@@ -63,6 +63,17 @@ class FakeProductService:
         ("field.change.status", {"jobId": "job_01JMIGRATE"}),
         ("field.change.cancel", {"jobId": "job_01JMIGRATE"}),
         ("field.recycleBin.list", {"tableId": "orders"}),
+        ("formula.validate", {"tableId": "orders", "field": {"contract": "vibetable.schema.v2"}}),
+        ("formula.draft.validate", {"tableId": "orders", "displaySource": "1 + 1"}),
+        (
+            "formula.preview",
+            {
+                "tableId": "orders",
+                "field": {"contract": "vibetable.schema.v2"},
+                "row": {},
+                "changedFieldIds": [],
+            },
+        ),
         (
             "schema.table.create",
             {
@@ -148,6 +159,9 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "field.change.status",
         "field.recycleBin.list",
         "field.settings.describe",
+        "formula.draft.validate",
+        "formula.preview",
+        "formula.validate",
         "relation.searchTargets",
         "query.selectionOpen",
         "lookup.list",
@@ -183,6 +197,9 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "field.change.status",
         "field.recycleBin.list",
         "field.settings.describe",
+        "formula.draft.validate",
+        "formula.preview",
+        "formula.validate",
         "file.list",
         "history.applyRestore",
         "history.previewRestore",
@@ -341,5 +358,8 @@ def test_current_python_registry_rejects_unknown_and_retires_go_owned_routes() -
             "field.recycleBin.list",
             "schema.table.create",
             "schema.delete",
+            "formula.validate",
+            "formula.draft.validate",
+            "formula.preview",
         }
     )

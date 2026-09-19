@@ -32,7 +32,8 @@ func surfaceHTTPServer(t *testing.T, pb *pocketbase.PocketBase, gates ...busines
 			return nil, errors.New("unrelated")
 		}})
 	}
-	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, append(registrations, unrelatedSchemaFieldChangeRegistrations(t)...)...)
+	dispatcher, err := productrpc.New(productrpc.Identity{WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7, FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, append(append(registrations, unrelatedSchemaFieldChangeRegistrations(t)...),
+		unrelatedFormulaProductRegistrations(t)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

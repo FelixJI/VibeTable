@@ -627,6 +627,14 @@ describe("field settings service", () => {
         collection: "tbl_opaque", primaryKey: "id", primaryDisplayFieldId: "fld_price",
         columns: [
           {
+            name: "id", title: "ID", fieldId: "id", kind: "system" as const,
+            dataType: "text" as const, editable: false, nullable: false,
+          },
+          {
+            name: "f_created", title: "Created", fieldId: "fld_created", kind: "system" as const,
+            dataType: "dateTime" as const, editable: false, nullable: false,
+          },
+          {
             name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar" as const,
             dataType: "number" as const, editable: true, nullable: false,
           },
@@ -690,7 +698,7 @@ describe("field settings service", () => {
         name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar",
         dataType: "decimal", editable: true, nullable: false,
       }],
-      rows: [{ rowKey: "order-1", id: "order-1", f_price: 21.25 }],
+      rows: [{ rowKey: "order-1", id: "order-1", f_price: 21.25, f_created: "2026-09-19T00:00:00Z" }],
       offset: 0, limit: 1, totalRows: 1, mode: "remote",
     });
 
@@ -698,7 +706,7 @@ describe("field settings service", () => {
     await service.loadFormulaCatalog();
 
     expect(store.formulaSourceSchema?.columns.map(column => column.title))
-      .toEqual(["单价", "明细"]);
+      .toEqual(["ID", "Created", "单价", "明细"]);
     expect(store.formulaTargetSchemas.fld_lines?.columns[0]?.title).toBe("金额");
 
     const older = service.validateFormulaDraft("{单价} * 2");
@@ -715,7 +723,7 @@ describe("field settings service", () => {
     });
     expect(store.formulaPreviewValue).toBe(42.5);
     expect(request).toHaveBeenCalledWith("formula.preview", expect.objectContaining({
-      row: { id: "order-1", f_price: 21.25 },
+      row: { f_price: 21.25, f_created: "2026-09-19T00:00:00Z" },
       changedFieldIds: [],
     }));
     resolveFirst({

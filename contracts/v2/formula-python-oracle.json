@@ -1,0 +1,6705 @@
+{
+  "producerCommit": "2c8eb476078eafe06a31484814e17b1bc999e340",
+  "boundary": "Real Python dispatcher/DTO/adapter/HTTP error projection; scripted HTTP authority, not Go domain execution",
+  "cases": [
+    {
+      "name": "formula.validate:success",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:success",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/validate",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:success",
+        "result": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "formula.validate:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:unknown-param",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "extra": true
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:revision-is-not-a-public-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:revision-is-not-a-public-param",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "expectedRevision": "stale"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:revision-is-not-a-public-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:missing-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:missing-table",
+        "method": "formula.validate",
+        "params": {
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:missing-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:null-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:null-table",
+        "method": "formula.validate",
+        "params": {
+          "tableId": null,
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:null-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:empty-table",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:wrong-table-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:wrong-table-type",
+        "method": "formula.validate",
+        "params": {
+          "tableId": false,
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:wrong-table-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:whitespace-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:whitespace-forwarded",
+        "method": "formula.validate",
+        "params": {
+          "tableId": " ",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/validate",
+          "body": {
+            "tableId": " ",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:whitespace-forwarded",
+        "result": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "formula.validate:nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nonobject-params",
+        "method": "formula.validate",
+        "params": []
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:missing-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:missing-field",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:missing-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:null-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:null-field",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": null
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:null-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:incomplete-field-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:incomplete-field-handler-error",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {}
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:incomplete-field-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:nested-unknown-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-unknown-handler-error",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            },
+            "unexpected": true
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-unknown-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:nested-language-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-language-handler-error",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "other",
+              "source": "1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-language-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:nested-empty-source-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-empty-source-handler-error",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-empty-source-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:nested-python-alias-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-python-alias-forwarded",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            },
+            "display_name": "金额"
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/validate",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              },
+              "display_name": "金额"
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:nested-python-alias-forwarded",
+        "result": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "formula.validate:credential-rejected",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:credential-rejected",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            },
+            "password": "oracle-only"
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "formulas": [
+            {
+              "fieldId": "fld_01JABCDE",
+              "canonicalSource": "1 + 1",
+              "astHash": "authority-fixture",
+              "dependencies": []
+            }
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:credential-rejected",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:scalar-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:scalar-response",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": 7,
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/validate",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:scalar-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.validate:transport-failure",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:transport-failure",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "transportFailure": true
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/validate",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:transport-failure",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "PocketBase sidecar is unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.validate:domain-error-projection",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:domain-error-projection",
+        "method": "formula.validate",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 422,
+        "body": {
+          "contractVersion": "2.0",
+          "code": "formula.dependency",
+          "path": "field.formula.source",
+          "message": "unknown field",
+          "details": {
+            "fieldId": "missing"
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/validate",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.validate:domain-error-projection",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "unknown field",
+            "code": "formula.dependency",
+            "path": "field.formula.source",
+            "details": {
+              "fieldId": "missing"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:success",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:success",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/draft/validate",
+          "body": {
+            "tableId": "orders",
+            "displaySource": "SUM({明细}.{金额})"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:success",
+        "result": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:unknown-param",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "SUM({明细}.{金额})",
+          "extra": true
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:revision-is-not-a-public-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:revision-is-not-a-public-param",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "SUM({明细}.{金额})",
+          "expectedRevision": "stale"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:revision-is-not-a-public-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:missing-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:missing-table",
+        "method": "formula.draft.validate",
+        "params": {
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:missing-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:null-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:null-table",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": null,
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:null-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:empty-table",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "",
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:wrong-table-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:wrong-table-type",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": false,
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:wrong-table-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:whitespace-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:whitespace-forwarded",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": " ",
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/draft/validate",
+          "body": {
+            "tableId": " ",
+            "displaySource": "SUM({明细}.{金额})"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:whitespace-forwarded",
+        "result": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:nonobject-params",
+        "method": "formula.draft.validate",
+        "params": []
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:empty-source",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:empty-source",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:empty-source",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:null-source",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:null-source",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": null
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:null-source",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:missing-source",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:missing-source",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:missing-source",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:syntax-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:syntax-forwarded",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "1 + ("
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/draft/validate",
+          "body": {
+            "tableId": "orders",
+            "displaySource": "1 + ("
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:syntax-forwarded",
+        "result": {
+          "canonicalSource": "relationSum(f_lines, \"f_amount\")",
+          "resultType": "number",
+          "dependencies": [],
+          "relationAggregatePaths": [
+            "f_lines.f_amount"
+          ]
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:scalar-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:scalar-response",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": 7,
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/draft/validate",
+          "body": {
+            "tableId": "orders",
+            "displaySource": "SUM({明细}.{金额})"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:scalar-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:transport-failure",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:transport-failure",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "transportFailure": true
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/draft/validate",
+          "body": {
+            "tableId": "orders",
+            "displaySource": "SUM({明细}.{金额})"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:transport-failure",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "PocketBase sidecar is unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.draft.validate:domain-error-projection",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:domain-error-projection",
+        "method": "formula.draft.validate",
+        "params": {
+          "tableId": "orders",
+          "displaySource": "SUM({明细}.{金额})"
+        }
+      },
+      "authorityFixture": {
+        "status": 422,
+        "body": {
+          "contractVersion": "2.0",
+          "code": "formula.dependency",
+          "path": "field.formula.source",
+          "message": "unknown field",
+          "details": {
+            "fieldId": "missing"
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/draft/validate",
+          "body": {
+            "tableId": "orders",
+            "displaySource": "SUM({明细}.{金额})"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.draft.validate:domain-error-projection",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "unknown field",
+            "code": "formula.dependency",
+            "path": "field.formula.source",
+            "details": {
+              "fieldId": "missing"
+            },
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.preview:success",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:success",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            },
+            "row": {},
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:success",
+        "result": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.preview:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:unknown-param",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": [],
+          "extra": true
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:revision-is-not-a-public-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:revision-is-not-a-public-param",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": [],
+          "expectedRevision": "stale"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:revision-is-not-a-public-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:missing-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-table",
+        "method": "formula.preview",
+        "params": {
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:null-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-table",
+        "method": "formula.preview",
+        "params": {
+          "tableId": null,
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:empty-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:empty-table",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:empty-table",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:wrong-table-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:wrong-table-type",
+        "method": "formula.preview",
+        "params": {
+          "tableId": false,
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:wrong-table-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:whitespace-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:whitespace-forwarded",
+        "method": "formula.preview",
+        "params": {
+          "tableId": " ",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": " ",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            },
+            "row": {},
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:whitespace-forwarded",
+        "result": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.preview:nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nonobject-params",
+        "method": "formula.preview",
+        "params": []
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:missing-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-field",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:null-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-field",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": null,
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-field",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:incomplete-field-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:incomplete-field-handler-error",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {},
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:incomplete-field-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:nested-unknown-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-unknown-handler-error",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            },
+            "unexpected": true
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-unknown-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:nested-language-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-language-handler-error",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "other",
+              "source": "1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-language-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:nested-empty-source-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-empty-source-handler-error",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-empty-source-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:nested-python-alias-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-python-alias-forwarded",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            },
+            "display_name": "金额"
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              },
+              "display_name": "金额"
+            },
+            "row": {},
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:nested-python-alias-forwarded",
+        "result": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.preview:credential-rejected",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:credential-rejected",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            },
+            "password": "oracle-only"
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:credential-rejected",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:missing-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-row",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-row",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:null-row",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-row",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": null,
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-row",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:missing-changed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-changed",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {}
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:missing-changed",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:null-changed",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-changed",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": null
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:null-changed",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:empty-changed-id-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:empty-changed-id-handler-error",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": [
+            ""
+          ]
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:empty-changed-id-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:numeric-changed-id-handler-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:numeric-changed-id-handler-error",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": [
+            1
+          ]
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:numeric-changed-id-handler-error",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:row-values-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:row-values-forwarded",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {
+            "large": 9007199254740993,
+            "negative": -2.5,
+            "empty": null,
+            "unicode": "金额😀",
+            "date": "2026-09-19T00:00:00Z"
+          },
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            },
+            "row": {
+              "large": 9007199254740993,
+              "negative": -2.5,
+              "empty": null,
+              "unicode": "金额😀",
+              "date": "2026-09-19T00:00:00Z"
+            },
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:row-values-forwarded",
+        "result": {
+          "values": {
+            "f_01jabcde": 2,
+            "empty": null,
+            "large": 9007199254740993
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.preview:scalar-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:scalar-response",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": 7,
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            },
+            "row": {},
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:scalar-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "formula.preview:transport-failure",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:transport-failure",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "transportFailure": true
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            },
+            "row": {},
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:transport-failure",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "PocketBase sidecar is unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "formula.preview:domain-error-projection",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:domain-error-projection",
+        "method": "formula.preview",
+        "params": {
+          "tableId": "orders",
+          "field": {
+            "contract": "vibetable.schema.v2",
+            "identity": {
+              "fieldId": "fld_01JABCDE",
+              "physicalName": "f_01jabcde",
+              "providerFieldId": "pb_01JABCDE"
+            },
+            "displayName": "金额",
+            "help": "",
+            "logicalType": "formula",
+            "lifecycle": {
+              "state": "active",
+              "retiredAt": null
+            },
+            "value": {
+              "required": false,
+              "default": {
+                "enabled": false,
+                "value": null,
+                "source": "recommended",
+                "defaultsVersion": 1
+              },
+              "presence": {
+                "mode": "computed"
+              }
+            },
+            "constraints": {
+              "unique": {
+                "enabled": false,
+                "blankPolicy": "ignoreMissing"
+              },
+              "range": {
+                "min": null,
+                "max": null
+              },
+              "length": {
+                "min": null,
+                "max": null
+              },
+              "pattern": {
+                "enabled": false,
+                "value": ""
+              },
+              "domains": {
+                "only": [],
+                "except": []
+              },
+              "selection": {
+                "min": 0,
+                "max": null
+              }
+            },
+            "storage": {
+              "kind": "computed",
+              "options": {
+                "onlyInt": false,
+                "maxSize": 0,
+                "convertURLs": false,
+                "presentable": false
+              }
+            },
+            "display": {
+              "kind": "readonly",
+              "preset": "number",
+              "displayScale": 2,
+              "scaleMode": "max",
+              "trimTrailingZeros": true,
+              "useGrouping": true,
+              "currency": "CNY",
+              "percentStorage": "ratio",
+              "unit": null,
+              "precision": "minute",
+              "timezone": "system",
+              "mode": "default",
+              "indent": 0,
+              "trueLabel": "是",
+              "falseLabel": "否"
+            },
+            "formula": {
+              "language": "cel-v1",
+              "source": "1 + 1",
+              "resultType": "number"
+            }
+          },
+          "row": {},
+          "changedFieldIds": []
+        }
+      },
+      "authorityFixture": {
+        "status": 422,
+        "body": {
+          "contractVersion": "2.0",
+          "code": "formula.dependency",
+          "path": "field.formula.source",
+          "message": "unknown field",
+          "details": {
+            "fieldId": "missing"
+          }
+        },
+        "transportFailure": false
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/formulas/preview",
+          "body": {
+            "tableId": "orders",
+            "field": {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "formula",
+              "lifecycle": {
+                "state": "active",
+                "retiredAt": null
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "computed"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "computed",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "readonly",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              },
+              "formula": {
+                "language": "cel-v1",
+                "source": "1 + 1",
+                "resultType": "number"
+              }
+            },
+            "row": {},
+            "changedFieldIds": []
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "formula.preview:domain-error-projection",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "unknown field",
+            "code": "formula.dependency",
+            "path": "field.formula.source",
+            "details": {
+              "fieldId": "missing"
+            },
+            "retryable": false
+          }
+        }
+      }
+    }
+  ]
+}

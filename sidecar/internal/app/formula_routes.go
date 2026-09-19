@@ -36,17 +36,13 @@ func registerFormulaRoutes(
 	app core.App,
 	compiler *formula.Compiler,
 ) {
+	domain := formulaDomain{app: app, compiler: compiler}
 	r.POST("/api/vibetable/v1/formulas/draft/validate", func(request *core.RequestEvent) error {
 		var input formulaDraftValidateRequest
 		if err := decodeFormulaRequest(request.Request.Body, &input); err != nil {
 			return writeFormulaError(request, err)
 		}
-		if input.TableID == "" || input.DisplaySource == "" {
-			return writeFormulaError(
-				request, formulaRequestError("tableId and displaySource are required"),
-			)
-		}
-		result, err := fieldchange.NewCatalog(request.App).InspectFormulaDraft(
+		result, err := domain.validateDraft(
 			request.Request.Context(), input.TableID, input.DisplaySource,
 		)
 		if err != nil {
@@ -60,24 +56,11 @@ func registerFormulaRoutes(
 		if err := decodeFormulaRequest(request.Request.Body, &input); err != nil {
 			return writeFormulaError(request, err)
 		}
-		definition, err := formulaRequestTable(
-			request.Request.Context(), app, input.TableId, input.Field,
-		)
+		result, err := domain.validate(request.Request.Context(), input.TableId, input.Field)
 		if err != nil {
 			return writeFormulaError(request, err)
 		}
-		plan, formulaErr := compiler.CompileExecutionTable(definition)
-		if formulaErr != nil {
-			return writeFormulaError(request, formulaErr)
-		}
-		metadata := make([]formulaMetadata, 0, len(plan.Formulas))
-		for _, compiled := range plan.Formulas {
-			metadata = append(metadata, formulaMetadata{
-				FieldID: compiled.FieldID, CanonicalSource: compiled.CanonicalSource,
-				ASTHash: compiled.ASTHash, Dependencies: compiled.Dependencies,
-			})
-		}
-		return request.JSON(http.StatusOK, map[string]any{"formulas": metadata})
+		return request.JSON(http.StatusOK, result)
 	})
 
 	r.POST("/api/vibetable/v1/formulas/preview", func(request *core.RequestEvent) error {
@@ -85,30 +68,11 @@ func registerFormulaRoutes(
 		if err := decodeFormulaRequest(request.Request.Body, &input); err != nil {
 			return writeFormulaError(request, err)
 		}
-		if input.Row == nil {
-			return writeFormulaError(request, formulaRequestError("row is required"))
-		}
-		definition, err := formulaRequestTable(
-			request.Request.Context(), app, input.TableId, input.Field,
-		)
+		result, err := domain.preview(request.Request.Context(), input)
 		if err != nil {
 			return writeFormulaError(request, err)
 		}
-		plan, formulaErr := compiler.CompileExecutionTable(definition)
-		if formulaErr != nil {
-			return writeFormulaError(request, formulaErr)
-		}
-		row, err := decodeFormulaRow(input.Row)
-		if err != nil {
-			return writeFormulaError(request, err)
-		}
-		values, formulaErr := plan.Evaluate(
-			request.Request.Context(), row, input.ChangedFieldIds,
-		)
-		if formulaErr != nil {
-			return writeFormulaError(request, formulaErr)
-		}
-		return request.JSON(http.StatusOK, map[string]any{"values": values})
+		return request.JSON(http.StatusOK, result)
 	})
 }
 

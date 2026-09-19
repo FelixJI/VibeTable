@@ -240,7 +240,6 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
 async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachment() -> None:
     service, transport = service_with(
         [
-            {"valid": True, "diagnostics": []},
             {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
             {
@@ -266,12 +265,12 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
             ),
         )
     assert transport.requests == []
-    assert (
+    with pytest.raises(ValueError, match=r"unknown product RPC method: formula\.validate"):
         await service.invoke(
             "formula.validate",
             ProductParams.model_validate({"tableId": "orders", "field": formula_v2_field()}),
         )
-    )["valid"] is True
+    assert transport.requests == []
     await service.invoke(
         "file.token",
         ProductParams.model_validate(
