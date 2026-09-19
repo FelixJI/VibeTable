@@ -20,7 +20,7 @@ public sealed class ProductRpcRouteSelectorTests
                 method,
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
-            Assert.AreEqual(method is "settings.readWorkCalendar" or "settings.commitWorkCalendar" or "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.settings.describe" or "file.list" or "history.read" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "schema.list"
+            Assert.AreEqual(method is "settings.readWorkCalendar" or "settings.commitWorkCalendar" or "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.change.apply" or "field.change.cancel" or "field.change.plan" or "field.change.status" or "field.recycleBin.list" or "field.settings.describe" or "file.list" or "history.read" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "schema.list"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
                 route, method);
         }
@@ -29,6 +29,23 @@ public sealed class ProductRpcRouteSelectorTests
             Assert.IsTrue(selector.TrySelectRelation(method, out ProductRpcRoute route), method);
             Assert.AreEqual(method is "relation.searchTargets" or "relation.previewDelta" or "lookup.query" or "lookup.valuePage"
                 ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff, route, method);
+        }
+    }
+
+    [TestMethod]
+    public void SchemaFieldChangeMethodsSelectGoWithoutPythonFallback()
+    {
+        foreach (string method in new[]
+                { "field.change.plan", "field.change.apply", "field.change.status",
+                  "field.change.cancel", "field.recycleBin.list", "schema.table.create", "schema.delete" })
+        {
+            ProductRpcCapabilityCatalog catalog = ProductDataRpcRegistry.TryGet(method, out var endpoint)
+                ? endpoint.CapabilityCatalog
+                : ProductRpcCapabilityCatalog.Product;
+            Assert.AreEqual(ProductRpcCapabilityCatalog.Product, catalog, method);
+            Assert.IsTrue(ProductRpcRouteSelector.Default.TrySelectProduct(
+                method, catalog, out ProductRpcRoute route), method);
+            Assert.AreEqual(ProductRpcRoute.GoSidecar, route, method);
         }
     }
 

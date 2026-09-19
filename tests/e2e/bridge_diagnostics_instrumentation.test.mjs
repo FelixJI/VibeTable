@@ -723,6 +723,145 @@ test(`retirement only settles ${method} with matching type and epoch`, () => {
 });
 }
 
+function installRetirementHarness(method) {
+  const listeners = new Map();
+  const webview = { postMessage() {}, addEventListener(type, listener) { listeners.set(type, listener); } };
+  globalThis.window = {
+    chrome: { webview },
+    addEventListener(type, listener) { listeners.set(type, listener); },
+  };
+  const retire = (requestId, sessionEpoch = 7) => {
+    listeners.get("vibetable:bridge-request-retired")({ detail: {
+      requestId, requestType: method, workspaceId: "workspace-a", sessionEpoch,
+    } });
+  };
+  const postScoped = (requestId, sequence) => {
+    webview.postMessage({
+      type: method,
+      requestId,
+      payload: { seed: "private-seed" },
+      scope: { scope: "workspace", workspaceId: "workspace-a", sessionEpoch: 7, sequence },
+    });
+  };
+  const lateFailure = (requestId, code, message = "late failure") => {
+    listeners.get("message")({ data: {
+      type: "operation.failed", requestId, payload: { code, message },
+    } });
+  };
+  return { retire, postScoped, lateFailure };
+}
+
+for (const method of ["dashboard.listRequested", "dashboard.manifestRequested"]) {
+test(`late BAD_WORKSPACE_SCOPE failure after ${method} retirement keeps code and request identity`, () => {
+  const { retire, postScoped, lateFailure } = installRetirementHarness(method);
+  try {
+    installBridgeDiagnosticsInPage();
+    postScoped("old-list", 1);
+    retire("old-list");
+    lateFailure("old-list", "BAD_WORKSPACE_SCOPE");
+
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.failures.length, 1);
+    const [failure] = result.failures;
+    assert.equal(failure.requestId, "old-list");
+    assert.equal(failure.requestType, method);
+    assert.equal(failure.code, "BAD_WORKSPACE_SCOPE");
+    assert.deepEqual(failure.payloadShape, { seed: { kind: "string", length: 12 } });
+    assert.equal(typeof failure.startedAt, "string");
+    assert.equal(typeof failure.durationMs, "number");
+    assert.equal(result.retiredRequests.length, 1, "retirement evidence stays");
+    assert.equal(result.acknowledgedFailures.length, 0);
+    assert.equal(result.pending.length, 0);
+    assert.equal(JSON.stringify(result).includes("private-seed"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test(`late failure with unlisted code after ${method} retirement stays codeless and fails closed`, () => {
+  const { retire, postScoped, lateFailure } = installRetirementHarness(method);
+  try {
+    installBridgeDiagnosticsInPage();
+    postScoped("old-list", 1);
+    retire("old-list");
+    lateFailure("old-list", "SECRET_PRIVATE_CODE");
+
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].code, null);
+    assert.equal(result.failures[0].requestType, method);
+    assert.equal(JSON.stringify(result).includes("SECRET_PRIVATE_CODE"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+}
+
+test(`retired request receiving another real error still records the failure`, () => {
+  const { retire, postScoped, lateFailure } = installRetirementHarness("dashboard.listRequested");
+  try {
+    installBridgeDiagnosticsInPage();
+    postScoped("old-list", 1);
+    retire("old-list");
+    lateFailure("old-list", "WORKSPACE_ERROR");
+
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].code, "WORKSPACE_ERROR");
+    assert.equal(result.failures[0].requestType, "dashboard.listRequested");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test(`failure settled before retirement is not retroactively deleted`, () => {
+  const { retire, postScoped, lateFailure } = installRetirementHarness("dashboard.listRequested");
+  try {
+    installBridgeDiagnosticsInPage();
+    postScoped("old-list", 1);
+    lateFailure("old-list", "WORKSPACE_ERROR");
+    retire("old-list");
+
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].requestType, "dashboard.listRequested");
+    assert.equal(result.failures[0].code, "WORKSPACE_ERROR");
+    assert.equal(result.roundTrips.length, 1);
+    assert.equal(result.retiredRequests.length, 0);
+    assert.equal(result.pending.length, 0);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test(`retirement association evicts with the bounded ledger and stays fail closed`, () => {
+  const { retire, postScoped, lateFailure } = installRetirementHarness("dashboard.listRequested");
+  try {
+    installBridgeDiagnosticsInPage();
+    for (let index = 1; index <= 205; index += 1) {
+      const requestId = `ret-${index}`;
+      postScoped(requestId, index);
+      retire(requestId);
+    }
+    lateFailure("ret-1", "BAD_WORKSPACE_SCOPE");
+    lateFailure("ret-6", "BAD_WORKSPACE_SCOPE");
+    lateFailure("ret-205", "BAD_WORKSPACE_SCOPE");
+
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.retiredRequests.length, 200);
+    assert.equal(result.failures.length, 3);
+    assert.equal(result.failures[0].requestId, "ret-1");
+    assert.equal(result.failures[0].requestType, null, "evicted association resolves no identity");
+    assert.equal(result.failures[0].code, "BAD_WORKSPACE_SCOPE");
+    assert.equal(result.failures[1].requestId, "ret-6");
+    assert.equal(result.failures[1].requestType, "dashboard.listRequested");
+    assert.equal(result.failures[2].requestId, "ret-205");
+    assert.equal(result.failures[2].requestType, "dashboard.listRequested");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("replica observations retain bounded public state without response contents", () => {
   const listeners = [];
   globalThis.window = { chrome: { webview: {

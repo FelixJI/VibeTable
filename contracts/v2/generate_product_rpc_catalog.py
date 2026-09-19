@@ -19,7 +19,6 @@ from pydantic import BaseModel, RootModel, TypeAdapter
 import backend.__main__ as composition
 from backend.contracts.product_rpc import (
     PRODUCT_RPC_REGISTRY as PRODUCT_PARAM_MODELS,
-    WORKSPACE_CATALOG_METHODS,
     ProductParams,
 )
 from backend.contracts.data_io import (
@@ -109,7 +108,14 @@ from backend.contracts.relation_admin import (
     RelationSingleUpdateResult,
     SchemaDescribeResult,
 )
-from backend.contracts.schema_v2 import FieldSettingsDescribeResultV2, SchemaSnapshotV2
+from backend.contracts.schema_v2 import (
+    ApplyReceiptV2,
+    FieldChangePlanV2,
+    FieldRecycleBinResultV2,
+    FieldSettingsDescribeResultV2,
+    MigrationStatusV2,
+    SchemaSnapshotV2,
+)
 from backend.contracts.settings_commands import (
     CommandResult,
     CommandsResult,
@@ -244,6 +250,8 @@ def _value(
 
 
 def _product_payload(model: type[ProductParams]) -> dict[str, object]:
+    if model._catalog_example is not None:
+        return model.model_validate(model._catalog_example).model_dump(mode="json")
     result: dict[str, object] = {}
     for name in sorted(model._required_fields):
         expected = model._field_types.get(name, (str,))
@@ -777,6 +785,11 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
             "SchemaDeleteResult",
             {"deleted": True, "tableId": "orders"},
         ),
+        "field.change.plan": _typed(FieldChangePlanV2),
+        "field.change.apply": _typed(ApplyReceiptV2),
+        "field.change.status": _typed(MigrationStatusV2),
+        "field.change.cancel": _typed(MigrationStatusV2),
+        "field.recycleBin.list": _typed(FieldRecycleBinResultV2),
         "field.settings.describe": _typed(FieldSettingsDescribeResultV2),
         "schema.describe": _typed(SchemaDescribeResult),
         "schema.getTable": _typed(SchemaSnapshotV2),
@@ -897,7 +910,7 @@ def main() -> None:
 
     path = Path(__file__).with_name("fixtures") / "product-rpc-catalog.json"
     models = _registered_models()
-    methods = sorted(set(models) - WORKSPACE_CATALOG_METHODS)
+    methods = sorted(models)
     result_specs = _result_specs(path.parent)
     missing_results = sorted(set(methods) - result_specs.keys())
     stale_results = sorted(result_specs.keys() - set(methods))

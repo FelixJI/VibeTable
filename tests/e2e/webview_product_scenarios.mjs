@@ -8,6 +8,7 @@ import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/in
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
   beginSidecarRecoveryNotificationFailureWindowInPage,
+  pythonRecoveryReadinessMethod,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -2577,6 +2578,69 @@ async function scenario05(page, recorder, _network, runtime) {
       && rollbackRows.payload?.rows?.[0]?.[rollbackTable.field.physicalName] === "42",
     { rollbackPlan, faultedApply, rollbackStatus, rollbackAfter, rollbackRows },
   );
+
+  const cancellationPlan = await rawBridgeRequest(page, "field.change.plan", {
+    ...rollbackPlan.payload.intent,
+    expectedSchemaRevision: rollbackAfter.payload.schemaRevision,
+    expectedDataRevision: rollbackAfter.payload.dataRevision,
+  });
+  const holdFile = path.join(runtime.controlsDir, "migration-fault.phase");
+  await fs.writeFile(holdFile, "hold:copying\n", "utf8");
+  let cancellationApply;
+  try {
+    cancellationApply = await rawBridgeRequest(page, "field.change.apply", {
+      planId: cancellationPlan.payload.planId,
+      planHash: cancellationPlan.payload.planHash,
+      operationId: `op_e2e_cancel_${Date.now()}`,
+      actor: { id: "product-e2e", kind: "user" },
+      confirmations: [...(cancellationPlan.payload.confirmations ?? [])],
+    });
+    const jobId = cancellationApply.payload.migrationJobId;
+    let running;
+    const deadline = performance.now() + 15_000;
+    do {
+      running = await rawBridgeRequest(page, "field.change.status", { jobId });
+      if (running.payload?.phase === "copying") break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (performance.now() < deadline);
+    recorder.check("the real packaged migration pauses in a cancellable phase",
+      running?.payload?.phase === "copying" && running.payload.canCancel === true,
+      { cancellationApply, running });
+    const cancelled = await rawBridgeRequest(page, "field.change.cancel", { jobId });
+    recorder.check("Host routes a running migration cancellation to the Go authority",
+      cancelled.type === "field.change.cancel" && cancelled.payload?.jobId === jobId
+        && cancelled.payload.canCancel === false, { cancelled });
+  } finally {
+    await fs.rm(holdFile, { force: true });
+  }
+  const cancelledStatus = await waitForFieldMigration(page, cancellationApply.payload.migrationJobId);
+  recorder.check("the packaged migration persists cancellation before switching authority",
+    cancelledStatus.payload?.phase === "cancelled", { cancelledStatus });
+
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
+  recorder.check("schema lifecycle closes the actual workspace", closed.result?.state === "closed", { closed });
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  const persistedStatus = await rawBridgeRequest(page, "field.change.status", {
+    jobId: cancellationApply.payload.migrationJobId,
+  });
+  const persistedDefinition = await rawBridgeRequest(page, "field.settings.describe", {
+    tableId: rollbackTable.tableId, fieldId: rollbackTable.field.fieldId,
+  });
+  const persistedRows = await rawBridgeRequest(page, "query.page", {
+    tableId: rollbackTable.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("workspace reopen retains the cancelled job, schema and original data in a new epoch",
+    reopened.payload.session.workspaceId === originalSession.workspaceId
+      && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
+      && persistedStatus.payload?.phase === "cancelled"
+      && persistedDefinition.payload?.definition?.logicalType === "text"
+      && persistedDefinition.payload?.definition?.identity?.fieldId === rollbackTable.field.fieldId
+      && persistedRows.payload?.rows?.[0]?.[rollbackTable.field.physicalName] === "42",
+    { originalSession, reopened, persistedStatus, persistedDefinition, persistedRows });
   return;
 }
 
@@ -3984,7 +4048,7 @@ async function waitForTableRecovery(
           }
           const recoveredCount = await page.locator(".tabulator-row").count();
           if (recoveredCount === expectedRows) {
-            // Go page reads can recover before the Python write gateway.
+            // Go page/schema reads can recover before the fixed Host/Python binding.
             // Keep this read under the same deadline and terminal ownership window.
             if (Date.now() >= deadline) {
               throw new SidecarRecoveryContractError("sidecar recovery deadline expired");
@@ -3995,7 +4059,20 @@ async function waitForTableRecovery(
             recoveryReads.own(fieldRequestId, "field.recycleBin.list");
             const fields = await recoveryReads.observe(fieldRequestId);
             if (fields?.type !== "field.recycleBin.list") {
-              lastError = new Error("Python field recycle-bin read did not recover");
+              lastError = new Error("Go field recycle-bin read did not recover");
+              continue;
+            }
+            // Recycle-bin moved to Go in #343, so it no longer proves that
+            // the rotated Python client and native Host gateways are current.
+            // Validate a constant draft through the retained read-only Python
+            // route, under the existing absolute deadline and request ownership.
+            const pythonRequestId = await beginRawBridgeRequest(
+              page, pythonRecoveryReadinessMethod, { tableId, displaySource: "1" },
+            );
+            recoveryReads.own(pythonRequestId, pythonRecoveryReadinessMethod);
+            const pythonReady = await recoveryReads.observe(pythonRequestId);
+            if (pythonReady?.type !== pythonRecoveryReadinessMethod) {
+              lastError = new Error("Host/Python binding did not recover");
               continue;
             }
             await recoveryReads.settle();
@@ -4134,10 +4211,10 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       lastResponse = await rawBridgeRequest(
-        page, "field.recycleBin.list", { tableId }, Math.min(20_000, remainingMs),
+        page, pythonRecoveryReadinessMethod, { tableId, displaySource: "1" }, Math.min(20_000, remainingMs),
       );
       if (Date.now() >= deadline) break;
-      if (lastResponse.type === "field.recycleBin.list") {
+      if (lastResponse.type === pythonRecoveryReadinessMethod) {
         return recoveredPage;
       }
     }
@@ -4687,6 +4764,30 @@ async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000)
   return waitForWorkspaceSearchRebuildTerminal(page, accepted, timeout);
 }
 
+// The restored-search attachment miss has been intermittent in packaged runs.
+// Capture one bounded, read-only snapshot of the restored attachment, target
+// record, and index state so a failure report can separate derived indexing
+// from actual data loss. It never rebuilds or retries the search, and a
+// diagnostic that cannot be collected becomes an explicit gap instead of
+// replacing the original search failure.
+async function collectRestoredSearchDiagnostics(page, attachmentParams, tableId) {
+  const diagnostics = { attachmentList: null, targetRecord: null, searchIndex: null, gaps: [] };
+  const collect = async (key, request) => {
+    try {
+      diagnostics[key] = await request();
+    } catch (error) {
+      diagnostics.gaps.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  await collect("attachmentList", () => rawBridgeRequest(page, "file.list", attachmentParams));
+  await collect("targetRecord", () => rawBridgeRequest(page, "query.page", {
+    tableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }));
+  await collect("searchIndex", () => rawWorkspaceV2Request(page, "workspaceSearch.status", {}));
+  return diagnostics;
+}
+
 async function scenario12(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -5016,17 +5117,23 @@ async function scenario12(page, recorder, _network, runtime) {
     "workspaceSearch.status",
     {},
   );
+  const restoredSearchCheckPassed = ["building", "degraded", "ready"].includes(
+      postRestoreInitialSearch.result?.state,
+    )
+    && restoredSearchState === "ready"
+    && restoredSearchStatus.result?.generation
+      > beforeSnapshotSearchStatus.result?.generation
+    && restoredSearch.hits.some((hit) => hit.kind === "attachment");
+  const restoredSearchDiagnostics = restoredSearchCheckPassed ? null
+    : await collectRestoredSearchDiagnostics(page, attachmentParams, tableId);
   recorder.check("snapshot restore invalidates derived search and rebuilds a newer usable generation",
-    ["building", "degraded", "ready"].includes(postRestoreInitialSearch.result?.state)
-      && restoredSearchState === "ready"
-      && restoredSearchStatus.result?.generation
-        > beforeSnapshotSearchStatus.result?.generation
-      && restoredSearch.hits.some((hit) => hit.kind === "attachment"),
+    restoredSearchCheckPassed,
   {
     postRestoreInitialSearch: postRestoreInitialSearch.result,
     beforeSnapshotSearchStatus: beforeSnapshotSearchStatus.result,
     restoredSearchStatus: restoredSearchStatus.result,
     restoredSearch,
+    restoredSearchDiagnostics,
   });
 
   await page.getByTestId("nav-tables").click();
@@ -6164,8 +6271,24 @@ async function scenario16(page, recorder, _network, runtime) {
     x: await layoutItem.getAttribute("gs-x"),
     height: await layoutItem.getAttribute("gs-h"),
   };
+  const layoutPanelId = await layoutItem.getAttribute("data-panel-id");
+  if (!layoutPanelId) throw new Error("Dashboard layout panel id is unavailable");
   await layoutItem.press("Alt+ArrowRight");
+  // Observe each user action before issuing the next one: the grid update and
+  // Vue's canonical panel projection do not share Playwright's keyup boundary.
+  await page.waitForFunction(({ panelId, beforeX }) => {
+    const item = document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
+    return item && Number(item.getAttribute("gs-x") ?? 0) === Number(beforeX ?? 0) + 1;
+  }, { panelId: layoutPanelId, beforeX: layoutBefore.x }, { timeout: 20_000 });
+  const movedX = await layoutItem.getAttribute("gs-x");
   await layoutItem.press("Alt+Shift+ArrowDown");
+  await page.waitForFunction(({ panelId, expectedX, beforeHeight }) => {
+    const item = document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
+    return item && item.getAttribute("gs-x") === expectedX
+      && Number(item.getAttribute("gs-h")) === Number(beforeHeight) + 1;
+  }, {
+    panelId: layoutPanelId, expectedX: movedX, beforeHeight: layoutBefore.height,
+  }, { timeout: 20_000 });
   const layoutAfter = {
     x: await layoutItem.getAttribute("gs-x"),
     height: await layoutItem.getAttribute("gs-h"),
@@ -7925,11 +8048,11 @@ function hasExactWorkspaceWire(message) {
     && outerKeys.every((key, index) => key === innerKeys[index] && outer[key] === inner[key]);
 }
 
-async function activateDirectoryReplicaWorkspace(page, { method, activate }) {
+async function activateWorkspaceThroughUi(page, { method, activate, waitForHydration = false }) {
   const workspaceCenter = page.getByTestId("workspace-center");
   const databaseOpened = await activateWorkspaceAndWaitForDatabaseOpened({
     beginCapture: (expectation) => beginWorkspaceActivationCapture(page, {
-      ...expectation, waitForHydration: true,
+      ...expectation, waitForHydration,
     }),
     activate,
     waitForActivation: (timeoutMs) => Promise.race([
@@ -8000,7 +8123,8 @@ async function scenario23(page, recorder, _network, runtime) {
   });
   await card.waitFor({ state: "visible", timeout: 60_000 });
 
-  const initial = await activateDirectoryReplicaWorkspace(page, {
+  const initial = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.switch",
     activate: () => card.click(),
   });
@@ -8110,7 +8234,8 @@ async function scenario23(page, recorder, _network, runtime) {
   const workspaceCenter = page.getByTestId("workspace-center");
   await workspaceCenter.waitFor({ state: "visible", timeout: 60_000 });
   const reopenCard = workspaceCenter.getByRole("button", { name: new RegExp(workspaceName) });
-  const reopened = await activateDirectoryReplicaWorkspace(page, {
+  const reopened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.open",
     activate: () => reopenCard.click(),
   });
@@ -8304,7 +8429,8 @@ async function replicaEditRow(page, recorder, state, value, session) {
   recorder.check("public workspace close completes protection for the provisional session",
     closed.result.state === "closed" && closed.result.workspaceId === null
       && closed.result.sessionEpoch === session.sessionEpoch, { closed });
-  const reopened = await activateDirectoryReplicaWorkspace(page, {
+  const reopened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.open",
     activate: () => center.getByRole("button", { name: new RegExp(state.workspaceName) }).click(),
   });
@@ -8418,7 +8544,8 @@ async function scenario24(page, recorder, _network, runtime) {
         && closed.result.state === "closed" && closed.result.workspaceId === null
         && closed.result.sessionEpoch === closed.request.wire.sessionEpoch, { closed });
   }
-  const opened = await activateDirectoryReplicaWorkspace(page, {
+  const opened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true,
     method: "workspace.open",
     activate: () => center.getByRole("button", { name: new RegExp(state.workspaceName) }).click(),
   });
@@ -8532,7 +8659,6 @@ async function scenario24(page, recorder, _network, runtime) {
 async function scenario32(page, recorder) {
   await waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
-  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession);
   const today = await page.evaluate(() => {
     const date = new Date();
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -8576,12 +8702,18 @@ async function scenario32(page, recorder) {
   await page.getByTestId("workspace-flow-confirm").click();
   const target = page.getByTestId("workspace-center").getByRole("button", { name: /Calendar Workspace B/ });
   await target.waitFor({ state: "visible", timeout: 60_000 });
-  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
-  await target.click();
-  const opened = await waitForCapturedBridgeMessage(page, 60_000);
+  await activateWorkspaceThroughUi(page, {
+    method: "workspace.switch", activate: () => target.click(),
+  });
   const isolated = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
   recorder.check("workspace B has no A calendar rules", isolated.payload?.overrides?.length === 0 && isolated.payload?.revision === "", { isolated });
-  await switchWorkspaceByName(page, "E2E Product Workspace", opened.payload.session.sessionEpoch);
+  await activateWorkspaceThroughUi(page, {
+    method: "workspace.switch",
+    activate: async () => {
+      await page.getByTestId("workspace-switcher").locator(".switcher-trigger").click();
+      await page.locator(".n-dropdown-option").filter({ hasText: "E2E Product Workspace" }).click();
+    },
+  });
   const reopened = await rawBridgeRequest(page, "settings.readWorkCalendar", {});
   recorder.check("reopening A reloads its persistent calendar revision", reopened.payload?.revision === confirmed.payload?.revision && JSON.stringify(reopened.payload?.overrides) === JSON.stringify(confirmed.payload?.overrides), { reopened });
   await page.getByTestId("nav-settings").click();

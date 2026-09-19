@@ -40,30 +40,25 @@ internal static class ProductDataRpcRegistry
             && FieldChangePayloadContract.IsValidPlanRequest(p),
             (g, p, t) => g.PlanFieldChangeAsync(p, t),
             MutatesWorkspace: true,
-            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangePlan,
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangePlan),
         new("field.change.apply", p => Safe(p)
             && FieldChangePayloadContract.IsValidApplyRequest(p),
             (g, p, t) => g.ApplyFieldChangeAsync(p, t),
             MutatesWorkspace: true,
-            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangeApply,
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            ProtectionPolicy: ProtectionSnapshotPolicy.FieldChangeApply),
         new("field.change.status", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
-            (g, p, t) => g.GetFieldChangeStatusAsync(p, t),
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            (g, p, t) => g.GetFieldChangeStatusAsync(p, t)),
         new("field.change.cancel", p => Safe(p)
             && HasExactProperties(p, "jobId")
             && HasString(p, "jobId"),
             (g, p, t) => g.CancelFieldChangeAsync(p, t),
-            MutatesWorkspace: true,
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            MutatesWorkspace: true),
         new("field.recycleBin.list", p => Safe(p)
             && HasExactProperties(p, "tableId")
             && HasString(p, "tableId"),
-            (g, p, t) => g.ListRecycledFieldsAsync(p, t),
-            CapabilityCatalog: ProductRpcCapabilityCatalog.Workspace),
+            (g, p, t) => g.ListRecycledFieldsAsync(p, t)),
         new("relation.inspectPair", p => Safe(p)
             && HasOnlyProperties(p, "tableId", "fieldId", "limit", "cursor")
             && HasStrings(p, "tableId", "fieldId")

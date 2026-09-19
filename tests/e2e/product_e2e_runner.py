@@ -1149,13 +1149,15 @@ def summarize_performance(results: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for result in results:
         duration = result.get("durationMs")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
-            scenario_timings.append(
-                {
-                    "scenario": result.get("scenario"),
-                    "status": result.get("status"),
-                    "durationMs": round(float(duration), 2),
-                }
-            )
+            timing: dict[str, Any] = {
+                "scenario": result.get("scenario"),
+                "status": result.get("status"),
+                "durationMs": round(float(duration), 2),
+            }
+            wall_clock = result.get("runnerWallClockMs")
+            if isinstance(wall_clock, (int, float)) and not isinstance(wall_clock, bool):
+                timing["wallClockMs"] = round(float(wall_clock), 2)
+            scenario_timings.append(timing)
         recovery_timings: list[tuple[str, float | None]] = []
         ui_timings = result.get("uiTimings")
         if isinstance(ui_timings, list):
@@ -1494,6 +1496,11 @@ def run_scenario(
     with ExitStack() as resources:
         stdout = resources.enter_context((scenario_dir / "host-stdout.log").open("wb"))
         stderr = resources.enter_context((scenario_dir / "host-stderr.log").open("wb"))
+        # Wall-clock segments use the existing launch/CDP, driver, and exit
+        # boundaries so report consumers can separate in-scenario action time
+        # (durationMs) from orchestration overhead.
+        phase_timings: dict[str, float] = {}
+        startup_started = time.monotonic()
         try:
             scope = _launch_host_process(
                 command,
@@ -1535,6 +1542,7 @@ def run_scenario(
             _wait_for_cdp(port, scope, process_network, readiness_dir)
             cdp_owner = WindowsTcpListenerOwnerLease.capture(port)
             resources.enter_context(_close_owner_on_primary_error(cdp_owner))
+            phase_timings["startupMs"] = time.monotonic() - startup_started
             node_command = [
                 node,
                 str(NODE_RUNNER),
@@ -1558,6 +1566,7 @@ def run_scenario(
                         str(persistent_run.state_path),
                     ]
                 )
+            driver_started = time.monotonic()
             node_returncode, node_stdout, node_stderr = _run_node_runner(
                 node_command,
                 scenario_dir=scenario_dir,
@@ -1565,6 +1574,7 @@ def run_scenario(
                 host_scope=scope,
                 process_network=process_network,
             )
+            phase_timings["driverMs"] = time.monotonic() - driver_started
             (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
             (scenario_dir / "runner-stderr.log").write_text(node_stderr, encoding="utf-8")
             readiness = _wait_for_readiness(readiness_dir, scope)
@@ -1635,6 +1645,7 @@ def run_scenario(
                 code="E2E_INFRASTRUCTURE_FAILED",
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
+        exit_started = time.monotonic()
         if normal_exit_allowed and cdp_owner is not None:
             try:
                 lifecycle = _request_normal_exit(
@@ -1657,6 +1668,7 @@ def run_scenario(
                 ),
                 cdp_owner=cdp_owner,
             )
+        phase_timings["exitMs"] = time.monotonic() - exit_started
         result["lifecycle"] = lifecycle
         lifecycle_errors = list(lifecycle.get("errors", []))
         lifecycle_cleanup = lifecycle.get("cleanup")
@@ -1674,6 +1686,10 @@ def run_scenario(
                 }
             else:
                 result["lifecycleFailure"] = lifecycle
+        if phase_timings:
+            result["runnerPhasesMs"] = {
+                key: round(value * 1000, 2) for key, value in phase_timings.items()
+            }
         cleanup_state["result"] = result
         return result
 
@@ -1707,10 +1723,7 @@ def write_aggregate(
         "scenarios": results,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_json_atomic(path, report)
     return report
 
 
@@ -1766,21 +1779,50 @@ def run_product_acceptance(
         ]
         return 1, write_aggregate(report_path, audit=audit, results=results)
     results = [
-        _run_host_presentation_restart_acceptance(
+        _failure_result(
             scenario,
-            package_root=package_root.resolve(),
-            run_root=run_root,
-            node=node,
-        )
-        if scenario.id == "33-host-grid-presentation"
-        else run_scenario(
-            scenario,
-            package_root=package_root.resolve(),
-            evidence_root=run_root,
-            node=node,
+            code="SCENARIO_NOT_STARTED",
+            message="Runner did not start this scenario; the acceptance run was interrupted.",
         )
         for scenario in scenarios
     ]
+    # Refresh the report around every scenario boundary so a killed process
+    # still leaves one complete, parseable JSON that names the interruption
+    # point. Unstarted and running scenarios stay explicit failed entries, so a
+    # completed subset can never be mistaken for a passing run.
+    write_aggregate(report_path, audit=audit, results=results)
+    for index, scenario in enumerate(scenarios):
+        results[index] = _failure_result(
+            scenario,
+            code="SCENARIO_IN_PROGRESS",
+            message="Runner was interrupted while this scenario was executing.",
+        )
+        write_aggregate(report_path, audit=audit, results=results)
+        print(f"[product-e2e] scenario {scenario.id} start", flush=True)
+        scenario_started = time.monotonic()
+        if scenario.id == "33-host-grid-presentation":
+            result = _run_host_presentation_restart_acceptance(
+                scenario,
+                package_root=package_root.resolve(),
+                run_root=run_root,
+                node=node,
+            )
+        else:
+            result = run_scenario(
+                scenario,
+                package_root=package_root.resolve(),
+                evidence_root=run_root,
+                node=node,
+            )
+        wall_clock_ms = round((time.monotonic() - scenario_started) * 1000, 2)
+        result["runnerWallClockMs"] = wall_clock_ms
+        results[index] = result
+        write_aggregate(report_path, audit=audit, results=results)
+        print(
+            f"[product-e2e] scenario {scenario.id} {result.get('status')} "
+            f"wallClockMs={wall_clock_ms}",
+            flush=True,
+        )
     report = write_aggregate(report_path, audit=audit, results=results)
     return (0 if report["status"] == "passed" else 1), report
 

@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
-	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 )
@@ -56,29 +54,7 @@ func registerSchemaRoutes(
 		if err := decodeSchemaRequest(request.Request.Body, &body); err != nil {
 			return writeSchemaError(request, err)
 		}
-		expectedRevision, err := v2.ParseSchemaRevision(body.ExpectedRevision)
-		if err != nil {
-			return writeSchemaError(request, &schemaerror.ProductError{
-				Code: "schema.revision.invalid", Path: "expectedRevision",
-				Message: err.Error(),
-			})
-		}
-		var result schemaapi.DeleteResult
-		err = runBusinessWrite(
-			request.Request.Context(),
-			gates,
-			"schema.delete",
-			fmt.Sprintf("%s:%d", body.TableID, expectedRevision),
-			func(ctx context.Context) error {
-				var deleteErr error
-				result, deleteErr = catalog.DeleteTable(
-					ctx,
-					body.TableID,
-					expectedRevision,
-				)
-				return deleteErr
-			},
-		)
+		result, err := deleteSchemaTable(request.Request.Context(), catalog, body.TableID, body.ExpectedRevision, gates)
 		if err != nil {
 			return writeSchemaError(request, err)
 		}

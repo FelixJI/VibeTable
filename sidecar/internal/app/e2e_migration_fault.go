@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -28,6 +29,20 @@ func newE2EMigrationFaultFromEnvironment() fieldchange.MigrationOption {
 		}
 		if err != nil {
 			return fmt.Errorf("read product E2E migration fault: %w", err)
+		}
+		// The explicit E2E control pauses before authority switching so the real
+		// Host can cancel a running job without racing a one-row migration.
+		if strings.TrimSpace(string(content)) == "hold:"+string(phase) {
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+					return nil
+				} else if err != nil {
+					return fmt.Errorf("observe product E2E migration hold: %w", err)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			return fmt.Errorf("product E2E migration hold timed out at %s", phase)
 		}
 		if strings.TrimSpace(string(content)) != string(phase) {
 			return nil

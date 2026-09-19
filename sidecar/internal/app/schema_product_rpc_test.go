@@ -673,6 +673,13 @@ func assertSchemaCapabilityModelDumpDefaults(t *testing.T, rawCapabilities any) 
 func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 	t.Helper()
 	catalog := schemaapi.New(pb)
+	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
+		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
+	})
+	migration := fieldchange.NewMigrationService(pb, nil)
+	t.Cleanup(migration.Shutdown)
+	domain := registerFieldRoutes(r, pb, migration, nil, nil, nil)
+
 	contentSource, err := queryschema.New(pb.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -682,60 +689,57 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 		WorkspaceID: "11111111-1111-4111-8111-111111111111", SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 	},
-		contentMetadataRegistration("contentProfile.load", contentMetadata),
-		contentMetadataRegistration("contentProfile.commit", contentMetadata),
-		contentMetadataRegistration("contentProfile.delete", contentMetadata),
-		contentMetadataRegistration("recordDocumentLink.list", contentMetadata),
-		contentMetadataRegistration("recordDocumentLink.commit", contentMetadata),
-		contentMetadataRegistration("recordDocumentLink.repair", contentMetadata),
-		contentMetadataRegistration("recordDocumentLink.delete", contentMetadata),
-		unrelatedPresetRegistration(t, "preset.list"),
-		unrelatedPresetRegistration(t, "preset.save"),
-		unrelatedPresetRegistration(t, "preset.delete"),
-		mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
-		mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
-		productrpc.ReconcileRegistration(catalog),
-		queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
-		lookupListRegistration(relation.New(pb, nil, nil)),
-		relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
-		unrelatedRelationInspectRegistration(t),
-		queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
-		queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
-		queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
-		queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
-		schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
-		schemaGetTableRegistration(pb),
-		schemaListRegistration(catalog),
-		queryViewRegistration(unrelatedViewMustNotRun{t: t}),
-		lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
-		lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
-		relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
-		fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
-		productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
-		unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
-		unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
-		unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
-		unrelatedDashboardRegistration(t, "insights.listDashboards"),
-		unrelatedDashboardRegistration(t, "insights.panelManifest"),
-		unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
-		unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
-		unrelatedSurfaceRegistration(t, "interface.list"),
-		unrelatedSurfaceRegistration(t, "interface.load"),
-		unrelatedSurfaceRegistration(t, "interface.commit"),
-		unrelatedSurfaceRegistration(t, "interface.delete"),
-		historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
-		querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
-		workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
-	)
+		append([]productrpc.Registration{
+			contentMetadataRegistration("contentProfile.load", contentMetadata),
+			contentMetadataRegistration("contentProfile.commit", contentMetadata),
+			contentMetadataRegistration("contentProfile.delete", contentMetadata),
+			contentMetadataRegistration("recordDocumentLink.list", contentMetadata),
+			contentMetadataRegistration("recordDocumentLink.commit", contentMetadata),
+			contentMetadataRegistration("recordDocumentLink.repair", contentMetadata),
+			contentMetadataRegistration("recordDocumentLink.delete", contentMetadata),
+			unrelatedPresetRegistration(t, "preset.list"),
+			unrelatedPresetRegistration(t, "preset.save"),
+			unrelatedPresetRegistration(t, "preset.delete"),
+			mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
+			mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
+			productrpc.ReconcileRegistration(catalog),
+			queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
+			lookupListRegistration(relation.New(pb, nil, nil)),
+			relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
+			unrelatedRelationInspectRegistration(t),
+			queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
+			queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),
+			queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+			queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
+			schemaDescribeRegistration(pb, relation.New(pb, nil, nil)),
+			schemaGetTableRegistration(pb),
+			schemaListRegistration(catalog),
+			queryViewRegistration(unrelatedViewMustNotRun{t: t}),
+			lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
+			lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
+			relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
+			fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
+			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+			unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
+			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
+			unrelatedDashboardRegistration(t, "insights.listDashboards"),
+			unrelatedDashboardRegistration(t, "insights.panelManifest"),
+			unrelatedDashboardRegistration(t, "insights.readDashboardWorkspace"),
+			unrelatedDashboardRegistration(t, "insights.saveDashboardDraft"),
+			unrelatedSurfaceRegistration(t, "interface.list"),
+			unrelatedSurfaceRegistration(t, "interface.load"),
+			unrelatedSurfaceRegistration(t, "interface.commit"),
+			unrelatedSurfaceRegistration(t, "interface.delete"),
+			historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+			historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
+			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
+			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
+		}, schemaFieldChangeRegistrations(domain, catalog)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
-		return &core.RequestEvent{Event: router.Event{Response: w, Request: request}}, nil
-	})
-	registerFieldRoutes(r, pb, nil, nil, nil, nil)
 	registerSchemaRoutes(r, catalog, nil)
 	registerRelationRoutes(r, relation.New(pb, nil, nil))
 	registerRealtimeRoutes(r, nil, catalog)

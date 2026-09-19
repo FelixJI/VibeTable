@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,7 +29,7 @@ func registerFieldRoutes(
 	logger *slog.Logger,
 	protectionVerifier fieldchange.ProtectionSnapshotVerifier,
 	gates ...businessWriteGate,
-) fieldSettingsDescribeDomain {
+) schemaFieldChangeDomain {
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(
@@ -63,6 +62,11 @@ func registerFieldRoutes(
 		panic(lifecycleErr)
 	}
 
+	domain := schemaFieldChangeDomain{
+		fieldSettingsDescribeDomain: fieldSettingsDescribeDomain{schema: schemaCore, fields: catalog},
+		core:                        schemaCore, tables: tableLifecycle, catalog: catalog, migration: migration, gates: gates,
+	}
+
 	r.GET("/api/vibetable/v2/schema/tables/{tableId}", func(
 		request *core.RequestEvent,
 	) error {
@@ -90,32 +94,9 @@ func registerFieldRoutes(
 		if err := decodeFieldRequest(request.Request.Body, &intent); err != nil {
 			return writeFieldError(request, err)
 		}
-		if replay, found, err := tableLifecycle.FindReplay(intent); err != nil {
-			return writeFieldError(request, err)
-		} else if found {
-			return request.JSON(http.StatusOK, replay)
-		}
-		var receipt v2.TableCreateReceipt
-		err := runIdempotentBusinessWrite(
-			request.Request.Context(),
-			gates,
-			"schema.table.create",
-			intent.OperationID,
-			func(ctx context.Context) error {
-				var createErr error
-				receipt, createErr = tableLifecycle.Create(ctx, intent)
-				return createErr
-			},
-		)
+		receipt, err := domain.CreateTable(request.Request.Context(), intent)
 		if err != nil {
 			return writeFieldError(request, err)
-		}
-		if receipt.TableID == "" {
-			var replayErr error
-			receipt, replayErr = tableLifecycle.Replay(intent)
-			if replayErr != nil {
-				return writeFieldError(request, replayErr)
-			}
 		}
 		return request.JSON(http.StatusOK, receipt)
 	})
@@ -186,24 +167,7 @@ func registerFieldRoutes(
 		if err := decodeFieldRequest(request.Request.Body, &intent); err != nil {
 			return writeFieldError(request, err)
 		}
-		var plan v2.FieldChangePlan
-		err := runBusinessWrite(
-			request.Request.Context(),
-			gates,
-			"field.change.plan",
-			fmt.Sprintf(
-				"%s:%s:%s:%s",
-				intent.TableID,
-				intent.FieldID,
-				intent.Action,
-				intent.ExpectedSchemaRev,
-			),
-			func(ctx context.Context) error {
-				var planErr error
-				plan, planErr = schemaCore.Plan(ctx, intent)
-				return planErr
-			},
-		)
+		plan, err := domain.Plan(request.Request.Context(), intent)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
@@ -217,18 +181,7 @@ func registerFieldRoutes(
 		if err := decodeFieldRequest(request.Request.Body, &body); err != nil {
 			return writeFieldError(request, err)
 		}
-		var receipt v2.ApplyReceipt
-		err := runBusinessWrite(
-			request.Request.Context(),
-			gates,
-			"field.change.apply",
-			body.OperationID,
-			func(ctx context.Context) error {
-				var applyErr error
-				receipt, applyErr = schemaCore.Apply(ctx, body)
-				return applyErr
-			},
-		)
+		receipt, err := domain.Apply(request.Request.Context(), body)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
@@ -238,30 +191,17 @@ func registerFieldRoutes(
 	r.GET("/api/vibetable/v2/field-recycle-bin/{tableId}", func(
 		request *core.RequestEvent,
 	) error {
-		fields, err := catalog.Fields(
-			request.Request.Context(),
-			request.Request.PathValue("tableId"),
-			true,
-		)
+		result, err := domain.RecycledFields(request.Request.Context(), request.Request.PathValue("tableId"))
 		if err != nil {
 			return writeFieldError(request, err)
 		}
-		retired := make([]v2.FieldDefinition, 0)
-		for _, field := range fields {
-			if field.Lifecycle.State == v2.LifecycleRetired {
-				retired = append(retired, field)
-			}
-		}
-		return request.JSON(http.StatusOK, map[string]any{
-			"contract": v2.Contract,
-			"fields":   retired,
-		})
+		return request.JSON(http.StatusOK, result)
 	})
 
 	r.GET("/api/vibetable/v2/field-change/status/{jobId}", func(
 		request *core.RequestEvent,
 	) error {
-		status, err := migration.Status(
+		status, err := domain.Status(
 			request.Request.Context(), request.Request.PathValue("jobId"),
 		)
 		if err != nil {
@@ -274,24 +214,13 @@ func registerFieldRoutes(
 		request *core.RequestEvent,
 	) error {
 		jobID := request.Request.PathValue("jobId")
-		var status v2.MigrationStatus
-		err := runBusinessWrite(
-			request.Request.Context(),
-			gates,
-			"field.change.cancel",
-			jobID,
-			func(ctx context.Context) error {
-				var cancelErr error
-				status, cancelErr = migration.Cancel(ctx, jobID)
-				return cancelErr
-			},
-		)
+		status, err := domain.Cancel(request.Request.Context(), jobID)
 		if err != nil {
 			return writeFieldError(request, err)
 		}
 		return request.JSON(http.StatusOK, status)
 	})
-	return fieldSettingsDescribeDomain{schema: schemaCore, fields: catalog}
+	return domain
 }
 
 func decodeFieldRequest(reader io.Reader, target any) error {

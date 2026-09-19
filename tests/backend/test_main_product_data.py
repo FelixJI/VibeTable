@@ -9,7 +9,6 @@ from backend.contracts.generated_product_rpc_capabilities import current_owner_m
 from backend.contracts.product_rpc import (
     PRODUCT_RPC_REGISTRY,
     PYTHON_PRODUCT_RPC_REGISTRY,
-    WORKSPACE_CATALOG_METHODS,
     ProductParams,
     _current_python_registry,
 )
@@ -59,9 +58,20 @@ class FakeProductService:
         ("relation.inspectPair", {"tableId": "orders", "fieldId": "fld_link"}),
         ("relation.previewDelta", {"extra": True}),
         ("lookup.query", {"extra": True}),
-        ("schema.list", {"extra": True}),
         ("schema.getTable", {"tableId": "orders"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
+        ("field.change.status", {"jobId": "job_01JMIGRATE"}),
+        ("field.change.cancel", {"jobId": "job_01JMIGRATE"}),
+        ("field.recycleBin.list", {"tableId": "orders"}),
+        (
+            "schema.table.create",
+            {
+                "displayName": "订单",
+                "operationId": "operation-create-table-12345678",
+                "actor": {"id": "desktop-host", "kind": "host"},
+            },
+        ),
+        ("schema.delete", {"tableId": "orders", "expectedRevision": "schema_0002"}),
     ],
 )
 async def test_go_owned_product_methods_have_no_python_registration_or_fallback(
@@ -132,6 +142,11 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
     assert set(dispatcher.registered_methods) == expected_methods - {
         "mutation.apply",
         "mutation.preview",
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
         "field.settings.describe",
         "relation.searchTargets",
         "query.selectionOpen",
@@ -152,40 +167,45 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.previewRestore",
         "history.read",
         "events.reconcile",
+        "schema.delete",
         "schema.getTable",
         "schema.list",
+        "schema.table.create",
     }
     assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
-    assert set(dispatcher.registered_methods) >= WORKSPACE_CATALOG_METHODS
-    assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == (
-        WORKSPACE_CATALOG_METHODS
-        | {
-            "mutation.apply",
-            "mutation.preview",
-            "events.reconcile",
-            "field.settings.describe",
-            "file.list",
-            "history.applyRestore",
-            "history.previewRestore",
-            "history.read",
-            "lookup.list",
-            "lookup.query",
-            "lookup.valuePage",
-            "query.cursorFetch",
-            "query.cursorOpen",
-            "query.page",
-            "query.readRows",
-            "query.selectionOpen",
-            "query.validateSnapshot",
-            "query.view",
-            "relation.inspectPair",
-            "relation.previewDelta",
-            "relation.searchTargets",
-            "schema.describe",
-            "schema.getTable",
-            "schema.list",
-        }
-    )
+    assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == {
+        "mutation.apply",
+        "mutation.preview",
+        "events.reconcile",
+        "field.change.apply",
+        "field.change.cancel",
+        "field.change.plan",
+        "field.change.status",
+        "field.recycleBin.list",
+        "field.settings.describe",
+        "file.list",
+        "history.applyRestore",
+        "history.previewRestore",
+        "history.read",
+        "lookup.list",
+        "lookup.query",
+        "lookup.valuePage",
+        "query.cursorFetch",
+        "query.cursorOpen",
+        "query.page",
+        "query.readRows",
+        "query.selectionOpen",
+        "query.validateSnapshot",
+        "query.view",
+        "relation.inspectPair",
+        "relation.previewDelta",
+        "relation.searchTargets",
+        "schema.delete",
+        "schema.describe",
+        "schema.getTable",
+        "schema.list",
+        "schema.table.create",
+    }
     assert not any(
         method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
     )
@@ -200,14 +220,19 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
         {
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "field.recycleBin.list",
-            "params": {"tableId": "orders"},
+            "method": "file.token",
+            "params": {
+                "tableId": "orders",
+                "recordId": "row-1",
+                "fieldId": "invoice",
+                "storedName": "invoice.pdf",
+            },
         }
     )
     assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
     assert len(service.calls) == 1
     method, params = service.calls[0]
-    assert method == "field.recycleBin.list"
+    assert method == "file.token"
     assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
 
 
@@ -215,10 +240,22 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
 @pytest.mark.parametrize(
     ("method", "params"),
     [
-        ("field.recycleBin.list", {"tableId": "orders", "extra": True}),
-        ("field.recycleBin.list", {}),
-        ("field.recycleBin.list", {"tableId": 7}),
-        ("field.recycleBin.list", {"tableId": "orders", "collection": "orders"}),
+        ("file.token", {"tableId": "orders", "extra": True}),
+        ("file.token", {}),
+        (
+            "file.token",
+            {"tableId": 7, "recordId": "row-1", "fieldId": "invoice", "storedName": "s"},
+        ),
+        (
+            "file.token",
+            {
+                "tableId": "orders",
+                "recordId": "row-1",
+                "fieldId": "invoice",
+                "storedName": "s",
+                "collection": "orders",
+            },
+        ),
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
@@ -271,8 +308,13 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "field.recycleBin.list",
-            "params": {"tableId": "orders"},
+            "method": "file.token",
+            "params": {
+                "tableId": "orders",
+                "recordId": "row-1",
+                "fieldId": "invoice",
+                "storedName": "invoice.pdf",
+            },
         }
     )
     assert response is not None
@@ -281,12 +323,23 @@ async def test_product_rpc_preserves_sanitized_structured_errors(
     assert response["error"]["data"]["message"] == str(failure)
 
 
-def test_current_python_registry_rejects_unknown_or_missing_workspace_contracts() -> None:
+def test_current_python_registry_rejects_unknown_and_retires_go_owned_routes() -> None:
     models = dict(PRODUCT_RPC_REGISTRY)
     models["undeclared.read"] = ProductParams
     with pytest.raises(RuntimeError, match="undeclared non-Product methods"):
         _current_python_registry(models)
     models.pop("undeclared.read")
-    models.pop(next(iter(WORKSPACE_CATALOG_METHODS)))
-    with pytest.raises(RuntimeError, match="undeclared non-Product methods"):
-        _current_python_registry(models)
+    registry = _current_python_registry(models)
+    assert set(registry) == set(current_owner_methods("pythonBff")) & set(models)
+    assert not (
+        set(registry)
+        & {
+            "field.change.plan",
+            "field.change.apply",
+            "field.change.status",
+            "field.change.cancel",
+            "field.recycleBin.list",
+            "schema.table.create",
+            "schema.delete",
+        }
+    )

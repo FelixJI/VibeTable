@@ -1,0 +1,1858 @@
+{
+  "producerCommit": "98829eb9d7fdddf78afce396fb274f8468210ca8",
+  "boundary": "Fixed Python dispatcher, Product DTO, PocketBaseProductRpc and registered errors; only the loopback HTTP end is scripted, so responses are Python forwarding and error-boundary evidence, not Go domain execution",
+  "cases": [
+    {
+      "name": "schema.table.create:success-receipt",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:success-receipt",
+        "method": "schema.table.create",
+        "params": {
+          "displayName": "订单",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "operationId": "operation_01JABCDEFGH",
+          "tableId": "tbl_orders",
+          "displayName": "订单",
+          "schemaRevision": "schema_1"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/schema/tables",
+          "body": {
+            "displayName": "订单",
+            "operationId": "operation_01JABCDEFGH",
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:success-receipt",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "operationId": "operation_01JABCDEFGH",
+          "tableId": "tbl_orders",
+          "displayName": "订单",
+          "schemaRevision": "schema_1"
+        }
+      }
+    },
+    {
+      "name": "schema.table.create:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:unknown-param",
+        "method": "schema.table.create",
+        "params": {
+          "displayName": "订单",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "extra": false
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "schema.table.create:missing-required-actor",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:missing-required-actor",
+        "method": "schema.table.create",
+        "params": {
+          "displayName": "订单",
+          "operationId": "operation_01JABCDEFGH"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:missing-required-actor",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "schema.table.create:actor-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:actor-type",
+        "method": "schema.table.create",
+        "params": {
+          "displayName": "订单",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": "user_local"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:actor-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "schema.table.create:scalar-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:scalar-response",
+        "method": "schema.table.create",
+        "params": {
+          "displayName": "订单",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": 7,
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/schema/tables",
+          "body": {
+            "displayName": "订单",
+            "operationId": "operation_01JABCDEFGH",
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:scalar-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "schema.table.create:nested-credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:nested-credential",
+        "method": "schema.table.create",
+        "params": {
+          "displayName": "订单",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user",
+            "password": "oracle-only"
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.table.create:nested-credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "schema.delete:success-deleted",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:success-deleted",
+        "method": "schema.delete",
+        "params": {
+          "tableId": "tbl_orders",
+          "expectedRevision": "schema_7"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "deleted": true,
+          "tableId": "tbl_orders"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/schema/delete",
+          "body": {
+            "tableId": "tbl_orders",
+            "expectedRevision": "schema_7"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:success-deleted",
+        "result": {
+          "deleted": true,
+          "tableId": "tbl_orders"
+        }
+      }
+    },
+    {
+      "name": "schema.delete:revision-conflict",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:revision-conflict",
+        "method": "schema.delete",
+        "params": {
+          "tableId": "tbl_orders",
+          "expectedRevision": "schema_7"
+        }
+      },
+      "authorityFixture": {
+        "status": 409,
+        "body": {
+          "code": "schema.revision_conflict",
+          "path": "expectedRevision",
+          "message": "schema revision is stale"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/schema/delete",
+          "body": {
+            "tableId": "tbl_orders",
+            "expectedRevision": "schema_7"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:revision-conflict",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "schema revision is stale",
+            "code": "schema.revision_conflict",
+            "path": "expectedRevision",
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "schema.delete:missing-required-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:missing-required-revision",
+        "method": "schema.delete",
+        "params": {
+          "tableId": "tbl_orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:missing-required-revision",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "schema.delete:transport-failure",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:transport-failure",
+        "method": "schema.delete",
+        "params": {
+          "tableId": "tbl_orders",
+          "expectedRevision": "schema_7"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": "transport"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/schema/delete",
+          "body": {
+            "tableId": "tbl_orders",
+            "expectedRevision": "schema_7"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "schema.delete:transport-failure",
+        "error": {
+          "code": -32150,
+          "message": "Product data unavailable",
+          "data": {
+            "kind": "product_data_unavailable",
+            "message": "PocketBase sidecar is unavailable",
+            "code": "sidecar.unavailable"
+          }
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:success-null-draft",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:success-null-draft",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "draft": null,
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "expiresAt": "2026-07-28T11:00:00Z",
+          "intent": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": ""
+          },
+          "before": null,
+          "after": null,
+          "classes": [
+            "display"
+          ],
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "impact": {
+            "records": 0,
+            "missing": 0,
+            "ambiguous": 0,
+            "failures": [],
+            "dependencies": []
+          },
+          "steps": [
+            {
+              "kind": "validate",
+              "details": {}
+            }
+          ],
+          "warnings": [],
+          "errors": [],
+          "confirmations": [],
+          "createsMigration": false,
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/field-change/plan",
+          "body": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": ""
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:success-null-draft",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "expiresAt": "2026-07-28T11:00:00Z",
+          "intent": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": ""
+          },
+          "before": null,
+          "after": null,
+          "classes": [
+            "display"
+          ],
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "impact": {
+            "records": 0,
+            "missing": 0,
+            "ambiguous": 0,
+            "failures": [],
+            "dependencies": []
+          },
+          "steps": [
+            {
+              "kind": "validate",
+              "details": {}
+            }
+          ],
+          "warnings": [],
+          "errors": [],
+          "confirmations": [],
+          "createsMigration": false,
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:optional-pair-patch-forwarded",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:optional-pair-patch-forwarded",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "draft": null,
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": "",
+          "relationPair": null,
+          "relationPairPatch": {
+            "reciprocalDisplayName": "客户",
+            "reciprocalCardinality": "many",
+            "sourceDisplayFieldId": "fld_01JABCDE"
+          }
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "expiresAt": "2026-07-28T11:00:00Z",
+          "intent": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": ""
+          },
+          "before": null,
+          "after": null,
+          "classes": [
+            "display"
+          ],
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "impact": {
+            "records": 0,
+            "missing": 0,
+            "ambiguous": 0,
+            "failures": [],
+            "dependencies": []
+          },
+          "steps": [
+            {
+              "kind": "validate",
+              "details": {}
+            }
+          ],
+          "warnings": [],
+          "errors": [],
+          "confirmations": [],
+          "createsMigration": false,
+          "canApply": true
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/field-change/plan",
+          "body": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": "",
+            "relationPair": null,
+            "relationPairPatch": {
+              "reciprocalDisplayName": "客户",
+              "reciprocalCardinality": "many",
+              "sourceDisplayFieldId": "fld_01JABCDE"
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:optional-pair-patch-forwarded",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "expiresAt": "2026-07-28T11:00:00Z",
+          "intent": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": ""
+          },
+          "before": null,
+          "after": null,
+          "classes": [
+            "display"
+          ],
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "impact": {
+            "records": 0,
+            "missing": 0,
+            "ambiguous": 0,
+            "failures": [],
+            "dependencies": []
+          },
+          "steps": [
+            {
+              "kind": "validate",
+              "details": {}
+            }
+          ],
+          "warnings": [],
+          "errors": [],
+          "confirmations": [],
+          "createsMigration": false,
+          "canApply": true
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:unknown-param",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "draft": null,
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": "",
+          "extra": false
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:missing-required-revision",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:missing-required-revision",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedDataRevision": null,
+          "draft": null,
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:missing-required-revision",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:draft-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:draft-type",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "draft": [],
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:draft-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:schema-conflict",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:schema-conflict",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "draft": null,
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 409,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "code": "field.change.schema_conflict",
+          "path": "expectedSchemaRevision",
+          "message": "schema revision changed",
+          "details": {},
+          "retryable": false,
+          "occurredAt": "2026-09-17T00:00:00Z"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/field-change/plan",
+          "body": {
+            "action": "update",
+            "tableId": "tbl_orders",
+            "fieldId": "fld_01JABCDE",
+            "expectedSchemaRevision": "schema_7",
+            "expectedDataRevision": null,
+            "draft": null,
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "conversionRule": "",
+            "confirmation": "",
+            "backupReceipt": ""
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:schema-conflict",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "schema revision changed",
+            "code": "field.change.schema_conflict",
+            "path": "expectedSchemaRevision",
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "field.change.plan:depth-budget",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:depth-budget",
+        "method": "field.change.plan",
+        "params": {
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "expectedSchemaRevision": "schema_7",
+          "expectedDataRevision": null,
+          "draft": {
+            "nested": {
+              "nested": {
+                "nested": {
+                  "nested": {
+                    "nested": {
+                      "nested": {
+                        "nested": {
+                          "nested": {
+                            "nested": {
+                              "nested": {
+                                "nested": {
+                                  "nested": {
+                                    "nested": {
+                                      "nested": {
+                                        "nested": {
+                                          "nested": {
+                                            "nested": {
+                                              "nested": {
+                                                "nested": {
+                                                  "nested": {
+                                                    "nested": {
+                                                      "nested": {
+                                                        "nested": {
+                                                          "nested": {
+                                                            "nested": {
+                                                              "nested": {
+                                                                "nested": {
+                                                                  "nested": {
+                                                                    "nested": {
+                                                                      "nested": {
+                                                                        "nested": {
+                                                                          "nested": {
+                                                                            "nested": {
+                                                                              "nested": {
+                                                                                "nested": {
+                                                                                  "nested": {
+                                                                                    "nested": {
+                                                                                      "nested": {
+                                                                                        "nested": {
+                                                                                          "nested": "budget"
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "conversionRule": "",
+          "confirmation": "",
+          "backupReceipt": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.plan:depth-budget",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.apply:success-receipt",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:success-receipt",
+        "method": "field.change.apply",
+        "params": {
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "confirmations": [],
+          "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "operationId": "operation_01JABCDEFGH",
+          "planId": "plan_01JABCDEFGH",
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "schemaRevision": "schema_8",
+          "definition": null,
+          "migrationJobId": ""
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/field-change/apply",
+          "body": {
+            "planId": "plan_01JABCDEFGH",
+            "planHash": "sha256:0123456789abcdef",
+            "operationId": "operation_01JABCDEFGH",
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "confirmations": [],
+            "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:success-receipt",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "operationId": "operation_01JABCDEFGH",
+          "planId": "plan_01JABCDEFGH",
+          "action": "update",
+          "tableId": "tbl_orders",
+          "fieldId": "fld_01JABCDE",
+          "schemaRevision": "schema_8",
+          "definition": null,
+          "migrationJobId": ""
+        }
+      }
+    },
+    {
+      "name": "field.change.apply:plan-expired",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:plan-expired",
+        "method": "field.change.apply",
+        "params": {
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "confirmations": [],
+          "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
+        }
+      },
+      "authorityFixture": {
+        "status": 410,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "code": "field.change.plan_expired",
+          "path": "planId",
+          "message": "field change plan expired",
+          "details": {},
+          "retryable": false,
+          "occurredAt": "2026-09-17T00:00:00Z"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/field-change/apply",
+          "body": {
+            "planId": "plan_01JABCDEFGH",
+            "planHash": "sha256:0123456789abcdef",
+            "operationId": "operation_01JABCDEFGH",
+            "actor": {
+              "id": "user_local",
+              "kind": "user"
+            },
+            "confirmations": [],
+            "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:plan-expired",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "field change plan expired",
+            "code": "field.change.plan_expired",
+            "path": "planId",
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "field.change.apply:nested-actor-empty-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:nested-actor-empty-id",
+        "method": "field.change.apply",
+        "params": {
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "",
+            "kind": "user"
+          },
+          "confirmations": [],
+          "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:nested-actor-empty-id",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.apply:nested-confirmation-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:nested-confirmation-type",
+        "method": "field.change.apply",
+        "params": {
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "confirmations": [
+            42
+          ],
+          "protectionSnapshotId": "77777777-7777-4777-8777-777777777777"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:nested-confirmation-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.apply:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:unknown-param",
+        "method": "field.change.apply",
+        "params": {
+          "planId": "plan_01JABCDEFGH",
+          "planHash": "sha256:0123456789abcdef",
+          "operationId": "operation_01JABCDEFGH",
+          "actor": {
+            "id": "user_local",
+            "kind": "user"
+          },
+          "confirmations": [],
+          "protectionSnapshotId": "77777777-7777-4777-8777-777777777777",
+          "extra": 1
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.apply:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:success-copying",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:success-copying",
+        "method": "field.change.status",
+        "params": {
+          "jobId": "job_01JMIGRATE"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "jobId": "job_01JMIGRATE",
+          "planId": "plan_01JCHANGE",
+          "phase": "copying",
+          "processed": 250,
+          "total": 1000,
+          "canCancel": true,
+          "error": null,
+          "updatedAt": "2026-07-28T01:00:00Z"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-change/status/job_01JMIGRATE",
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:success-copying",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "jobId": "job_01JMIGRATE",
+          "planId": "plan_01JCHANGE",
+          "phase": "copying",
+          "processed": 250,
+          "total": 1000,
+          "canCancel": true,
+          "error": null,
+          "updatedAt": "2026-07-28T01:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:migration-not-found",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:migration-not-found",
+        "method": "field.change.status",
+        "params": {
+          "jobId": "job_01JMIGRATE"
+        }
+      },
+      "authorityFixture": {
+        "status": 404,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "code": "field.migration.not_found",
+          "path": "jobId",
+          "message": "field migration job was not found",
+          "details": {},
+          "retryable": false,
+          "occurredAt": "2026-09-17T00:00:00Z"
+        },
+        "failure": "domain"
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-change/status/job_01JMIGRATE",
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:migration-not-found",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "field migration job was not found",
+            "code": "field.migration.not_found",
+            "path": "jobId",
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "field.change.status:invalid-job-path",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:invalid-job-path",
+        "method": "field.change.status",
+        "params": {
+          "jobId": "../orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:invalid-job-path",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:missing-job-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:missing-job-id",
+        "method": "field.change.status",
+        "params": {}
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:missing-job-id",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:numeric-job-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:numeric-job-id",
+        "method": "field.change.status",
+        "params": {
+          "jobId": 7
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:numeric-job-id",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:array-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:array-response",
+        "method": "field.change.status",
+        "params": {
+          "jobId": "job_01JMIGRATE"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": [],
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-change/status/job_01JMIGRATE",
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:array-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:empty-body-response",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:empty-body-response",
+        "method": "field.change.status",
+        "params": {
+          "jobId": "job_01JMIGRATE"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-change/status/job_01JMIGRATE",
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:empty-body-response",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "field.change.status:envelope-nonobject-params",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:envelope-nonobject-params",
+        "method": "field.change.status",
+        "params": []
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.status:envelope-nonobject-params",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "field.change.cancel:success-cancelled-job",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:success-cancelled-job",
+        "method": "field.change.cancel",
+        "params": {
+          "jobId": "job_01JMIGRATE"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "jobId": "job_01JMIGRATE",
+          "planId": "plan_01JCHANGE",
+          "phase": "cancelled",
+          "processed": 1000,
+          "total": 1000,
+          "canCancel": false,
+          "error": null,
+          "updatedAt": "2026-07-28T01:00:00Z"
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v2/field-change/cancel/job_01JMIGRATE",
+          "body": {}
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:success-cancelled-job",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "jobId": "job_01JMIGRATE",
+          "planId": "plan_01JCHANGE",
+          "phase": "cancelled",
+          "processed": 1000,
+          "total": 1000,
+          "canCancel": false,
+          "error": null,
+          "updatedAt": "2026-07-28T01:00:00Z"
+        }
+      }
+    },
+    {
+      "name": "field.change.cancel:invalid-job-path",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:invalid-job-path",
+        "method": "field.change.cancel",
+        "params": {
+          "jobId": "订单"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:invalid-job-path",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "field.change.cancel:empty-job-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:empty-job-id",
+        "method": "field.change.cancel",
+        "params": {
+          "jobId": ""
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:empty-job-id",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "field.change.cancel:oversized-job-path",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:oversized-job-path",
+        "method": "field.change.cancel",
+        "params": {
+          "jobId": "j________________________________________________________________________________________________________________________________"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.change.cancel:oversized-job-path",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "field.recycleBin.list:success-empty-list",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:success-empty-list",
+        "method": "field.recycleBin.list",
+        "params": {
+          "tableId": "tbl_orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "fields": []
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-recycle-bin/tbl_orders",
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:success-empty-list",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "fields": []
+        }
+      }
+    },
+    {
+      "name": "field.recycleBin.list:success-retired-field",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:success-retired-field",
+        "method": "field.recycleBin.list",
+        "params": {
+          "tableId": "tbl_orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": {
+          "contract": "vibetable.schema.v2",
+          "fields": [
+            {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "number",
+              "lifecycle": {
+                "state": "retired",
+                "retiredAt": "2026-09-17T00:00:00Z"
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "companion",
+                  "providerFieldId": "pb_01JPRESEN",
+                  "physicalName": "__vt_has_f_01jabcde"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "pocketbase-number",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "number",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              }
+            }
+          ]
+        },
+        "failure": null
+      },
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v2/field-recycle-bin/tbl_orders",
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:success-retired-field",
+        "result": {
+          "contract": "vibetable.schema.v2",
+          "fields": [
+            {
+              "contract": "vibetable.schema.v2",
+              "identity": {
+                "fieldId": "fld_01JABCDE",
+                "physicalName": "f_01jabcde",
+                "providerFieldId": "pb_01JABCDE"
+              },
+              "displayName": "金额",
+              "help": "",
+              "logicalType": "number",
+              "lifecycle": {
+                "state": "retired",
+                "retiredAt": "2026-09-17T00:00:00Z"
+              },
+              "value": {
+                "required": false,
+                "default": {
+                  "enabled": false,
+                  "value": null,
+                  "source": "recommended",
+                  "defaultsVersion": 1
+                },
+                "presence": {
+                  "mode": "companion",
+                  "providerFieldId": "pb_01JPRESEN",
+                  "physicalName": "__vt_has_f_01jabcde"
+                }
+              },
+              "constraints": {
+                "unique": {
+                  "enabled": false,
+                  "blankPolicy": "ignoreMissing"
+                },
+                "range": {
+                  "min": null,
+                  "max": null
+                },
+                "length": {
+                  "min": null,
+                  "max": null
+                },
+                "pattern": {
+                  "enabled": false,
+                  "value": ""
+                },
+                "domains": {
+                  "only": [],
+                  "except": []
+                },
+                "selection": {
+                  "min": 0,
+                  "max": null
+                }
+              },
+              "storage": {
+                "kind": "pocketbase-number",
+                "options": {
+                  "onlyInt": false,
+                  "maxSize": 0,
+                  "convertURLs": false,
+                  "presentable": false
+                }
+              },
+              "display": {
+                "kind": "number",
+                "preset": "number",
+                "displayScale": 2,
+                "scaleMode": "max",
+                "trimTrailingZeros": true,
+                "useGrouping": true,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": null,
+                "precision": "minute",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "field.recycleBin.list:invalid-table-path",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:invalid-table-path",
+        "method": "field.recycleBin.list",
+        "params": {
+          "tableId": "../orders"
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:invalid-table-path",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "field.recycleBin.list:null-table-id",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:null-table-id",
+        "method": "field.recycleBin.list",
+        "params": {
+          "tableId": null
+        }
+      },
+      "authorityFixture": {
+        "status": 200,
+        "body": null,
+        "failure": null
+      },
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "field.recycleBin.list:null-table-id",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    }
+  ]
+}

@@ -224,7 +224,15 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
 
     with pytest.raises(ValueError, match="non-finite JSON number"):
         await service.invoke(
-            "field.recycleBin.list", ProductParams.model_validate({"tableId": "orders"})
+            "file.token",
+            ProductParams.model_validate(
+                {
+                    "tableId": "orders",
+                    "recordId": "row-1",
+                    "fieldId": "invoice",
+                    "storedName": "invoice.pdf",
+                }
+            ),
         )
 
 
@@ -232,13 +240,6 @@ async def test_public_invoke_rejects_non_finite_product_response(non_finite: flo
 async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachment() -> None:
     service, transport = service_with(
         [
-            {
-                "contract": "vibetable.schema.v2",
-                "operationId": "operation-create-table-12345678",
-                "tableId": "tbl_orders",
-                "displayName": "订单",
-                "schemaRevision": "schema_0001",
-            },
             {"valid": True, "diagnostics": []},
             {"downloadCapability": "opaque", "contractVersion": "2.0"},
             {"status": "applied"},
@@ -253,7 +254,7 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
         ]
     )
 
-    assert (
+    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.table\.create"):
         await service.invoke(
             "schema.table.create",
             PRODUCT_RPC_REGISTRY["schema.table.create"].model_validate(
@@ -264,7 +265,7 @@ async def test_closed_routes_cover_schema_formula_file_and_remove_only_attachmen
                 }
             ),
         )
-    )["tableId"] == "tbl_orders"
+    assert transport.requests == []
     assert (
         await service.invoke(
             "formula.validate",

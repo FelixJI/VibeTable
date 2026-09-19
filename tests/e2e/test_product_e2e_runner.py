@@ -2532,6 +2532,173 @@ def test_aggregate_reports_failures_without_skips(tmp_path: Path) -> None:
     )
 
 
+def _patch_acceptance_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    run_scenario: Any,
+    host_presentation_restart: Any = None,
+) -> None:
+    monkeypatch.setattr(runner, "audit_package", lambda _package_root: {"passed": True})
+    monkeypatch.setattr(runner.shutil, "which", lambda _name: "node")
+    monkeypatch.setattr(runner, "run_scenario", run_scenario)
+    if host_presentation_restart is not None:
+        monkeypatch.setattr(
+            runner,
+            "_run_host_presentation_restart_acceptance",
+            host_presentation_restart,
+        )
+
+
+def _latest_acceptance_report(evidence_root: Path) -> dict[str, Any]:
+    reports = sorted(evidence_root.glob("*/product-e2e-report.json"), reverse=True)
+    assert reports, "run_product_acceptance wrote no report"
+    return json.loads(reports[0].read_text(encoding="utf-8"))
+
+
+def _passing_scenario_result(scenario: Any, **_kwargs: Any) -> dict[str, Any]:
+    return {
+        "scenario": scenario.id,
+        "title": scenario.title,
+        "requirement": scenario.requirement,
+        "status": "passed",
+        "durationMs": 5.0,
+    }
+
+
+def test_interrupted_acceptance_retains_every_selected_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected = ("01-offline-first-start", "02-all-field-schema", "03-schema-errors")
+    started: list[str] = []
+
+    def interrupted_second_scenario(scenario: Any, **kwargs: Any) -> dict[str, Any]:
+        started.append(scenario.id)
+        if scenario.id == "02-all-field-schema":
+            raise KeyboardInterrupt("runner killed mid-scenario")
+        return _passing_scenario_result(scenario, **kwargs)
+
+    _patch_acceptance_preflight(monkeypatch, run_scenario=interrupted_second_scenario)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_product_acceptance(
+            package_root=tmp_path / "package",
+            evidence_root=tmp_path / "evidence",
+            selected=selected,
+        )
+
+    assert started == ["01-offline-first-start", "02-all-field-schema"]
+    report = _latest_acceptance_report(tmp_path / "evidence")
+    assert report["status"] == "failed"
+    assert report["summary"] == {"total": 3, "passed": 1, "failed": 2, "skipped": 0}
+    assert [item["scenario"] for item in report["scenarios"]] == list(selected)
+    assert report["scenarios"][0]["status"] == "passed"
+    in_progress = report["scenarios"][1]
+    assert in_progress["status"] == "failed"
+    assert in_progress["error"]["code"] == "SCENARIO_IN_PROGRESS"
+    not_started = report["scenarios"][2]
+    assert not_started["status"] == "failed"
+    assert not_started["error"]["code"] == "SCENARIO_NOT_STARTED"
+    assert not list((tmp_path / "evidence").rglob("*.tmp"))
+    progress = capsys.readouterr().out
+    assert "[product-e2e] scenario 01-offline-first-start start" in progress
+    assert "[product-e2e] scenario 01-offline-first-start passed" in progress
+    assert "[product-e2e] scenario 02-all-field-schema start" in progress
+
+
+def test_completed_acceptance_keeps_the_full_passing_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_acceptance_preflight(
+        monkeypatch,
+        run_scenario=_passing_scenario_result,
+        host_presentation_restart=_passing_scenario_result,
+    )
+
+    exit_code, report = runner.run_product_acceptance(
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence",
+    )
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert report["summary"]["total"] == len(runner.load_scenarios())
+    assert report["summary"]["failed"] == 0
+    assert report == _latest_acceptance_report(tmp_path / "evidence")
+    wall_clocks = [item.get("runnerWallClockMs") for item in report["scenarios"]]
+    assert all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+        for value in wall_clocks
+    )
+    timing_by_scenario = {
+        item["scenario"]: item.get("wallClockMs") for item in report["performance"]["scenarios"]
+    }
+    assert timing_by_scenario == {
+        item["scenario"]: item["runnerWallClockMs"] for item in report["scenarios"]
+    }
+
+
+def test_run_scenario_records_wall_clock_phases_between_existing_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    scenario = runner.Scenario(id="02-schema-edit", title="schema", requirement="timings")
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+
+    def successful_node(
+        _command: list[str],
+        *,
+        scenario_dir: Path,
+        **_kwargs: Any,
+    ) -> tuple[int, str, str]:
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}), encoding="utf-8"
+        )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+
+    result = runner.run_scenario(
+        scenario,
+        package_root=package,
+        evidence_root=tmp_path / "evidence",
+        node="node",
+    )
+
+    phases = result["runnerPhasesMs"]
+    assert set(phases) == {"startupMs", "driverMs", "exitMs"}
+    assert all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+        for value in phases.values()
+    )
+
+
+def test_restored_search_failure_captures_one_read_only_diagnostic_snapshot() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    scenario = source[
+        source.index("async function scenario12") : source.index("async function scenario13")
+    ]
+
+    assert scenario.count("collectRestoredSearchDiagnostics(") == 1
+    assert "restoredSearchCheckPassed ? null" in scenario
+    # Diagnostics must not heal the failure: the rebuild pair stays at the
+    # pre-snapshot build plus the post-restore rebuild.
+    assert scenario.count("rebuildWorkspaceSearchAndWaitForTerminal(") == 2
+
+
 def test_document_diff_scenario_uses_closed_ui_operation_and_rejects_raw_materialize() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
@@ -3501,6 +3668,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
         runner.NODE_RUNNER.with_name("directory_replica_conflict_ui.test.mjs"),
+        runner.NODE_RUNNER.with_name("restored_search_diagnostics.test.mjs"),
     ]
     try:
         completed = subprocess.run(

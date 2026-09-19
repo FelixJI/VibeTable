@@ -78,7 +78,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     class MissingRouteModule(ProductQuerySchemaRpc):
         def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
             super().__init__(context)
-            self.methods = self.methods - {"field.recycleBin.list"}
+            self.methods = self.methods - {"formula.validate"}
 
     monkeypatch.setattr(product_rpc, "ProductQuerySchemaRpc", MissingRouteModule)
     with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
@@ -98,6 +98,43 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
             },
         ),
         ("field.settings.describe", {"tableId": "orders"}),
+        (
+            "field.change.plan",
+            {
+                "action": "retire",
+                "tableId": "orders",
+                "fieldId": "fld_12345678",
+                "expectedSchemaRevision": "schema_0001",
+                "expectedDataRevision": None,
+                "draft": None,
+                "actor": {"id": "local-user", "kind": "user"},
+                "conversionRule": "",
+                "confirmation": "",
+                "backupReceipt": "",
+            },
+        ),
+        (
+            "field.change.apply",
+            {
+                "planId": "plan_1",
+                "planHash": "a" * 64,
+                "operationId": "op_1",
+                "actor": {"id": "local-user", "kind": "user"},
+                "confirmations": [],
+            },
+        ),
+        ("field.change.status", {"jobId": "job_01JMIGRATE"}),
+        ("field.change.cancel", {"jobId": "job_01JMIGRATE"}),
+        ("field.recycleBin.list", {"tableId": "orders"}),
+        (
+            "schema.table.create",
+            {
+                "displayName": "订单",
+                "operationId": "operation-create-table-12345678",
+                "actor": {"id": "desktop-host", "kind": "host"},
+            },
+        ),
+        ("schema.delete", {"tableId": "orders", "expectedRevision": "schema_0002"}),
         ("file.list", {"tableId": "t", "recordId": "r", "fieldId": "f"}),
         (
             "lookup.query",
@@ -222,72 +259,27 @@ def test_schema_v2_apply_params_reject_open_nested_objects() -> None:
         )
 
 
-@pytest.mark.asyncio
-async def test_field_settings_methods_use_only_frozen_v2_routes() -> None:
-    service, transport = _service(
-        [
-            {"contract": "vibetable.schema.v2", "planId": "plan_1"},
-            {"contract": "vibetable.schema.v2", "operationId": "op_1"},
-            {"contract": "vibetable.schema.v2", "fields": []},
-        ]
-    )
-    plan = PRODUCT_RPC_REGISTRY["field.change.plan"].model_validate(
-        {
-            "action": "retire",
-            "tableId": "orders",
-            "fieldId": "fld_12345678",
-            "expectedSchemaRevision": "schema_0001",
-            "expectedDataRevision": None,
-            "draft": None,
-            "actor": {"id": "local-user", "kind": "user"},
-            "conversionRule": "",
-            "confirmation": "",
-            "backupReceipt": "",
-            "relationPair": {
-                "reciprocalDisplayName": "订单",
-                "reciprocalCardinality": "many",
-                "sourceDisplayFieldId": "fld_order_number",
-            },
-        }
-    )
-    apply = PRODUCT_RPC_REGISTRY["field.change.apply"].model_validate(
-        {
-            "planId": "plan_1",
-            "planHash": "a" * 64,
-            "operationId": "op_1",
-            "actor": {"id": "local-user", "kind": "user"},
-            "confirmations": [],
-        }
-    )
-    recycle = PRODUCT_RPC_REGISTRY["field.recycleBin.list"].model_validate({"tableId": "orders"})
+def test_retired_schema_methods_keep_their_full_public_parameter_models() -> None:
+    from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 
-    await service.invoke("field.change.plan", plan)
-    await service.invoke("field.change.apply", apply)
-    await service.invoke("field.recycleBin.list", recycle)
-
-    assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v2/field-change/plan",
-        "/api/vibetable/v2/field-change/apply",
-        "/api/vibetable/v2/field-recycle-bin/orders",
-    ]
-    assert transport.requests[0]["json_body"]["relationPair"] == {
-        "reciprocalDisplayName": "订单",
-        "reciprocalCardinality": "many",
-        "sourceDisplayFieldId": "fld_order_number",
+    retired = {
+        "field.change.plan",
+        "field.change.apply",
+        "field.change.status",
+        "field.change.cancel",
+        "field.recycleBin.list",
+        "schema.table.create",
+        "schema.delete",
     }
+    for method in retired:
+        assert method in PRODUCT_RPC_REGISTRY
+        assert method not in PYTHON_PRODUCT_RPC_REGISTRY
 
 
 @pytest.mark.asyncio
 async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     service, transport = _service(
         [
-            {
-                "contract": "vibetable.schema.v2",
-                "operationId": "operation-create-table-12345678",
-                "tableId": "tbl_orders",
-                "displayName": "订单",
-                "schemaRevision": "schema_0001",
-            },
             {
                 "canonicalSource": 'relationSum(f_lines, "f_amount")',
                 "resultType": "number",
@@ -299,16 +291,6 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
         ]
     )
 
-    await service.invoke(
-        "schema.table.create",
-        PRODUCT_RPC_REGISTRY["schema.table.create"].model_validate(
-            {
-                "displayName": "订单",
-                "operationId": "operation-create-table-12345678",
-                "actor": {"id": "desktop-host", "kind": "host"},
-            }
-        ),
-    )
     inspected = await service.invoke(
         "formula.draft.validate",
         PRODUCT_RPC_REGISTRY["formula.draft.validate"].model_validate(
@@ -336,7 +318,6 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
     assert token["downloadCapability"] == "cap"
     assert inspected["resultType"] == "number"
     assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v2/schema/tables",
         "/api/vibetable/v1/formulas/draft/validate",
         "/api/vibetable/v1/formulas/preview",
         "/api/vibetable/v1/files/token",
@@ -347,21 +328,16 @@ async def test_schema_formula_and_file_use_only_fixed_routes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_delete_uses_fixed_route_and_revision_guard() -> None:
-    service, transport = _service([{"deleted": True, "tableId": "orders"}])
+async def test_schema_delete_has_no_python_transport() -> None:
+    service, transport = _service([])
 
-    result = await service.invoke(
-        "schema.delete",
-        ProductParams.model_validate({"tableId": "orders", "expectedRevision": "schema_0002"}),
-    )
+    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.delete"):
+        await service.invoke(
+            "schema.delete",
+            ProductParams.model_validate({"tableId": "orders", "expectedRevision": "schema_0002"}),
+        )
 
-    assert result == {"deleted": True, "tableId": "orders"}
-    assert transport.requests[0]["method"] == "POST"
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/schema/delete"
-    assert transport.requests[0]["json_body"] == {
-        "tableId": "orders",
-        "expectedRevision": "schema_0002",
-    }
+    assert transport.requests == []
 
 
 @pytest.mark.asyncio

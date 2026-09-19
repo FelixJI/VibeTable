@@ -443,14 +443,7 @@ def test_rpc_catalog_covers_every_registered_product_method_and_event() -> None:
     )
 
     catalog = _load(FIXTURES / "product-rpc-catalog.json")
-    workspace_catalog_methods = {
-        "field.change.apply",
-        "field.change.cancel",
-        "field.change.plan",
-        "field.change.status",
-        "field.recycleBin.list",
-    }
-    assert catalog["rpcMethods"] == sorted(registered - workspace_catalog_methods)
+    assert catalog["rpcMethods"] == sorted(registered)
     assert catalog["eventTopics"] == [
         "data.changed",
         "plugin.catalog.changed",
