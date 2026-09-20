@@ -1314,6 +1314,7 @@ export interface VersionCompareResult {
   readonly versionId: string;
   readonly outdated: boolean;
   readonly mainHash: string;
+  readonly versionRevision: string;
   readonly differences: Readonly<Record<string, {
     readonly main: unknown;
     readonly version: unknown;
@@ -2038,6 +2039,7 @@ export interface WebPayloadMap {
     readonly itemId: string;
     readonly versionId: string;
     readonly values: Readonly<Record<string, unknown>>;
+    readonly expectedRevision: string;
     readonly operationId: string;
   };
   "version.compare": {
@@ -2050,6 +2052,7 @@ export interface WebPayloadMap {
     readonly itemId: string;
     readonly versionId: string;
     readonly mainHash: string;
+    readonly expectedRevision: string;
     readonly operationId: string;
   };
   "version.delete": {

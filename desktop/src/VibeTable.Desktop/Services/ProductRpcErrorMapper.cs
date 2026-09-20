@@ -7,6 +7,22 @@ namespace VibeTable.Desktop.Services;
 
 internal static class ProductRpcErrorMapper
 {
+    internal static bool TryMapNamedRevision(string method, JsonElement source, out JsonElement response)
+    {
+        response = default;
+        if (method is not ("version.list" or "version.create" or "version.save" or "version.compare" or "version.promote" or "version.delete")
+            || !HasContentProperties(source, false)
+            || !TryString(source, "kind", out string kind) || kind != "insights_error"
+            || !TryString(source, "code", out string code)
+            || code is not ("version_not_found" or "version_record_unavailable" or "version_values_not_allowed"
+                or "version_audit_missing" or "version_audit_invalid" or "version_revision_missing"
+                or "version_edit_conflict" or "version_main_conflict" or "version_not_restorable"
+                or "version_idempotency_conflict" or "version_operation_expired"
+                or "version_storage_invalid" or "version_persistence_failed"))
+            return false;
+        return TryMap(source, out response);
+    }
+
     internal static bool TryMapContent(string method, JsonElement data, out JsonElement response)
     {
         response = default;

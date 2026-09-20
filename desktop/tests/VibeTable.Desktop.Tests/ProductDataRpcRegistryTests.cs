@@ -214,7 +214,7 @@ public sealed class ProductDataRpcRegistryTests
             ("task.create", JsonDocument.Parse(
                 """{"kind":"import","params":{}}""").RootElement.Clone(), true, null),
             ("version.promote", JsonDocument.Parse(
-                """{"collection":"orders","itemId":"row-1","versionId":"v1","mainHash":"main-1","operationId":"op-6"}""")
+                """{"collection":"orders","itemId":"row-1","versionId":"v1","mainHash":"main-1","expectedRevision":"version-1","operationId":"op-6"}""")
                 .RootElement.Clone(), true, null),
         };
         var ledger = new FieldChangeProtectionPlanLedger();

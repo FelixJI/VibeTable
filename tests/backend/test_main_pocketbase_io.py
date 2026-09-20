@@ -363,3 +363,43 @@ async def test_build_server_dispatches_import_task_without_internal_error(
     finally:
         if plugin_service is not None:
             await plugin_service.close()
+
+
+def test_recovery_preview_probe_refreshes_schema_without_files_or_plans() -> None:
+    class ReadOnlyTransport(_ImportTransport, _Transport):
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+            assert method == "GET", (method, path)
+            self.calls.append((method, path))
+            return await super().request(method, path, **kwargs)
+
+    async def run() -> None:
+        transport = ReadOnlyTransport()
+        client = PocketBaseClient(transport=transport, session_secret="test-only")
+        dispatcher = RpcDispatcher()
+        tasks = build_task_service()
+        runtime = _configure_pocketbase_data_io(dispatcher, client=client, task_service=tasks)
+        response = await dispatcher.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "e2e-recovery-owned",
+                "method": "data.previewImport",
+                "params": {
+                    "grantId": "e2e-python-recovery-probe",
+                    "collection": "orders",
+                    "schemaRevision": "e2e-python-recovery-probe",
+                },
+            }
+        )
+        assert response is not None
+        assert response["id"] == "e2e-recovery-owned"
+        assert response["error"]["code"] == -32060
+        assert response["error"]["data"]["message"] == "schema changed since the grid was rendered"
+        assert response["error"]["data"]["code"] == "schema_mismatch"
+        assert transport.calls == [("GET", "/api/vibetable/v2/schema/tables/orders")]
+        assert not runtime._import._plans
+        assert not tasks.grants._grants
+
+    asyncio.run(run())

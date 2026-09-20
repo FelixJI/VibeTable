@@ -113,6 +113,12 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "schema.describe",
         "schema.getTable",
         "schema.list",
+        "version.compare",
+        "version.create",
+        "version.delete",
+        "version.list",
+        "version.promote",
+        "version.save",
         "schema.table.create",
         "settings.commitWorkCalendar",
         "settings.readWorkCalendar",
@@ -214,7 +220,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 46
+    assert len(methods) == 40
     assert methods[0] == "command.list"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
@@ -277,6 +283,12 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "schema.table.create",
         "settings.commitWorkCalendar",
         "settings.readWorkCalendar",
+        "version.compare",
+        "version.create",
+        "version.delete",
+        "version.list",
+        "version.promote",
+        "version.save",
     )
     assert current_owner_methods("wpfHost") == (
         "gridState.get",

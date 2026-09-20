@@ -4,9 +4,8 @@
   fields/layout) to product presets. Device-local details (window position,
   pixel widths, scroll) stay in the B3 local Grid State, referencing the preset
   id/version.
-* **Content Versions** (Task 5) are unpublished working copies of an item on
-  version-enabled collections (distinct from Revisions, which are audit
-  history).
+* **Content Versions** (Task 5) name durable audit revisions of one record; refresh advances the
+  audit pointer and restore uses the existing audit compare-and-swap contract.
 * **Dashboards/Panels** (Task 6-7) implement the product Insights designer
   with a locked built-in panel manifest, interactive filters and drilldown.
 """
@@ -150,7 +149,7 @@ class DeletePresetParams(CamelModel):
 
 
 class ContentVersionEntry(CamelModel):
-    """One content version (unpublished working copy) of an item."""
+    """One named audit revision of an item."""
 
     id: str = Field(min_length=1, max_length=128)
     key: str = Field(default="", max_length=128)
@@ -204,9 +203,10 @@ class VersionIdParams(VersionSelectionParams):
 
 
 class SaveVersionParams(VersionSelectionParams):
-    """Parameters for saving a version working copy."""
+    """Refresh a named revision to the current audited record."""
 
     values: dict[str, Any] = Field(default_factory=dict)
+    expected_revision: str = Field(min_length=1, max_length=128)
     operation_id: str = Field(min_length=1, max_length=128)
 
 
@@ -224,17 +224,19 @@ class VersionCompareResult(CamelModel):
     item_id: str = Field(min_length=1, max_length=128)
     version_id: str = Field(min_length=1, max_length=128)
     outdated: bool
+    version_revision: str = Field(min_length=1, max_length=128)
     main_hash: str = Field(default="", max_length=128)
     differences: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class PromoteVersionParams(CamelModel):
-    """Parameters for promoting a version working copy."""
+    """Restore a named audit revision after comparing both revisions."""
 
     collection: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     version_id: str = Field(min_length=1, max_length=128)
     main_hash: str = Field(min_length=1)
+    expected_revision: str = Field(min_length=1, max_length=128)
     operation_id: str = Field(min_length=1, max_length=128)
 
 

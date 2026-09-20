@@ -20,7 +20,6 @@ from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMeta
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.insights_service import InsightsService
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
@@ -51,14 +50,6 @@ from backend.contracts.plugin_rpc import (
     StartPluginActionParams,
     UninstallPluginParams,
     UpgradePluginParams,
-)
-from backend.contracts.presets_versions_dashboards import (
-    CreateVersionParams,
-    DeleteVersionParams,
-    ListVersionsParams,
-    PromoteVersionParams,
-    SaveVersionParams,
-    VersionIdParams,
 )
 from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 from backend.contracts.settings_commands import (
@@ -383,15 +374,6 @@ async def _build_server() -> tuple[
             command_executors={"export.query": execute_export_command},
         )
         _register_settings_methods(dispatcher, settings)
-        insights = InsightsService(metadata_port=metadata_transport, query_port=client)
-        register_application_errors(ErrorDomain.INSIGHTS)
-
-        dispatcher.register("version.list", insights.list_versions, ListVersionsParams)
-        dispatcher.register("version.create", insights.create_version, CreateVersionParams)
-        dispatcher.register("version.save", insights.save_version, SaveVersionParams)
-        dispatcher.register("version.compare", insights.compare_version, VersionIdParams)
-        dispatcher.register("version.promote", insights.promote_version, PromoteVersionParams)
-        dispatcher.register("version.delete", insights.delete_version, DeleteVersionParams)
         store = PluginProjectStore(state_root / "plugins.db")
         registry = PluginRegistry(store=store)
         confirmation = HostConfirmationAdapter()

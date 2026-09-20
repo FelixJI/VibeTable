@@ -111,7 +111,21 @@ export function releaseSidecarRecoveryNotificationFailureWindowInPage({ ownerTok
 }
 
 const recoveryObservationMs = 5_000;
-export const pythonRecoveryReadinessMethod = "version.list";
+export const pythonRecoveryReadinessMethod = "data.previewImport";
+export function pythonRecoveryReadinessParams(tableId) {
+  // Python refreshes the real PB schema before rejecting this impossible revision,
+  // and rejects it before resolving a grant, reading a file, or creating a plan.
+  return { collection: tableId, grantId: "e2e-python-recovery-probe", schemaRevision: "e2e-python-recovery-probe" };
+}
+export function isPythonRecoveryReady(response) {
+  const error = response?.payload?.error;
+  return response?.type === pythonRecoveryReadinessMethod
+    && typeof response.requestId === "string" && response.requestId.length > 0
+    && error?.code === "schema_mismatch"
+    && error.path === ""
+    && error.message === "schema changed since the grid was rendered"
+    && error.details === null && error.retryable === false;
+}
 const recoveryRequestTypes = new Set(["query.page", "field.recycleBin.list", pythonRecoveryReadinessMethod]);
 
 export class SidecarRecoveryContractError extends Error {
@@ -349,7 +363,9 @@ export class SidecarRecoveryReadWindow {
         `recovery request identity mismatch: ${owned.requestId}`,
       );
     }
-    const succeeded = terminal.type === owned.requestType;
+    const succeeded = owned.requestType === pythonRecoveryReadinessMethod
+      ? isPythonRecoveryReady(terminal)
+      : terminal.type === owned.requestType;
     const expectedFailure = isExpectedSidecarRecoveryFailure(terminal);
     if (!succeeded && !expectedFailure) {
       throw new SidecarRecoveryContractError(

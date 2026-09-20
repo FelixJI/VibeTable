@@ -488,6 +488,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				)...,
 			)
 			productRegistrations = append(productRegistrations, relationWriteRegistrations(relationService, queryPort, businessGate)...)
+			versions := metadata.NewContentVersions(pb, workspaceRuntime, auditService)
+			for _, method := range []string{"version.list", "version.create", "version.save", "version.compare", "version.promote", "version.delete"} {
+				productRegistrations = append(productRegistrations, contentVersionRegistration(method, versions, businessGate))
+			}
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
