@@ -92,7 +92,7 @@ export async function resumeHostCommands(page, recorder, runtime, state) {
   const exportRow = page.locator(`[data-shortcut-id="${state.exportId}"]`);
   recorder.check("second real Host restores the edited shortcut and HTTPS definition",
     (await exportRow.innerText()).includes("Pinned query")
-      && (await page.locator(`[data-shortcut-id="${state.urlId}"]`).innerText()).includes("https://example.com/help"));
+      && (await page.locator(`[data-shortcut-id="${state.urlId}"]`).locator("small").innerText()) === "https://example.com/help");
   await exportRow.click();
   await exported(page, recorder, runtime, "shortcut-launch");
   await page.getByTestId("shortcuts-dialog").evaluate(node => node.scrollIntoView({ block: "start" }));
