@@ -9,7 +9,8 @@ import {
   acknowledgeExpectedSidecarRecoveryFailure,
   beginSidecarRecoveryNotificationFailureWindowInPage,
   pythonRecoveryReadinessMethod,
-  pythonRecoveryReadinessParamsInPage,
+  pythonRecoveryReadinessParams,
+  isPythonRecoveryReady,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -4083,7 +4084,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
     center.getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
   recorder.check("named revision workspace closes through the UI", closed.result.state === "closed", { closed });
   const opened = await activateWorkspaceThroughUi(page, {
-    waitForHydration: true, method: "workspace.open",
+    method: "workspace.open",
     activate: () => center.getByRole("button", { name: /E2E Product Workspace/ }).click(),
   });
   recorder.check("named revision UI reopens the same workspace in a fresh session",
@@ -4344,14 +4345,14 @@ async function waitForTableRecovery(
             }
             // Recycle-bin moved to Go in #343, so it no longer proves that
             // the rotated Python client and native Host gateways are current.
-            // Read an empty metadata scope through the retained Python Version
-            // list, under the same absolute deadline and request ownership.
+            // The import preview refreshes Python/PB schema, then rejects an
+            // impossible revision before any file or preview plan is created.
             const pythonRequestId = await beginRawBridgeRequest(
-              page, pythonRecoveryReadinessMethod, await page.evaluate(pythonRecoveryReadinessParamsInPage),
+              page, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams(tableId),
             );
             recoveryReads.own(pythonRequestId, pythonRecoveryReadinessMethod);
             const pythonReady = await recoveryReads.observe(pythonRequestId);
-            if (pythonReady?.type !== pythonRecoveryReadinessMethod) {
+            if (!isPythonRecoveryReady(pythonReady)) {
               lastError = new Error("Host/Python binding did not recover");
               continue;
             }
@@ -4491,17 +4492,19 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       lastResponse = await rawBridgeRequest(
-        page, pythonRecoveryReadinessMethod, await page.evaluate(pythonRecoveryReadinessParamsInPage), Math.min(20_000, remainingMs),
+        page, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams(tableId), Math.min(20_000, remainingMs),
       );
       if (Date.now() >= deadline) break;
-      if (lastResponse.type === pythonRecoveryReadinessMethod) {
+      if (isPythonRecoveryReady(lastResponse)) {
         return recoveredPage;
       }
     }
-    await acknowledgeExpectedSidecarRecoveryFailure(
+    if (!await acknowledgeExpectedSidecarRecoveryFailure(
       lastResponse,
       response => acknowledgeExpectedBridgeFailure(page, response),
-    );
+    )) {
+      throw new SidecarRecoveryContractError(`unexpected recovery terminal: ${JSON.stringify(lastResponse)}`);
+    }
     await page.waitForTimeout(250);
   }
   throw new Error(`active table backend did not recover: ${JSON.stringify(lastResponse)}`);

@@ -1,7 +1,6 @@
-export function isExpectedSidecarRecoveryFailure(response, requestType = "query.page") {
+export function isExpectedSidecarRecoveryFailure(response) {
   return response?.type === "operation.failed"
-    && (response.payload?.code === "BACKEND_UNAVAILABLE"
-      || (requestType === pythonRecoveryReadinessMethod && response.payload?.code === "PLUGIN_NOT_READY"))
+    && response.payload?.code === "BACKEND_UNAVAILABLE"
     && typeof response.requestId === "string"
     && response.requestId.length > 0;
 }
@@ -9,9 +8,8 @@ export function isExpectedSidecarRecoveryFailure(response, requestType = "query.
 export async function acknowledgeExpectedSidecarRecoveryFailure(
   response,
   acknowledge,
-  requestType = "query.page",
 ) {
-  if (!isExpectedSidecarRecoveryFailure(response, requestType)) return false;
+  if (!isExpectedSidecarRecoveryFailure(response)) return false;
   await acknowledge(response);
   return true;
 }
@@ -113,14 +111,20 @@ export function releaseSidecarRecoveryNotificationFailureWindowInPage({ ownerTok
 }
 
 const recoveryObservationMs = 5_000;
-export const pythonRecoveryReadinessMethod = "plugin.catalog.list";
-export const pythonRecoveryReadinessRpcMethod = "plugin.listCatalog";
-export function pythonRecoveryReadinessParamsInPage() {
-  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
-  if (typeof session?.workspaceId !== "string" || !session.workspaceId) {
-    throw new Error("Python recovery probe requires the current workspace session");
-  }
-  return { projectKey: `local:${session.workspaceId.replaceAll("-", "")}` };
+export const pythonRecoveryReadinessMethod = "data.previewImport";
+export function pythonRecoveryReadinessParams(tableId) {
+  // Python refreshes the real PB schema before rejecting this impossible revision,
+  // and rejects it before resolving a grant, reading a file, or creating a plan.
+  return { collection: tableId, grantId: "e2e-python-recovery-probe", schemaRevision: "e2e-python-recovery-probe" };
+}
+export function isPythonRecoveryReady(response) {
+  const error = response?.payload?.error;
+  return response?.type === pythonRecoveryReadinessMethod
+    && typeof response.requestId === "string" && response.requestId.length > 0
+    && error?.code === "schema_mismatch"
+    && error.path === ""
+    && error.message === "schema changed since the grid was rendered"
+    && error.details === null && error.retryable === false;
 }
 const recoveryRequestTypes = new Set(["query.page", "field.recycleBin.list", pythonRecoveryReadinessMethod]);
 
@@ -359,8 +363,10 @@ export class SidecarRecoveryReadWindow {
         `recovery request identity mismatch: ${owned.requestId}`,
       );
     }
-    const succeeded = terminal.type === owned.requestType;
-    const expectedFailure = isExpectedSidecarRecoveryFailure(terminal, owned.requestType);
+    const succeeded = owned.requestType === pythonRecoveryReadinessMethod
+      ? isPythonRecoveryReady(terminal)
+      : terminal.type === owned.requestType;
+    const expectedFailure = isExpectedSidecarRecoveryFailure(terminal);
     if (!succeeded && !expectedFailure) {
       throw new SidecarRecoveryContractError(
         `unexpected recovery terminal: ${owned.requestId}`,

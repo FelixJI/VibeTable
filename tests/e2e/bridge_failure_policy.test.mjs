@@ -6,8 +6,8 @@ import {
   beginSidecarRecoveryNotificationFailureWindowInPage,
   isExpectedSidecarRecoveryFailure,
   pythonRecoveryReadinessMethod,
-  pythonRecoveryReadinessRpcMethod,
-  pythonRecoveryReadinessParamsInPage,
+  pythonRecoveryReadinessParams,
+  isPythonRecoveryReady,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -876,7 +876,7 @@ test("close reuses a failed release attempt instead of retrying it", async () =>
 test("Go readiness cannot complete an owned Python binding probe", async () => {
   const { readFile } = await import("node:fs/promises");
   const manifest = JSON.parse(await readFile(new URL("../../contracts/v2/product-rpc-capability-manifest.json", import.meta.url), "utf8"));
-  const descriptor = manifest.rpcMethods.find(item => item.method === pythonRecoveryReadinessRpcMethod);
+  const descriptor = manifest.rpcMethods.find(item => item.method === pythonRecoveryReadinessMethod);
   assert.equal(descriptor?.owner, "pythonBff", "replace the readiness probe if this route migrates");
   assert.equal(descriptor.effect, "read");
   assert.equal(descriptor.scope, "workspace");
@@ -893,7 +893,7 @@ test("Go readiness cannot complete an owned Python binding probe", async () => {
       return pythonTerminal;
     },
     releaseRequest: async requestId => released.push(requestId),
-    acknowledge: async () => assert.fail("no failure should be acknowledged"),
+    acknowledge: async () => assert.fail("typed probe replies are not diagnostic failures"),
   });
   window.own("go", "field.recycleBin.list");
   await window.observe("go");
@@ -904,7 +904,7 @@ test("Go readiness cannot complete an owned Python binding probe", async () => {
   await Promise.resolve();
   assert.equal(settled, false);
   assert.deepEqual(released, ["go"]);
-  releasePython({ type: pythonRecoveryReadinessMethod, requestId: "python" });
+  releasePython(pythonProbeTerminal("python"));
   await pending;
   await window.close();
   assert.deepEqual(released, ["go", "python"]);
@@ -919,34 +919,38 @@ test("active-table recovery sends a valid retained Python read after Go readines
   const calls = [];
   const recoveredPage = { rows: [{ id: "row-a" }], snapshot: { schemaRevision: "schema-a" } };
   const run = new Function(
-    "rawBridgeRequest", "pythonRecoveryReadinessMethod", "pythonRecoveryReadinessParamsInPage",
+    "rawBridgeRequest", "pythonRecoveryReadinessMethod", "pythonRecoveryReadinessParams", "isPythonRecoveryReady", "SidecarRecoveryContractError",
     "acknowledgeExpectedSidecarRecoveryFailure", "acknowledgeExpectedBridgeFailure",
     `${scenarios.slice(start, end)}\nreturn waitForActiveTableBackend;`,
   )(async (_page, method, params) => {
     calls.push({ method, params });
     if (method === "query.page") return { type: method, payload: recoveredPage };
-    // The retained plugin catalog proves the current workspace Python binding
-    // is callable without requiring an installed plugin or a mutation.
-    assert.equal(method, "plugin.catalog.list");
-    assert.deepEqual(params, { projectKey: "local:11111111111141118111111111111111" });
-    return { type: method, payload: [] };
-  }, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParamsInPage, async () => assert.fail("unexpected failure"), async () => {});
-  assert.equal(await run({ evaluate: async () => ({ projectKey: "local:11111111111141118111111111111111" }), waitForTimeout: async () => assert.fail("unexpected retry") }, "orders", 1), recoveredPage);
-  assert.deepEqual(calls.map(call => call.method), ["query.page", "plugin.catalog.list"]);
+    assert.equal(method, "data.previewImport");
+    assert.deepEqual(params, { collection: "orders", grantId: "e2e-python-recovery-probe", schemaRevision: "e2e-python-recovery-probe" });
+    return pythonProbeTerminal("python");
+  }, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams, isPythonRecoveryReady, SidecarRecoveryContractError,
+  async () => assert.fail("unexpected failure"), async () => assert.fail("typed probe replies are not diagnostic failures"));
+  assert.equal(await run({ waitForTimeout: async () => assert.fail("unexpected retry") }, "orders", 1), recoveredPage);
+  assert.deepEqual(calls.map(call => call.method), ["query.page", "data.previewImport"]);
 });
 
+function pythonProbeTerminal(requestId) {
+  return { type: pythonRecoveryReadinessMethod, requestId, payload: { error: {
+    code: "schema_mismatch", path: "", message: "schema changed since the grid was rendered", details: null, retryable: false,
+  } } };
+}
 
-test("plugin readiness failures are accepted only for the owned plugin read", async () => {
-  for (const method of ["query.page", pythonRecoveryReadinessMethod]) {
-    const failure = { type: "operation.failed", requestId: "probe", payload: { code: "PLUGIN_NOT_READY" } };
-    assert.equal(isExpectedSidecarRecoveryFailure(failure, method), method === pythonRecoveryReadinessMethod);
+test("Python readiness accepts only its exact correlated schema rejection", async () => {
+  for (const terminal of [
+    { type: pythonRecoveryReadinessMethod, requestId: "python", payload: {} },
+    { ...pythonProbeTerminal("python"), type: "operation.failed" },
+    { ...pythonProbeTerminal("python"), payload: { error: { ...pythonProbeTerminal("python").payload.error, code: "PRODUCT_DATA_FAILED" } } },
+    pythonProbeTerminal("unowned"),
+  ]) {
     const window = new SidecarRecoveryReadWindow({ deadlineAt: 10_000, now: () => 0,
-      observeTerminal: async () => failure, releaseRequest: async () => {}, acknowledge: async () => {} });
-    window.own("probe", method);
-    if (method === pythonRecoveryReadinessMethod) {
-      assert.equal(await window.observe("probe"), failure);
-      await window.settle();
-    } else await assert.rejects(window.observe("probe"), SidecarRecoveryContractError);
+      observeTerminal: async () => terminal, releaseRequest: async () => {}, acknowledge: async () => assert.fail("unexpected acknowledgement") });
+    window.own("python", pythonRecoveryReadinessMethod);
+    await assert.rejects(window.observe("python"), SidecarRecoveryContractError);
     await window.close();
   }
 });
