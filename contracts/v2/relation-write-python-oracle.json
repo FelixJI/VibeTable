@@ -1,0 +1,4185 @@
+{
+  "producerCommit": "55e0bfa41bbbf6d2f4129227d29a085e6c599a87",
+  "boundary": "Original Python dispatcher/closed DTO/adapter/error projection; scripted HTTP authority, not Go execution",
+  "cases": [
+    {
+      "name": "relation.createTarget:success",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:success",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1"
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/create-target",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "label": "",
+            "values": {},
+            "requestId": "create-1",
+            "idempotencyKey": "create-1",
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:success",
+        "result": {
+          "outcome": "committed",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "secondaryLabel": null
+          },
+          "requestId": "create-1"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:unknown-param",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "extra": true
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:internal-alias-not-public",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:internal-alias-not-public",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "expectedDigest": "not-public"
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:internal-alias-not-public",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:missing-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:missing-key",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author"
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:missing-key",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:empty-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:empty-key",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": ""
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:empty-key",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:wrong-relation-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:wrong-relation-type",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": false,
+          "idempotencyKey": "create-1"
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:wrong-relation-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:credential",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "sessionSecret": "not-a-secret"
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:nonobject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:nonobject",
+        "method": "relation.createTarget",
+        "params": []
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:nonobject",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:authority-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:authority-error",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1"
+        }
+      },
+      "authorityFixture": [
+        {
+          "code": "relation.target_invalid",
+          "message": "wrong target",
+          "path": null,
+          "details": null,
+          "retryable": false
+        }
+      ],
+      "authorityStatus": 422,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/create-target",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "label": "",
+            "values": {},
+            "requestId": "create-1",
+            "idempotencyKey": "create-1",
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:authority-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "wrong target",
+            "code": "relation.target_invalid",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:success",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:success",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:success",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:unknown-param",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "extra": true
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:internal-alias-not-public",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:internal-alias-not-public",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "expectedDigest": "not-public"
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:internal-alias-not-public",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:missing-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:missing-key",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:missing-key",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:empty-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:empty-key",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:empty-key",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:wrong-relation-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-relation-type",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": false,
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-relation-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:credential",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "sessionSecret": "not-a-secret"
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:nonobject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:nonobject",
+        "method": "relation.updateSingle",
+        "params": []
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:nonobject",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:authority-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:authority-error",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "code": "relation.target_invalid",
+          "message": "wrong target",
+          "path": null,
+          "details": null,
+          "retryable": false
+        }
+      ],
+      "authorityStatus": 422,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:authority-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "wrong target",
+            "code": "relation.target_invalid",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:success",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:success",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:success",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:unknown-param",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:unknown-param",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ],
+          "extra": true
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:unknown-param",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:internal-alias-not-public",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:internal-alias-not-public",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ],
+          "expectedDigest": "not-public"
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:internal-alias-not-public",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:missing-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:missing-key",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:missing-key",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:empty-key",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:empty-key",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:empty-key",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:wrong-relation-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:wrong-relation-type",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": false,
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:wrong-relation-type",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:credential",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:credential",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ],
+          "sessionSecret": "not-a-secret"
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:credential",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:nonobject",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:nonobject",
+        "method": "relation.applyDelta",
+        "params": []
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:nonobject",
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:authority-error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:authority-error",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "code": "relation.target_invalid",
+          "message": "wrong target",
+          "path": null,
+          "details": null,
+          "retryable": false
+        }
+      ],
+      "authorityStatus": 422,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:authority-error",
+        "error": {
+          "code": -32150,
+          "message": "Product data error",
+          "data": {
+            "kind": "product_data_error",
+            "message": "wrong target",
+            "code": "relation.target_invalid",
+            "path": null,
+            "details": {},
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:label",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "label": "中文"
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/create-target",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "label": "中文",
+            "values": {},
+            "requestId": "create-1",
+            "idempotencyKey": "create-1",
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:label",
+        "result": {
+          "outcome": "committed",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "secondaryLabel": null
+          },
+          "requestId": "create-1"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:values",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:values",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "values": {
+            "title": "new",
+            "count": 9007199254740993,
+            "empty": null,
+            "zero": 0
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/create-target",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "label": "",
+            "values": {
+              "title": "new",
+              "count": 9007199254740993,
+              "empty": null,
+              "zero": 0
+            },
+            "requestId": "create-1",
+            "idempotencyKey": "create-1",
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:values",
+        "result": {
+          "outcome": "committed",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "secondaryLabel": null
+          },
+          "requestId": "create-1"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:empty-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:empty-label",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "label": ""
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:empty-label",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:null-values",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:null-values",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "values": null
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:null-values",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:wrong-values",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:wrong-values",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1",
+          "values": []
+        }
+      },
+      "authorityFixture": [
+        {
+          "target": {
+            "tableId": "authors",
+            "recordId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:wrong-values",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.createTarget:missing-target-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:missing-target-result",
+        "method": "relation.createTarget",
+        "params": {
+          "relationId": "orders.author",
+          "idempotencyKey": "create-1"
+        }
+      },
+      "authorityFixture": [
+        {}
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/create-target",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "label": "",
+            "values": {},
+            "requestId": "create-1",
+            "idempotencyKey": "create-1",
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.createTarget:missing-target-result",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:clear",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:clear",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": null
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:clear",
+        "result": {
+          "outcome": "committed",
+          "current": null,
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:unchanged",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:unchanged",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-new"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:unchanged",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:source-empty",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:source-empty",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": null
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:source-empty",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:wrong-cardinality",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-cardinality",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "many"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-cardinality",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:missing-source",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:missing-source",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": []
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:missing-source",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:wrong-table",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-table",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "elsewhere",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-table",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:wrong-target-type",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-target-type",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": []
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:wrong-target-type",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:source-invalid-value",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:source-invalid-value",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": false
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:source-invalid-value",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:date-null",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:date-null",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "expectedDateUpdated": null
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:date-null",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:date-text",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:date-text",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "expectedDateUpdated": "stale"
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:date-text",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:date-object",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:date-object",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          },
+          "expectedDateUpdated": {
+            "anything": false
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:date-object",
+        "error": {
+          "code": -32602,
+          "message": "Invalid params"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:nested-target",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:nested-target",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "target": {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            },
+            "note": 0
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:nested-target",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "target": {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            },
+            "note": 0
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:alias-priority",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:alias-priority",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "tableId": "authors",
+            "recordId": "a-priority"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-priority",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:alias-priority",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "tableId": "authors",
+            "recordId": "a-priority"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:alias-fallback",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:alias-fallback",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "tableId": false,
+            "recordId": ""
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:alias-fallback",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻",
+            "tableId": false,
+            "recordId": ""
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:empty-nested-target",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:empty-nested-target",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "target": {},
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": "中文 👩🏽‍💻"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:empty-nested-target",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:null-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:null-label",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new",
+            "label": null
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:null-label",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.updateSingle:missing-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:missing-label",
+        "method": "relation.updateSingle",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "target": {
+            "collection": "authors",
+            "itemId": "a-new"
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "relations": [
+            {
+              "relationId": "orders.author",
+              "sourceTableId": "orders",
+              "physicalName": "author_id",
+              "targetTableId": "authors",
+              "cardinality": "one"
+            }
+          ]
+        },
+        {
+          "rows": [
+            {
+              "id": "o-1",
+              "author_id": "a-old"
+            }
+          ]
+        },
+        {
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "GET",
+          "path": "/api/vibetable/v1/relations/describe",
+          "query": {
+            "tableId": "orders"
+          },
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/query",
+          "query": {},
+          "body": {
+            "operation": "readRows",
+            "tableId": "orders",
+            "rowIds": [
+              "o-1"
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "a-new"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.updateSingle:missing-label",
+        "result": {
+          "outcome": "committed",
+          "current": {
+            "collection": "authors",
+            "itemId": "a-new"
+          },
+          "schemaRevision": "schema-1",
+          "requestId": "write-1",
+          "receipt": {
+            "status": "applied",
+            "changeSetId": "change-1"
+          }
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:date-null",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:date-null",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ],
+          "expectedDateUpdated": null
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:date-null",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:date-text",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:date-text",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ],
+          "expectedDateUpdated": "stale"
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:date-text",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:date-object",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:date-object",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ],
+          "expectedDateUpdated": {
+            "anything": false
+          }
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:date-object",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:nested-target",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:nested-target",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "target": {
+                "collection": "authors",
+                "itemId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              },
+              "note": 0
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:nested-target",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:alias-priority",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:alias-priority",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "tableId": "authors",
+              "recordId": "a-priority"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-priority",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:alias-priority",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:alias-fallback",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:alias-fallback",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "tableId": false,
+              "recordId": ""
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:alias-fallback",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:empty-nested-target",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:empty-nested-target",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "target": {},
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:empty-nested-target",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:null-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:null-label",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": null
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:null-label",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:missing-label",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:missing-label",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "a-new"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:missing-label",
+        "result": {
+          "outcome": "committed",
+          "current": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻",
+              "secondaryLabel": null
+            }
+          ],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:empty-delta",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:empty-delta",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [],
+          "removes": []
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": []
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [],
+            "removes": [],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:empty-delta",
+        "result": {
+          "outcome": "committed",
+          "current": [],
+          "schemaRevision": "schema-1",
+          "requestId": "write-1"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:wrong-adds",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:wrong-adds",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": {},
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:wrong-adds",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:wrong-target",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:wrong-target",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            false
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {
+          "current": [
+            {
+              "tableId": "authors",
+              "recordId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ]
+        }
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:wrong-target",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    },
+    {
+      "name": "relation.applyDelta:missing-current-result",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:missing-current-result",
+        "method": "relation.applyDelta",
+        "params": {
+          "relationId": "orders.author",
+          "sourceItemId": "o-1",
+          "expectedSchemaRevision": "schema-1",
+          "idempotencyKey": "write-1",
+          "adds": [
+            {
+              "collection": "authors",
+              "itemId": "a-new",
+              "label": "中文 👩🏽‍💻"
+            }
+          ],
+          "removes": [
+            {
+              "collection": "authors",
+              "itemId": "a-old"
+            }
+          ]
+        }
+      },
+      "authorityFixture": [
+        {}
+      ],
+      "authorityStatus": 200,
+      "authorityRequests": [
+        {
+          "method": "POST",
+          "path": "/api/vibetable/v1/relations/apply-delta",
+          "query": {},
+          "body": {
+            "relationId": "orders.author",
+            "sourceRecordId": "o-1",
+            "schemaRevision": "schema-1",
+            "adds": [
+              {
+                "tableId": "authors",
+                "recordId": "a-new",
+                "label": "中文 👩🏽‍💻"
+              }
+            ],
+            "removes": [
+              {
+                "tableId": "authors",
+                "recordId": "a-old",
+                "label": "a-old"
+              }
+            ],
+            "requestId": "write-1",
+            "idempotencyKey": "write-1",
+            "expectedDigest": null,
+            "actor": {
+              "type": "user",
+              "id": "local-user",
+              "displayName": null
+            }
+          }
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "relation.applyDelta:missing-current-result",
+        "error": {
+          "code": -32603,
+          "message": "Internal error"
+        }
+      }
+    }
+  ]
+}

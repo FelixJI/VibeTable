@@ -11,13 +11,15 @@
 - 当前 manifest gap：4（`24-directory-replica-conflict`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`）。
 - S33 两真实 Host 的本地新包资格见对应资格记录；本节旧 main 样本没有这些结果，因此保留该样本的 gap。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：3（`07-attachment-history`、`16-dashboard-lifecycle`、`17-interface-lifecycle`）。
+- 当前 manifest changed：4（`07-attachment-history`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`28-relation-delta-preview`）。
 
 同一 main 候选覆盖该样本当时登记的 29 个场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
 
 同编号场景 "07-attachment-history" 现在保留历史抽屉的 Workspace V2 恢复，并新增公开 `history.previewRestoreRequested` / `history.applyRestoreRequested` 桥接闭环，独立验证 Go Product owner。旧 main 报告中的 S07 没有这些 Product 断言；即使场景编号相同，也不能用旧报告证明新增恢复入口。新增段验证预览不改变当前附件、Product 五字段结果不含 `mutationRevision`，以及返回行中的当前存储名与附件权威列表、表/记录/字段身份、原名、既有内容 checksum 和长度一致。恢复会重新生成托管存储名，不要求沿用历史名称。本候选同包局部验证已通过（见[本地资格记录](quality/history-restore-local-validation.md)），正式 main 报告仍待验收；S12 的快照恢复结果不能替代它。
 
 当前分支的 S17 新增 sidecar 重启后的 fresh Interface list/load、完整定义及 revision 持久和真实 UI 删除断言。source `65be85ce3d5727dc95cf3723ab0fd4795fb2016e` 的同包 S17 已通过，证据见 [Surface 资格记录](quality/surface-metadata-owner-qualification.md)；这只覆盖该 source，不能将旧 main 29 场样本或该局部新包结果归为本次 History/Surface 合并后的完整资格。
+
+当前 S28 保留原关系预览断言，并增加真实选择器多值增删、单值替换和清空、新建目标、Lookup 更新与同 UUID 重开。旧主干样本只证明预览语义，不能证明新增关系写入资格；本轮结果以 #345 对应 PR 的新包证据为准。
 
 新场景 S34 不在上述主干样本中，仍待正式 main 打包报告验收。本候选的历史 S32 局部资格记录见[关系与 Lookup 数据互操作](quality/relation-lookup-data-io.md)，不能用旧 29/29 报告或该旧包记录关闭当前缺口。
 

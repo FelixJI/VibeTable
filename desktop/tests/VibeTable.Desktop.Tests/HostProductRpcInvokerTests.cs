@@ -342,6 +342,39 @@ public sealed class HostProductRpcInvokerTests
     }
 
     [TestMethod]
+    [DataRow("relation.createTarget", false)]
+    [DataRow("relation.updateSingle", false)]
+    [DataRow("relation.applyDelta", false)]
+    [DataRow("relation.createTarget", true)]
+    [DataRow("relation.updateSingle", true)]
+    [DataRow("relation.applyDelta", true)]
+    public async Task RelationWritesUseGoOwnerAndDiscardRetiredReplies(string method, bool retired)
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        if (retired)
+        {
+            fixture.Http.BeforeReply = (_, _) =>
+            {
+                fixture.Current = false;
+                return Task.CompletedTask;
+            };
+        }
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        Task<JsonElement> Call() => method switch
+        {
+            "relation.createTarget" => gateway.CreateRelationTargetAsync(Json("{}"), CancellationToken.None),
+            "relation.updateSingle" => gateway.UpdateSingleRelationAsync(Json("{}"), CancellationToken.None),
+            _ => gateway.ApplyRelationDeltaAsync(Json("{}"), CancellationToken.None),
+        };
+        if (retired)
+            await Assert.ThrowsExactlyAsync<BackendUnavailableException>(Call);
+        else
+            await Call();
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+        Assert.AreEqual(method, fixture.Http.Calls.Single().GetProperty("method").GetString());
+    }
+
+    [TestMethod]
     public async Task CallerCancellationDoesNotCancelAnotherCallsSharedHandshake()
     {
         await using var fixture = await HostFixture.OpenAsync();
@@ -776,7 +809,7 @@ public sealed class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.change.apply", "workspace"), new("field.change.cancel", "workspace"), new("field.change.plan", "workspace"), new("field.change.status", "workspace"), new("field.recycleBin.list", "workspace"), new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("formula.draft.validate", "workspace"), new("formula.preview", "workspace"), new("formula.validate", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("schema.delete", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace"), new("schema.table.create", "workspace")]);
+                [new("field.change.apply", "workspace"), new("field.change.cancel", "workspace"), new("field.change.plan", "workspace"), new("field.change.status", "workspace"), new("field.recycleBin.list", "workspace"), new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("formula.draft.validate", "workspace"), new("formula.preview", "workspace"), new("formula.validate", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("relation.applyDelta", "workspace"), new("relation.createTarget", "workspace"), new("relation.updateSingle", "workspace"), new("schema.delete", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace"), new("schema.table.create", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

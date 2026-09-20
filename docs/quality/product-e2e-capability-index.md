@@ -8,8 +8,8 @@
 ## 当前声明范围
 
 - 场景：33
-- 唯一能力：52
-- 场景—能力关联：70
+- 唯一能力：53
+- 场景—能力关联：71
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -53,8 +53,9 @@
 | `relation.import` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `relation.integrity-inspection` | <code>31-relation-pair-inspection</code>（关系完整性只读分页检查） |
 | `relation.pair-edit` | <code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
-| `relation.preview` | <code>28-relation-delta-preview</code>（多值关系预览与取消） |
+| `relation.preview` | <code>28-relation-delta-preview</code>（关系预览、选择器写入与重开） |
 | `relation.search` | <code>27-relation-target-search</code>（关系目标搜索） |
+| `relation.write` | <code>28-relation-delta-preview</code>（关系预览、选择器写入与重开） |
 | `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `replica.conflict` | <code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
 | `replica.recovery` | <code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复）、<code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
@@ -99,7 +100,7 @@
 | <code>24-directory-replica-conflict</code> | 双端目录副本冲突与败方恢复 | 两个真实 packaged Host 使用独立 local-data 与目录副本，从同一表行 seed 分叉；正常关闭后仅交换公开副本 payload，稳定重开后在 Conflict Center 选择 replica，preview 有效计划并 apply 同一 planId；query.page 验证选中的远端 marker；正常关闭并重启 Host 后验证同一行与 revision、同一 conflictId 已解决状态，公开 snapshot.list 与 UI previewRestore 证明败方 recoverySnapshotIds 仍可达。 | `replica.conflict`、`replica.recovery`、`workspace.protection` |
 | <code>26-lookup-definition-read</code> | Lookup 持久定义读取 | 通过真实字段规划创建关联与 Lookup，再经打包 Product 桥接读取持久定义，核对目标字段、关系路径和输出类型，并与 schema.describe 的 Lookup revision 保持一致。 | `lookup.definition-read` |
 | <code>27-relation-target-search</code> | 关系目标搜索 | 真实关系编辑器验证目标搜索的50/51分页、Unicode、空结果与清空恢复；不提交关联写入。 | `relation.search` |
-| <code>28-relation-delta-preview</code> | 多值关系预览与取消 | 真实多值关系编辑器经预览加载权威已关联目标；增加本地草稿选择后取消，源与目标表记录及schema/data revision保持不变。 | `relation.preview` |
+| <code>28-relation-delta-preview</code> | 关系预览、选择器写入与重开 | 真实多值关系预览与取消保持权威只读；通过选择器提交多值增删、单值更换/清空与新建目标，验证 Lookup 刷新和工作区重开后的稳定身份与值。 | `relation.preview`、`relation.write` |
 | <code>29-lookup-source-pagination</code> | Lookup 来源分页读取 | 通过真实字段规划与既有 mutation 建立101条关联来源，打开Lookup来源面板核对首100条，真实点击加载更多后核对101条唯一Unicode来源与分页耗尽，并比较两表权威记录及schema/data revision保持不变。 | `lookup.source-pagination` |
 | <code>30-query-snapshot-validation</code> | 查询快照只读校验 | 真实 Product bridge 校验 query.page 生成的快照，覆盖省略与传入当前查询的有效结果、query_changed、实际 mutation 后的 application_write 和字段变更后的 schema_changed；逐次比较权威记录与 revision，校验过程保持零写入。 | `schema.query` |
 | <code>31-relation-pair-inspection</code> | 关系完整性只读分页检查 | 通过真实字段设置检查101条来源与一个反向目标，跨两页累计端点进度且不把覆盖完整误报为健康；检查前后权威记录与revision零写入保持，页间实际mutation后续页拒绝并提示重新检查，重新检查可完成。 | `relation.integrity-inspection` |

@@ -73,7 +73,7 @@ func queryViewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interface {
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			workCalendarReadRegistration(nil), workCalendarCommitRegistration(nil),
 		}, append(unrelatedSchemaFieldChangeRegistrations(t),
-			unrelatedFormulaProductRegistrations(t)...)...)...)
+			append(unrelatedFormulaProductRegistrations(t), unrelatedRelationWriteRegistrations(t)...)...)...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

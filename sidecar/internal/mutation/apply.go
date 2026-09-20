@@ -104,6 +104,11 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 			receipt = replayed
 			if receipt.Status == StatusReplayed {
 				replaySignal = writecoordinator.ReplayedBusinessWrite(ctx, "mutation.apply", request.IdempotencyKey)
+				if replaySignal == nil {
+					if kind, ok := ctx.Value(businessReplayScopeKey{}).(string); ok {
+						replaySignal = writecoordinator.ReplayedBusinessWrite(ctx, kind, request.IdempotencyKey)
+					}
+				}
 			}
 			return nil
 		}

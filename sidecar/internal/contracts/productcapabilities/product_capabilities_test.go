@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 57 {
+	if len(allGo) != 60 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	schemaMethods := map[string]Effect{
@@ -92,8 +92,16 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		"field.change.cancel": WriteEffect, "field.change.status": ReadEffect,
 		"field.recycleBin.list": ReadEffect,
 	}
+	relationMethods := map[string]bool{"relation.applyDelta": true, "relation.createTarget": true, "relation.updateSingle": true}
 	otherGo := []RPCDescriptor{}
 	for _, descriptor := range allGo {
+		if relationMethods[descriptor.Method] {
+			if descriptor != (RPCDescriptor{Method: descriptor.Method, Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: WriteEffect}) {
+				t.Fatalf("relation write descriptor = %#v", descriptor)
+			}
+			delete(relationMethods, descriptor.Method)
+			continue
+		}
 		if effect, migrated := schemaMethods[descriptor.Method]; migrated {
 			capability := "schema.definition"
 			if effect == ReadEffect {
@@ -116,6 +124,9 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		if descriptor.Owner != GoSidecar || descriptor.Scope != WorkspaceScope || descriptor.Audience != RendererPublic || descriptor.CapabilityID != "content.model" || descriptor.Effect != effect {
 			t.Fatalf("content descriptor = %#v", descriptor)
 		}
+	}
+	if len(relationMethods) != 0 {
+		t.Fatalf("missing relation writes: %v", relationMethods)
 	}
 	if len(schemaMethods) != 0 {
 		t.Fatalf("missing migrated descriptors: %v", schemaMethods)

@@ -1300,7 +1300,7 @@ public sealed class WebMessageRouterTests
         {
             Assert.IsTrue(policy.TryGet(route, out ProductRpcCapability capability), route);
             Assert.AreEqual("rendererPublic", capability.Audience, route);
-            Assert.AreEqual(route is "relation.searchTargets" or "relation.previewDelta" or "lookup.query" or "lookup.valuePage" ? "goSidecar" : "pythonBff",
+            Assert.AreEqual(route is "relation.applyDelta" or "relation.createTarget" or "relation.updateSingle" or "relation.searchTargets" or "relation.previewDelta" or "lookup.query" or "lookup.valuePage" ? "goSidecar" : "pythonBff",
                 capability.Owner, route);
         }
     }

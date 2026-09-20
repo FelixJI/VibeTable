@@ -487,6 +487,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 					formulaDomain{app: pb, compiler: formulaCompiler},
 				)...,
 			)
+			productRegistrations = append(productRegistrations, relationWriteRegistrations(relationService, queryPort, businessGate)...)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,
