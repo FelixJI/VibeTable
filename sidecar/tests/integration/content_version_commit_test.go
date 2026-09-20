@@ -2,11 +2,15 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/audit"
+	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -75,5 +79,91 @@ func TestMutationCommitCallbackIsAtomicAndNeverRunsOnReplay(t *testing.T) {
 	})
 	if err != nil || replay.Status != mutation.StatusReplayed || !reflect.DeepEqual(snapshot(), after) {
 		t.Fatalf("replay: %#v %v", replay, err)
+	}
+}
+
+// Keep the real audit service behind the same narrow history port as the runtime.
+type namedRevisionHistory struct{ *audit.Service }
+
+func (h namedRevisionHistory) ReadBusinessHistory(ctx context.Context, p audit.ReadParams) (audit.Page, error) {
+	return h.ReadChangeSets(ctx, p)
+}
+func (h namedRevisionHistory) PreviewBusinessHistoryRestore(ctx context.Context, p audit.PreviewParams) (audit.Preview, error) {
+	return h.PreviewRestore(ctx, p)
+}
+
+func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	targets := createV2IntegrationTable(t, ctx, app, "Version targets", "version_targets")
+	targetName := createV2IntegrationField(t, ctx, app, targets.TableID, fieldDraftForIntegration(t, v2.LogicalText, "Name"), "version_target_name")
+	source := createV2IntegrationTable(t, ctx, app, "Version source", "version_source")
+	title := createV2IntegrationField(t, ctx, app, source.TableID, fieldDraftForIntegration(t, v2.LogicalText, "Title"), "version_source_title")
+	related := createV2IntegrationRelation(t, ctx, app, source.TableID, title.FieldID, targets.TableID, targetName.FieldID, "Related", "Sources", "many", "version_relation")
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	service, err := audit.New(app, kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := metadata.NewContentVersions(app, namedRevisionHistory{service}, service)
+	apply := func(key, tableID, recordID string, kind mutation.OperationKind, values map[string]any) {
+		t.Helper()
+		described, err := schemaexecution.Describe(ctx, app, tableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = kernel.Apply(ctx, mutation.Request{ContractVersion: mutation.ContractVersion, RequestID: key, IdempotencyKey: key, TableID: tableID, SchemaRevision: described.Snapshot.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "local-user"}, Operations: []mutation.Operation{{Kind: kind, RecordID: &recordID, Values: values}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := []string{"versiontarget01", "versiontarget02", "versiontarget03"}
+	for _, id := range ids {
+		apply("insert-"+id, targets.TableID, id, mutation.OperationInsert, map[string]any{targetName.Definition.Identity.PhysicalName: id})
+	}
+	field := related.Definition.Identity.PhysicalName
+	rowID := "versionsource01"
+	apply("insert-source", source.TableID, rowID, mutation.OperationInsert, map[string]any{field: ids[:2]})
+	created, err := owner.Write(ctx, "version.create", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, Key: "before", OperationID: "name-relation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := created.(map[string]any)
+	versionID := entry["id"].(string)
+	apply("update-source", source.TableID, rowID, mutation.OperationUpdate, map[string]any{field: ids[1:]})
+	compared, err := owner.Compare(ctx, metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(compared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		MainHash        string
+		VersionRevision string
+		Differences     map[string]struct {
+			Main    any
+			Version any
+		}
+	}
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatal(err)
+	}
+	difference := result.Differences[field]
+	if difference.Main != strings.Join(ids[1:], ", ") || difference.Version != strings.Join(ids[:2], ", ") {
+		t.Fatalf("named comparison hides actual relation sets: %s", encoded)
+	}
+	_, err = owner.Write(ctx, "version.promote", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID, ExpectedRevision: result.VersionRevision, MainHash: result.MainHash, OperationID: "restore-relation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := app.FindRecordById(source.PhysicalName, rowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := record.GetStringSlice(field); !reflect.DeepEqual(got, ids[:2]) {
+		t.Fatalf("restored relation %v differs from displayed %v", got, difference.Version)
 	}
 }

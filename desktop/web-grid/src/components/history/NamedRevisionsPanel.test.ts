@@ -18,10 +18,13 @@ describe("named revision product controls", () => {
     await wrapper.get('[data-testid="named-delete"]').trigger("click");
     expect(wrapper.emitted("action")).toHaveLength(4);
     wrapper.getComponent(NPopconfirm).vm.$emit("positive-click");
-    value.comparison = { collection: "table", itemId: "row", versionId: "v1", versionRevision: "r1", mainHash: "h2", outdated: true, differences: { title: { main: "Current", version: "Saved" } } };
+    value.comparison = { collection: "table", itemId: "row", versionId: "v1", versionRevision: "r1", mainHash: "h2", outdated: true, differences: { title: { main: "Current", version: "Saved" }, related: { main: "versiontarget02, versiontarget03", version: "versiontarget01, versiontarget02" } } };
     await flushPromises();
     expect(wrapper.get('[data-testid="named-comparison"]').text()).toContain('Current');
     expect(wrapper.get('[data-testid="named-comparison"]').text()).toContain('Saved');
+    const relation = wrapper.findAll('.named-differences dd')[1]!;
+    expect(relation.text()).toContain("versiontarget02, versiontarget03");
+    expect(relation.text()).toContain("versiontarget01, versiontarget02");
     await wrapper.get('[data-testid="named-promote"]').trigger("click");
     expect(wrapper.emitted("action")).toHaveLength(5);
     wrapper.findAllComponents(NPopconfirm)[1]!.vm.$emit("positive-click");

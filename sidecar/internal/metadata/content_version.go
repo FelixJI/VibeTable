@@ -197,7 +197,11 @@ func (s *ContentVersions) Compare(ctx context.Context, p VersionParams) (any, er
 		differences[change.Field] = map[string]any{"main": change.Before, "version": change.After}
 	}
 	for _, change := range preview.RelationChanges {
-		differences[change.Field] = map[string]any{"main": change.BeforeItemID, "version": change.AfterItemID}
+		before, after := change.BeforeItemID, change.AfterItemID
+		if change.Kind == "m2m" {
+			before, after = change.BeforeDisplayValue, change.AfterDisplayValue
+		}
+		differences[change.Field] = map[string]any{"main": before, "version": after}
 	}
 	return map[string]any{"collection": p.Collection, "itemId": p.ItemID, "versionId": p.VersionID, "outdated": preview.CurrentHash != versionText(payload["mainHash"]), "mainHash": preview.CurrentHash, "versionRevision": item.Revision, "differences": differences}, nil
 }
