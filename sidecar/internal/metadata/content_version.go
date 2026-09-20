@@ -192,6 +192,9 @@ func (s *ContentVersions) Compare(ctx context.Context, p VersionParams) (any, er
 	if err != nil {
 		return nil, versionPersistence(err)
 	}
+	if err := requireCompleteVersionRestore(preview); err != nil {
+		return nil, err
+	}
 	differences := map[string]any{}
 	for _, change := range preview.ScalarChanges {
 		differences[change.Field] = map[string]any{"main": change.Before, "version": change.After}
@@ -387,6 +390,9 @@ func (s *ContentVersions) promote(ctx context.Context, p VersionParams, key, dig
 	if preview.CurrentHash != p.MainHash {
 		return nil, versionError("version_main_conflict", "The record changed after comparison.")
 	}
+	if err := requireCompleteVersionRestore(preview); err != nil {
+		return nil, err
+	}
 	if !preview.CanApply || preview.Token == "" {
 		return nil, versionError("version_not_restorable", "Named revision cannot be restored.")
 	}
@@ -404,6 +410,19 @@ func (s *ContentVersions) promote(ctx context.Context, p VersionParams, key, dig
 	})
 	return result, versionPersistence(err)
 }
+
+// Named revisions promise a whole record state. The ordinary History UI can
+// explain skipped fields; this entry point has no partial-restore selection.
+func requireCompleteVersionRestore(preview audit.Preview) error {
+	for _, diagnostic := range preview.Diagnostics {
+		if diagnostic.Severity == "derived" && diagnostic.Code == "field_generated" {
+			continue // Computed/system values are recalculated by the mutation kernel.
+		}
+		return versionError("version_not_restorable", "Named revision cannot be fully restored because a field or related record is unavailable.")
+	}
+	return nil
+}
+
 func versionPersistence(err error) error {
 	if err == nil || err == writecoordinator.ErrBusinessReplay || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err

@@ -124,7 +124,7 @@ func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
 	}
 	field := related.Definition.Identity.PhysicalName
 	rowID := "versionsource01"
-	apply("insert-source", source.TableID, rowID, mutation.OperationInsert, map[string]any{field: ids[:2]})
+	apply("insert-source", source.TableID, rowID, mutation.OperationInsert, map[string]any{field: ids[:2], title.Definition.Identity.PhysicalName: "original"})
 	created, err := owner.Write(ctx, "version.create", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, Key: "before", OperationID: "name-relation"})
 	if err != nil {
 		t.Fatal(err)
@@ -166,4 +166,32 @@ func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
 	if got := record.GetStringSlice(field); !reflect.DeepEqual(got, ids[:2]) {
 		t.Fatalf("restored relation %v differs from displayed %v", got, difference.Version)
 	}
+	t.Run("unavailable target cannot produce an unannounced partial restore", func(t *testing.T) {
+		apply("change-before-unavailable", source.TableID, rowID, mutation.OperationUpdate, map[string]any{field: ids[1:], title.Definition.Identity.PhysicalName: "later"})
+		safeCompare, err := owner.Compare(ctx, metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		safe := safeCompare.(map[string]any)
+		apply("delete-historical-target", targets.TableID, ids[0], mutation.OperationDelete, nil)
+		assertRejected := func(err error) {
+			t.Helper()
+			var named *metadata.VersionError
+			if !errors.As(err, &named) || named.Code != "version_not_restorable" {
+				t.Errorf("incomplete named restore not rejected: %v", err)
+			}
+		}
+		_, err = owner.Compare(ctx, metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID})
+		assertRejected(err)
+		_, err = owner.Write(ctx, "version.promote", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID, ExpectedRevision: safe["versionRevision"].(string), MainHash: safe["mainHash"].(string), OperationID: "reject-partial-restore"})
+		assertRejected(err)
+		unchanged, err := app.FindRecordById(source.PhysicalName, rowID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if unchanged.GetString(title.Definition.Identity.PhysicalName) != "later" || !reflect.DeepEqual(unchanged.GetStringSlice(field), ids[1:]) {
+			t.Fatalf("partial restore changed record: %v", unchanged.PublicExport())
+		}
+	})
+
 }
