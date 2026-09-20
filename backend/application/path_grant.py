@@ -156,6 +156,10 @@ class SessionPathGrantStore:
             )
         return stored.path
 
+    def revoke(self, grant_id: str) -> None:
+        """Retire an export grant even if it expired; cleanup is idempotent."""
+        self._grants.pop(grant_id, None)
+
     def consume(self, grant_id: str) -> None:
         """Mark ``grant_id`` as consumed (single-use for import sources)."""
         stored = self._get(grant_id)

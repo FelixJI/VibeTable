@@ -47,7 +47,7 @@ public sealed record LocalCommandCatalogEntry(
 
 public sealed record CommandsResult(IReadOnlyList<LocalCommandCatalogEntry> Commands);
 
-public sealed record RunCommandParams(string CommandId, IReadOnlyDictionary<string, object?> Params, string? GrantId);
+public sealed record RunCommandParams(string CommandId, IReadOnlyDictionary<string, object?> Params);
 
 public sealed record CommandResult(string CommandId, bool Success, IReadOnlyDictionary<string, object?> Output, string? Error);
 
@@ -57,11 +57,10 @@ public static class ShortcutTargets
 {
     public const string BuiltInCommand = "built-in-command";
     public const string Url = "url";
-    public const string FileAction = "file-action";
 }
 
 public sealed record ShortcutEntry(
-    string ShortcutId, string Target, string? CommandId, string? Url, string Label, string Accelerator);
+    string ShortcutId, string Target, string? CommandId, string? Url, string Label);
 
 public sealed record ShortcutsResult(IReadOnlyList<ShortcutEntry> Shortcuts);
 
@@ -69,6 +68,6 @@ public sealed record SaveShortcutParams(ShortcutEntry Shortcut);
 
 public sealed record DeleteShortcutParams(string ShortcutId);
 
-public sealed record LaunchActionParams(string ShortcutId);
+public sealed record LaunchActionParams(string ShortcutId, IReadOnlyDictionary<string, object?>? Params = null);
 
-public sealed record LaunchActionResult(string ShortcutId, bool Launched, string? BlockedReason);
+public sealed record LaunchActionResult(string ShortcutId, bool Launched, string? BlockedReason, IReadOnlyDictionary<string, object?>? Output = null);

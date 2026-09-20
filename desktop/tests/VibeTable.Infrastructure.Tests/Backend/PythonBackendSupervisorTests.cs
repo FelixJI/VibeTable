@@ -678,6 +678,7 @@ public sealed class PythonBackendSupervisorTests
                     "path.requestExportTarget",
                     "path.requestImportSource",
                     "path.resolveGrant",
+                    "path.revokeExportTarget",
                     "system.handshake",
                     "task.cancel",
                     "task.create",

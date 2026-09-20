@@ -119,6 +119,11 @@ from backend.contracts.schema_v2 import (
 from backend.contracts.settings_commands import (
     CommandResult,
     CommandsResult,
+    DeleteShortcutParams,
+    LaunchActionParams,
+    ListShortcutsParams,
+    RunCommandParams,
+    SaveShortcutParams,
     DeviceSettings,
     LaunchActionResult,
     ListCommandsParams,
@@ -127,7 +132,7 @@ from backend.contracts.settings_commands import (
     ShortcutsResult,
 )
 from backend.contracts.system import HandshakeResult
-from backend.contracts.task import SessionPathGrant, TaskStatus
+from backend.contracts.task import ExportTargetSettled, SessionPathGrant, TaskStatus
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -420,6 +425,12 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "settings.readWorkCalendar": ReadWorkCalendarParams,
             "settings.commitWorkCalendar": CommitWorkCalendarParams,
             "settings.readDevice": ListCommandsParams,
+            "command.list": ListCommandsParams,
+            "command.run": RunCommandParams,
+            "shortcut.list": ListShortcutsParams,
+            "shortcut.save": SaveShortcutParams,
+            "shortcut.delete": DeleteShortcutParams,
+            "shortcut.launch": LaunchActionParams,
             "settings.saveDevice": SaveDeviceSettingsParams,
         }
     )
@@ -677,6 +688,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "path.requestExportTarget": _typed(SessionPathGrant),
         "path.requestImportSource": _typed(SessionPathGrant),
         "path.resolveGrant": _typed(SessionPathGrant),
+        "path.revokeExportTarget": _typed(ExportTargetSettled),
         "plugin.cancelInstall": _typed(bool, "Boolean"),
         "plugin.cancelTask": _typed(PluginTaskSnapshot),
         "plugin.commitInstall": _typed(PluginSnapshot),
@@ -835,7 +847,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "settings.saveDevice": _typed(DeviceSettings),
         "shortcut.delete": _manual(
             "DeleteShortcutResult",
-            {"deleted": "shortcut-1"},
+            {"deleted": "11111111-1111-4111-8111-111111111111"},
         ),
         "shortcut.launch": _typed(LaunchActionResult),
         "shortcut.list": _typed(ShortcutsResult),

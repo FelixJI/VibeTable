@@ -16,7 +16,6 @@ from typing import Any
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
-from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
 from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
@@ -24,7 +23,6 @@ from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
 from backend.application.product_rpc import ProductRpc
-from backend.application.settings_command_service import SettingsCommandService
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
 from backend.contracts.data_io import (
@@ -52,14 +50,6 @@ from backend.contracts.plugin_rpc import (
     UpgradePluginParams,
 )
 from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
-from backend.contracts.settings_commands import (
-    DeleteShortcutParams,
-    LaunchActionParams,
-    ListCommandsParams,
-    ListShortcutsParams,
-    RunCommandParams,
-    SaveShortcutParams,
-)
 from backend.contracts.system import HandshakeParams
 from backend.contracts.task import (
     CreateTaskParams,
@@ -178,27 +168,6 @@ def _configure_pocketbase_data_io(
         GenerateTemplateParams,
     )
     return runtime
-
-
-def _register_settings_methods(
-    dispatcher: RpcDispatcher,
-    service: SettingsCommandService,
-) -> None:
-    register_application_errors(ErrorDomain.SETTINGS_COMMAND)
-    dispatcher.register(
-        "command.list",
-        lambda _params=None: service.list_commands(),
-        ListCommandsParams,
-    )
-    dispatcher.register("command.run", service.run_command, RunCommandParams)
-    dispatcher.register(
-        "shortcut.list",
-        lambda _params=None: service.list_shortcuts(),
-        ListShortcutsParams,
-    )
-    dispatcher.register("shortcut.save", service.save_shortcut, SaveShortcutParams)
-    dispatcher.register("shortcut.delete", service.delete_shortcut, DeleteShortcutParams)
-    dispatcher.register("shortcut.launch", service.launch_action, LaunchActionParams)
 
 
 def _register_plugin_methods(
@@ -342,17 +311,19 @@ async def _build_server() -> tuple[
         HostExportTargetParams,
     )
     dispatcher.register("path.resolveGrant", task_service.resolve_grant, ResolveGrantParams)
+    dispatcher.register(
+        "path.revokeExportTarget", task_service.revoke_export_target, ResolveGrantParams
+    )
 
     product_service, client, _config = _product_runtime()
     plugin_service: PluginPlatformService | None = None
     if product_service is not None and client is not None:
         _register_pocketbase_product_methods(dispatcher, product_service)
-        data_io = _configure_pocketbase_data_io(
+        _configure_pocketbase_data_io(
             dispatcher,
             client=client,
             task_service=task_service,
         )
-        metadata_transport = PocketBaseInternalMetadataPort(client=client)
         state_root = Path(
             os.environ.get(
                 "VIBETABLE_STATE_DIR",
@@ -360,20 +331,6 @@ async def _build_server() -> tuple[
             )
         )
 
-        async def execute_export_command(
-            raw_params: dict[str, Any],
-            grant_id: str,
-        ) -> dict[str, Any]:
-            params = ExportParams.model_validate({**raw_params, "grantId": grant_id})
-            result = await data_io.export(params)
-            return result.model_dump(by_alias=True, mode="json")
-
-        settings = SettingsCommandService(
-            metadata_port=metadata_transport,
-            grant_authority=task_service.grants,
-            command_executors={"export.query": execute_export_command},
-        )
-        _register_settings_methods(dispatcher, settings)
         store = PluginProjectStore(state_root / "plugins.db")
         registry = PluginRegistry(store=store)
         confirmation = HostConfirmationAdapter()

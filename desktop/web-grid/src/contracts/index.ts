@@ -1420,6 +1420,12 @@ export type WebMessageType =
   | "preset.list"
   | "preset.save"
   | "preset.delete"
+  | "command.list"
+  | "command.run"
+  | "shortcut.list"
+  | "shortcut.save"
+  | "shortcut.delete"
+  | "shortcut.launch"
   | "version.list"
   | "version.create"
   | "version.save"
@@ -1566,6 +1572,12 @@ export type HostMessageType =
   | "preset.list"
   | "preset.save"
   | "preset.delete"
+  | "command.list"
+  | "command.run"
+  | "shortcut.list"
+  | "shortcut.save"
+  | "shortcut.delete"
+  | "shortcut.launch"
   | "version.list"
   | "version.create"
   | "version.save"
@@ -1889,6 +1901,12 @@ export interface HostPayloadMap {
   "preset.list": PresetsResult;
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
+  "command.list": { readonly commands: readonly HostCommandEntry[] };
+  "command.run": { readonly commandId: string; readonly success: boolean; readonly output: ExportResult; readonly error: string | null };
+  "shortcut.list": { readonly shortcuts: readonly HostShortcut[] };
+  "shortcut.save": HostShortcut;
+  "shortcut.delete": { readonly deleted: string };
+  "shortcut.launch": { readonly shortcutId: string; readonly launched: boolean; readonly blockedReason: string | null; readonly output: ExportResult | null };
   "version.list": VersionsResult;
   "version.create": ContentVersionEntry;
   "version.save": VersionSaveResult;
@@ -2026,6 +2044,12 @@ export interface WebPayloadMap {
     readonly expectedRevision: string;
     readonly operationId: string;
   };
+  "command.list": Record<string, never>;
+  "command.run": { readonly commandId: "export.query"; readonly params: HostExportParameters };
+  "shortcut.list": Record<string, never>;
+  "shortcut.save": { readonly shortcut: HostShortcut };
+  "shortcut.delete": { readonly shortcutId: string };
+  "shortcut.launch": { readonly shortcutId: string; readonly params?: HostExportParameters };
   "version.list": { readonly collection: string; readonly itemId: string };
   "version.create": {
     readonly collection: string;
@@ -2493,3 +2517,14 @@ export interface DocumentWorkspaceChangedPayload {
 export * from "./schemaV2";
 export * from "./fileDocumentQuery";
 export * from "./documentDiffV2";
+
+/** Device-local definitions; grants and execution query are deliberately separate. */
+export interface HostShortcut {
+  readonly shortcutId: string;
+  readonly target: "built-in-command" | "url";
+  readonly label: string;
+  readonly commandId: string | null;
+  readonly url: string | null;
+}
+export interface HostCommandEntry { readonly commandId: string; readonly description: string }
+export interface HostExportParameters { readonly collection: string; readonly query: TableQuery; readonly format: ExportFormat }

@@ -23,7 +23,7 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 	if !HasCurrentOwnerRPCMethod(GoSidecar, "schema.getTable") {
 		t.Fatal("L3A must route schema.getTable through goSidecar")
 	}
-	for _, method := range []string{"gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"} {
+	for _, method := range []string{"command.list", "command.run", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after L6", method)
 		}
@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 110 {
-		t.Fatalf("RPCDescriptors length = %d, want 110", len(descriptors))
+	if len(descriptors) != 111 {
+		t.Fatalf("RPCDescriptors length = %d, want 111", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -166,10 +166,15 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		got[42] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	if got := CurrentOwnerRPCDescriptors(WpfHost); len(got) != 4 ||
-		got[0].Method != "gridState.get" || got[1].Method != "gridState.save" ||
-		got[2].Method != "settings.readDevice" || got[3].Method != "settings.saveDevice" {
-		t.Fatalf("wpfHost descriptors = %#v, want gridState.get, gridState.save, settings.readDevice and settings.saveDevice", got)
+	hostMethods := []string{"command.list", "command.run", "gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save"}
+	hostDescriptors := CurrentOwnerRPCDescriptors(WpfHost)
+	if len(hostDescriptors) != len(hostMethods) {
+		t.Fatalf("wpfHost count = %d", len(hostDescriptors))
+	}
+	for index, method := range hostMethods {
+		if hostDescriptors[index].Method != method {
+			t.Fatalf("wpfHost descriptor = %#v, want %s", hostDescriptors[index], method)
+		}
 	}
 
 	descriptors[0].Method = "mutated"

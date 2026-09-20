@@ -146,7 +146,7 @@ describe("ShortcutsView", () => {
 
     const text = bodyText();
     // Title + first shortcut's English description render.
-    expect(text).toContain("Keyboard shortcuts");
+    expect(text).toContain("Commands, saved actions and keyboard shortcuts");
     expect(text).toContain(SHORTCUTS[0].descriptionEn);
     // The Chinese description must NOT be shown in en-US.
     expect(text).not.toContain(SHORTCUTS[0].descriptionZh);

@@ -27,7 +27,6 @@ CODE_PATH_GRANT = -32050
 CODE_IMPORT = -32060
 CODE_EXPORT = -32061
 CODE_INSIGHTS = -32080
-CODE_SETTINGS_COMMAND = -32100
 CODE_PLUGIN = -32120
 CODE_PRODUCT_DATA = -32150
 
@@ -40,7 +39,6 @@ class ErrorDomain(StrEnum):
     IMPORT = "import"
     EXPORT = "export"
     INSIGHTS = "insights"
-    SETTINGS_COMMAND = "settings_command"
     PLUGIN = "plugin"
 
 
@@ -185,19 +183,6 @@ def _domain_specs(domain: ErrorDomain) -> tuple[tuple[type[Exception], _ErrorSpe
         from backend.application.insights_service import InsightsError
 
         return ((InsightsError, _ErrorSpec(CODE_INSIGHTS, "Insights error", "insights_error")),)
-    if domain is ErrorDomain.SETTINGS_COMMAND:
-        from backend.application.settings_command_service import SettingsCommandError
-
-        return (
-            (
-                SettingsCommandError,
-                _ErrorSpec(
-                    CODE_SETTINGS_COMMAND,
-                    "Settings/command error",
-                    "settings_command_error",
-                ),
-            ),
-        )
     if domain is ErrorDomain.PLUGIN:
         from backend.application.plugin_registry import PluginRegistryError
         from backend.infrastructure.plugin_package import PluginPackageError

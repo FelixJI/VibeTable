@@ -104,6 +104,45 @@ internal sealed class HostProductRpcInvoker : IDisposable
         }
     }
 
+    internal async Task<JsonElement> ExecuteExportAsync(JsonElement parameters, CancellationToken token)
+    {
+        using WorkspaceRequestEpochLease lease = CaptureLease();
+        string grantId = parameters.GetProperty("grantId").GetString()
+            ?? throw new JsonException("Export grant is required.");
+        try
+        {
+            JsonElement status = await InvokeAsync("task.create", JsonSerializer.SerializeToElement(
+                new { kind = "data.export", @params = parameters }), token).ConfigureAwait(false);
+            string taskId = status.GetProperty("taskId").GetString()
+                ?? throw new JsonException("Export task ID is missing.");
+            while (true)
+            {
+                EnsureCurrent(lease, token);
+                string? state = status.GetProperty("state").GetString();
+                if (state == "succeeded") return status.GetProperty("result").Clone();
+                if (state == "failed") throw new InvalidOperationException("Export failed.");
+                if (state == "cancelled") throw new OperationCanceledException("Export cancelled.");
+                if (state is not ("queued" or "running")) throw new JsonException("Invalid export state.");
+                await Task.Delay(100, token).ConfigureAwait(false);
+                status = await InvokeAsync("task.status", JsonSerializer.SerializeToElement(new { taskId }), token)
+                    .ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            // The known grant also identifies tasks whose create reply was lost.
+            // Only this captured client's export grant can be retired after epoch cancellation.
+            // Keep our lease until the server has closed its writers; never use a new binding.
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            JsonElement settled = await _client.InvokeAsync<JsonElement, JsonElement>(
+                "path.revokeExportTarget", JsonSerializer.SerializeToElement(new { grantId }), cleanup.Token)
+                .ConfigureAwait(false);
+            if (settled.GetProperty("grantId").GetString() != grantId
+                || !settled.GetProperty("settled").GetBoolean())
+                throw new InvalidOperationException("Export cleanup was not confirmed.");
+        }
+    }
+
     private void EnsureCurrent(WorkspaceRequestEpochLease lease, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();

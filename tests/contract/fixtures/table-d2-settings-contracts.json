@@ -72,15 +72,14 @@
   },
   "shortcuts": {
     "entry": {
-      "shortcutId": "s1",
+      "shortcutId": "11111111-1111-4111-8111-111111111111",
       "target": "url",
       "commandId": null,
       "url": "https://example.com",
-      "label": "Example",
-      "accelerator": "Ctrl+Shift+E"
+      "label": "Example"
     },
     "launchResult": {
-      "shortcutId": "s1",
+      "shortcutId": "11111111-1111-4111-8111-111111111111",
       "launched": true,
       "blockedReason": null
     },

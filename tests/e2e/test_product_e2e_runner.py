@@ -4063,6 +4063,7 @@ def test_host_presentation_resume_failure_propagates_and_keeps_phase_evidence(
                 "fields": {"title": "Title", "status": "Status"},
                 "state": {"keyword": "preserved"},
                 "revision": "revision-1",
+                "commands": {"exportId": "export-id", "urlId": "url-id"},
             }
         return {"status": "failed", "lifecycle": {"status": "passed"}}
 
@@ -4138,6 +4139,7 @@ def test_host_presentation_invalid_workspace_does_not_launch_resume(
             "fields": {},
             "state": {},
             "revision": "revision-1",
+            "commands": {"exportId": "export-id", "urlId": "url-id"},
         }
 
     monkeypatch.setattr(runner, "run_scenario", seed)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import HostCommandsPanel from "@/components/commands/HostCommandsPanel.vue";
 import { NModal, NTag, NH3, NDivider } from "naive-ui";
 import {
   SHORTCUTS,
@@ -45,8 +46,11 @@ function categoryLabel(c: ShortcutCategory): string {
     @update:show="(v: boolean) => !v && ui.closeShortcuts()"
     preset="card"
     :title="t('shortcuts.title')"
-    style="max-width: 640px;"
+    style="max-width: 680px;"
+    data-testid="shortcuts-dialog"
   >
+    <HostCommandsPanel v-if="ui.shortcutsOpen" />
+    <NDivider />
     <div v-for="[cat, items] of grouped" :key="cat" class="shortcut-group">
       <NH3>{{ categoryLabel(cat) }}</NH3>
       <div v-for="sc in items" :key="sc.id" class="shortcut-row">

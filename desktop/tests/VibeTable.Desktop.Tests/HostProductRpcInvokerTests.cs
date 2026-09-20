@@ -1,3 +1,4 @@
+using System.Threading.Channels;
 using System.Net;
 using System.Text.Json;
 using VibeTable.Contracts;
@@ -757,6 +758,68 @@ public sealed class HostProductRpcInvokerTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ExportLostCreateReplyStillSettlesCapturedGrantBeforeEpochDrain(bool timeout)
+    {
+        var transport = new CommandTransport();
+        await using var fixture = await HostFixture.OpenAsync(transport: transport);
+        using var cancellation = new CancellationTokenSource();
+        using var gateway = fixture.Gateway(useGeneratedPolicy: true);
+        Task<JsonElement> export = ((IHostCommandExportGateway)gateway).ExecuteExportAsync(
+            Json("""{"collection":"orders","query":{},"format":"csv","grantId":"known-grant"}"""), cancellation.Token);
+        Task? closing = null;
+        try
+        {
+            await transport.Created.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            if (timeout) cancellation.Cancel();
+            else closing = fixture.CloseAsync();
+            await transport.CleanupEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            fixture.Current = false;
+            Assert.IsFalse(export.IsCompleted, "The command still owns cleanup despite a missing taskId.");
+            if (closing is not null) Assert.IsFalse(closing.IsCompleted, "Epoch drain cannot pass the export writer.");
+            transport.ReleaseCleanup.TrySetResult();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => export.WaitAsync(TimeSpan.FromSeconds(2)));
+            if (closing is not null) await closing.WaitAsync(TimeSpan.FromSeconds(2));
+            CollectionAssert.AreEqual(new[] { "task.create", "path.revokeExportTarget" }, transport.Methods);
+            Assert.AreEqual("known-grant", transport.CleanupGrant);
+        }
+        finally
+        {
+            transport.ReleaseCleanup.TrySetResult();
+            cancellation.Cancel();
+            try { await export.WaitAsync(TimeSpan.FromSeconds(2)); } catch (OperationCanceledException) { }
+            if (closing is not null) await closing.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private sealed class CommandTransport : IJsonLineTransport
+    {
+        private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
+        internal TaskCompletionSource Created { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource CleanupEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource ReleaseCleanup { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal List<string> Methods { get; } = [];
+        internal string? CleanupGrant { get; private set; }
+        public Task<JsonElement?> ReadAsync(CancellationToken token) => _incoming.Reader.ReadAsync(token).AsTask();
+        public async Task WriteAsync(string line, CancellationToken token)
+        {
+            JsonElement request = Json(line);
+            string method = request.GetProperty("method").GetString()!;
+            Methods.Add(method);
+            if (method == "task.create") { Created.TrySetResult(); return; } // Server admission succeeded; its reply is lost.
+            Assert.AreEqual("path.revokeExportTarget", method);
+            CleanupGrant = request.GetProperty("params").GetProperty("grantId").GetString();
+            CleanupEntered.TrySetResult();
+            await ReleaseCleanup.Task.WaitAsync(token);
+            _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new {
+                jsonrpc = "2.0", id = request.GetProperty("id"), result = new { grantId = CleanupGrant, settled = true },
+            }));
+        }
+        public ValueTask DisposeAsync() { _incoming.Writer.TryComplete(); return ValueTask.CompletedTask; }
+    }
+
     private sealed class HostFixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(),
@@ -766,13 +829,13 @@ public sealed class HostProductRpcInvokerTests
         private readonly JsonRpcClient _client;
         private ProductSidecarGenerationSnapshot _snapshot = null!;
 
-        private HostFixture(Func<string, JsonElement>? response)
+        private HostFixture(Func<string, JsonElement>? response, IJsonLineTransport? transport)
         {
             _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), new RuntimeFactory());
             _leases = new WorkspaceSessionEnvelopeFilter(_sessions);
             _sessions.SetRequestDrainHook(_leases);
             Python = new CountingQueryTransport(response);
-            _client = new JsonRpcClient(Python);
+            _client = new JsonRpcClient(transport ?? Python);
         }
 
         internal CountingQueryTransport Python { get; }
@@ -781,9 +844,9 @@ public sealed class HostProductRpcInvokerTests
         internal bool Current { get; set; } = true;
         internal Task CloseAsync() => _sessions.CloseAsync("host-rpc-test");
 
-        internal static async Task<HostFixture> OpenAsync(Func<string, JsonElement>? response = null)
+        internal static async Task<HostFixture> OpenAsync(Func<string, JsonElement>? response = null, IJsonLineTransport? transport = null)
         {
-            var fixture = new HostFixture(response);
+            var fixture = new HostFixture(response, transport);
             WorkspaceLayoutResult layout = WorkspaceLayout.Create(Path.Combine(fixture._root, "workspace"),
                 "Host RPC", WorkspaceStorageMode.Direct, WorkspaceEncryptionMode.Convenient);
             var registry = new WorkspaceRegistry(fixture._root);

@@ -10,7 +10,7 @@ using VibeTable.Infrastructure.Rpc;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>JSON-RPC adapter for the closed provider-neutral product surface.</summary>
-public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurfaceRpcGateway
+public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurfaceRpcGateway, IHostCommandExportGateway
 {
     private static readonly JsonSerializerOptions RequestOptions = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions JsonOptions =
@@ -38,6 +38,10 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     }
 
     public event Action<JsonElement>? TaskChanged;
+
+    Task<JsonElement> IHostCommandExportGateway.ExecuteExportAsync(JsonElement parameters, CancellationToken token)
+        => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
+            .ExecuteExportAsync(parameters, token);
 
     Task<InterfaceListResult> ISurfaceRpcGateway.ListAsync(CancellationToken token)
         => InvokeStrict<InterfaceListRequest, InterfaceListResult>("interface.list", new(), token);

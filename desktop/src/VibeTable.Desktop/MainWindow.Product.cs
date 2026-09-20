@@ -441,6 +441,12 @@ public partial class MainWindow : Window
                 _webBridge,
                 _workspaceSessionFilter,
                 new HostGridStateStore(Path.Combine(_productDataRoot, "grid-presentation"))),
+            new HostCommandRequestController(
+                _webBridge, _workspaceSessionFilter,
+                new HostShortcutStore(Path.Combine(_productDataRoot, "commands")),
+                new WindowsHostCommandActions(this, () => _productGateway as IHostCommandExportGateway,
+                    new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
+                    _e2eControlsDir), message => _readiness?.Trace(message)),
             TraceHostRequest);
 
         _runtime.ClientReady += OnRuntimeClientReady;

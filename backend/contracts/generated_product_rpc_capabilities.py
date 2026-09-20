@@ -7,8 +7,6 @@ CurrentOwner = Literal["pythonBff", "goSidecar", "wpfHost", "pythonWorker"]
 
 PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     "pythonBff": (
-        "command.list",
-        "command.run",
         "data.applyImport",
         "data.export",
         "data.generateTemplate",
@@ -21,6 +19,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "path.requestExportTarget",
         "path.requestImportSource",
         "path.resolveGrant",
+        "path.revokeExportTarget",
         "plugin.cancelInstall",
         "plugin.cancelTask",
         "plugin.commitInstall",
@@ -37,10 +36,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "plugin.startAction",
         "plugin.uninstall",
         "plugin.upgrade",
-        "shortcut.delete",
-        "shortcut.launch",
-        "shortcut.list",
-        "shortcut.save",
         "system.handshake",
         "table.applyPaste",
         "table.previewPaste",
@@ -117,10 +112,16 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "version.save",
     ),
     "wpfHost": (
+        "command.list",
+        "command.run",
         "gridState.get",
         "gridState.save",
         "settings.readDevice",
         "settings.saveDevice",
+        "shortcut.delete",
+        "shortcut.launch",
+        "shortcut.list",
+        "shortcut.save",
     ),
     "pythonWorker": (),
 }
