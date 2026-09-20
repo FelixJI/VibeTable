@@ -6,6 +6,8 @@ import {
   beginSidecarRecoveryNotificationFailureWindowInPage,
   isExpectedSidecarRecoveryFailure,
   pythonRecoveryReadinessMethod,
+  pythonRecoveryReadinessRpcMethod,
+  pythonRecoveryReadinessParamsInPage,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -874,7 +876,7 @@ test("close reuses a failed release attempt instead of retrying it", async () =>
 test("Go readiness cannot complete an owned Python binding probe", async () => {
   const { readFile } = await import("node:fs/promises");
   const manifest = JSON.parse(await readFile(new URL("../../contracts/v2/product-rpc-capability-manifest.json", import.meta.url), "utf8"));
-  const descriptor = manifest.rpcMethods.find(item => item.method === pythonRecoveryReadinessMethod);
+  const descriptor = manifest.rpcMethods.find(item => item.method === pythonRecoveryReadinessRpcMethod);
   assert.equal(descriptor?.owner, "pythonBff", "replace the readiness probe if this route migrates");
   assert.equal(descriptor.effect, "read");
   assert.equal(descriptor.scope, "workspace");
@@ -917,18 +919,34 @@ test("active-table recovery sends a valid retained Python read after Go readines
   const calls = [];
   const recoveredPage = { rows: [{ id: "row-a" }], snapshot: { schemaRevision: "schema-a" } };
   const run = new Function(
-    "rawBridgeRequest", "pythonRecoveryReadinessMethod",
+    "rawBridgeRequest", "pythonRecoveryReadinessMethod", "pythonRecoveryReadinessParamsInPage",
     "acknowledgeExpectedSidecarRecoveryFailure", "acknowledgeExpectedBridgeFailure",
     `${scenarios.slice(start, end)}\nreturn waitForActiveTableBackend;`,
   )(async (_page, method, params) => {
     calls.push({ method, params });
     if (method === "query.page") return { type: method, payload: recoveredPage };
-    // The retained Version list reads metadata through Python's current PB
-    // binding without requiring an attachment or changing business state.
-    assert.equal(method, "version.list");
-    assert.deepEqual(params, { collection: "orders", itemId: "__recovery_probe__" });
-    return { type: method, payload: { ...params, versions: [] } };
-  }, pythonRecoveryReadinessMethod, async () => assert.fail("unexpected failure"), async () => {});
-  assert.equal(await run({ waitForTimeout: async () => assert.fail("unexpected retry") }, "orders", 1), recoveredPage);
-  assert.deepEqual(calls.map(call => call.method), ["query.page", "version.list"]);
+    // The retained plugin catalog proves the current workspace Python binding
+    // is callable without requiring an installed plugin or a mutation.
+    assert.equal(method, "plugin.catalog.list");
+    assert.deepEqual(params, { projectKey: "local:11111111111141118111111111111111" });
+    return { type: method, payload: [] };
+  }, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParamsInPage, async () => assert.fail("unexpected failure"), async () => {});
+  assert.equal(await run({ evaluate: async () => ({ projectKey: "local:11111111111141118111111111111111" }), waitForTimeout: async () => assert.fail("unexpected retry") }, "orders", 1), recoveredPage);
+  assert.deepEqual(calls.map(call => call.method), ["query.page", "plugin.catalog.list"]);
+});
+
+
+test("plugin readiness failures are accepted only for the owned plugin read", async () => {
+  for (const method of ["query.page", pythonRecoveryReadinessMethod]) {
+    const failure = { type: "operation.failed", requestId: "probe", payload: { code: "PLUGIN_NOT_READY" } };
+    assert.equal(isExpectedSidecarRecoveryFailure(failure, method), method === pythonRecoveryReadinessMethod);
+    const window = new SidecarRecoveryReadWindow({ deadlineAt: 10_000, now: () => 0,
+      observeTerminal: async () => failure, releaseRequest: async () => {}, acknowledge: async () => {} });
+    window.own("probe", method);
+    if (method === pythonRecoveryReadinessMethod) {
+      assert.equal(await window.observe("probe"), failure);
+      await window.settle();
+    } else await assert.rejects(window.observe("probe"), SidecarRecoveryContractError);
+    await window.close();
+  }
 });

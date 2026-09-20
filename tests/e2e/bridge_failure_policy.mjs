@@ -1,6 +1,7 @@
-export function isExpectedSidecarRecoveryFailure(response) {
+export function isExpectedSidecarRecoveryFailure(response, requestType = "query.page") {
   return response?.type === "operation.failed"
-    && response.payload?.code === "BACKEND_UNAVAILABLE"
+    && (response.payload?.code === "BACKEND_UNAVAILABLE"
+      || (requestType === pythonRecoveryReadinessMethod && response.payload?.code === "PLUGIN_NOT_READY"))
     && typeof response.requestId === "string"
     && response.requestId.length > 0;
 }
@@ -8,8 +9,9 @@ export function isExpectedSidecarRecoveryFailure(response) {
 export async function acknowledgeExpectedSidecarRecoveryFailure(
   response,
   acknowledge,
+  requestType = "query.page",
 ) {
-  if (!isExpectedSidecarRecoveryFailure(response)) return false;
+  if (!isExpectedSidecarRecoveryFailure(response, requestType)) return false;
   await acknowledge(response);
   return true;
 }
@@ -111,7 +113,15 @@ export function releaseSidecarRecoveryNotificationFailureWindowInPage({ ownerTok
 }
 
 const recoveryObservationMs = 5_000;
-export const pythonRecoveryReadinessMethod = "version.list";
+export const pythonRecoveryReadinessMethod = "plugin.catalog.list";
+export const pythonRecoveryReadinessRpcMethod = "plugin.listCatalog";
+export function pythonRecoveryReadinessParamsInPage() {
+  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
+  if (typeof session?.workspaceId !== "string" || !session.workspaceId) {
+    throw new Error("Python recovery probe requires the current workspace session");
+  }
+  return { projectKey: `local:${session.workspaceId.replaceAll("-", "")}` };
+}
 const recoveryRequestTypes = new Set(["query.page", "field.recycleBin.list", pythonRecoveryReadinessMethod]);
 
 export class SidecarRecoveryContractError extends Error {
@@ -350,7 +360,7 @@ export class SidecarRecoveryReadWindow {
       );
     }
     const succeeded = terminal.type === owned.requestType;
-    const expectedFailure = isExpectedSidecarRecoveryFailure(terminal);
+    const expectedFailure = isExpectedSidecarRecoveryFailure(terminal, owned.requestType);
     if (!succeeded && !expectedFailure) {
       throw new SidecarRecoveryContractError(
         `unexpected recovery terminal: ${owned.requestId}`,

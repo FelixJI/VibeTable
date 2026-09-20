@@ -9,6 +9,7 @@ import {
   acknowledgeExpectedSidecarRecoveryFailure,
   beginSidecarRecoveryNotificationFailureWindowInPage,
   pythonRecoveryReadinessMethod,
+  pythonRecoveryReadinessParamsInPage,
   releaseSidecarRecoveryNotificationFailureWindowInPage,
   settleSidecarRecoveryNotificationFailureWindowInPage,
   SidecarRecoveryContractError,
@@ -4346,7 +4347,7 @@ async function waitForTableRecovery(
             // Read an empty metadata scope through the retained Python Version
             // list, under the same absolute deadline and request ownership.
             const pythonRequestId = await beginRawBridgeRequest(
-              page, pythonRecoveryReadinessMethod, { collection: tableId, itemId: "__recovery_probe__" },
+              page, pythonRecoveryReadinessMethod, await page.evaluate(pythonRecoveryReadinessParamsInPage),
             );
             recoveryReads.own(pythonRequestId, pythonRecoveryReadinessMethod);
             const pythonReady = await recoveryReads.observe(pythonRequestId);
@@ -4490,7 +4491,7 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) break;
       lastResponse = await rawBridgeRequest(
-        page, pythonRecoveryReadinessMethod, { collection: tableId, itemId: "__recovery_probe__" }, Math.min(20_000, remainingMs),
+        page, pythonRecoveryReadinessMethod, await page.evaluate(pythonRecoveryReadinessParamsInPage), Math.min(20_000, remainingMs),
       );
       if (Date.now() >= deadline) break;
       if (lastResponse.type === pythonRecoveryReadinessMethod) {
