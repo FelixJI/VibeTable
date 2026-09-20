@@ -421,10 +421,17 @@ func (service *Service) PreviewRestore(
 	}, nil
 }
 
-func (service *Service) ApplyRestore(
-	ctx context.Context,
-	params ApplyParams,
-) (RestoreResult, error) {
+func (service *Service) ApplyRestore(ctx context.Context, params ApplyParams) (RestoreResult, error) {
+	return service.applyRestore(ctx, params, nil)
+}
+
+// ApplyRestoreWithCommit shares the History token owner and CAS while persisting
+// a caller's complete restore projection before the authoritative commit.
+func (service *Service) ApplyRestoreWithCommit(ctx context.Context, params ApplyParams, commit func(core.App, RestoreResult) error) (RestoreResult, error) {
+	return service.applyRestore(ctx, params, commit)
+}
+
+func (service *Service) applyRestore(ctx context.Context, params ApplyParams, commit func(core.App, RestoreResult) error) (RestoreResult, error) {
 	if params.TableID == "" || params.ItemID == "" || params.Token == "" ||
 		len(params.TableID) > maxHistoryIdentifierSize ||
 		len(params.ItemID) > maxHistoryIdentifierSize ||
@@ -511,7 +518,39 @@ func (service *Service) ApplyRestore(
 		operations = appendAttachmentOperations(operations, state.recordID, attachmentChanges)
 		expectedDigest = &state.currentDigest
 	}
-	receipt, err := service.kernel.Apply(ctx, mutation.Request{
+	var committedResult RestoreResult
+	callbackRan := false
+	apply := service.kernel.Apply
+	if commit != nil {
+		kernel, ok := service.kernel.(interface {
+			ApplyWithCommit(context.Context, mutation.Request, func(core.App, mutation.Receipt) error) (mutation.Receipt, error)
+		})
+		if !ok {
+			return RestoreResult{}, historyError("history.atomic_restore_unavailable", "atomic restore is unavailable", false)
+		}
+		apply = func(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+			return kernel.ApplyWithCommit(ctx, request, func(tx core.App, receipt mutation.Receipt) error {
+				revision, err := restoreRevisionIDFrom(tx, receipt, state.recordID)
+				if err != nil {
+					return err
+				}
+				item, exists, err := readCurrentFrom(tx, definition, state.recordID)
+				if err != nil {
+					return err
+				}
+				if !exists {
+					return historyError("history.storage_failed", "restored record is unavailable", true)
+				}
+				committedResult = RestoreResult{Collection: state.tableID, ItemID: state.recordID, RestoredToRevision: state.targetRevision, NewRevisionID: revision, Item: item, Receipt: receipt}
+				if err := commit(tx, committedResult); err != nil {
+					return err
+				}
+				callbackRan = true
+				return nil
+			})
+		}
+	}
+	receipt, err := apply(ctx, mutation.Request{
 		ContractVersion: mutation.ContractVersion,
 		RequestID:       "restore_" + requestIdentity,
 		IdempotencyKey:  "restore_" + requestIdentity,
@@ -523,6 +562,12 @@ func (service *Service) ApplyRestore(
 	})
 	if err != nil {
 		return RestoreResult{}, service.restoreMutationError(params.Token, state, err)
+	}
+	if commit != nil {
+		if !callbackRan {
+			return RestoreResult{}, historyError("history.restore_receipt_inconsistent", "original restore result receipt is unavailable", false)
+		}
+		return committedResult, nil
 	}
 	newRevisionID, err := service.restoreRevisionID(receipt, state.recordID)
 	if err != nil {
@@ -596,14 +641,14 @@ func restoreMutationDetails(productErr *mutation.ProductError) map[string]any {
 	return details
 }
 
-func (service *Service) restoreRevisionID(
-	receipt mutation.Receipt,
-	recordID string,
-) (*string, error) {
+func (service *Service) restoreRevisionID(receipt mutation.Receipt, recordID string) (*string, error) {
+	return restoreRevisionIDFrom(service.app, receipt, recordID)
+}
+func restoreRevisionIDFrom(app core.App, receipt mutation.Receipt, recordID string) (*string, error) {
 	if receipt.ChangeSetID == nil {
 		return nil, historyError("revision_not_created", "restore did not create a revision", true)
 	}
-	records, err := service.app.FindRecordsByFilter(
+	records, err := app.FindRecordsByFilter(
 		"vibetable_audit_events",
 		"change_set_id={:changeSet} && record_id={:record}",
 		"-sequence",
@@ -817,22 +862,22 @@ func (service *Service) readCurrentByTableID(
 	return service.readCurrent(definition, recordID)
 }
 
-func (service *Service) readCurrent(
-	definition schemaexecution.Table,
-	recordID string,
-) (map[string]any, bool, error) {
-	meta, err := service.app.FindFirstRecordByFilter(
+func (service *Service) readCurrent(definition schemaexecution.Table, recordID string) (map[string]any, bool, error) {
+	return readCurrentFrom(service.app, definition, recordID)
+}
+func readCurrentFrom(app core.App, definition schemaexecution.Table, recordID string) (map[string]any, bool, error) {
+	meta, err := app.FindFirstRecordByFilter(
 		"vibetable_tables", "table_id={:table}",
 		dbx.Params{"table": definition.Snapshot.TableID},
 	)
 	if err != nil {
 		return nil, false, historyError("history.storage_failed", "table metadata could not be read", true)
 	}
-	collection, err := service.app.FindCollectionByNameOrId(meta.GetString("collection_id"))
+	collection, err := app.FindCollectionByNameOrId(meta.GetString("collection_id"))
 	if err != nil {
 		return nil, false, historyError("history.storage_failed", "table storage could not be read", true)
 	}
-	record, err := service.app.FindRecordById(collection, recordID)
+	record, err := app.FindRecordById(collection, recordID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return map[string]any{}, false, nil

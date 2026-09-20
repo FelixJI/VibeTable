@@ -19,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
+	contentmetadata "github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
@@ -362,6 +363,12 @@ func historyRestoreProductFixture(
 			unrelatedPresetRegistration(t, "preset.list"),
 			unrelatedPresetRegistration(t, "preset.save"),
 			unrelatedPresetRegistration(t, "preset.delete"),
+			contentVersionRegistration("version.list", contentmetadata.NewContentVersions(pb, runtime, history), runtime.CoordinateBusinessWrite),
+			contentVersionRegistration("version.create", contentmetadata.NewContentVersions(pb, runtime, history), runtime.CoordinateBusinessWrite),
+			contentVersionRegistration("version.save", contentmetadata.NewContentVersions(pb, runtime, history), runtime.CoordinateBusinessWrite),
+			contentVersionRegistration("version.compare", contentmetadata.NewContentVersions(pb, runtime, history), runtime.CoordinateBusinessWrite),
+			contentVersionRegistration("version.promote", contentmetadata.NewContentVersions(pb, runtime, history), runtime.CoordinateBusinessWrite),
+			contentVersionRegistration("version.delete", contentmetadata.NewContentVersions(pb, runtime, history), runtime.CoordinateBusinessWrite),
 			mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			productrpc.ReconcileRegistration(schemaapi.New(pb)),

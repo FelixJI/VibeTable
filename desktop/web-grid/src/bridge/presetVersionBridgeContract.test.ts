@@ -30,14 +30,14 @@ describe("preset/version bridge whitelist", () => {
     });
     bridge.notify("version.save", {
       collection: "orders", itemId: "row-1", versionId: "v1",
-      values: {}, operationId: "op-4",
+      values: {}, expectedRevision: "rev-v1", operationId: "op-4",
     });
     bridge.notify("version.compare", {
       collection: "orders", itemId: "row-1", versionId: "v1",
     });
     bridge.notify("version.promote", {
       collection: "orders", itemId: "row-1", versionId: "v1",
-      mainHash: "hash-1", operationId: "op-5",
+      mainHash: "hash-1", expectedRevision: "rev-v1", operationId: "op-5",
     });
     bridge.notify("version.delete", {
       collection: "orders", itemId: "row-1", versionId: "v1",

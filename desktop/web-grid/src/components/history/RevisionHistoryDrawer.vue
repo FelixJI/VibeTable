@@ -36,12 +36,18 @@ import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useUiStore } from "@/stores/uiStore";
 import { t } from "@/i18n";
+import NamedRevisionsPanel from "./NamedRevisionsPanel.vue";
+import type { NamedRevisionAction, NamedRevisionState } from "@/composables/useNamedRevisions";
 
 const props = withDefaults(defineProps<{
+  namedRevisions?: NamedRevisionState;
   fieldOptions?: readonly { label: string; value: string }[];
 }>(), { fieldOptions: () => [] });
 
 const emit = defineEmits<{
+  namedAction: [action: NamedRevisionAction];
+  namedSelect: [id: string];
+  namedName: [name: string];
   close: [];
   reload: [];
   loadMore: [];
@@ -270,6 +276,7 @@ function closeDrawer(): void {
         </div>
       </template>
 
+      <NamedRevisionsPanel v-if="store.scope === 'row' && namedRevisions" :state="namedRevisions" :field-options="fieldOptions" @action="emit('namedAction', $event)" @select="emit('namedSelect', $event)" @name="emit('namedName', $event)" />
       <div class="audit-tools">
         <NInput
           v-model:value="searchDraft"

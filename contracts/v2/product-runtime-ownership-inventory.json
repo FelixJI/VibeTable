@@ -571,11 +571,10 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -590,28 +589,18 @@
       },
       "stateHolders": [
         "goSidecar",
-        "pocketBase",
-        "pythonBff"
+        "pocketBase"
       ],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": [
-        "16-dashboard-lifecycle",
-        "19-gallery-lifecycle",
-        "20-kanban-lane-drag",
-        "21-calendar-date-move",
-        "22-timeline-date-move"
-      ],
+      "productScenarios": ["07-attachment-history"],
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "The Go Product Adapter owns shared metadata, query projection, and history reads; Python dashboard and version orchestration has no production route.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/adapters/pocketbase/internal_metadata.py",
-        "backend/application/insights_service.py",
-        "backend/application/settings_command_service.py",
-        "sidecar/internal/app/metadata_routes.go",
+        "sidecar/internal/app/content_version_product_rpc.go",
+        "contracts/v2/content-version-python-oracle.json",
         "tests/e2e/pocketbase_product_scenarios.json"
       ]
     },
@@ -626,11 +615,10 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -647,27 +635,18 @@
       },
       "stateHolders": [
         "goSidecar",
-        "pocketBase",
-        "pythonBff"
+        "pocketBase"
       ],
       "stateLifetime": "workspace",
-      "cancellation": "clientPendingOnly",
+      "cancellation": "cooperative",
       "timeout": "perHopBounded",
-      "productScenarios": [
-        "16-dashboard-lifecycle",
-        "19-gallery-lifecycle",
-        "20-kanban-lane-drag",
-        "21-calendar-date-move",
-        "22-timeline-date-move"
-      ],
+      "productScenarios": ["07-attachment-history"],
       "targetSlice": "L5",
       "targetPr": null,
       "deleteWhen": "Go owns the complete shared-metadata capability including CAS, revision, idempotency, and history restore, and the Python write routes are deleted.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/adapters/pocketbase/internal_metadata.py",
-        "backend/application/insights_service.py",
-        "sidecar/internal/app/metadata_routes.go",
+        "sidecar/internal/app/content_version_product_rpc.go",
+        "contracts/v2/content-version-python-oracle.json",
         "tests/e2e/pocketbase_product_scenarios.json"
       ]
     },

@@ -25963,6 +25963,11 @@
           "outdated": {
             "type": "boolean"
           },
+          "versionRevision": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
           "mainHash": {
             "default": "",
             "maxLength": 128,
@@ -25980,7 +25985,8 @@
           "collection",
           "itemId",
           "versionId",
-          "outdated"
+          "outdated",
+          "versionRevision"
         ],
         "type": "object"
       },
@@ -26003,6 +26009,7 @@
           "itemId": "00000000-0000-4000-8000-000000000001",
           "versionId": "00000000-0000-4000-8000-000000000001",
           "outdated": false,
+          "versionRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "mainHash": "",
           "differences": {}
         }
@@ -26369,6 +26376,7 @@
           "itemId": "00000000-0000-4000-8000-000000000001",
           "versionId": "00000000-0000-4000-8000-000000000001",
           "mainHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "operationId": "00000000-0000-4000-8000-000000000001"
         }
       },
@@ -26449,6 +26457,7 @@
           "itemId": "00000000-0000-4000-8000-000000000001",
           "versionId": "00000000-0000-4000-8000-000000000001",
           "values": {},
+          "expectedRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "operationId": "00000000-0000-4000-8000-000000000001"
         }
       },

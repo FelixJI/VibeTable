@@ -359,6 +359,12 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             )
     from backend.contracts.presets_versions_dashboards import (
         DashboardWorkspaceParams,
+        CreateVersionParams,
+        DeleteVersionParams,
+        ListVersionsParams,
+        PromoteVersionParams,
+        SaveVersionParams,
+        VersionIdParams,
         ExecuteDashboardQueryParams,
         ListDashboardsParams,
         SaveDashboardDraftParams,
@@ -379,6 +385,12 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "preset.list": ListPresetsParams,
             "preset.save": SavePresetParams,
             "preset.delete": DeletePresetParams,
+            "version.list": ListVersionsParams,
+            "version.create": CreateVersionParams,
+            "version.save": SaveVersionParams,
+            "version.compare": VersionIdParams,
+            "version.promote": PromoteVersionParams,
+            "version.delete": DeleteVersionParams,
         }
     )
     result.update(PRODUCT_PARAM_MODELS)

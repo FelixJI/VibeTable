@@ -38,8 +38,8 @@
   {
     "id": "07-attachment-history",
     "title": "附件全生命周期与历史恢复",
-    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。",
-    "capabilities": ["attachment.history", "history.restore"]
+    "requirement": "通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。单记录历史抽屉完成命名修订创建、比较、恢复、更新指针；通过 UI 关闭并重开工作区后核对列表和记录状态，再经 UI 删除并刷新确认。",
+    "capabilities": ["attachment.history", "history.restore", "content.named-revision"]
   },
   {
     "id": "08-stale-conflict",

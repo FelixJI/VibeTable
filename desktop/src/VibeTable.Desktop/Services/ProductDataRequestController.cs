@@ -462,6 +462,13 @@ public sealed class ProductDataRequestController
             _reply.PostResponse(request.Type, request.RequestId, contentMapped);
             return;
         }
+        if (error.Code == -32080 && error.Message == "Insights error"
+            && error.Data is JsonElement versionData
+            && ProductRpcErrorMapper.TryMapNamedRevision(request.Type, versionData, out JsonElement versionMapped))
+        {
+            _reply.PostResponse(request.Type, request.RequestId, versionMapped);
+            return;
+        }
         if (error.Data is JsonElement data
             && (error.Code == -32150
                 || (error.Code == -32080

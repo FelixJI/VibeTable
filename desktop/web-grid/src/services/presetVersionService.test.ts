@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
+import { useContentVersionService } from "./contentVersionService";
 import { usePresetVersionService } from "./presetVersionService";
+
+const versionEntry = { id: "v1", key: "draft", name: "Draft", outdated: false, mainHash: "hash-1", revision: "rev-v1", emittedEvents: [] };
 
 describe("presetVersionService", () => {
   const requests: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -67,10 +70,10 @@ describe("presetVersionService", () => {
       revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
     await service.deletePreset("p1", "rev-p1");
-    await service.createVersion("orders", "row-1", "draft", "Draft");
-    await service.saveVersion("orders", "row-1", "v1");
-    await service.promoteVersion("orders", "row-1", "v1", "hash-1");
-    await service.deleteVersion("orders", "row-1", "v1", "rev-v1");
+    await useContentVersionService().create({ collection: "orders", itemId: "row-1" }, "Draft");
+    await useContentVersionService().save({ collection: "orders", itemId: "row-1" }, versionEntry);
+    await useContentVersionService().promote({ collection: "orders", itemId: "row-1" }, { collection: "orders", itemId: "row-1", versionId: "v1", versionRevision: "rev-v1", mainHash: "hash-1", outdated: false, differences: {} });
+    await useContentVersionService().delete({ collection: "orders", itemId: "row-1" }, versionEntry);
 
     const writes = requests.filter(({ type }) => [
       "preset.save", "preset.delete", "version.create",
@@ -96,9 +99,8 @@ describe("presetVersionService", () => {
   });
 
   it("keeps list and compare requests read-only", async () => {
-    const service = usePresetVersionService();
-    await service.listVersions("orders", "row-1");
-    await service.compareVersion("orders", "row-1", "v1");
+    await useContentVersionService().list({ collection: "orders", itemId: "row-1" });
+    await useContentVersionService().compare({ collection: "orders", itemId: "row-1" }, "v1");
 
     expect(requests).toEqual([
       { type: "version.list", payload: { collection: "orders", itemId: "row-1" } },

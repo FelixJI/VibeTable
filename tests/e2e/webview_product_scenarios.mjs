@@ -3981,6 +3981,130 @@ async function scenario07(page, recorder, _network, runtime) {
       && productRestoredFile.size === replacementBytes.length,
     { productRestoredFile, replacementFile, expectedSize: replacementBytes.length },
   );
+  await namedRevisionJourney(page, recorder, runtime);
+}
+
+async function namedRevisionJourney(page, recorder, runtime) {
+  await page.locator(".n-drawer-header__close").last().click();
+  const table = await createSingleFieldTable(page, "E2E Named Revisions", "Title", "text");
+  await selectTable(page, "E2E Named Revisions");
+  await insertRowFromToolbar(page);
+  await insertRowFromToolbar(page);
+  const cell = page.locator(`.tabulator-cell[tabulator-field="${table.field.physicalName}"]`).first();
+  const edit = async (value) => {
+    const editor = await beginCellEdit(cell);
+    await editor.fill(value);
+    const capture = await page.evaluate(installTableMutationReceiptCaptureInPage, { requestType: "table.updateCellRequested" });
+    await editor.press("Enter");
+    const terminal = await waitForCapturedBridgeMessage(page, 30_000, capture);
+    if (terminal.type !== "table.editCommitted" || terminal.payload?.storedValue !== value) {
+      throw new Error(`named revision edit failed: ${JSON.stringify(terminal)}`);
+    }
+  };
+  const openNamed = async () => {
+    await cell.click({ button: "right" });
+    await page.getByText("查看此行历史", { exact: true }).click();
+    await page.getByTestId("named-revisions").waitFor({ state: "visible", timeout: 30_000 });
+    await page.getByTestId("named-reload").waitFor({ state: "visible" });
+  };
+  const clickTerminal = async (method, trigger) => {
+    await beginBridgeMessageCapture(page, [method, "operation.failed"]);
+    await trigger();
+    const reply = await waitForCapturedBridgeMessage(page);
+    if (reply.type !== method || reply.payload?.error) throw new Error(`named revision ${method}: ${JSON.stringify(reply)}`);
+    return reply.payload;
+  };
+  await edit("Named original");
+  await openNamed();
+  await page.getByTestId("named-name").locator("input").fill("Release candidate");
+  const created = await clickTerminal("version.create", () => page.getByTestId("named-create").click());
+  recorder.check("single-record UI names the actual audited record", typeof created.id === "string"
+    && created.name === "Release candidate" && created.revision.length > 0, { created });
+  await page.locator(".n-drawer-header__close").last().click();
+  await edit("Changed after naming");
+  await openNamed();
+  await page.getByTestId("named-select").click();
+  await page.getByText("Release candidate", { exact: true }).last().click();
+  const compared = await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
+  recorder.check("named UI comparison binds both CAS revisions and original record value",
+    compared.versionId === created.id && compared.versionRevision === created.revision
+      && compared.differences?.[table.field.physicalName]?.main === "Changed after naming"
+      && compared.differences?.[table.field.physicalName]?.version === "Named original", { compared });
+  const scopedRows = await rawBridgeRequest(page, "query.page", {
+    tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const other = scopedRows.payload?.rows?.find((row) => row.id !== compared.itemId);
+  if (!other?.id) throw new Error("named revision isolation requires a second actual record");
+  const otherList = await rawBridgeRequest(page, "version.list", { collection: table.tableId, itemId: other.id });
+  const otherCompare = await rawBridgeRequest(page, "version.compare", {
+    collection: table.tableId, itemId: other.id, versionId: created.id,
+  });
+  recorder.check("another actual record cannot list or compare this named revision",
+    otherList.payload?.versions?.length === 0 && otherCompare.payload?.error?.code === "version_not_found",
+    { otherId: other.id, otherList, otherCompare });
+  await page.locator(".n-drawer-header__close").last().click();
+  await edit("Changed after comparison");
+  const stalePromote = await rawBridgeRequest(page, "version.promote", {
+    collection: table.tableId, itemId: compared.itemId, versionId: created.id,
+    expectedRevision: compared.versionRevision, mainHash: compared.mainHash, operationId: crypto.randomUUID(),
+  });
+  const afterRejected = await rawBridgeRequest(page, "query.page", {
+    tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("main record CAS rejects an old named comparison without overwriting the later edit",
+    stalePromote.payload?.error?.code === "version_main_conflict"
+      && afterRejected.payload?.rows?.find((row) => row.id === compared.itemId)?.[table.field.physicalName] === "Changed after comparison",
+    { stalePromote, afterRejected });
+  await openNamed();
+  await page.getByTestId("named-select").click();
+  await page.getByText("Release candidate", { exact: true }).last().click();
+  await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "07-named-comparison.png"), fullPage: true });
+  const promoted = await clickTerminal("version.promote", async () => {
+    await page.getByTestId("named-promote").click();
+    await page.locator(".n-popconfirm").getByRole("button", { name: "恢复此修订", exact: true }).click();
+  });
+  recorder.check("named UI restore returns the committed audited row", promoted.promoted === created.id
+    && promoted.result?.item?.[table.field.physicalName] === "Named original"
+    && typeof promoted.result?.newRevisionId === "string", { promoted });
+  const saved = await clickTerminal("version.save", () => page.getByTestId("named-save").click());
+  const before = await rawBridgeRequest(page, "version.list", { collection: table.tableId, itemId: compared.itemId });
+  const persisted = before.payload?.versions?.find((item) => item.id === created.id);
+  recorder.check("named UI refresh preserves key/name and advances the audit pointer revision",
+    saved.saved === created.id && persisted?.key === created.key && persisted?.name === created.name
+      && persisted?.revision === saved.metadataRevision, { saved, persisted });
+  await page.locator(".n-drawer-header__close").last().click();
+  await waitForBridgeDiagnosticsToSettle(page);
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const center = page.getByTestId("workspace-center");
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    center.getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
+  recorder.check("named revision workspace closes through the UI", closed.result.state === "closed", { closed });
+  const opened = await activateWorkspaceThroughUi(page, {
+    waitForHydration: true, method: "workspace.open",
+    activate: () => center.getByRole("button", { name: /E2E Product Workspace/ }).click(),
+  });
+  recorder.check("named revision UI reopens the same workspace in a fresh session",
+    opened.session.workspaceId === session.workspaceId && opened.session.sessionEpoch > session.sessionEpoch,
+    { opened, session });
+  await selectTable(page, "E2E Named Revisions");
+  await openNamed();
+  const reopened = await clickTerminal("version.list", () => page.getByTestId("named-reload").click());
+  recorder.check("fresh named UI list preserves complete entries after workspace reopen",
+    JSON.stringify(reopened.versions) === JSON.stringify(before.payload.versions), { before: before.payload, reopened });
+  await page.getByTestId("named-select").click();
+  await page.getByText("Release candidate", { exact: true }).last().click();
+  const freshCompare = await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
+  recorder.check("fresh named UI compare verifies persisted record data and revision",
+    freshCompare.versionRevision === saved.metadataRevision && Object.keys(freshCompare.differences).length === 0, { freshCompare });
+  await clickTerminal("version.delete", async () => {
+    await page.getByTestId("named-delete").click();
+    await page.locator(".n-popconfirm").getByRole("button", { name: "删除", exact: true }).click();
+  });
+  const final = await clickTerminal("version.list", () => page.getByTestId("named-reload").click());
+  recorder.check("named UI deletion is absent from a fresh authority list", final.versions.length === 0, { final });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "07-named-revisions.png"), fullPage: true });
 }
 
 async function scenario08(page, recorder) {

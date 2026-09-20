@@ -454,7 +454,8 @@ public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
         if (code == -32170 && !SurfaceRpcErrorContract.IsValid(method, data))
             throw InvalidResponse();
         if (code == -32080 && !IsValidDashboardErrorData(method, message, data)
-            && !IsValidPresetErrorData(method, message, data))
+            && !IsValidPresetErrorData(method, message, data)
+            && !(message == "Insights error" && ProductRpcErrorMapper.TryMapNamedRevision(method, data, out _)))
             throw InvalidResponse();
         return new ProductSidecarRpcError(
             code,

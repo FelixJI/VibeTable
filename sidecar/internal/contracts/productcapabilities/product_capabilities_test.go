@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 60 {
+	if len(allGo) != 66 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	schemaMethods := map[string]Effect{
@@ -93,8 +93,17 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		"field.recycleBin.list": ReadEffect,
 	}
 	relationMethods := map[string]bool{"relation.applyDelta": true, "relation.createTarget": true, "relation.updateSingle": true}
+	versionMethods := map[string]Effect{"version.compare": ReadEffect, "version.create": WriteEffect, "version.delete": WriteEffect, "version.list": ReadEffect, "version.promote": WriteEffect, "version.save": WriteEffect}
 	otherGo := []RPCDescriptor{}
 	for _, descriptor := range allGo {
+		if effect, found := versionMethods[descriptor.Method]; found {
+			if descriptor != (RPCDescriptor{Method: descriptor.Method, Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: effect}) {
+				t.Fatalf("version descriptor = %#v", descriptor)
+			}
+			delete(versionMethods, descriptor.Method)
+			continue
+		}
+
 		if relationMethods[descriptor.Method] {
 			if descriptor != (RPCDescriptor{Method: descriptor.Method, Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: WriteEffect}) {
 				t.Fatalf("relation write descriptor = %#v", descriptor)
@@ -124,6 +133,9 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		if descriptor.Owner != GoSidecar || descriptor.Scope != WorkspaceScope || descriptor.Audience != RendererPublic || descriptor.CapabilityID != "content.model" || descriptor.Effect != effect {
 			t.Fatalf("content descriptor = %#v", descriptor)
 		}
+	}
+	if len(versionMethods) != 0 {
+		t.Fatalf("missing versions: %v", versionMethods)
 	}
 	if len(relationMethods) != 0 {
 		t.Fatalf("missing relation writes: %v", relationMethods)

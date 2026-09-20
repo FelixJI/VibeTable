@@ -886,6 +886,56 @@ public sealed class ProductSidecarHttpGatewayTests
         }
     }
 
+    [TestMethod]
+    [DataRow("version.save", "version_edit_conflict", false)]
+    [DataRow("version.compare", "version_not_found", false)]
+    [DataRow("version.compare", "version_unknown", true)]
+    [DataRow("query.page", "version_not_found", true)]
+    public async Task NamedRevisionErrorsKeepTheirClosedCodeThroughRealController(
+        string method, string code, bool rejected)
+    {
+        JsonElement wire = JsonSerializer.SerializeToElement(new {
+            scope = "workspace", workspaceId = WorkspaceId, sessionEpoch = 7,
+            operationId = ClaimId, sequence = 0,
+        });
+        var handler = new RecordingHandler(request => {
+            if (request.Method == HttpMethod.Get)
+                return Json(Capabilities(rpcMethods: JsonSerializer.Serialize(new[] { method }),
+                    registrations: JsonSerializer.Serialize(new[] { new { method, scope = "workspace" } })));
+            return Json(JsonSerializer.Serialize(new {
+                jsonrpc = "2.0", id = "named-error", wire,
+                error = new { code = -32080, message = "Insights error",
+                    data = new { kind = "insights_error", code, message = "Named revision changed." } },
+            }));
+        });
+        using var gateway = Gateway(handler, expectedRegistrations: [new(method, "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        var parameters = JsonSerializer.SerializeToElement(new {
+            collection = "records", itemId = "record-1", versionId = "version-1",
+            expectedRevision = "stale", operationId = "named-save", values = new { },
+        });
+        if (rejected)
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                gateway.ForwardAsync("named-error", method, wire, parameters, CancellationToken.None));
+            return;
+        }
+        var pythonTransport = new CountingQueryTransport();
+        await using var pythonClient = new JsonRpcClient(pythonTransport);
+        using var pythonGateway = new JsonRpcProductDataGateway(pythonClient);
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink);
+        controller.SetGateway(pythonGateway);
+        controller.SetProductSidecarForwarder(gateway);
+        await controller.DispatchAsync(new RoutedWebRequest(method, "named-error", parameters,
+            string.Empty, Wire: wire));
+        Assert.AreEqual(0, pythonTransport.WriteCount);
+        FakeWebReplySink.Reply reply = sink.Replies.Single();
+        Assert.AreEqual(method, reply.Type);
+        JsonElement payload = Assert.IsInstanceOfType<JsonElement>(reply.Payload);
+        Assert.AreEqual(code, payload.GetProperty("error").GetProperty("code").GetString());
+    }
+
     private static ProductSidecarHttpGateway Gateway(
         HttpMessageHandler handler,
         string secret = "private-secret",

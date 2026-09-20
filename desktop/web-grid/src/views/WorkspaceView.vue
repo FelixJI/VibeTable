@@ -134,6 +134,9 @@ import type {
 } from "@/contracts";
 import { t } from "@/i18n";
 
+import { useContentVersionService } from "@/services/contentVersionService";
+import { useNamedRevisions } from "@/composables/useNamedRevisions";
+
 const workspaceService = useWorkspaceService();
 const message = useMessage();
 const hostBridge = useHostBridge();
@@ -163,6 +166,13 @@ const history = useHistoryStore();
 const workspace = useWorkspaceStore();
 const plugins = usePluginStore();
 const revisionHistory = useRevisionHistoryStore();
+const namedScope = computed(() => revisionHistory.panelOpen && revisionHistory.scope === "row"
+  && revisionHistory.itemId && workspace.currentTable
+  ? { collection: workspace.currentTable, itemId: revisionHistory.itemId } : null);
+const namedRevisions = useNamedRevisions(namedScope, useContentVersionService(), async () => {
+  revisionHistoryService.refresh();
+  await refreshTable();
+});
 const dashboards = useDashboardStore();
 const dashboardDraft = useDashboardDraftStore();
 const surfaces = useSurfaceStore();
@@ -1454,6 +1464,10 @@ useKeyboard({
     <ShortcutsView />
     <RevisionHistoryDrawer
       :field-options="historyFieldOptions"
+      :named-revisions="namedRevisions.state"
+      @named-action="namedRevisions.dispatch"
+      @named-select="namedRevisions.select"
+      @named-name="namedRevisions.state.name = $event"
       @close="revisionHistoryService.close"
       @reload="revisionHistoryService.refresh"
       @load-more="revisionHistoryService.loadMore"

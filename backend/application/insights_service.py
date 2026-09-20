@@ -1,4 +1,4 @@
-"""Provider-neutral content versions and dashboard orchestration.
+"""Provider-neutral dashboard orchestration.
 
 The application layer addresses logical metadata namespaces and the product
 QueryPort.  Physical PocketBase collection names and HTTP details belong only
@@ -24,7 +24,6 @@ from backend.application.revisioned_metadata_port import (
 )
 from backend.contracts.presets_versions_dashboards import (
     CompiledDashboardQuery,
-    ContentVersionEntry,
     DashboardEntry,
     DashboardFilterState,
     DashboardFilterVariable,
@@ -46,8 +45,6 @@ from backend.contracts.presets_versions_dashboards import (
     PanelType,
     SaveDashboardDraftParams,
     SaveDashboardDraftResult,
-    VersionCompareResult,
-    VersionsResult,
 )
 
 PANEL_MANIFEST_VERSION = "dashboard-panel-manifest.v2"
@@ -213,264 +210,6 @@ class InsightsService:
         self._metadata = metadata_port
         self._query = query_port
         self._query_slots = asyncio.Semaphore(DASHBOARD_QUERY_LIMITS.max_concurrent_requests)
-
-    async def list_versions(self, collection: str, item_id: str) -> VersionsResult:
-        rows = await self._metadata.list_metadata(
-            "content_versions", scope=f"{collection}:{item_id}"
-        )
-        return VersionsResult(
-            collection=collection,
-            item_id=item_id,
-            versions=[_version(row) for row in rows],
-        )
-
-    async def create_version(
-        self,
-        collection: str,
-        item_id: str,
-        key: str,
-        name: str,
-        operation_id: str = "",
-    ) -> ContentVersionEntry:
-        if not operation_id:
-            raise InsightsError("operationId is required", code="operation_id_required")
-        record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"vibetable:version:{operation_id}"))
-        change_set_id, revision_id = await self._latest_audit_revision(collection, item_id)
-        preview = await self._query.preview_history_restore(
-            collection=collection,
-            item_id=item_id,
-            target_revision=revision_id,
-        )
-        main_hash = _text(preview.get("currentHash"))
-        entry = ContentVersionEntry(
-            id=record_id,
-            key=key or record_id[:8],
-            name=name,
-            main_hash=main_hash,
-        )
-        receipt = await self._metadata.upsert_metadata(
-            "content_versions",
-            record_id=record_id,
-            values={
-                **entry.model_dump(by_alias=True, mode="json"),
-                "scope": f"{collection}:{item_id}",
-                "changeSetId": change_set_id,
-                "revisionId": revision_id,
-            },
-            expected_revision=None,
-            idempotency_key=f"version:create:{operation_id}",
-        )
-        return entry.model_copy(
-            update={
-                "revision": _receipt_revision(receipt),
-                "change_set_id": _optional_text(receipt.get("changeSetId")),
-                "emitted_events": _string_list(receipt.get("emittedEvents")),
-            }
-        )
-
-    async def save_version(
-        self,
-        collection: str,
-        item_id: str,
-        version_id: str,
-        values: JsonObject,
-        operation_id: str,
-    ) -> JsonObject:
-        if values:
-            raise InsightsError(
-                "content versions point to audit snapshots and do not accept arbitrary values",
-                code="version_values_not_allowed",
-            )
-        change_set_id, revision_id = await self._latest_audit_revision(collection, item_id)
-        preview = await self._query.preview_history_restore(
-            collection=collection,
-            item_id=item_id,
-            target_revision=revision_id,
-        )
-        receipt = await self._metadata.upsert_metadata(
-            "content_versions",
-            record_id=version_id,
-            values={
-                "scope": f"{collection}:{item_id}",
-                "changeSetId": change_set_id,
-                "revisionId": revision_id,
-                "mainHash": _text(preview.get("currentHash")),
-            },
-            expected_revision=None,
-            idempotency_key=f"version:save:{operation_id}",
-        )
-        return {
-            "saved": version_id,
-            "changeSetId": change_set_id,
-            "revisionId": revision_id,
-            "metadataRevision": _receipt_revision(receipt),
-            **_receipt_trace(receipt),
-        }
-
-    async def compare_version(
-        self, collection: str, item_id: str, version_id: str
-    ) -> VersionCompareResult:
-        rows = await self._metadata.list_metadata(
-            "content_versions", scope=f"{collection}:{item_id}", keys=[version_id]
-        )
-        if not rows:
-            raise InsightsError("content version was not found", code="version_not_found")
-        version = rows[0]
-        revision_id = version.get("revisionId")
-        if not isinstance(revision_id, str) or not revision_id:
-            raise InsightsError(
-                "content version has no audit revision",
-                code="version_revision_missing",
-            )
-        preview = await self._query.preview_history_restore(
-            collection=collection,
-            item_id=item_id,
-            target_revision=revision_id,
-        )
-        differences: dict[str, JsonObject] = {}
-        scalar_changes = preview.get("scalarChanges", [])
-        if isinstance(scalar_changes, list):
-            for change in scalar_changes:
-                if not isinstance(change, dict):
-                    continue
-                field = change.get("field")
-                if isinstance(field, str):
-                    differences[field] = {
-                        "main": change.get("before"),
-                        "version": change.get("after"),
-                    }
-        relation_changes = preview.get("relationChanges", [])
-        if isinstance(relation_changes, list):
-            for change in relation_changes:
-                if not isinstance(change, dict):
-                    continue
-                field = change.get("field")
-                if isinstance(field, str):
-                    differences[field] = {
-                        "main": change.get("beforeItemId"),
-                        "version": change.get("afterItemId"),
-                    }
-        current_hash = _text(preview.get("currentHash"))
-        return VersionCompareResult(
-            collection=collection,
-            item_id=item_id,
-            version_id=version_id,
-            outdated=current_hash != _text(version.get("mainHash")),
-            main_hash=current_hash,
-            differences=differences,
-        )
-
-    async def promote_version(
-        self,
-        collection: str,
-        item_id: str,
-        version_id: str,
-        main_hash: str,
-        operation_id: str,
-    ) -> JsonObject:
-        if not operation_id:
-            raise InsightsError("operationId is required", code="operation_id_required")
-        rows = await self._metadata.list_metadata(
-            "content_versions", scope=f"{collection}:{item_id}", keys=[version_id]
-        )
-        if not rows:
-            raise InsightsError("content version was not found", code="version_not_found")
-        revision_id = rows[0].get("revisionId")
-        if not isinstance(revision_id, str) or not revision_id:
-            raise InsightsError(
-                "content version has no audit revision",
-                code="version_revision_missing",
-            )
-        preview = await self._query.preview_history_restore(
-            collection=collection,
-            item_id=item_id,
-            target_revision=revision_id,
-        )
-        if _text(preview.get("currentHash")) != main_hash:
-            raise InsightsError(
-                "main item changed after the version comparison",
-                code="version_main_conflict",
-            )
-        token = preview.get("token")
-        if not isinstance(token, str) or not token or preview.get("canApply") is not True:
-            raise InsightsError(
-                "content version cannot be promoted",
-                code="version_not_restorable",
-            )
-        result = await self._query.apply_history_restore(
-            collection=collection,
-            item_id=item_id,
-            token=token,
-        )
-        return {
-            "promoted": version_id,
-            "restoredToRevision": revision_id,
-            "result": _freeze(result),
-        }
-
-    async def delete_version(
-        self,
-        collection: str,
-        item_id: str,
-        version_id: str,
-        expected_revision: str,
-        operation_id: str,
-    ) -> JsonObject:
-        del collection, item_id
-        receipt = await self._delete(
-            "content_versions",
-            version_id,
-            expected_revision=expected_revision,
-            operation_id=operation_id,
-            label="version",
-        )
-        return {"deleted": version_id, **_receipt_trace(receipt)}
-
-    async def _latest_audit_revision(
-        self,
-        collection: str,
-        item_id: str,
-    ) -> tuple[str, str]:
-        page = await self._query.read_history(
-            collection=collection,
-            item_id=item_id,
-            limit=1,
-        )
-        change_sets = page.get("changeSets")
-        if not isinstance(change_sets, list) or not change_sets:
-            raise InsightsError(
-                "an audit revision is required before naming a content version",
-                code="version_audit_missing",
-            )
-        change_set = change_sets[0]
-        if not isinstance(change_set, dict):
-            raise InsightsError(
-                "audit history returned an invalid change set",
-                code="version_audit_invalid",
-            )
-        change_set_id = change_set.get("changeSetId")
-        if not isinstance(change_set_id, str) or not change_set_id:
-            raise InsightsError(
-                "audit change set has no identity",
-                code="version_audit_invalid",
-            )
-        root_revision_id = change_set.get("rootRevisionId")
-        revision_id = (
-            root_revision_id if isinstance(root_revision_id, str) and root_revision_id else ""
-        )
-        record_changes = change_set.get("recordChanges")
-        if isinstance(record_changes, list):
-            for change in record_changes:
-                candidate_revision = change.get("revisionId") if isinstance(change, dict) else None
-                if (
-                    isinstance(change, dict)
-                    and change.get("itemId") == item_id
-                    and isinstance(candidate_revision, str)
-                    and candidate_revision
-                ):
-                    revision_id = candidate_revision
-                    break
-        return change_set_id, revision_id
 
     async def list_dashboards(self, _params: object | None = None) -> DashboardsResult:
         dashboards, panels = await asyncio.gather(
@@ -867,17 +606,6 @@ def _matches_option_rule(value: object, rule: Mapping[str, JsonValue]) -> bool:
             _matches_option_rule(item, item_rule) for item in value
         )
     return False
-
-
-def _version(row: Mapping[str, JsonValue]) -> ContentVersionEntry:
-    return ContentVersionEntry(
-        id=_text(row.get("id")),
-        key=_text(row.get("key")),
-        name=_text(row.get("name")),
-        outdated=bool(row.get("outdated", False)),
-        main_hash=_text(row.get("mainHash")),
-        revision=_text(row.get("revision")),
-    )
 
 
 def _dashboard(row: Mapping[str, JsonValue], panel_rows: list[JsonObject]) -> DashboardEntry:
