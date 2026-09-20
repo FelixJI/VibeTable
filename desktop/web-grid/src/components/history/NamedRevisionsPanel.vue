@@ -10,6 +10,7 @@ const emit = defineEmits<{
 const choices = computed(() => props.state.versions.map((entry) => ({
   label: entry.name || entry.key || entry.id, value: entry.id,
 })));
+const canRestore = computed(() => !!props.state.comparison && Object.keys(props.state.comparison.differences).length > 0);
 const fieldLabels = computed(() => new Map(props.fieldOptions.map((field) => [field.value, field.label])));
 function displayValue(value: unknown): string {
   return value === null || value === undefined || value === "" ? t("named.emptyValue")
@@ -38,6 +39,7 @@ function displayValue(value: unknown): string {
       </NPopconfirm>
     </div>
     <div v-if="state.comparison" data-testid="named-comparison">
+      <p data-testid="named-recomputed">{{ t('named.recomputed') }}</p>
       <p v-if="!Object.keys(state.comparison.differences).length" role="status" data-testid="named-no-differences">{{ t('named.noDifferences') }}</p>
       <dl v-else class="named-differences">
         <template v-for="(difference, field) in state.comparison.differences" :key="field">
@@ -47,7 +49,7 @@ function displayValue(value: unknown): string {
         </template>
       </dl>
       <NPopconfirm :positive-text="t('named.promote')" @positive-click="emit('action', 'promote')">
-        <template #trigger><NButton type="warning" :disabled="state.loading" :aria-label="t('named.promote')" data-testid="named-promote">{{ t('named.promote') }}</NButton></template>
+        <template #trigger><NButton type="warning" :disabled="state.loading || !canRestore" :aria-label="t('named.promote')" data-testid="named-promote">{{ t('named.promote') }}</NButton></template>
         {{ t('named.promoteConfirm') }}
       </NPopconfirm>
     </div>

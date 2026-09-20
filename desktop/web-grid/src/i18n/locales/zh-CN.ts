@@ -1,7 +1,8 @@
 export const messages: Record<string, string> = {
   "named.empty": "尚无命名修订。输入名称，记录当前记录的状态。",
   "named.emptyValue": "（空）",
-  "named.noDifferences": "当前记录与此修订一致。",
+  "named.noDifferences": "可恢复字段没有差异。",
+  "named.recomputed": "计算字段将在恢复后按当前规则和关联数据重新计算。",
   "named.current": "当前记录",
   "named.target": "命名修订",
   "named.title": "命名修订",

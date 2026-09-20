@@ -10,6 +10,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -101,7 +102,11 @@ func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
 	source := createV2IntegrationTable(t, ctx, app, "Version source", "version_source")
 	title := createV2IntegrationField(t, ctx, app, source.TableID, fieldDraftForIntegration(t, v2.LogicalText, "Title"), "version_source_title")
 	related := createV2IntegrationRelation(t, ctx, app, source.TableID, title.FieldID, targets.TableID, targetName.FieldID, "Related", "Sources", "many", "version_relation")
-	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	author := createV2IntegrationRelation(t, ctx, app, source.TableID, title.FieldID, targets.TableID, targetName.FieldID, "Author", "Authored", "one", "version_author")
+	formulaDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Author label")
+	formulaDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: `concat({Author}.{Name}, "")`}
+	authorLabel := createV2IntegrationFormula(t, ctx, app, source.TableID, formulaDraft, "version_author_label")
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{}, mutation.WithFormulaCalculator(formula.NewCalculator(formula.NewCompiler(formula.DefaultLimits()))))
 	service, err := audit.New(app, kernel)
 	if err != nil {
 		t.Fatal(err)
@@ -124,14 +129,15 @@ func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
 	}
 	field := related.Definition.Identity.PhysicalName
 	rowID := "versionsource01"
-	apply("insert-source", source.TableID, rowID, mutation.OperationInsert, map[string]any{field: ids[:2], title.Definition.Identity.PhysicalName: "original"})
+	apply("insert-source", source.TableID, rowID, mutation.OperationInsert, map[string]any{field: ids[:2], title.Definition.Identity.PhysicalName: "original", author.Definition.Identity.PhysicalName: ids[0]})
 	created, err := owner.Write(ctx, "version.create", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, Key: "before", OperationID: "name-relation"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	entry := created.(map[string]any)
 	versionID := entry["id"].(string)
-	apply("update-source", source.TableID, rowID, mutation.OperationUpdate, map[string]any{field: ids[1:]})
+	apply("update-source", source.TableID, rowID, mutation.OperationUpdate, map[string]any{field: ids[1:], author.Definition.Identity.PhysicalName: ids[1]})
+	apply("rename-historical-author", targets.TableID, ids[0], mutation.OperationUpdate, map[string]any{targetName.Definition.Identity.PhysicalName: "Gamma"})
 	compared, err := owner.Compare(ctx, metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID})
 	if err != nil {
 		t.Fatal(err)
@@ -151,11 +157,14 @@ func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		t.Fatal(err)
 	}
+	if historical, shown := result.Differences[authorLabel.Definition.Identity.PhysicalName]; shown {
+		t.Errorf("comparison promises a historical computed value instead of current-rule recomputation: %+v", historical)
+	}
 	difference := result.Differences[field]
 	if difference.Main != strings.Join(ids[1:], ", ") || difference.Version != strings.Join(ids[:2], ", ") {
 		t.Fatalf("named comparison hides actual relation sets: %s", encoded)
 	}
-	_, err = owner.Write(ctx, "version.promote", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID, ExpectedRevision: result.VersionRevision, MainHash: result.MainHash, OperationID: "restore-relation"})
+	promoted, err := owner.Write(ctx, "version.promote", metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID, ExpectedRevision: result.VersionRevision, MainHash: result.MainHash, OperationID: "restore-relation"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,8 +175,19 @@ func TestContentVersionComparisonMatchesRestoredManyRelation(t *testing.T) {
 	if got := record.GetStringSlice(field); !reflect.DeepEqual(got, ids[:2]) {
 		t.Fatalf("restored relation %v differs from displayed %v", got, difference.Version)
 	}
+	restoredResult := promoted.(map[string]any)["result"].(audit.RestoreResult)
+	if restoredResult.Item[authorLabel.Definition.Identity.PhysicalName] != "Gamma" {
+		t.Fatalf("restoration did not recalculate the current relation label: %v", restoredResult.Item)
+	}
+	onlyDerived, err := owner.Compare(ctx, metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if differences := onlyDerived.(map[string]any)["differences"].(map[string]any); len(differences) != 0 {
+		t.Fatalf("derived-only drift advertised restorable changes: %v", differences)
+	}
 	t.Run("unavailable target cannot produce an unannounced partial restore", func(t *testing.T) {
-		apply("change-before-unavailable", source.TableID, rowID, mutation.OperationUpdate, map[string]any{field: ids[1:], title.Definition.Identity.PhysicalName: "later"})
+		apply("change-before-unavailable", source.TableID, rowID, mutation.OperationUpdate, map[string]any{field: ids[1:], title.Definition.Identity.PhysicalName: "later", author.Definition.Identity.PhysicalName: ids[1]})
 		safeCompare, err := owner.Compare(ctx, metadata.VersionParams{Collection: source.TableID, ItemID: rowID, VersionID: versionID})
 		if err != nil {
 			t.Fatal(err)

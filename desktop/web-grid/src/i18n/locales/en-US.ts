@@ -1,7 +1,8 @@
 export const messages: Record<string, string> = {
   "named.empty": "No named revisions yet. Enter a name to capture the current record.",
   "named.emptyValue": "(empty)",
-  "named.noDifferences": "The current record matches this revision.",
+  "named.noDifferences": "No differences in restorable fields.",
+  "named.recomputed": "Computed fields will be recalculated using current rules and related data after restoration.",
   "named.current": "Current record",
   "named.target": "Named revision",
   "named.title": "Named revisions",

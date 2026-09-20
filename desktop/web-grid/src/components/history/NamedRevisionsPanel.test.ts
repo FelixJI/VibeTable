@@ -40,6 +40,8 @@ describe("named revision product controls", () => {
     value.comparison = { collection: "table", itemId: "row", versionId: "v1", versionRevision: "r1", mainHash: "h1", outdated: false, differences: {} };
     await flushPromises();
     expect(wrapper.get('[data-testid="named-no-differences"]').text()).toBeTruthy();
+    expect(wrapper.get('[data-testid="named-recomputed"]').text()).toBeTruthy();
+    expect(wrapper.get('[data-testid="named-promote"]').attributes("disabled")).toBeDefined();
   });
   it("shows errors and disables pending writes without removing the user draft", async () => {
     const value = state(); value.error = "Version changed. Reload before retrying."; value.loading = true;

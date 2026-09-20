@@ -195,11 +195,21 @@ func (s *ContentVersions) Compare(ctx context.Context, p VersionParams) (any, er
 	if err := requireCompleteVersionRestore(preview); err != nil {
 		return nil, err
 	}
+	restorable := make(map[string]bool, len(preview.Restorable))
+	for _, field := range preview.Restorable {
+		restorable[field] = true
+	}
 	differences := map[string]any{}
 	for _, change := range preview.ScalarChanges {
+		if !restorable[change.Field] {
+			continue
+		}
 		differences[change.Field] = map[string]any{"main": change.Before, "version": change.After}
 	}
 	for _, change := range preview.RelationChanges {
+		if !restorable[change.Field] {
+			continue
+		}
 		before, after := change.BeforeItemID, change.AfterItemID
 		if change.Kind == "m2m" {
 			before, after = change.BeforeDisplayValue, change.AfterDisplayValue
@@ -415,7 +425,7 @@ func (s *ContentVersions) promote(ctx context.Context, p VersionParams, key, dig
 // explain skipped fields; this entry point has no partial-restore selection.
 func requireCompleteVersionRestore(preview audit.Preview) error {
 	for _, diagnostic := range preview.Diagnostics {
-		if diagnostic.Severity == "derived" && diagnostic.Code == "field_generated" {
+		if diagnostic.Classification == "derived" && diagnostic.Code == "field_generated" {
 			continue // Computed/system values are recalculated by the mutation kernel.
 		}
 		return versionError("version_not_restorable", "Named revision cannot be fully restored because a field or related record is unavailable.")
