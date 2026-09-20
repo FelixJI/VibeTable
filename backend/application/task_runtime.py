@@ -113,6 +113,7 @@ class TaskRecord:
         "completed",
         "created_at",
         "error",
+        "export_grant_id",
         "kind",
         "progress",
         "result",
@@ -121,6 +122,7 @@ class TaskRecord:
     )
 
     def __init__(self, task_id: str, kind: str) -> None:
+        self.export_grant_id: str | None = None
         self.task_id = task_id
         self.kind = kind
         self.state: TaskState = "queued"
@@ -144,7 +146,7 @@ class TaskRuntime:
         self._handlers_accept_params: dict[str, bool] = {}
         self._tasks: dict[str, TaskRecord] = {}
         self._tokens: dict[str, CancellationToken] = {}
-        self._async_tasks: set[asyncio.Task[Any]] = set()
+        self._async_tasks: dict[str, asyncio.Task[Any]] = {}
         self._sink = notification_sink or _noop_sink
         self._clock = clock
         self._lock = asyncio.Lock()
@@ -168,7 +170,9 @@ class TaskRuntime:
     # Task lifecycle
     # ------------------------------------------------------------------
 
-    async def create(self, kind: str, params: dict[str, Any]) -> TaskStatus:
+    async def create(
+        self, kind: str, params: dict[str, Any], *, export_grant_id: str | None = None
+    ) -> TaskStatus:
         """Create and start a task of ``kind`` with ``params``.
 
         Returns the initial ``queued``/``running`` status. The task runs in the
@@ -180,6 +184,7 @@ class TaskRuntime:
             raise ValueError(f"unknown task kind {kind!r}")
         task_id = f"task-{uuid.uuid4().hex[:12]}"
         record = TaskRecord(task_id, kind)
+        record.export_grant_id = export_grant_id
         token = CancellationToken()
         async with self._lock:
             self._tasks[task_id] = record
@@ -195,8 +200,8 @@ class TaskRuntime:
                 accepts_params=self._handlers_accept_params[kind],
             )
         )
-        self._async_tasks.add(task)
-        task.add_done_callback(self._async_tasks.discard)
+        self._async_tasks[task_id] = task
+        task.add_done_callback(lambda _: self._async_tasks.pop(task_id, None))
         return self._snapshot(record)
 
     async def _run(
@@ -215,10 +220,10 @@ class TaskRuntime:
             await self._sink(status)
 
         reporter = ProgressReporter(record.task_id, record.kind, report_sink)
-        await self._emit(record)
         # Bind params into the handler via a closure: handlers are registered
         # with a fixed signature, so params are injected through a wrapper.
         try:
+            await self._emit(record)
             if accepts_params:
                 result = await handler(record.task_id, reporter, token, dict(params))
             else:
@@ -251,6 +256,34 @@ class TaskRuntime:
         if token is not None and record.state in ("queued", "running"):
             token.cancel()
         return self._snapshot(record)
+
+    async def settle_export_grant(self, grant_id: str) -> None:
+        """Join only exports admitted by this grant, including a lost create reply.
+
+        Export cancellation is safe at await points: its atomic replace has no
+        intervening await and the writer closes before this method returns.
+        Import cancellation/commit semantics remain cooperative.
+        """
+        records = [
+            record
+            for record in self._tasks.values()
+            if record.kind == "data.export" and record.export_grant_id == grant_id
+        ]
+        for record in records:
+            task = self._async_tasks.get(record.task_id)
+            if task is None or task.done():
+                continue
+            self._tokens[record.task_id].cancel()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                # A coroutine cancelled before its first instruction has no finally.
+                if not record.completed.is_set():
+                    record.state = "cancelled"
+                    record.completed.set()
+        for record in records:
+            await record.completed.wait()
 
     def status(self, task_id: str) -> TaskStatus:
         """Return the current status snapshot of ``task_id``."""

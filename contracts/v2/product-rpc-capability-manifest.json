@@ -3,19 +3,19 @@
   "rpcMethods": [
     {
       "method": "command.list",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
       "method": "command.run",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
-      "effect": "read"
+      "owner": "wpfHost",
+      "effect": "write"
     },
     {
       "method": "contentProfile.commit",
@@ -394,6 +394,14 @@
       "effect": "read"
     },
     {
+      "method": "path.revokeExportTarget",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
       "method": "plugin.cancelInstall",
       "scope": "workspace",
       "audience": "rendererPublic",
@@ -755,34 +763,34 @@
     },
     {
       "method": "shortcut.delete",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
       "method": "shortcut.launch",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
-      "effect": "read"
+      "owner": "wpfHost",
+      "effect": "write"
     },
     {
       "method": "shortcut.list",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
       "method": "shortcut.save",
-      "scope": "global",
+      "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "host.preferences",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {

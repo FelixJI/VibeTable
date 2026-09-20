@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 110
+    assert len(manifest["rpcMethods"]) == 111
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -54,6 +54,12 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "effect": "read",
     }
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
+        "command.list",
+        "command.run",
+        "shortcut.list",
+        "shortcut.save",
+        "shortcut.delete",
+        "shortcut.launch",
         "contentProfile.commit",
         "contentProfile.delete",
         "contentProfile.load",
@@ -220,8 +226,8 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 40
-    assert methods[0] == "command.list"
+    assert len(methods) == 35
+    assert methods[0] == "data.applyImport"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
         "contentProfile.delete",
@@ -291,10 +297,16 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "version.save",
     )
     assert current_owner_methods("wpfHost") == (
+        "command.list",
+        "command.run",
         "gridState.get",
         "gridState.save",
         "settings.readDevice",
         "settings.saveDevice",
+        "shortcut.delete",
+        "shortcut.launch",
+        "shortcut.list",
+        "shortcut.save",
     )
     with pytest.raises(ValueError, match="unknown current owner"):
         current_owner_methods(cast(CurrentOwner, "retiredOwner"))

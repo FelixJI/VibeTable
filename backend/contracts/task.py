@@ -107,6 +107,13 @@ class CreateTaskParams(CamelModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExportTargetSettled(CamelModel):
+    """Host-only receipt: grant retired and all admitted export writers joined."""
+
+    grant_id: str = Field(min_length=1, max_length=128)
+    settled: Literal[True]
+
+
 class TaskIdParams(CamelModel):
     """Parameters for ``task.cancel`` / ``task.status``.
 
@@ -208,6 +215,7 @@ class ResolveGrantParams(CamelModel):
 __all__ = [
     "CamelModel",
     "CreateTaskParams",
+    "ExportTargetSettled",
     "HostExportTargetParams",
     "HostImportSourceParams",
     "PathGrantDirection",

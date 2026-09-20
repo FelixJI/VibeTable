@@ -1860,7 +1860,7 @@ def _run_host_presentation_restart_acceptance(
         return _host_presentation_phase_failure(
             scenario, phase_results, "HOST_PRESENTATION_SEED_FAILED"
         )
-    required = ("workspaceId", "tableId", "fields", "state", "revision")
+    required = ("workspaceId", "tableId", "fields", "state", "revision", "commands")
     created_workspace_root = _resolve_persistent_workspace_root(
         workspace_root, readiness_dir, seed.get("workspaceId")
     )

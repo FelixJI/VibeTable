@@ -76,6 +76,7 @@ public sealed class WebMessageRouter
         "appPreferences.update",
         "settings.readDevice",
         "settings.saveDevice",
+        "command.list", "command.run", "shortcut.list", "shortcut.save", "shortcut.delete", "shortcut.launch",
         "update.check",
         "update.install",
         // G1 history query + two-phase safe restore.
@@ -199,6 +200,7 @@ public sealed class WebMessageRouter
         "appPreferences.update",
         "settings.readDevice",
         "settings.saveDevice",
+        "command.list", "command.run", "shortcut.list", "shortcut.save", "shortcut.delete", "shortcut.launch",
         "update.check",
         "update.install",
         // G1 history query + two-phase safe restore outcomes.
@@ -402,7 +404,7 @@ public sealed class WebMessageRouter
                     "CAPABILITY_NOT_PUBLIC");
             }
 
-            if (GridPresentationRequestController.Handles(type)
+            if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type))
                 && (!_productRpcCapabilities.TryGet(type, out ProductRpcCapability? gridCapability)
                     || gridCapability.Owner != "wpfHost"
                     || gridCapability.Scope != "workspace"
@@ -462,7 +464,7 @@ public sealed class WebMessageRouter
                         "BAD_WORKSPACE_SCOPE");
                 }
             }
-            if (GridPresentationRequestController.Handles(type) && scope is null)
+            if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (productRoute == ProductRpcRoute.GoSidecar)

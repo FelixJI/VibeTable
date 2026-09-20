@@ -1,3 +1,4 @@
+import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import { createHash } from "node:crypto";
@@ -5670,7 +5671,7 @@ async function scenario12(page, recorder, _network, runtime) {
   });
 }
 
-async function scenario33(page, recorder) {
+async function scenario33(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const tableId = await createEmptyTable(page, "E2E Host Presentation");
@@ -5859,6 +5860,7 @@ async function scenario33(page, recorder) {
   recorder.check("a stale CAS cannot overwrite the current UI-authored state",
     conflict.type === "gridState.save" && conflict.payload?.conflict === true
       && conflict.payload?.state?.keyword === "preserved", conflict);
+  const commands = await seedHostCommands(page, recorder, runtime);
   const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await openWorkspaceCenterFromSwitcher(page);
   await page.getByTestId("workspace-create").click();
@@ -5885,7 +5887,9 @@ async function scenario33(page, recorder) {
       && returned.payload.session.sessionEpoch > targetSession.sessionEpoch
       && reopened.payload?.state?.keyword === "preserved" && reopened.payload?.state?.density === "compact"
       && await page.getByTestId("view-keyword").locator("input").inputValue() === "preserved", reopened);
+  await verifyHostCommandsReopen(page, recorder, commands);
   return {
+    commands,
     workspaceId: originalSession.workspaceId,
     tableId,
     fields: { title: title.physicalName, status: status.physicalName,
@@ -5895,7 +5899,7 @@ async function scenario33(page, recorder) {
   };
 }
 
-async function resumeHostPresentation(page, recorder, statePath) {
+async function resumeHostPresentation(page, recorder, statePath, runtime) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
   const session = await activateHostPresentationWorkspace(page, recorder, state.workspaceId);
   await page.getByTestId("nav-tables").click();
@@ -5966,6 +5970,8 @@ async function resumeHostPresentation(page, recorder, statePath) {
         { field: "Status", operator: "等于", logic: "或", value: "" },
       ]),
     { keyword: await keyword.inputValue(), filterUi });
+  await page.getByTestId("view-filter-trigger").click();
+  await resumeHostCommands(page, recorder, runtime, state.commands);
   return { workspaceId: session.workspaceId, tableId: state.tableId, state: restored.payload?.state, revision: restored.payload?.revision };
 }
 
@@ -9325,8 +9331,8 @@ async function main() {
         ? scenario33(candidate, checks, network, runtime)
         : seedNaturalRetentionAging(candidate, checks)
       : args["persistent-phase"] === "resume"
-        ? (candidate, checks) => args.scenario === "33-host-grid-presentation"
-          ? resumeHostPresentation(candidate, checks, args.state)
+        ? (candidate, checks, _network, runtime) => args.scenario === "33-host-grid-presentation"
+          ? resumeHostPresentation(candidate, checks, args.state, runtime)
           : resumeNaturalRetentionAging(candidate, checks, args.state)
         : scenarios[args.scenario];
     if (implementation) {

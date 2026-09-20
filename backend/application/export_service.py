@@ -26,7 +26,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from openpyxl.cell.cell import Cell
@@ -373,35 +373,50 @@ class ExportService:
         cancelled: Callable[[], bool] | None,
     ) -> int:
         from openpyxl import Workbook
+        from openpyxl.worksheet._writer import WorksheetWriter
 
         wb = Workbook(write_only=True)
-        ws = wb.create_sheet(title=profile.collection[:31])
-        ws.append(columns)
-        written = 0
-        total_estimate = 0
-        offset = 0
-        while True:
-            if cancelled and cancelled():
-                break
-            page_query = query.model_copy(update={"offset": offset, "limit": EXPORT_PAGE_SIZE})
-            page = await self._query_port.query_page(
-                table_id=profile.collection,
-                query=page_query.model_dump(mode="json", by_alias=True, exclude_none=True),
-            )
-            if offset == 0:
-                total_estimate = page.filtered_rows
-            for row in page.rows:
-                rendered = [_render_cell(row, col) for col in columns]
-                ws.append(_xlsx_row(ws, rendered))
-                written += 1
-            if progress:
-                await progress(written, total_estimate, f"exported {written} rows")
-            if len(page.rows) < EXPORT_PAGE_SIZE:
-                break
-            offset += EXPORT_PAGE_SIZE
-        wb.save(path)
-        wb.close()
-        return written
+        try:
+            ws = wb.create_sheet(title=profile.collection[:31])
+            ws.append(columns)
+            written = 0
+            total_estimate = 0
+            offset = 0
+            while True:
+                if cancelled and cancelled():
+                    break
+                page_query = query.model_copy(update={"offset": offset, "limit": EXPORT_PAGE_SIZE})
+                page = await self._query_port.query_page(
+                    table_id=profile.collection,
+                    query=page_query.model_dump(mode="json", by_alias=True, exclude_none=True),
+                )
+                if offset == 0:
+                    total_estimate = page.filtered_rows
+                for row in page.rows:
+                    rendered = [_render_cell(row, col) for col in columns]
+                    ws.append(_xlsx_row(ws, rendered))
+                    written += 1
+                if progress:
+                    await progress(written, total_estimate, f"exported {written} rows")
+                if len(page.rows) < EXPORT_PAGE_SIZE:
+                    break
+                offset += EXPORT_PAGE_SIZE
+            wb.save(path)
+            return written
+        finally:
+            # A cancelled streaming workbook has never reached save(), which
+            # normally closes and removes openpyxl's worksheet temporary file.
+            for worksheet in wb.worksheets:
+                sheet = cast("WriteOnlyWorksheet", worksheet)
+                if not sheet.closed:
+                    sheet.close()
+                writer = getattr(sheet, "_writer", None)
+                if writer is not None:
+                    if not isinstance(writer, WorksheetWriter) or not isinstance(writer.out, str):
+                        raise RuntimeError("Unexpected streaming worksheet resource.")
+                    if Path(writer.out).exists():
+                        writer.cleanup()
+            wb.close()
 
     def _profile(self, collection: str) -> CollectionProfile:
         profile = self._profiles.get(collection)

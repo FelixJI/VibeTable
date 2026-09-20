@@ -16,6 +16,7 @@ Web layer never submits a raw path and only ever holds grant ids.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any
@@ -24,6 +25,7 @@ from backend.application.path_grant import PathGrantError, SessionPathGrantStore
 from backend.application.task_runtime import TaskRuntime
 from backend.contracts.task import (
     CreateTaskParams,
+    ExportTargetSettled,
     HostExportTargetParams,
     HostImportSourceParams,
     RequestExportTargetGrantParams,
@@ -45,6 +47,7 @@ class TaskService:
     ) -> None:
         self._runtime = runtime
         self._grants = grants
+        self._export_admission = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Path grants
@@ -125,7 +128,20 @@ class TaskService:
     # ------------------------------------------------------------------
 
     async def create_task(self, params: CreateTaskParams) -> TaskStatus:
-        return await self._runtime.create(params.kind, params.params)
+        if params.kind != "data.export":
+            return await self._runtime.create(params.kind, params.params)
+        grant_id = params.params.get("grantId")
+        if not isinstance(grant_id, str):
+            raise ValueError("Export requires a grantId.")
+        async with self._export_admission:
+            self._grants.resolve(grant_id, purpose="export_target", direction="write")
+            return await self._runtime.create(params.kind, params.params, export_grant_id=grant_id)
+
+    async def revoke_export_target(self, params: ResolveGrantParams) -> ExportTargetSettled:
+        async with self._export_admission:
+            self._grants.revoke(params.grant_id)
+            await self._runtime.settle_export_grant(params.grant_id)
+        return ExportTargetSettled(grant_id=params.grant_id, settled=True)
 
     async def cancel_task(self, params: TaskIdParams) -> TaskStatus:
         return await self._runtime.cancel(params.task_id)

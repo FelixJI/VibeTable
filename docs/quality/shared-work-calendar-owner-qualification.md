@@ -31,7 +31,7 @@
 
 ## Python 退出与必要元数据读
 
-同一切换 PR 删除 `settings.readShared` Python 注册，将旧公开 readShared 从 capability/catalog 退役；没有生产 UI 依赖它，不维持无消费者兼容层。固定历史回放的 DTO 与方法由固定 producer 提供。当前源码暂保留未注册、无生产调用者的 read_shared 方法与旧 DTO，原服务单测仍运行；公共生产注册已经退出；此残留仅供历史服务测试，尚未满足最终死代码退出项，后续统一收束。其他 command/shortcut 方法不在此 PR 删除。
+同一切换 PR 删除 `settings.readShared` Python 注册，将旧公开 readShared 从 capability/catalog 退役；没有生产 UI 依赖它，不维持无消费者兼容层。固定历史回放的 DTO 与方法由固定 producer 提供。该迁移时暂保留的未注册 read_shared 与 SettingsCommandService 已在后续 #347 随 command/shortcut Host 迁移删除。原服务14项测试在固定producer 42593596隔离运行；历史共享日历回放继续从原Git producer读取，不依赖当前生产死代码。
 
 现有内部 metadata GET shared_settings 保留，供 PB authority 的 snapshot/冲突/只读诊断等必要消费者使用。generic HTTP upsert/delete 对整个 shared_settings namespace 封闭，只允许 typed Product Module 写；不能只挡 work-calendar key 仍允许旁路修改它。内部 Go metadata Method 不删除，由 typed Module 复用。实现前搜索所有内部写消费者，发现真实另一个写能力则纳入显式 typed 设计或先交 root 裁决，不能暗中破坏或保留无限制 public 写。
 

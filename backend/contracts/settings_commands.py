@@ -130,13 +130,11 @@ class RunCommandParams(CamelModel):
     """Parameters for ``command.run``.
 
     ``command_id`` must be in the static catalog; ``params`` is validated
-    against the command's param schema. ``grant_id`` is required when
-    ``requires_grant=true``.
+    against the command's param schema. the Host obtains a fresh native export grant at execution time.
     """
 
     command_id: str = Field(min_length=1, max_length=64)
     params: dict[str, Any] = Field(default_factory=dict)
-    grant_id: str | None = Field(default=None, max_length=128)
 
 
 class CommandResult(CamelModel):
@@ -153,18 +151,19 @@ class CommandResult(CamelModel):
 # ---------------------------------------------------------------------------
 
 
-ShortcutTarget = Literal["built-in-command", "url", "file-action"]
+ShortcutTarget = Literal["built-in-command", "url"]
 
 
 class ShortcutEntry(CamelModel):
     """One user shortcut (references a versioned command or approved action)."""
 
-    shortcut_id: str = Field(min_length=1, max_length=128)
+    shortcut_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
     target: ShortcutTarget
     command_id: str | None = Field(default=None, max_length=64)
     url: str | None = Field(default=None, max_length=2048)
-    label: str = Field(default="", max_length=256)
-    accelerator: str = Field(default="", max_length=64)
+    label: str = Field(min_length=1, max_length=128)
 
 
 class ListShortcutsParams(CamelModel):
@@ -186,26 +185,34 @@ class SaveShortcutParams(CamelModel):
 class DeleteShortcutParams(CamelModel):
     """Parameters for ``shortcut.delete``."""
 
-    shortcut_id: str = Field(min_length=1, max_length=128)
+    shortcut_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
 
 
 class LaunchActionParams(CamelModel):
     """Parameters for ``shortcut.launch`` (OS Launch Broker).
 
-    The broker validates the scheme (only ``https``/``file`` with a grant), the
-    target's existence, and asks for user confirmation. Web never calls shell
-    directly.
+    The Host confirms HTTPS URLs or exports using the current params and a
+    fresh native grant. File actions and arbitrary shell commands are not supported.
     """
 
-    shortcut_id: str = Field(min_length=1, max_length=128)
+    shortcut_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
+
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class LaunchActionResult(CamelModel):
     """Result of ``shortcut.launch``."""
 
-    shortcut_id: str = Field(min_length=1, max_length=128)
+    shortcut_id: str = Field(
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
     launched: bool
     blocked_reason: str | None = Field(default=None, max_length=512)
+    output: dict[str, Any] | None = None
 
 
 __all__ = [

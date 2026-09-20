@@ -42,8 +42,8 @@ type RPCDescriptor struct {
 }
 
 var rpcDescriptors = []RPCDescriptor{
-	{Method: "command.list", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
-	{Method: "command.run", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "command.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: ReadEffect},
+	{Method: "command.run", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect},
 	{Method: "contentProfile.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect},
 	{Method: "contentProfile.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect},
 	{Method: "contentProfile.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect},
@@ -91,6 +91,7 @@ var rpcDescriptors = []RPCDescriptor{
 	{Method: "path.requestExportTarget", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "path.requestImportSource", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "path.resolveGrant", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: ReadEffect},
+	{Method: "path.revokeExportTarget", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "host.path", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.cancelInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.cancelTask", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.commitInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
@@ -136,10 +137,10 @@ var rpcDescriptors = []RPCDescriptor{
 	{Method: "settings.readDevice", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: ReadEffect},
 	{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect},
 	{Method: "settings.saveDevice", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect},
-	{Method: "shortcut.delete", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: WriteEffect},
-	{Method: "shortcut.launch", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
-	{Method: "shortcut.list", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: ReadEffect},
-	{Method: "shortcut.save", Scope: GlobalScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "shortcut.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect},
+	{Method: "shortcut.launch", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect},
+	{Method: "shortcut.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: ReadEffect},
+	{Method: "shortcut.save", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "host.preferences", Owner: WpfHost, Effect: WriteEffect},
 	{Method: "system.handshake", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "system.handshake", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "table.applyPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "table.previewPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: PythonBff, Effect: ReadEffect},
@@ -155,9 +156,9 @@ var rpcDescriptors = []RPCDescriptor{
 }
 
 var rpcMethods = map[CurrentOwner]map[string]struct{}{
-	PythonBff:    set("command.list", "command.run", "data.applyImport", "data.export", "data.generateTemplate", "data.previewImport", "file.applyHostChange", "file.saveHostFile", "file.token", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "plugin.cancelInstall", "plugin.cancelTask", "plugin.commitInstall", "plugin.describeAction", "plugin.getTask", "plugin.inspectInstall", "plugin.listAudit", "plugin.listCatalog", "plugin.listPendingCleanup", "plugin.resolveFile", "plugin.resolveInteraction", "plugin.rollback", "plugin.setEnabled", "plugin.startAction", "plugin.uninstall", "plugin.upgrade", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "system.handshake", "table.applyPaste", "table.previewPaste", "task.cancel", "task.create", "task.status"),
+	PythonBff:    set("data.applyImport", "data.export", "data.generateTemplate", "data.previewImport", "file.applyHostChange", "file.saveHostFile", "file.token", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "plugin.cancelInstall", "plugin.cancelTask", "plugin.commitInstall", "plugin.describeAction", "plugin.getTask", "plugin.inspectInstall", "plugin.listAudit", "plugin.listCatalog", "plugin.listPendingCleanup", "plugin.resolveFile", "plugin.resolveInteraction", "plugin.rollback", "plugin.setEnabled", "plugin.startAction", "plugin.uninstall", "plugin.upgrade", "system.handshake", "table.applyPaste", "table.previewPaste", "task.cancel", "task.create", "task.status"),
 	GoSidecar:    set("contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.change.apply", "field.change.cancel", "field.change.plan", "field.change.status", "field.recycleBin.list", "field.settings.describe", "file.list", "formula.draft.validate", "formula.preview", "formula.validate", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.applyDelta", "relation.createTarget", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "relation.updateSingle", "schema.delete", "schema.describe", "schema.getTable", "schema.list", "schema.table.create", "settings.commitWorkCalendar", "settings.readWorkCalendar", "version.compare", "version.create", "version.delete", "version.list", "version.promote", "version.save"),
-	WpfHost:      set("gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice"),
+	WpfHost:      set("command.list", "command.run", "gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save"),
 	PythonWorker: set(),
 }
 

@@ -297,6 +297,12 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "preset.list",
   "preset.save",
   "preset.delete",
+  "command.list",
+  "command.run",
+  "shortcut.list",
+  "shortcut.save",
+  "shortcut.delete",
+  "shortcut.launch",
   "version.list",
   "version.create",
   "version.save",
@@ -412,6 +418,12 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "preset.list",
   "preset.save",
   "preset.delete",
+  "command.list",
+  "command.run",
+  "shortcut.list",
+  "shortcut.save",
+  "shortcut.delete",
+  "shortcut.launch",
   "version.list",
   "version.create",
   "version.save",
@@ -1067,6 +1079,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             ? null
           : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
             ? workspaceBootstrapTimeoutMs
+          : type === "command.run" || type === "shortcut.launch"
+            ? Math.max(timeoutMs, 135_000)
           : timeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
       // Workspace open/switch may perform drain, protection and pre-open work
@@ -1082,7 +1096,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           }, requestTimeoutMs);
       pending.set(requestId, {
         retirementScope: (type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
-          || type === "settings.readWorkCalendar")
+          || type === "settings.readWorkCalendar" || type.startsWith("command.") || type.startsWith("shortcut."))
           && env.scope ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
           : undefined,
         messageType: type,

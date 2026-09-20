@@ -162,6 +162,8 @@ async function resumeDom(mutate = () => {}) {
   const equivalentPresentationState = eval(`(${extract(
     "function equivalentPresentationState", "async function scenario13",
   )})`);
+  // Command controls have their own UI/real-package assertions; this probe isolates presentation restoration.
+  const resumeHostCommands = async () => {};
   const resumeHostPresentation = eval(`(${extract(
     "async function resumeHostPresentation", "async function activateHostPresentationWorkspace",
   )})`);
