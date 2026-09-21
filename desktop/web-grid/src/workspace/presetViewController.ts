@@ -133,6 +133,7 @@ export function createPresetViewController(
   const pendingView = ref<PresetView | null>(null);
   const presentedView = ref<PresetView | null>(null);
   const presentationError = ref("");
+  const presentationQueryReady = ref(false);
   let pendingRestore: { view: PresetView; local: GridState | null } | null = null;
   let initializing = true;
   let forcedRemote = false;
@@ -148,7 +149,7 @@ export function createPresetViewController(
   const frozenFields = computed(() => (presentedView.value?.columns ?? [])
     .filter(column => column.frozen).map(column => column.name));
   const presentationLoading = computed(() => !!dependencies.workspace.currentTable
-    && (dependencies.presets.loading || !presentedView.value || !!pendingView.value));
+    && (dependencies.presets.loading || !presentedView.value || !!pendingView.value || !presentationQueryReady.value));
   onScopeDispose(() => { loadGeneration++; persistence?.retire(); });
 
   const activeView = computed(() => dependencies.presets.presets
@@ -262,6 +263,7 @@ export function createPresetViewController(
     if (!table) return;
     dependencies.executeQuery(table, dependencies.query.toQuery(groupOffset));
     dependencies.refreshLookups();
+    presentationQueryReady.value = true;
   }
 
   async function applyView(view: PresetView): Promise<void> {
@@ -289,6 +291,7 @@ export function createPresetViewController(
 
   async function loadCollection(collection: string, preserveActive = false, restoreLocal = false): Promise<void> {
     const generation = ++loadGeneration;
+    presentationQueryReady.value = false;
     const requestedActiveId = preserveActive ? dependencies.presets.activePresetId : null;
     dependencies.presets.begin();
     try {
@@ -431,6 +434,7 @@ export function createPresetViewController(
       if (previous?.[1] !== identity) memoryDefaults.clear();
       persistence?.retire();
       initializing = true;
+      presentationQueryReady.value = false;
       applying = false;
       presentationError.value = "";
       presentedView.value = null;

@@ -2258,6 +2258,64 @@ describe("WorkspaceView", () => {
     });
   });
 
+  it("defers cold recovery until the saved presentation query is queued", async () => {
+    configureWorkspaceEpochPair();
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    Object.assign(mockTabulatorRef.current, {
+      getColumns: () => [], getData: () => [], getSorters: () => [], getHeaderFilters: () => [],
+      setSort: vi.fn(), clearHeaderFilter: vi.fn(), setHeaderFilterValue: vi.fn(),
+      replaceData: vi.fn().mockResolvedValue(undefined),
+    });
+    useUiStore().navigate("tables");
+    mountView();
+    await flushPromises();
+    workspace.selectTable("orders");
+    useTableStore().schema = [{ name: "status", title: "Status", dataType: "text", editable: false, nullable: true }];
+    await flushPromises();
+    const presets = [...posted].reverse().find(item => item.type === "preset.list")!;
+    const layout = [...posted].reverse().find(item => item.type === "gridState.get")!;
+    expect(presets).toBeDefined();
+    expect(layout).toBeDefined();
+    emit({ type: "realtime.recovered", payload: {
+      contractVersion: "2.0", topic: "realtime.recovered", activeFormulaTasks: [], terminalNotifications: [],
+    } });
+    await flushPromises();
+    expect(posted.filter(item => item.type === "table.queryRequested")).toHaveLength(0);
+    useTableStore().appendPage({
+      table: "orders", columns: useTableStore().schema!, rows: [], offset: 0, limit: 100,
+      totalRows: 0, mode: "remote",
+      revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+    });
+    await flushPromises();
+    emit({ type: "preset.list", requestId: presets.requestId, payload: { collection: "orders", presets: [] } });
+    emit({ type: "gridState.get", requestId: layout.requestId, payload: {
+      state: { keyword: "preserved", filters: [{ field: "status", operator: "eq", value: "signed" }] },
+      revision: "layout-1", conflict: false,
+    } });
+    await flushPromises();
+    const queries = posted.filter(item => item.type === "table.queryRequested");
+    expect(queries).toHaveLength(2);
+    expect(queries[0]!.requestId).toBeUndefined();
+    expect(queries[1]!.requestId).toBeTruthy();
+    expect(queries[1]!.payload).toEqual(queries[0]!.payload);
+    expect(queries[1]!.payload).toMatchObject({ table: "orders", query: {
+      filters: [{ field: "status", operator: "eq", value: "signed" }],
+    } });
+    expect(JSON.stringify(queries[1]!.payload)).toContain("preserved");
+    const contextsBefore = posted.filter(item => item.type === "schema.describe").length;
+    emit({ type: "table.pageLoaded", requestId: queries[1]!.requestId, payload: {
+      table: "orders", columns: useTableStore().schema!, rows: [], offset: 0, limit: 100,
+      totalRows: 0, mode: "remote",
+      revision: { databaseSessionId: "pocketbase", schemaRevision: "schema_7", dataRevision: 7 },
+    } });
+    await flushPromises();
+    expect(posted.filter(item => item.type === "schema.describe").length).toBeGreaterThan(contextsBefore);
+  });
+
   it("routes grid sort/filter/group intent to the standard full-dataset table query", async () => {
     configureWorkspaceEpochPair();
     const { bridge, posted, emit } = makeRecordingBridge();

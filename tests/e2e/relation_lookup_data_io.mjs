@@ -38,7 +38,7 @@ export async function runRelationLookupDataIo(page, recorder, runtime, helpers) 
     recorder.check(`${kind} task completes successfully`, status.state === "succeeded", { status });
     return status.result;
   };
-  await waitForShell(page, recorder);
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
   const targets = await createSimpleTable(page, "A5 Targets", "Label");
   const code = await createV2Field(page, targets.tableId, "Code", "text", (draft) => {
