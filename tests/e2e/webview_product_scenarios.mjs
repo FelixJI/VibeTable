@@ -5783,54 +5783,54 @@ async function scenario33(page, recorder, _network, runtime) {
   const holder = await page.locator(".tabulator-tableholder").boundingBox();
   const secondBeforeScroll = await secondHeader.boundingBox();
   if (!holder || !secondBeforeScroll) throw new Error("column move viewport unavailable");
+  const settledGrid = await waitForBridgeDiagnosticsToSettle(page);
+  if ((settledGrid?.pending?.length ?? 1) !== 0 || (settledGrid?.failures?.length ?? 0) !== 0) {
+    throw new Error("column move requires settled grid requests");
+  }
+  const measureDropTarget = () => page.evaluate((field) => {
+    const body = document.querySelector(".tabulator-tableholder");
+    const contents = document.querySelector(".tabulator-header-contents");
+    const column = document.querySelector(
+      `.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`,
+    );
+    if (!body || !contents || !column) throw new Error("column move viewport unavailable");
+    const bounds = body.getBoundingClientRect();
+    const target = column.getBoundingClientRect();
+    const viewport = {
+      left: Math.max(0, bounds.left),
+      right: Math.min(document.documentElement.clientWidth, bounds.left + body.clientWidth),
+    };
+    const left = Math.max(viewport.left, target.left);
+    const right = Math.min(viewport.right, target.right);
+    const point = { x: left + (right - left) * 3 / 4, y: target.top + 10 };
+    const hitsTarget = right - left >= 12 && point.x > target.left + target.width / 2
+      && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1
+      && document.elementFromPoint(point.x, point.y)?.closest(".tabulator-col") === column;
+    return {
+      point, hitsTarget, viewport, target: { left: target.left, right: target.right },
+      bodyScroll: body.scrollLeft, headerScroll: contents.scrollLeft,
+      maxScroll: body.scrollWidth - body.clientWidth, bodyTop: bounds.top,
+    };
+  }, second.physicalName);
   const visibleDropTarget = async () => {
-    const target = await secondHeader.boundingBox();
-    if (!target) throw new Error("visible column move target unavailable");
-    const viewport = await page.locator(".tabulator-tableholder").evaluate(body => {
-      const bounds = body.getBoundingClientRect();
-      return {
-        left: Math.max(0, bounds.left),
-        right: Math.min(document.documentElement.clientWidth, bounds.left + body.clientWidth),
-      };
-    });
-    const overflow = target.x < viewport.left
-      ? target.x - viewport.left - 24
-      : target.x + target.width > viewport.right
-        ? target.x + target.width - viewport.right + 24
-        : 0;
-    if (overflow !== 0) {
-      // Wheel the real body, never the overflow-hidden header. MoveColumns can
-      // reset the body scroll while entering its drag state, so this runs again
-      // after the moving marker appears.
-      await page.mouse.move((viewport.left + viewport.right) / 2, holder.y + 20);
+    let observed;
+    // A resize acknowledgement can precede Tabulator's data redraw, and
+    // MoveColumns itself resets the body scroll on entry. Reposition only
+    // after measuring a missing hit; never replay the actual drag/mutation.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      observed = await measureDropTarget();
+      if (observed.hitsTarget) return observed.point;
+      const { viewport, target } = observed;
+      const overflow = target.left < viewport.left
+        ? target.left - viewport.left - 24
+        : target.right - viewport.right + 24;
+      await page.mouse.move((viewport.left + viewport.right) / 2, observed.bodyTop + 20);
       await page.mouse.wheel(overflow, 0);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      observed = await measureDropTarget();
+      if (observed.hitsTarget) return observed.point;
     }
-    await page.waitForFunction((field) => {
-      const body = document.querySelector(".tabulator-tableholder");
-      const contents = document.querySelector(".tabulator-header-contents");
-      const column = document.querySelector(`.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`);
-      if (!body || !contents || !column) return false;
-      const viewport = body.getBoundingClientRect();
-      const bounds = column.getBoundingClientRect();
-      const left = Math.max(0, viewport.left);
-      const right = Math.min(document.documentElement.clientWidth, viewport.left + body.clientWidth);
-      return bounds.left >= left && bounds.right <= right
-        && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1;
-    }, second.physicalName);
-    const visibleTarget = await secondHeader.boundingBox();
-    if (!visibleTarget) throw new Error("column move target became unavailable");
-    const dropPoint = { x: visibleTarget.x + visibleTarget.width * 3 / 4, y: visibleTarget.y + 10 };
-    const hitsTarget = await page.evaluate(({ field, point }) => {
-      const targetHeader = document.querySelector(
-        `.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`,
-      );
-      return document.elementFromPoint(point.x, point.y)?.closest(".tabulator-col") === targetHeader;
-    }, {
-      field: second.physicalName,
-      point: dropPoint,
-    });
-    if (!hitsTarget) throw new Error("column move drop point does not hit the target header");
-    return dropPoint;
+    throw new Error(`column move drop point does not hit the target header: ${JSON.stringify(observed)}`);
   };
   await visibleDropTarget();
   const moveSource = await firstHeader.boundingBox();
