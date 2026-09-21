@@ -265,6 +265,7 @@ async def test_ordinary_rpc_overload_terminates_instead_of_blocking_callback_rea
         (-32050, "path_grant_error", -32050),
         (-32098, "path_grant_error", -32603),
         (-32050, "unknown", -32603),
+        (None, "valid_read_grant", -32050),
     ],
 )
 async def test_real_task_composition_preserves_only_closed_host_grant_errors(
@@ -297,19 +298,25 @@ async def test_real_task_composition_preserves_only_closed_host_grant_errors(
         callback = await asyncio.wait_for(frames.get(), 2)
         assert callback["method"] == "host.file.describe"
         assert callback["params"] == {"grantId": "expired"}
-        reader.feed_data(
-            json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": callback["id"],
-                    "error": {
-                        "code": native_code,
-                        "message": "private-path-marker",
-                        "data": {"kind": kind, "message": "private-path-marker"},
-                    },
+        native_reply = {
+            "error": {
+                "code": native_code,
+                "message": "private-path-marker",
+                "data": {"kind": kind, "message": "private-path-marker"},
+            },
+        }
+        if native_code is None:
+            native_reply = {
+                "result": {
+                    "grantId": "expired",
+                    "purpose": "import_source",
+                    "direction": "read",
+                    "displayName": "input.csv",
+                    "expiresAt": 9999999999,
                 }
-            ).encode()
-            + b"\n"
+            }
+        reader.feed_data(
+            json.dumps({"jsonrpc": "2.0", "id": callback["id"], **native_reply}).encode() + b"\n"
         )
         response = await asyncio.wait_for(frames.get(), 2)
         assert response["id"] == "export-create"
@@ -319,6 +326,8 @@ async def test_real_task_composition_preserves_only_closed_host_grant_errors(
             assert response["error"]["data"]["kind"] == "path_grant_error"
         assert "private-path-marker" not in json.dumps(response)
         assert product_backend.transport.requests == []
+        task_service = server._dispatcher._handlers["task.create"][0].__self__
+        assert task_service.runtime._tasks == {}
     finally:
         reader.feed_eof()
         await asyncio.wait_for(serving, 2)

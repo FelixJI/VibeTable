@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from backend.application.host_files import HostFiles
+from backend.application.path_grant import PathGrantError
 from backend.application.task_runtime import NotificationSink, TaskRuntime
 from backend.contracts.task import (
     CreateTaskParams,
@@ -30,7 +31,9 @@ class TaskService:
         async with self._export_admission:
             descriptor = await self.files.describe(grant_id)
             if descriptor.purpose != "export_target" or descriptor.direction != "write":
-                raise ValueError("Export requires a writable Host grant.")
+                raise PathGrantError(
+                    "Export requires a writable Host grant.", code="grant_direction_mismatch"
+                )
             return await self._runtime.create(params.kind, params.params, export_grant_id=grant_id)
 
     async def settle_export(self, params: ResolveGrantParams) -> ExportTargetSettled:
