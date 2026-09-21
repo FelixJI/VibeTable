@@ -24,16 +24,17 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
+from backend.application.host_files import HostFiles, text_stream
 from backend.application.paste_service import PasteMutationPort
 from backend.contracts.data_io import (
     MAX_ATOMIC_IMPORT_ROWS,
@@ -57,6 +58,9 @@ IMPORT_TOKEN_TTL_SECONDS: float = 10 * 60.0
 
 #: Compatibility default retained by the public contract. Apply is atomic.
 DEFAULT_CHUNK_SIZE: int = 500
+
+
+logger = logging.getLogger(__name__)
 
 
 class ImportFlowError(Exception):
@@ -152,8 +156,9 @@ class SourceFile:
     reader never loads the entire file into memory at once.
     """
 
-    def __init__(self, path: str) -> None:
-        self._path = Path(path)
+    def __init__(self, stream: BinaryIO, display_name: str) -> None:
+        self._stream = stream
+        self._display_name = display_name
 
     def read_header_and_rows(
         self,
@@ -169,8 +174,12 @@ class SourceFile:
         because apply is one atomic mutation with the same fixed row limit.
         ``source_hash`` is the SHA-256 of the file bytes (binds the preview).
         """
-        source_hash = hashlib.sha256(self._path.read_bytes()).hexdigest()
-        suffix = self._path.suffix.lower()
+        digest = hashlib.sha256()
+        while block := self._stream.read(256 * 1024):
+            digest.update(block)
+        source_hash = digest.hexdigest()
+        self._stream.seek(0)
+        suffix = Path(self._display_name).suffix.lower()
         if suffix in (".xlsx", ".xlsm"):
             header, rows = self._read_xlsx(max_rows=max_rows, sheet=sheet)
             return header, rows, source_hash
@@ -187,7 +196,7 @@ class SourceFile:
         from openpyxl.styles.numbers import is_datetime
         from openpyxl.utils.datetime import CALENDAR_WINDOWS_1900
 
-        wb = load_workbook(self._path, read_only=True, data_only=True)
+        wb = load_workbook(self._stream, read_only=True, data_only=True)
         try:
             ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.active
             if ws is None:
@@ -246,7 +255,7 @@ class SourceFile:
             wb.close()
 
     def _read_csv(self, *, max_rows: int) -> tuple[list[str], list[list[Any]]]:
-        with self._path.open("r", encoding="utf-8-sig", newline="") as fh:
+        with text_stream(self._stream) as fh:
             reader = csv.reader(fh)
             try:
                 header = [str(c) for c in next(reader)]
@@ -363,8 +372,7 @@ class ImportService:
         auth: Any,
         bulk: ImportMutationPort,
         profiles: dict[str, CollectionProfile],
-        resolve_path: Callable[..., str],
-        reserve_grant: Callable[[str], AbstractContextManager[Callable[[], None]]],
+        files: HostFiles,
         relation_provider: RelationImportProvider | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -372,8 +380,7 @@ class ImportService:
         self._auth = auth
         self._bulk = bulk
         self._profiles = profiles
-        self._resolve_path = resolve_path
-        self._reserve_grant = reserve_grant
+        self._files = files
         self._relation_provider = relation_provider
         self._clock = clock
         self._plans: dict[str, _StoredImportPlan] = {}
@@ -390,13 +397,10 @@ class ImportService:
                     "expectedSchemaRevision": params.schema_revision,
                 },
             )
-        path = self._resolve_path(
-            params.grant_id,
-            purpose="import_source",
-            direction="read",
-        )
-        source = SourceFile(path)
-        header, rows, source_hash = source.read_header_and_rows()
+        async with self._files.read(params.grant_id) as source:
+            header, rows, source_hash = SourceFile(
+                source.stream, source.display_name
+            ).read_header_and_rows()
         mapping, unmatched = auto_map_columns(header, profile, params.column_mapping)
         relations = {r.field: r for r in profile.relations}
         explicit_by_source = {item.source_column.strip(): item for item in params.column_mapping}
@@ -660,7 +664,7 @@ class ImportService:
             )
         if stored.capability_hash != profile.capability_hash:
             raise ImportFlowError("schema changed since preview", code="schema_mismatch")
-        with self._reserve_grant(params.grant_id) as commit_grant:
+        async with self._files.reserve_import(params.grant_id, params.token) as commit_grant:
             return await self._apply_reserved(
                 params, stored, profile, commit_grant, progress=progress, cancelled=cancelled
             )
@@ -775,7 +779,10 @@ class ImportService:
         commit_grant()
         stored.consumed = True
         if progress:
-            await progress(total, total, "atomic import committed")
+            try:
+                await progress(total, total, "atomic import committed")
+            except Exception:
+                logger.warning("import.committed_progress_notification_failed")
         return ApplyImportResult(
             collection=params.collection,
             created_count=len(created_keys),

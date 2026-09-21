@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from backend.__main__ import _register_pocketbase_product_methods
 from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
 from backend.contracts.generated_product_rpc_capabilities import current_owner_methods
@@ -12,19 +12,11 @@ from backend.contracts.product_rpc import (
     ProductParams,
     _current_python_registry,
 )
-from backend.rpc.dispatcher import CODE_INVALID_PARAMS, CODE_METHOD_NOT_FOUND, RpcDispatcher
 from backend.rpc.error_registry import CODE_PRODUCT_DATA
+from tests.backend.product_composition_fixture import ProductBackend
+from tests.backend.product_composition_fixture import product_backend as product_backend
 
 RETIRED_PROVIDER = "".join(["di", "rectus"])
-
-
-class FakeProductService:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, ProductParams]] = []
-
-    async def invoke(self, method: str, params: ProductParams) -> dict[str, object]:
-        self.calls.append((method, params))
-        return {}
 
 
 @pytest.mark.asyncio
@@ -33,11 +25,7 @@ class FakeProductService:
     [
         (
             "events.reconcile",
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_0001",
-                "dataRevision": "data_0001",
-            },
+            {"tableId": "orders", "schemaRevision": "schema_0001", "dataRevision": "data_0001"},
         ),
         ("field.settings.describe", {"tableId": "orders"}),
         ("field.settings.describe", {"extra": True}),
@@ -86,27 +74,15 @@ class FakeProductService:
     ],
 )
 async def test_go_owned_product_methods_have_no_python_registration_or_fallback(
-    method: str,
-    params: dict[str, object],
+    method: str, params: dict[str, object], product_backend: ProductBackend
 ) -> None:
-    dispatcher = RpcDispatcher()
-    service = FakeProductService()
-    _register_pocketbase_product_methods(dispatcher, service)
-
-    response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    )
-
-    assert response is not None
-    assert response["error"]["code"] == CODE_METHOD_NOT_FOUND
-    assert service.calls == []
+    await product_backend.assert_retired(method, params)
 
 
-def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
-    dispatcher = RpcDispatcher()
-
-    _register_pocketbase_product_methods(dispatcher, FakeProductService())
-
+@pytest.mark.asyncio
+async def test_product_rpc_registration_is_closed_and_provider_neutral(
+    product_backend: ProductBackend,
+) -> None:
     expected_methods = {
         "field.settings.describe",
         "field.change.plan",
@@ -149,114 +125,44 @@ def test_product_rpc_registration_is_closed_and_provider_neutral() -> None:
         "history.previewRestore",
         "history.read",
     }
+    assert set(product_backend.server._dispatcher.registered_methods) == {
+        "system.handshake",
+        "task.create",
+        "task.cancel",
+        "task.status",
+        "task.settleExport",
+        "table.previewPaste",
+        "table.applyPaste",
+        "data.previewImport",
+        "data.applyImport",
+        "data.export",
+        "data.generateTemplate",
+        "plugin.listCatalog",
+        "plugin.listAudit",
+        "plugin.listPendingCleanup",
+        "plugin.inspectInstall",
+        "plugin.commitInstall",
+        "plugin.cancelInstall",
+        "plugin.setEnabled",
+        "plugin.upgrade",
+        "plugin.rollback",
+        "plugin.uninstall",
+        "plugin.describeAction",
+        "plugin.startAction",
+        "plugin.resolveInteraction",
+        "plugin.resolveFile",
+        "plugin.cancelTask",
+        "plugin.getTask",
+    }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
-    assert set(dispatcher.registered_methods) == expected_methods - {
-        "mutation.apply",
-        "mutation.preview",
-        "field.change.apply",
-        "field.change.cancel",
-        "field.change.plan",
-        "field.change.status",
-        "field.recycleBin.list",
-        "field.settings.describe",
-        "formula.draft.validate",
-        "formula.preview",
-        "formula.validate",
-        "relation.searchTargets",
-        "query.selectionOpen",
-        "lookup.list",
-        "lookup.query",
-        "lookup.valuePage",
-        "query.cursorFetch",
-        "query.cursorOpen",
-        "query.page",
-        "query.readRows",
-        "query.view",
-        "query.validateSnapshot",
-        "relation.applyDelta",
-        "relation.createTarget",
-        "relation.updateSingle",
-        "relation.inspectPair",
-        "relation.previewDelta",
-        "schema.describe",
-        "file.list",
-        "history.applyRestore",
-        "history.previewRestore",
-        "history.read",
-        "events.reconcile",
-        "schema.delete",
-        "schema.getTable",
-        "schema.list",
-        "schema.table.create",
-    }
-    assert set(PYTHON_PRODUCT_RPC_REGISTRY) == set(dispatcher.registered_methods)
-    assert set(PRODUCT_RPC_REGISTRY) - set(current_owner_methods("pythonBff")) == {
-        "mutation.apply",
-        "mutation.preview",
-        "events.reconcile",
-        "field.change.apply",
-        "field.change.cancel",
-        "field.change.plan",
-        "field.change.status",
-        "field.recycleBin.list",
-        "field.settings.describe",
-        "formula.draft.validate",
-        "formula.preview",
-        "formula.validate",
-        "file.list",
-        "history.applyRestore",
-        "history.previewRestore",
-        "history.read",
-        "lookup.list",
-        "lookup.query",
-        "lookup.valuePage",
-        "query.cursorFetch",
-        "query.cursorOpen",
-        "query.page",
-        "query.readRows",
-        "query.selectionOpen",
-        "query.validateSnapshot",
-        "query.view",
-        "relation.applyDelta",
-        "relation.createTarget",
-        "relation.updateSingle",
-        "relation.inspectPair",
-        "relation.previewDelta",
-        "relation.searchTargets",
-        "schema.delete",
-        "schema.describe",
-        "schema.getTable",
-        "schema.list",
-        "schema.table.create",
-    }
+    assert not PYTHON_PRODUCT_RPC_REGISTRY
+    assert expected_methods.isdisjoint(product_backend.server._dispatcher.registered_methods)
+    assert expected_methods.isdisjoint(current_owner_methods("pythonBff"))
     assert not any(
-        method.startswith(f"{RETIRED_PROVIDER}.") for method in dispatcher.registered_methods
+        method.startswith(f"{RETIRED_PROVIDER}.")
+        for method in product_backend.server._dispatcher.registered_methods
     )
-
-
-@pytest.mark.asyncio
-async def test_product_rpc_registration_delegates_through_single_invoke_seam() -> None:
-    dispatcher = RpcDispatcher()
-    service = FakeProductService()
-    _register_pocketbase_product_methods(dispatcher, service)
-    response = await dispatcher.dispatch(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "file.token",
-            "params": {
-                "tableId": "orders",
-                "recordId": "row-1",
-                "fieldId": "invoice",
-                "storedName": "invoice.pdf",
-            },
-        }
-    )
-    assert response == {"jsonrpc": "2.0", "id": 1, "result": {}}
-    assert len(service.calls) == 1
-    method, params = service.calls[0]
-    assert method == "file.token"
-    assert isinstance(params, PRODUCT_RPC_REGISTRY[method])
+    assert product_backend.transport.requests == []
 
 
 @pytest.mark.asyncio
@@ -282,15 +188,11 @@ async def test_product_rpc_registration_delegates_through_single_invoke_seam() -
     ],
 )
 async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
-    method: str, params: dict[str, object]
+    method: str, params: dict[str, object], product_backend: ProductBackend
 ) -> None:
-    dispatcher = RpcDispatcher()
-    _register_pocketbase_product_methods(dispatcher, FakeProductService())
-    response = await dispatcher.dispatch(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-    )
-    assert response is not None
-    assert response["error"]["code"] == CODE_INVALID_PARAMS
+    with pytest.raises(ValidationError):
+        PRODUCT_RPC_REGISTRY[method].model_validate(params)
+    await product_backend.assert_retired(method, params)
 
 
 @pytest.mark.asyncio
@@ -317,33 +219,26 @@ async def test_product_rpc_rejects_extra_missing_wrong_type_and_alias_conflict(
     ],
 )
 async def test_product_rpc_preserves_sanitized_structured_errors(
-    failure: Exception, expected_code: str
+    failure: Exception, expected_code: str, product_backend: ProductBackend
 ) -> None:
-
-    class ErrorService(FakeProductService):
-        async def invoke(self, method: str, params: ProductParams) -> dict[str, object]:
-            del method, params
-            raise failure
-
-    dispatcher = RpcDispatcher()
-    _register_pocketbase_product_methods(dispatcher, ErrorService())
-    response = await dispatcher.dispatch(
+    product_backend.transport.failure = failure
+    response = await product_backend.server._dispatcher.dispatch(
         {
             "jsonrpc": "2.0",
             "id": 2,
-            "method": "file.token",
-            "params": {
-                "tableId": "orders",
-                "recordId": "row-1",
-                "fieldId": "invoice",
-                "storedName": "invoice.pdf",
-            },
+            "method": "data.generateTemplate",
+            "params": {"collection": "orders", "grantId": "not-opened"},
         }
     )
     assert response is not None
     assert response["error"]["code"] == CODE_PRODUCT_DATA
     assert response["error"]["data"]["code"] == expected_code
     assert response["error"]["data"]["message"] == str(failure)
+    if isinstance(failure, PocketBaseProductError):
+        assert response["error"]["data"]["details"] == failure.details
+        assert response["error"]["data"]["path"] == failure.path
+        assert response["error"]["data"]["retryable"] == failure.retryable
+    assert product_backend.transport.requests == [("GET", "/api/vibetable/v2/schema/tables/orders")]
 
 
 def test_current_python_registry_rejects_unknown_and_retires_go_owned_routes() -> None:

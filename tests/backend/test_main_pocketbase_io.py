@@ -17,12 +17,10 @@ from backend.__main__ import (
 )
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.transport import PocketBaseConfig
-from backend.application.task_service import build_task_service
 from backend.contracts.data_io import PreviewImportParams
 from backend.contracts.task import CreateTaskParams, TaskIdParams
 from backend.rpc.dispatcher import RpcDispatcher
+from tests.backend.host_files_fixture import file_task_fixture as build_task_service
 
 RETIRED_PROVIDER = "".join(["di", "rectus"])
 
@@ -68,11 +66,7 @@ def test_product_runtime_fails_closed_without_sidecar_session(monkeypatch: Any) 
     monkeypatch.delenv("VIBETABLE_SIDECAR_URL", raising=False)
     monkeypatch.delenv("VIBETABLE_SIDECAR_SESSION_SECRET", raising=False)
 
-    service, client, config = _product_runtime()
-
-    assert service is None
-    assert client is None
-    assert config is None
+    assert _product_runtime() is None
 
 
 class _ImportTransport:
@@ -248,20 +242,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
         transport=transport,  # type: ignore[arg-type]
         session_secret=secret,
     )
-    product_service = PocketBaseProductRpc(
-        client=client,
-        transport=transport,  # type: ignore[arg-type]
-        session_secret=secret,
-    )
-    config = PocketBaseConfig(
-        base_url="http://127.0.0.1:8090",
-        session_secret=secret,
-    )
-    monkeypatch.setattr(
-        backend_main,
-        "_product_runtime",
-        lambda: (product_service, client, config),
-    )
+    monkeypatch.setattr(backend_main, "_product_runtime", lambda: client)
     output = io.BytesIO()
     monkeypatch.setattr(
         backend_main.sys,
@@ -290,21 +271,16 @@ async def test_build_server_dispatches_import_task_without_internal_error(
             "preset.list",
             "preset.save",
         }.isdisjoint(dispatcher.registered_methods)
-        registered = await dispatcher.dispatch(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "path.registerImportSource",
-                "params": {
-                    "path": str(source),
-                    "sizeBytes": source.stat().st_size,
-                    "mimeType": "text/csv",
-                },
-            }
+        from tests.backend.host_files_fixture import LocalFilePeer
+
+        peer = LocalFilePeer()
+        descriptor = peer.grants.issue(path=str(source), purpose="import_source", direction="read")
+        monkeypatch.setattr(server, "call_host_file", peer.call)
+        grant_id = descriptor.grant_id
+        assert all(not method.startswith("path.") for method in dispatcher.registered_methods)
+        assert {"file.token", "file.applyHostChange", "file.saveHostFile"}.isdisjoint(
+            dispatcher.registered_methods
         )
-        assert registered is not None
-        assert "error" not in registered
-        grant_id = registered["result"]["grantId"]
         previewed = await dispatcher.dispatch(
             {
                 "jsonrpc": "2.0",
@@ -403,3 +379,63 @@ def test_recovery_preview_probe_refreshes_schema_without_files_or_plans() -> Non
         assert not tasks.grants._grants
 
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_build_server_preserves_worker_product_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from backend.adapters.pocketbase.client import PocketBaseProductError
+    from backend.rpc import dispatcher, error_registry
+
+    class RejectingTransport(_Transport):
+        async def request(self, method: str, path: str, **kwargs: Any) -> Any:
+            assert (method, path) == ("GET", "/api/vibetable/v2/schema/tables/orders")
+            raise PocketBaseProductError(
+                status=409,
+                payload={
+                    "code": "schema.revision_conflict",
+                    "message": "Schema changed",
+                    "path": "schemaRevision",
+                    "details": {"current": "schema_2"},
+                    "retryable": False,
+                },
+            )
+
+    registry = error_registry.RpcErrorRegistry()
+    monkeypatch.setattr(error_registry, "application_error_registry", registry)
+    monkeypatch.setattr(dispatcher, "application_error_registry", registry)
+    client = PocketBaseClient(transport=RejectingTransport(), session_secret="test-only")
+    monkeypatch.setattr(backend_main, "_product_runtime", lambda: client)
+    monkeypatch.setattr(backend_main.sys, "stdin", SimpleNamespace(buffer=io.BytesIO()))
+    monkeypatch.setattr(backend_main.sys, "stdout", SimpleNamespace(buffer=io.BytesIO()))
+    monkeypatch.setenv("VIBETABLE_STATE_DIR", str(tmp_path / "state"))
+    server, plugins = await backend_main._build_server()
+    try:
+        response = await server._dispatcher.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": "worker-error",
+                "method": "data.generateTemplate",
+                "params": {"collection": "orders", "grantId": "not-opened"},
+            }
+        )
+        assert response == {
+            "jsonrpc": "2.0",
+            "id": "worker-error",
+            "error": {
+                "code": -32150,
+                "message": "Product data error",
+                "data": {
+                    "kind": "product_data_error",
+                    "message": "Schema changed",
+                    "code": "schema.revision_conflict",
+                    "path": "schemaRevision",
+                    "details": {"current": "schema_2"},
+                    "retryable": False,
+                },
+            },
+        }
+    finally:
+        if plugins is not None:
+            await plugins.close()

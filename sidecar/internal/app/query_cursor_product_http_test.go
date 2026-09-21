@@ -123,7 +123,7 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 			lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 			queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 			schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
-			schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+			schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), productrpc.AttachmentTokenRegistration(pb, mustAttachmentManager(t)),
 			unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),

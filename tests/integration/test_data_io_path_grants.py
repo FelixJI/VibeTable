@@ -13,9 +13,7 @@ from pydantic import JsonValue
 from backend.__main__ import _configure_pocketbase_data_io
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
-from backend.application.path_grant import SessionPathGrantStore
 from backend.application.task_runtime import TaskRuntime
-from backend.application.task_service import TaskService
 from backend.contracts.product_rpc import JsonObject
 from backend.contracts.task import (
     HostExportTargetParams,
@@ -24,6 +22,8 @@ from backend.contracts.task import (
 )
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.error_registry import ErrorDomain, register_application_errors
+from tests.backend.host_files_fixture import FileTaskFixture as TaskService
+from tests.backend.path_grant_fixture import SessionPathGrantStore
 from tests.integration.packaged_sidecar_matrix import (
     CLAIM_ID,
     FENCE_EPOCH,

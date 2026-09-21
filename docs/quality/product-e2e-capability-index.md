@@ -82,7 +82,7 @@
 | <code>04-json-round-trip</code> | JSON 编辑、筛选、粘贴、导入与导出不变 | JSON 值经结构化编辑、剪贴板粘贴、host picker 导入和导出后，与权威查询做规范化深比较并保持完全一致。 | `data.json`、`data-io.round-trip` |
 | <code>05-formula-lifecycle</code> | 空表转换与非空迁移故障回滚 | 空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。 | `schema.v2`、`formula.recalculation` |
 | <code>06-relation-fanout</code> | 双向关联字段编辑、冻结计划与重开 | 从真实字段设置修改两端名称、基数、显示字段与共享 setNull/restrict 策略，冻结计划展示两端并原子应用；重开后定义和链接身份保持。many→one 多链接冲突及公共 cascade 输入明确拒绝且不改变两端权威状态；内部迁移 cascade 能力保留。 | `schema.v2`、`relation.pair-edit`、`contract.diagnostics` |
-| <code>07-attachment-history</code> | 附件全生命周期与历史恢复 | 通过 host picker 上传和替换附件，验证实际预览产物字节长度与 SHA-256；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。单记录历史抽屉完成命名修订创建、比较、恢复、更新指针；通过 UI 关闭并重开工作区后核对列表和记录状态，再经 UI 删除并刷新确认。 | `attachment.history`、`history.restore`、`content.named-revision` |
+| <code>07-attachment-history</code> | 附件全生命周期与历史恢复 | 通过 host picker 上传、另存为和替换附件，验证实际预览产物字节长度与 SHA-256、另存为落盘字节；历史恢复后通过真实 UI 移除附件，核对权威字段为空且已保存副本不变；保留历史抽屉的 Workspace 恢复，并经公开 Product 桥接预览和应用另一修订，核对预览不改当前附件、五字段返回及恢复后的附件身份和长度。单记录历史抽屉完成命名修订创建、比较、恢复、更新指针；通过 UI 关闭并重开工作区后核对列表和记录状态，再经 UI 删除并刷新确认。 | `attachment.history`、`history.restore`、`content.named-revision` |
 | <code>08-stale-conflict</code> | 两次过期编辑显示明确冲突 | 两个基于同一旧版本的编辑中，后提交者看到可操作的显式冲突，且不会静默覆盖。 | `mutation.conflict`、`release.smoke` |
 | <code>09-atomic-import-scale</code> | 粘贴或导入中途失败无半提交 | 1,000 行单事务导入在中途故障后，业务记录、审计、幂等键和 outbox 均严格为零。 | `data-import.atomic` |
 | <code>10-sse-reconnect</code> | SSE 断线重连且不重复应用 | 真实 sidecar 断开后 UI 自动追赶且事件只应用一次；精确终止打包 BFF 后通过 workspace 关闭/重开恢复，轮换 session epoch，并拒绝旧 epoch 写入。 | `realtime.reconnect`、`workspace.lifecycle` |

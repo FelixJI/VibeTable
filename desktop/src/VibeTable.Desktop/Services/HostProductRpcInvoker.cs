@@ -10,7 +10,7 @@ namespace VibeTable.Desktop.Services;
 /// The binding callback must atomically validate the captured runtime, Python client,
 /// and canonical Sidecar snapshot while admitting the synchronous start action.
 /// </summary>
-internal sealed class HostProductRpcInvoker : IDisposable
+internal sealed partial class HostProductRpcInvoker : IDisposable
 {
     private static readonly JsonSerializerOptions WireOptions = new(JsonSerializerDefaults.Web);
     private readonly object _gate = new();
@@ -49,7 +49,9 @@ internal sealed class HostProductRpcInvoker : IDisposable
         token.ThrowIfCancellationRequested();
         ProductRpcCapabilityCatalog catalog = ProductDataRpcRegistry.TryGet(method, out var endpoint)
             ? endpoint.CapabilityCatalog : ProductRpcCapabilityCatalog.Product;
-        if (!_routes.TrySelectProduct(method, catalog, out ProductRpcRoute route))
+        ProductRpcRoute route = default;
+        bool native = IsNativeFileMethod(method);
+        if (!native && !_routes.TrySelectProduct(method, catalog, out route))
             throw new InvalidOperationException("The Product RPC owner is unavailable.");
         using (WorkspaceRequestEpochLease lease = CaptureLease())
         {
@@ -74,7 +76,11 @@ internal sealed class HostProductRpcInvoker : IDisposable
                     await ready.WaitAsync(call.Token).ConfigureAwait(false);
                 }
                 JsonElement result;
-                if (route == ProductRpcRoute.PythonBff)
+                if (native)
+                {
+                    result = await InvokeNativeFileAsync(method, parameters, call.Token).ConfigureAwait(false);
+                }
+                else if (route == ProductRpcRoute.PythonBff)
                 {
                     result = await StartCurrent(() => _client.InvokeAsync<JsonElement, JsonElement>(
                         method, parameters, call.Token)).ConfigureAwait(false);
@@ -134,8 +140,9 @@ internal sealed class HostProductRpcInvoker : IDisposable
             // Only this captured client's export grant can be retired after epoch cancellation.
             // Keep our lease until the server has closed its writers; never use a new binding.
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await Files.RevokeAsync(grantId).ConfigureAwait(false);
             JsonElement settled = await _client.InvokeAsync<JsonElement, JsonElement>(
-                "path.revokeExportTarget", JsonSerializer.SerializeToElement(new { grantId }), cleanup.Token)
+                "task.settleExport", JsonSerializer.SerializeToElement(new { grantId }), cleanup.Token)
                 .ConfigureAwait(false);
             if (settled.GetProperty("grantId").GetString() != grantId
                 || !settled.GetProperty("settled").GetBoolean())
@@ -184,6 +191,7 @@ internal sealed class HostProductRpcInvoker : IDisposable
             _disposed = true;
         }
         _lifetime.Cancel();
+        if (_files is not null) _client.UnregisterHostFileHandler(_files);
         _sidecar.Dispose();
         _lifetime.Dispose();
     }

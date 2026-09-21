@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from backend.application.path_grant import PathGrantError, SessionPathGrantStore
+from backend.application.path_grant import PathGrantError
+from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 
 def test_expired_grant_cannot_start_a_reserved_import(tmp_path: Path) -> None:

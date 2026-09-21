@@ -43,7 +43,7 @@ public interface IPluginRpcGateway : IDisposable
     Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(
         PluginResolveInteractionParams request, CancellationToken token);
     Task<bool> ResolveFileAsync(
-        PluginResolveFileParams request, CancellationToken token);
+        PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token);
     Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(
         PluginTaskParams request, CancellationToken token);
     Task<PluginRuntimeTaskSnapshot> GetTaskAsync(

@@ -98,9 +98,10 @@ def cases() -> list[dict[str, JsonValue]]:
 
 async def produce(producer: Path) -> dict[str, JsonValue]:
     sys.path.insert(0, str(producer))
+    from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
+
     import backend
     from backend.adapters.pocketbase.client import PocketBaseClient
-    from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
     from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
     from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, current_owner_methods
     from backend.rpc.dispatcher import RpcDispatcher

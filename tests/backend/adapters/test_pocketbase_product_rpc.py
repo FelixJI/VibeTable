@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import inspect
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from backend.adapters.pocketbase import product_rpc
-from backend.adapters.pocketbase.client import PocketBaseClient
-from backend.adapters.pocketbase.product_relation_lookup_file_rpc import (
-    ProductRelationLookupFileRpc,
-)
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.contracts.product_rpc import PRODUCT_RPC_REGISTRY, ProductParams
+from tests.backend.product_composition_fixture import ProductBackend
+from tests.backend.product_composition_fixture import product_backend as product_backend
 
 
 def _formula_v2_field() -> dict[str, Any]:
@@ -29,61 +23,9 @@ def _formula_v2_field() -> dict[str, Any]:
     return field
 
 
-class FakeTransport:
-    def __init__(self, responses: list[Any]) -> None:
-        self.responses = list(responses)
-        self.requests: list[dict[str, Any]] = []
-
-    async def request(self, method: str, path: str, **kwargs: Any) -> Any:
-        self.requests.append({"method": method, "path": path, **kwargs})
-        return self.responses.pop(0)
-
-    async def request_multipart(self, path: str, **kwargs: Any) -> Any:
-        self.requests.append({"method": "MULTIPART", "path": path, **kwargs})
-        return self.responses.pop(0)
-
-    async def download_to_file(self, path: str, **kwargs: Any) -> int:
-        self.requests.append({"method": "DOWNLOAD", "path": path, **kwargs})
-        return 12
-
-
-def _service(responses: list[Any]) -> tuple[PocketBaseProductRpc, FakeTransport]:
-    transport = FakeTransport(responses)
-    client = PocketBaseClient(transport=transport, session_secret="a" * 64)
-    return (
-        PocketBaseProductRpc(
-            client=client,
-            transport=transport,
-            session_secret="a" * 64,
-        ),
-        transport,
-    )
-
-
 def test_params_reject_credentials_recursively() -> None:
     with pytest.raises(ValidationError):
         ProductParams.model_validate({"nested": {"sessionSecret": "secret"}})
-
-
-def test_root_adapter_exposes_only_the_closed_invoke_interface() -> None:
-    public_async_methods = {
-        name
-        for name, member in inspect.getmembers(PocketBaseProductRpc, inspect.iscoroutinefunction)
-        if not name.startswith("_")
-    }
-
-    assert public_async_methods == {"invoke"}
-
-
-def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    class MissingRouteModule(ProductRelationLookupFileRpc):
-        def __init__(self, context: product_rpc.PocketBaseProductContext) -> None:
-            super().__init__(context)
-            self.methods = self.methods - {"file.token"}
-
-    monkeypatch.setattr(product_rpc, "ProductRelationLookupFileRpc", MissingRouteModule)
-    with pytest.raises(RuntimeError, match="routes do not match the contract registry"):
-        _service([])
 
 
 @pytest.mark.asyncio
@@ -92,11 +34,7 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     [
         (
             "events.reconcile",
-            {
-                "tableId": "orders",
-                "schemaRevision": "schema_0001",
-                "dataRevision": "data_0001",
-            },
+            {"tableId": "orders", "schemaRevision": "schema_0001", "dataRevision": "data_0001"},
         ),
         ("field.settings.describe", {"tableId": "orders"}),
         (
@@ -185,15 +123,9 @@ def test_adapter_rejects_a_missing_current_python_route(monkeypatch: pytest.Monk
     ],
 )
 async def test_go_owned_methods_are_retired_from_python_adapter_without_transport(
-    method: str, params: dict[str, object]
+    method: str, params: dict[str, object], product_backend: ProductBackend
 ) -> None:
-    service, transport = _service([{"tables": []}])
-    validated = PRODUCT_RPC_REGISTRY[method].model_validate(params)
-
-    with pytest.raises(ValueError, match=rf"unknown product RPC method: {method}"):
-        await service.invoke(method, validated)
-
-    assert transport.requests == []
+    await product_backend.assert_retired(method, params)
 
 
 def test_schema_v2_plan_params_defer_domain_validation_but_keep_transport_closed() -> None:
@@ -278,9 +210,9 @@ def test_retired_schema_methods_keep_their_full_public_parameter_models() -> Non
 
 
 @pytest.mark.asyncio
-async def test_go_owned_formula_routes_have_no_python_transport() -> None:
-    service, transport = _service([])
-
+async def test_go_owned_formula_routes_have_no_python_transport(
+    product_backend: ProductBackend,
+) -> None:
     for method, params in [
         ("formula.validate", {"tableId": "orders", "field": _formula_v2_field()}),
         ("formula.draft.validate", {"tableId": "orders", "displaySource": "SUM({明细}.{金额})"}),
@@ -289,194 +221,53 @@ async def test_go_owned_formula_routes_have_no_python_transport() -> None:
             {"tableId": "orders", "field": _formula_v2_field(), "row": {}, "changedFieldIds": []},
         ),
     ]:
-        with pytest.raises(ValueError, match=rf"unknown product RPC method: {re.escape(method)}"):
-            await service.invoke(method, PRODUCT_RPC_REGISTRY[method].model_validate(params))
-
-    assert transport.requests == []
+        await product_backend.assert_retired(method, params)
 
 
 @pytest.mark.asyncio
-async def test_file_token_uses_only_its_fixed_route() -> None:
-    service, transport = _service([{"contractVersion": "2.0", "downloadCapability": "cap"}])
-
-    token = await service.invoke(
-        "file.token",
-        ProductParams.model_validate(
-            {
-                "tableId": "orders",
-                "recordId": "row-1",
-                "fieldId": "invoice",
-                "storedName": "invoice.pdf",
-            }
-        ),
-    )
-
-    assert token["downloadCapability"] == "cap"
-    assert [request["path"] for request in transport.requests] == [
-        "/api/vibetable/v1/files/token",
-    ]
-    assert all(
-        request["headers"] == {"X-VibeTable-Session": "a" * 64} for request in transport.requests
+async def test_schema_delete_has_no_python_transport(product_backend: ProductBackend) -> None:
+    await product_backend.assert_retired(
+        "schema.delete", {"tableId": "orders", "expectedRevision": "schema_0002"}
     )
 
 
 @pytest.mark.asyncio
-async def test_schema_delete_has_no_python_transport() -> None:
-    service, transport = _service([])
-
-    with pytest.raises(ValueError, match=r"unknown product RPC method: schema\.delete"):
-        await service.invoke(
-            "schema.delete",
-            ProductParams.model_validate({"tableId": "orders", "expectedRevision": "schema_0002"}),
-        )
-
-    assert transport.requests == []
-
-
-@pytest.mark.asyncio
-async def test_reconcile_has_no_python_transport_fallback() -> None:
-    service, transport = _service([])
+async def test_reconcile_has_no_python_transport_fallback(product_backend: ProductBackend) -> None:
     params = ProductParams.model_validate(
-        {
-            "tableId": "orders",
-            "schemaRevision": "schema_0001",
-            "dataRevision": "data_0001",
-        }
+        {"tableId": "orders", "schemaRevision": "schema_0001", "dataRevision": "data_0001"}
     )
-
-    with pytest.raises(ValueError, match=r"unknown product RPC method: events\.reconcile"):
-        await service.invoke("events.reconcile", params)
-
-    assert transport.requests == []
+    await product_backend.assert_retired("events.reconcile", params.root)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["history.previewRestore", "history.applyRestore"])
-async def test_history_restore_has_no_python_transport_fallback(method: str) -> None:
-    service, transport = _service([])
-    with pytest.raises(ValueError, match="unknown product RPC method"):
-        await service.invoke(method, ProductParams.model_validate({}))
-    assert transport.requests == []
+async def test_history_restore_has_no_python_transport_fallback(
+    method: str, product_backend: ProductBackend
+) -> None:
+    await product_backend.assert_retired(method, {})
 
 
 @pytest.mark.asyncio
-async def test_trusted_host_attachment_upload_uses_one_guarded_multipart_mutation() -> None:
-    service, transport = _service(
-        [
-            {
-                "contractVersion": "2.0",
-                "status": "applied",
-                "changeSetId": "change-1",
-            }
-        ]
-    )
-
-    result = await service.invoke(
-        "file.applyHostChange",
-        ProductParams.model_validate(
-            {
-                "tableId": "orders",
-                "recordId": "row-1",
-                "fieldId": "invoice",
-                "schemaRevision": "schema_7",
-                "expectedDigest": "sha256:" + "a" * 64,
-                "hostPaths": [r"C:\host-selected\invoice.pdf"],
-                "removeStoredNames": [],
-            }
-        ),
-    )
-
-    request = transport.requests[0]
-    assert result["status"] == "applied"
-    assert request["method"] == "MULTIPART"
-    assert request["path"] == "/api/vibetable/v1/mutations/apply"
-    assert request["uploads"] == [("upload_0", r"C:\host-selected\invoice.pdf")]
-    assert request["json_body"]["expectedDigest"] == "sha256:" + "a" * 64
-    assert request["json_body"]["operations"] == [
+async def test_snapshot_has_no_python_route_or_transport_fallback(
+    product_backend: ProductBackend,
+) -> None:
+    await product_backend.assert_retired(
+        "query.validateSnapshot",
         {
-            "kind": "setAttachments",
-            "recordId": "row-1",
-            "fieldId": "invoice",
-            "uploadHandles": ["upload_0"],
-            "removeStoredNames": [],
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_trusted_host_attachment_download_keeps_capability_and_path_native() -> None:
-    service, transport = _service(
-        [
-            {
-                "contractVersion": "2.0",
-                "downloadCapability": "opaque-capability",
+            "snapshot": {
+                "snapshotId": "snap",
+                "digest": "a" * 64,
+                "databaseId": "local",
+                "table": "orders",
+                "schemaRevision": "schema_1",
+                "dataRevision": 1,
+                "normalizedQuery": {
+                    "keyword": "",
+                    "filters": [],
+                    "sorts": [],
+                    "offset": 0,
+                    "limit": 100,
+                },
             }
-        ]
+        },
     )
-
-    result = await service.invoke(
-        "file.saveHostFile",
-        ProductParams.model_validate(
-            {
-                "tableId": "orders",
-                "recordId": "row-1",
-                "fieldId": "invoice",
-                "storedName": "invoice_abcd.pdf",
-                "outputPath": r"C:\host-selected\invoice.pdf",
-            }
-        ),
-    )
-
-    assert result == {
-        "contractVersion": "2.0",
-        "saved": True,
-        "bytes": 12,
-    }
-    assert transport.requests[0]["path"] == "/api/vibetable/v1/files/token"
-    assert transport.requests[1] == {
-        "method": "DOWNLOAD",
-        "path": "/api/vibetable/v1/attachments/download",
-        "query": {"capability": "opaque-capability"},
-        "target_path": r"C:\host-selected\invoice.pdf",
-        "headers": {"X-VibeTable-Session": "a" * 64},
-        "expected_status": (200,),
-    }
-
-
-@pytest.mark.asyncio
-async def test_snapshot_has_no_python_route_or_transport_fallback() -> None:
-    service, transport = _service(
-        [
-            {
-                "valid": True,
-                "currentDataRevision": 2,
-                "currentSchemaRevision": "schema_2",
-            },
-        ]
-    )
-
-    with pytest.raises(ValueError, match=r"unknown product RPC method: query\.validateSnapshot"):
-        await service.invoke(
-            "query.validateSnapshot",
-            ProductParams.model_validate(
-                {
-                    "snapshot": {
-                        "snapshotId": "snap",
-                        "digest": "a" * 64,
-                        "databaseId": "local",
-                        "table": "orders",
-                        "schemaRevision": "schema_1",
-                        "dataRevision": 1,
-                        "normalizedQuery": {
-                            "keyword": "",
-                            "filters": [],
-                            "sorts": [],
-                            "offset": 0,
-                            "limit": 100,
-                        },
-                    }
-                }
-            ),
-        )
-
-    assert transport.requests == []

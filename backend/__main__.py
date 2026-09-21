@@ -10,19 +10,17 @@ import os
 import sys
 import threading
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from typing import Any
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
+from backend.application.host_files import HostFiles
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_platform_service import PluginPlatformService
 from backend.application.plugin_registry import PluginRegistry
-from backend.application.product_rpc import ProductRpc
 from backend.application.system_service import SystemService
 from backend.application.task_service import build_task_service
 from backend.contracts.data_io import (
@@ -49,14 +47,9 @@ from backend.contracts.plugin_rpc import (
     UninstallPluginParams,
     UpgradePluginParams,
 )
-from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY
 from backend.contracts.system import HandshakeParams
 from backend.contracts.task import (
     CreateTaskParams,
-    HostExportTargetParams,
-    HostImportSourceParams,
-    RequestExportTargetGrantParams,
-    RequestImportSourceGrantParams,
     ResolveGrantParams,
     TaskIdParams,
 )
@@ -110,40 +103,15 @@ def _feed_stdin_to_reader(
             loop.call_soon_threadsafe(reader.feed_eof)
 
 
-def _product_runtime() -> tuple[
-    PocketBaseProductRpc | None,
-    PocketBaseClient | None,
-    PocketBaseConfig | None,
-]:
+def _product_runtime() -> PocketBaseClient | None:
     base_url = os.environ.get("VIBETABLE_SIDECAR_URL")
     session_secret = os.environ.get("VIBETABLE_SIDECAR_SESSION_SECRET")
     if not base_url or not session_secret:
-        return None, None, None
+        return None
     config = PocketBaseConfig(base_url=base_url, session_secret=session_secret)
-    transport = StdlibPocketBaseTransport(config)
-    client = PocketBaseClient(transport=transport, session_secret=session_secret)
-    return (
-        PocketBaseProductRpc(
-            client=client,
-            transport=transport,
-            session_secret=session_secret,
-        ),
-        client,
-        config,
+    return PocketBaseClient(
+        transport=StdlibPocketBaseTransport(config), session_secret=session_secret
     )
-
-
-def _build_pocketbase_product_service() -> PocketBaseProductRpc | None:
-    return _product_runtime()[0]
-
-
-def _register_pocketbase_product_methods(
-    dispatcher: RpcDispatcher,
-    service: ProductRpc,
-) -> None:
-    register_product_rpc_errors()
-    for method, params_model in PYTHON_PRODUCT_RPC_REGISTRY.items():
-        dispatcher.register(method, partial(service.invoke, method), params_model)
 
 
 def _configure_pocketbase_data_io(
@@ -154,6 +122,7 @@ def _configure_pocketbase_data_io(
 ) -> ProductDataIoRuntime:
     """Register the product-only paste/import/export vertical slice."""
 
+    register_product_rpc_errors()
     register_application_errors(ErrorDomain.PASTE, ErrorDomain.IMPORT, ErrorDomain.EXPORT)
     runtime = ProductDataIoRuntime(client=client, task_service=task_service)
     runtime.register_tasks()
@@ -286,39 +255,23 @@ async def _build_server() -> tuple[
     )
 
     register_application_errors(ErrorDomain.PATH_GRANT)
-    task_service = build_task_service(notification_sink=notify_task_status)
+
+    async def call_host_file(action: str, params: dict[str, Any]) -> dict[str, Any]:
+        if server_ref is None:
+            raise RuntimeError("Host file channel is not connected")
+        return await server_ref.call_host_file(action, params)
+
+    task_service = build_task_service(
+        files=HostFiles(call_host_file), notification_sink=notify_task_status
+    )
     dispatcher.register("task.create", task_service.create_task, CreateTaskParams)
     dispatcher.register("task.cancel", task_service.cancel_task, TaskIdParams)
     dispatcher.register("task.status", task_service.status_task, TaskIdParams)
-    dispatcher.register(
-        "path.requestImportSource",
-        task_service.register_import_source,
-        RequestImportSourceGrantParams,
-    )
-    dispatcher.register(
-        "path.requestExportTarget",
-        task_service.register_export_target,
-        RequestExportTargetGrantParams,
-    )
-    dispatcher.register(
-        "path.registerImportSource",
-        task_service.register_host_import_source,
-        HostImportSourceParams,
-    )
-    dispatcher.register(
-        "path.registerExportTarget",
-        task_service.register_host_export_target,
-        HostExportTargetParams,
-    )
-    dispatcher.register("path.resolveGrant", task_service.resolve_grant, ResolveGrantParams)
-    dispatcher.register(
-        "path.revokeExportTarget", task_service.revoke_export_target, ResolveGrantParams
-    )
+    dispatcher.register("task.settleExport", task_service.settle_export, ResolveGrantParams)
 
-    product_service, client, _config = _product_runtime()
+    client = _product_runtime()
     plugin_service: PluginPlatformService | None = None
-    if product_service is not None and client is not None:
-        _register_pocketbase_product_methods(dispatcher, product_service)
+    if client is not None:
         _configure_pocketbase_data_io(
             dispatcher,
             client=client,
@@ -334,7 +287,7 @@ async def _build_server() -> tuple[
         store = PluginProjectStore(state_root / "plugins.db")
         registry = PluginRegistry(store=store)
         confirmation = HostConfirmationAdapter()
-        file_capability = HostFileCapabilityAdapter(task_service=task_service)
+        file_capability = HostFileCapabilityAdapter(files=task_service.files)
         worker = NodePluginWorkerAdapter(
             store=store,
             profiles={},

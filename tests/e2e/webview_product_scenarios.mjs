@@ -3757,6 +3757,15 @@ async function scenario07(page, recorder, _network, runtime) {
           && previewResult.payload?.reason === "PREVIEW_HANDLER_UNAVAILABLE")),
     { previewResult },
   );
+  const savedAttachment = path.join(runtime.evidenceDir, "attachment-saved.txt");
+  await fs.writeFile(path.join(runtime.controlsDir, "attachment-target.txt"), savedAttachment);
+  await beginBridgeMessageCapture(page, ["file.downloadRequested", "operation.failed"]);
+  await page.getByTestId("attachment-download-0").click();
+  const savedReply = await waitForCapturedBridgeMessage(page);
+  recorder.check("native attachment save reports completion after the exact bytes are committed",
+    savedReply.type === "file.downloadRequested" && savedReply.payload?.outcome === "saved"
+      && (await fs.readFile(savedAttachment)).equals(originalBytes), { savedReply });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "07-attachment-saved.png"), fullPage: true });
   await page.getByTestId("attachment-replace-0").click();
   await panel.waitFor({ state: "hidden", timeout: 30_000 });
   const replaced = await waitForAttachmentList(
@@ -3984,6 +3993,25 @@ async function scenario07(page, recorder, _network, runtime) {
       && productRestoredFile.size === replacementBytes.length,
     { productRestoredFile, replacementFile, expectedSize: replacementBytes.length },
   );
+  await page.locator(".n-drawer-header__close").last().click();
+  await cell.dblclick();
+  await panel.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("attachment-remove-0").click();
+  await beginBridgeMessageCapture(page, ["file.removeRequested", "operation.failed"]);
+  await page.locator(".n-popconfirm").getByRole("button", { name: /^(移除|Remove)$/ }).click();
+  const removedReply = await waitForCapturedBridgeMessage(page);
+  recorder.check("attachment removal reaches its correlated native mutation receipt",
+    removedReply.type === "file.removeRequested" && !removedReply.payload?.error, { removedReply });
+  await page.getByTestId("attachment-remove-0").waitFor({ state: "hidden", timeout: 30_000 });
+  await panel.getByRole("button", { name: /^(关闭|Close)$/ }).click();
+  await panel.waitFor({ state: "hidden", timeout: 30_000 });
+  const removed = await waitForAttachmentList(page, attachmentParams, (attachments) => attachments.length === 0);
+  recorder.check("attachment removal leaves the authoritative field empty and the saved copy intact",
+    removed.payload.attachments.length === 0
+      && (await fs.readFile(savedAttachment)).equals(originalBytes), { removed });
+  await cell.click();
+  await page.getByTestId("toolbar-history").click();
+  await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
   await namedRevisionJourney(page, recorder, runtime);
 }
 
@@ -5760,7 +5788,10 @@ async function scenario33(page, recorder, _network, runtime) {
     if (!target) throw new Error("visible column move target unavailable");
     const viewport = await page.locator(".tabulator-tableholder").evaluate(body => {
       const bounds = body.getBoundingClientRect();
-      return { left: bounds.left, right: bounds.left + body.clientWidth };
+      return {
+        left: Math.max(0, bounds.left),
+        right: Math.min(document.documentElement.clientWidth, bounds.left + body.clientWidth),
+      };
     });
     const overflow = target.x < viewport.left
       ? target.x - viewport.left - 24
@@ -5771,7 +5802,7 @@ async function scenario33(page, recorder, _network, runtime) {
       // Wheel the real body, never the overflow-hidden header. MoveColumns can
       // reset the body scroll while entering its drag state, so this runs again
       // after the moving marker appears.
-      await page.mouse.move(holder.x + holder.width / 2, holder.y + 20);
+      await page.mouse.move((viewport.left + viewport.right) / 2, holder.y + 20);
       await page.mouse.wheel(overflow, 0);
     }
     await page.waitForFunction((field) => {
@@ -5781,7 +5812,9 @@ async function scenario33(page, recorder, _network, runtime) {
       if (!body || !contents || !column) return false;
       const viewport = body.getBoundingClientRect();
       const bounds = column.getBoundingClientRect();
-      return bounds.left >= viewport.left && bounds.right <= viewport.left + body.clientWidth
+      const left = Math.max(0, viewport.left);
+      const right = Math.min(document.documentElement.clientWidth, viewport.left + body.clientWidth);
+      return bounds.left >= left && bounds.right <= right
         && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1;
     }, second.physicalName);
     const visibleTarget = await secondHeader.boundingBox();

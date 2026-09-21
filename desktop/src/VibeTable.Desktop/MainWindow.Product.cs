@@ -629,6 +629,7 @@ public partial class MainWindow : Window
             _productGateway.Dispose();
         }
         _productGateway = binding.CreateGateway(_workspaceSessionFilter);
+        HostSessionFileBroker hostFiles = _productGateway.EnableHostFiles();
         _productGateway.TaskChanged += OnProductTaskChanged;
         _dispatcher.SetProductDataGateway(_productGateway);
 
@@ -638,7 +639,8 @@ public partial class MainWindow : Window
         _dispatcher.SetSurfaceGateway(_productGateway);
 
         IPluginRpcGateway? previousPluginGateway = _pluginGateway;
-        _pluginGateway = new JsonRpcPluginGateway(client);
+        _pluginGateway = new JsonRpcPluginGateway(client, (request, path, token) =>
+            hostFiles.IssueAsync(path, request.Direction == "write", request.RunId, token, request.MediaType));
         _pluginDispatcher.SetGatewayAfterAuthorityTransition(
             _pluginGateway,
             PluginProjectContext.FromSession(_workspaceSessions.Current));

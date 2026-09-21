@@ -161,7 +161,7 @@ class FakeFileAdapter:
         assert options["suggestedName"] == "output.txt"
         return {"grantId": "write-1", "displayName": "output.txt"}
 
-    def read(
+    async def read(
         self,
         execution: dict[str, Any],
         grant_id: str,
@@ -170,7 +170,7 @@ class FakeFileAdapter:
         assert grant_id == "read-1"
         return {"base64": base64.b64encode(b"hello").decode("ascii")}
 
-    def write(
+    async def write(
         self,
         execution: dict[str, Any],
         grant_id: str,

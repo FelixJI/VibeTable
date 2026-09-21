@@ -61,3 +61,54 @@ func attachmentProductError(err error) error {
 		Retryable: productError.Retryable,
 	}
 }
+
+func AttachmentTokenRegistration(app core.App, manager *attachments.Manager) Registration {
+	return Registration{
+		Method: "file.token", Scope: productcapabilities.WorkspaceScope,
+		ValidateParams: func(raw json.RawMessage) error {
+			_, err := attachmentTokenParams(raw)
+			return err
+		},
+		Handler: func(ctx context.Context, raw json.RawMessage) (any, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			params, err := attachmentTokenParams(raw)
+			if err != nil {
+				return nil, err
+			}
+			capability, err := manager.Token(ctx, app, params["tableId"], params["recordId"],
+				params["fieldId"], params["storedName"], params["variant"])
+			if contextErr := ctx.Err(); contextErr != nil {
+				return nil, contextErr
+			}
+			if err != nil {
+				return nil, attachmentProductError(err)
+			}
+			return map[string]any{"contractVersion": attachments.ContractVersion, "downloadCapability": capability}, nil
+		},
+	}
+}
+
+func attachmentTokenParams(raw json.RawMessage) (map[string]string, error) {
+	var values map[string]string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, err
+	}
+	for _, key := range []string{"tableId", "recordId", "fieldId", "storedName"} {
+		if values[key] == "" {
+			return nil, errors.New("file.token requires attachment identity")
+		}
+	}
+	for key, value := range values {
+		switch key {
+		case "tableId", "recordId", "fieldId", "storedName", "variant":
+			if value == "" {
+				return nil, errors.New("file.token requires non-empty parameters")
+			}
+		default:
+			return nil, errors.New("file.token has unknown parameters")
+		}
+	}
+	return values, nil
+}

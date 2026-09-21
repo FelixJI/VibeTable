@@ -326,13 +326,13 @@ class NodePluginWorkerAdapter:
         if name == "file.read":
             if "pickRead" not in declared:
                 raise PluginWorkerError("plugin did not declare file.pickRead")
-            return self._file_adapter.read(execution, grant_id)
+            return await self._file_adapter.read(execution, grant_id)
         if "pickWrite" not in declared:
             raise PluginWorkerError("plugin did not declare file.pickWrite")
         encoded = args.get("base64")
         if not isinstance(encoded, str):
             raise PluginWorkerError("plugin file content is required")
-        self._file_adapter.write(execution, grant_id, encoded)
+        await self._file_adapter.write(execution, grant_id, encoded)
         return None
 
     async def _data_read(

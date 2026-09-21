@@ -134,7 +134,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "file.host",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -150,7 +150,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "file.host",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
@@ -158,7 +158,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "file.attachment",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -358,7 +358,7 @@
       "scope": "global",
       "audience": "hostOnly",
       "capabilityId": "host.path",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -366,7 +366,7 @@
       "scope": "global",
       "audience": "hostOnly",
       "capabilityId": "host.path",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -374,7 +374,7 @@
       "scope": "global",
       "audience": "hostOnly",
       "capabilityId": "host.path",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
@@ -382,7 +382,7 @@
       "scope": "global",
       "audience": "hostOnly",
       "capabilityId": "host.path",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
@@ -390,7 +390,7 @@
       "scope": "global",
       "audience": "hostOnly",
       "capabilityId": "host.path",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {
@@ -398,7 +398,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "host.path",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -830,6 +830,14 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "task.lifecycle",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
+      "method": "task.settleExport",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "host.path",
       "owner": "pythonBff",
       "effect": "write"
     },

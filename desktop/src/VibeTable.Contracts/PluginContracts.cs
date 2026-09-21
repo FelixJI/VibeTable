@@ -125,7 +125,7 @@ public sealed record PluginResolveInteractionParams(
     string RunId,
     string InteractionId,
     string Decision);
-public sealed record PluginResolveFileParams(string RequestId, string? SelectedPath);
+public sealed record PluginResolveFileParams(string RequestId, SessionPathGrant? Grant);
 public sealed record PluginTaskParams(string TaskId);
 public sealed record PluginSurfaceAcceptance(bool Accepted);
 

@@ -22,6 +22,7 @@ from backend.application.export_service import (
 )
 from backend.contracts.data_io import ExportParams
 from backend.contracts.data_profile import CollectionProfile
+from tests.backend.host_files_fixture import FormatFiles
 
 
 @dataclass
@@ -89,7 +90,7 @@ def _service(
     return ExportService(
         query_port=query_port,
         profiles=profiles,
-        resolve_path=lambda _g, *, purpose, direction: path,
+        files=FormatFiles(path),
     )
 
 
@@ -119,7 +120,7 @@ def _lookup_service(
     return ExportService(
         query_port=query_port,
         profiles=profiles,
-        resolve_path=lambda _g, *, purpose, direction: path,
+        files=FormatFiles(path),
         lookup_provider=provider,
     )
 

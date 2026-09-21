@@ -75,7 +75,7 @@ func selectionProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port inter
 			queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 			queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 			schemaGetTableRegistration(pb), schemaListRegistration(catalog),
-			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), productrpc.AttachmentTokenRegistration(pb, mustAttachmentManager(t)),
 			unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),

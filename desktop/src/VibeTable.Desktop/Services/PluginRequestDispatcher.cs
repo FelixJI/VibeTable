@@ -611,10 +611,9 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     private async void OnFileRequested(PluginEventEnvelope envelope)
     {
-        if (_gateway is null)
-        {
-            return;
-        }
+        IPluginRpcGateway? gateway;
+        lock (_gatewayGate) gateway = _gateway;
+        if (gateway is null) return;
         string? selectedPath = null;
         try
         {
@@ -624,8 +623,8 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 selectedPath = await _filePicker.PickAsync(request, CancellationToken.None);
             }
-            await _gateway.ResolveFileAsync(
-                new PluginResolveFileParams(request.RequestId, selectedPath),
+            await gateway.ResolveFileAsync(
+                request, selectedPath,
                 CancellationToken.None);
         }
         catch (Exception ex)

@@ -17,7 +17,6 @@ from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
 from backend.adapters.pocketbase.relation_io import RelationIoError
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.revisioned_metadata_port import JsonObject
-from backend.application.task_service import build_task_service
 from backend.contracts.data_io import (
     ApplyImportParams,
     ExportParams,
@@ -26,6 +25,7 @@ from backend.contracts.data_io import (
 )
 from backend.contracts.task import HostExportTargetParams, HostImportSourceParams
 from scripts.build_next import RepoPaths, build_sidecar_command
+from tests.backend.host_files_fixture import file_task_fixture as build_task_service
 from tests.integration.packaged_sidecar_matrix import (
     CLAIM_ID,
     FENCE_EPOCH,

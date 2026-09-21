@@ -727,7 +727,7 @@ func schemaProductMux(t *testing.T, pb *pocketbase.PocketBase) http.Handler {
 			lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 			relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 			fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
-			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), productrpc.AttachmentTokenRegistration(pb, mustAttachmentManager(t)),
 			unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),

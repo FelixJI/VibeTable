@@ -18,6 +18,7 @@ from backend.application.export_service import (
 )
 from backend.contracts.data_io import ExportParams
 from backend.contracts.data_profile import CollectionProfile
+from tests.backend.host_files_fixture import FormatFiles
 
 
 class _OnePageQueryPort:
@@ -77,7 +78,7 @@ async def _export(
     service = ExportService(
         query_port=_OnePageQueryPort(row),
         profiles={"interoperability": _profile(list(row))},
-        resolve_path=lambda _grant, *, purpose, direction: str(target),
+        files=FormatFiles(target),
     )
     await service.export(
         ExportParams(
@@ -158,7 +159,7 @@ async def test_xlsx_lookup_export_preserves_base_and_lookup_formula_text(tmp_pat
     service = ExportService(
         query_port=_OnePageQueryPort(row),
         profiles={"interoperability": _profile(["id", "formula_text"])},
-        resolve_path=lambda _grant, *, purpose, direction: str(target),
+        files=FormatFiles(target),
         lookup_provider=_OnePageLookupProvider(row),
     )
 

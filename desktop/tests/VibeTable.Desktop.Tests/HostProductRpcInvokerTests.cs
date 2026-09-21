@@ -10,7 +10,7 @@ using VibeTable.Infrastructure.Workspace;
 namespace VibeTable.Desktop.Tests;
 
 [TestClass]
-public sealed class HostProductRpcInvokerTests
+public sealed partial class HostProductRpcInvokerTests
 {
     [TestMethod]
     public async Task TypedHostSchemaReadUsesPolicySelectedSidecarOnly()
@@ -767,6 +767,7 @@ public sealed class HostProductRpcInvokerTests
         await using var fixture = await HostFixture.OpenAsync(transport: transport);
         using var cancellation = new CancellationTokenSource();
         using var gateway = fixture.Gateway(useGeneratedPolicy: true);
+        gateway.EnableHostFiles();
         Task<JsonElement> export = ((IHostCommandExportGateway)gateway).ExecuteExportAsync(
             Json("""{"collection":"orders","query":{},"format":"csv","grantId":"known-grant"}"""), cancellation.Token);
         Task? closing = null;
@@ -782,7 +783,7 @@ public sealed class HostProductRpcInvokerTests
             transport.ReleaseCleanup.TrySetResult();
             await Assert.ThrowsAsync<OperationCanceledException>(() => export.WaitAsync(TimeSpan.FromSeconds(2)));
             if (closing is not null) await closing.WaitAsync(TimeSpan.FromSeconds(2));
-            CollectionAssert.AreEqual(new[] { "task.create", "path.revokeExportTarget" }, transport.Methods);
+            CollectionAssert.AreEqual(new[] { "task.create", "task.settleExport" }, transport.Methods);
             Assert.AreEqual("known-grant", transport.CleanupGrant);
         }
         finally
@@ -809,7 +810,7 @@ public sealed class HostProductRpcInvokerTests
             string method = request.GetProperty("method").GetString()!;
             Methods.Add(method);
             if (method == "task.create") { Created.TrySetResult(); return; } // Server admission succeeded; its reply is lost.
-            Assert.AreEqual("path.revokeExportTarget", method);
+            Assert.AreEqual("task.settleExport", method);
             CleanupGrant = request.GetProperty("params").GetProperty("grantId").GetString();
             CleanupEntered.TrySetResult();
             await ReleaseCleanup.Task.WaitAsync(token);

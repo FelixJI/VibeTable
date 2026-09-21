@@ -20,18 +20,17 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
-import os
-import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 
 if TYPE_CHECKING:
     from openpyxl.cell.cell import Cell
     from openpyxl.worksheet._write_only import WriteOnlyWorksheet
 
+from backend.application.host_files import HostFiles, text_stream
 from backend.contracts.data_io import ExportParams, ExportResult, TemplateResult
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.query import TableQuery
@@ -112,12 +111,12 @@ class ExportService:
         *,
         query_port: QueryPagePort,
         profiles: dict[str, CollectionProfile],
-        resolve_path: Callable[..., str],
+        files: HostFiles,
         lookup_provider: AuthoritativeLookupExportProvider | None = None,
     ) -> None:
         self._query_port = query_port
         self._profiles = profiles
-        self._resolve_path = resolve_path
+        self._files = files
         self._lookup_provider = lookup_provider
 
     async def export(
@@ -128,11 +127,6 @@ class ExportService:
         cancelled: Callable[[], bool] | None = None,
     ) -> ExportResult:
         profile = self._profile(params.collection)
-        path = self._resolve_path(
-            params.grant_id,
-            purpose="export_target",
-            direction="write",
-        )
         output_columns = list(profile.fields)
         if params.include_relations:
             for relation in profile.relations:
@@ -140,11 +134,9 @@ class ExportService:
                     col = f"{relation.field}.{display}"
                     if col not in output_columns:
                         output_columns.append(col)
-        target = Path(path)
-        temporary = target.with_name(f".{target.name}.vibetable-{uuid.uuid4().hex}.tmp")
         rows_written = 0
         fmt = params.format
-        try:
+        async with self._files.write(params.grant_id) as target:
             if params.lookup_ids:
                 if self._lookup_provider is None:
                     raise ExportError(
@@ -153,7 +145,7 @@ class ExportService:
                     )
                 assert params.lookup_revision is not None
                 rows_written = await self._export_with_lookups(
-                    str(temporary),
+                    target.stream,
                     profile,
                     params,
                     output_columns,
@@ -164,7 +156,7 @@ class ExportService:
                 query = TableQuery.model_validate(params.query)
                 if fmt == "csv":
                     rows_written = await self._export_csv(
-                        str(temporary),
+                        target.stream,
                         profile,
                         query,
                         output_columns,
@@ -173,7 +165,7 @@ class ExportService:
                     )
                 else:
                     rows_written = await self._export_xlsx(
-                        str(temporary),
+                        target.stream,
                         profile,
                         query,
                         output_columns,
@@ -182,17 +174,13 @@ class ExportService:
                     )
             if cancelled and cancelled():
                 raise asyncio.CancelledError
-            os.replace(temporary, target)
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
         return ExportResult(
             collection=params.collection,
             format=fmt,
             rows_written=rows_written,
             schema_revision=profile.capability_hash,
             capability_hash=profile.capability_hash,
-            output_display_name=target.name,
+            output_display_name=target.display_name,
         )
 
     async def generate_template(
@@ -201,11 +189,6 @@ class ExportService:
         grant_id: str,
     ) -> TemplateResult:
         profile = self._profile(collection)
-        path = self._resolve_path(
-            grant_id,
-            purpose="export_target",
-            direction="write",
-        )
         from openpyxl import Workbook
 
         wb = Workbook()
@@ -229,12 +212,15 @@ class ExportService:
         if headers:
             ws.append(headers)
             ws.append(notes)
-        wb.save(path)
-        wb.close()
+        try:
+            async with self._files.write(grant_id) as target:
+                wb.save(target.stream)
+        finally:
+            wb.close()
         return TemplateResult(
             collection=collection,
             grant_id=grant_id,
-            display_name=Path(path).name,
+            display_name=target.display_name,
         )
 
     # ------------------------------------------------------------------
@@ -243,7 +229,7 @@ class ExportService:
 
     async def _export_with_lookups(
         self,
-        path: str,
+        stream: BinaryIO,
         profile: CollectionProfile,
         params: ExportParams,
         base_columns: list[str],
@@ -286,7 +272,7 @@ class ExportService:
 
         with ExitStack() as resources:
             if params.format == "csv":
-                sink = resources.enter_context(open(path, "w", encoding="utf-8-sig", newline=""))
+                sink = resources.enter_context(text_stream(stream))
                 writer: Any = csv.writer(sink)
                 writer.writerow(columns)
                 workbook = None
@@ -325,12 +311,12 @@ class ExportService:
                         code="lookup_revision_mismatch",
                     )
             if workbook is not None:
-                workbook.save(path)
+                workbook.save(stream)
         return written
 
     async def _export_csv(
         self,
-        path: str,
+        stream: BinaryIO,
         profile: CollectionProfile,
         query: TableQuery,
         columns: list[str],
@@ -339,7 +325,7 @@ class ExportService:
     ) -> int:
         total_estimate = 0
         written = 0
-        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+        with text_stream(stream) as fh:
             writer = csv.writer(fh)
             writer.writerow(columns)
             offset = 0
@@ -365,7 +351,7 @@ class ExportService:
 
     async def _export_xlsx(
         self,
-        path: str,
+        stream: BinaryIO,
         profile: CollectionProfile,
         query: TableQuery,
         columns: list[str],
@@ -401,7 +387,7 @@ class ExportService:
                 if len(page.rows) < EXPORT_PAGE_SIZE:
                     break
                 offset += EXPORT_PAGE_SIZE
-            wb.save(path)
+            wb.save(stream)
             return written
         finally:
             # A cancelled streaming workbook has never reached save(), which

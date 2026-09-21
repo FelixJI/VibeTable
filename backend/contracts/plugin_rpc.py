@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import Field
 
 from backend.contracts.plugin import CommandContext, InteractionDecision, PluginContract
+from backend.contracts.task import SessionPathGrant
 
 
 class PluginProjectParams(PluginContract):
@@ -67,7 +68,7 @@ class ResolvePluginInteractionParams(PluginContract):
 
 class ResolvePluginFileParams(PluginContract):
     request_id: str
-    selected_path: str | None = None
+    grant: SessionPathGrant | None = None
 
 
 class PluginTaskParams(PluginContract):

@@ -8,12 +8,13 @@ from pathlib import Path
 import pytest
 
 from backend.application.export_service import ExportService
-from backend.application.path_grant import PathGrantError, SessionPathGrantStore
+from backend.application.path_grant import PathGrantError
 from backend.application.task_runtime import TaskRuntime
-from backend.application.task_service import TaskService
 from backend.contracts.data_io import ExportParams
 from backend.contracts.task import CreateTaskParams, ResolveGrantParams
 from tests.backend.application.test_export_service import FakeQueryPort, _manifest
+from tests.backend.host_files_fixture import FileTaskFixture as TaskService
+from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 
 @pytest.mark.parametrize("export_format", ["csv", "xlsx"])
@@ -38,9 +39,7 @@ async def test_revoke_joins_real_writer_without_a_create_reply(
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-    writer = ExportService(
-        query_port=BlockedQuery([]), profiles=_manifest(), resolve_path=service.resolve_path
-    )
+    writer = ExportService(query_port=BlockedQuery([]), profiles=_manifest(), files=service.files)
 
     async def export(_task_id, _reporter, token, params):
         return await writer.export(

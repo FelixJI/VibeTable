@@ -22,6 +22,7 @@ from backend.contracts.plugin import (
     PluginTaskSnapshot,
     UninstallResult,
 )
+from backend.contracts.task import SessionPathGrant
 
 NotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 
@@ -325,15 +326,15 @@ class PluginPlatformService:
         )(run_id, interaction_id, decision)
         return result or InteractionResolveResult(status="expired")
 
-    async def resolve_file(self, *, request_id: str, selected_path: str | None) -> bool:
+    async def resolve_file(self, *, request_id: str, grant: SessionPathGrant | None) -> bool:
         resolver = getattr(self._file_adapter, "resolve", None)
         if not callable(resolver):
             return False
         return bool(
             await cast(
-                Callable[[str, str | None], Awaitable[bool]],
+                Callable[[str, SessionPathGrant | None], Awaitable[bool]],
                 resolver,
-            )(request_id, selected_path)
+            )(request_id, grant)
         )
 
     async def cancel_task(self, *, task_id: str) -> PluginTaskSnapshot:

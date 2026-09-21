@@ -8,7 +8,7 @@ using VibeTable.Infrastructure.Rpc;
 namespace VibeTable.Desktop.Tests;
 
 [TestClass]
-public sealed class ProductSidecarHttpGatewayTests
+public sealed partial class ProductSidecarHttpGatewayTests
 {
     private const string WorkspaceId =
         "11111111-1111-4111-8111-111111111111";

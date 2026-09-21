@@ -148,3 +148,109 @@ async def test_serve_can_run_concurrently_with_notify(capfd: pytest.CaptureFixtu
     # protocol output on the writer. Capfd catches any stray print().
     captured = capfd.readouterr()
     assert captured.out == ""
+
+
+@pytest.mark.asyncio
+async def test_host_file_reply_unblocks_current_handler_without_reordering_requests() -> None:
+    dispatcher = RpcDispatcher()
+    reader = asyncio.StreamReader()
+    frames: asyncio.Queue[dict] = asyncio.Queue()
+    order: list[str] = []
+
+    class InteractiveWriter(BufferWriter):
+        def write(self, data: bytes) -> None:
+            super().write(data)
+            frames.put_nowait(json.loads(data))
+
+    writer = InteractiveWriter()
+    server = RpcServer(reader, writer, dispatcher)
+
+    async def first(_params: HandshakeParams) -> dict:
+        order.append("first-start")
+        result = await server.call_host_file("describe", {"grantId": "opaque"})
+        order.append("first-end")
+        return result
+
+    async def second(_params: HandshakeParams) -> dict:
+        order.append("second")
+        return {"ok": True}
+
+    dispatcher.register("first", first, HandshakeParams)
+    dispatcher.register("second", second, HandshakeParams)
+    serving = asyncio.create_task(server.serve())
+    params = {"clientVersion": "0.1.0", "protocolVersion": "1.0"}
+    try:
+        for method in ("first", "second"):
+            reader.feed_data(
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": method, "method": method, "params": params}
+                ).encode()
+                + b"\n"
+            )
+        callback = await asyncio.wait_for(frames.get(), 2)
+        assert callback["method"] == "host.file.describe"
+        assert order == ["first-start"]
+        reader.feed_data(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": callback["id"], "result": {"grantId": "opaque"}}
+            ).encode()
+            + b"\n"
+        )
+        responses = [await asyncio.wait_for(frames.get(), 2) for _ in range(2)]
+        assert [response["id"] for response in responses] == ["first", "second"]
+        assert responses[0]["result"] == {"grantId": "opaque"}
+        assert order == ["first-start", "first-end", "second"]
+    finally:
+        reader.feed_eof()
+        await asyncio.wait_for(serving, 2)
+
+
+@pytest.mark.asyncio
+async def test_eof_fails_pending_host_file_call() -> None:
+    server, reader, writer = _make_server()
+    serving = asyncio.create_task(server.serve())
+    call = asyncio.create_task(server.call_host_file("describe", {"grantId": "opaque"}))
+    await asyncio.sleep(0)
+    assert _frames(writer.data)[0]["method"] == "host.file.describe"
+    reader.feed_eof()
+    with pytest.raises(RuntimeError, match="channel closed"):
+        await asyncio.wait_for(call, 2)
+    await asyncio.wait_for(serving, 2)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await server.call_host_file("describe", {"grantId": "opaque"})
+
+
+@pytest.mark.asyncio
+async def test_host_file_channel_rejects_unknown_operation_without_writing() -> None:
+    server, _reader, writer = _make_server()
+    with pytest.raises(ValueError, match="unknown"):
+        await server.call_host_file("executeShell", {"path": "forbidden"})
+    assert writer.data == b""
+
+
+@pytest.mark.asyncio
+async def test_response_write_failure_stops_reader_without_waiting_for_eof() -> None:
+    class BrokenWriter(BufferWriter):
+        async def drain(self) -> None:
+            raise OSError("closed output")
+
+    dispatcher = RpcDispatcher()
+    dispatcher.register("system.handshake", SystemService().handshake, HandshakeParams)
+    reader = asyncio.StreamReader()
+    server = RpcServer(reader, BrokenWriter(), dispatcher)
+    reader.feed_data(
+        b'{"jsonrpc":"2.0","id":"a","method":"system.handshake","params":{"clientVersion":"1","protocolVersion":"1.0"}}\n'
+    )
+    with pytest.raises(OSError, match="closed output"):
+        await asyncio.wait_for(server.serve(), 2)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await server.call_host_file("describe", {"grantId": "opaque"})
+
+
+@pytest.mark.asyncio
+async def test_ordinary_rpc_overload_terminates_instead_of_blocking_callback_read_pump() -> None:
+    server, reader, _writer = _make_server()
+    frame = b'{"jsonrpc":"2.0","id":"a","method":"system.handshake","params":{"clientVersion":"1","protocolVersion":"1.0"}}\n'
+    reader.feed_data(frame * 66)
+    with pytest.raises(asyncio.QueueFull):
+        await asyncio.wait_for(server.serve(), 2)

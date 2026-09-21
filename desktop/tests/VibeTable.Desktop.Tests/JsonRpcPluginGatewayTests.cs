@@ -14,7 +14,8 @@ public sealed class JsonRpcPluginGatewayTests
     {
         var transport = new AutoRespondTransport();
         await using var client = new JsonRpcClient(transport);
-        using var gateway = new JsonRpcPluginGateway(client);
+        using var gateway = new JsonRpcPluginGateway(client, (request, path, token) =>
+            Task.FromResult(JsonSerializer.SerializeToElement(new SessionPathGrant("opaque", "export_target", "write", "output.txt", null, "text/plain", 9999999999), new JsonSerializerOptions(JsonSerializerDefaults.Web))));
         var context = new PluginRuntimeCommandContext(
             "vibetable.command-context.v1",
             "project-1",
@@ -47,7 +48,7 @@ public sealed class JsonRpcPluginGatewayTests
                 JsonDocument.Parse("""{"trim":true}""").RootElement.Clone()),
             CancellationToken.None);
         await gateway.ResolveInteractionAsync(new("run-1", "i-1", "rejected"), CancellationToken.None);
-        await gateway.ResolveFileAsync(new("file-1", @"C:\trusted\output.txt"), CancellationToken.None);
+        await gateway.ResolveFileAsync(new("file-1", "run-1", "project-1", "plugin-1", "action-1", "write", [], "output.txt", "text/plain", 9999999999), @"C:\trusted\output.txt", CancellationToken.None);
         await gateway.CancelTaskAsync(new("task-1"), CancellationToken.None);
         await gateway.GetTaskAsync(new("task-1"), CancellationToken.None);
 
@@ -84,9 +85,9 @@ public sealed class JsonRpcPluginGatewayTests
         Assert.AreEqual(
             "rejected",
             transport.Requests[10].GetProperty("params").GetProperty("decision").GetString());
-        Assert.AreEqual(
-            @"C:\trusted\output.txt",
-            transport.Requests[11].GetProperty("params").GetProperty("selectedPath").GetString());
+        Assert.AreEqual("opaque",
+            transport.Requests[11].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
+        Assert.IsFalse(transport.SerializedRequests.Contains("trusted", StringComparison.Ordinal));
     }
 
     private sealed class AutoRespondTransport : IJsonLineTransport

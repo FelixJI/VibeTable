@@ -1313,7 +1313,7 @@ public sealed class PluginRequestDispatcherTests
         public Exception? CancelFailure { get; init; }
         public TaskCompletionSource<bool>? PendingCancel { get; init; }
         public CancellationToken CancelToken { get; private set; }
-        public TaskCompletionSource<PluginResolveFileParams> FileResolution { get; } = new(
+        public TaskCompletionSource<(string RequestId, string? SelectedPath)> FileResolution { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         private Action<PluginEventEnvelope>? _catalogChanged;
         private Action<PluginEventEnvelope>? _taskChanged;
@@ -1439,9 +1439,9 @@ public sealed class PluginRequestDispatcherTests
             => System.Threading.Tasks.Task.FromResult(Task);
         public Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(PluginResolveInteractionParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", "rejected"));
-        public Task<bool> ResolveFileAsync(PluginResolveFileParams request, CancellationToken token)
+        public Task<bool> ResolveFileAsync(PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token)
         {
-            FileResolution.TrySetResult(request);
+            FileResolution.TrySetResult((request.RequestId, selectedPath));
             return System.Threading.Tasks.Task.FromResult(true);
         }
         public Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(PluginTaskParams request, CancellationToken token)
