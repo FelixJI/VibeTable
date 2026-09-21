@@ -323,7 +323,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         if (!_grants.TryGetValue(id, out Grant? grant) || grant.State != "available"
             || grant.ExpiresAt <= _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0
             || (write.HasValue && grant.Write != write.Value) || grant.RunId != runId)
-            throw new InvalidOperationException("File grant is unavailable for this operation.");
+            throw new HostPathGrantException();
         return grant;
     }
 

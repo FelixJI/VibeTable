@@ -25,6 +25,7 @@ from backend.contracts.system import HandshakeParams
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.framing import MAX_FRAME_BYTES, FrameTooLargeError
 from backend.rpc.server import RpcServer
+from tests.backend.product_composition_fixture import product_backend as product_backend
 
 
 class BufferWriter:
@@ -206,12 +207,14 @@ async def test_host_file_reply_unblocks_current_handler_without_reordering_reque
 
 
 @pytest.mark.asyncio
-async def test_eof_fails_pending_host_file_call() -> None:
+@pytest.mark.parametrize("action", ["describe", "finishWrite"])
+async def test_eof_fails_pending_host_file_call(action) -> None:
     server, reader, writer = _make_server()
     serving = asyncio.create_task(server.serve())
-    call = asyncio.create_task(server.call_host_file("describe", {"grantId": "opaque"}))
+    params = {"grantId": "opaque"} if action == "describe" else {"transferId": "t", "commit": True}
+    call = asyncio.create_task(server.call_host_file(action, params))
     await asyncio.sleep(0)
-    assert _frames(writer.data)[0]["method"] == "host.file.describe"
+    assert _frames(writer.data)[0]["method"] == f"host.file.{action}"
     reader.feed_eof()
     with pytest.raises(RuntimeError, match="channel closed"):
         await asyncio.wait_for(call, 2)
@@ -254,3 +257,171 @@ async def test_ordinary_rpc_overload_terminates_instead_of_blocking_callback_rea
     reader.feed_data(frame * 66)
     with pytest.raises(asyncio.QueueFull):
         await asyncio.wait_for(server.serve(), 2)
+
+
+@pytest.mark.parametrize(
+    ("native_code", "kind", "expected_code"),
+    [
+        (-32050, "path_grant_error", -32050),
+        (-32098, "path_grant_error", -32603),
+        (-32050, "unknown", -32603),
+    ],
+)
+async def test_real_task_composition_preserves_only_closed_host_grant_errors(
+    product_backend, native_code, kind, expected_code
+):
+    server = product_backend.server
+    reader = asyncio.StreamReader()
+    frames = asyncio.Queue()
+
+    class InteractiveWriter(BufferWriter):
+        def write(self, data):
+            super().write(data)
+            frames.put_nowait(json.loads(data))
+
+    server._reader = reader
+    server._writer = InteractiveWriter()
+    serving = asyncio.create_task(server.serve())
+    try:
+        reader.feed_data(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "export-create",
+                    "method": "task.create",
+                    "params": {"kind": "data.export", "params": {"grantId": "expired"}},
+                }
+            ).encode()
+            + b"\n"
+        )
+        callback = await asyncio.wait_for(frames.get(), 2)
+        assert callback["method"] == "host.file.describe"
+        assert callback["params"] == {"grantId": "expired"}
+        reader.feed_data(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": callback["id"],
+                    "error": {
+                        "code": native_code,
+                        "message": "private-path-marker",
+                        "data": {"kind": kind, "message": "private-path-marker"},
+                    },
+                }
+            ).encode()
+            + b"\n"
+        )
+        response = await asyncio.wait_for(frames.get(), 2)
+        assert response["id"] == "export-create"
+        assert response["error"]["code"] == expected_code
+        if expected_code == -32050:
+            assert response["error"]["message"] == "Path grant error"
+            assert response["error"]["data"]["kind"] == "path_grant_error"
+        assert "private-path-marker" not in json.dumps(response)
+        assert product_backend.transport.requests == []
+    finally:
+        reader.feed_eof()
+        await asyncio.wait_for(serving, 2)
+
+
+async def test_native_commit_outlives_callback_deadline_without_a_false_failed_task(monkeypatch):
+    import base64
+
+    from backend.application.export_service import ExportService
+    from backend.application.host_files import HostFiles
+    from backend.application.task_runtime import TaskRuntime
+    from backend.contracts.data_io import ExportParams
+    from tests.backend.application.test_export_service import FakeQueryPort, _manifest
+
+    reader = asyncio.StreamReader()
+    committing = asyncio.Event()
+    received = bytearray()
+    commit_id = None
+    last_method = None
+    output = b"previous complete file"
+    original_wait_for = asyncio.wait_for
+
+    async def expire_callback_deadline(awaitable, timeout):
+        if timeout == 30 and last_method == "host.file.finishWrite":
+            # Deterministic deadline injection: the native operation has been
+            # submitted but has not committed or returned its receipt yet.
+            raise TimeoutError("callback deadline elapsed")
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", expire_callback_deadline)
+
+    class HostPeer(BufferWriter):
+        def write(self, data):
+            nonlocal commit_id, last_method
+            frame = json.loads(data)
+            last_method = frame["method"]
+            if last_method == "host.file.openWrite":
+                result = {"transferId": "t", "displayName": "out.csv"}
+            elif last_method == "host.file.write":
+                received.extend(base64.b64decode(frame["params"]["base64"]))
+                result = {"offset": len(received)}
+            else:
+                assert last_method == "host.file.finishWrite"
+                assert frame["params"]["commit"] is True
+                commit_id = frame["id"]
+                committing.set()
+                return
+            reader.feed_data(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": frame["id"],
+                        "result": result,
+                    }
+                ).encode()
+                + b"\n"
+            )
+
+    server = RpcServer(reader, HostPeer(), RpcDispatcher())
+    writer = ExportService(
+        query_port=FakeQueryPort([[{"title": "complete"}]]),
+        profiles=_manifest(),
+        files=HostFiles(server.call_host_file),
+    )
+    runtime = TaskRuntime()
+
+    async def export(_task_id, _reporter, token):
+        return await writer.export(
+            ExportParams.model_validate(
+                {
+                    "collection": "vibetable_demo",
+                    "query": {},
+                    "format": "csv",
+                    "grantId": "g",
+                }
+            ),
+            cancelled=lambda: token.cancelled,
+        )
+
+    runtime.register("data.export", export)
+    serving = asyncio.create_task(server.serve())
+    created = await runtime.create("data.export", {})
+    try:
+        await asyncio.wait_for(committing.wait(), 2)
+        # Let the worker observe an expired deadline if one was applied.
+        await asyncio.sleep(0)
+        assert runtime.status(created.task_id).state == "running"
+        assert output == b"previous complete file"
+        output = bytes(received)
+        reader.feed_data(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": commit_id,
+                    "result": {"committed": True, "bytes": len(received)},
+                }
+            ).encode()
+            + b"\n"
+        )
+        result = await asyncio.wait_for(runtime.wait(created.task_id), 2)
+        assert result.state == "succeeded"
+        assert b"complete" in output
+    finally:
+        reader.feed_eof()
+        await asyncio.wait_for(serving, 2)
+        await asyncio.wait_for(runtime.wait(created.task_id), 2)

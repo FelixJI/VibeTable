@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
+using VibeTable.Infrastructure.Rpc;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 
@@ -135,6 +137,38 @@ public sealed class HostSessionFileBrokerTests
         Assert.AreEqual("subsequent edit", File.ReadAllText(target));
         Assert.AreEqual(0, f.Leases);
     }
+    [TestMethod]
+    public async Task ExpiredGrantKeepsStructuredErrorAcrossActualNativeCallback()
+    {
+        await using var f = new Fixture();
+        string grant = await f.Issue(Path.Combine(f.Root, "private-path-marker.csv"), true);
+        f.Clock.Now = f.Clock.Now.AddMinutes(6);
+        var transport = new FilePeer();
+        await using var client = new JsonRpcClient(transport);
+        client.RegisterHostFileHandler(f.Broker);
+        await transport.In.Writer.WriteAsync(JsonSerializer.SerializeToElement(new
+        { jsonrpc = "2.0", id = "host-file:expired-grant", method = "host.file.describe", @params = new { grantId = grant } }));
+        JsonElement reply = await transport.Out.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("host-file:expired-grant", reply.GetProperty("id").GetString());
+        JsonElement error = reply.GetProperty("error");
+        Assert.AreEqual(-32050, error.GetProperty("code").GetInt32());
+        Assert.AreEqual("path_grant_error", error.GetProperty("data").GetProperty("kind").GetString());
+        Assert.IsFalse(reply.GetRawText().Contains("private-path-marker", StringComparison.Ordinal));
+        Assert.IsFalse(reply.GetRawText().Contains(f.Root, StringComparison.Ordinal));
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    private sealed class FilePeer : IJsonLineTransport
+    {
+        internal readonly Channel<JsonElement> In = Channel.CreateUnbounded<JsonElement>();
+        internal readonly Channel<JsonElement> Out = Channel.CreateUnbounded<JsonElement>();
+        public async Task<JsonElement?> ReadAsync(CancellationToken token)
+            => await In.Reader.WaitToReadAsync(token) ? await In.Reader.ReadAsync(token) : null;
+        public Task WriteAsync(string line, CancellationToken token)
+            => Out.Writer.WriteAsync(JsonDocument.Parse(line).RootElement.Clone(), token).AsTask();
+        public ValueTask DisposeAsync() { In.Writer.TryComplete(); return ValueTask.CompletedTask; }
+    }
+
     private sealed class Clock : TimeProvider
     {
         internal DateTimeOffset Now = DateTimeOffset.UtcNow;

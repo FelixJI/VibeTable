@@ -121,3 +121,77 @@ async def test_revoke_after_commit_keeps_truthful_success_and_target(tmp_path: P
     await service.revoke_export_target(ResolveGrantParams(grant_id=grant.grant_id))
     assert service.runtime.status(created.task_id).state == "succeeded"
     assert target.read_text(encoding="utf-8") == "complete"
+
+
+@pytest.mark.parametrize("export_format", ["csv", "xlsx"])
+@pytest.mark.parametrize("cancel_at", ["write", "finishWrite"])
+async def test_cooperative_cancel_respects_native_export_commit_boundary(export_format, cancel_at):
+    from backend.application.host_files import HostFiles
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    previous = b"previous complete file"
+    output = previous
+    received = bytearray()
+    finishes = []
+    write_calls = 0
+
+    async def call(action, params):
+        nonlocal output, write_calls
+        if action == "openWrite":
+            return {"transferId": "transfer", "displayName": f"out.{export_format}"}
+        if action == "write":
+            import base64
+
+            write_calls += 1
+            assert params["offset"] == len(received)
+            received.extend(base64.b64decode(params["base64"]))
+        else:
+            assert action == "finishWrite"
+            finishes.append(params["commit"])
+        if action == cancel_at:
+            entered.set()
+            await release.wait()
+        if action == "write":
+            return {"offset": len(received)}
+        if params["commit"]:
+            output = bytes(received)
+        return {"committed": params["commit"], "bytes": len(received)}
+
+    # CSV crosses the byte transport's block boundary; XLSX also exercises
+    # cancellation after the final data block and before native commit.
+    writer = ExportService(
+        query_port=FakeQueryPort([[{"title": "x" * 300_000}]]),
+        profiles=_manifest(),
+        files=HostFiles(call),
+    )
+    runtime = TaskRuntime()
+
+    async def export(_task_id, _reporter, token, params):
+        return await writer.export(
+            ExportParams.model_validate(params), cancelled=lambda: token.cancelled
+        )
+
+    runtime.register("data.export", export)
+    created = await runtime.create(
+        "data.export",
+        {"collection": "vibetable_demo", "query": {}, "format": export_format, "grantId": "g"},
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await runtime.cancel(created.task_id)
+        assert runtime.status(created.task_id).state == "running"
+        release.set()
+        result = await asyncio.wait_for(runtime.wait(created.task_id), 2)
+        if cancel_at == "write":
+            assert result.state == "cancelled"
+            assert finishes == [False]
+            assert output == previous
+            assert write_calls == 1
+        else:
+            assert result.state == "succeeded"
+            assert finishes == [True]
+            assert output == bytes(received) != previous
+    finally:
+        release.set()
+        await asyncio.wait_for(runtime.wait(created.task_id), 2)

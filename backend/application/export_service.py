@@ -10,7 +10,7 @@ Covers the C1 Task 4 requirements:
 * Templates: :meth:`generate_template` writes a schema-derived template (column
   names, required hints, enum/relation notes) to an export-target grant.
 
-Cancellation is cooperative between pages. Output is written to a sibling
+Cancellation is cooperative between pages and during byte transfer. Output is written to a sibling
 temporary file and atomically replaces the selected target only on success;
 cancelled/failed exports never expose a partial artifact.
 """
@@ -136,7 +136,7 @@ class ExportService:
                         output_columns.append(col)
         rows_written = 0
         fmt = params.format
-        async with self._files.write(params.grant_id) as target:
+        async with self._files.write(params.grant_id, cancelled=cancelled) as target:
             if params.lookup_ids:
                 if self._lookup_provider is None:
                     raise ExportError(

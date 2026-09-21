@@ -14,6 +14,9 @@ public interface IHostFileRequestHandler
     void Retire();
 }
 
+/// <summary>A grant rejection whose fixed message is safe on the worker channel.</summary>
+public sealed class HostPathGrantException() : InvalidOperationException("File grant is unavailable for this operation.");
+
 public sealed partial class JsonRpcClient
 {
     private readonly object _hostFileGate = new();
@@ -85,6 +88,12 @@ public sealed partial class JsonRpcClient
             JsonElement result = await handler.HandleAsync(action, parameters, _hostFileLifetime.Token)
                 .ConfigureAwait(false);
             response = new { jsonrpc = "2.0", id, result };
+        }
+        catch (HostPathGrantException)
+        {
+            response = new { jsonrpc = "2.0", id,
+                error = new { code = -32050, message = "Path grant error",
+                    data = new { kind = "path_grant_error", message = "File grant is unavailable for this operation." } } };
         }
         catch (Exception)
         {

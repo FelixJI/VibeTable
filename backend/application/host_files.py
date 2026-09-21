@@ -66,7 +66,13 @@ class HostFiles:
                 await self._call("closeRead", {"transferId": transfer_id})
 
     @asynccontextmanager
-    async def write(self, grant_id: str, *, run_id: str | None = None) -> AsyncIterator[FileBuffer]:
+    async def write(
+        self,
+        grant_id: str,
+        *,
+        run_id: str | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> AsyncIterator[FileBuffer]:
         opened = await self._call("openWrite", self._grant_params(grant_id, run_id))
         transfer_id = _string(opened, "transferId")
         finishing = False
@@ -76,6 +82,8 @@ class HostFiles:
                 spool.seek(0)
                 offset = 0
                 while content := spool.read(BLOCK_BYTES):
+                    if cancelled and cancelled():
+                        raise asyncio.CancelledError
                     receipt = await self._call(
                         "write",
                         {
@@ -87,6 +95,8 @@ class HostFiles:
                     offset += len(content)
                     if receipt.get("offset") != offset:
                         raise RuntimeError("Host file write acknowledgement mismatch")
+                if cancelled and cancelled():
+                    raise asyncio.CancelledError
                 # Once submitted, cancellation must observe the final native
                 # outcome. A committed file must not become a cancelled task.
                 finishing = True

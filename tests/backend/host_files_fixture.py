@@ -133,7 +133,7 @@ class FormatFiles(HostFiles):
             yield FileBuffer(stream, self.path.name)
 
     @asynccontextmanager
-    async def write(self, grant_id, *, run_id=None):
+    async def write(self, grant_id, *, run_id=None, cancelled=None):
         with io.BytesIO() as stream:
             yield FileBuffer(stream, self.path.name)
             self.path.write_bytes(stream.getvalue())

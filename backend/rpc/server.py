@@ -24,6 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from backend.application.path_grant import PathGrantError
 from backend.contracts.product_rpc import JsonObject
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.framing import AsyncWriter, read_frame, write_frame
@@ -79,6 +80,11 @@ class RpcServer:
                         "params": params,
                     },
                 )
+            if action == "finishWrite" and params.get("commit") is True:
+                # Submission can outlive the ordinary callback deadline. Only
+                # the native receipt or channel retirement settles this commit;
+                # a local timeout cannot prove that the target was not replaced.
+                return await future
             return await asyncio.wait_for(future, timeout=30)
         finally:
             self._host_pending.pop(request_id, None)
@@ -101,7 +107,25 @@ class RpcServer:
             ):
                 future.set_result(result)
             else:
-                future.set_exception(RuntimeError("Host file operation was rejected"))
+                error = payload.get("error")
+                data = error.get("data") if isinstance(error, dict) else None
+                if (
+                    payload.get("jsonrpc") == "2.0"
+                    and "result" not in payload
+                    and isinstance(error, dict)
+                    and error.get("code") == -32050
+                    and isinstance(data, dict)
+                    and data.get("kind") == "path_grant_error"
+                ):
+                    # Preserve the public category, never forward peer messages or paths.
+                    future.set_exception(
+                        PathGrantError(
+                            "File grant is unavailable for this operation.",
+                            code="grant_unavailable",
+                        )
+                    )
+                else:
+                    future.set_exception(RuntimeError("Host file operation was rejected"))
         return True
 
     async def serve(self) -> None:
