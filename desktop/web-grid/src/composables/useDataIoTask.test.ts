@@ -240,7 +240,7 @@ describe("useDataIoTask", () => {
     expect(task.relationOptions.value).toEqual(relationOptions);
 
     await task.applyImport();
-    expect(service.applyImport).toHaveBeenCalledWith(session, expect.any(Function));
+    expect(service.applyImport).toHaveBeenCalledWith(session, expect.any(Function), expect.any(Function));
     expect(importSucceeded).toHaveBeenCalledWith(2);
     expect(refresh).toHaveBeenCalledOnce();
     expect(task.previewSession.value).toBeNull();
@@ -305,7 +305,7 @@ describe("useDataIoTask", () => {
     await task.exportData("xlsx");
     await task.confirmExportData();
 
-    expect(service.exportData).toHaveBeenCalledWith("orders", {}, "xlsx", undefined, expect.any(Function));
+    expect(service.exportData).toHaveBeenCalledWith("orders", {}, "xlsx", undefined, expect.any(Function), expect.any(Function));
   });
 
   it("admits only one export while the target picker is pending", async () => {
@@ -455,7 +455,7 @@ describe("useDataIoTask", () => {
     expect(service.exportData).toHaveBeenCalledWith("orders", {}, "csv", {
       lookupIds: ["lkp-1"],
       lookupRevision: "schema_0001",
-    } satisfies ExportLookupSelection, expect.any(Function));
+    } satisfies ExportLookupSelection, expect.any(Function), expect.any(Function));
     expect(exportSucceeded).toHaveBeenCalledOnce();
     expect(task.exportPanel.value).toBeNull();
   });

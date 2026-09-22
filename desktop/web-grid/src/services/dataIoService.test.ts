@@ -4,6 +4,75 @@ import { setHostBridgeForTesting } from "./bridgeContext";
 import { useDataIoService } from "./dataIoService";
 
 describe("dataIoService", () => {
+  it("holds task ownership while its workspace drains and never polls a replacement session", async () => {
+    vi.useFakeTimers();
+    let session: "active" | "draining" | "retired" = "active";
+    const request = vi.fn(async (method: string) => {
+      if (method === "data.exportTargetRequested") return { grantId: "grant-out" };
+      if (method === "task.create") return { taskId: "old-workspace-task", state: "running" };
+      return { taskId: "old-workspace-task", state: "succeeded", result: {} };
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    const result = service.exportData("orders", {}, "csv", undefined, () => undefined, () => session)
+      .catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      session = "draining";
+      await vi.advanceTimersByTimeAsync(100);
+      expect(service.busy.value).toBe(true);
+      await service.cancelActive();
+      expect(request.mock.calls.map(([method]) => method)).toEqual(["data.exportTargetRequested", "task.create"]);
+      session = "retired";
+      await vi.advanceTimersByTimeAsync(100);
+      await result;
+      expect(service.busy.value).toBe(false);
+      expect(request.mock.calls.map(([method]) => method)).toEqual(["data.exportTargetRequested", "task.create"]);
+    } finally {
+      session = "retired";
+      await vi.advanceTimersByTimeAsync(100);
+      await result;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["creation receipt", "status poll"] as const)("keeps admitted tasks cancellable after scope retirement during %s", async (boundary) => {
+    vi.useFakeTimers();
+    let resolveCreated!: (value: unknown) => void;
+    let resolveStatus!: (value: unknown) => void;
+    const created = new Promise((resolve) => { resolveCreated = resolve; });
+    const status = new Promise((resolve) => { resolveStatus = resolve; });
+    let current = true;
+    const request = vi.fn(async (method: string) => {
+      if (method === "data.exportTargetRequested") return { grantId: "grant-out" };
+      if (method === "task.create") return await created;
+      if (method === "task.status") return await status;
+      if (method === "task.cancel") return { state: "cancelling" };
+      throw new Error(`Unexpected request ${method}`);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    const result = service.exportData("orders", {}, "csv", undefined, () => {
+      if (!current) throw new Error("retired");
+    }).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("task.create", expect.anything()));
+      if (boundary === "creation receipt") current = false;
+      resolveCreated({ taskId: "owned-task", state: "running" });
+      await vi.advanceTimersByTimeAsync(0);
+      if (boundary === "status poll") current = false;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(service.busy.value).toBe(true);
+      await service.cancelActive();
+      expect(request).toHaveBeenCalledWith("task.cancel", { taskId: "owned-task" });
+    } finally {
+      resolveStatus({ taskId: "owned-task", state: "succeeded", result: { rowsWritten: 1 } });
+      await result;
+      vi.useRealTimers();
+    }
+    expect(service.busy.value).toBe(false);
+  });
+
   it.each(["import", "export"] as const)("does not continue a %s picker after its scope retires", async (kind) => {
     let resolvePicker!: (value: unknown) => void;
     const picker = new Promise((resolve) => { resolvePicker = resolve; });

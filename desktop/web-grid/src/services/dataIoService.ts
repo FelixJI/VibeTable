@@ -15,6 +15,8 @@ import type {
 import { t } from "@/i18n";
 import { computed, ref } from "vue";
 
+export type DataTaskSessionState = "active" | "draining" | "retired";
+
 export interface ImportPreviewSession {
   readonly grant: SessionPathGrant;
   readonly plan: ImportPlan;
@@ -77,23 +79,29 @@ export function useDataIoService() {
   const activeTaskId = ref<string | null>(null);
   const busy = computed(() => activeTaskId.value !== null);
   let catalogGeneration = 0;
+  let activeTaskSession: () => DataTaskSessionState = () => "active";
 
   async function runTask(
     kind: "data.import" | "data.export",
     params: Readonly<Record<string, unknown>>,
     assertCurrent: () => void,
+    taskSession: () => DataTaskSessionState,
   ): Promise<unknown> {
     if (activeTaskId.value) {
       throw new Error("A data task is already running.");
     }
     assertCurrent();
     let status = await bridge.request("task.create", { kind, params }) as DataTaskStatus;
-    assertCurrent();
+    // Admission is already complete. Keep tracking the owned task through its
+    // terminal receipt so table changes do not discard busy/cancellation state.
     activeTaskId.value = status.taskId;
+    activeTaskSession = taskSession;
     try {
       while (status.state === "queued" || status.state === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 100));
-        assertCurrent();
+        const sessionState = taskSession();
+        if (sessionState === "retired") throw new Error(t("dataIo.operationRetired"));
+        if (sessionState === "draining") continue;
         status = await bridge.request("task.status", {
           taskId: status.taskId,
         }) as DataTaskStatus;
@@ -119,7 +127,7 @@ export function useDataIoService() {
 
   async function cancelActive(): Promise<void> {
     const taskId = activeTaskId.value;
-    if (taskId) {
+    if (taskId && activeTaskSession() === "active") {
       await bridge.request("task.cancel", { taskId });
     }
   }
@@ -256,6 +264,7 @@ export function useDataIoService() {
   async function applyImport(
     session: ImportPreviewSession,
     assertCurrent: () => void = () => undefined,
+    taskSession: () => DataTaskSessionState = () => "active",
   ): Promise<ApplyImportResult> {
     return await runTask("data.import", {
       grantId: session.grant.grantId,
@@ -263,7 +272,7 @@ export function useDataIoService() {
       token: session.plan.token.token,
       mode: session.mode,
       idempotencyPrefix: crypto.randomUUID(),
-    }, assertCurrent) as ApplyImportResult;
+    }, assertCurrent, taskSession) as ApplyImportResult;
   }
 
   async function exportData(
@@ -272,6 +281,7 @@ export function useDataIoService() {
     format: ExportFormat = "csv",
     lookup?: ExportLookupSelection,
     assertCurrent: () => void = () => undefined,
+    taskSession: () => DataTaskSessionState = () => "active",
   ): Promise<ExportResult> {
     const grant = await bridge.request("data.exportTargetRequested", {
       defaultName: `${collection}-export.${format}`,
@@ -287,7 +297,7 @@ export function useDataIoService() {
       includeRelations: true,
       lookupIds,
       ...(lookupIds.length > 0 ? { lookupRevision: lookup?.lookupRevision } : {}),
-    }, assertCurrent) as ExportResult;
+    }, assertCurrent, taskSession) as ExportResult;
   }
 
   return {

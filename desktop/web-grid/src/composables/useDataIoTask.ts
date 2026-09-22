@@ -1,6 +1,7 @@
 import { computed, readonly, ref, watch, type Ref } from "vue";
 import type { ApplyImportResult, ExportFormat, ExportResult, ImportPlan, SessionPathGrant } from "@/contracts";
 import type {
+  DataTaskSessionState,
   ExportLookupContext,
   ExportLookupSelection,
   ImportColumnMappingPayload,
@@ -38,13 +39,18 @@ export interface DataIoTaskPort {
   ): Promise<ImportPlan>;
   loadRelationImportOptions(collection: string, assertCurrent?: () => void): Promise<readonly RelationImportOption[]>;
   loadExportLookupContext(collection: string): Promise<ExportLookupContext>;
-  applyImport(session: ImportPreviewSession, assertCurrent?: () => void): Promise<ApplyImportResult>;
+  applyImport(
+    session: ImportPreviewSession,
+    assertCurrent?: () => void,
+    taskSession?: () => DataTaskSessionState,
+  ): Promise<ApplyImportResult>;
   exportData(
     collection: string,
     query: Readonly<Record<string, unknown>>,
     format: ExportFormat,
     lookup?: ExportLookupSelection,
     assertCurrent?: () => void,
+    taskSession?: () => DataTaskSessionState,
   ): Promise<ExportResult>;
   cancelActive(): Promise<void>;
 }
@@ -138,6 +144,13 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       && context.collection === scope.collection
       && (context.workspaceId ?? null) === scope.workspaceId
       && (context.sessionEpoch ?? null) === scope.sessionEpoch;
+  }
+
+  function taskSession(scope: RequestScope): DataTaskSessionState {
+    const context = options.resolveContext();
+    if ((context.workspaceId ?? null) !== scope.workspaceId
+        || (context.sessionEpoch ?? null) !== scope.sessionEpoch) return "retired";
+    return context.available === false ? "draining" : "active";
   }
 
   function assertCurrent(scope: RequestScope): void {
@@ -303,7 +316,9 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     applying.value = true;
     applyError.value = null;
     try {
-      const result = await options.service.applyImport(session, () => assertCurrent(scope));
+      const result = await options.service.applyImport(
+        session, () => assertCurrent(scope), () => taskSession(scope),
+      );
       if (!isLive(scope)) return;
       options.importSucceeded(result.createdCount + result.updatedCount);
       previewSession.value = null;
@@ -411,6 +426,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         panel.format,
         selection,
         () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (isLive(scope)) options.exportSucceeded(result);
     } catch (error) {
