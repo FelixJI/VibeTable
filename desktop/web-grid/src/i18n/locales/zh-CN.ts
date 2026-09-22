@@ -236,6 +236,8 @@ export const messages: Record<string, string> = {
   "dataIo.import.preview.confirm": "导入 {count} 行",
   "dataIo.import.preview.sizeUnknown": "大小未知",
   "dataIo.import.repreview": "重新预检",
+  "dataIo.import.mapping.sourceTooLong": "表头超过 128 个字符，无法配置映射",
+  "dataIo.operationRetired": "操作已失效，请在当前工作区重新操作。",
   "dataIo.catalog.mismatch": "导入导出目录响应与当前数据表不匹配。",
   "dataIo.import.mapping.title": "关系列匹配",
   "dataIo.import.mapping.hint": "将文件中的编码列按目标表的唯一字段匹配为关系；未配置映射的关系列不会导入。",

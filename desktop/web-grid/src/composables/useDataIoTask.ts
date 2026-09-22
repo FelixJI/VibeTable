@@ -13,7 +13,7 @@ import { t } from "@/i18n";
 /** One user-authored relation mapping row (stable identities only). */
 export interface RelationMappingDraft {
   readonly sourceColumn: string;
-  readonly targetField: string;
+  readonly relationId: string;
   readonly matchField: string;
 }
 
@@ -29,21 +29,22 @@ export interface ExportLookupPanelState {
 
 export interface DataIoTaskPort {
   readonly busy: Readonly<Ref<boolean>>;
-  previewImport(collection: string, schemaRevision: string): Promise<ImportPreviewSession>;
+  previewImport(collection: string, schemaRevision: string, assertCurrent?: () => void): Promise<ImportPreviewSession>;
   previewImportWithGrant(
     grant: SessionPathGrant,
     collection: string,
     schemaRevision: string,
     columnMapping: readonly ImportColumnMappingPayload[],
   ): Promise<ImportPlan>;
-  loadRelationImportOptions(collection: string): Promise<readonly RelationImportOption[]>;
+  loadRelationImportOptions(collection: string, assertCurrent?: () => void): Promise<readonly RelationImportOption[]>;
   loadExportLookupContext(collection: string): Promise<ExportLookupContext>;
-  applyImport(session: ImportPreviewSession): Promise<ApplyImportResult>;
+  applyImport(session: ImportPreviewSession, assertCurrent?: () => void): Promise<ApplyImportResult>;
   exportData(
     collection: string,
     query: Readonly<Record<string, unknown>>,
     format: ExportFormat,
     lookup?: ExportLookupSelection,
+    assertCurrent?: () => void,
   ): Promise<ExportResult>;
   cancelActive(): Promise<void>;
 }
@@ -53,6 +54,7 @@ interface DataIoTaskContext {
   readonly schemaRevision?: string | null;
   readonly workspaceId?: string | null;
   readonly sessionEpoch?: string | number | null;
+  readonly available?: boolean;
 }
 
 interface DataIoTaskOptions {
@@ -78,7 +80,7 @@ function errorMessage(error: unknown): string {
 function mappingKey(rows: readonly RelationMappingDraft[]): string {
   return JSON.stringify(
     rows
-      .map((row) => [row.sourceColumn, row.targetField, row.matchField])
+      .map((row) => [row.sourceColumn, row.relationId, row.matchField])
       .sort((left, right) => left.join("\u0000").localeCompare(right.join("\u0000"))),
   );
 }
@@ -107,6 +109,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
   const exportPanel = ref<ExportLookupPanelState | null>(null);
   const exportLookupIds = ref<readonly string[]>([]);
   let requestEpoch = 0;
+  let catalogRequest = 0;
   let previewedMappingKey = "[]";
   const taskLocked = computed(() =>
     previewing.value
@@ -130,29 +133,35 @@ export function useDataIoTask(options: DataIoTaskOptions) {
 
   function isLive(scope: RequestScope): boolean {
     const context = options.resolveContext();
-    return scope.epoch === requestEpoch
+    return context.available !== false
+      && scope.epoch === requestEpoch
       && context.collection === scope.collection
       && (context.workspaceId ?? null) === scope.workspaceId
       && (context.sessionEpoch ?? null) === scope.sessionEpoch;
   }
 
+  function assertCurrent(scope: RequestScope): void {
+    if (!isLive(scope)) throw new Error(t("dataIo.operationRetired"));
+  }
+
   function resolveImportContext(): { collection: string; schemaRevision: string } | null {
-    const { collection, schemaRevision } = options.resolveContext();
-    return collection && schemaRevision && !taskLocked.value
+    const { collection, schemaRevision, available } = options.resolveContext();
+    return available !== false && collection && schemaRevision && !taskLocked.value
       ? { collection, schemaRevision }
       : null;
   }
 
   function resolveRepreviewContext(): { collection: string; schemaRevision: string } | null {
-    const { collection, schemaRevision } = options.resolveContext();
+    const { collection, schemaRevision, available } = options.resolveContext();
     const busy = applying.value || previewing.value || repreviewing.value || exporting.value
       || options.service.busy.value;
-    return collection && schemaRevision && !busy ? { collection, schemaRevision } : null;
+    return available !== false && collection && schemaRevision && !busy
+      && !relationOptionsLoading.value && !relationOptionsError.value ? { collection, schemaRevision } : null;
   }
 
   function resolveExportCollection(): string | null {
-    const { collection } = options.resolveContext();
-    return collection && !taskLocked.value ? collection : null;
+    const { collection, available } = options.resolveContext();
+    return available !== false && collection && !taskLocked.value ? collection : null;
   }
 
   const canPreviewImport = computed(() => resolveImportContext() !== null);
@@ -162,6 +171,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     && (mappingDirty.value || schemaDrifted.value));
 
   function resetRelationCatalog(): void {
+    catalogRequest += 1;
     relationOptions.value = null;
     relationOptionsError.value = null;
     relationOptionsLoading.value = false;
@@ -182,25 +192,26 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       throw new Error(t("dataIo.import.mapping.tooManyRows"));
     }
     const optionByTarget = new Map(
-      (relationOptions.value ?? []).map((option) => [option.targetField, option]));
+      (relationOptions.value ?? []).map((option) => [option.relationId, option]));
     const usedSources = new Set<string>();
     const usedTargets = new Set<string>();
     return rows.map((row) => {
-      const option = optionByTarget.get(row.targetField);
+      const option = optionByTarget.get(row.relationId);
       if (
         !option
         || !option.matchFields.some((field) => field.fieldId === row.matchField)
         || !row.sourceColumn.trim()
+        || [...row.sourceColumn].length > 128
         || usedSources.has(row.sourceColumn)
-        || usedTargets.has(row.targetField)
+        || usedTargets.has(row.relationId)
       ) {
         throw new Error(t("dataIo.import.mapping.invalid"));
       }
       usedSources.add(row.sourceColumn);
-      usedTargets.add(row.targetField);
+      usedTargets.add(row.relationId);
       return {
         sourceColumn: row.sourceColumn,
-        targetField: row.targetField,
+        targetField: option.targetField,
         relationId: option.relationId,
         matchField: row.matchField,
       };
@@ -215,16 +226,17 @@ export function useDataIoTask(options: DataIoTaskOptions) {
 
   async function loadRelationOptions(collection: string, scope: RequestScope): Promise<void> {
     if (!isLive(scope)) return;
+    const generation = ++catalogRequest;
     relationOptionsLoading.value = true;
     relationOptionsError.value = null;
     try {
-      const loaded = await options.service.loadRelationImportOptions(collection);
-      if (!isLive(scope)) return;
+      const loaded = await options.service.loadRelationImportOptions(collection, () => assertCurrent(scope));
+      if (!isLive(scope) || generation !== catalogRequest) return;
       relationOptions.value = loaded;
     } catch (error) {
-      if (isLive(scope)) relationOptionsError.value = errorMessage(error);
+      if (isLive(scope) && generation === catalogRequest) relationOptionsError.value = errorMessage(error);
     } finally {
-      relationOptionsLoading.value = false;
+      if (generation === catalogRequest) relationOptionsLoading.value = false;
     }
   }
 
@@ -239,6 +251,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       const session = await options.service.previewImport(
         context.collection,
         context.schemaRevision,
+        () => assertCurrent(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = session;
@@ -282,12 +295,15 @@ export function useDataIoTask(options: DataIoTaskOptions) {
   async function applyImport(): Promise<void> {
     const session = previewSession.value;
     if (!session || applying.value || options.service.busy.value) return;
-    if (mappingDirty.value || schemaDrifted.value || relationOptionsLoading.value) return;
+    if (mappingDirty.value || schemaDrifted.value || repreviewing.value
+        || relationOptionsLoading.value
+        || session.plan.summary.errorRows > 0 || session.plan.summary.validRows === 0) return;
     const scope = captureScope(session.plan.collection);
+    if (!isLive(scope)) return;
     applying.value = true;
     applyError.value = null;
     try {
-      const result = await options.service.applyImport(session);
+      const result = await options.service.applyImport(session, () => assertCurrent(scope));
       if (!isLive(scope)) return;
       options.importSucceeded(result.createdCount + result.updatedCount);
       previewSession.value = null;
@@ -380,7 +396,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
 
   async function confirmExportData(): Promise<void> {
     const panel = exportPanel.value;
-    if (!panel || exporting.value || options.service.busy.value) return;
+    if (!panel || panel.loading || exporting.value || options.service.busy.value) return;
     const scope = captureScope(panel.collection);
     const ids = [...exportLookupIds.value];
     exporting.value = true;
@@ -389,12 +405,14 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       const selection = ids.length > 0 && panel.lookupRevision
         ? { lookupIds: ids, lookupRevision: panel.lookupRevision }
         : undefined;
-      options.exportSucceeded(await options.service.exportData(
+      const result = await options.service.exportData(
         panel.collection,
         {},
         panel.format,
         selection,
-      ));
+        () => assertCurrent(scope),
+      );
+      if (isLive(scope)) options.exportSucceeded(result);
     } catch (error) {
       if (isLive(scope)) options.reportError(errorMessage(error));
     } finally {
@@ -410,17 +428,19 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.sessionEpoch ?? null,
         context.collection ?? null,
         context.schemaRevision ?? null,
+        context.available !== false,
       ] as const;
     },
     (next, previous) => {
-      const [workspaceId, sessionEpoch, collection, schemaRevision] = next;
+      const [workspaceId, sessionEpoch, collection, schemaRevision, available] = next;
       const [prevWorkspaceId, prevSessionEpoch, prevCollection] = previous;
       const scopeRetired = workspaceId !== prevWorkspaceId
         || sessionEpoch !== prevSessionEpoch
-        || collection !== prevCollection;
+        || collection !== prevCollection
+        || !available;
       if (scopeRetired) {
+        retirePendingRequests();
         if (exportPanel.value && !exporting.value) {
-          retirePendingRequests();
           exportPanel.value = null;
           exportLookupIds.value = [];
         }
@@ -429,13 +449,13 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         }
         return;
       }
-      if (schemaRevision !== undefined && previous[3] !== undefined && schemaRevision !== previous[3]) {
+      if (schemaRevision !== previous[3]) {
+        retirePendingRequests();
         if (previewSession.value && !applying.value) {
           schemaDrifted.value = true;
           if (collection) void loadRelationOptions(collection, captureScope(collection));
         }
         if (exportPanel.value && !exporting.value) {
-          retirePendingRequests();
           exportPanel.value = null;
           exportLookupIds.value = [];
         }

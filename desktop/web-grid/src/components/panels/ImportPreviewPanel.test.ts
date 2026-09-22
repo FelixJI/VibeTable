@@ -137,7 +137,7 @@ describe("ImportPreviewPanel", () => {
   it("disables confirm until a changed mapping is re-previewed", async () => {
     const wrapper = mount(ImportPreviewPanel, {
       props: baseProps({
-        relationConfig: [{ sourceColumn: "Partner Code", targetField: "partner", matchField: "fld_code" }],
+        relationConfig: [{ sourceColumn: "Partner Code", relationId: "orders.fld_partner", matchField: "fld_code" }],
         mappingDirty: true,
       }),
     });

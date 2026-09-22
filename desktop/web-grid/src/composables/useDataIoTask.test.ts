@@ -63,6 +63,7 @@ type Context = {
   schemaRevision: string | null;
   workspaceId?: string | null;
   sessionEpoch?: number | null;
+  available?: boolean;
 };
 
 function setup(
@@ -116,11 +117,100 @@ function setup(
 
 const mappingRow: RelationMappingDraft = {
   sourceColumn: "Partner Code",
-  targetField: "partner",
+  relationId: "orders.fld_partner",
   matchField: "fld_code",
 };
 
 describe("useDataIoTask", () => {
+  it("resolves a stable relation choice to its current physical name after schema refresh", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    const catalog = vi.fn(async () => relationOptions);
+    const { task, service } = setup({ loadRelationImportOptions: catalog }, () => context.value);
+    await task.previewImport();
+    task.setRelationConfig([mappingRow]);
+    catalog.mockResolvedValue([{ ...relationOptions[0]!, targetField: "renamed_partner" }]);
+    context.value.schemaRevision = "schema_0002";
+    await Promise.resolve();
+    await task.repreviewImport();
+    expect(service.previewImportWithGrant).toHaveBeenCalledWith(expect.anything(), "orders", "schema_0002", [
+      { sourceColumn: "Partner Code", targetField: "renamed_partner", relationId: "orders.fld_partner", matchField: "fld_code" },
+    ]);
+  });
+
+  it("keeps the newest relation catalog when earlier reads complete last", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    const replies: ((value: readonly RelationImportOption[]) => void)[] = [];
+    const { task } = setup({ loadRelationImportOptions: vi.fn(() => new Promise<readonly RelationImportOption[]>((resolve) => replies.push(resolve))) }, () => context.value);
+    const preview = task.previewImport();
+    await Promise.resolve();
+    context.value.schemaRevision = "schema_0002";
+    replies[1]!([{ ...relationOptions[0]!, sourceDisplayName: "Current" }]);
+    await Promise.resolve();
+    replies[0]!([{ ...relationOptions[0]!, sourceDisplayName: "Old" }]);
+    await preview;
+    expect(task.relationOptions.value?.[0]?.sourceDisplayName).toBe("Current");
+    expect(task.relationOptionsLoading.value).toBe(false);
+  });
+
+  it("retires pending previews permanently when a transition starts before epoch rotation", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001", available: true });
+    let resolvePreview!: (value: ImportPreviewSession) => void;
+    const pending = new Promise<ImportPreviewSession>((resolve) => { resolvePreview = resolve; });
+    const { task, service } = setup({ previewImport: vi.fn(() => pending) }, () => context.value);
+    const preview = task.previewImport();
+    context.value.available = false;
+    expect(task.canExport.value).toBe(false);
+    context.value.available = true;
+    resolvePreview(previewSession());
+    await preview;
+    expect(task.previewSession.value).toBeNull();
+    expect(service.loadRelationImportOptions).not.toHaveBeenCalled();
+  });
+
+  it("retires a preview when leaving and returning to the same table before its reply", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    let resolvePreview!: (value: ImportPreviewSession) => void;
+    const pending = new Promise<ImportPreviewSession>((resolve) => { resolvePreview = resolve; });
+    const { task } = setup({ previewImport: vi.fn(() => pending) }, () => context.value);
+    const preview = task.previewImport();
+    context.value.collection = "invoices";
+    context.value.collection = "orders";
+    resolvePreview(previewSession());
+    await preview;
+    expect(task.previewSession.value).toBeNull();
+  });
+
+  it("does not report export success in a retired session", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001", sessionEpoch: 1 });
+    let resolveExport!: (value: ExportResult) => void;
+    const pending = new Promise<ExportResult>((resolve) => { resolveExport = resolve; });
+    const { task, exportSucceeded } = setup({ exportData: vi.fn(() => pending) }, () => context.value);
+    await task.exportData("csv");
+    const confirmed = task.confirmExportData();
+    context.value.sessionEpoch = 2;
+    resolveExport({ collection: "orders", format: "csv", rowsWritten: 3, schemaRevision: "schema_0001",
+      capabilityHash: "capability-1", outputDisplayName: "orders.csv" });
+    await confirmed;
+    expect(exportSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("does not make an in-flight repreview current after schema changes", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    let resolvePlan!: (value: ImportPlan) => void;
+    const pending = new Promise<ImportPlan>((resolve) => { resolvePlan = resolve; });
+    const { task, service } = setup({ previewImportWithGrant: vi.fn(() => pending) }, () => context.value);
+    await task.previewImport();
+    task.setRelationConfig([mappingRow]);
+    const preview = task.repreviewImport();
+    context.value.schemaRevision = "schema_0002";
+    resolvePlan({ ...previewSession().plan, token: { token: "retired", expiresAt: 1, consumed: false } });
+    await preview;
+    expect(task.schemaDrifted.value).toBe(true);
+    expect(task.previewSession.value?.plan.token.token).not.toBe("retired");
+    await task.applyImport();
+    expect(service.applyImport).not.toHaveBeenCalled();
+  });
+
   it("uses one reactive admission contract for import and export commands", async () => {
     const context = ref<Context>({ collection: "orders", schemaRevision: null });
     const { task, service } = setup({}, () => context.value);
@@ -146,11 +236,11 @@ describe("useDataIoTask", () => {
 
     await task.previewImport();
     expect(task.previewSession.value).toEqual(session);
-    expect(service.previewImport).toHaveBeenCalledWith("orders", "schema_0001");
+    expect(service.previewImport).toHaveBeenCalledWith("orders", "schema_0001", expect.any(Function));
     expect(task.relationOptions.value).toEqual(relationOptions);
 
     await task.applyImport();
-    expect(service.applyImport).toHaveBeenCalledWith(session);
+    expect(service.applyImport).toHaveBeenCalledWith(session, expect.any(Function));
     expect(importSucceeded).toHaveBeenCalledWith(2);
     expect(refresh).toHaveBeenCalledOnce();
     expect(task.previewSession.value).toBeNull();
@@ -215,7 +305,7 @@ describe("useDataIoTask", () => {
     await task.exportData("xlsx");
     await task.confirmExportData();
 
-    expect(service.exportData).toHaveBeenCalledWith("orders", {}, "xlsx", undefined);
+    expect(service.exportData).toHaveBeenCalledWith("orders", {}, "xlsx", undefined, expect.any(Function));
   });
 
   it("admits only one export while the target picker is pending", async () => {
@@ -335,6 +425,7 @@ describe("useDataIoTask", () => {
 
     context.value = { ...context.value, schemaRevision: "schema_0002" };
     expect(task.schemaDrifted.value).toBe(true);
+    await Promise.resolve();
     expect(task.canRepreview.value).toBe(true);
   });
 
@@ -364,7 +455,7 @@ describe("useDataIoTask", () => {
     expect(service.exportData).toHaveBeenCalledWith("orders", {}, "csv", {
       lookupIds: ["lkp-1"],
       lookupRevision: "schema_0001",
-    } satisfies ExportLookupSelection);
+    } satisfies ExportLookupSelection, expect.any(Function));
     expect(exportSucceeded).toHaveBeenCalledOnce();
     expect(task.exportPanel.value).toBeNull();
   });

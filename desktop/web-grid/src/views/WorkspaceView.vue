@@ -232,6 +232,8 @@ const {
   resolveContext: () => ({
     collection: workspace.currentTable,
     schemaRevision: tableStore.schemaRevision,
+    available: !workspaceSession.enabled
+      || (workspaceSession.hasOpenWorkspace && !workspaceSession.isTransitioning),
     workspaceId: workspaceSession.activeWorkspaceId,
     sessionEpoch: workspaceSession.sessionEpoch,
   }),

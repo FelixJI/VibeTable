@@ -67,6 +67,7 @@ const mappingStale = computed(() => props.mappingDirty || props.schemaDrifted);
 
 const canConfirm = computed(() =>
   !props.applying
+  && !props.repreviewing
   && !mappingStale.value
   && !props.relationOptionsLoading
   && props.session.plan.summary.validRows > 0
@@ -77,6 +78,8 @@ const canConfirm = computed(() =>
 const canRepreview = computed(() =>
   !props.applying
   && !props.repreviewing
+  && !props.relationOptionsLoading
+  && !props.relationOptionsError
   && props.relationOptions !== null
   && mappingStale.value);
 

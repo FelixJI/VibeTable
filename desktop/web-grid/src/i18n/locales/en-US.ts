@@ -236,6 +236,8 @@ export const messages: Record<string, string> = {
   "dataIo.import.preview.confirm": "Import {count} row(s)",
   "dataIo.import.preview.sizeUnknown": "Unknown size",
   "dataIo.import.repreview": "Re-run preview",
+  "dataIo.import.mapping.sourceTooLong": "Headers longer than 128 characters cannot be mapped",
+  "dataIo.operationRetired": "This operation is no longer current. Start again in the active workspace.",
   "dataIo.catalog.mismatch": "The import/export catalog response does not match the current table.",
   "dataIo.import.mapping.title": "Relation column matching",
   "dataIo.import.mapping.hint": "Match a file column to a relation by a unique field of the target table; unmapped relation columns are not imported.",

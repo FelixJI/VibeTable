@@ -44,40 +44,43 @@ const sourceOptions = computed<readonly SourceColumnOption[]>(() => {
     seen.add(key);
     const empty = key === "";
     const duplicate = (counts.get(key) ?? 0) > 1;
+    const tooLong = [...key].length > 128;
     result.push({
-      label: empty || duplicate
+      label: empty || duplicate || tooLong
         ? `${empty ? t("dataIo.import.mapping.emptySource") : column} · ${
-          duplicate ? t("dataIo.import.mapping.duplicateSource") : t("dataIo.import.mapping.emptySource")
+          duplicate ? t("dataIo.import.mapping.duplicateSource")
+            : tooLong ? t("dataIo.import.mapping.sourceTooLong") : t("dataIo.import.mapping.emptySource")
         }`
         : column,
       value: key,
-      disabled: empty || duplicate,
+      disabled: empty || duplicate || tooLong,
       reason: empty
         ? t("dataIo.import.mapping.emptySource")
-        : duplicate ? t("dataIo.import.mapping.duplicateSource") : null,
+        : duplicate ? t("dataIo.import.mapping.duplicateSource")
+          : tooLong ? t("dataIo.import.mapping.sourceTooLong") : null,
     });
   }
   return result;
 });
 
-const usableSourceCount = computed(() =>
-  sourceOptions.value.filter((option) => !option.disabled).length);
+const unavailableSources = computed(() =>
+  sourceOptions.value.filter((option) => option.disabled));
 
 const configurableTargets = computed(() =>
   (props.options ?? []).filter((option) => option.matchFields.length > 0));
 
-function usedInRows(rows: readonly RelationMappingDraft[], key: "sourceColumn" | "targetField"): Set<string> {
+function usedInRows(rows: readonly RelationMappingDraft[], key: "sourceColumn" | "relationId"): Set<string> {
   return new Set(rows.map((row) => row[key]));
 }
 
 function targetOptions(rows: readonly RelationMappingDraft[]) {
-  const used = usedInRows(rows, "targetField");
+  const used = usedInRows(rows, "relationId");
   return (props.options ?? []).map((option) => ({
     label: option.matchFields.length === 0
       ? `${option.sourceDisplayName} · ${t("dataIo.import.mapping.noMatchFields")}`
       : `${option.sourceDisplayName}（${option.targetDisplayName}）`,
-    value: option.targetField,
-    disabled: props.disabled || option.matchFields.length === 0 || used.has(option.targetField),
+    value: option.relationId,
+    disabled: props.disabled || option.matchFields.length === 0 || used.has(option.relationId),
   }));
 }
 
@@ -89,8 +92,8 @@ function rowSourceOptions(rows: readonly RelationMappingDraft[]) {
   }));
 }
 
-function matchFieldOptions(targetField: string) {
-  const option = (props.options ?? []).find((item) => item.targetField === targetField);
+function matchFieldOptions(relationId: string) {
+  const option = (props.options ?? []).find((item) => item.relationId === relationId);
   return (option?.matchFields ?? []).map((field) => ({
     label: field.displayName,
     value: field.fieldId,
@@ -104,8 +107,8 @@ function updateRow(index: number, patch: Partial<RelationMappingDraft>): void {
     position === index ? { ...row, ...patch } : row));
 }
 
-function onTargetChange(index: number, targetField: string): void {
-  updateRow(index, { targetField, matchField: "" });
+function onTargetChange(index: number, relationId: string): void {
+  updateRow(index, { relationId, matchField: "" });
 }
 
 function removeRow(index: number): void {
@@ -116,26 +119,26 @@ function removeRow(index: number): void {
 const canAddRow = computed(() => {
   if (props.disabled || props.options === null) return false;
   const usedSources = usedInRows(props.modelValue, "sourceColumn");
-  const usedTargets = usedInRows(props.modelValue, "targetField");
+  const usedTargets = usedInRows(props.modelValue, "relationId");
   const freeSource = sourceOptions.value.some((option) =>
     !option.disabled && !usedSources.has(option.value));
   const freeTarget = configurableTargets.value.some((option) =>
-    !usedTargets.has(option.targetField));
+    !usedTargets.has(option.relationId));
   return freeSource && freeTarget && props.modelValue.length < 256;
 });
 
 function addRow(): void {
   if (!canAddRow.value) return;
   const usedSources = usedInRows(props.modelValue, "sourceColumn");
-  const usedTargets = usedInRows(props.modelValue, "targetField");
+  const usedTargets = usedInRows(props.modelValue, "relationId");
   const source = sourceOptions.value.find((option) =>
     !option.disabled && !usedSources.has(option.value));
   const target = configurableTargets.value.find((option) =>
-    !usedTargets.has(option.targetField));
+    !usedTargets.has(option.relationId));
   if (!source || !target) return;
   emit("update:modelValue", [...props.modelValue, {
     sourceColumn: source.value,
-    targetField: target.targetField,
+    relationId: target.relationId,
     matchField: target.matchFields[0].fieldId,
   }]);
 }
@@ -161,9 +164,13 @@ function addRow(): void {
       {{ t("dataIo.import.mapping.noMatchFieldsAny") }}
     </NAlert>
 
+    <NAlert v-if="unavailableSources.length" type="warning" :show-icon="false" data-testid="relation-mapping-unavailable-sources">
+      <div v-for="source in unavailableSources" :key="source.value">{{ source.label }}</div>
+    </NAlert>
+
     <div
       v-for="(row, index) in modelValue"
-      :key="`${row.sourceColumn}-${row.targetField}-${index}`"
+      :key="`${row.sourceColumn}-${row.relationId}-${index}`"
       class="mapping-row"
       data-testid="relation-mapping-row"
     >
@@ -183,7 +190,7 @@ function addRow(): void {
         <NSelect
           size="small"
           :options="targetOptions(modelValue)"
-          :value="row.targetField"
+          :value="row.relationId"
           :data-testid="`relation-mapping-target-${index}`"
           @update:value="onTargetChange(index, String($event))"
         />
@@ -192,7 +199,7 @@ function addRow(): void {
         <span>{{ t("dataIo.import.mapping.matchField") }}</span>
         <NSelect
           size="small"
-          :options="matchFieldOptions(row.targetField)"
+          :options="matchFieldOptions(row.relationId)"
           :value="row.matchField || undefined"
           :placeholder="t('dataIo.import.mapping.matchFieldPlaceholder')"
           :data-testid="`relation-mapping-match-${index}`"
@@ -213,7 +220,7 @@ function addRow(): void {
     </div>
 
     <NButton
-      v-if="options !== null && usableSourceCount > 0"
+      v-if="options !== null"
       size="small"
       dashed
       :disabled="!canAddRow"

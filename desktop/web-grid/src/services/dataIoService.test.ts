@@ -4,6 +4,25 @@ import { setHostBridgeForTesting } from "./bridgeContext";
 import { useDataIoService } from "./dataIoService";
 
 describe("dataIoService", () => {
+  it.each(["import", "export"] as const)("does not continue a %s picker after its scope retires", async (kind) => {
+    let resolvePicker!: (value: unknown) => void;
+    const picker = new Promise((resolve) => { resolvePicker = resolve; });
+    const request = vi.fn(() => picker);
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    let current = true;
+    const assertCurrent = () => { if (!current) throw new Error("retired"); };
+    const result = kind === "import"
+      ? service.previewImport("orders", "schema-7", assertCurrent)
+      : service.exportData("orders", {}, "csv", undefined, assertCurrent);
+    const rejected = expect(result).rejects.toThrow("retired");
+    current = false;
+    resolvePicker({ grantId: "grant-retired" });
+    await rejected;
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(service.busy.value).toBe(false);
+  });
+
   afterEach(() => {
     setHostBridgeForTesting(null);
     vi.restoreAllMocks();

@@ -81,15 +81,19 @@ export function useDataIoService() {
   async function runTask(
     kind: "data.import" | "data.export",
     params: Readonly<Record<string, unknown>>,
+    assertCurrent: () => void,
   ): Promise<unknown> {
     if (activeTaskId.value) {
       throw new Error("A data task is already running.");
     }
+    assertCurrent();
     let status = await bridge.request("task.create", { kind, params }) as DataTaskStatus;
+    assertCurrent();
     activeTaskId.value = status.taskId;
     try {
       while (status.state === "queued" || status.state === "running") {
         await new Promise((resolve) => window.setTimeout(resolve, 100));
+        assertCurrent();
         status = await bridge.request("task.status", {
           taskId: status.taskId,
         }) as DataTaskStatus;
@@ -143,10 +147,12 @@ export function useDataIoService() {
   async function previewImport(
     collection: string,
     schemaRevision: string,
+    assertCurrent: () => void = () => undefined,
   ): Promise<ImportPreviewSession> {
     const grant = await bridge.request("data.importSourceRequested", {
       accept: [".xlsx", ".xlsm", ".csv"],
     }) as SessionPathGrant;
+    assertCurrent();
     const plan = await requestPreview(grant, collection, schemaRevision, []);
     return { grant, plan, mode: "create_only" };
   }
@@ -179,8 +185,10 @@ export function useDataIoService() {
 
   async function loadRelationImportOptions(
     collection: string,
+    assertCurrent: () => void = () => undefined,
   ): Promise<readonly RelationImportOption[]> {
     const schema = await describeSchema(collection);
+    assertCurrent();
     const relationColumns = new Map(
       schema.columns
         .filter((column): column is ColumnSchema & { readonly relationId: string } =>
@@ -247,6 +255,7 @@ export function useDataIoService() {
 
   async function applyImport(
     session: ImportPreviewSession,
+    assertCurrent: () => void = () => undefined,
   ): Promise<ApplyImportResult> {
     return await runTask("data.import", {
       grantId: session.grant.grantId,
@@ -254,7 +263,7 @@ export function useDataIoService() {
       token: session.plan.token.token,
       mode: session.mode,
       idempotencyPrefix: crypto.randomUUID(),
-    }) as ApplyImportResult;
+    }, assertCurrent) as ApplyImportResult;
   }
 
   async function exportData(
@@ -262,11 +271,13 @@ export function useDataIoService() {
     query: Readonly<Record<string, unknown>>,
     format: ExportFormat = "csv",
     lookup?: ExportLookupSelection,
+    assertCurrent: () => void = () => undefined,
   ): Promise<ExportResult> {
     const grant = await bridge.request("data.exportTargetRequested", {
       defaultName: `${collection}-export.${format}`,
       format,
     }) as SessionPathGrant;
+    assertCurrent();
     const lookupIds = lookup ? [...lookup.lookupIds] : [];
     return await runTask("data.export", {
       grantId: grant.grantId,
@@ -276,7 +287,7 @@ export function useDataIoService() {
       includeRelations: true,
       lookupIds,
       ...(lookupIds.length > 0 ? { lookupRevision: lookup?.lookupRevision } : {}),
-    }) as ExportResult;
+    }, assertCurrent) as ExportResult;
   }
 
   return {
