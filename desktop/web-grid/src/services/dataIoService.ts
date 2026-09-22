@@ -1,4 +1,5 @@
 import { useHostBridge } from "./bridgeContext";
+import { BridgeOperationError } from "@/bridge/hostBridge";
 import type {
   ApplyImportResult,
   ColumnSchema,
@@ -102,9 +103,17 @@ export function useDataIoService() {
         const sessionState = taskSession();
         if (sessionState === "retired") throw new Error(t("dataIo.operationRetired"));
         if (sessionState === "draining") continue;
-        status = await bridge.request("task.status", {
-          taskId: status.taskId,
-        }) as DataTaskStatus;
+        try {
+          status = await bridge.request("task.status", {
+            taskId: status.taskId,
+          }) as DataTaskStatus;
+        } catch (error) {
+          // Drain cancels the status RPC lease, not the admitted backend task.
+          // Keep its last receipt: the next iteration waits for the original
+          // session to resume or retires ownership before any replacement RPC.
+          if (!(error instanceof BridgeOperationError)
+              || error.code !== "workspace.session_stale") throw error;
+        }
       }
       if (status.state !== "succeeded") {
         throw new Error(status.error ?? `Data task ended as ${status.state}.`);

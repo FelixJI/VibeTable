@@ -1,9 +1,90 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HostBridge } from "@/bridge/hostBridge";
+import { BridgeOperationError, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { useDataIoService } from "./dataIoService";
 
 describe("dataIoService", () => {
+  it.each(["draining", "active", "retired"] as const)("retains an admitted task after an in-flight status lease is cancelled with session %s", async (afterRejection) => {
+    vi.useFakeTimers();
+    let session: "active" | "draining" | "retired" = "active";
+    let rejectStatus!: (reason: unknown) => void;
+    const status = new Promise((_, reject) => { rejectStatus = reject; });
+    let polls = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === "data.exportTargetRequested") return { grantId: "grant-out" };
+      if (method === "task.create") return { taskId: "owned-task", state: "running" };
+      if (method === "task.status") {
+        if (++polls === 1) return await status;
+        return { taskId: "owned-task", state: "succeeded", result: { rowsWritten: 1 } };
+      }
+      if (method === "task.cancel") return { state: "cancelling" };
+      throw new Error(`Unexpected request ${method}`);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    const result = service.exportData("orders", {}, "csv", undefined, () => undefined, () => session)
+      .catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      expect(polls).toBe(1);
+      session = afterRejection;
+      rejectStatus(new BridgeOperationError({
+        message: "The workspace request was cancelled because its session ended.",
+        code: "workspace.session_stale",
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(service.activeTaskId.value).toBe("owned-task");
+      expect(service.busy.value).toBe(true);
+      if (session === "draining") {
+        await vi.advanceTimersByTimeAsync(300);
+        await service.cancelActive();
+        expect(polls).toBe(1);
+        expect(request).not.toHaveBeenCalledWith("task.cancel", expect.anything());
+        session = "active";
+      }
+      if (session === "active") {
+        await service.cancelActive();
+        expect(request).toHaveBeenCalledWith("task.cancel", { taskId: "owned-task" });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await result).toEqual({ rowsWritten: 1 });
+        expect(polls).toBe(2);
+      } else {
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await result).toBeInstanceOf(Error);
+        expect(polls).toBe(1);
+        await service.cancelActive();
+        expect(request).not.toHaveBeenCalledWith("task.cancel", expect.anything());
+      }
+      expect(service.busy.value).toBe(false);
+    } finally {
+      session = "retired";
+      await vi.advanceTimersByTimeAsync(100);
+      await result;
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports ordinary status errors without treating them as session cancellation", async () => {
+    vi.useFakeTimers();
+    const failure = new BridgeOperationError({ message: "Backend failed", code: "PRODUCT_DATA_FAILED" });
+    const request = vi.fn(async (method: string) => {
+      if (method === "data.exportTargetRequested") return { grantId: "grant-out" };
+      if (method === "task.create") return { taskId: "owned-task", state: "running" };
+      throw failure;
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    const result = service.exportData("orders", {}).catch((error: unknown) => error);
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await result).toBe(failure);
+      expect(service.busy.value).toBe(false);
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("holds task ownership while its workspace drains and never polls a replacement session", async () => {
     vi.useFakeTimers();
     let session: "active" | "draining" | "retired" = "active";
