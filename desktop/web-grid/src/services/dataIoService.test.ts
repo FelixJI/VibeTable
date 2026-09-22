@@ -26,6 +26,10 @@ describe("dataIoService", () => {
             totalRows: 2, validRows: 2, errorRows: 0,
             warningRows: 0, errorCount: 0, warningCount: 0,
           },
+          rows: [],
+          sourceColumns: ["number", "Partner Code"],
+          unmatchedColumns: [],
+          diagnostics: [],
           token: { token: "preview-token", expiresAt: 2, consumed: false },
         };
       }
@@ -143,5 +147,257 @@ describe("dataIoService", () => {
     service.activeTaskId.value = "import-1";
     await service.cancelActive();
     expect(request).toHaveBeenCalledWith("task.cancel", { taskId: "import-1" });
+  });
+
+  it("re-previews the same grant with the explicit relation mapping", async () => {
+    const previewCalls: unknown[] = [];
+    const request = vi.fn(async (type: string, params?: unknown) => {
+      if (type === "data.previewImport") {
+        previewCalls.push(params);
+        return {
+          collection: "orders", schemaRevision: "schema-7",
+          summary: {
+            totalRows: 1, validRows: 1, errorRows: 0,
+            warningRows: 0, errorCount: 0, warningCount: 0,
+          },
+          rows: [],
+          sourceColumns: ["number", "Partner Code"],
+          unmatchedColumns: [],
+          diagnostics: [],
+          token: { token: `preview-${previewCalls.length}`, expiresAt: 2, consumed: false },
+        };
+      }
+      return {};
+    });    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    await service.previewImportWithGrant(
+      { grantId: "grant-in" } as never,
+      "orders",
+      "schema-7",
+      [{
+        sourceColumn: "Partner Code",
+        targetField: "partner",
+        relationId: "orders.fld_partner",
+        matchField: "fld_code",
+      }],
+    );
+
+    expect(request).toHaveBeenCalledWith("data.previewImport", {
+      grantId: "grant-in",
+      collection: "orders",
+      schemaRevision: "schema-7",
+      mode: "create_only",
+      columnMapping: [{
+        sourceColumn: "Partner Code",
+        targetField: "partner",
+        relationId: "orders.fld_partner",
+        matchField: "fld_code",
+      }],
+    });
+  });
+
+  it("binds selected Lookup export columns to the describe schema revision", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "data.exportTargetRequested") {
+        return {
+          grantId: "grant-out", purpose: "export_target", direction: "write",
+          displayName: "orders.csv", sizeBytes: null, mimeType: null, expiresAt: 1,
+        };
+      }
+      if (type === "task.create") {
+        return {
+          taskId: "export-1",
+          kind: "data.export",
+          state: "succeeded",
+          progress: { done: 1, total: 1, message: "done" },
+          result: {
+            collection: "orders", format: "csv", rowsWritten: 1,
+            outputDisplayName: "orders.csv",
+          },
+          error: null,
+        };
+      }
+      return {};
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    await service.exportData("orders", {}, "csv", {
+      lookupIds: ["lkp-1"],
+      lookupRevision: "schema-7",
+    });
+    expect(request).toHaveBeenCalledWith("task.create", {
+      kind: "data.export",
+      params: {
+        grantId: "grant-out",
+        collection: "orders",
+        query: {},
+        format: "csv",
+        includeRelations: true,
+        lookupIds: ["lkp-1"],
+        lookupRevision: "schema-7",
+      },
+    });
+
+    request.mockClear();
+    await service.exportData("orders", {}, "csv");
+    expect(JSON.stringify(request.mock.calls)).not.toContain("lookupRevision");
+  });
+
+  it("builds relation options from the public catalogs with unique match fields only", async () => {
+    const request = vi.fn(async (type: string, params?: unknown) => {
+      if (type === "schema.describe") {
+        return {
+          contract: "vibetable.schema-describe.v1",
+          collection: "orders",
+          requestGeneration: (params as { requestGeneration: number }).requestGeneration,
+          schema: {
+            collection: "orders",
+            schemaRevision: "schema-7",
+            columns: [
+              { name: "number", title: "编号", kind: "scalar", editable: true },
+              {
+                name: "partner", title: "合作方", kind: "relation", editable: true,
+                relationId: "orders.fld_partner",
+              },
+              {
+                name: "tags", title: "标签", kind: "relation", editable: true,
+                relationId: "orders.fld_tags",
+              },
+              {
+                name: "owner", title: "负责人", kind: "relation", editable: false,
+                relationId: "orders.fld_owner",
+              },
+            ],
+            normalizedRelations: [
+              {
+                relationId: "orders.fld_partner", fieldRef: "fld_partner",
+                sourceCollection: "orders", kind: "m2o", state: "valid",
+                relatedCollection: "partners",
+              },
+              {
+                relationId: "orders.fld_tags", fieldRef: "fld_tags",
+                sourceCollection: "orders", kind: "o2m", state: "valid",
+                relatedCollection: "partners",
+              },
+              {
+                relationId: "orders.fld_owner", fieldRef: "fld_owner",
+                sourceCollection: "orders", kind: "m2o", state: "valid",
+                relatedCollection: "partners",
+              },
+              {
+                relationId: "orders.fld_stale", fieldRef: "fld_stale",
+                sourceCollection: "orders", kind: "m2o", state: "invalid",
+                relatedCollection: "partners",
+              },
+            ],
+          },
+          capabilities: {},
+        };
+      }
+      if (type === "schema.getTable") {
+        return {
+          contract: "vibetable.schema.v2",
+          tableId: "partners",
+          displayName: "合作方表",
+          fields: [
+            {
+              displayName: "编码",
+              identity: { fieldId: "fld_code", physicalName: "f_code", providerFieldId: "p1" },
+              lifecycle: { state: "active", retiredAt: null },
+              constraints: { unique: { enabled: true, blankPolicy: "ignoreMissing" } },
+            },
+            {
+              displayName: "名称",
+              identity: { fieldId: "fld_name", physicalName: "f_name", providerFieldId: "p2" },
+              lifecycle: { state: "active", retiredAt: null },
+              constraints: { unique: { enabled: false, blankPolicy: "ignoreMissing" } },
+            },
+            {
+              displayName: "旧编码",
+              identity: { fieldId: "fld_old", physicalName: "f_old", providerFieldId: "p3" },
+              lifecycle: { state: "retired", retiredAt: "2026-01-01T00:00:00Z" },
+              constraints: { unique: { enabled: true, blankPolicy: "ignoreMissing" } },
+            },
+          ],
+        };
+      }
+      return {};
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    const options = await service.loadRelationImportOptions("orders");
+
+    expect(options).toEqual([{
+      targetField: "partner",
+      relationId: "orders.fld_partner",
+      targetCollection: "partners",
+      targetDisplayName: "合作方表",
+      sourceDisplayName: "合作方",
+      matchFields: [{ fieldId: "fld_code", displayName: "编码" }],
+    }]);
+    expect(request).toHaveBeenCalledWith("schema.getTable", { tableId: "partners" });
+  });
+
+  it("loads the Lookup export catalog with the source describe revision, not the list revision", async () => {
+    const request = vi.fn(async (type: string, params?: unknown) => {
+      if (type === "schema.describe") {
+        return {
+          contract: "vibetable.schema-describe.v1",
+          collection: "orders",
+          requestGeneration: (params as { requestGeneration: number }).requestGeneration,
+          schema: { collection: "orders", schemaRevision: "schema-7" },
+          capabilities: {},
+        };
+      }
+      if (type === "lookup.list") {
+        return {
+          collection: "orders",
+          lookupRevision: "lookup-rev-9",
+          definitions: [
+            {
+              lookupId: "lkp-1", displayName: "合作方标签", state: "valid",
+              outputType: "text",
+            },
+            {
+              lookupId: "lkp-2", displayName: "失效列", state: "invalid",
+              outputType: "text",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    const context = await service.loadExportLookupContext("orders");
+
+    expect(context.lookupRevision).toBe("schema-7");
+    expect(context.options).toEqual([
+      { lookupId: "lkp-1", displayName: "合作方标签", outputType: "text" },
+    ]);
+  });
+
+  it("rejects catalog responses that do not match the requested collection", async () => {
+    const request = vi.fn(async (type: string) => {
+      if (type === "schema.describe") {
+        return {
+          contract: "vibetable.schema-describe.v1",
+          collection: "invoices",
+          requestGeneration: 1,
+          schema: { collection: "invoices", schemaRevision: "schema-7" },
+          capabilities: {},
+        };
+      }
+      return {};
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    await expect(service.loadRelationImportOptions("orders")).rejects.toThrow();
+    await expect(service.loadExportLookupContext("orders")).rejects.toThrow();
   });
 });

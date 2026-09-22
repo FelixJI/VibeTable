@@ -1715,6 +1715,8 @@ export interface ImportPlan {
     readonly warningCount: number;
   };
   readonly rows: readonly ImportPlanRow[];
+  /** Raw file header as read for this preview; basis for explicit mappings. */
+  readonly sourceColumns: readonly string[];
   readonly unmatchedColumns: readonly string[];
   readonly diagnostics: readonly ImportCellDiagnostic[];
   readonly token: { readonly token: string; readonly expiresAt: number; readonly consumed: boolean };

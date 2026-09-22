@@ -180,6 +180,10 @@ class ImportPlan(CamelModel):
     binds it to the schema/permission version. The host must re-preview if
     either changes. ``unmatched_columns`` lists source columns that could not be
     auto-mapped (the user must map them explicitly or ignore them).
+    ``source_columns`` is the raw file header as read for this preview; it lets
+    the host offer explicit mappings without re-reading the granted file.
+    Normalized rows cannot reconstruct it because matched source headers are
+    not retained there.
     """
 
     collection: str = Field(min_length=1, max_length=128)
@@ -191,6 +195,7 @@ class ImportPlan(CamelModel):
         default_factory=list,
         max_length=MAX_ATOMIC_IMPORT_ROWS,
     )
+    source_columns: list[str]
     unmatched_columns: list[str] = Field(default_factory=list, max_length=256)
     diagnostics: list[ImportCellDiagnostic] = Field(default_factory=list)
     token: ImportPreviewToken

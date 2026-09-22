@@ -2485,6 +2485,8 @@ async function scenario04(page, recorder, _network, runtime) {
   );
 
   await chooseToolbarMore(page, "export-csv");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
   const exportTarget = path.join(runtime.controlsDir, "export-result.csv");
   const deadline = Date.now() + 60_000;
   let exported = "";
@@ -4294,6 +4296,14 @@ async function chooseToolbarMore(page, key) {
     .filter({ hasText: labels[key] })
     .last();
   await option.waitFor();
+  // Toolbar commands stay disabled while the grid schema context is still
+  // loading; naive-ui silently swallows clicks on disabled option bodies and
+  // keeps the menu open, so wait for the option to become actionable.
+  await page.waitForFunction(
+    (element) => !element.className.includes("n-dropdown-option-body--disabled"),
+    await option.elementHandle(),
+    { timeout: 30_000 },
+  );
   await option.click();
 }
 
@@ -9086,7 +9096,7 @@ const scenarios = {
   "34-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, applyProductMutation,
-      parseCsv, canonicalJsonText,
+      parseCsv, canonicalJsonText, chooseToolbarMore,
     },
   ),
 };

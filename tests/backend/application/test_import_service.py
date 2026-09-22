@@ -501,6 +501,7 @@ async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path
         "amount": 1234.5,
         "signed_on": "2026-07-14",
     }
+    assert plan.source_columns == ["number", "amount", "signed_on", "unused"]
     assert plan.unmatched_columns == ["unused"]
     assert plan.token.token
     assert mutation.preview_calls[0]["rows"] == [
@@ -509,6 +510,49 @@ async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path
             "amount": "$1,234.50",
             "signed_on": "2026-07-14",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_projects_raw_header_verbatim_for_ui_mapping(tmp_path: Path) -> None:
+    """``sourceColumns`` carries the header exactly as read, even when explicit
+    relation mappings and normalization make rows/unmatched insufficient to
+    reconstruct which source columns the user could still map."""
+    path = tmp_path / "header-shapes.csv"
+    _write_csv(
+        path,
+        [" Code ", "", "number", "number"],
+        [["C-1", "x", "A-1", "A-2"]],
+    )
+    provider = FakeRelationProvider({"C-1": ["contract-1"]})
+    service, _ = _service(
+        path,
+        profile=_profile(relation=True),
+        relation_provider=provider,
+    )
+
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision="schema-1",
+            column_mapping=[
+                ImportColumnMapping(
+                    source_column="Code",
+                    target_field="contract",
+                    relation_id="rel_contract",
+                    match_field="number",
+                )
+            ],
+        )
+    )
+
+    assert plan.source_columns == [" Code ", "", "number", "number"]
+    assert plan.model_dump(by_alias=True)["sourceColumns"] == [
+        " Code ",
+        "",
+        "number",
+        "number",
     ]
 
 

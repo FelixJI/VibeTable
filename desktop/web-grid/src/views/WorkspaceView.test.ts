@@ -1796,6 +1796,30 @@ describe("WorkspaceView", () => {
 
     wrapper.findComponent(AppToolbar).vm.$emit("exportData", "xlsx");
     await flushPromises();
+    let catalogRequest = posted.at(-2)!;
+    expect(catalogRequest.type).toBe("schema.describe");
+    emit({
+      type: "schema.describe",
+      requestId: catalogRequest.requestId,
+      payload: {
+        contract: "vibetable.schema-describe.v1",
+        collection: "orders",
+        requestGeneration: (catalogRequest.payload as { requestGeneration: number }).requestGeneration,
+        schema: { collection: "orders", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+        capabilities: {},
+      },
+    });
+    catalogRequest = posted.at(-1)!;
+    expect(catalogRequest.type).toBe("lookup.list");
+    emit({
+      type: "lookup.list",
+      requestId: catalogRequest.requestId,
+      payload: { collection: "orders", lookupRevision: "lookup-1", definitions: [] },
+    });
+    await flushPromises();
+
+    (document.body.querySelector('[data-testid="export-lookup-confirm"]') as HTMLElement).click();
+    await flushPromises();
     const grantRequest = posted.at(-1)!;
     expect(grantRequest.type).toBe("data.exportTargetRequested");
     expect(grantRequest.payload).toEqual({
@@ -1837,6 +1861,8 @@ describe("WorkspaceView", () => {
     await flushPromises();
 
     expect(posted.map((item) => item.type)).toEqual([
+      "schema.describe",
+      "lookup.list",
       "data.exportTargetRequested",
       "task.create",
     ]);
@@ -1940,6 +1966,7 @@ describe("WorkspaceView", () => {
           diagnostics: [],
           relationResolutions: [],
         }],
+        sourceColumns: ["number"],
         unmatchedColumns: [],
         diagnostics: [],
       },
@@ -1947,7 +1974,21 @@ describe("WorkspaceView", () => {
     await flushPromises();
 
     expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeTruthy();
-    expect(posted.at(-1)?.type).toBe("data.previewImport");
+    const describeRequest = posted.at(-1)!;
+    expect(describeRequest.type).toBe("schema.describe");
+    emit({
+      type: "schema.describe",
+      requestId: describeRequest.requestId,
+      payload: {
+        contract: "vibetable.schema-describe.v1",
+        collection: "orders",
+        requestGeneration: (describeRequest.payload as { requestGeneration: number }).requestGeneration,
+        schema: { collection: "orders", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+        capabilities: {},
+      },
+    });
+    await flushPromises();
+    expect(document.body.querySelector('[data-testid="relation-mapping-empty"]')).toBeTruthy();
     (document.body.querySelector('[data-testid="import-confirm"]') as HTMLElement).click();
     await flushPromises();
 

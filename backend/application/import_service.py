@@ -621,6 +621,7 @@ class ImportService:
             source_hash=source_hash,
             summary=summary,
             rows=plan_rows,
+            source_columns=header,
             unmatched_columns=unmatched,
             token=token,
         )
