@@ -651,6 +651,11 @@ function retireRendererRecovery(): void {
 }
 
 function onRealtimeRecovered(): void {
+  // A posted recovery may arrive after local draining starts. Keep its task
+  // projection in tableService, but do not start reads against a retiring
+  // workspace. The next opened projection initializes the new workspace.
+  if (workspaceSession.enabled
+    && (workspaceSession.isTransitioning || !workspaceSession.hasOpenWorkspace)) return;
   const ticket = ++recoveryGeneration;
   recoveryTableLookupDirty = true;
   // Each consumer starts independently. The host never waits for these local

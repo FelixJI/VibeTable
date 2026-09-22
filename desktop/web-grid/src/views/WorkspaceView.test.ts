@@ -1410,6 +1410,49 @@ describe("WorkspaceView", () => {
     }));
   });
 
+  it.each(["draining", "closed"] as const)("does not restart recovery consumers after the workspace is %s", async (state) => {
+    const { bridge, emit, posted } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { session, rotate } = configureWorkspaceEpochPair();
+    mountView();
+    await flushPromises();
+    const recovered = {
+      type: "realtime.recovered",
+      payload: {
+        contractVersion: "2.0", topic: "realtime.recovered",
+        activeFormulaTasks: [{ taskId: "late-recovery", state: "running", progress: 0.5,
+          cursor: "0.5", error: null }], terminalNotifications: [],
+      },
+    };
+    if (state === "draining") {
+      session.applySession({
+        contractVersion: "2.0", workspaceId: session.activeWorkspaceId!, sessionEpoch: 1,
+        state: "switching", openMode: "writable", writable: false, provisional: false,
+        phase: "draining", errorCode: null,
+      });
+    } else {
+      session.closeSession();
+    }
+    await flushPromises();
+    const beforeLateRecovery = posted.length;
+    // The host can post while Idle, then WebView delivers after local retirement.
+    emit(recovered);
+    await flushPromises();
+    expect(posted.slice(beforeLateRecovery)).toEqual([]);
+    // Reopen recovery can precede its session reply; preserve task delivery.
+    expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("late-recovery");
+
+    expect(rotate()).toBe(true);
+    await flushPromises();
+    const beforeCurrentRecovery = posted.length;
+    emit(recovered);
+    await flushPromises();
+    expect(posted.slice(beforeCurrentRecovery).map(message => message.type)).toEqual([
+      "dashboard.listRequested", "dashboard.manifestRequested",
+    ]);
+    expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("late-recovery");
+  });
+
   it("wires recovered realtime through the root consumer before app.ready and starts a correlated table reload", async () => {
     const { bridge, emit, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
