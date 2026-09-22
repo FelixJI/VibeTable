@@ -120,3 +120,39 @@ def test_write_cannot_recreate_missing_frozen_output(
         oracle.main()
     assert failure.value.code == 2
     assert not target.exists()
+
+
+@pytest.mark.parametrize("arguments", [[], ["--check"]])
+def test_frozen_oracle_check_is_read_only_and_never_captures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, arguments: list[str]
+) -> None:
+    target = tmp_path / "oracle.json"
+    original = oracle.OUTPUT.read_text(encoding="utf-8")
+    target.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(oracle, "OUTPUT", target)
+    monkeypatch.setattr(oracle, "capture_case", lambda *_: pytest.fail("retired replay invoked"))
+    monkeypatch.setattr("sys.argv", ["oracle", *arguments])
+    assert oracle.main() == 0
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("field", ["producerCommit", "case", "request", "authorityFixture"])
+def test_frozen_oracle_rejects_semantic_input_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str
+) -> None:
+    original = json.loads(oracle.OUTPUT.read_text(encoding="utf-8"))
+    if field == "producerCommit":
+        original[field] = "changed"
+    elif field == "case":
+        original["cases"][0]["name"] = "changed"
+    elif field == "request":
+        original["cases"][0]["request"]["params"] = {"changed": True}
+    else:
+        original["cases"][0]["authorityFixture"]["response"] = {"changed": True}
+    source = json.dumps(original, ensure_ascii=False)
+    target = tmp_path / "oracle.json"
+    target.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(oracle, "OUTPUT", target)
+    with pytest.raises(ValueError, match="Frozen query window"):
+        oracle.validate_frozen_inputs()
+    assert target.read_text(encoding="utf-8") == source

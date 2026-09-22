@@ -56,10 +56,8 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     )
     assert file_list.evidence[0] == "sidecar/internal/productrpc/attachment.go"
     file_token = inventory.require("rpc", "file.token")
-    assert file_token.current_route == "pythonBff"
-    assert file_token.evidence[0] == (
-        "backend/adapters/pocketbase/product_relation_lookup_file_rpc.py"
-    )
+    assert file_token.current_route == "goSidecar"
+    assert file_token.evidence[0] == ("sidecar/internal/productrpc/attachment.go")
     reconcile = inventory.require("rpc", "events.reconcile")
     assert reconcile.current_route == "goSidecar"
     assert reconcile.target_owner == "GO_AUTHORITY"
@@ -77,6 +75,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "field.recycleBin.list",
         "field.settings.describe",
         "file.list",
+        "file.token",
         "formula.draft.validate",
         "formula.preview",
         "formula.validate",
@@ -149,6 +148,14 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
     } == {
         "command.list",
         "command.run",
+        "file.applyHostChange",
+        "file.saveHostFile",
+        "path.registerExportTarget",
+        "path.registerImportSource",
+        "path.requestExportTarget",
+        "path.requestImportSource",
+        "path.resolveGrant",
+        "path.revokeExportTarget",
         "shortcut.list",
         "shortcut.save",
         "shortcut.delete",
@@ -290,6 +297,7 @@ def test_inventory_rejects_temporary_bff_without_a_python_route(tmp_path: Path) 
     assert isinstance(groups, list)
     group = next(item for item in groups if item["id"] == "rpc.file-token-read")
     group["currentRoute"] = "goSidecar"
+    group["classification"] = "TEMPORARY_BFF"
 
     error = _assert_error(
         "invalidSemantics",

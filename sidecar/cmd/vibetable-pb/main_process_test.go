@@ -539,6 +539,7 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"field.recycleBin.list",
 		"field.settings.describe",
 		"file.list",
+		"file.token",
 		"formula.draft.validate",
 		"formula.preview",
 		"formula.validate",

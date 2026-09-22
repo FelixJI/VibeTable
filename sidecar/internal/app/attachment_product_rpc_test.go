@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
@@ -362,6 +364,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 			relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 			fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
 			productrpc.AttachmentListRegistration(app, manager),
+			productrpc.AttachmentTokenRegistration(app, manager),
 			unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
@@ -410,4 +413,140 @@ func fileListProductRequest(t *testing.T, mux http.Handler, ctx context.Context,
 		t.Fatalf("Product envelope changed: %d %s", response.Code, response.Body)
 	}
 	return envelope
+}
+
+func TestFileTokenProductHTTPUsesRealAttachmentOwnerAndDownload(t *testing.T) {
+	fixture := newFileListFixture(t)
+	fixture.upload(t)
+	refs := fileListREST(t, fixture.mux, fixture.params())
+	ref := refs.Attachments[0]
+	for _, variant := range []string{"", "8x8"} {
+		params := map[string]any{"tableId": fixture.tableID, "recordId": fixture.recordID, "fieldId": fixture.fieldID, "storedName": ref.StoredName}
+		if variant != "" {
+			params["variant"] = variant
+		}
+		raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "token", "method": "file.token", "wire": json.RawMessage(fileListWire), "params": params})
+		request := httptest.NewRequest(http.MethodPost, productRPCPath, bytes.NewReader(raw))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		fixture.mux.ServeHTTP(response, request)
+		var result struct {
+			Result struct {
+				ContractVersion string `json:"contractVersion"`
+				Capability      string `json:"downloadCapability"`
+			} `json:"result"`
+			Error json.RawMessage `json:"error"`
+		}
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &result) != nil || len(result.Error) != 0 || result.Result.Capability == "" || result.Result.ContractVersion != "2.0" {
+			t.Fatalf("file.token %q = %d %s", variant, response.Code, response.Body.String())
+		}
+		assertAttachmentDownload(t, fixture.mux, result.Result.Capability, fixture.content, variant == "")
+	}
+}
+
+func TestFileTokenProductHTTPRejectsInvalidParamsBeforeAuthority(t *testing.T) {
+	fixture := newFileListFixture(t)
+	for _, params := range []string{
+		`{}`, `{"tableId":"orders","extra":true}`,
+		`{"tableId":7,"recordId":"row-1","fieldId":"invoice","storedName":"s"}`,
+		`{"tableId":"x","recordId":1,"fieldId":"f","storedName":"s"}`,
+		`{"tableId":"x","recordId":"r","fieldId":"f","storedName":"s","variant":1}`,
+		`{"tableId":"x","recordId":"r","fieldId":"f","storedName":"s","collection":"x"}`,
+		`{"tableId":"x","recordId":"r","fieldId":"f","storedName":"s","variant":""}`,
+	} {
+		raw := `{"jsonrpc":"2.0","id":"invalid-token","method":"file.token","wire":` + fileListWire + `,"params":` + params + `}`
+		request := httptest.NewRequest(http.MethodPost, productRPCPath, strings.NewReader(raw))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		fixture.mux.ServeHTTP(response, request)
+		var result struct {
+			Error struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(response.Body.Bytes(), &result) != nil || result.Error.Code != -32602 {
+			t.Fatalf("invalid params = %d %s", response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestFileTokenProductHTTPPreservesAttachmentOwnerError(t *testing.T) {
+	fixture := newFileListFixture(t)
+	_, ownerErr := fixture.manager.Token(context.Background(), fixture.pb,
+		fixture.tableID, fixture.recordID, fixture.fieldID, "missing.png", "")
+	var want *mutation.ProductError
+	if !errors.As(ownerErr, &want) || want.Code != "attachment.not_found" {
+		t.Fatalf("missing attachment owner error = %v", ownerErr)
+	}
+	params := map[string]string{"tableId": fixture.tableID, "recordId": fixture.recordID,
+		"fieldId": fixture.fieldID, "storedName": "missing.png"}
+	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "missing-token",
+		"method": "file.token", "wire": json.RawMessage(fileListWire), "params": params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, productRPCPath, bytes.NewReader(raw))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	fixture.mux.ServeHTTP(response, request)
+	var result productrpc.ResponseEnvelope
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || result.Error == nil ||
+		result.Error.Code != productrpc.CodeProductData || len(result.Result) != 0 {
+		t.Fatalf("missing attachment token = %d %s", response.Code, response.Body.String())
+	}
+	// Compare the complete public error after the same JSON wire normalization.
+	wantJSON, err := json.Marshal(map[string]any{"kind": "product_data_error", "code": want.Code, "path": want.Path,
+		"message": want.Message, "details": want.Details, "retryable": want.Retryable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantData map[string]any
+	if err := json.Unmarshal(wantJSON, &wantData); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Error.Data, wantData) {
+		t.Fatalf("owner error changed: got=%v want=%v", result.Error.Data, wantData)
+	}
+}
+
+type cancelAfterAttachmentMetadataApp struct {
+	core.App
+	cancel       context.CancelFunc
+	metadataRead bool
+}
+
+func (app *cancelAfterAttachmentMetadataApp) FindFirstRecordByFilter(
+	collectionModelOrIdentifier any, filter string, params ...dbx.Params,
+) (*core.Record, error) {
+	record, err := app.App.FindFirstRecordByFilter(collectionModelOrIdentifier, filter, params...)
+	if collectionModelOrIdentifier == "vibetable_attachment_meta" && err == nil {
+		app.metadataRead = true
+		app.cancel()
+	}
+	return record, err
+}
+
+func TestFileTokenHandlerDiscardsCapabilityWhenCanceledDuringOwnerRead(t *testing.T) {
+	fixture := newFileListFixture(t)
+	fixture.upload(t)
+	refs := fileListREST(t, fixture.mux, fixture.params())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := &cancelAfterAttachmentMetadataApp{App: fixture.pb, cancel: cancel}
+	registration := productrpc.AttachmentTokenRegistration(app, fixture.manager)
+	params, err := json.Marshal(map[string]string{"tableId": fixture.tableID,
+		"recordId": fixture.recordID, "fieldId": fixture.fieldID, "storedName": refs.Attachments[0].StoredName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := registration.Handler(ctx, params)
+	if !app.metadataRead {
+		t.Fatal("token request did not reach the real attachment metadata read")
+	}
+	if result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("late cancellation exposed capability: result=%v error=%v", result, err)
+	}
 }

@@ -62,7 +62,7 @@ func queryReadRowsHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration 
 			lookupQueryRegistration(unrelatedLookupQueryMustNotRun{t: t}),
 			queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 			schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb),
-			schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+			schemaListRegistration(catalog), productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), productrpc.AttachmentTokenRegistration(pb, mustAttachmentManager(t)),
 			unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),

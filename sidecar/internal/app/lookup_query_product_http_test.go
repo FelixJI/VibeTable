@@ -72,7 +72,7 @@ func lookupQueryHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration pr
 			queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 			queryCursorFetchRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
-			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
+			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), productrpc.AttachmentTokenRegistration(pb, mustAttachmentManager(t)), unrelatedDashboardRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedDashboardRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedDashboardRegistration(t, "insights.executeDashboardQuery"),
 			unrelatedDashboardRegistration(t, "insights.listDashboards"),

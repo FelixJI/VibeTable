@@ -1171,6 +1171,59 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
 
 
+@pytest.mark.parametrize("failed_phase", ["seed", "resume"])
+def test_product_e2e_failure_evidence_retains_host_restart_phases(
+    tmp_path: Path,
+    failed_phase: str,
+) -> None:
+    run = tmp_path / "source" / "20260921T133903Z"
+    scenario = "33-host-grid-presentation"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "scenarios": [
+                    {
+                        "scenario": scenario,
+                        "status": "failed",
+                        "phases": {failed_phase: {"status": "failed"}},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    expected = (
+        "runner-stderr.log",
+        f"{scenario}-result.json",
+        f"{scenario}-trace.zip",
+        f"{scenario}.png",
+    )
+    phases = ("seed",) if failed_phase == "seed" else ("seed", "resume")
+    for phase in phases:
+        source = run / scenario / phase / "20260921T140000Z"
+        source.mkdir(parents=True)
+        for filename in expected:
+            (source / filename).write_text(filename, encoding="utf-8")
+        (source / "workspace.db").write_text("private", encoding="utf-8")
+    runtime = run / scenario / "persistent" / "host"
+    runtime.mkdir(parents=True)
+    (runtime / "vibetable-trace.log").write_text("host trace", encoding="utf-8")
+    (runtime / "workspace.db").write_text("private", encoding="utf-8")
+    (runtime.parent / "seed-state.json").write_text("private", encoding="utf-8")
+    destination = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert destination is not None
+    for phase in phases:
+        retained = destination / scenario / phase / "20260921T140000Z"
+        assert sorted(path.name for path in retained.iterdir()) == sorted(expected)
+    assert (
+        destination / scenario / "persistent" / "host" / "vibetable-trace.log"
+    ).read_text() == "host trace"
+    assert not list(destination.rglob("workspace.db"))
+    assert not list(destination.rglob("seed-state.json"))
+
+
 def test_product_e2e_failure_evidence_retains_replica_host_phases(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     run_root = source_root / "20260910T091449Z"

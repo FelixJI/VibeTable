@@ -61,6 +61,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "field.recycleBin.list:workspace",
                 "field.settings.describe:workspace",
                 "file.list:workspace",
+                "file.token:workspace",
                 "formula.draft.validate:workspace",
                 "formula.preview:workspace",
                 "formula.validate:workspace",

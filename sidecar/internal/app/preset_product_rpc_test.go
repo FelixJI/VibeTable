@@ -85,7 +85,7 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 			lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 			relationPreviewDeltaRegistration(unrelatedRelationPreviewMustNotRun{t: t}),
 			fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),
-			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)),
+			productrpc.AttachmentListRegistration(pb, mustAttachmentManager(t)), productrpc.AttachmentTokenRegistration(pb, mustAttachmentManager(t)),
 			historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),

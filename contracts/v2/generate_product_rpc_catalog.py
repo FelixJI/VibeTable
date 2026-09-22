@@ -132,7 +132,16 @@ from backend.contracts.settings_commands import (
     ShortcutsResult,
 )
 from backend.contracts.system import HandshakeResult
-from backend.contracts.task import ExportTargetSettled, SessionPathGrant, TaskStatus
+from backend.contracts.task import (
+    ExportTargetSettled,
+    SessionPathGrant,
+    TaskStatus,
+    HostImportSourceParams,
+    HostExportTargetParams,
+    RequestImportSourceGrantParams,
+    RequestExportTargetGrantParams,
+    ResolveGrantParams,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -420,6 +429,12 @@ def _registered_models() -> dict[str, type[BaseModel]]:
     # their Python dispatcher registrations are removed.
     result.update(
         {
+            "path.registerImportSource": HostImportSourceParams,
+            "path.registerExportTarget": HostExportTargetParams,
+            "path.requestImportSource": RequestImportSourceGrantParams,
+            "path.requestExportTarget": RequestExportTargetGrantParams,
+            "path.resolveGrant": ResolveGrantParams,
+            "path.revokeExportTarget": ResolveGrantParams,
             "gridState.get": HostGridStateGetParams,
             "gridState.save": HostGridStateSaveParams,
             "settings.readWorkCalendar": ReadWorkCalendarParams,
@@ -858,6 +873,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "task.cancel": _typed(TaskStatus),
         "task.create": _typed(TaskStatus),
         "task.status": _typed(TaskStatus),
+        "task.settleExport": _typed(ExportTargetSettled),
         "version.compare": _typed(VersionCompareResult),
         "version.create": _typed(ContentVersionEntry),
         "version.delete": _manual("DeleteVersionResult", delete_trace),

@@ -9,7 +9,7 @@ using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
-public sealed class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
+public sealed partial class ProductSidecarHttpGateway : IProductSidecarGatewayCandidate
 {
     // Budget the encoded envelope separately from decoded Product parameters.
     private const int MaxRequestBytes = 4 * 1024 * 1024, MaxResponseBytes = 4 * 1024 * 1024;

@@ -651,6 +651,11 @@ function retireRendererRecovery(): void {
 }
 
 function onRealtimeRecovered(): void {
+  // A posted recovery may arrive after local draining starts. Keep its task
+  // projection in tableService, but do not start reads against a retiring
+  // workspace. The next opened projection initializes the new workspace.
+  if (workspaceSession.enabled
+    && (workspaceSession.isTransitioning || !workspaceSession.hasOpenWorkspace)) return;
   const ticket = ++recoveryGeneration;
   recoveryTableLookupDirty = true;
   // Each consumer starts independently. The host never waits for these local
@@ -668,6 +673,10 @@ async function recoverCurrentTableAndLookups(ticket: number): Promise<void> {
     if (ticket === recoveryGeneration) recoveryTableLookupDirty = false;
     return;
   }
+  // A real workspace restores its saved query asynchronously. Keep recovery
+  // dirty until that notify read is queued, so it cannot cancel our correlated
+  // read or make recovery use the pre-restoration filters.
+  if (workspaceSession.hasOpenWorkspace && presetViewController.presentationLoading.value) return;
   const reloaded = await tableService.reloadCurrentQuery();
   if (ticket !== recoveryGeneration || !recoveryTableLookupDirty || reloaded !== "applied") return;
   // beginContext intentionally clears a relation edit draft. Recovery must
@@ -774,6 +783,10 @@ watch(
   () => workspace.currentTable,
   retireRendererRecovery,
   { flush: "sync" },
+);
+watch(
+  presetViewController.presentationLoading,
+  loading => { if (!loading) resumeDirtyTableLookupRecovery(); },
 );
 watch(
   () => relationLookup.draft,

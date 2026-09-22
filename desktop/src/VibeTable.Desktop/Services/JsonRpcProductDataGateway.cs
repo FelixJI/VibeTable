@@ -37,6 +37,9 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
         _hostInvoker = hostInvoker;
     }
 
+    internal HostSessionFileBroker EnableHostFiles()
+        => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required.")).EnableHostFiles();
+
     public event Action<JsonElement>? TaskChanged;
 
     Task<JsonElement> IHostCommandExportGateway.ExecuteExportAsync(JsonElement parameters, CancellationToken token)

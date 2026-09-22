@@ -3,7 +3,7 @@ package productcapabilities
 import "testing"
 
 func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
-	for _, method := range []string{"file.list", "history.read", "lookup.list", "query.readRows", "schema.describe"} {
+	for _, method := range []string{"file.list", "file.token", "history.read", "lookup.list", "query.readRows", "schema.describe"} {
 		if HasCurrentOwnerRPCMethod(PythonBff, method) {
 			t.Fatalf("%s must not remain on pythonBff after its Go migration", method)
 		}
@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 111 {
-		t.Fatalf("RPCDescriptors length = %d, want 111", len(descriptors))
+	if len(descriptors) != 112 {
+		t.Fatalf("RPCDescriptors length = %d, want 112", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 66 {
+	if len(allGo) != 67 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	schemaMethods := map[string]Effect{
@@ -143,30 +143,31 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	if len(schemaMethods) != 0 {
 		t.Fatalf("missing migrated descriptors: %v", schemaMethods)
 	}
-	if got := otherGo; len(got) != 43 ||
+	if got := otherGo; len(got) != 44 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
-		got[3] != (RPCDescriptor{Method: "formula.draft.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[4] != (RPCDescriptor{Method: "formula.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[5] != (RPCDescriptor{Method: "formula.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[6] != (RPCDescriptor{Method: "history.applyRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: WriteEffect}) || got[7] != (RPCDescriptor{Method: "history.previewRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect}) || got[8] != (RPCDescriptor{
+		got[3] != (RPCDescriptor{Method: "file.token", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "file.attachment", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[4] != (RPCDescriptor{Method: "formula.draft.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[5] != (RPCDescriptor{Method: "formula.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[6] != (RPCDescriptor{Method: "formula.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[7] != (RPCDescriptor{Method: "history.applyRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: WriteEffect}) || got[8] != (RPCDescriptor{Method: "history.previewRestore", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect}) || got[9] != (RPCDescriptor{
 		Method: "history.read", Scope: WorkspaceScope, Audience: RendererPublic,
 		CapabilityID: "history.restore", Owner: GoSidecar, Effect: ReadEffect,
-	}) || got[9] != (RPCDescriptor{Method: "insights.dashboardQueryLimits", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[10] != (RPCDescriptor{Method: "insights.deleteDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: WriteEffect}) ||
-		got[11] != (RPCDescriptor{Method: "insights.executeDashboardQuery", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[12] != (RPCDescriptor{Method: "insights.listDashboards", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[13] != (RPCDescriptor{Method: "insights.panelManifest", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[14] != (RPCDescriptor{Method: "insights.readDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[15] != (RPCDescriptor{Method: "insights.saveDashboardDraft", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: WriteEffect}) ||
-		got[16] != (RPCDescriptor{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[17] != (RPCDescriptor{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[18] != (RPCDescriptor{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[19] != (RPCDescriptor{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[20].Method != "lookup.list" || got[21] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[22] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[23] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[24] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) ||
-		got[25].Method != "preset.delete" || got[26].Method != "preset.list" || got[27].Method != "preset.save" || got[28].Method != "query.cursorFetch" || got[29].Method != "query.cursorOpen" || got[30].Method != "query.page" || got[31].Method != "query.readRows" ||
-		got[32].Method != "query.selectionOpen" || got[33] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[34].Method != "query.view" || got[35] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[36] != (RPCDescriptor{Method: "relation.previewDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[37] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[38].Method != "schema.describe" ||
-		got[39].Method != "schema.getTable" || got[40].Method != "schema.list" ||
-		got[41] != (RPCDescriptor{Method: "settings.commitWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: WriteEffect}) ||
-		got[42] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
+	}) || got[10] != (RPCDescriptor{Method: "insights.dashboardQueryLimits", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[11] != (RPCDescriptor{Method: "insights.deleteDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[12] != (RPCDescriptor{Method: "insights.executeDashboardQuery", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[13] != (RPCDescriptor{Method: "insights.listDashboards", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[14] != (RPCDescriptor{Method: "insights.panelManifest", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[15] != (RPCDescriptor{Method: "insights.readDashboardWorkspace", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[16] != (RPCDescriptor{Method: "insights.saveDashboardDraft", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "insights", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[17] != (RPCDescriptor{Method: "interface.commit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[18] != (RPCDescriptor{Method: "interface.delete", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: WriteEffect}) || got[19] != (RPCDescriptor{Method: "interface.list", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[20] != (RPCDescriptor{Method: "interface.load", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "content.model", Owner: GoSidecar, Effect: ReadEffect}) || got[21].Method != "lookup.list" || got[22] != (RPCDescriptor{Method: "lookup.query", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[23] != (RPCDescriptor{Method: "lookup.valuePage", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[24] != (RPCDescriptor{Method: "mutation.apply", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: WriteEffect}) || got[25] != (RPCDescriptor{Method: "mutation.preview", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.mutation", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[26].Method != "preset.delete" || got[27].Method != "preset.list" || got[28].Method != "preset.save" || got[29].Method != "query.cursorFetch" || got[30].Method != "query.cursorOpen" || got[31].Method != "query.page" || got[32].Method != "query.readRows" ||
+		got[33].Method != "query.selectionOpen" || got[34] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[35].Method != "query.view" || got[36] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[37] != (RPCDescriptor{Method: "relation.previewDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[38] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[39].Method != "schema.describe" ||
+		got[40].Method != "schema.getTable" || got[41].Method != "schema.list" ||
+		got[42] != (RPCDescriptor{Method: "settings.commitWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[43] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	hostMethods := []string{"command.list", "command.run", "gridState.get", "gridState.save", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save"}
+	hostMethods := []string{"command.list", "command.run", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save"}
 	hostDescriptors := CurrentOwnerRPCDescriptors(WpfHost)
 	if len(hostDescriptors) != len(hostMethods) {
 		t.Fatalf("wpfHost count = %d", len(hostDescriptors))

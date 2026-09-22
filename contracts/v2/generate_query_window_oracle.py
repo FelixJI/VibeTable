@@ -4,17 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 
-from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
-from backend.adapters.pocketbase.product_rpc import PocketBaseProductRpc
-from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.product_rpc import PYTHON_PRODUCT_RPC_REGISTRY, JsonObject, JsonValue
-from backend.rpc.dispatcher import RpcDispatcher
-from backend.rpc.product_errors import register_product_rpc_errors
+from backend.contracts.product_rpc import JsonObject, JsonValue
 
 PRODUCER_COMMIT = "c97c83336e4aa1bdf993fc46a7de57040219fb03"
 OUTPUT = Path(__file__).with_name("query-window-python-oracle.json")
@@ -116,101 +109,10 @@ def replay_cases() -> tuple[Case, ...]:
     return tuple(case for case in cases() if case.method in PYTHON_REPLAY_METHODS)
 
 
-class RecordingTransport:
-    """Only the authority HTTP boundary is scripted; Python code executes unchanged."""
-
-    def __init__(self, case: Case) -> None:
-        self.case = case
-        self.requests: list[JsonObject] = []
-
-    async def request(
-        self,
-        method: str,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue] | None = None,
-        json_body: JsonValue = None,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        assert headers == {"X-VibeTable-Session": "oracle-only"}
-        self.requests.append(
-            {
-                "method": method,
-                "path": path,
-                "query": dict(query) if query is not None else None,
-                "body": json_body,
-                "expectedStatus": list(expected_status),
-            }
-        )
-        if self.case.failure == "product":
-            raise PocketBaseProductError(
-                status=409,
-                payload={
-                    "code": "query.snapshot_stale",
-                    "message": "Snapshot is stale",
-                    "path": "snapshot",
-                    "details": {"expected": "data_0", "actual": "data_1"},
-                    "retryable": False,
-                },
-            )
-        if self.case.failure == "transport":
-            raise PocketBaseTransportError("Sidecar unavailable")
-        return self.case.response
-
-    async def request_multipart(
-        self,
-        path: str,
-        *,
-        json_body: Mapping[str, JsonValue],
-        uploads: Sequence[tuple[str, str]],
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-    ) -> JsonValue:
-        raise AssertionError("Read oracle must not upload files")
-
-    async def download_to_file(
-        self,
-        path: str,
-        *,
-        query: Mapping[str, JsonValue],
-        target_path: str,
-        headers: Mapping[str, str] | None = None,
-        expected_status: Sequence[int] = (200,),
-        maximum_bytes: int = 2 * 1024 * 1024 * 1024,
-    ) -> int:
-        raise AssertionError("Read oracle must not download files")
-
-
 async def capture_case(case: Case) -> JsonObject:
-    if case.method not in PYTHON_REPLAY_METHODS:
-        raise ValueError(f"Python oracle replay is retired for {case.method}")
-    transport = RecordingTransport(case)
-    service = PocketBaseProductRpc(
-        client=PocketBaseClient(transport=transport, session_secret="oracle-only"),
-        transport=transport,
-        session_secret="oracle-only",
-    )
-    dispatcher = RpcDispatcher()
-    register_product_rpc_errors()
-    for method in PYTHON_REPLAY_METHODS:
-        dispatcher.register(
-            method, partial(service.invoke, method), PYTHON_PRODUCT_RPC_REGISTRY[method]
-        )
-    request: JsonObject = {
-        "jsonrpc": "2.0",
-        "id": case.name,
-        "method": case.method,
-        "params": case.params,
-    }
-    response = await dispatcher.dispatch(request)
-    return {
-        "name": case.name,
-        "request": request,
-        "authorityFixture": {"response": case.response, "failure": case.failure},
-        "authorityRequests": list(transport.requests),
-        "response": response,
-    }
+    # All three query methods retired before this boundary migration. Keep the
+    # existing refusal contract without importing their removed Python adapter.
+    raise ValueError(f"Python oracle replay is retired for {case.method}")
 
 
 async def capture() -> JsonObject:

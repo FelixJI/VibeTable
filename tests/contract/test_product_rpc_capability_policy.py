@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 111
+    assert len(manifest["rpcMethods"]) == 112
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -56,6 +56,14 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
         "command.list",
         "command.run",
+        "file.applyHostChange",
+        "file.saveHostFile",
+        "path.registerExportTarget",
+        "path.registerImportSource",
+        "path.requestExportTarget",
+        "path.requestImportSource",
+        "path.resolveGrant",
+        "path.revokeExportTarget",
         "shortcut.list",
         "shortcut.save",
         "shortcut.delete",
@@ -71,6 +79,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "field.recycleBin.list",
         "field.settings.describe",
         "file.list",
+        "file.token",
         "formula.draft.validate",
         "formula.preview",
         "formula.validate",
@@ -226,7 +235,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 35
+    assert len(methods) == 27
     assert methods[0] == "data.applyImport"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
@@ -240,6 +249,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "field.recycleBin.list",
         "field.settings.describe",
         "file.list",
+        "file.token",
         "formula.draft.validate",
         "formula.preview",
         "formula.validate",
@@ -299,8 +309,16 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert current_owner_methods("wpfHost") == (
         "command.list",
         "command.run",
+        "file.applyHostChange",
+        "file.saveHostFile",
         "gridState.get",
         "gridState.save",
+        "path.registerExportTarget",
+        "path.registerImportSource",
+        "path.requestExportTarget",
+        "path.requestImportSource",
+        "path.resolveGrant",
+        "path.revokeExportTarget",
         "settings.readDevice",
         "settings.saveDevice",
         "shortcut.delete",

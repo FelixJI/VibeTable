@@ -303,7 +303,10 @@ async function fillNInput(page, testId, value) {
 
 async function selectVisibleNOption(page, testId, label) {
   const select = page.getByTestId(testId);
-  await select.locator(".n-base-selection").click();
+  // NSelect disables its div through a class, not a native disabled attribute.
+  // Resolve the enabled surface before clicking so a loading list cannot eat
+  // the single opening gesture and leave the option wait with no open menu.
+  await select.locator(".n-base-selection:not(.n-base-selection--disabled)").click();
   const option = page.locator(".n-base-select-option:visible")
     .filter({ hasText: label })
     .first();
@@ -3757,6 +3760,15 @@ async function scenario07(page, recorder, _network, runtime) {
           && previewResult.payload?.reason === "PREVIEW_HANDLER_UNAVAILABLE")),
     { previewResult },
   );
+  const savedAttachment = path.join(runtime.evidenceDir, "attachment-saved.txt");
+  await fs.writeFile(path.join(runtime.controlsDir, "attachment-target.txt"), savedAttachment);
+  await beginBridgeMessageCapture(page, ["file.downloadRequested", "operation.failed"]);
+  await page.getByTestId("attachment-download-0").click();
+  const savedReply = await waitForCapturedBridgeMessage(page);
+  recorder.check("native attachment save reports completion after the exact bytes are committed",
+    savedReply.type === "file.downloadRequested" && savedReply.payload?.outcome === "saved"
+      && (await fs.readFile(savedAttachment)).equals(originalBytes), { savedReply });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "07-attachment-saved.png"), fullPage: true });
   await page.getByTestId("attachment-replace-0").click();
   await panel.waitFor({ state: "hidden", timeout: 30_000 });
   const replaced = await waitForAttachmentList(
@@ -3984,6 +3996,25 @@ async function scenario07(page, recorder, _network, runtime) {
       && productRestoredFile.size === replacementBytes.length,
     { productRestoredFile, replacementFile, expectedSize: replacementBytes.length },
   );
+  await page.locator(".n-drawer-header__close").last().click();
+  await cell.dblclick();
+  await panel.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("attachment-remove-0").click();
+  await beginBridgeMessageCapture(page, ["file.removeRequested", "operation.failed"]);
+  await page.locator(".n-popconfirm").getByRole("button", { name: /^(移除|Remove)$/ }).click();
+  const removedReply = await waitForCapturedBridgeMessage(page);
+  recorder.check("attachment removal reaches its correlated native mutation receipt",
+    removedReply.type === "file.removeRequested" && !removedReply.payload?.error, { removedReply });
+  await page.getByTestId("attachment-remove-0").waitFor({ state: "hidden", timeout: 30_000 });
+  await panel.getByRole("button", { name: /^(关闭|Close)$/ }).click();
+  await panel.waitFor({ state: "hidden", timeout: 30_000 });
+  const removed = await waitForAttachmentList(page, attachmentParams, (attachments) => attachments.length === 0);
+  recorder.check("attachment removal leaves the authoritative field empty and the saved copy intact",
+    removed.payload.attachments.length === 0
+      && (await fs.readFile(savedAttachment)).equals(originalBytes), { removed });
+  await cell.click();
+  await page.getByTestId("toolbar-history").click();
+  await page.getByTestId("history-timeline").waitFor({ timeout: 30_000 });
   await namedRevisionJourney(page, recorder, runtime);
 }
 
@@ -4026,8 +4057,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
   await page.locator(".n-drawer-header__close").last().click();
   await edit("Changed after naming");
   await openNamed();
-  await page.getByTestId("named-select").click();
-  await page.getByText("Release candidate", { exact: true }).last().click();
+  await selectVisibleNOption(page, "named-select", "Release candidate");
   const compared = await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
   recorder.check("named UI comparison binds both CAS revisions and original record value",
     compared.versionId === created.id && compared.versionRevision === created.revision
@@ -4059,8 +4089,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
       && afterRejected.payload?.rows?.find((row) => row.id === compared.itemId)?.[table.field.physicalName] === "Changed after comparison",
     { stalePromote, afterRejected });
   await openNamed();
-  await page.getByTestId("named-select").click();
-  await page.getByText("Release candidate", { exact: true }).last().click();
+  await selectVisibleNOption(page, "named-select", "Release candidate");
   await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
   await page.screenshot({ path: path.join(runtime.evidenceDir, "07-named-comparison.png"), fullPage: true });
   const promoted = await clickTerminal("version.promote", async () => {
@@ -4096,8 +4125,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
   const reopened = await clickTerminal("version.list", () => page.getByTestId("named-reload").click());
   recorder.check("fresh named UI list preserves complete entries after workspace reopen",
     JSON.stringify(reopened.versions) === JSON.stringify(before.payload.versions), { before: before.payload, reopened });
-  await page.getByTestId("named-select").click();
-  await page.getByText("Release candidate", { exact: true }).last().click();
+  await selectVisibleNOption(page, "named-select", "Release candidate");
   const freshCompare = await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
   recorder.check("fresh named UI compare verifies persisted record data and revision",
     freshCompare.versionRevision === saved.metadataRevision && Object.keys(freshCompare.differences).length === 0, { freshCompare });
@@ -5755,49 +5783,54 @@ async function scenario33(page, recorder, _network, runtime) {
   const holder = await page.locator(".tabulator-tableholder").boundingBox();
   const secondBeforeScroll = await secondHeader.boundingBox();
   if (!holder || !secondBeforeScroll) throw new Error("column move viewport unavailable");
+  const settledGrid = await waitForBridgeDiagnosticsToSettle(page);
+  if ((settledGrid?.pending?.length ?? 1) !== 0 || (settledGrid?.failures?.length ?? 0) !== 0) {
+    throw new Error("column move requires settled grid requests");
+  }
+  const measureDropTarget = () => page.evaluate((field) => {
+    const body = document.querySelector(".tabulator-tableholder");
+    const contents = document.querySelector(".tabulator-header-contents");
+    const column = document.querySelector(
+      `.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`,
+    );
+    if (!body || !contents || !column) throw new Error("column move viewport unavailable");
+    const bounds = body.getBoundingClientRect();
+    const target = column.getBoundingClientRect();
+    const viewport = {
+      left: Math.max(0, bounds.left),
+      right: Math.min(document.documentElement.clientWidth, bounds.left + body.clientWidth),
+    };
+    const left = Math.max(viewport.left, target.left);
+    const right = Math.min(viewport.right, target.right);
+    const point = { x: left + (right - left) * 3 / 4, y: target.top + 10 };
+    const hitsTarget = right - left >= 12 && point.x > target.left + target.width / 2
+      && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1
+      && document.elementFromPoint(point.x, point.y)?.closest(".tabulator-col") === column;
+    return {
+      point, hitsTarget, viewport, target: { left: target.left, right: target.right },
+      bodyScroll: body.scrollLeft, headerScroll: contents.scrollLeft,
+      maxScroll: body.scrollWidth - body.clientWidth, bodyTop: bounds.top,
+    };
+  }, second.physicalName);
   const visibleDropTarget = async () => {
-    const target = await secondHeader.boundingBox();
-    if (!target) throw new Error("visible column move target unavailable");
-    const viewport = await page.locator(".tabulator-tableholder").evaluate(body => {
-      const bounds = body.getBoundingClientRect();
-      return { left: bounds.left, right: bounds.left + body.clientWidth };
-    });
-    const overflow = target.x < viewport.left
-      ? target.x - viewport.left - 24
-      : target.x + target.width > viewport.right
-        ? target.x + target.width - viewport.right + 24
-        : 0;
-    if (overflow !== 0) {
-      // Wheel the real body, never the overflow-hidden header. MoveColumns can
-      // reset the body scroll while entering its drag state, so this runs again
-      // after the moving marker appears.
-      await page.mouse.move(holder.x + holder.width / 2, holder.y + 20);
+    let observed;
+    // A resize acknowledgement can precede Tabulator's data redraw, and
+    // MoveColumns itself resets the body scroll on entry. Reposition only
+    // after measuring a missing hit; never replay the actual drag/mutation.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      observed = await measureDropTarget();
+      if (observed.hitsTarget) return observed.point;
+      const { viewport, target } = observed;
+      const overflow = target.left < viewport.left
+        ? target.left - viewport.left - 24
+        : target.right - viewport.right + 24;
+      await page.mouse.move((viewport.left + viewport.right) / 2, observed.bodyTop + 20);
       await page.mouse.wheel(overflow, 0);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      observed = await measureDropTarget();
+      if (observed.hitsTarget) return observed.point;
     }
-    await page.waitForFunction((field) => {
-      const body = document.querySelector(".tabulator-tableholder");
-      const contents = document.querySelector(".tabulator-header-contents");
-      const column = document.querySelector(`.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`);
-      if (!body || !contents || !column) return false;
-      const viewport = body.getBoundingClientRect();
-      const bounds = column.getBoundingClientRect();
-      return bounds.left >= viewport.left && bounds.right <= viewport.left + body.clientWidth
-        && Math.abs(contents.scrollLeft - body.scrollLeft) <= 1;
-    }, second.physicalName);
-    const visibleTarget = await secondHeader.boundingBox();
-    if (!visibleTarget) throw new Error("column move target became unavailable");
-    const dropPoint = { x: visibleTarget.x + visibleTarget.width * 3 / 4, y: visibleTarget.y + 10 };
-    const hitsTarget = await page.evaluate(({ field, point }) => {
-      const targetHeader = document.querySelector(
-        `.tabulator-header .tabulator-col:not(.tabulator-moving)[tabulator-field="${field}"]`,
-      );
-      return document.elementFromPoint(point.x, point.y)?.closest(".tabulator-col") === targetHeader;
-    }, {
-      field: second.physicalName,
-      point: dropPoint,
-    });
-    if (!hitsTarget) throw new Error("column move drop point does not hit the target header");
-    return dropPoint;
+    throw new Error(`column move drop point does not hit the target header: ${JSON.stringify(observed)}`);
   };
   await visibleDropTarget();
   const moveSource = await firstHeader.boundingBox();

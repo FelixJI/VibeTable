@@ -10,10 +10,11 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
+from backend.application.host_files import HostFiles
 from backend.contracts.plugin import PluginEventEnvelope, PluginFileRequest
+from backend.contracts.task import SessionPathGrant
 
 MAX_PLUGIN_FILE_BYTES = 1_048_576
 MAX_PENDING_FILE_REQUESTS = 16
@@ -24,7 +25,7 @@ PluginFileNotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 @dataclass
 class _PendingFileRequest:
     request: PluginFileRequest
-    future: asyncio.Future[str | None]
+    future: asyncio.Future[SessionPathGrant | None]
 
 
 class HostFileCapabilityAdapter:
@@ -33,18 +34,17 @@ class HostFileCapabilityAdapter:
     def __init__(
         self,
         *,
-        task_service: Any,
+        files: HostFiles,
         timeout_seconds: float = 300.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if timeout_seconds <= 0 or timeout_seconds > 900:
             raise ValueError("file picker timeout must be between 0 and 900 seconds")
-        self._task_service = task_service
+        self._files = files
         self._timeout_seconds = timeout_seconds
         self._clock = clock
         self._sink: PluginFileNotificationSink | None = None
         self._pending: dict[str, _PendingFileRequest] = {}
-        self._grants: dict[str, tuple[str, Literal["read", "write"]]] = {}
 
     @property
     def available(self) -> bool:
@@ -59,16 +59,7 @@ class HostFileCapabilityAdapter:
         selected = await self._request(execution, options, direction="read")
         if selected is None:
             return None
-        path = Path(selected)
-        if not path.is_file():
-            raise ValueError("selected plugin input file is unavailable")
-        if path.stat().st_size > MAX_PLUGIN_FILE_BYTES:
-            raise ValueError("selected plugin input file exceeds the host limit")
-        descriptor = self._task_service.issue_import_source(
-            str(path), size_bytes=path.stat().st_size
-        )
-        self._grants[descriptor.grant_id] = (str(execution["runId"]), "read")
-        return descriptor.model_dump(mode="json", by_alias=True)
+        return selected.model_dump(mode="json", by_alias=True)
 
     async def pick_write(
         self, execution: dict[str, Any], options: dict[str, Any]
@@ -76,52 +67,32 @@ class HostFileCapabilityAdapter:
         selected = await self._request(execution, options, direction="write")
         if selected is None:
             return None
-        descriptor = self._task_service.issue_export_target(selected)
-        self._grants[descriptor.grant_id] = (str(execution["runId"]), "write")
-        return descriptor.model_dump(mode="json", by_alias=True)
+        return selected.model_dump(mode="json", by_alias=True)
 
-    def read(self, execution: dict[str, Any], grant_id: str) -> dict[str, str]:
-        self._require_grant(execution, grant_id, "read")
-        path = Path(
-            self._task_service.resolve_path(grant_id, purpose="import_source", direction="read")
-        )
-        content = path.read_bytes()
-        if len(content) > MAX_PLUGIN_FILE_BYTES:
-            raise ValueError("selected plugin input file exceeds the host limit")
-        self._task_service.consume_grant(grant_id)
-        self._grants.pop(grant_id, None)
-        return {"base64": base64.b64encode(content).decode("ascii")}
+    async def read(self, execution: dict[str, Any], grant_id: str) -> dict[str, str]:
+        async with self._files.read(grant_id, run_id=str(execution["runId"])) as source:
+            content = source.stream.read(MAX_PLUGIN_FILE_BYTES + 1)
+            if len(content) > MAX_PLUGIN_FILE_BYTES:
+                raise ValueError("selected plugin input file exceeds the host limit")
+            return {"base64": base64.b64encode(content).decode("ascii")}
 
-    def write(self, execution: dict[str, Any], grant_id: str, encoded: str) -> None:
-        self._require_grant(execution, grant_id, "write")
+    async def write(self, execution: dict[str, Any], grant_id: str, encoded: str) -> None:
         try:
             content = base64.b64decode(encoded, validate=True)
         except (ValueError, binascii.Error) as exc:
             raise ValueError("plugin file content is not valid base64") from exc
         if len(content) > MAX_PLUGIN_FILE_BYTES:
             raise ValueError("plugin file output exceeds the host limit")
-        path = Path(
-            self._task_service.resolve_path(grant_id, purpose="export_target", direction="write")
-        )
-        path.write_bytes(content)
-        self._task_service.consume_grant(grant_id)
-        self._grants.pop(grant_id, None)
+        async with self._files.write(grant_id, run_id=str(execution["runId"])) as target:
+            target.stream.write(content)
 
-    def _require_grant(
-        self,
-        execution: dict[str, Any],
-        grant_id: str,
-        direction: Literal["read", "write"],
-    ) -> None:
-        run_id = execution.get("runId")
-        if not isinstance(run_id, str) or self._grants.get(grant_id) != (run_id, direction):
-            raise ValueError("plugin file grant does not belong to this run and direction")
-
-    async def resolve(self, request_id: str, selected_path: str | None) -> bool:
+    async def resolve(self, request_id: str, grant: SessionPathGrant | None) -> bool:
         pending = self._pending.get(request_id)
         if pending is None or pending.future.done():
             return False
-        pending.future.set_result(selected_path)
+        if grant is not None and grant.direction != pending.request.direction:
+            raise ValueError("Host file grant direction does not match the picker request")
+        pending.future.set_result(grant)
         return True
 
     async def _request(
@@ -130,7 +101,7 @@ class HostFileCapabilityAdapter:
         options: dict[str, Any],
         *,
         direction: Literal["read", "write"],
-    ) -> str | None:
+    ) -> SessionPathGrant | None:
         if self._sink is None:
             raise RuntimeError("host file picker channel is unavailable")
         if len(self._pending) >= MAX_PENDING_FILE_REQUESTS:
@@ -171,7 +142,7 @@ class HostFileCapabilityAdapter:
             ),
             expires_at=self._clock() + self._timeout_seconds,
         )
-        future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[SessionPathGrant | None] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = _PendingFileRequest(request=request, future=future)
         try:
             await self._sink(

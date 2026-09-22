@@ -12,11 +12,12 @@ from typing import Any
 
 import pytest
 
-from backend.application.path_grant import PathGrantError, SessionPathGrantStore
+from backend.application.path_grant import PathGrantError
 from backend.application.task_runtime import (
     CancellationToken,
     TaskRuntime,
 )
+from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 # ---------------------------------------------------------------------------
 # TaskRuntime

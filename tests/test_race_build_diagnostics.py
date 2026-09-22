@@ -200,23 +200,29 @@ def test_windows_snapshot_contains_only_requested_tree():
     def collect_tree(pid):
         # Exercise the real collector's semantics independently of the production
         # five-second diagnostic budget, which explicitly permits collection failure.
-        result = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-File",
-                str(gate.REPO_ROOT / "qa" / "race_build_process_snapshot.ps1"),
-                "-RootProcessId",
-                str(pid),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-File",
+                    str(gate.REPO_ROOT / "qa" / "race_build_process_snapshot.ps1"),
+                    "-RootProcessId",
+                    str(pid),
+                    "-DiagnosticTiming",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except subprocess.TimeoutExpired as error:
+            pytest.fail(
+                f"process snapshot exceeded 30s; query progress: {str(error.stderr)[-2048:]}"
+            )
         return json.loads(result.stdout)
 
     script = (
@@ -225,8 +231,16 @@ def test_windows_snapshot_contains_only_requested_tree():
         "stdin=subprocess.PIPE); "
         "print(p.pid,flush=True); sys.stdin.readline(); p.terminate(); p.wait()"
     )
+    base_executable = getattr(sys, "_base_executable", None)
+    assert isinstance(base_executable, str)
+    assert base_executable
     with subprocess.Popen(
-        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        # A venv launcher adds another process at both levels on Windows. This
+        # fixture needs a real parent/child, not the extra interpreter launchers.
+        [base_executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
     ) as process:
         assert process.stdout is not None
         assert process.stdin is not None

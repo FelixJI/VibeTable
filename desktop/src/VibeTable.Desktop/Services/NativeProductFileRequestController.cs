@@ -36,6 +36,8 @@ public interface INativeProductFileHost
 /// </summary>
 public interface IProductFileRpcGateway
 {
+    IProductFileRpcGateway Capture() => this;
+
     bool IsAvailable { get; }
 
     Task<JsonElement> RegisterImportSourceAsync(
@@ -93,6 +95,16 @@ public sealed class NativeProductFileRequestController
             "file.downloadRequested";
 
     public Task DispatchAsync(RoutedWebRequest request)
+    {
+        IProductFileRpcGateway captured = _gateway.Capture();
+        CancellationToken token = _sessionToken();
+        // Windows dialogs pump messages. Capture before showing one, so a
+        // workspace switch cannot register the result in a different binding.
+        return new NativeProductFileRequestController(_reply, captured, _host, () => token, _trace)
+            .DispatchCapturedAsync(request);
+    }
+
+    private Task DispatchCapturedAsync(RoutedWebRequest request)
         => request.Type switch
         {
             "data.importSourceRequested" => PickImportSourceAsync(request),
@@ -404,6 +416,7 @@ public sealed class NativeProductFileRequestController
             JsonElement grant = await register(
                 JsonSerializer.SerializeToElement(materializeParameters()),
                 token);
+            token.ThrowIfCancellationRequested();
             _reply.PostResponse(request.Type, request.RequestId, grant);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -517,6 +530,11 @@ internal sealed class ProductFileRpcGatewayAdapter(
     Func<JsonRpcProductDataGateway?> gateway) : IProductFileRpcGateway
 {
     public bool IsAvailable => gateway() is not null;
+    public IProductFileRpcGateway Capture()
+    {
+        JsonRpcProductDataGateway? captured = gateway();
+        return new ProductFileRpcGatewayAdapter(() => captured);
+    }
 
     public Task<JsonElement> RegisterImportSourceAsync(
         JsonElement parameters,
@@ -631,6 +649,11 @@ internal sealed class WindowsNativeProductFileHost : INativeProductFileHost
 
     public string? SelectAttachmentTarget(string suggestedName)
     {
+        string? testPath = ReadE2eControlPath(
+            "attachment-target.txt",
+            requireExistingFile: false);
+        if (testPath is not null)
+            return testPath;
         var dialog = new SaveFileDialog
         {
             FileName = suggestedName,

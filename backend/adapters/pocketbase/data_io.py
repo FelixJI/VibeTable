@@ -210,8 +210,7 @@ class ProductDataIoRuntime:
             auth=auth,
             bulk=bulk,
             profiles=self._profiles,
-            resolve_path=task_service.resolve_path,
-            reserve_grant=task_service.reserve_import_grant,
+            files=task_service.files,
             relation_provider=PocketBaseRelationImportProvider(
                 client=client,
                 bulk=bulk,
@@ -220,7 +219,7 @@ class ProductDataIoRuntime:
         self._export = ExportService(
             query_port=cast(QueryPagePort, client),
             profiles=self._profiles,
-            resolve_path=task_service.resolve_path,
+            files=task_service.files,
             lookup_provider=PocketBaseLookupExportProvider(client=client),
         )
 

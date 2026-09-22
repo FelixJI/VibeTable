@@ -20,6 +20,7 @@ from backend.contracts.plugin import (
     InteractionResolveResult,
     PluginManifest,
 )
+from backend.contracts.task import SessionPathGrant
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_store import InMemoryPluginStore
 from backend.infrastructure.plugin_worker import (
@@ -122,13 +123,13 @@ class _Confirmation:
 class _Files:
     def __init__(self) -> None:
         self.sink: Any = None
-        self.calls: list[tuple[str, str | None]] = []
+        self.calls: list[tuple[str, SessionPathGrant | None]] = []
 
     def set_notification_sink(self, sink: Any) -> None:
         self.sink = sink
 
-    async def resolve(self, request_id: str, selected_path: str | None) -> bool:
-        self.calls.append((request_id, selected_path))
+    async def resolve(self, request_id: str, grant: SessionPathGrant | None) -> bool:
+        self.calls.append((request_id, grant))
         return True
 
 
@@ -208,14 +209,18 @@ async def test_host_interaction_and_file_resolutions_reach_live_adapters(
         interaction_id="interaction-1",
         decision="approved",
     )
-    await service.resolve_file(
-        request_id="file-1",
-        selected_path="C:/safe/selected.csv",
+    grant = SessionPathGrant(
+        grant_id="native-grant",
+        purpose="import_source",
+        direction="read",
+        display_name="selected.csv",
+        expires_at=9999999999,
     )
+    await service.resolve_file(request_id="file-1", grant=grant)
 
     assert interaction.status == "resolved"
     assert confirmation.calls == [("run-1", "interaction-1", "approved")]
-    assert files.calls == [("file-1", "C:/safe/selected.csv")]
+    assert files.calls == [("file-1", grant)]
     assert confirmation.sink is not None
     assert files.sink is not None
 

@@ -673,15 +673,10 @@ public sealed class PythonBackendSupervisorTests
             CollectionAssert.AreEquivalent(
                 new[]
                 {
-                    "path.registerExportTarget",
-                    "path.registerImportSource",
-                    "path.requestExportTarget",
-                    "path.requestImportSource",
-                    "path.resolveGrant",
-                    "path.revokeExportTarget",
                     "system.handshake",
                     "task.cancel",
                     "task.create",
+                    "task.settleExport",
                     "task.status",
                 },
                 result.Capabilities);

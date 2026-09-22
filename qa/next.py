@@ -1307,6 +1307,29 @@ def persist_product_e2e_evidence(
             runtime_root / "host",
             run_destination / "_runtime" / scenario_number / "host",
         )
+        if scenario_id == "33-host-grid-presentation":
+            for phase in ("seed", "resume"):
+                phase_root = scenario_source / phase
+                if not phase_root.is_dir():
+                    continue
+                for phase_run in sorted(phase_root.iterdir()):
+                    if (
+                        not phase_run.is_dir()
+                        or re.fullmatch(r"\d{8}T\d{6}Z", phase_run.name) is None
+                    ):
+                        continue
+                    retained = scenario_destination / phase / phase_run.name
+                    for filename in (
+                        *PRODUCT_E2E_EVIDENCE_FILES,
+                        f"{scenario_id}-result.json",
+                        f"{scenario_id}-trace.zip",
+                        f"{scenario_id}.png",
+                    ):
+                        _copy_if_file(phase_run / filename, retained / filename)
+            copy_runtime_diagnostics(
+                scenario_source / "persistent" / "host",
+                scenario_destination / "persistent" / "host",
+            )
         if scenario_id == "24-directory-replica-conflict":
             for phase in REPLICA_E2E_PHASES:
                 for host in REPLICA_E2E_HOSTS:

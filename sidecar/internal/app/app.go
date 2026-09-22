@@ -471,6 +471,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				schemaListRegistration(schemaCatalog),
 				querySelectionOpenRegistration(queryPort),
 				productrpc.AttachmentListRegistration(pb, attachmentManager),
+				productrpc.AttachmentTokenRegistration(pb, attachmentManager),
 				historyReadRegistration(workspaceRuntime),
 				historyPreviewRestoreRegistration(workspaceRuntime),
 				historyApplyRestoreRegistration(workspaceRuntime),

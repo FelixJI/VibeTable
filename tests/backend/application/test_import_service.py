@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +37,7 @@ from backend.contracts.data_profile import (
     collection_profile_from_definition,
 )
 from backend.contracts.paste import ApplyPasteResult
+from tests.backend.host_files_fixture import FormatFiles
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 FIELD_VALUE_CORPUS_PATH = (
@@ -239,14 +239,6 @@ def _service(
     profiles = profiles or {profile.collection: profile}
     mutation = mutation or FakeProductMutationPort()
 
-    @contextmanager
-    def reserve_grant(grant: str) -> Iterator[Callable[[], None]]:
-        def commit() -> None:
-            if consumed is not None:
-                consumed.append(grant)
-
-        yield commit
-
     kwargs: dict[str, Any] = {}
     if clock is not None:
         kwargs["clock"] = clock
@@ -256,8 +248,7 @@ def _service(
             auth=object(),
             bulk=mutation,
             profiles=profiles,
-            resolve_path=lambda _grant, **_kwargs: str(path),
-            reserve_grant=reserve_grant,
+            files=FormatFiles(path, consumed),
             relation_provider=relation_provider,
             **kwargs,
         ),
@@ -282,7 +273,9 @@ def test_source_file_rejects_csv_beyond_atomic_limit_and_other_formats(tmp_path:
     _write_csv(csv_path, ["number", "title"], [["1", "one"], ["2", "two"]])
 
     with pytest.raises(ImportFlowError) as overflow:
-        SourceFile(str(csv_path)).read_header_and_rows(max_rows=1)
+        SourceFile(io.BytesIO(csv_path.read_bytes()), csv_path.name).read_header_and_rows(
+            max_rows=1
+        )
     assert overflow.value.code == "import_row_limit"
     assert overflow.value.rpc_error_data == {
         "code": "import_row_limit",
@@ -292,7 +285,7 @@ def test_source_file_rejects_csv_beyond_atomic_limit_and_other_formats(tmp_path:
     unsupported = tmp_path / "source.txt"
     unsupported.write_text("x", encoding="utf-8")
     with pytest.raises(ImportFlowError) as error:
-        SourceFile(str(unsupported)).read_header_and_rows()
+        SourceFile(io.BytesIO(unsupported.read_bytes()), unsupported.name).read_header_and_rows()
     assert error.value.code == "import_unsupported_format"
 
 
@@ -306,7 +299,7 @@ async def test_xlsx_native_dates_reach_import_http_as_json_scalars(tmp_path: Pat
     sheet.append([date(2026, 8, 29), datetime(2026, 8, 29, 14, 5, 6, 123000), "日期", 0, False])
     workbook.save(path)
     workbook.close()
-    header, rows, _ = SourceFile(str(path)).read_header_and_rows()
+    header, rows, _ = SourceFile(io.BytesIO(path.read_bytes()), path.name).read_header_and_rows()
     received: list[dict[str, Any]] = []
 
     def receive(request: httpx.Request) -> httpx.Response:
@@ -359,7 +352,7 @@ def test_xlsx_unrepresentable_native_dates_have_explicit_errors(
     workbook.close()
 
     with pytest.raises(ImportFlowError) as error:
-        SourceFile(str(path)).read_header_and_rows()
+        SourceFile(io.BytesIO(path.read_bytes()), path.name).read_header_and_rows()
     assert error.value.code == code
     assert error.value.data == {"sheet": "Sheet", "row": 2, "column": 1}
     assert "ISO" in str(error.value)
@@ -384,7 +377,7 @@ def test_xlsx_dates_preserve_hidden_time_and_formula_cache_semantics(tmp_path: P
     sheet["A8"].data_type = "s"
     workbook.save(path)
     workbook.close()
-    _, rows, _ = SourceFile(str(path)).read_header_and_rows()
+    _, rows, _ = SourceFile(io.BytesIO(path.read_bytes()), path.name).read_header_and_rows()
     assert rows == [
         ["2026-08-29 00:00:00"],
         ["2026-08-29 12:30:00"],
@@ -406,7 +399,7 @@ def test_xlsx_1904_epoch_does_not_reject_unambiguous_native_date(tmp_path: Path)
     sheet.append([date(1900, 2, 28)])
     workbook.save(path)
     workbook.close()
-    _, rows, _ = SourceFile(str(path)).read_header_and_rows()
+    _, rows, _ = SourceFile(io.BytesIO(path.read_bytes()), path.name).read_header_and_rows()
     assert rows == [["1900-02-28"]]
 
 
@@ -424,7 +417,7 @@ def test_source_file_reads_named_xlsx_sheet_and_empty_workbook(tmp_path: Path) -
     workbook.save(path)
     workbook.close()
 
-    header, rows, _ = SourceFile(str(path)).read_header_and_rows(
+    header, rows, _ = SourceFile(io.BytesIO(path.read_bytes()), path.name).read_header_and_rows(
         max_rows=1,
         sheet="Chosen",
     )
@@ -438,7 +431,9 @@ def test_source_file_reads_named_xlsx_sheet_and_empty_workbook(tmp_path: Path) -
     empty_path = tmp_path / "empty.xlsx"
     empty.save(empty_path)
     empty.close()
-    header, rows, _ = SourceFile(str(empty_path)).read_header_and_rows()
+    header, rows, _ = SourceFile(
+        io.BytesIO(empty_path.read_bytes()), empty_path.name
+    ).read_header_and_rows()
     assert header == []
     assert rows == []
 
@@ -456,7 +451,7 @@ def test_source_file_rejects_xlsx_beyond_atomic_limit(tmp_path: Path) -> None:
     workbook.close()
 
     with pytest.raises(ImportFlowError) as overflow:
-        SourceFile(str(path)).read_header_and_rows(max_rows=1)
+        SourceFile(io.BytesIO(path.read_bytes()), path.name).read_header_and_rows(max_rows=1)
     assert overflow.value.code == "import_row_limit"
     assert overflow.value.rpc_error_data["maxRows"] == 1
 
@@ -883,3 +878,63 @@ async def test_expired_import_token_is_rejected(tmp_path: Path) -> None:
             )
         )
     assert error.value.code == "import_token_expired"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_at", ["settlement", "progress"])
+async def test_committed_import_task_keeps_result_when_final_notification_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failure_at: str
+) -> None:
+    import asyncio
+
+    from backend.application.host_files import HostFiles
+    from backend.application.task_runtime import TaskRuntime
+
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"], ["A-2"]])
+    service, mutation = _service(path)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "reserveImport":
+            return {"reservationId": "r"}
+        assert action == "settleImport"
+        assert params["outcome"] == "consumed"
+        if failure_at == "settlement":
+            raise TimeoutError("private transport detail")
+        return {"reservationId": "r", "outcome": "consumed"}
+
+    service._files = HostFiles(call)
+    params = ApplyImportParams(
+        grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+    )
+
+    async def progress(done, total, message):
+        assert message == "atomic import committed"
+        if failure_at == "progress":
+            raise RuntimeError("private transport detail")
+
+    async def handler(task_id, reporter, cancellation):
+        return await service.apply(params, progress=progress)
+
+    runtime = TaskRuntime()
+    runtime.register("data.import", handler)
+    started = await runtime.create("data.import", {})
+    status = await asyncio.wait_for(runtime.wait(started.task_id), 2)
+    assert status.state == "succeeded"
+    result = status.model_dump(mode="json", by_alias=True)["result"]
+    assert result["createdCount"] == 2
+    assert result["failedRows"] == []
+    assert len(mutation.calls) == 1
+    assert calls[-1] == ("settleImport", {"reservationId": "r", "outcome": "consumed"})
+    assert "import.committed_" in caplog.text
+    assert "private transport detail" not in caplog.text
+    with pytest.raises(ImportFlowError, match="already used"):
+        await service.apply(params)
+    assert len(mutation.calls) == 1

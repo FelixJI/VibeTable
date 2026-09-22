@@ -15,9 +15,12 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
 
     private readonly JsonRpcClient _client;
     private bool _disposed;
+    private readonly Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? _issueFile;
 
-    public JsonRpcPluginGateway(JsonRpcClient client)
+    public JsonRpcPluginGateway(JsonRpcClient client,
+        Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? issueFile = null)
     {
+        _issueFile = issueFile;
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _client.NotificationReceived += OnNotificationReceived;
     }
@@ -92,10 +95,21 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         => InvokeAsync<PluginResolveInteractionParams, PluginRuntimeInteractionResolveResult>(
             "plugin.resolveInteraction", request, token);
 
-    public Task<bool> ResolveFileAsync(
-        PluginResolveFileParams request, CancellationToken token)
-        => InvokeAsync<PluginResolveFileParams, bool>(
-            "plugin.resolveFile", request, token);
+    public async Task<bool> ResolveFileAsync(
+        PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        SessionPathGrant? grant = null;
+        if (selectedPath is not null)
+        {
+            JsonElement descriptor = await (_issueFile ?? throw new InvalidOperationException("Host file binding unavailable."))
+                (request, selectedPath, token).ConfigureAwait(false);
+            grant = descriptor.Deserialize<SessionPathGrant>(JsonOptions)
+                ?? throw new JsonException("Invalid Host file grant.");
+        }
+        return await InvokeAsync<PluginResolveFileParams, bool>("plugin.resolveFile",
+            new PluginResolveFileParams(request.RequestId, grant), token).ConfigureAwait(false);
+    }
 
     public Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(
         PluginTaskParams request, CancellationToken token)

@@ -32,7 +32,7 @@ namespace VibeTable.Infrastructure.Rpc;
 /// <see cref="InvokeAsync{TParams,TResult}"/> awaiter.
 /// </para>
 /// </remarks>
-public sealed class JsonRpcClient : IAsyncDisposable
+public sealed partial class JsonRpcClient : IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web);
@@ -141,6 +141,8 @@ public sealed class JsonRpcClient : IAsyncDisposable
             return;
         }
 
+        RetireHostFiles();
+
         // Fail anything still outstanding so awaiters never hang.
         FailAllPending(new BackendUnavailableException(
             "JSON-RPC client was disposed while calls were still pending."));
@@ -154,6 +156,8 @@ public sealed class JsonRpcClient : IAsyncDisposable
             // Dispose must not throw; transport shutdown errors are not
             // actionable from here.
         }
+
+        await DrainHostFilesAsync().ConfigureAwait(false);
 
         // Give the reader a chance to observe the closed transport and exit.
         try
@@ -203,6 +207,13 @@ public sealed class JsonRpcClient : IAsyncDisposable
             {
                 RouteFrame(frame.Value);
             }
+            catch (HostFileChannelException)
+            {
+                MarkReaderDead();
+                FailAllPending(new BackendUnavailableException("Invalid or overloaded Host file channel."));
+                await _transport.DisposeAsync().ConfigureAwait(false);
+                return;
+            }
             catch
             {
                 // A single bad frame must not kill the reader loop or strand
@@ -226,6 +237,12 @@ public sealed class JsonRpcClient : IAsyncDisposable
                     : default(JsonElement);
                 NotificationReceived?.Invoke(method, parameters);
             }
+            return;
+        }
+
+        if (frame.TryGetProperty("method", out JsonElement requestMethod))
+        {
+            RouteHostFileRequest(frame, idElement, requestMethod);
             return;
         }
 
@@ -313,6 +330,7 @@ public sealed class JsonRpcClient : IAsyncDisposable
         // InvokeAsync on another thread observes the terminal state and
         // fails fast instead of registering a TCS that can never resolve.
         Volatile.Write(ref _readerDead, 1);
+        RetireHostFiles();
     }
 
     private void ThrowIfDisposed()
