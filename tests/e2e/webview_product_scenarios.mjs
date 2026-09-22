@@ -303,7 +303,10 @@ async function fillNInput(page, testId, value) {
 
 async function selectVisibleNOption(page, testId, label) {
   const select = page.getByTestId(testId);
-  await select.locator(".n-base-selection").click();
+  // NSelect disables its div through a class, not a native disabled attribute.
+  // Resolve the enabled surface before clicking so a loading list cannot eat
+  // the single opening gesture and leave the option wait with no open menu.
+  await select.locator(".n-base-selection:not(.n-base-selection--disabled)").click();
   const option = page.locator(".n-base-select-option:visible")
     .filter({ hasText: label })
     .first();
@@ -4054,8 +4057,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
   await page.locator(".n-drawer-header__close").last().click();
   await edit("Changed after naming");
   await openNamed();
-  await page.getByTestId("named-select").click();
-  await page.getByText("Release candidate", { exact: true }).last().click();
+  await selectVisibleNOption(page, "named-select", "Release candidate");
   const compared = await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
   recorder.check("named UI comparison binds both CAS revisions and original record value",
     compared.versionId === created.id && compared.versionRevision === created.revision
@@ -4087,8 +4089,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
       && afterRejected.payload?.rows?.find((row) => row.id === compared.itemId)?.[table.field.physicalName] === "Changed after comparison",
     { stalePromote, afterRejected });
   await openNamed();
-  await page.getByTestId("named-select").click();
-  await page.getByText("Release candidate", { exact: true }).last().click();
+  await selectVisibleNOption(page, "named-select", "Release candidate");
   await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
   await page.screenshot({ path: path.join(runtime.evidenceDir, "07-named-comparison.png"), fullPage: true });
   const promoted = await clickTerminal("version.promote", async () => {
@@ -4124,8 +4125,7 @@ async function namedRevisionJourney(page, recorder, runtime) {
   const reopened = await clickTerminal("version.list", () => page.getByTestId("named-reload").click());
   recorder.check("fresh named UI list preserves complete entries after workspace reopen",
     JSON.stringify(reopened.versions) === JSON.stringify(before.payload.versions), { before: before.payload, reopened });
-  await page.getByTestId("named-select").click();
-  await page.getByText("Release candidate", { exact: true }).last().click();
+  await selectVisibleNOption(page, "named-select", "Release candidate");
   const freshCompare = await clickTerminal("version.compare", () => page.getByTestId("named-compare").click());
   recorder.check("fresh named UI compare verifies persisted record data and revision",
     freshCompare.versionRevision === saved.metadataRevision && Object.keys(freshCompare.differences).length === 0, { freshCompare });

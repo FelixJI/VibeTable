@@ -121,7 +121,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     [TestMethod]
     public async Task SwitchDrainsInflightRequestBeforeProtectionSnapshot()
     {
-        using var fixture = new SessionFixture(blockProtection: true);
+        using var fixture = new SessionFixture();
         WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
         WorkspaceRegistryEntryV2 second = fixture.AddWorkspace("二号", "Two");
         WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
@@ -135,22 +135,41 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.IsNotNull(lease);
         Assert.IsFalse(lease.CancellationToken.IsCancellationRequested);
 
+        using var cancellation = new CancellationTokenSource();
         Task<WorkspaceSessionV2> switchTask = fixture.Manager.SwitchAsync(
             second.WorkspaceId,
-            WorkspaceOpenMode.Writable);
-        await WaitUntilAsync(
-            () => lease.CancellationToken.IsCancellationRequested);
+            WorkspaceOpenMode.Writable,
+            cancellation.Token);
+        try
+        {
+            await WaitUntilAsync(() => lease.CancellationToken.IsCancellationRequested);
+            Assert.IsFalse(fixture.Protection.Entered.IsCompleted);
+            Assert.IsFalse(switchTask.IsCompleted);
+            lease.Dispose();
 
-        fixture.Protection.Release();
-        Assert.IsFalse(fixture.Protection.Entered.IsCompleted);
-        Assert.IsFalse(switchTask.IsCompleted);
-        lease.Dispose();
-        await fixture.Protection.Entered.WaitAsync(TimeSpan.FromSeconds(2));
-        await switchTask;
-
-        Assert.IsTrue(lease.CancellationToken.IsCancellationRequested);
-        Assert.IsFalse(filter.IsCurrent(lease));
-        Assert.IsFalse(filter.TryCapture(scope, out _));
+            // The contract is drain-before-protection, not a two-second budget
+            // for the thread pool to schedule an intermediate continuation.
+            // The QA stage owns the existing process-tree timeout boundary.
+            WorkspaceSessionV2 switched = await switchTask;
+            Assert.AreEqual(1, fixture.Protection.CallCount);
+            Assert.AreEqual(second.WorkspaceId, switched.WorkspaceId);
+            Assert.IsTrue(lease.CancellationToken.IsCancellationRequested);
+            Assert.IsFalse(filter.IsCurrent(lease));
+            Assert.IsFalse(filter.TryCapture(scope, out _));
+        }
+        finally
+        {
+            lease.Dispose();
+            cancellation.Cancel();
+            try
+            {
+                await switchTask;
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                // Only observe cancellation requested by this test's cleanup.
+            }
+        }
     }
 
     [TestMethod]
