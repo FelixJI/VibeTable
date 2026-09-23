@@ -117,3 +117,102 @@ PdfPig 的 Predictor 支持声明。
 
 这一轮只完成有限 DISCOVERY 构造的可复现观察。真实复杂生产者、一般 Predictor 支持、warning 分类校准，以及产品
 adapter 接入、generation 事务、授权和发布资格仍开放；本报告不采纳候选或关闭 A6。
+
+## 2026-09-24：#351 产品采用评估
+
+本轮基线为 `main@7bc31a1f`，继续复用以上工具、38 项冻结预期和历史反证；不更换生产 adapter。
+新增资格只覆盖重复 Form XObject、独立合并/旋转页和 RC4-128/AES-128 空用户密码代表样本，
+不将这几个样本外推为一般生产者、字体、filter chain 或安全 handler 的支持声明。
+
+### warning 与 DecodeParams 的可观察边界
+
+supervisor 现保留 worker 已有的 `parsedPages` 和 `warningCount`，供资格报告核对；不记录 warning
+原文、不按异常文本分类，不改变拒绝策略。`build/qa/h351-cost/warning-calibration.json` 的六项观察为：
+
+| 冻结样本 | 结果 | 页数 / warning | 正文与清理 |
+| --- | --- | --- | --- |
+| missing-glyph-mapping | unsupported / extract.unsupported | 1 / 1 | 空正文，全部进程退出 |
+| nonidentity-tounicode-cjk | indexed | 1 / 0 | 四个中文码点，全部进程退出 |
+| missing-tounicode | indexed | 1 / 0 | 沿用既有冻结 token，全部进程退出 |
+| structure-predictor12-valid | unsupported / extract.unsupported | 0 / 2 | 空正文，全部进程退出 |
+| structure-predictor12-bad-filter | unsupported / extract.unsupported | 0 / 2 | 空正文，全部进程退出 |
+| structure-predictor1-identity | unsupported / extract.unsupported | 0 / 2 | 空正文，全部进程退出 |
+
+这是缺字负样本与完整映射正样本的区分证据，不是所有 warning 的准确分类。
+合法 Predictor 1/12 仍被 `QualificationFilters.cs` 的非空 DecodeParams 分支保守拒绝，坏 filter 也被拒绝；
+正样本的独立 oracle 见前述结构证据。因此候选存在已知合法文档误拒范围，不能以全拒带来的零正文宣称一般
+Predictor 支持已通过。当前不放宽 warning/DecodeParams 策略；需要更多合法生产者和明确 typed failure
+证据后，另行决定是否接纳具体子集。
+
+### 产品接入需要保持的边界
+
+实际产品入口是 `workspace_search_handlers.go`：附件通过 `attachments.OpenForIndex` 获取 reader，
+文件文档通过 `history.OpenRevision` 获取特定 revision 的内容，再调用 Go `workspacesearch.Extract`。
+候选工具的 `--run <path>` 只用于资格，不能直接成为 renderer 可调用的任意路径接口。
+未来 worker 应只接收由 Go 解析并绑定 workspace、source/revision、session/epoch 的单次只读输入能力，
+验证返回仍属于该 source 后才可进入派生投影；不能让 worker 持有 PocketBase 写权限。已有 Host picker grant
+不等于现有搜索 reader 已完成跨进程授权，二者不可混写为“产品接入完成”。
+
+`Engine.RebuildProjection` 事务内提升正文和 checkpoint/generation；单文档拒绝按现有 source 状态保留，
+rebuild 级取消/失败则回滚。新 worker 的超时、崩溃、迟到结果、source 变化和取消须在产品接线中证明仍满足
+这个边界。目前只验证隔离 executable 的进程收拢，不把它当作产品事务、Host generation 或授权测试。
+
+### 依赖、许可和分发成本
+
+本轮 locked restore 的两项直接依赖仍为 PdfPig 0.1.16 / SharpZipLib 1.4.2，没有新增产品引用。
+对应 NuGet nuspec 将其声明为 Apache-2.0 / MIT。固定源码版本的
+[PdfPig LICENSE](https://github.com/UglyToad/PdfPig/blob/a7bb35662bbbf405efddad50aedc9bcdcf515afc/LICENSE)
+还列出 PDFBox/FontBox、Adobe AFM 与 CMap 的第三方条款，不能仅复制 NuGet 顶层许可标识；
+[SharpZipLib LICENSE](https://github.com/icsharpcode/SharpZipLib/blob/33f64eb0f28cdd2b084cb822fcc224c7c5aba553/LICENSE.txt)
+也须作为分发材料核对。实际 NOTICE/归属文件、捆绑资源清单和可消费的 SBOM 条目尚未整合进产品。
+
+八个候选依赖 DLL 未压缩合计 **5,979,648 bytes**；本机用 ZIP/DEFLATE level 9 单独压缩这些 DLL 为
+**1,948,598 bytes**，清单位于 `build/qa/h351-cost/dependency-cost.json`。该实验不含 worker host、runtime
+配置、LICENSE/NOTICE 或接入改动，既不是完整正式 ZIP 增量，也不是产品启动/RSS 成本。
+当前 SPDX 生成器从 sidecar CycloneDX 读取包清单，不能自动证明未来 .NET worker 的依赖和捆绑资源已覆盖。
+正式接入需要扩充既有产品构建/许可/SBOM收集并用同一候选比较，不能人工往发布资产补 DLL。
+
+### 当前建议与未通过项
+
+建议本轮**保留现状、不采纳候选、不缩小既有原生文本 PDF 承诺**。理由是已知合法 Predictor 误拒、
+真实复杂生产者/字体组合与 warning 分类尚无充分证据，产品内存预算和跨进程 source/generation 接入未闭合，
+正式分发许可/SBOM及启动成本也未验证。旧 Go 扫描器的已知 MUST 差距继续保留；“不采纳”不代表它已合格。
+ADR 0014 保持“提议”，无需为完成本资格 Task 将其改成 accepted。只有补齐上述证据并作出采用决定后，
+才在 #339 下另建产品集成 Task；本轮没有该批准，也不把资格工具加入正式包。
+### 本轮实际验证与预算对照
+
+同一 `main@7bc31a1f` 加本 PR 差异的冻结源码，锁定 .NET 10.0.401 构建零 warning/error；
+原 38 项预期和四份旧生产者 PDF 保持不变。四个新增样本由现有生产者脚本 `--new-only` 生成，
+PDFium 5.13.0 独立核对页数、可见 token 次数，以及两份加密样本在已知测试 owner 密码下确有正文，
+证据 `build/qa/pdf-qualification/new-producer-pdfium-oracle.json`。
+
+完整收集 `observations-42-1g.json` 再经现有 Go 比较器输出 `comparison-42-1g.json`，结果 **42 项、
+failed=0、exit 0**；所有进程均退出。新增四项和字体 warning 正负对照的六项真实 pytest 回归通过；
+此聚焦命令使用 `--no-cov`，不当作完整 Python 质量或 required 通过。12 项现有进程边界检查全部通过，
+原始 `build/qa/pdf-adapter/process-boundary-351.json` 保留实际 reason、退出、输出丢弃和后代清理证据。
+
+本轮最高 Job peak commit 为 **733,982,720 bytes**，同一高输出合法后续页样本的根 worker peak working set
+为 **753,115,136 bytes**；wall 8202 ms、CPU 1593.75 ms。普通代表样本含进程启动约 0.3 秒；仅为本机单次
+隔离工具观察，不能外推成产品冷启动或总 RSS。继续将两个内存指标分别记录。
+
+额外的 **512 MiB** 对照没有改变 manifest 或 1 GiB 资格记录：普通 Form 样本仍 indexed，而相同合法高输出
+后续页样本返回 `resourceLimited / extract.memory_limit`、空正文、进程全部退出，峰值 Job commit
+417,140,736 bytes、根 worker working set 440,082,432 bytes。证据 `budget-probe-512m.json`。
+这证明当前候选不能在该更低实验预算下满足原有高输出样本的 `truncated` 预期；不以峰值低于限额推导
+Job 是否触顶，也不将返回的受控内存错误改写成成功或调高预算求绿。
+
+因此本轮**不批准任何产品内存默认值**：1 GiB 的实验成功不能消除产品资源决策；512 MiB 对照保留为
+未通过项。若后续采用，先优化或明确批准有证据的产品上限，再重跑不变语料及真实产品并发/取消路径。
+
+复现（工作区根目录，报告写入固定 `build/qa/`）：
+
+```text
+uv run --frozen --no-sync python tests/contract/generate_pdf_qualification_corpus.py
+uv run --frozen --no-sync python qa/pdf_adapter_qualification.py tests/contract/pdf_qualification_corpus.json build/qa/pdf-qualification/v1 build/qa/pdf-adapter/artifacts/bin/PdfAdapterQualification/release/PdfAdapterQualification.exe --memory-mib 1024 --output build/qa/pdf-adapter/observations-42-1g.json
+go -C sidecar build -o ../build/qa/pdf-adapter/pdf-qualification.exe ./cmd/pdf-qualification
+build/qa/pdf-adapter/pdf-qualification.exe --observations tests/contract/pdf_qualification_corpus.json build/qa/pdf-adapter/observations-42-1g.json
+build/qa/pdf-adapter/artifacts/bin/PdfAdapterQualification/release/PdfAdapterQualification.exe --check-process-boundary
+uv run --frozen --no-sync pytest tests/contract/test_pdf_adapter_qualification.py -q --no-cov -k "independent_producer_page_structures or independent_producer_empty_password_security_handlers or missing_glyph_warning_and_complete_mapping"
+```
+
+本 PR 的完整 CI/required、fresh 独立审阅与合并结果证据以对应 PR 为准；上述资格不声称产品集成已通过。

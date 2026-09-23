@@ -1,6 +1,6 @@
 # A6 自有 PDF 决策语料 v1
 
-`pdf_qualification_corpus.json` 冻结 38 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
+`pdf_qualification_corpus.json` 冻结 42 项样本的 MUST / DISCOVERY 层级、目标状态及文本断言；
 `generate_pdf_qualification_corpus.py` 用标准库构造结构样本并读取固定的自有生产者 fixtures，不复制字体或外部文档。
 
 ```text
@@ -122,3 +122,14 @@ Predictor 样本均为 `unsupported / extract.unsupported`、零正文；cycle �
 
 结构 DISCOVERY 仍只覆盖这六份自有小样本。复杂真实生产者组合、一般 Predictor 支持与 warning 分类校准，以及产品
 adapter、generation 事务和发布集成仍开放，不能因为本比较为零差异而关闭。
+## Form、合并旋转页与空用户密码增量
+
+在既有 38 项预期不变的基础上，预注册三项 MUST 与一项 DISCOVERY，自有固定 PDF 由锁定版本的 ReportLab 4.4.9、pypdf 6.10.0 和 cryptography 50.0.1 生成。普通语料生成与 CI 只读取提交的 fixtures，不导入这些生产者包。只生成这次四项的命令是：
+
+```text
+uv run --frozen --no-sync -- C:/Users/felji/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe tests/contract/generate_pdf_producer_fixtures.py --new-only
+```
+
+`independent-reportlab-form-reused.pdf` 在同页两次调用合法 Form XObject，该受限 fixture 预期 indexed、`A6FORMVISIBLE` 恰好两次且正文 26 个 token 字符；Form 类别整体仍处于 DISCOVERY，不扩大产品支持范围。`independent-pypdf-merged-rotated.pdf` 合并两个 ReportLab 单页源并旋转第二页，预期 indexed、两页且保留 `A6PAGEONE`、`A6PAGETWO`。`independent-rc4-128-empty-user-password.pdf` 和 `independent-aes-128-empty-user-password.pdf` 都有空 user password 与非空 owner password，预期 `passwordProtected / extract.password_required`、零正文。加密 fixtures 只在首次生成时创建；重新生成会有随机密文字节，不作为字节一致性契约。
+
+生成前已固定 manifest 目标。独立 PDFium 5.13.0 检查得到 Form 一页、token 两次；合并文档两页、各 token 一次；两份加密文档分别是 PDF `/V` 2 和 4，使用已知测试 owner password 后各有一页且能读取自有正文。证据在 `build/qa/pdf-qualification/new-producer-pdfium-oracle.json`。聚焦真实进程 pytest 6 项通过，覆盖上述四份 fixture 及缺字映射拒绝/完整 CJK 映射对照；两者分别要求 warning 非零/零，不依赖 warning 精确次数。当前尚未据此声明 42 项完整候选、资源预算或产品集成通过。
