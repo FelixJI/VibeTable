@@ -70,6 +70,6 @@ BOM 的 CSV 依次经过 Python Data IO、Go import preview、原子 apply、权
 
 - source-built 相邻集合：`uv run --frozen --no-sync python -m pytest tests/integration/test_unicode_data_io_roundtrip.py tests/integration/test_data_io_interoperability_roundtrip.py tests/integration/test_data_io_system_fields.py tests/integration/test_data_io_path_grants.py tests/backend/application/test_import_service.py --no-cov -q`
 - 源文件与导出校验契约：`uv run --frozen --no-sync python -m pytest tests/e2e/test_data_io_interoperability.py --no-cov -q`；Node：`node --test --test-concurrency=1 tests/e2e/data_io_interoperability.test.mjs`
-- 包 UI：`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --scenario 35-data-io-interoperability`；完整 CI 的 resilience lane 包含此场景（见 `qa/release_eligibility.py`）。
+- 包 UI：`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --scenario 35-data-io-interoperability`；完整 CI 由独立的 `data-io` lane 对 S34/S35 执行 `product-e2e-data-io` stage，其余场景在 `resilience` lane。两个分片的成功证据必须精确覆盖当前 manifest（见 `qa/release_eligibility.py`）。
 
 聚焦入口不统计全后端覆盖率；完整 CI 仍执行仓库既有的 85% 覆盖率门禁。

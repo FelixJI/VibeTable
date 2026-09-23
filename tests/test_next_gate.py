@@ -291,6 +291,25 @@ def test_product_e2e_deepest_plugin_cache_path_stays_below_windows_max_path() ->
     assert len(str(deepest_path)) < 260
 
 
+def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
+    scenarios = next_gate.handoff_gate.load_dependencies()
+    assert scenarios["requiredGateStages"].count("product-e2e-data-io") == 1
+    commands = [
+        next_gate.stage_command(stage)[0] for stage in ("product-e2e", "product-e2e-data-io")
+    ]
+    selected = [
+        [command[index + 1] for index, part in enumerate(command) if part == "--scenario"]
+        for command in commands
+    ]
+    manifest_ids = {item.id for item in next_gate.load_scenarios()}
+
+    assert all(len(ids) == len(set(ids)) for ids in selected)
+    assert set(selected[0]).isdisjoint(selected[1])
+    assert set(selected[0]) | set(selected[1]) == manifest_ids
+    assert set(selected[1]) == {"34-relation-lookup-data-io", "35-data-io-interoperability"}
+    assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
+
+
 def test_workbench_qualification_stage_freezes_representative_scale_and_report() -> None:
     command, cwd = next_gate.stage_command("workbench-qualification")
 
@@ -1459,6 +1478,69 @@ def test_product_e2e_evidence_rejects_failed_report_when_passing_is_required(
         )
 
 
+@pytest.mark.parametrize(
+    "actual_ids",
+    [
+        ["34-relation-lookup-data-io"],
+        ["34-relation-lookup-data-io", "35-data-io-interoperability", "36-extra"],
+        ["34-relation-lookup-data-io", "34-relation-lookup-data-io"],
+    ],
+    ids=("missing", "extra", "duplicate"),
+)
+def test_passing_product_e2e_report_requires_exact_scenario_evidence(
+    tmp_path: Path,
+    actual_ids: list[str],
+) -> None:
+    run_root = tmp_path / "source" / "20260817T010203Z"
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "scenarios": [
+                    {"scenario": scenario_id, "status": "passed"} for scenario_id in actual_ids
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="scenario coverage mismatch"):
+        next_gate.persist_product_e2e_evidence(
+            tmp_path / "source",
+            tmp_path / "destination",
+            require_passing_report=True,
+            expected_scenarios=("34-relation-lookup-data-io", "35-data-io-interoperability"),
+        )
+
+
+def test_passing_product_e2e_report_accepts_exact_scenario_evidence(tmp_path: Path) -> None:
+    expected = ("34-relation-lookup-data-io", "35-data-io-interoperability")
+    run_root = tmp_path / "source" / "20260817T010203Z"
+    run_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "scenarios": [
+                    {"scenario": scenario_id, "status": "passed"} for scenario_id in expected
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    destination = next_gate.persist_product_e2e_evidence(
+        tmp_path / "source",
+        tmp_path / "destination",
+        require_passing_report=True,
+        expected_scenarios=expected,
+    )
+
+    assert destination == tmp_path / "destination" / run_root.name
+    assert (destination / "product-e2e-report.json").is_file()
+
+
 def test_product_e2e_evidence_persists_interrupted_report_and_required_gate_rejects_it(
     tmp_path: Path,
 ) -> None:
@@ -1706,7 +1788,11 @@ def _prepare_product_lane(
     returncode: int,
 ) -> Path:
     qa_temp = tmp_path / ("qa-success" if returncode == 0 else "qa-failure")
-    source_directory = "p" if stage == "product-e2e" else "fault-injection"
+    source_directory = {
+        "product-e2e": "p",
+        "product-e2e-data-io": "d",
+        "fault-injection": "fault-injection",
+    }[stage]
     (qa_temp / source_directory).mkdir(parents=True)
     monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
@@ -1743,13 +1829,18 @@ def _prepare_product_lane(
 
 
 @pytest.mark.parametrize(
-    ("stage", "source_directory"),
-    [("product-e2e", "p"), ("fault-injection", "fault-injection")],
+    ("stage", "lane", "source_directory"),
+    [
+        ("product-e2e", "resilience", "p"),
+        ("product-e2e-data-io", "data-io", "d"),
+        ("fault-injection", "resilience", "fault-injection"),
+    ],
 )
 def test_failed_product_lane_persists_product_diagnostics(
     monkeypatch,
     tmp_path: Path,
     stage: str,
+    lane: str,
     source_directory: str,
 ) -> None:
     qa_temp = _prepare_product_lane(
@@ -1765,19 +1856,26 @@ def test_failed_product_lane_persists_product_diagnostics(
         destination: Path,
         *,
         require_passing_report: bool,
+        expected_scenarios: tuple[str, ...] | None,
     ) -> Path:
         assert not require_passing_report
+        if stage == "fault-injection":
+            assert expected_scenarios is None
+        else:
+            assert expected_scenarios == next_gate.product_e2e_partition(
+                next_gate.load_scenarios(), stage
+            )
         observed.append((source, destination))
         return destination / "20260817T010203Z"
 
     monkeypatch.setattr(next_gate, "persist_product_e2e_evidence", persist)
-    report = tmp_path / "lane-reports" / "resilience.json"
+    report = tmp_path / "lane-reports" / f"{lane}.json"
 
     assert (
         next_gate.main(
             [
                 "--lane",
-                "resilience",
+                lane,
                 *_candidate_args(tmp_path),
                 "--json-report",
                 str(report),
@@ -1788,23 +1886,33 @@ def test_failed_product_lane_persists_product_diagnostics(
     assert observed == [
         (
             qa_temp / source_directory,
-            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / "resilience",
+            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / lane,
         )
     ]
     assert report.is_file()
 
 
+@pytest.mark.parametrize(
+    ("stage", "lane", "source_directory"),
+    [
+        ("product-e2e", "resilience", "p"),
+        ("product-e2e-data-io", "data-io", "d"),
+    ],
+)
 def test_successful_product_lane_persists_report_before_qa_cleanup(
     monkeypatch,
     tmp_path: Path,
+    stage: str,
+    lane: str,
+    source_directory: str,
 ) -> None:
     qa_temp = _prepare_product_lane(
         monkeypatch,
         tmp_path,
-        stage="product-e2e",
+        stage=stage,
         returncode=0,
     )
-    product_evidence = qa_temp / "p"
+    product_evidence = qa_temp / source_directory
     observed: list[tuple[Path, Path]] = []
 
     def persist(
@@ -1812,20 +1920,24 @@ def test_successful_product_lane_persists_report_before_qa_cleanup(
         destination: Path,
         *,
         require_passing_report: bool,
+        expected_scenarios: tuple[str, ...] | None,
     ) -> Path:
         assert source.is_dir()
         assert require_passing_report
+        assert expected_scenarios == next_gate.product_e2e_partition(
+            next_gate.load_scenarios(), stage
+        )
         observed.append((source, destination))
         return destination / "20260817T010203Z"
 
     monkeypatch.setattr(next_gate, "persist_product_e2e_evidence", persist)
-    report = tmp_path / "lane-reports" / "resilience.json"
+    report = tmp_path / "lane-reports" / f"{lane}.json"
 
     assert (
         next_gate.main(
             [
                 "--lane",
-                "resilience",
+                lane,
                 *_candidate_args(tmp_path),
                 "--json-report",
                 str(report),
@@ -1839,7 +1951,7 @@ def test_successful_product_lane_persists_report_before_qa_cleanup(
     assert observed == [
         (
             product_evidence,
-            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / "resilience",
+            next_gate.REPO_ROOT / "build" / "automation" / "lane-evidence" / lane,
         )
     ]
 
@@ -1862,7 +1974,12 @@ def test_successful_product_lane_fails_closed_when_report_cannot_be_persisted(
     )
 
     def persist(*_args, **kwargs):
-        assert kwargs == {"require_passing_report": True}
+        assert kwargs == {
+            "require_passing_report": True,
+            "expected_scenarios": next_gate.product_e2e_partition(
+                next_gate.load_scenarios(), "product-e2e"
+            ),
+        }
         if persistence_failure is not None:
             raise persistence_failure
         return None
@@ -2197,10 +2314,11 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
     assert Path(cwd) == next_gate.REPO_ROOT
 
     product_command, product_cwd = next_gate.stage_command("product-e2e")
-    assert product_command == [
+    assert product_command[:4] == [
         next_gate.sys.executable,
         "qa/product_acceptance.py",
         "--evidence-root",
         str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
+    assert product_command.count("--scenario") == len(next_gate.load_scenarios()) - 2
     assert Path(product_cwd) == next_gate.REPO_ROOT

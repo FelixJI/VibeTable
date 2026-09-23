@@ -1060,6 +1060,7 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
         "race-a",
         "race-b",
         "resilience",
+        "data-io",
         "release",
     ]
     resilience = next(lane for lane in shards["lanes"] if lane["name"] == "resilience")
@@ -1068,6 +1069,11 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
         "node",
         "dotnet",
         "go",
+    }
+    data_io = next(lane for lane in shards["lanes"] if lane["name"] == "data-io")
+    assert {name for name in ("uv", "node", "dotnet", "go") if data_io.get(name)} == {
+        "uv",
+        "node",
     }
     assert shards["handoff_paths"] == [
         "build/automation/artifacts",
@@ -1105,6 +1111,7 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
         ("race-a", ["w64devkit"]),
         ("race-b", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci"]),
+        ("data-io", ["uv-sync", "npm-ci"]),
         ("release", []),
     ],
 )

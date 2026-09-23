@@ -23,7 +23,12 @@ from threading import Event
 try:
     from qa import handoff as handoff_gate
     from qa import release_candidate
-    from qa.release_eligibility import LANE_STAGES, RACE_LANES, REQUIRED_STAGES
+    from qa.release_eligibility import (
+        LANE_STAGES,
+        RACE_LANES,
+        REQUIRED_STAGES,
+        product_e2e_partition,
+    )
 except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
     import handoff as handoff_gate  # type: ignore[no-redef]
     import release_candidate  # type: ignore[no-redef]
@@ -31,7 +36,10 @@ except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
         LANE_STAGES,
         RACE_LANES,
         REQUIRED_STAGES,
+        product_e2e_partition,
     )
+
+from tests.e2e.product_scenario_manifest import load_scenarios
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"
@@ -50,6 +58,7 @@ DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
 STAGE_TIMEOUT_SECONDS = {
     "fault-injection": 30 * 60,
     "product-e2e": 30 * 60,
+    "product-e2e-data-io": 30 * 60,
     "runtime-baseline": 10 * 60,
 }
 RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
@@ -428,7 +437,7 @@ def stage_command(
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
         return command, str(REPO_ROOT)
-    if stage == "product-e2e":
+    if stage in {"product-e2e", "product-e2e-data-io"}:
         command = [
             sys.executable,
             "qa/product_acceptance.py",
@@ -437,10 +446,12 @@ def stage_command(
             # workspace and content-addressed package-cache descendants. Keep
             # this segment minimal so the deepest real Windows path remains
             # below the legacy MAX_PATH boundary.
-            str(_qa_temp_dir() / "p"),
+            str(_qa_temp_dir() / ("p" if stage == "product-e2e" else "d")),
         ]
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
+        for scenario_id in product_e2e_partition(load_scenarios(), stage):
+            command.extend(["--scenario", scenario_id])
         return command, str(REPO_ROOT)
     if stage == "runtime-baseline":
         if package_root is None or package_archive is None:
@@ -1226,6 +1237,7 @@ def persist_product_e2e_evidence(
     destination_root: Path,
     *,
     require_passing_report: bool = False,
+    expected_scenarios: tuple[str, ...] | None = None,
 ) -> Path | None:
     """Persist the newest product E2E report and bounded diagnostics for failures."""
 
@@ -1261,6 +1273,13 @@ def persist_product_e2e_evidence(
         raise ValueError(f"product E2E report passed with failed scenarios: {report_path}")
     if require_passing_report and report_status != "passed":
         raise ValueError(f"product E2E stage did not produce a passing report: {report_path}")
+    if report_status == "passed" and expected_scenarios is not None:
+        actual_scenarios = tuple(item["scenario"] for item in scenarios)
+        if actual_scenarios != expected_scenarios:
+            raise ValueError(
+                f"product E2E scenario coverage mismatch: expected {expected_scenarios}, "
+                f"found {actual_scenarios} in {report_path}"
+            )
 
     run_source = report_path.parent
     run_destination = destination_root / run_source.name
@@ -1512,22 +1531,30 @@ def _main(argv: list[str] | None = None) -> int:
         and has_required_webview2_evidence(results)
     )
     if args.lane:
-        evidence_sources: list[tuple[Path, bool]] = []
-        product_e2e_result = next(
-            (result for result in results if result.stage == "product-e2e"),
-            None,
-        )
-        if product_e2e_result is not None:
-            evidence_sources.append((_qa_temp_dir() / "p", product_e2e_result.returncode == 0))
+        evidence_sources: list[tuple[Path, bool, tuple[str, ...] | None]] = []
+        for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
+            product_e2e_result = next(
+                (result for result in results if result.stage == stage),
+                None,
+            )
+            if product_e2e_result is not None:
+                evidence_sources.append(
+                    (
+                        _qa_temp_dir() / directory,
+                        product_e2e_result.returncode == 0,
+                        product_e2e_partition(load_scenarios(), stage),
+                    )
+                )
         if any(result.stage == "fault-injection" and result.returncode != 0 for result in results):
-            evidence_sources.append((_qa_temp_dir() / "fault-injection", False))
+            evidence_sources.append((_qa_temp_dir() / "fault-injection", False, None))
 
-        for source_root, required in evidence_sources:
+        for source_root, required, expected_scenarios in evidence_sources:
             try:
                 evidence_path = persist_product_e2e_evidence(
                     source_root,
                     REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
                     require_passing_report=required,
+                    expected_scenarios=expected_scenarios,
                 )
                 if evidence_path is None:
                     print(

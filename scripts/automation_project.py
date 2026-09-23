@@ -553,7 +553,7 @@ def _prepare_smoke_lane(lane: str) -> None:
                 _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     elif lane in {"race-a", "race-b"}:
         _install_w64devkit()
-    elif lane == "resilience":
+    elif lane in {"resilience", "data-io"}:
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
         _run(
             "npm",
@@ -571,9 +571,11 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
     archive = artifacts / f"VibeTable-v{version}-win-x64.zip"
     _verify_release_metadata(artifacts, version, archive)
     _prepare_smoke_lane(lane)
-    python = ("uv", "run", "python") if lane in {"core", "resilience"} else (sys.executable,)
+    python = (
+        ("uv", "run", "python") if lane in {"core", "resilience", "data-io"} else (sys.executable,)
+    )
     smoke_env = {"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}
-    if lane in {"core", "resilience"}:
+    if lane in {"core", "resilience", "data-io"}:
         smoke_env = _node_environment(smoke_env)
     _run(
         *python,
@@ -647,7 +649,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lane",
-        choices=("core", "race-a", "race-b", "resilience", "release"),
+        choices=("core", "race-a", "race-b", "resilience", "data-io", "release"),
     )
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--reports-dir", type=Path)
