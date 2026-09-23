@@ -3669,6 +3669,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
         runner.NODE_RUNNER.with_name("directory_replica_conflict_ui.test.mjs"),
         runner.NODE_RUNNER.with_name("restored_search_diagnostics.test.mjs"),
+        runner.NODE_RUNNER.with_name("data_io_interoperability.test.mjs"),
     ]
     try:
         completed = subprocess.run(

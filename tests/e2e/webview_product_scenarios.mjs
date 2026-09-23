@@ -41,6 +41,7 @@ import {
   waitForCapturedBridgeMessage,
 } from "./bridge_capture_wait.mjs";
 import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
+import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -9096,6 +9097,12 @@ const scenarios = {
   "34-relation-lookup-data-io": (page, recorder, _network, runtime) => runRelationLookupDataIo(
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, rawBridgeRequest, applyProductMutation,
+      parseCsv, canonicalJsonText, chooseToolbarMore,
+    },
+  ),
+  "35-data-io-interoperability": (page, recorder, _network, runtime) => runDataIoInteroperability(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
       parseCsv, canonicalJsonText, chooseToolbarMore,
     },
   ),

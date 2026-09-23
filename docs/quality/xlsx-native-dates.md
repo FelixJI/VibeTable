@@ -20,3 +20,5 @@ import preview 与 FieldValueKernel 决定。本片属于 PR #140 的 A5，不�
 验证入口：`tests/backend/application/test_import_service.py` 的真实 Workbook/HTTP 序列化用例，及
 `tests/integration/test_unicode_data_io_roundtrip.py` 的 source-built sidecar 日期用例。CSV 行为、
 通用 JSON transport、Go 字段规则、依赖与 lock 均未调整；未把本机验证写成正式 packaged 验收。
+2026-09 本片补齐了 source-built 的 CSV/XLSX 导出断点与包 UI 原生日期代表组合，跨层汇总见
+[数据互操作资格矩阵](data-io-interoperability.md)。

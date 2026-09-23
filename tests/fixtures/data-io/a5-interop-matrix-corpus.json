@@ -1,0 +1,192 @@
+{
+  "$schema": "vibetable.a5-interop-matrix-corpus.v1",
+  "producers": {
+    "python": "CPython 3.13 (uv 管理的锁定环境；实际版本由消费测试在运行期核对)",
+    "xlsxWriter": "openpyxl 3.1.5 + et-xmlfile 2.0.0（uv.lock 锁定）",
+    "csv": "UTF-8 with BOM（utf-8-sig），源文件行尾 CRLF，导出按导出器既有契约",
+    "xlsx": "Excel 1900 日期系统（CALENDAR_WINDOWS_1900）；原生日期/时间戳为数值 serial，导出为文本",
+    "localeNote": "locale/时区仅为运行环境元数据，不代表支持区域排序、本地数字解析或时区猜测；支持语义是值原样往返"
+  },
+  "dateCases": [
+    {
+      "key": "xlsx_native_date",
+      "source": {
+        "container": "xlsx",
+        "kind": "native-date",
+        "cell": "2026-08-29"
+      },
+      "targetField": "date",
+      "preview": "2026-08-29",
+      "queryWire": "2026-08-29 00:00:00.000Z",
+      "exportText": "2026-08-29 00:00:00.000Z"
+    },
+    {
+      "key": "xlsx_native_datetime_milliseconds",
+      "source": {
+        "container": "xlsx",
+        "kind": "native-datetime",
+        "cell": "2026-08-29 14:05:06.123"
+      },
+      "targetField": "dateTime",
+      "preview": "2026-08-29T14:05:06.123Z",
+      "queryWire": "2026-08-29 14:05:06.123Z",
+      "exportText": "2026-08-29 14:05:06.123Z"
+    },
+    {
+      "key": "iso_offset_text",
+      "source": {
+        "container": "xlsx",
+        "kind": "text",
+        "cell": "2026-08-29T00:00:00+08:00"
+      },
+      "targetField": "dateTime",
+      "preview": "2026-08-28T16:00:00Z",
+      "queryWire": "2026-08-28 16:00:00.000Z",
+      "exportText": "2026-08-28 16:00:00.000Z"
+    },
+    {
+      "key": "iso_1900_date_text",
+      "source": {
+        "container": "xlsx",
+        "kind": "text",
+        "cell": "1900-02-28"
+      },
+      "targetField": "date",
+      "preview": "1900-02-28",
+      "queryWire": "1900-02-28 00:00:00.000Z",
+      "exportText": "1900-02-28 00:00:00.000Z",
+      "note": "文本 ISO 日期不受原生 serial 59/60 歧义拒绝影响；歧义仅针对 1900 系统的原生数值 cell"
+    },
+    {
+      "key": "csv_iso_date_text",
+      "source": {
+        "container": "csv",
+        "kind": "text",
+        "cell": "2026-08-29"
+      },
+      "targetField": "date",
+      "preview": "2026-08-29",
+      "queryWire": "2026-08-29 00:00:00.000Z",
+      "exportText": "2026-08-29 00:00:00.000Z",
+      "note": "与 xlsx_native_date 经同一 ISO 文本投影（见 docs/quality/xlsx-native-dates.md），Go authority 值相同"
+    },
+    {
+      "key": "csv_civil_datetime_text",
+      "source": {
+        "container": "csv",
+        "kind": "text",
+        "cell": "2026-08-29 14:05:06.123"
+      },
+      "targetField": "dateTime",
+      "preview": "2026-08-29T14:05:06.123Z",
+      "queryWire": "2026-08-29 14:05:06.123Z",
+      "exportText": "2026-08-29 14:05:06.123Z",
+      "note": "无时区 civil time 按既有 UTC civil time 规则解释，不猜本机时区"
+    },
+    {
+      "key": "csv_iso_offset_text",
+      "source": {
+        "container": "csv",
+        "kind": "text",
+        "cell": "2026-08-29T00:00:00+08:00"
+      },
+      "targetField": "dateTime",
+      "preview": "2026-08-28T16:00:00Z",
+      "queryWire": "2026-08-28 16:00:00.000Z",
+      "exportText": "2026-08-28 16:00:00.000Z",
+      "note": "带时区文本保持原样交给 Go，按显式 offset 折算 UTC"
+    }
+  ],
+  "rejections": [
+    {
+      "key": "excel_1900_serial_59_60",
+      "code": "import_ambiguous_excel_date",
+      "coveredBy": "tests/backend/application/test_import_service.py 与 docs/quality/xlsx-native-dates.md"
+    },
+    {
+      "key": "native_time_or_duration",
+      "code": "import_unsupported_excel_time",
+      "coveredBy": "tests/backend/application/test_import_service.py 与 docs/quality/xlsx-native-dates.md"
+    }
+  ],
+  "unicodeRepresentatives": [
+    {
+      "key": "nfc",
+      "value": "Café 👩🏽‍💻",
+      "codePoints": [
+        67,
+        97,
+        102,
+        233,
+        32,
+        128105,
+        127997,
+        8205,
+        128187
+      ]
+    },
+    {
+      "key": "nfd",
+      "value": "Café 👩🏽‍💻",
+      "codePoints": [
+        67,
+        97,
+        102,
+        101,
+        769,
+        32,
+        128105,
+        127997,
+        8205,
+        128187
+      ]
+    },
+    {
+      "key": "cjk",
+      "value": "中文 𠀀",
+      "codePoints": [
+        20013,
+        25991,
+        32,
+        131072
+      ]
+    },
+    {
+      "key": "rtl",
+      "value": "‏عربي 123",
+      "codePoints": [
+        8207,
+        1593,
+        1585,
+        1576,
+        1610,
+        32,
+        49,
+        50,
+        51
+      ]
+    },
+    {
+      "key": "locale_case",
+      "value": "I i İ ı ß SS",
+      "codePoints": [
+        73,
+        32,
+        105,
+        32,
+        304,
+        32,
+        305,
+        32,
+        223,
+        32,
+        83,
+        83
+      ]
+    }
+  ],
+  "formulaLikeText": {
+    "value": "=文本",
+    "xlsxExportCell": "字符串 cell（inline/shared string），绝不能写成公式"
+  }
+}
