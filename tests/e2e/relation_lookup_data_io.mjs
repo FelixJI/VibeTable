@@ -313,7 +313,7 @@ export async function runRelationLookupDataIo(page, recorder, runtime, helpers) 
 }
 
 /** Minimal STORED/DEFLATE zip walker for reading XLSX parts without a dependency. */
-export function zipEntries(buffer) {
+function zipEntries(buffer) {
   const entries = [];
   for (let eocd = buffer.length - 22; eocd >= 0; eocd -= 1) {
     if (buffer.readUInt32LE(eocd) !== 0x06054b50) continue;

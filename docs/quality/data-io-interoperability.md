@@ -20,6 +20,12 @@
 
 ## 样本 → 语义 → 层级 → source/run → 缺口
 
+本片当前复核：PR #362 的 Codex 修订，基于 `aee561bc`；source-built 相邻集合 43/43、
+导出校验与 runner 180/180、生成索引 55/55、Node 2/2；修订后的 S35 run
+`h350-codex-exact/20260923T034221Z` 为 1/1、15/15 断言、43.6 秒，实际长路径 296 字符。
+本地复用同工作树既有完整包，产品源码/lock 与 base `3abaaf89` 无 diff，包 freshness 检查通过；
+此本地样本不冒充绑定新 head 的 CI 候选，完整当前资格以 PR checks/review 为准。
+
 | 样本（冻结语义） | source-built | Host 边界 | 包 UI | source/run | 缺口 |
 |---|---|---|---|---|---|
 | falsy/container：空白数字 `null` vs 空文本 `""`、`0`/`false`/`{}`/`[]`、select 稳定 optionId、公式样文本 | `test_data_io_interoperability_roundtrip.py` + `a5-falsy-container-corpus.json`（CSV BOM→authority→CSV/XLSX） | — | S07 原导入故障修复（历史） | #318 语料；2026-09-23 本片重跑通过 | 无新增；互操作导出把空白与空文本都写空单元格，不作为无损备份 |
@@ -37,14 +43,20 @@
 导出文本恒等于 query wire）、Unicode 代表值与逐码点序列（复用 #318 冻结码点，不另造矩阵）、拒绝码
 及其既有覆盖入口、生产者（openpyxl 3.1.5 + et-xmlfile 2.0.0，uv.lock 锁定；CSV UTF-8 BOM；XLSX 1900
 epoch）。`test_unicode_data_io_roundtrip.py::test_interop_matrix_corpus_matches_frozen_oracles` 在每次
-运行时核对语料与冻结码点/锁定版本不漂移。locale/时区（本片取证环境：Python 3.13.12、
-`Chinese (Simplified)_China`/936、中国标准时间）只是运行环境元数据；支持语义是值原样往返，不含区域
-排序、本地数字解析或时区猜测。
+运行时核对语料与冻结码点、openpyxl/et-xmlfile 锁定版本不漂移。S35 使用 runner 的
+`sys.executable` 调用 `tests/e2e/data_io_workbook.py`，由锁定 openpyxl 按目标字段 physicalName
+生成原生日期、毫秒和字符串公式样文本源；不手写 ZIP、OOXML 或 Excel serial。
+每次运行的 `35-producer-metadata.json` 记录实际 Python、openpyxl、et-xmlfile、locale、编码、
+时区以及源文件路径。locale/时区仅为环境记录，不代表支持区域排序、本地数字解析或时区猜测。
 
-E2E 场景内的 XLSX 原生日期源由 `tests/e2e/data_io_interoperability.mjs` 按目标表字段的运行期
-physicalName 动态生成（STORED zip + 最小 OOXML 部件 + Excel serial 数值单元格，serial 以
-openpyxl 3.1.5 独立推导值为准）；`tests/e2e/test_data_io_interoperability.py` 用锁定 openpyxl 验证该
-生成器可读出原生日期、毫秒与公式样文本后才允许进入真实包场景。
+S35 对 CSV 使用标准库 csv，对 XLSX 使用 openpyxl 独立读取，按物理列名比较完整行多重集合，
+保留重复次数且拒绝缺行、多行、日期串行或重复 note；XLSX 非空单元格还必须是字符串，不能是
+公式、数值或原生日期。`test_data_io_interoperability.py` 用交换日期、重复 note、缺行、多行和
+错误单元格类型证明拒绝路径，Node 相邻测试覆盖 authority 行集合检查。
+
+历史 GLM 样本绑定 head `aee561bc4b73bfbff3243527c75d30234da556f9`，本地 run
+`h350-s35-first/20260923T030010Z`（1/1、15 个断言）；该结果早于精确导出断言修订，不能替代
+修订后的新 head CI 和 S35 验证。
 
 ## 历史段
 
@@ -57,7 +69,7 @@ BOM 的 CSV 依次经过 Python Data IO、Go import preview、原子 apply、权
 ## 验证入口
 
 - source-built 相邻集合：`uv run --frozen --no-sync python -m pytest tests/integration/test_unicode_data_io_roundtrip.py tests/integration/test_data_io_interoperability_roundtrip.py tests/integration/test_data_io_system_fields.py tests/integration/test_data_io_path_grants.py tests/backend/application/test_import_service.py --no-cov -q`
-- 生成器契约：`uv run --frozen --no-sync python -m pytest tests/e2e/test_data_io_interoperability.py --no-cov -q`；Node：`node --test --test-concurrency=1 tests/e2e/data_io_interoperability.test.mjs`
-- 包 UI：`uv run python qa/next.py` 的 pr-e2e 阶段（manifest 场景 `35-data-io-interoperability`）。
+- 源文件与导出校验契约：`uv run --frozen --no-sync python -m pytest tests/e2e/test_data_io_interoperability.py --no-cov -q`；Node：`node --test --test-concurrency=1 tests/e2e/data_io_interoperability.test.mjs`
+- 包 UI：`uv run --frozen --no-sync python tests/e2e/product_e2e_runner.py --scenario 35-data-io-interoperability`；完整 CI 的 core lane 包含此场景。
 
 聚焦入口不统计全后端覆盖率；完整 CI 仍执行仓库既有的 85% 覆盖率门禁。

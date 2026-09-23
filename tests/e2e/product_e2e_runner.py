@@ -1554,6 +1554,8 @@ def run_scenario(
                 str(scenario_dir),
                 "--controls-dir",
                 str(controls_dir),
+                "--python-executable",
+                sys.executable,
                 "--data-root",
                 str(readiness_dir / "local-data"),
             ]

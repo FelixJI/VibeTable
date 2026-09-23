@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import tempfile
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import date, datetime
 from pathlib import Path
@@ -241,9 +242,9 @@ async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
             assert result.rows_written == 2
             if export_format == "csv":
                 with target.open("r", encoding="utf-8-sig", newline="") as stream:
-                    exported = {
-                        row[date_field]: row[datetime_field] for row in csv.DictReader(stream)
-                    }
+                    exported = [
+                        (row[date_field], row[datetime_field]) for row in csv.DictReader(stream)
+                    ]
             else:
                 export_book = load_workbook(target, read_only=True, data_only=False)
                 try:
@@ -251,19 +252,16 @@ async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
                     assert export_sheet is not None
                     export_rows = export_sheet.iter_rows()
                     header_names = [cell.value for cell in next(export_rows)]
-                    exported = {}
+                    exported = []
                     for cells in export_rows:
-                        row = dict(zip(header_names, (cell.value for cell in cells), strict=False))
-                        date_value = row.get(date_field)
-                        if not date_value:
-                            continue
+                        row = dict(zip(header_names, (cell.value for cell in cells), strict=True))
                         for cell in cells:
                             if cell.value is not None:
                                 assert cell.data_type == "s"
-                        exported[date_value] = row[datetime_field]
+                        exported.append((row[date_field], row[datetime_field]))
                 finally:
                     export_book.close()
-            assert exported == expected_wire
+            assert Counter(exported) == Counter(expected_wire.items())
     finally:
         sidecar.stop()
 

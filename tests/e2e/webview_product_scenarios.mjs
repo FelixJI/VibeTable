@@ -9389,6 +9389,7 @@ async function main() {
       const phaseResult = await implementation(page, recorder, network, {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
+        pythonExecutable: args["python-executable"],
         dataRoot: path.resolve(args["data-root"]),
         replicaStage: args["replica-stage"],
         replicaState: args["replica-state"],

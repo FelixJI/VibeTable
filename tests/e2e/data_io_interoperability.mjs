@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify, isDeepStrictEqual } from "node:util";
+import { fileURLToPath } from "node:url";
 
-// The shared zip walker lives with the #349 scenario that introduced it.
-import { zipEntries } from "./relation_lookup_data_io.mjs";
+const executeFile = promisify(execFile);
+const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
 
 // Scenario 35 drives the remaining interoperability representatives through the
 // visible product UI: a UTF-8 BOM CSV with Unicode/date text, an XLSX workbook
@@ -13,11 +16,23 @@ import { zipEntries } from "./relation_lookup_data_io.mjs";
 export async function runDataIoInteroperability(page, recorder, runtime, helpers) {
   const {
     waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
-    parseCsv, canonicalJsonText, chooseToolbarMore,
+    canonicalJsonText, chooseToolbarMore,
   } = helpers;
   const corpus = JSON.parse(await fs.readFile(
     new URL("../fixtures/data-io/a5-interop-matrix-corpus.json", import.meta.url), "utf8",
   ));
+  const workbook = async (action, target, payload) => {
+    if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
+    const { stdout } = await executeFile(runtime.pythonExecutable,
+      [workbookHelper, action, target, JSON.stringify(payload)],
+      { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
+        env: { ...process.env, PYTHONUTF8: "1" } });
+    return JSON.parse(stdout);
+  };
+  const verifyExport = async (format, target, columns, rows, screenshot) => {
+    await exportThroughUi(format, target, screenshot);
+    return workbook("verify", target, { columns, rows });
+  };
   const dateCase = (key) => corpus.dateCases.find((item) => item.key === key);
   const request = async (type, payload) => {
     const response = await rawBridgeRequest(page, type, payload);
@@ -149,48 +164,18 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
           === (expected.eventAt === civilAt.source.cell ? civilAt.queryWire : offsetAt.queryWire))),
     { imported });
 
-  // The exporter writes CSV through utf-8-sig (a leading BOM is part of the
-  // contract); strip it before parsing so header lookups stay exact.
-  const parseExportedCsv = (bytes) => parseCsv(bytes.toString("utf8").replace(/^\uFEFF/u, ""));
   const afterImport = await authority(table.tableId);
-  const unicodeCsvTarget = path.join(runtime.controlsDir, `导出-结果-${nfdAccent}-${emoji}.csv`);
-  const unicodeCsv = parseExportedCsv(await exportThroughUi(
-    "csv", unicodeCsvTarget, "35-ui-export-csv.png",
-  ));
-  const [unicodeHeaders, ...unicodeDataRows] = unicodeCsv;
-  const csvByLabel = new Map(unicodeDataRows
-    .filter((row) => row.some((cell) => cell !== ""))
-    .map((row) => [row[unicodeHeaders.indexOf(table.field.physicalName)], row]));
-  recorder.check("CSV export keeps Unicode code points and date wire text byte-exact",
-    csvByLabel.size === csvRows.length
-      && csvRows.every((expected) => {
-        const row = csvByLabel.get(expected.label);
-        return row !== undefined
-          && codePoints(row[unicodeHeaders.indexOf(value.physicalName)]).join(",")
-            === expectedRepresentative(corpus, expected.label).codePoints.join(",")
-          && row[unicodeHeaders.indexOf(eventDate.physicalName)] === isoDate.exportText
-          && row[unicodeHeaders.indexOf(eventAt.physicalName)]
-            === (expected.eventAt === civilAt.source.cell ? civilAt.exportText : offsetAt.exportText);
-      }),
-    { unicodeHeaders, rows: [...csvByLabel] });
-
-  const unicodeXlsxTarget = path.join(runtime.controlsDir, `导出-结果-${nfdAccent}-${emoji}.xlsx`);
-  const unicodeXlsx = zipEntries(await exportThroughUi(
-    "xlsx", unicodeXlsxTarget, "35-ui-export-xlsx.png",
-  )).filter((entry) => entry.name.startsWith("xl/worksheets/"))
-    .map((entry) => entry.data.toString("utf8"));
-  const expectedTexts = [
-    ...csvRows.flatMap((row) => [
-      row.value,
-      row.eventAt === civilAt.source.cell ? civilAt.exportText : offsetAt.exportText,
-    ]),
-    isoDate.exportText,
-  ];
-  recorder.check("XLSX export stores Unicode and date wire text as strings, never formulas",
-    unicodeXlsx.length > 0
-      && unicodeXlsx.every((sheet) => !sheet.includes("<f"))
-      && expectedTexts.every((text) => unicodeXlsx.some((sheet) => sheet.includes(text))),
-    { worksheetCount: unicodeXlsx.length });
+  const unicodeColumns = [table.field.physicalName, value.physicalName,
+    eventDate.physicalName, eventAt.physicalName];
+  const unicodeExpectedRows = csvRows.map((row) => [row.label, row.value,
+    isoDate.exportText, row.eventAt === civilAt.source.cell ? civilAt.exportText : offsetAt.exportText]);
+  for (const format of ["csv", "xlsx"]) {
+    const target = path.join(runtime.controlsDir, `导出-结果-${nfdAccent}-${emoji}.${format}`);
+    const verified = await verifyExport(format, target, unicodeColumns, unicodeExpectedRows,
+      `35-ui-export-${format}.png`);
+    recorder.check(`${format.toUpperCase()} export preserves every Unicode/date row and string value`,
+      verified.rows === csvRows.length, verified);
+  }
   recorder.check("Unicode exports leave the authority rows and revisions unchanged",
     canonicalJsonText(await authority(table.tableId)) === canonicalJsonText(afterImport));
 
@@ -200,53 +185,33 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   const stamp = await createV2Field(page, xlsxTable.tableId, "Stamp", "dateTime");
   const nativeDate = dateCase("xlsx_native_date");
   const nativeDatetime = dateCase("xlsx_native_datetime_milliseconds");
-  const xlsxRows = [
-    [excelSerial(2026, 7, 29), excelSerial(2026, 7, 29, 14, 5, 6, 123), corpus.formulaLikeText.value],
-    [excelSerial(2026, 7, 29), excelSerial(2026, 7, 29, 14, 5, 6, 123), "普通文本"],
-  ];
   const xlsxSource = path.join(runtime.controlsDir, `数据-源-${emoji}.xlsx`);
-  await fs.writeFile(xlsxSource, buildNativeDateXlsx({
-    header: [day.physicalName, stamp.physicalName, xlsxTable.field.physicalName],
-    rows: xlsxRows,
-  }));
+  const producer = await workbook("native", xlsxSource, {
+    columns: [day.physicalName, stamp.physicalName, xlsxTable.field.physicalName],
+    date: nativeDate.source.cell, stamp: nativeDatetime.source.cell,
+    notes: [corpus.formulaLikeText.value, "普通文本"],
+  });
+  await fs.writeFile(path.join(runtime.evidenceDir, "35-producer-metadata.json"),
+    JSON.stringify(producer, null, 2), "utf8");
+  const xlsxExpectedRows = [corpus.formulaLikeText.value, "普通文本"].map((note) =>
+    [nativeDate.queryWire, nativeDatetime.queryWire, note]);
   await importThroughUi(xlsxSource);
-  const xlsxImported = await waitForAuthorityRows(xlsxTable.tableId, xlsxRows.length);
+  const xlsxImported = await waitForAuthorityRows(xlsxTable.tableId, xlsxExpectedRows.length);
   recorder.check("UI import turns native XLSX dates into the frozen UTC wire text",
-    xlsxImported.rows.length === xlsxRows.length
-      && xlsxImported.rows.every((row) =>
-        row[day.physicalName] === nativeDate.queryWire
-        && row[stamp.physicalName] === nativeDatetime.queryWire
-        && [corpus.formulaLikeText.value, "普通文本"].includes(row[xlsxTable.field.physicalName])),
+    sameRows(xlsxImported.rows.map((row) =>
+      [row[day.physicalName], row[stamp.physicalName], row[xlsxTable.field.physicalName]]),
+    xlsxExpectedRows),
     { xlsxImported });
 
   const xlsxAfterImport = await authority(xlsxTable.tableId);
-  const xlsxNotes = new Set([corpus.formulaLikeText.value, "普通文本"]);
-  const derivedCsvTarget = path.join(runtime.controlsDir, `导出-结果-xlsx-${nfdAccent}.csv`);
-  const derivedCsv = parseExportedCsv(await exportThroughUi(
-    "csv", derivedCsvTarget, "35-ui-export-xlsx-source-csv.png",
-  ));
-  const [derivedHeaders, ...derivedDataRows] = derivedCsv;
-  const derivedCells = derivedDataRows.filter((row) => row.some((cell) => cell !== ""));
-  recorder.check("CSV export of the native-date table keeps the frozen wire text",
-    derivedCells.length === xlsxRows.length
-      && derivedCells.every((row) =>
-        row[derivedHeaders.indexOf(day.physicalName)] === nativeDate.exportText
-        && row[derivedHeaders.indexOf(stamp.physicalName)] === nativeDatetime.exportText
-        && xlsxNotes.has(row[derivedHeaders.indexOf(xlsxTable.field.physicalName)])),
-    { derivedHeaders, derivedCells });
-
-  const derivedXlsxTarget = path.join(runtime.controlsDir, `导出-结果-xlsx-${emoji}.xlsx`);
-  const derivedXlsx = zipEntries(await exportThroughUi(
-    "xlsx", derivedXlsxTarget, "35-ui-export-xlsx-source-xlsx.png",
-  )).filter((entry) => entry.name.startsWith("xl/worksheets/"))
-    .map((entry) => entry.data.toString("utf8"));
-  recorder.check("XLSX export of the native-date table writes text cells, not dates or formulas",
-    derivedXlsx.length > 0
-      && derivedXlsx.every((sheet) => !sheet.includes("<f"))
-      && derivedXlsx.some((sheet) => sheet.includes(nativeDate.exportText)
-        && sheet.includes(nativeDatetime.exportText)
-        && sheet.includes(corpus.formulaLikeText.value)),
-    { worksheetCount: derivedXlsx.length });
+  for (const format of ["csv", "xlsx"]) {
+    const target = path.join(runtime.controlsDir, `导出-结果-xlsx-${nfdAccent}-${emoji}.${format}`);
+    const verified = await verifyExport(format, target,
+      [day.physicalName, stamp.physicalName, xlsxTable.field.physicalName], xlsxExpectedRows,
+      `35-ui-export-xlsx-source-${format}.png`);
+    recorder.check(`${format.toUpperCase()} native-date export preserves the exact row multiset`,
+      verified.rows === xlsxExpectedRows.length, verified);
+  }
   recorder.check("native-date exports leave the authority rows and revisions unchanged",
     canonicalJsonText(await authority(xlsxTable.tableId)) === canonicalJsonText(xlsxAfterImport));
 
@@ -278,137 +243,7 @@ function expectedRepresentative(corpus, key) {
   return corpus.unicodeRepresentatives.find((item) => item.key === key);
 }
 
-// ---- Minimal XLSX producer for native date cells ----
-// The scenario knows the target table's physical field names only at runtime,
-// so the workbook is generated here rather than pre-baked: a stored-zip writer
-// plus the four minimal OOXML parts openpyxl needs to read native date cells.
-const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
-
-export function excelSerial(year, monthIndex, day, hour = 0, minute = 0, second = 0, ms = 0) {
-  return (Date.UTC(year, monthIndex, day, hour, minute, second, ms) - EXCEL_EPOCH_UTC)
-    / 86_400_000;
-}
-
-function escapeXmlText(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-export function buildNativeDateXlsx({ header, rows }) {
-  const headerCells = header
-    .map((name, index) => columnCell(1, index, { text: name }));
-  const bodyRows = rows.map((row, rowIndex) => {
-    const cells = row.map((cell, columnIndex) => (
-      typeof cell === "number"
-        ? columnCell(rowIndex + 2, columnIndex, {
-          serial: cell, style: columnIndex === 0 ? 1 : 2,
-        })
-        : columnCell(rowIndex + 2, columnIndex, { text: cell })
-    ));
-    return `<row r="${rowIndex + 2}">${cells.join("")}</row>`;
-  });
-  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">${headerCells.join("")}</row>${bodyRows.join("")}</sheetData></worksheet>`;
-  return zipStoreSync([
-    { name: "[Content_Types].xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>` },
-    { name: "_rels/.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
-    { name: "xl/workbook.xml", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>` },
-    { name: "xl/_rels/workbook.xml.rels", data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
-    {
-      name: "xl/styles.xml",
-      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="22" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`,
-    },
-    { name: "xl/worksheets/sheet1.xml", data: sheet },
-  ]);
-}
-
-function columnCell(rowNumber, columnIndex, { text, serial, style }) {
-  const reference = `${columnName(columnIndex)}${rowNumber}`;
-  if (typeof serial === "number") {
-    return `<c r="${reference}" s="${style}"><v>${serial}</v></c>`;
-  }
-  return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${escapeXmlText(text)}</t></is></c>`;
-}
-
-function columnName(index) {
-  let name = "";
-  let value = index;
-  while (value >= 0) {
-    name = String.fromCharCode(65 + (value % 26)) + name;
-    value = Math.floor(value / 26) - 1;
-  }
-  return name;
-}
-
-// ---- Minimal STORED zip writer (CRC-32 + local/central records) ----
-const CRC_TABLE = new Int32Array(256).map((_, index) => {
-  let value = index;
-  for (let bit = 0; bit < 8; bit += 1) {
-    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
-  }
-  return value;
-});
-
-function crc32(buffer) {
-  let crc = -1;
-  for (const byte of buffer) {
-    crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ byte) & 0xff];
-  }
-  return (crc ^ -1) >>> 0;
-}
-
-export function zipStoreSync(entries) {
-  const encoder = new TextEncoder();
-  const localChunks = [];
-  const centralChunks = [];
-  let offset = 0;
-  for (const entry of entries) {
-    const nameBytes = encoder.encode(entry.name);
-    const data = typeof entry.data === "string" ? encoder.encode(entry.data) : entry.data;
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
-    local.writeUInt16LE(0x0800, 6);
-    local.writeUInt16LE(0, 8);
-    local.writeUInt16LE(0, 10);
-    local.writeUInt16LE(0x21, 12);
-    const crc = crc32(data);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(nameBytes.length, 26);
-    localChunks.push(local, nameBytes, data);
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(0x0800, 8);
-    central.writeUInt16LE(0, 10);
-    central.writeUInt16LE(0, 12);
-    central.writeUInt16LE(0x21, 14);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt32LE(offset, 42);
-    centralChunks.push(central, nameBytes);
-    offset += 30 + nameBytes.length + data.length;
-  }
-  const centralDirectorySize = centralChunks.reduce(
-    (total, chunk) => total + chunk.length, 0,
-  );
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(centralDirectorySize, 12);
-  end.writeUInt32LE(offset, 16);
-  return Buffer.concat([...localChunks, ...centralChunks, end]);
+export function sameRows(actual, expected) {
+  const ordered = (rows) => rows.map((row) => JSON.stringify(row)).sort();
+  return isDeepStrictEqual(ordered(actual), ordered(expected));
 }
