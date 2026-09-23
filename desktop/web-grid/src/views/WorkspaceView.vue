@@ -48,6 +48,7 @@ import { TABULATOR_INJECTION_KEY, GRID_PRESENTATION_KEY } from "@/components/gri
 import { useGridPresentationService } from "@/services/gridPresentationService";
 import PastePanel from "@/components/panels/PastePanel.vue";
 import ImportPreviewPanel from "@/components/panels/ImportPreviewPanel.vue";
+import ExportLookupPanel from "@/components/panels/ExportLookupPanel.vue";
 import CreateTableModal from "@/components/panels/CreateTableModal.vue";
 import DeleteConfirmModal from "@/components/panels/DeleteConfirmModal.vue";
 import ShortcutsView from "@/views/ShortcutsView.vue";
@@ -206,17 +207,35 @@ const {
   applyError: importApplyError,
   canPreviewImport: canImportTableData,
   canExport: canExportTableData,
+  relationOptions: importRelationOptions,
+  relationOptionsLoading: importRelationOptionsLoading,
+  relationOptionsError: importRelationOptionsError,
+  relationConfig: importRelationConfig,
+  mappingDirty: importMappingDirty,
+  schemaDrifted: importSchemaDrifted,
+  repreviewing: importRepreviewing,
   previewImport: importTableData,
+  repreviewImport: repreviewTableImport,
+  setRelationConfig: setImportRelationConfig,
   applyImport: confirmTableImport,
   cancelImport: cancelActiveImport,
   cancelActiveTask: cancelDataTask,
   dismissPreview: cancelImportPreview,
+  exportPanel: exportLookupPanel,
+  exportLookupIds,
   exportData: exportTableData,
+  setExportLookupIds: setExportLookupIds,
+  cancelExportPanel: cancelExportLookupPanel,
+  confirmExportData: confirmExportLookupData,
 } = useDataIoTask({
   service: dataIoService,
   resolveContext: () => ({
     collection: workspace.currentTable,
     schemaRevision: tableStore.schemaRevision,
+    available: !workspaceSession.enabled
+      || (workspaceSession.hasOpenWorkspace && !workspaceSession.isTransitioning),
+    workspaceId: workspaceSession.activeWorkspaceId,
+    sessionEpoch: workspaceSession.sessionEpoch,
   }),
   importSucceeded: (count) => message.success(t("dataIo.import.success", { count })),
   exportSucceeded: (result) => message.success(t("dataIo.export.success", {
@@ -1462,9 +1481,26 @@ useKeyboard({
       :cancellable="dataIoBusy"
       :cancelling="importCancelling"
       :error="importApplyError"
+      :relation-options="importRelationOptions"
+      :relation-options-loading="importRelationOptionsLoading"
+      :relation-options-error="importRelationOptionsError"
+      :relation-config="importRelationConfig"
+      :mapping-dirty="importMappingDirty"
+      :schema-drifted="importSchemaDrifted"
+      :repreviewing="importRepreviewing"
       @confirm="confirmTableImport"
       @cancel="cancelImportPreview"
       @cancel-task="cancelActiveImport"
+      @repreview="repreviewTableImport"
+      @update:relation-config="setImportRelationConfig"
+    />
+    <ExportLookupPanel
+      v-if="exportLookupPanel"
+      :panel="exportLookupPanel"
+      :selected-ids="exportLookupIds"
+      @update:selected-ids="setExportLookupIds"
+      @confirm="confirmExportLookupData"
+      @cancel="cancelExportLookupPanel"
     />
     <CreateTableModal
       @submit="tableInteractions.dispatch({ type: 'table.create' })"

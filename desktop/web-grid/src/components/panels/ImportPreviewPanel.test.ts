@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import ImportPreviewPanel from "./ImportPreviewPanel.vue";
 import { setLocale } from "@/i18n";
-import type { ImportPreviewSession } from "@/services/dataIoService";
+import type { ImportPreviewSession, RelationImportOption } from "@/services/dataIoService";
 
 function session(options: { errors?: number; warnings?: number } = {}): ImportPreviewSession {
   const errors = options.errors ?? 0;
@@ -47,10 +47,41 @@ function session(options: { errors?: number; warnings?: number } = {}): ImportPr
           relationResolutions: [],
         },
       ],
+      sourceColumns: ["number", "amount", "Partner Code", "Legacy note"],
       unmatchedColumns: ["Legacy note"],
       diagnostics: [],
       token: { token: "token-1", expiresAt: 9999999999, consumed: false },
     },
+  };
+}
+
+const relationOptions: readonly RelationImportOption[] = [{
+  targetField: "partner",
+  relationId: "orders.fld_partner",
+  targetCollection: "partners",
+  targetDisplayName: "合作方",
+  sourceDisplayName: "合作方",
+  matchFields: [
+    { fieldId: "fld_code", displayName: "编码" },
+    { fieldId: "fld_tax", displayName: "税号" },
+  ],
+}];
+
+function baseProps(overrides: Record<string, unknown> = {}) {
+  return {
+    session: session(),
+    applying: false,
+    cancellable: false,
+    cancelling: false,
+    error: null,
+    relationOptions,
+    relationOptionsLoading: false,
+    relationOptionsError: null,
+    relationConfig: [],
+    mappingDirty: false,
+    schemaDrifted: false,
+    repreviewing: false,
+    ...overrides,
   };
 }
 
@@ -59,10 +90,7 @@ describe("ImportPreviewPanel", () => {
 
   it("shows the atomic write scope, unmatched columns, diagnostics, and normalized samples", () => {
     const wrapper = mount(ImportPreviewPanel, {
-      props: {
-        session: session({ errors: 1 }), applying: false, cancellable: false,
-        cancelling: false, error: null,
-      },
+      props: baseProps({ session: session({ errors: 1 }) }),
     });
 
     expect(wrapper.text()).toContain("orders.xlsx");
@@ -76,10 +104,7 @@ describe("ImportPreviewPanel", () => {
 
   it("requires acknowledgement for warnings or ignored columns before emitting confirm", async () => {
     const wrapper = mount(ImportPreviewPanel, {
-      props: {
-        session: session({ warnings: 1 }), applying: false, cancellable: false,
-        cancelling: false, error: null,
-      },
+      props: baseProps({ session: session({ warnings: 1 }) }),
     });
     const confirm = wrapper.get('[data-testid="import-confirm"]');
     expect(confirm.attributes("disabled")).toBeDefined();
@@ -92,9 +117,7 @@ describe("ImportPreviewPanel", () => {
 
   it("offers task cancellation but keeps preview dismissal locked while applying", async () => {
     const wrapper = mount(ImportPreviewPanel, {
-      props: {
-        session: session(), applying: true, cancellable: true, cancelling: false, error: null,
-      },
+      props: baseProps({ applying: true, cancellable: true }),
     });
     const cancel = wrapper.get('[data-testid="import-cancel"]');
     expect(cancel.attributes("disabled")).toBeUndefined();
@@ -106,11 +129,52 @@ describe("ImportPreviewPanel", () => {
 
   it("waits for the task id before enabling cancellation", () => {
     const wrapper = mount(ImportPreviewPanel, {
-      props: {
-        session: session(), applying: true, cancellable: false,
-        cancelling: false, error: null,
-      },
+      props: baseProps({ applying: true, cancellable: false }),
     });
     expect(wrapper.get('[data-testid="import-cancel"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("disables confirm until a changed mapping is re-previewed", async () => {
+    const wrapper = mount(ImportPreviewPanel, {
+      props: baseProps({
+        relationConfig: [{ sourceColumn: "Partner Code", relationId: "orders.fld_partner", matchField: "fld_code" }],
+        mappingDirty: true,
+      }),
+    });
+
+    expect(wrapper.find('[data-testid="import-mapping-stale"]').exists()).toBe(true);
+    const confirm = wrapper.get('[data-testid="import-confirm"]');
+    expect(confirm.attributes("disabled")).toBeDefined();
+    const repreview = wrapper.get('[data-testid="import-repreview"]');
+    expect(repreview.attributes("disabled")).toBeUndefined();
+
+    await repreview.trigger("click");
+    expect(wrapper.emitted("repreview")).toHaveLength(1);
+    expect(wrapper.emitted("confirm")).toBeUndefined();
+  });
+
+  it("requires re-preview after a schema drift and surfaces the catalog empty state", async () => {
+    const wrapper = mount(ImportPreviewPanel, {
+      props: baseProps({
+        relationOptions: [],
+        schemaDrifted: true,
+      }),
+    });
+
+    expect(wrapper.find('[data-testid="import-schema-drifted"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="relation-mapping-empty"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="import-confirm"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-testid="import-repreview"]').trigger("click");
+    expect(wrapper.emitted("repreview")).toHaveLength(1);
+  });
+
+  it("forwards mapping edits and blocks re-preview while the catalog is loading", async () => {
+    const wrapper = mount(ImportPreviewPanel, {
+      props: baseProps({ relationOptionsLoading: true, relationOptions: null }),
+    });
+
+    expect(wrapper.find('[data-testid="relation-mapping-loading"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="import-repreview"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="import-confirm"]').attributes("disabled")).toBeDefined();
   });
 });

@@ -8,9 +8,11 @@ import {
   NIcon,
   NTag,
 } from "naive-ui";
-import { AlertTriangle, FileSpreadsheet, ShieldCheck, X } from "@lucide/vue";
+import { AlertTriangle, FileSpreadsheet, RefreshCw, ShieldCheck, X } from "@lucide/vue";
 import type { ImportCellDiagnostic, ImportPlanRow } from "@/contracts";
-import type { ImportPreviewSession } from "@/services/dataIoService";
+import type { ImportPreviewSession, RelationImportOption } from "@/services/dataIoService";
+import type { RelationMappingDraft } from "@/composables/useDataIoTask";
+import ImportRelationMapping from "./ImportRelationMapping.vue";
 import { getLocale, t } from "@/i18n";
 
 const props = defineProps<{
@@ -19,12 +21,21 @@ const props = defineProps<{
   cancellable: boolean;
   cancelling: boolean;
   error: string | null;
+  relationOptions: readonly RelationImportOption[] | null;
+  relationOptionsLoading: boolean;
+  relationOptionsError: string | null;
+  relationConfig: readonly RelationMappingDraft[];
+  mappingDirty: boolean;
+  schemaDrifted: boolean;
+  repreviewing: boolean;
 }>();
 
 const emit = defineEmits<{
   confirm: [];
   cancel: [];
   cancelTask: [];
+  repreview: [];
+  "update:relationConfig": [rows: readonly RelationMappingDraft[]];
 }>();
 
 const acknowledged = ref(false);
@@ -52,12 +63,25 @@ const requiresAcknowledgement = computed(() =>
   || props.session.plan.unmatchedColumns.length > 0,
 );
 
+const mappingStale = computed(() => props.mappingDirty || props.schemaDrifted);
+
 const canConfirm = computed(() =>
   !props.applying
+  && !props.repreviewing
+  && !mappingStale.value
+  && !props.relationOptionsLoading
   && props.session.plan.summary.validRows > 0
   && props.session.plan.summary.errorRows === 0
   && (!requiresAcknowledgement.value || acknowledged.value),
 );
+
+const canRepreview = computed(() =>
+  !props.applying
+  && !props.repreviewing
+  && !props.relationOptionsLoading
+  && !props.relationOptionsError
+  && props.relationOptions !== null
+  && mappingStale.value);
 
 function formatBytes(value: number | null): string {
   if (value === null) return t("dataIo.import.preview.sizeUnknown");
@@ -136,6 +160,33 @@ function displayValue(row: ImportPlanRow, field: string): string {
           </span>
         </NAlert>
 
+        <ImportRelationMapping
+          :source-columns="session.plan.sourceColumns"
+          :options="relationOptions"
+          :loading="relationOptionsLoading"
+          :error="relationOptionsError"
+          :model-value="relationConfig"
+          :disabled="applying || repreviewing"
+          @update:model-value="emit('update:relationConfig', $event)"
+        />
+
+        <NAlert
+          v-if="mappingDirty"
+          type="warning"
+          :show-icon="true"
+          data-testid="import-mapping-stale"
+        >
+          {{ t("dataIo.import.mapping.stale") }}
+        </NAlert>
+        <NAlert
+          v-else-if="schemaDrifted"
+          type="warning"
+          :show-icon="true"
+          data-testid="import-schema-drifted"
+        >
+          {{ t("dataIo.import.mapping.schemaDrifted") }}
+        </NAlert>
+
         <NAlert
           v-if="session.plan.unmatchedColumns.length"
           type="warning"
@@ -204,6 +255,16 @@ function displayValue(row: ImportPlanRow, field: string): string {
         <div class="panel-actions">
           <span>{{ t("dataIo.import.preview.createOnly") }}</span>
           <div>
+            <NButton
+              v-if="relationOptions !== null || relationOptionsLoading"
+              :loading="repreviewing"
+              :disabled="!canRepreview"
+              data-testid="import-repreview"
+              @click="emit('repreview')"
+            >
+              <template #icon><NIcon><RefreshCw /></NIcon></template>
+              {{ t("dataIo.import.repreview") }}
+            </NButton>
             <NButton
               data-testid="import-cancel"
               :loading="cancelling"

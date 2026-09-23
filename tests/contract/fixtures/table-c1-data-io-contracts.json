@@ -60,6 +60,7 @@
           ]
         }
       ],
+      "sourceColumns": ["合同编号", "title", "备注"],
       "unmatchedColumns": ["备注"],
       "diagnostics": [],
       "token": {"token": "imp-fixture-token", "expiresAt": 1753000600.0, "consumed": false}

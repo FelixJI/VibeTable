@@ -1066,6 +1066,12 @@
             "maxItems": 1000,
             "type": "array"
           },
+          "sourceColumns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "unmatchedColumns": {
             "items": {
               "type": "string"
@@ -1089,6 +1095,7 @@
           "capabilityHash",
           "sourceHash",
           "summary",
+          "sourceColumns",
           "token"
         ],
         "type": "object"
@@ -1123,6 +1130,9 @@
             "warningCount": 1
           },
           "rows": [],
+          "sourceColumns": [
+            "sample-value"
+          ],
           "unmatchedColumns": [],
           "diagnostics": [],
           "token": {

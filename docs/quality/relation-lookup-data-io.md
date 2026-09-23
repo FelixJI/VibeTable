@@ -95,3 +95,26 @@ CSV/XLSX 的原有两个集成测试复用这份完整包内 sidecar，Python �
 - PR #318 旧 CI run `34305718618` 的 S12 恢复后搜索未命中仍保留在 `build/qa/ci-318-resilience/`；本片未修改该搜索路径，正常同步 main 或 S32 通过均不代表该失败已修复。
 
 尚未执行本 head 的完整 Python 覆盖率、完整 Go 测试和 fresh PR CI。正式 main E2E 证据与全部 A5 的日期/时区、locale、路径/grant 等资格仍需各自验收。
+
+## #349 正式 UI 选配闭环（2026-09-22）
+
+Issue #349 / H349-DATA-IO-UI 在 `codex/relation-lookup-data-io-ui`（base `981ab213`）把同一批公开能力接入正式 UI：导入预检面板提供“源列 → 目标单值关系 → 目标表唯一匹配字段”的显式映射配置，映射变更后必须点击“重新预检”以同一 Host grant 重新调用 `data.previewImport`，仅最新映射的成功预检可确认 `task.create`；CSV/XLSX 导出前先在选列确认面板勾选合法 Lookup 只读文本列（默认不选），确认后才走既有 Host 保存 picker 与 `task.create`。
+
+- 公开 DTO 仅新增 `ImportPlan.sourceColumns`（Python `source_columns`）：由 `ImportService.preview` 用同一 Host grant 已读取的文件表头原样投影，供 UI 构建显式映射；重复/空表头在 UI 中禁用并说明，不生成歧义显式映射。CAS、TaskStatus、grant 绑定与消费语义不变。
+- 目录来源：关系选项取公开 `schema.describe`（columns + normalizedRelations，仅 valid、`m2o`、源字段可写），匹配字段取公开 `schema.getTable`（仅 active 且 `constraints.unique.enabled`），发送稳定 `fieldId`/`relationId`；`targetField` 保持源 schema physicalName 的既有 DTO 语义。Lookup 选项取 `lookup.list.definitions` 的 valid 项，`lookupIds` 发送稳定 ID；`lookupRevision` 固定取源表 `schema.describe.schema.schemaRevision`，不与 `lookup.list.lookupRevision` 混用。用户界面只展示 displayName，不手填内部 ID。
+- 生命周期收敛在 `dataIoService`/`useDataIoTask`：在途请求绑定 workspace/session epoch、collection 与请求 generation；切表、epoch 退休、取消丢弃迟到结果，schema 漂移使旧确认失效并要求重新预检；失败与拒绝沿用后端真实语义（`relation_match_field_not_unique`、`relation_match_not_found`、`schema_mismatch`、`lookup_revision_mismatch` 等），无配置导入导出保持原路径。
+
+### 验证（2026-09-22，工作树 `C:\Users\felji\PycharmProjects\.worktrees\vibetable\relation-lookup-data-io-ui`）
+
+| 验证 | 命令与结果 |
+| --- | --- |
+| Python 合同/服务 | `uv run pytest tests/backend/application/test_import_service.py tests/contract -q`：673 通过（含新增 `source_columns` 原样投影与 camelCase 序列化断言；`table-c1-data-io-contracts.json` 夹具同步 `sourceColumns`）；相邻集合 `tests/backend/adapters/test_pocketbase_data_io.py tests/backend/adapters/test_pocketbase_relation_io.py tests/backend/contracts/test_lookup_contract.py tests/backend/application/test_export_service.py -q --no-cov`：42 通过 |
+| 目录生成物 | `uv run python contracts/v2/generate_product_rpc_catalog.py` 后 `--check` 一致；`uv run python scripts/generate_product_e2e_capability_index.py --write` 后 `tests/contract/test_product_e2e_capability_index.py` 全通过 |
+| Web 单测 | `desktop/web-grid` `npm run typecheck`、`npm run test`：1726/1726 通过（新增 dataIoService 目录/映射/Lookup revision 合同、useDataIoTask 重预检与晚回执边界、ImportRelationMapping、ExportLookupPanel、ImportPreviewPanel 脏映射禁用、WorkspaceView 导入导出接线） |
+| Web 构建 | `npm run build` EXIT 0 |
+| Python 格式 | `uv run ruff format` + `uv run ruff check` 变更文件均通过 |
+| 真实包 UI E2E | `scripts/build_next.py`（PR 阶段包，dist/VibeTable.Next）后 `uv run python tests/e2e/product_e2e_runner.py --package-root dist/VibeTable.Next --evidence-root build/qa/product-e2e-349 --scenario 34-relation-lookup-data-io`：通过（bridge 协议段 + 真实 UI 段）；证据 `build/qa/product-e2e-349/`（截图 34-ui-relation-mapping.png、34-ui-repreview.png、34-ui-lookup-export.png；CSV/XLSX 产物在 run 目录 `_runtime/34/controls/`） |
+
+E2E UI 段在同一真实包内完成：工具栏导入 → 面板内配置 TargetCode→Target（A5 UI Targets）→ 唯一字段 Code → 确认按钮因映射变更禁用 → 重新预检 → 确认导入 → 权威 query 核对稳定目标 ID/null；工具栏导出 CSV/XLSX → 勾选 Lookup 列 → 确认 → 独立读取产物核对中文、`=文本`（XLSX 为 inline string，非 `<f>` 公式）与关系 ID；导出前后两端权威记录不变。既有 bridge 级负向断言（非唯一/缺失/只读/revision）全部保留。场景实现备注：建字段后渲染端依赖 realtime 触发刷新，桥阶段大量直连操作后刷新可能未送达，场景在导入前显式点击工具栏“刷新”（真实用户动作）；`chooseToolbarMore` 增加等待菜单项可用，避免点击被禁用项静默吞掉。
+
+未执行项：完整 `qa/next.py --ci` 质量门禁、全场景 E2E 矩阵与 fresh PR CI 由 Codex 接收后的完整资格流程负责；本片未改 Go authority、Host grant owner、公共 automation core 与 CI 配置。
