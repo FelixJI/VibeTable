@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from qa import release_eligibility
+from qa.product_scenario_manifest import Scenario, load_scenarios
 
 
 def _identity() -> dict[str, object]:
@@ -37,7 +40,20 @@ def _write_lane_reports(root: Path) -> None:
             "results": [
                 {
                     "stage": stage,
-                    "command": ["test"],
+                    "command": (
+                        [
+                            "test",
+                            *(
+                                part
+                                for scenario_id in release_eligibility.product_e2e_partition(
+                                    load_scenarios(), stage
+                                )
+                                for part in ("--scenario", scenario_id)
+                            ),
+                        ]
+                        if stage in {"product-e2e", "product-e2e-data-io"}
+                        else ["test"]
+                    ),
                     "returncode": 0,
                     "elapsed": 1.0,
                     "stdout": "",
@@ -91,6 +107,63 @@ def test_lane_allocation_covers_every_required_stage_with_two_race_shards() -> N
     assert set(allocated) == set(release_eligibility.REQUIRED_STAGES)
     assert counts["go-race"] == 2
     assert all(count == 1 for stage, count in counts.items() if stage != "go-race")
+
+
+def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
+    scenarios = load_scenarios()
+    extra = Scenario("36-future-product-case", "future", "future", ("future.case",))
+    expanded = [*scenarios, extra]
+
+    standard = release_eligibility.product_e2e_partition(expanded, "product-e2e")
+    data_io = release_eligibility.product_e2e_partition(expanded, "product-e2e-data-io")
+
+    assert set(standard).isdisjoint(data_io)
+    assert set(standard) | set(data_io) == {item.id for item in expanded}
+    assert extra.id in standard
+    assert set(data_io) == {
+        "34-relation-lookup-data-io",
+        "35-data-io-interoperability",
+    }
+
+
+def test_product_e2e_partition_rejects_a_missing_data_io_scenario() -> None:
+    scenarios = [item for item in load_scenarios() if item.id != "35-data-io-interoperability"]
+
+    with pytest.raises(release_eligibility.EligibilityError, match="data IO scenario"):
+        release_eligibility.product_e2e_partition(scenarios, "product-e2e")
+
+
+def test_aggregate_rejects_missing_product_e2e_scenario_selection(
+    tmp_path: Path,
+    aggregate_identity,
+) -> None:
+    _write_lane_reports(tmp_path)
+    report_path = tmp_path / "data-io" / "report.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["results"][0]["command"] = ["test", "--scenario", "34-relation-lookup-data-io"]
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(release_eligibility.EligibilityError, match="scenario coverage mismatch"):
+        release_eligibility.aggregate_reports(
+            tmp_path,
+            tmp_path / "VibeTable.Next",
+            tmp_path / "candidate.zip",
+        )
+
+
+def test_aggregate_rejects_missing_data_io_lane(
+    tmp_path: Path,
+    aggregate_identity,
+) -> None:
+    _write_lane_reports(tmp_path)
+    (tmp_path / "data-io" / "report.json").unlink()
+
+    with pytest.raises(release_eligibility.EligibilityError, match="expected 6 lane reports"):
+        release_eligibility.aggregate_reports(
+            tmp_path,
+            tmp_path / "VibeTable.Next",
+            tmp_path / "candidate.zip",
+        )
 
 
 def test_runtime_baseline_is_allocated_once_to_resilience_lane() -> None:
@@ -231,7 +304,7 @@ def test_aggregate_reports_rejects_missing_or_duplicate_lanes(
     _write_lane_reports(tmp_path)
     (tmp_path / "race-b" / "report.json").unlink()
 
-    with pytest.raises(release_eligibility.EligibilityError, match="expected 5 lane reports"):
+    with pytest.raises(release_eligibility.EligibilityError, match="expected 6 lane reports"):
         release_eligibility.aggregate_reports(
             tmp_path,
             tmp_path / "VibeTable.Next",
@@ -247,3 +320,17 @@ def test_aggregate_reports_rejects_missing_or_duplicate_lanes(
             tmp_path / "VibeTable.Next",
             tmp_path / "candidate.zip",
         )
+
+
+@pytest.mark.parametrize("entrypoint", ["qa/next.py", "qa/release_eligibility.py"])
+def test_release_entrypoints_start_without_site_packages(entrypoint: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-S", entrypoint, "--help"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "usage:" in completed.stdout

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,12 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/release_eligibility.py``
     import handoff as handoff_gate  # type: ignore[no-redef]
     import release_candidate  # type: ignore[no-redef]
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from qa.product_scenario_manifest import Scenario, load_scenarios  # noqa: E402
 
 SCHEMA_VERSION = 2
 REQUIRED_STAGES = (
@@ -37,6 +44,7 @@ REQUIRED_STAGES = (
     "web-build",
     "fault-injection",
     "product-e2e",
+    "product-e2e-data-io",
     "runtime-baseline",
     "workbench-qualification",
     "smoke",
@@ -69,14 +77,46 @@ LANE_STAGES = {
         "runtime-baseline",
         "workbench-qualification",
     ),
+    "data-io": ("product-e2e-data-io",),
     "release": ("package",),
 }
-PARALLEL_LANES = ("core", *RACE_LANES, "resilience")
+PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
+DATA_IO_SCENARIO_IDS = ("34-relation-lookup-data-io", "35-data-io-interoperability")
 
 
 class EligibilityError(RuntimeError):
     """Raised when lane evidence cannot prove release eligibility."""
+
+
+def product_e2e_partition(scenarios: Sequence[Scenario], stage: str) -> tuple[str, ...]:
+    """Select an exact, disjoint partition of the current product manifest."""
+
+    if stage not in {"product-e2e", "product-e2e-data-io"}:
+        raise ValueError(f"unknown product E2E stage: {stage}")
+    manifest_ids = tuple(item.id for item in scenarios)
+    if len(manifest_ids) != len(set(manifest_ids)):
+        raise EligibilityError("product E2E manifest contains duplicate scenario ids")
+    missing = set(DATA_IO_SCENARIO_IDS) - set(manifest_ids)
+    if missing:
+        raise EligibilityError(
+            f"missing data IO scenario from product E2E manifest: {sorted(missing)}"
+        )
+    data_io_ids = set(DATA_IO_SCENARIO_IDS)
+    return tuple(
+        scenario_id
+        for scenario_id in manifest_ids
+        if (scenario_id in data_io_ids) == (stage == "product-e2e-data-io")
+    )
+
+
+def _reported_product_e2e_scenarios(command: object) -> tuple[str, ...]:
+    if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
+        raise EligibilityError("product E2E stage has invalid command evidence")
+    positions = [index for index, part in enumerate(command) if part == "--scenario"]
+    if any(index + 1 >= len(command) for index in positions):
+        raise EligibilityError("product E2E stage has incomplete scenario selection")
+    return tuple(command[index + 1] for index in positions)
 
 
 def _read_report(path: Path) -> dict[str, object]:
@@ -180,6 +220,13 @@ def aggregate_reports(
         missing = sorted(set(REQUIRED_STAGES) - set(stage_results))
         unknown = sorted(set(stage_results) - set(REQUIRED_STAGES))
         raise EligibilityError(f"stage set mismatch: missing={missing}, unknown={unknown}")
+
+    scenarios = load_scenarios()
+    for stage in ("product-e2e", "product-e2e-data-io"):
+        expected = product_e2e_partition(scenarios, stage)
+        actual = _reported_product_e2e_scenarios(stage_results[stage][0][1].get("command"))
+        if actual != expected:
+            raise EligibilityError(f"product E2E scenario coverage mismatch: {stage}")
 
     race_results = stage_results["go-race"]
     if tuple(lane for lane, _item in race_results) != RACE_LANES:

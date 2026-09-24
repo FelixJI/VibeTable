@@ -153,6 +153,11 @@
         "go": true
       },
       {
+        "name": "data-io",
+        "uv": true,
+        "node": true
+      },
+      {
         "name": "release"
       }
     ],
