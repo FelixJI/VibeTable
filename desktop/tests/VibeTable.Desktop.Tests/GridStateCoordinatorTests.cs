@@ -14,14 +14,13 @@ namespace VibeTable.Desktop.Tests;
 /// Unit tests for <see cref="GridStateCoordinator"/>.
 /// </summary>
 /// <remarks>
-/// Covers (per B3 Task 4):
+/// Covers:
 /// <list type="bullet">
-/// <item>Debounce search/filter by 250 ms and state saves by 500 ms.</item>
+/// <item>Debounce search/filter by 250 ms.</item>
 /// <item>Cancel superseded reads (stale generation).</item>
 /// <item>Ignore stale responses by request generation.</item>
 /// <item>Selection snapshot produced only after reconciliation; invalidated on
 /// query/schema/data revision change.</item>
-/// <item>Flush confirmed state on table switch; shutdown does not block &gt; 2 s.</item>
 /// </list>
 /// </remarks>
 [TestClass]
@@ -43,7 +42,6 @@ public sealed class GridStateCoordinatorTests
             gateway,
             n => notify?.Invoke(n),
             timeProvider);
-        coordinator.SetDatabase("db-identity");
         return coordinator;
     }
 
@@ -472,7 +470,7 @@ public sealed class GridStateCoordinatorTests
     }
 
     [TestMethod]
-    public async Task SwitchTableAsync_FlushesPending_AndInvalidatesSelection()
+    public void ResetForTableChange_InvalidatesSelection()
     {
         var gateway = new FakeTableRpcGateway();
         var coordinator = NewCoordinator(gateway);
@@ -489,48 +487,9 @@ public sealed class GridStateCoordinatorTests
         coordinator.ReconcileSelection(snap, new object[] { 1 });
         Assert.IsNotNull(produced);
 
-        await coordinator.SwitchTableAsync("vendors");
+        coordinator.ResetForTableChange();
 
         Assert.IsNull(produced, "selection must be invalidated on table switch");
-    }
-
-    [TestMethod]
-    public async Task FlushAsync_DoesNotBlock_LongerThan_TwoSeconds()
-    {
-        var gateway = new FakeTableRpcGateway();
-        var coordinator = NewCoordinator(gateway);
-        // RequestSave requires a current table; drive one through a query.
-        coordinator.RequestQuery("contracts", Query());
-
-        coordinator.RequestSave(new GridState());
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        await coordinator.FlushAsync();
-        sw.Stop();
-
-        Assert.IsTrue(sw.ElapsedMilliseconds < GridStateCoordinator.ShutdownFlushTimeoutMs + 500,
-            $"flush must not block much beyond the {GridStateCoordinator.ShutdownFlushTimeoutMs} ms cap; took {sw.ElapsedMilliseconds} ms");
-    }
-
-    [TestMethod]
-    public async Task RequestSave_Debounces_RapidSaves_IntoOne()
-    {
-        var gateway = new FakeTableRpcGateway();
-        var time = new ManualTimeProvider();
-        var coordinator = NewCoordinator(gateway, timeProvider: time);
-        await coordinator.SwitchTableAsync("contracts");
-
-        for (int i = 0; i < 5; i++)
-        {
-            coordinator.RequestSave(new GridState());
-        }
-
-        Assert.AreEqual(1, time.ScheduledTimerCount);
-        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.SaveDebounceMs - 1));
-        Assert.AreEqual(0, gateway.SaveGridStateCalls.Count);
-        time.Advance(TimeSpan.FromMilliseconds(1));
-
-        Assert.AreEqual(1, gateway.SaveGridStateCalls.Count,
-            "rapid saves should coalesce into one debounced save");
     }
 
     [TestMethod]
@@ -567,44 +526,5 @@ public sealed class GridStateCoordinatorTests
 
         Assert.AreEqual(1, notifications.Count,
             "a response from the superseded generation must not be emitted");
-    }
-
-    [TestMethod]
-    public async Task LoadStateAsync_ReturnsSavedState()
-    {
-        var gateway = new FakeTableRpcGateway();
-        var saved = new GridStateResult(
-            new GridState(null, null, null, null, "compact", true, "rev-5"),
-            "rev-5",
-            false);
-        gateway.GridStateResults["contracts"] = saved;
-        var coordinator = NewCoordinator(gateway);
-
-        var result = await coordinator.LoadStateAsync("contracts");
-
-        Assert.IsNotNull(result);
-        Assert.AreEqual("compact", result!.State.Density);
-        Assert.IsTrue(result.State.ForcedRemote);
-    }
-
-    [TestMethod]
-    public async Task LoadStateAsync_ReturnsNull_WhenNoDatabaseSet()
-    {
-        var gateway = new FakeTableRpcGateway();
-        var coordinator = new GridStateCoordinator(gateway, _ => { });
-        // No SetDatabase call.
-
-        var result = await coordinator.LoadStateAsync("contracts");
-
-        Assert.IsNull(result);
-    }
-
-    [TestMethod]
-    public void SetDatabase_DoesNotThrow_ForEmptyIdentity()
-    {
-        var gateway = new FakeTableRpcGateway();
-        var coordinator = new GridStateCoordinator(gateway, _ => { });
-        coordinator.SetDatabase("");
-        // No exception; LoadState would still attempt with empty id (best-effort).
     }
 }

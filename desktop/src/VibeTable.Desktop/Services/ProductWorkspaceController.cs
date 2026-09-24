@@ -15,7 +15,6 @@ internal sealed class ProductWorkspaceController : IDisposable
     private readonly WorkspaceSessionManager _sessions;
     private readonly IDatabasePicker _databasePicker;
     private readonly TableWorkspaceService _workspace;
-    private readonly GridStateCoordinator _coordinator;
     private readonly Func<bool> _isRendererReady;
     private readonly Func<bool> _isClosing;
     private readonly Func<bool> _hasProductGateway;
@@ -49,7 +48,6 @@ internal sealed class ProductWorkspaceController : IDisposable
         WorkspaceSessionManager sessions,
         IDatabasePicker databasePicker,
         TableWorkspaceService workspace,
-        GridStateCoordinator coordinator,
         Func<bool> isRendererReady,
         Func<bool> isClosing,
         Func<bool> hasProductGateway,
@@ -68,7 +66,6 @@ internal sealed class ProductWorkspaceController : IDisposable
         _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
         _databasePicker = databasePicker ?? throw new ArgumentNullException(nameof(databasePicker));
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
-        _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
         _isRendererReady = isRendererReady
             ?? throw new ArgumentNullException(nameof(isRendererReady));
         _isClosing = isClosing ?? throw new ArgumentNullException(nameof(isClosing));
@@ -239,7 +236,6 @@ internal sealed class ProductWorkspaceController : IDisposable
                             {
                                 using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
                                     _workspace,
-                                    _coordinator,
                                     source,
                                     result);
                                 commit.Enqueue(() =>

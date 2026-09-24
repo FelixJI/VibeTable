@@ -1435,7 +1435,6 @@ export type WebMessageType =
   // B3 query + state requests.
   | "table.queryRequested"
   | "table.cursorRequested"
-  | "gridState.saveRequested"
   | "gridState.get"
   | "gridState.save"
   // B2 paste preview + apply requests.
@@ -2091,7 +2090,6 @@ export interface WebPayloadMap {
   // B3 query + state requests.
   "table.queryRequested": TableQueryRequestedPayload;
   "table.cursorRequested": TableCursorRequestedPayload;
-  "gridState.saveRequested": GridStateSaveRequestedPayload;
   "gridState.get": { readonly table: string };
   "gridState.save": { readonly table: string; readonly state: GridState; readonly revision: string };
   // B2 paste preview + apply requests.
@@ -2244,13 +2242,6 @@ export interface TableQueryRequestedPayload {
 
 export interface TableCursorRequestedPayload {
   readonly cursor: string;
-}
-
-/** Payload produced by the web layer for `gridState.saveRequested`. */
-export interface GridStateSaveRequestedPayload {
-  readonly databaseId: string;
-  readonly table: string;
-  readonly state: GridState;
 }
 
 /** Payload produced by the web layer for `table.previewPasteRequested`. */

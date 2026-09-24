@@ -1,10 +1,9 @@
-"""B3 grid-state contracts: the on-the-wire shape of the durable per-table grid
-state (column widths, order, visibility, frozen columns, sort/filter/search,
-density and forced-remote preference).
+"""Grid-state contracts for the Host-owned presentation state.
 
 Production presentation state is owned by the WPF Host and scoped by workspace
-UUID and table. HostGridState models describe that boundary. The legacy Python
-models remain solely for historical service tests and the fixed producer oracle.
+UUID and table; ``HostGridState`` models describe that boundary. The legacy
+Python service models were removed with the retired Python route; the frozen
+producer behavior is pinned by ``contracts/v2/grid_state-python-oracle.json``.
 
 Wire conventions
 ----------------
@@ -26,7 +25,7 @@ Design notes
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
@@ -69,80 +68,6 @@ class ColumnState(CamelModel):
     visible: bool = True
     frozen: bool = False
     order: int | None = Field(default=None, ge=0)
-
-
-class GridState(CamelModel):
-    """The full persisted grid state for one table.
-
-    Wire form::
-
-        {"columns": [...], "sorts": [...], "filters": [...],
-         "keyword": null, "density": "comfortable",
-         "forcedRemote": false, "revision": "rev-3"}
-
-    * ``columns`` is the per-column layout state.
-    * ``sorts`` / ``filters`` / ``keyword`` mirror the B3 query AST so the
-      grid restores the exact view the user left.
-    * ``density`` is a UI hint (``compact`` / ``comfortable`` / ``cozy``).
-    * ``forced_remote`` records the user's per-table remote-mode preference.
-    * ``revision`` is the opaque conflict token carried on save.
-    """
-
-    columns: list[ColumnState] = Field(default_factory=list, max_length=512)
-    sorts: list[dict[str, Any]] = Field(default_factory=list, max_length=16)
-    filters: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
-    keyword: str | None = Field(default=None, max_length=256)
-    density: Literal["compact", "comfortable", "cozy"] = "comfortable"
-    forced_remote: bool = False
-    revision: str | None = None
-
-
-class GridStateGetParams(CamelModel):
-    """Parameters for ``gridState.get``.
-
-    Wire form::
-
-        {"databaseId": "c:/.../file.db", "table": "contracts"}
-    """
-
-    database_id: str = Field(min_length=1)
-    table: str = Field(min_length=1, max_length=128)
-
-
-class GridStateSaveParams(CamelModel):
-    """Parameters for ``gridState.save``.
-
-    Wire form::
-
-        {"databaseId": "c:/.../file.db", "table": "contracts",
-         "state": {...}, "revision": "rev-3"}
-
-    ``revision`` is the conflict token from the prior get/save; a mismatch
-    means another session saved newer state and the caller must re-read.
-    """
-
-    database_id: str = Field(min_length=1)
-    table: str = Field(min_length=1, max_length=128)
-    state: GridState
-    revision: str | None = None
-
-
-class GridStateResult(CamelModel):
-    """Result of ``gridState.get`` / ``gridState.save``.
-
-    Wire form::
-
-        {"state": {...}, "revision": "rev-3", "conflict": false}
-
-    * ``state`` is the current persisted state (empty default on first get).
-    * ``revision`` is the conflict token to carry on the next save.
-    * ``conflict`` is true when a save was rejected because ``revision`` did
-      not match the stored value; the caller must re-read ``state`` and retry.
-    """
-
-    state: GridState
-    revision: str
-    conflict: bool = False
 
 
 class HostGridState(CamelModel):

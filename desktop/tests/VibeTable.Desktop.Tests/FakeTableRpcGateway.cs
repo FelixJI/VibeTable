@@ -393,15 +393,6 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
     public List<string> ValidateSnapshotCalls { get; } = new();
     public SnapshotValidation? NextValidateSnapshotResult { get; set; }
 
-    public Dictionary<string, GridStateResult> GridStateResults { get; } =
-        new(StringComparer.Ordinal);
-    public List<string> GetGridStateCalls { get; } = new();
-    public List<string> SaveGridStateCalls { get; } = new();
-    public List<(string DatabaseId, string Table, GridState State, string? Revision)>
-        SavedGridStates
-    { get; } = new();
-    public GridStateResult? NextSaveGridStateResult { get; set; }
-
     public Task<TablePage> QueryTableViewRawAsync(
         string table, JsonElement query, CancellationToken token)
     {
@@ -472,29 +463,6 @@ public sealed class FakeTableRpcGateway : ITableRpcGateway
         ValidateSnapshotCalls.Add(snapshot.Table);
         return Task.FromResult(
             NextValidateSnapshotResult ?? new SnapshotValidation(Valid: true));
-    }
-
-    public Task<GridStateResult> GetGridStateAsync(
-        string databaseId, string table, CancellationToken token)
-    {
-        GetGridStateCalls.Add(table);
-        if (GridStateResults.TryGetValue(table, out var result))
-        {
-            return Task.FromResult(result);
-        }
-        return Task.FromResult(new GridStateResult(
-            new GridState(), "rev-1", Conflict: false));
-    }
-
-    public Task<GridStateResult> SaveGridStateAsync(
-        string databaseId, string table, GridState state,
-        string? revision, CancellationToken token)
-    {
-        SaveGridStateCalls.Add(table);
-        SavedGridStates.Add((databaseId, table, state, revision));
-        return Task.FromResult(
-            NextSaveGridStateResult ?? new GridStateResult(
-                state, "rev-2", Conflict: false));
     }
 
     // -------------------------------------------------------------------

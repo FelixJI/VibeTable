@@ -904,7 +904,7 @@ public sealed partial class HostProductRpcInvokerTests
         }
 
         internal PocketBaseTableGateway TableGateway() => new(
-            Gateway(useGeneratedPolicy: true), new JsonRpcWorkspaceSupportGateway(_client));
+            Gateway(useGeneratedPolicy: true));
 
         internal WorkspaceRequestDispatcher Dispatcher(IWebReplySink sink)
         {

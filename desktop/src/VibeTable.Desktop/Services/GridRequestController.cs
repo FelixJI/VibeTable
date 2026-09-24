@@ -13,9 +13,6 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 public sealed class GridRequestController
 {
-    private static readonly JsonSerializerOptions WireOptions =
-        new(JsonSerializerDefaults.Web);
-
     private readonly GridStateCoordinator? _coordinator;
     private readonly IWebReplySink _reply;
     private readonly Func<CancellationToken> _sessionToken;
@@ -36,15 +33,13 @@ public sealed class GridRequestController
     public static bool Handles(string requestType)
         => requestType is
             "table.queryRequested" or
-            "table.cursorRequested" or
-            "gridState.saveRequested";
+            "table.cursorRequested";
 
     public Task DispatchAsync(RoutedWebRequest request)
         => request.Type switch
         {
             "table.queryRequested" => QueryAsync(request),
             "table.cursorRequested" => CursorAsync(request),
-            "gridState.saveRequested" => SaveStateAsync(request),
             _ => RejectAsync(
                 request,
                 "Grid request type is not supported.",
@@ -167,28 +162,6 @@ public sealed class GridRequestController
             "table.windowLoaded", "query.cursor", correlate: false);
     }
 
-    private Task SaveStateAsync(RoutedWebRequest request)
-    {
-        if (_coordinator is null)
-        {
-            return RejectAsync(
-                request,
-                "Grid-state save is not wired in this host configuration.",
-                "NOT_CONFIGURED");
-        }
-
-        if (!TryReadGridState(request.Payload, out GridState? state) || state is null)
-        {
-            return RejectAsync(
-                request,
-                "gridState.saveRequested requires a 'state' payload field.",
-                "BAD_PAYLOAD");
-        }
-
-        _coordinator.RequestSave(state);
-        return Task.CompletedTask;
-    }
-
     private Task RejectAsync(
         RoutedWebRequest request,
         string message,
@@ -196,32 +169,6 @@ public sealed class GridRequestController
     {
         _reply.PostOperationFailed(request.RequestId, message, code);
         return Task.CompletedTask;
-    }
-
-    private static bool TryReadGridState(
-        JsonElement payload,
-        out GridState? state)
-    {
-        state = null;
-        if (!TryGetProperty(payload, "state", out JsonElement value)
-            || value.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        try
-        {
-            state = value.Deserialize<GridState>(WireOptions);
-            return state is not null;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-        catch (NotSupportedException)
-        {
-            return false;
-        }
     }
 
     private static string? GetString(JsonElement payload, string name)

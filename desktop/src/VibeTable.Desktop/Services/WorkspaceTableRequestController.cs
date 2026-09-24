@@ -25,7 +25,6 @@ public sealed class WorkspaceTableRequestController
     private readonly TimeSpan _schemaLifecycleTimeout;
     private readonly Func<CancellationToken> _sessionToken;
     private readonly PluginProjectContextBindingRegistry _pluginBindings;
-    private readonly GridStateCoordinator? _grid;
     private readonly bool _databaseOpenEnabled;
     private readonly TimeProvider _timeProvider;
     private readonly DatabaseOpenTerminalPublisher _terminals;
@@ -35,7 +34,6 @@ public sealed class WorkspaceTableRequestController
         IDatabasePicker picker,
         IWebReplySink reply,
         Func<IProductDataRpcGateway?> productGateway,
-        GridStateCoordinator grid,
         TimeSpan? readRecoveryTimeout = null,
         TimeSpan? schemaLifecycleTimeout = null,
         Func<CancellationToken>? sessionToken = null,
@@ -47,7 +45,6 @@ public sealed class WorkspaceTableRequestController
             picker,
             reply,
             productGateway,
-            grid ?? throw new ArgumentNullException(nameof(grid)),
             true,
             readRecoveryTimeout,
             schemaLifecycleTimeout,
@@ -75,7 +72,6 @@ public sealed class WorkspaceTableRequestController
             picker,
             reply,
             productGateway,
-            null,
             false,
             readRecoveryTimeout,
             schemaLifecycleTimeout,
@@ -92,7 +88,6 @@ public sealed class WorkspaceTableRequestController
         IDatabasePicker picker,
         IWebReplySink reply,
         Func<IProductDataRpcGateway?> productGateway,
-        GridStateCoordinator? grid,
         bool databaseOpenEnabled,
         TimeSpan? readRecoveryTimeout,
         TimeSpan? schemaLifecycleTimeout,
@@ -117,7 +112,6 @@ public sealed class WorkspaceTableRequestController
             throw new ArgumentOutOfRangeException(nameof(schemaLifecycleTimeout));
         _sessionToken = sessionToken ?? (() => CancellationToken.None);
         _pluginBindings = pluginBindings ?? UnavailablePluginBindings.Instance;
-        _grid = grid;
         _databaseOpenEnabled = databaseOpenEnabled;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -162,7 +156,7 @@ public sealed class WorkspaceTableRequestController
 
     private async Task OpenDatabaseAsync(RoutedWebRequest request)
     {
-        if (!_databaseOpenEnabled || _grid is null)
+        if (!_databaseOpenEnabled)
             throw new InvalidOperationException("Database open route is not installed.");
         string openId = GetString(request.Payload, "openId")
             ?? throw new JsonException("database.openRequested requires openId.");
@@ -205,7 +199,7 @@ public sealed class WorkspaceTableRequestController
             bool completed = _pluginBindings.TryComplete(binding, () =>
             {
                 using DatabaseOpenCommit commit = DatabaseOpenCommit.Begin(
-                    _workspace, _grid, path, result);
+                    _workspace, path, result);
                 commit.Enqueue(() =>
                     _reply.PostNotification("database.opened", projection));
             });
