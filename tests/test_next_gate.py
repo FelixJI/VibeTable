@@ -1512,6 +1512,11 @@ def test_passing_product_e2e_report_requires_exact_scenario_evidence(
             require_passing_report=True,
             expected_scenarios=("34-relation-lookup-data-io", "35-data-io-interoperability"),
         )
+    archived = tmp_path / "destination" / run_root.name / "product-e2e-report.json"
+    assert archived.is_file()
+    assert json.loads(archived.read_text(encoding="utf-8"))["scenarios"] == [
+        {"scenario": scenario_id, "status": "passed"} for scenario_id in actual_ids
+    ]
 
 
 def test_passing_product_e2e_report_accepts_exact_scenario_evidence(tmp_path: Path) -> None:
@@ -1654,10 +1659,104 @@ def test_full_ci_report_rejects_source_change_while_gate_is_running(
     assert payload["sourceHash"] == "b" * 64
 
 
+def _prepare_complete_product_reports(
+    monkeypatch,
+    tmp_path: Path,
+) -> dict[str, list[str]]:
+    qa_temp = tmp_path / "qa-full"
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    selected: dict[str, list[str]] = {}
+    for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
+        selected[stage] = list(next_gate.product_e2e_partition(next_gate.load_scenarios(), stage))
+        run_root = qa_temp / directory / "20260817T010203Z"
+        run_root.mkdir(parents=True)
+        (run_root / "product-e2e-report.json").write_text(
+            json.dumps(
+                {
+                    "status": "passed",
+                    "scenarios": [
+                        {"scenario": scenario_id, "status": "passed"}
+                        for scenario_id in selected[stage]
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    return selected
+
+
+@pytest.mark.parametrize(
+    ("stage", "mutation"),
+    [
+        ("product-e2e", "missing"),
+        ("product-e2e-data-io", "missing"),
+        ("product-e2e-data-io", "duplicate"),
+        ("product-e2e-data-io", "extra"),
+    ],
+)
+def test_full_ci_rejects_incomplete_actual_product_reports(
+    monkeypatch,
+    tmp_path: Path,
+    stage: str,
+    mutation: str,
+) -> None:
+    selected = _prepare_complete_product_reports(monkeypatch, tmp_path)
+    ids = selected[stage]
+    if mutation == "missing":
+        ids.pop()
+    elif mutation == "duplicate":
+        ids.append(ids[-1])
+    else:
+        ids.append("36-extra")
+    directory = "p" if stage == "product-e2e" else "d"
+    (
+        next_gate.QA_RUN_TEMP_DIR / directory / "20260817T010203Z" / "product-e2e-report.json"
+    ).write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "scenarios": [{"scenario": scenario_id, "status": "passed"} for scenario_id in ids],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate, "artifact_hashes", lambda _deps: {"sidecar": "d" * 64}
+    )
+    monkeypatch.setattr(next_gate.handoff_gate, "release_source_hash", lambda _deps: "s" * 64)
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda *_args: (
+            0,
+            [
+                next_gate.StageResult(
+                    stage_name,
+                    ["test"],
+                    0,
+                    0.01,
+                    "",
+                    "",
+                    "repo",
+                    "required-passed" if stage_name == "smoke" else None,
+                )
+                for stage_name in next_gate.STAGES
+            ],
+        ),
+    )
+    report = tmp_path / "ci.json"
+
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
+    assert json.loads(report.read_text(encoding="utf-8"))["releaseEligible"] is False
+
+
 def test_full_ci_report_is_bound_to_stable_release_candidate(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    _prepare_complete_product_reports(monkeypatch, tmp_path)
     monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
     monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
     monkeypatch.setattr(
@@ -1677,15 +1776,16 @@ def test_full_ci_report_is_bound_to_stable_release_candidate(
             0,
             [
                 next_gate.StageResult(
-                    "smoke",
-                    ["pytest"],
+                    stage,
+                    ["test"],
                     0,
                     0.01,
-                    "1 passed",
+                    "passed",
                     "",
                     str(tmp_path),
-                    "required-passed",
+                    "required-passed" if stage == "smoke" else None,
                 )
+                for stage in next_gate.STAGES
             ],
         ),
     )
@@ -1697,6 +1797,34 @@ def test_full_ci_report_is_bound_to_stable_release_candidate(
     assert payload["releaseEligible"] is True
     assert payload["releaseCandidate"]["archive"]["sha256"]
     assert payload["releaseCandidate"]["packageTreeSha256"]
+
+
+def test_full_ci_rejects_smoke_only_result_even_with_webview2_evidence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(
+        next_gate.handoff_gate, "artifact_hashes", lambda _deps: {"sidecar": "d" * 64}
+    )
+    monkeypatch.setattr(next_gate.handoff_gate, "release_source_hash", lambda _deps: "s" * 64)
+    monkeypatch.setattr(
+        next_gate,
+        "run_ci",
+        lambda *_args: (
+            0,
+            [
+                next_gate.StageResult(
+                    "smoke", ["test"], 0, 0.01, "passed", "", "repo", "required-passed"
+                )
+            ],
+        ),
+    )
+    report = tmp_path / "ci.json"
+
+    assert next_gate.main(["--ci", *_candidate_args(tmp_path), "--json-report", str(report)]) == 1
+    assert json.loads(report.read_text(encoding="utf-8"))["releaseEligible"] is False
 
 
 def test_full_ci_report_rejects_missing_required_webview2_evidence(

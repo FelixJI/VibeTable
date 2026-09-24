@@ -1273,6 +1273,10 @@ def persist_product_e2e_evidence(
         raise ValueError(f"product E2E report passed with failed scenarios: {report_path}")
     if require_passing_report and report_status != "passed":
         raise ValueError(f"product E2E stage did not produce a passing report: {report_path}")
+    run_source = report_path.parent
+    run_destination = destination_root / run_source.name
+    if not _copy_if_file(report_path, run_destination / report_path.name):
+        raise OSError(f"could not copy product E2E report: {report_path}")
     if report_status == "passed" and expected_scenarios is not None:
         actual_scenarios = tuple(item["scenario"] for item in scenarios)
         if actual_scenarios != expected_scenarios:
@@ -1281,10 +1285,6 @@ def persist_product_e2e_evidence(
                 f"found {actual_scenarios} in {report_path}"
             )
 
-    run_source = report_path.parent
-    run_destination = destination_root / run_source.name
-    if not _copy_if_file(report_path, run_destination / report_path.name):
-        raise OSError(f"could not copy product E2E report: {report_path}")
     for item in failed_scenarios:
         scenario_id = item.get("scenario")
         if (
@@ -1503,6 +1503,9 @@ def _main(argv: list[str] | None = None) -> int:
     if args.ci and not has_required_webview2_evidence(results):
         print("required WebView2 evidence is missing, skipped, or failed", file=sys.stderr)
         code = code or 1
+    if args.ci and code == 0 and tuple(result.stage for result in results) != STAGES:
+        print("complete QA stage coverage is missing or out of order", file=sys.stderr)
+        code = 1
     ending_candidate: dict[str, object] | None = None
     candidate_stable = not (args.ci or args.lane)
     if (
@@ -1522,15 +1525,7 @@ def _main(argv: list[str] | None = None) -> int:
         if not candidate_stable:
             print("release candidate changed while the gate was running", file=sys.stderr)
             code = code or 1
-    release_eligible = bool(
-        args.ci
-        and code == 0
-        and identity_stable
-        and candidate_stable
-        and ending_candidate is not None
-        and has_required_webview2_evidence(results)
-    )
-    if args.lane:
+    if args.ci or args.lane:
         evidence_sources: list[tuple[Path, bool, tuple[str, ...] | None]] = []
         for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
             product_e2e_result = next(
@@ -1545,14 +1540,21 @@ def _main(argv: list[str] | None = None) -> int:
                         product_e2e_partition(load_scenarios(), stage),
                     )
                 )
-        if any(result.stage == "fault-injection" and result.returncode != 0 for result in results):
+        if args.lane and any(
+            result.stage == "fault-injection" and result.returncode != 0 for result in results
+        ):
             evidence_sources.append((_qa_temp_dir() / "fault-injection", False, None))
 
         for source_root, required, expected_scenarios in evidence_sources:
             try:
+                destination_root = (
+                    REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane
+                    if args.lane
+                    else _qa_temp_dir() / "checked-product-e2e" / source_root.name
+                )
                 evidence_path = persist_product_e2e_evidence(
                     source_root,
-                    REPO_ROOT / "build" / "automation" / "lane-evidence" / args.lane,
+                    destination_root,
                     require_passing_report=required,
                     expected_scenarios=expected_scenarios,
                 )
@@ -1572,6 +1574,7 @@ def _main(argv: list[str] | None = None) -> int:
                 print(f"could not persist product E2E evidence: {exc}", file=sys.stderr)
                 if required:
                     code = code or 1
+    if args.lane:
         runtime_baseline_result = next(
             (result for result in results if result.stage == "runtime-baseline"),
             None,
@@ -1600,6 +1603,14 @@ def _main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 print(f"could not persist runtime baseline evidence: {exc}", file=sys.stderr)
                 code = code or 1
+    release_eligible = bool(
+        args.ci
+        and code == 0
+        and identity_stable
+        and candidate_stable
+        and ending_candidate is not None
+        and has_required_webview2_evidence(results)
+    )
     if args.json_report:
         args.json_report.parent.mkdir(parents=True, exist_ok=True)
         args.json_report.write_text(
