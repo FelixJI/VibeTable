@@ -7,19 +7,19 @@ from typing import Any
 
 import pytest
 
-from backend.application.paste_service import (
-    MAX_PASTE_CELLS,
-    PasteError,
-    PasteService,
-    PasteTokenStore,
-    _StoredPlan,
-)
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import (
     ApplyPasteParams,
     ApplyPasteResult,
     PasteCell,
     PreviewPasteParams,
+)
+from tests.backend.application.paste_oracle import (
+    MAX_PASTE_CELLS,
+    PasteError,
+    PasteService,
+    PasteTokenStore,
+    _StoredPlan,
 )
 
 

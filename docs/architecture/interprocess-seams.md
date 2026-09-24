@@ -14,23 +14,25 @@
 
 ## 宿主 Product 调用与 Go owner
 
-`JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析
-及原 Python client 的通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
+`JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析；
+Python client 就绪时继续接收其通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
 HTTP 实例与一次共享握手；握手独立持有 epoch lease 至实际 HTTP 完成，单个 caller 的取消不终止
 其他 caller 的握手，epoch drain／Dispose 取消全部自有调用。
 每次调用取得现有 workspace epoch lease，在发送及返回（包括错误）时核对绑定；不重试到新代际，
 不 fallback、shadow 或双发。Product wire 只有原 scope 字段，fence/claim 仍由 capabilities 验证。
 
-`ProductionWorkspaceRuntimeFactory.CaptureHostProductRpcBinding` 在 factory → backend Ready admission
-→ Sidecar context 的锁序中捕获不透明三元组，可附期望 workspace UUID/epoch；每次发送及返回由
-同一 factory 核对 runtime、精确 Python client 和 canonical Sidecar snapshot，再委托现有 Sidecar
-authority。callback 只同步启动调用，不持锁等待异步完成，也不保证子进程不会退出。
-binding 只提供配对 client、完整代际比较与 typed gateway 构造；一次 capture 不延长 runtime 寿命。
+`ProductionWorkspaceRuntimeFactory.CaptureHostProductRpcBinding` 只在已建立的当前 workspace
+runtime 及 Sidecar generation 上捕获不透明绑定，可附期望 workspace UUID/epoch。Go owner
+调用在发送及返回时核对当前 runtime、canonical Sidecar snapshot 与 workspace epoch lease；
+Python owner 和 native file grant 还要求捕获的精确 Python client 处于 Ready。Python 停止后
+Go binding 可不含 client，grid state 等 Python support 操作稳定拒绝；Sidecar 或 session 换代
+仍拒绝旧绑定。callback 只同步启动调用，不持锁等待异步完成，也不保证子进程不会退出。
+一次 capture 不延长 runtime 寿命，首次打开 workspace 仍按原启动契约完成 Python 验证。
 内部 construction seam 复用真实 supervisors 与现有 process/health/HTTP adapter；默认生成 policy
 与测试注入 policy 的 selector 和 canonical registrations 均保持同源。
 
-三个 Host-origin 生产入口已消费该 binding：MainWindow 一次捕获并将配对 client 交给其余 Python
-gateways；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
+三个 Host-origin 生产入口已消费该 binding：MainWindow 在 Ready 时将配对 client 交给其余 Python
+gateways，Python 停止时保留 Go table binding 并撤下 plugin gateway；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
 至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
 schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
 现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
@@ -42,7 +44,8 @@ Python专属分页转译已删除；lookup.query也已迁移，供冻结独立�
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
-非 Ready/错误期望不捕获、Python 或 Sidecar 换代拒绝旧发送/迟到响应，以及默认
+错误 workspace/session 期望拒绝、Python 停止后 Go paste 继续工作而 Python route 拒绝、
+Sidecar 换代拒绝旧发送/迟到响应，以及默认
 生成 policy 按方法选择当前唯一 owner，并验证 `query.page` 与 `query.readRows` 通过 Product HTTP gateway 保持返回值。游标组合测试验证 Go open/fetch 的 cursor 传递，selection 组合测试验证默认 Go owner 的代际租约、取消及公开失败零 fallback。
 Go Product 与 REST 的 `events.reconcile` 共用 revision authority，`file.list` 共用 attachment manager，
 `schema.getTable` 共用 `schemaexecution.Describe` 投影与 field 错误分类，`schema.list` 共用

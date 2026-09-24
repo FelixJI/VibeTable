@@ -111,6 +111,8 @@ public sealed class ProductRpcCapabilityManifestTests
                 "schema.table.create:workspace",
                 "settings.commitWorkCalendar:workspace",
                 "settings.readWorkCalendar:workspace",
+                "table.applyPaste:workspace",
+                "table.previewPaste:workspace",
                 "version.compare:workspace",
                 "version.create:workspace",
                 "version.delete:workspace",

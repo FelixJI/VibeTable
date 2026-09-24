@@ -83,7 +83,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	}
 	contentMethods := map[string]bool{"contentProfile.commit": true, "contentProfile.delete": true, "contentProfile.load": true, "recordDocumentLink.commit": true, "recordDocumentLink.delete": true, "recordDocumentLink.list": true, "recordDocumentLink.repair": true}
 	allGo := CurrentOwnerRPCDescriptors(GoSidecar)
-	if len(allGo) != 67 {
+	if len(allGo) != 69 {
 		t.Fatalf("goSidecar count = %d", len(allGo))
 	}
 	schemaMethods := map[string]Effect{
@@ -143,7 +143,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 	if len(schemaMethods) != 0 {
 		t.Fatalf("missing migrated descriptors: %v", schemaMethods)
 	}
-	if got := otherGo; len(got) != 44 ||
+	if got := otherGo; len(got) != 46 ||
 		got[0].Method != "events.reconcile" || got[1] != settings || got[2].Method != "file.list" ||
 		got[3] != (RPCDescriptor{Method: "file.token", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "file.attachment", Owner: GoSidecar, Effect: ReadEffect}) ||
 		got[4] != (RPCDescriptor{Method: "formula.draft.validate", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.formula", Owner: GoSidecar, Effect: ReadEffect}) ||
@@ -164,7 +164,9 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		got[33].Method != "query.selectionOpen" || got[34] != (RPCDescriptor{Method: "query.validateSnapshot", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "schema.query", Owner: GoSidecar, Effect: ReadEffect}) || got[35].Method != "query.view" || got[36] != (RPCDescriptor{Method: "relation.inspectPair", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[37] != (RPCDescriptor{Method: "relation.previewDelta", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[38] != (RPCDescriptor{Method: "relation.searchTargets", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "relation.lookup", Owner: GoSidecar, Effect: ReadEffect}) || got[39].Method != "schema.describe" ||
 		got[40].Method != "schema.getTable" || got[41].Method != "schema.list" ||
 		got[42] != (RPCDescriptor{Method: "settings.commitWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: WriteEffect}) ||
-		got[43] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) {
+		got[43] != (RPCDescriptor{Method: "settings.readWorkCalendar", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "workspace.calendar", Owner: GoSidecar, Effect: ReadEffect}) ||
+		got[44] != (RPCDescriptor{Method: "table.applyPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: GoSidecar, Effect: WriteEffect}) ||
+		got[45] != (RPCDescriptor{Method: "table.previewPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
 	hostMethods := []string{"command.list", "command.run", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save"}

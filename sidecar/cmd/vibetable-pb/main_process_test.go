@@ -589,6 +589,8 @@ func TestSidecarWorkspaceV2HTTPFailsClosedAndPersistsAcrossRestart(t *testing.T)
 		"schema.table.create",
 		"settings.commitWorkCalendar",
 		"settings.readWorkCalendar",
+		"table.applyPaste",
+		"table.previewPaste",
 		"version.compare",
 		"version.create",
 		"version.delete",

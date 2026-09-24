@@ -177,7 +177,7 @@ class PasteToken(CamelModel):
         {"token": "opaque-string", "expiresAt": 1.6e9, "consumed": false}
 
     The token is bound (server-side) to the user, project, collection, schema
-    hash, target row keys/revisions and the payload hash. The host must not
+    hash, target row keys/revisions and the server-held payload. The host must not
     interpret its contents. ``expires_at`` is a Unix timestamp (seconds).
     """
 

@@ -13,6 +13,31 @@ namespace VibeTable.Desktop.Tests;
 public sealed partial class HostProductRpcInvokerTests
 {
     [TestMethod]
+    public async Task TablePasteUsesGoForPreviewAndApplyWithoutPythonFallback()
+    {
+        await using var fixture = await HostFixture.OpenAsync();
+        using PocketBaseTableGateway gateway = fixture.TableGateway();
+        fixture.Http.Result = Json("""
+            {"collection":"orders","schemaRevision":"schema_1","capabilityHash":"schema_1","summary":{"updateRows":0,"insertRows":1,"skipRows":0,"errorCount":0,"warningCount":0},"rows":[{"kind":"insert","targetRowKey":null,"expectedDateUpdated":null,"changes":{"name":{"before":null,"after":"示例"}},"diagnostics":[]}],"diagnostics":[],"token":{"token":"opaque-plan","expiresAt":123456,"consumed":false},"overflow":false}
+            """);
+        PastePlan plan = await gateway.PreviewPasteAsync("orders", "schema_1",
+            new Dictionary<string, object?>(), new PasteStartCell(null, "name"),
+            new IReadOnlyList<PasteCell>[] { new[] { new PasteCell(0, 0, "name", "示例", null) } },
+            CancellationToken.None);
+        Assert.AreEqual("opaque-plan", plan.Token.Token);
+        fixture.Http.Result = Json("""
+            {"collection":"orders","outcome":"committed","createdRowKeys":["row1"],"updatedRowKeys":[],"skippedRowKeys":[],"conflicts":[],"requestId":"apply-1"}
+            """);
+        ApplyPasteResult result = await gateway.ApplyPasteAsync(
+            "orders", plan.Token.Token, "apply-1", CancellationToken.None);
+        Assert.AreEqual("committed", result.Outcome);
+        CollectionAssert.AreEqual(new[] { "table.previewPaste", "table.applyPaste" },
+            fixture.Http.Calls.Select(call => call.GetProperty("method").GetString()).ToArray());
+        Assert.AreEqual("opaque-plan", fixture.Http.Calls[1].GetProperty("params").GetProperty("token").GetString());
+        Assert.AreEqual(0, fixture.Python.WriteCount);
+    }
+
+    [TestMethod]
     public async Task TypedHostSchemaReadUsesPolicySelectedSidecarOnly()
     {
         await using var fixture = await HostFixture.OpenAsync();
@@ -873,7 +898,7 @@ public sealed partial class HostProductRpcInvokerTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(layout.Manifest.WorkspaceId.ToString("D"),
                     fixture.Session.SessionEpoch, 3, "22222222-2222-4222-8222-222222222222"),
-                [new("field.change.apply", "workspace"), new("field.change.cancel", "workspace"), new("field.change.plan", "workspace"), new("field.change.status", "workspace"), new("field.recycleBin.list", "workspace"), new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("formula.draft.validate", "workspace"), new("formula.preview", "workspace"), new("formula.validate", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("relation.applyDelta", "workspace"), new("relation.createTarget", "workspace"), new("relation.updateSingle", "workspace"), new("schema.delete", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace"), new("schema.table.create", "workspace")]);
+                [new("field.change.apply", "workspace"), new("field.change.cancel", "workspace"), new("field.change.plan", "workspace"), new("field.change.status", "workspace"), new("field.recycleBin.list", "workspace"), new("field.settings.describe", "workspace"), new("file.list", "workspace"), new("formula.draft.validate", "workspace"), new("formula.preview", "workspace"), new("formula.validate", "workspace"), new("history.read", "workspace"), new("insights.listDashboards", "workspace"), new("insights.panelManifest", "workspace"), new("interface.commit", "workspace"), new("interface.delete", "workspace"), new("interface.list", "workspace"), new("interface.load", "workspace"), new("preset.delete", "workspace"), new("preset.list", "workspace"), new("preset.save", "workspace"), new("relation.applyDelta", "workspace"), new("relation.createTarget", "workspace"), new("relation.updateSingle", "workspace"), new("schema.delete", "workspace"), new("schema.getTable", "workspace"), new("schema.list", "workspace"), new("schema.table.create", "workspace"), new("table.applyPaste", "workspace"), new("table.previewPaste", "workspace")]);
             fixture.Http = new ProductHttpPeer(fixture._snapshot);
             return fixture;
         }

@@ -1,10 +1,21 @@
 using System;
+using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
+
+public sealed record PreviewPasteRpcParams(
+    string Collection,
+    string SchemaRevision,
+    IReadOnlyDictionary<string, object?> Selection,
+    PasteStartCell StartCell,
+    IReadOnlyList<IReadOnlyList<PasteCell>> Cells);
+
+public sealed record ApplyPasteRpcParams(
+    string Collection, string Token, string IdempotencyKey);
 
 /// <summary>
 /// Closed product RPC boundary used by the desktop host. Each operation is a
@@ -14,6 +25,9 @@ namespace VibeTable.Desktop.Services;
 public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
 {
     event Action<JsonElement>? TaskChanged;
+
+    Task<PastePlan> PreviewPasteAsync(PreviewPasteRpcParams parameters, CancellationToken token);
+    Task<ApplyPasteResult> ApplyPasteAsync(ApplyPasteRpcParams parameters, CancellationToken token);
 
     Task<JsonElement> DescribeFieldSettingsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PlanFieldChangeAsync(JsonElement parameters, CancellationToken token);

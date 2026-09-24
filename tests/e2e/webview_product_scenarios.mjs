@@ -4680,6 +4680,35 @@ async function scenario09(page, recorder, _network, runtime) {
   );
 }
 
+async function pasteBridgeRequest(page, type, payload, responseType) {
+  return page.evaluate(({ type, payload, responseType }) => new Promise((resolve, reject) => {
+    const operationId = crypto.randomUUID();
+    // Match pasteService's notify protocol: success is an uncorrelated event.
+    // Giving it a requestId would leave a request the Host never promises to reply to.
+    const scope = window.__vibetableE2EWorkspaceWirePort.reserve(operationId);
+    const webview = window.chrome.webview;
+    const finish = (error, message) => {
+      clearTimeout(timer);
+      webview.removeEventListener("message", handler);
+      if (error) reject(error); else resolve(message.payload);
+    };
+    const handler = (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      if (message?.type === "operation.failed" && message.requestId == null) {
+        finish(new Error(`${type} failed: ${JSON.stringify(message.payload)}`));
+      } else if (message?.type === responseType && message.payload?.collection === payload.collection) {
+        finish(null, message);
+      }
+    };
+    const timer = setTimeout(() => finish(new Error(`${type} timed out`)), 20_000);
+    webview.addEventListener("message", handler);
+    webview.postMessage({ type, payload, scope });
+  }), { type, payload, responseType });
+}
+
 async function scenario10(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
@@ -4758,6 +4787,22 @@ async function scenario10(page, recorder, _network, runtime) {
     { stableGrid },
   );
 
+  const pasteRowId = mutation.payload.affectedRows[0].recordId;
+  const pasteRequest = {
+    collection: tableId,
+    schemaRevision: recovered.snapshot.schemaRevision,
+    selection: { rowKeys: [pasteRowId] },
+    startCell: { rowKey: pasteRowId, column: valueField },
+    cells: [[{ rowIndex: 0, columnIndex: 0, column: valueField,
+      rawValue: "paste-after-python-exit", parsedValue: null }]],
+  };
+  const retainedPaste = await pasteBridgeRequest(
+    page, "table.previewPasteRequested", pasteRequest, "table.pastePreviewReady",
+  );
+  recorder.check("paste preview is held by Go before Python exits",
+    retainedPaste.summary.updateRows === 1 && retainedPaste.summary.errorCount === 0
+      && retainedPaste.token.consumed === false, { retainedPaste });
+
   const backendSourceSession = await page.evaluate(
     () => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null,
   );
@@ -4772,6 +4817,29 @@ async function scenario10(page, recorder, _network, runtime) {
     backendFault.processName === "vibetable-backend.exe",
     { backendFault },
   );
+
+  const retainedApply = await pasteBridgeRequest(page, "table.applyPasteRequested", {
+    collection: tableId, token: retainedPaste.token.token,
+    idempotencyKey: "paste-plan-survives-python-exit",
+  }, "table.pasteApplied");
+  recorder.check("the same Go paste plan commits after the exact Python child exits",
+    retainedApply.outcome === "committed"
+      && retainedApply.updatedRowKeys.length === 1
+      && retainedApply.updatedRowKeys[0] === pasteRowId, { retainedApply });
+  const afterPythonPaste = await pasteBridgeRequest(
+    page, "table.previewPasteRequested", pasteRequest, "table.pastePreviewReady",
+  );
+  recorder.check("new paste previews remain available without Python in the same session",
+    afterPythonPaste.schemaRevision === retainedPaste.schemaRevision
+      && afterPythonPaste.summary.errorCount === 0
+      && afterPythonPaste.token.token !== retainedPaste.token.token, { afterPythonPaste });
+  const pasteRows = await rawBridgeRequest(page, "query.page", {
+    tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  recorder.check("Go authority contains the confirmed post-Python paste value",
+    pasteRows.type === "query.page"
+      && pasteRows.payload.rows.find((row) => row.id === pasteRowId)?.[valueField]
+        === "paste-after-python-exit", { pasteRows });
 
   await beginWritableWorkspaceBootstrapCapture(
     page,
@@ -4851,6 +4919,18 @@ async function scenario10(page, recorder, _network, runtime) {
       && recoveredSession.sessionEpoch > backendSourceSession.sessionEpoch,
     { backendSourceSession, recoveredSession },
   );
+
+  // A reopened workspace has a new sidecar owner; an old unconsumed plan
+  // must fail instead of attaching to the new session or repeating a write.
+  const retiredPaste = await rawBridgeRequest(page, "table.applyPasteRequested", {
+    collection: tableId, token: afterPythonPaste.token.token,
+    idempotencyKey: "paste-plan-from-retired-session",
+  });
+  recorder.check("reopening retires the previous sidecar's unconsumed paste plan",
+    retiredPaste.type === "operation.failed"
+      && retiredPaste.payload?.code === "PASTE_APPLY_FAILED"
+      && /paste token not found/i.test(retiredPaste.payload?.message ?? ""), { retiredPaste });
+  await acknowledgeExpectedBridgeFailure(page, retiredPaste);
 
   const writableSessionObserved = performance.now();
   runtime.recordUiTiming(

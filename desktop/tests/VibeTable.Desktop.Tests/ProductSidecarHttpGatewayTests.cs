@@ -365,6 +365,87 @@ public sealed partial class ProductSidecarHttpGatewayTests
     }
 
     [TestMethod]
+    [DataRow("table.previewPaste", "paste_token_unknown", "paste token not found", "none")]
+    [DataRow("table.applyPaste", "mutation.edit_conflict", "PocketBase rejected the mutation", "object")]
+    [DataRow("table.applyPaste", "mutation.edit_conflict", "PocketBase rejected the mutation", "null")]
+    [DataRow("table.previewPaste", "schema_mismatch", "schema changed since the grid was rendered", "empty-revision")]
+    public async Task PasteErrorsPreserveThePublicDetailMessage(
+        string method, string code, string message, string shape)
+    {
+        var data = new Dictionary<string, object?>
+        {
+            ["kind"] = "paste_error", ["code"] = code, ["message"] = message,
+        };
+        if (shape == "object")
+            data["details"] = new { conflictingRows = 1 };
+        if (shape == "null")
+            data["details"] = null;
+        if (shape == "empty-revision")
+        {
+            data["currentSchemaRevision"] = "schema-2";
+            data["expectedSchemaRevision"] = "";
+        }
+        var responses = new Queue<HttpResponseMessage>([
+            Json(Capabilities(rpcMethods: JsonSerializer.Serialize(new[] { method }),
+                registrations: JsonSerializer.Serialize(new[] { new { method, scope = "workspace" } }))),
+            Json(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0", id = "paste-1", wire = new { },
+                error = new
+                {
+                    code = -32040, message = "Paste error",
+                    data,
+                },
+            })),
+        ]);
+        using var gateway = Gateway(new RecordingHandler(_ => responses.Dequeue()),
+            expectedRegistrations: [new(method, "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        JsonElement empty = JsonSerializer.SerializeToElement(new { });
+
+        var failure = (ProductSidecarFailure)await gateway.ForwardAsync(
+            "paste-1", method, empty, empty, CancellationToken.None);
+
+        Assert.AreEqual(-32040, failure.Error.Code);
+        Assert.AreEqual(message, failure.Error.Message);
+        Assert.AreEqual(code, failure.Error.Data!.Value.GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    [DataRow("query.page", "paste_error", "paste_token_unknown", "paste token not found", "none")]
+    [DataRow("table.applyPaste", "other_error", "paste_token_unknown", "paste token not found", "none")]
+    [DataRow("table.applyPaste", "paste_error", "paste_token_unknown", "", "none")]
+    [DataRow("table.applyPaste", "paste_error", "unsafe code", "paste token not found", "none")]
+    [DataRow("table.applyPaste", "paste_error", "paste_token_unknown", "paste token not found", "string-details")]
+    [DataRow("table.previewPaste", "paste_error", "schema_mismatch", "schema changed", "number-revision")]
+    public async Task PasteErrorsRejectWrongMethodOrMalformedData(
+        string method, string kind, string code, string message, string shape)
+    {
+        var data = new Dictionary<string, object?>
+        {
+            ["kind"] = kind, ["code"] = code, ["message"] = message,
+        };
+        if (shape == "string-details") data["details"] = "invalid";
+        if (shape == "number-revision") data["expectedSchemaRevision"] = 42;
+        var responses = new Queue<HttpResponseMessage>([
+            Json(Capabilities(rpcMethods: JsonSerializer.Serialize(new[] { method }),
+                registrations: JsonSerializer.Serialize(new[] { new { method, scope = "workspace" } }))),
+            Json(JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0", id = "paste-1", wire = new { },
+                error = new { code = -32040, message = "Paste error", data },
+            })),
+        ]);
+        using var gateway = Gateway(new RecordingHandler(_ => responses.Dequeue()),
+            expectedRegistrations: [new(method, "workspace")]);
+        await gateway.GetCapabilitiesAsync(CancellationToken.None);
+        JsonElement empty = JsonSerializer.SerializeToElement(new { });
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => gateway.ForwardAsync(
+            "paste-1", method, empty, empty, CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task ForwardRejectsInvalidInputBeforeSending()
     {
         var handler = ProductHandler(_ => Json(SuccessResponse()));

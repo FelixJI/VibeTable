@@ -7,37 +7,40 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Owns one typed caller's Product HTTP readiness, not the runtime or Python client.
-/// The binding callback must atomically validate the captured runtime, Python client,
-/// and canonical Sidecar snapshot while admitting the synchronous start action.
+/// Python starts validate the captured ready client; Go starts validate the
+/// current runtime and canonical Sidecar snapshot independently.
 /// </summary>
 internal sealed partial class HostProductRpcInvoker : IDisposable
 {
     private static readonly JsonSerializerOptions WireOptions = new(JsonSerializerDefaults.Web);
     private readonly object _gate = new();
-    private readonly JsonRpcClient _client;
+    private readonly JsonRpcClient? _client;
     private readonly ProductSidecarGenerationSnapshot _snapshot;
     private readonly IWorkspaceHostEpochLeaseSource _leases;
     private readonly Func<Func<bool>, bool> _tryUseCurrent;
+    private readonly Func<Func<bool>, bool> _tryUseGoCurrent;
     private readonly ProductRpcRouteSelector _routes;
     private readonly ProductSidecarHttpGateway _sidecar;
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _ready;
     private bool _disposed;
 
-    internal JsonRpcClient Client => _client;
+    internal JsonRpcClient? Client => _client;
 
     internal HostProductRpcInvoker(
-        JsonRpcClient client,
+        JsonRpcClient? client,
         ProductSidecarGenerationSnapshot snapshot,
         IWorkspaceHostEpochLeaseSource leases,
         Func<Func<bool>, bool> tryUseCurrent,
         ProductRpcRouteSelector? routes = null,
-        HttpMessageHandler? handler = null)
+        HttpMessageHandler? handler = null,
+        Func<Func<bool>, bool>? tryUseGoCurrent = null)
     {
-        _client = client ?? throw new ArgumentNullException(nameof(client));
+        _client = client;
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _leases = leases ?? throw new ArgumentNullException(nameof(leases));
         _tryUseCurrent = tryUseCurrent ?? throw new ArgumentNullException(nameof(tryUseCurrent));
+        _tryUseGoCurrent = tryUseGoCurrent ?? _tryUseCurrent;
         _routes = routes ?? ProductRpcRouteSelector.Default;
         _sidecar = new ProductSidecarHttpGateway(snapshot.Context, snapshot.Identity,
             snapshot.Registrations, handler);
@@ -78,18 +81,20 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 JsonElement result;
                 if (native)
                 {
+                    EnsureCurrent(lease, call.Token);
                     result = await InvokeNativeFileAsync(method, parameters, call.Token).ConfigureAwait(false);
                 }
                 else if (route == ProductRpcRoute.PythonBff)
                 {
-                    result = await StartCurrent(() => _client.InvokeAsync<JsonElement, JsonElement>(
+                    result = await StartCurrent(() => _client!.InvokeAsync<JsonElement, JsonElement>(
                         method, parameters, call.Token)).ConfigureAwait(false);
                 }
                 else
                 {
                     JsonElement wire = JsonSerializer.SerializeToElement(lease.Scope, WireOptions);
                     ProductSidecarForwardResult response = await StartCurrent(() => _sidecar.ForwardAsync(
-                        Guid.NewGuid().ToString("D"), method, wire, parameters, call.Token)).ConfigureAwait(false);
+                        Guid.NewGuid().ToString("D"), method, wire, parameters, call.Token),
+                        go: true).ConfigureAwait(false);
                     result = response switch
                     {
                         ProductSidecarSuccess success => success.Result,
@@ -98,13 +103,13 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                         _ => throw new InvalidOperationException("Invalid Product RPC response."),
                     };
                 }
-                EnsureCurrent(lease, call.Token);
+                EnsureCurrent(lease, call.Token, route == ProductRpcRoute.GoSidecar && !native);
                 return result;
             }
             catch
             {
                 // A late failure belongs to the retired binding just as a late result does.
-                EnsureCurrent(lease, call.Token);
+                EnsureCurrent(lease, call.Token, route == ProductRpcRoute.GoSidecar && !native);
                 throw;
             }
         }
@@ -112,7 +117,10 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
 
     internal async Task<JsonElement> ExecuteExportAsync(JsonElement parameters, CancellationToken token)
     {
+        if (_client is null)
+            throw Unavailable();
         using WorkspaceRequestEpochLease lease = CaptureLease();
+        EnsureCurrent(lease, token);
         string grantId = parameters.GetProperty("grantId").GetString()
             ?? throw new JsonException("Export grant is required.");
         try
@@ -141,7 +149,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             // Keep our lease until the server has closed its writers; never use a new binding.
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await Files.RevokeAsync(grantId).ConfigureAwait(false);
-            JsonElement settled = await _client.InvokeAsync<JsonElement, JsonElement>(
+            JsonElement settled = await _client!.InvokeAsync<JsonElement, JsonElement>(
                 "task.settleExport", JsonSerializer.SerializeToElement(new { grantId }), cleanup.Token)
                 .ConfigureAwait(false);
             if (settled.GetProperty("grantId").GetString() != grantId
@@ -150,10 +158,11 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         }
     }
 
-    private void EnsureCurrent(WorkspaceRequestEpochLease lease, CancellationToken token)
+    private void EnsureCurrent(WorkspaceRequestEpochLease lease, CancellationToken token, bool go = false)
     {
         token.ThrowIfCancellationRequested();
-        if (!_leases.IsCurrent(lease) || !_tryUseCurrent(() => true))
+        if (!_leases.IsCurrent(lease)
+            || !(go ? _tryUseGoCurrent : _tryUseCurrent)(() => true))
             throw Unavailable();
     }
 
@@ -163,7 +172,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         using WorkspaceRequestEpochLease lease = CaptureLease();
         using var handshake = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime, lease.CancellationToken);
-        await StartCurrent(() => _sidecar.GetCapabilitiesAsync(handshake.Token)).ConfigureAwait(false);
+        await StartCurrent(() => _sidecar.GetCapabilitiesAsync(handshake.Token), go: true)
+            .ConfigureAwait(false);
     }
 
     private WorkspaceRequestEpochLease CaptureLease()
@@ -175,10 +185,11 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         return lease;
     }
 
-    private Task<T> StartCurrent<T>(Func<Task<T>> start)
+    private Task<T> StartCurrent<T>(Func<Task<T>> start, bool go = false)
     {
         Task<T>? pending = null;
-        if (!_tryUseCurrent(() => { pending = start(); return true; }))
+        if (!(go ? _tryUseGoCurrent : _tryUseCurrent)(
+                () => { pending = start(); return true; }))
             throw Unavailable();
         return pending!;
     }
@@ -191,7 +202,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             _disposed = true;
         }
         _lifetime.Cancel();
-        if (_files is not null) _client.UnregisterHostFileHandler(_files);
+        if (_files is not null) _client!.UnregisterHostFileHandler(_files);
         _sidecar.Dispose();
         _lifetime.Dispose();
     }
