@@ -306,6 +306,7 @@ func (owner *pasteOwner) apply(ctx context.Context, p pasteApplyParams) (pasteAp
 	}
 	if stored.idempotencyKey == "" {
 		stored.idempotencyKey = p.IdempotencyKey
+		stored.mutationRequestID = requestID
 	} else if stored.idempotencyKey != p.IdempotencyKey {
 		return result, pasteError("paste_idempotency_mismatch", "paste token is bound to a different idempotency key", nil)
 	}
@@ -342,7 +343,7 @@ func (owner *pasteOwner) apply(ctx context.Context, p pasteApplyParams) (pasteAp
 	err = runBusinessWrite(ctx, []businessWriteGate{owner.gate}, "mutation.apply", p.IdempotencyKey, func(writeCtx context.Context) error {
 		invoked = true
 		var applyErr error
-		receipt, applyErr = owner.kernel.Apply(writeCtx, pasteMutationRequest(requestID, p.IdempotencyKey, p.Collection, revision, operations))
+		receipt, applyErr = owner.kernel.Apply(writeCtx, pasteMutationRequest(stored.mutationRequestID, p.IdempotencyKey, p.Collection, revision, operations))
 		return applyErr
 	})
 	if err != nil {

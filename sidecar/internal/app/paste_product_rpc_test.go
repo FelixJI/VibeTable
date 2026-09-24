@@ -27,11 +27,16 @@ const pasteTestWire = "{\"scope\":\"workspace\",\"workspaceId\":\"11111111-1111-
 
 func pasteTestCall(t *testing.T, dispatcher *productrpc.Dispatcher, method string, params any) productrpc.ResponseEnvelope {
 	t.Helper()
+	return pasteTestCallWithWire(t, dispatcher, method, params, pasteTestWire)
+}
+
+func pasteTestCallWithWire(t *testing.T, dispatcher *productrpc.Dispatcher, method string, params any, wire string) productrpc.ResponseEnvelope {
+	t.Helper()
 	body, err := json.Marshal(params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := fmt.Sprintf("{\"jsonrpc\":\"2.0\",\"id\":\"paste\",\"method\":%q,\"wire\":%s,\"params\":%s}", method, pasteTestWire, body)
+	request := fmt.Sprintf("{\"jsonrpc\":\"2.0\",\"id\":\"paste\",\"method\":%q,\"wire\":%s,\"params\":%s}", method, wire, body)
 	return dispatcher.Dispatch(context.Background(), []byte(request))
 }
 
@@ -413,5 +418,101 @@ func TestPasteJSONEquivalentKeepsTypesAndNumericValue(t *testing.T) {
 	}
 	if _, err := pasteJSONEquivalent(make(chan int), 0); err == nil {
 		t.Fatal("unsupported JSON value must return an error")
+	}
+}
+
+type pasteCommitThenLoseReceipt struct {
+	actual mutationKernel
+	calls  int
+	first  mutation.Receipt
+	replay mutation.Receipt
+}
+
+func (kernel *pasteCommitThenLoseReceipt) Preview(ctx context.Context, request mutation.Request) (mutation.PreviewResult, error) {
+	return kernel.actual.Preview(ctx, request)
+}
+
+func (kernel *pasteCommitThenLoseReceipt) Apply(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+	receipt, err := kernel.actual.Apply(ctx, request)
+	kernel.calls++
+	if kernel.calls == 1 {
+		if err != nil {
+			return receipt, err
+		}
+		kernel.first = receipt
+		return mutation.Receipt{}, errors.New("response lost after kernel commit")
+	}
+	kernel.replay = receipt
+	return receipt, err
+}
+
+func TestPasteProductCommittedButReplyLostReplaysSameRequest(t *testing.T) {
+	fixture, owner, dispatcher := newPasteTestRuntime(t)
+	probe := &pasteCommitThenLoseReceipt{actual: fixture.authority}
+	owner.kernel = probe
+	plan := pasteTestPreview(t, fixture, dispatcher)
+	params := map[string]any{"collection": fixture.request.TableID, "token": plan.Token.Token, "idempotencyKey": "committed-before-lost-response"}
+	pending := pasteTestCall(t, dispatcher, "table.applyPaste", params)
+	if pending.Error != nil {
+		t.Fatalf("pending error: %+v", pending.Error)
+	}
+	var pendingResult pasteApplyResult
+	if err := json.Unmarshal(pending.Result, &pendingResult); err != nil {
+		t.Fatal(err)
+	}
+	if pendingResult.Outcome != "pending" || probe.first.Status != mutation.StatusApplied || len(probe.first.AffectedRows) != 1 {
+		t.Fatalf("first kernel commit and lost response: pending=%+v receipt=%+v", pendingResult, probe.first)
+	}
+	retryWire := "{\"scope\":\"workspace\",\"workspaceId\":\"11111111-1111-4111-8111-111111111111\",\"sessionEpoch\":7,\"operationId\":\"cccccccc-cccc-4ccc-8ccc-cccccccccccc\",\"sequence\":0}"
+	retried := pasteTestCallWithWire(t, dispatcher, "table.applyPaste", params, retryWire)
+	if retried.Error != nil {
+		t.Fatalf("retry error: %+v", retried.Error)
+	}
+	var result pasteApplyResult
+	if err := json.Unmarshal(retried.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "committed" || probe.replay.Status != mutation.StatusReplayed || len(result.CreatedRowKeys) != 1 {
+		t.Fatalf("retry result=%+v receipt=%+v calls=%d applies=%d", result, probe.replay, probe.calls, fixture.authority.applies)
+	}
+	if len(probe.replay.AffectedRows) != 1 || probe.replay.AffectedRows[0].RecordID != probe.first.AffectedRows[0].RecordID || probe.calls != 2 {
+		t.Fatalf("kernel receipts first=%+v replay=%+v calls=%d", probe.first, probe.replay, probe.calls)
+	}
+	records, err := fixture.pb.FindRecordsByFilter(fixture.definition.PhysicalName, "", "", 0, 0)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("business records=%d, err=%v", len(records), err)
+	}
+	pasteAssertCode(t, pasteTestCall(t, dispatcher, "table.applyPaste", params), "paste_token_consumed")
+}
+
+func TestPasteProductArraySelectionUsesEmptySelection(t *testing.T) {
+	fixture, _, dispatcher := newPasteTestRuntime(t)
+	response := pasteTestCall(t, dispatcher, "table.previewPaste", map[string]any{
+		"collection": fixture.request.TableID, "schemaRevision": fixture.request.SchemaRevision,
+		"selection": []any{"ignored"}, "startCell": map[string]any{"rowKey": nil, "column": fixture.field},
+		"cells": []any{[]any{map[string]any{"rowIndex": 0, "columnIndex": 0, "rawValue": "array-selection"}}},
+	})
+	if response.Error != nil {
+		t.Fatalf("preview error: %+v", response.Error)
+	}
+	var plan pastePlan
+	if err := json.Unmarshal(response.Result, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Summary["insertRows"] != 1 || len(plan.Rows) != 1 || plan.Rows[0].Kind != "insert" {
+		t.Fatalf("array selection plan = %+v", plan)
+	}
+	applied := pasteTestCall(t, dispatcher, "table.applyPaste", map[string]any{
+		"collection": fixture.request.TableID, "token": plan.Token.Token, "idempotencyKey": "array-selection",
+	})
+	if applied.Error != nil {
+		t.Fatalf("apply error: %+v", applied.Error)
+	}
+	var result pasteApplyResult
+	if err := json.Unmarshal(applied.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "committed" || len(result.CreatedRowKeys) != 1 {
+		t.Fatalf("apply = %+v", result)
 	}
 }

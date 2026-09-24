@@ -90,12 +90,15 @@ async def test_go_paste_matches_frozen_python_preview_and_consumes_once(
         # the entire public plan apart from its intentionally random token/clock.
         sequence = 1
         insert_token = ""
-        for values in (("雪😀", "0", '{"enabled":false,"items":[0,null]}'), ("", "", "{bad")):
+        valid_values = ("雪😀", "0", '{"enabled":false,"items":[0,null]}')
+        cases = [(valid_values, {"rowKeys": []}), (("", "", "{bad"), {"rowKeys": []})]
+        cases.extend((valid_values, selection) for selection in ([], None, False, 0, ""))
+        for values, selection in cases:
             params = PreviewPasteParams.model_validate(
                 {
                     "collection": table_id,
                     "schemaRevision": profile.capability_hash,
-                    "selection": {"rowKeys": []},
+                    "selection": selection,
                     "startCell": {"rowKey": None, "column": fields[0]},
                     "cells": [
                         [

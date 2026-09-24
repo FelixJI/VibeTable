@@ -104,16 +104,17 @@ type pasteApplyResult struct {
 }
 
 type pasteStoredPlan struct {
-	collection     string
-	schemaRevision string
-	workspaceID    string
-	userID         string
-	expiresAt      time.Time
-	rows           []pasteRow
-	rawRows        []map[string]any
-	guards         map[string]string
-	consumed       bool
-	idempotencyKey string
+	collection        string
+	schemaRevision    string
+	workspaceID       string
+	userID            string
+	expiresAt         time.Time
+	rows              []pasteRow
+	rawRows           []map[string]any
+	guards            map[string]string
+	consumed          bool
+	idempotencyKey    string
+	mutationRequestID string
 }
 
 type pasteSchemaPort func(context.Context, string) (schemaexecution.Table, error)
@@ -432,6 +433,9 @@ func pasteEditable(table schemaexecution.Table) ([]string, []string, map[string]
 }
 
 func pasteSelectionKeys(raw json.RawMessage) ([]any, error) {
+	if !strings.HasPrefix(strings.TrimSpace(string(raw)), "{") {
+		return []any{}, nil
+	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return nil, err
