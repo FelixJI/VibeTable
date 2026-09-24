@@ -12,8 +12,8 @@ A5 的源码集成测试 `tests/integration/test_unicode_data_io_roundtrip.py` �
 
 这证明上述文本的数据保存和往返不发生规范化、大小写折叠或方向标记丢失。
 它不证明 RTL 的视觉排版、locale 排序/搜索，或 packaged UI 的完整矩阵。
-A5 仍为部分完成；falsy/container 的独立边界见
-[数据互操作资格](data-io-interoperability.md)。
+A5 的跨格式/层级汇总见
+[数据互操作资格矩阵](data-io-interoperability.md)。
 
 本地聚焦入口（复用锁定环境）：
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import subprocess
 import tempfile
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import date, datetime
 from pathlib import Path
@@ -31,6 +33,7 @@ from tests.integration.packaged_sidecar_matrix import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+INTEROP_CORPUS_PATH = REPO_ROOT / "tests" / "fixtures" / "data-io" / "a5-interop-matrix-corpus.json"
 EXPECTED_VALUES = {
     "nfc": "Caf\u00e9 \U0001f469\U0001f3fd\u200d\U0001f4bb",
     "nfd": "Cafe\u0301 \U0001f469\U0001f3fd\u200d\U0001f4bb",
@@ -82,6 +85,51 @@ def _physical_name(definition: Mapping[str, object]) -> str:
     return physical_name
 
 
+def _load_interop_corpus() -> dict[str, object]:
+    payload = json.loads(INTEROP_CORPUS_PATH.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
+
+
+def _corpus_date_case(key: str) -> dict[str, object]:
+    cases = _load_interop_corpus()["dateCases"]
+    assert isinstance(cases, list)
+    case = next(item for item in cases if isinstance(item, dict) and item["key"] == key)
+    return case
+
+
+@pytest.mark.integration
+async def test_interop_matrix_corpus_matches_frozen_oracles() -> None:
+    """The declarative corpus is the independent oracle for this slice.
+
+    It reuses the exact Unicode code points frozen above and the locked XLSX
+    producer versions, so a drift in either direction fails here before any
+    product surface is invoked.
+    """
+    corpus = _load_interop_corpus()
+    representatives = corpus["unicodeRepresentatives"]
+    assert isinstance(representatives, list)
+    assert {item["key"]: item["value"] for item in representatives} == EXPECTED_VALUES
+    for item in representatives:
+        assert [ord(character) for character in item["value"]] == item["codePoints"]
+    import et_xmlfile
+    import openpyxl
+
+    producers = corpus["producers"]
+    assert isinstance(producers, dict)
+    assert f"openpyxl {openpyxl.__version__}" in str(producers["xlsxWriter"])
+    assert f"et-xmlfile {et_xmlfile.__version__}" in str(producers["xlsxWriter"])
+    for case in corpus["dateCases"]:
+        assert isinstance(case, dict)
+        assert case["exportText"] == case["queryWire"]
+    rejections = corpus["rejections"]
+    assert isinstance(rejections, list)
+    assert {item["code"] for item in rejections} == {
+        "import_ambiguous_excel_date",
+        "import_unsupported_excel_time",
+    }
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
@@ -111,13 +159,17 @@ async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
             assert isinstance(definition, dict)
             fields.append(_physical_name(definition))
         date_field, datetime_field = fields
+        native_date = _corpus_date_case("xlsx_native_date")
+        native_datetime = _corpus_date_case("xlsx_native_datetime_milliseconds")
+        iso_1900 = _corpus_date_case("iso_1900_date_text")
+        iso_offset = _corpus_date_case("iso_offset_text")
         source = tmp_path / "native-dates.xlsx"
         workbook = Workbook()
         sheet = workbook.active
         assert sheet is not None
         sheet.append(fields)
         sheet.append([date(2026, 8, 29), datetime(2026, 8, 29, 14, 5, 6, 123000)])
-        sheet.append(["1900-02-28", "2026-08-29T00:00:00+08:00"])
+        sheet.append([iso_1900["source"]["cell"], iso_offset["source"]["cell"]])
         workbook.save(source)
         workbook.close()
 
@@ -145,11 +197,13 @@ async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
         )
         assert plan.summary.total_rows == plan.summary.valid_rows == 2
         assert plan.summary.error_count == 0
-        expected = {
-            "2026-08-29": "2026-08-29T14:05:06.123Z",
-            "1900-02-28": "2026-08-28T16:00:00Z",
+        expected_preview = {
+            native_date["preview"]: native_datetime["preview"],
+            iso_1900["preview"]: iso_offset["preview"],
         }
-        assert {row.values[date_field]: row.values[datetime_field] for row in plan.rows} == expected
+        assert {row.values[date_field]: row.values[datetime_field] for row in plan.rows} == (
+            expected_preview
+        )
         query = {"filters": [], "sorts": [], "offset": 0, "limit": 100}
         assert (await client.query_page(table_id=table["tableId"], query=query)).rows == []
         applied = await runtime.apply_import(
@@ -164,10 +218,50 @@ async def test_xlsx_native_dates_reach_go_authority_without_timezone_guessing(
         assert applied.failed_rows == []
         page = await client.query_page(table_id=table["tableId"], query=query)
         # The query port exposes PocketBase's UTC date wire format, not preview DTOs.
-        assert {row[date_field]: row[datetime_field] for row in page.rows} == {
-            "2026-08-29 00:00:00.000Z": "2026-08-29 14:05:06.123Z",
-            "1900-02-28 00:00:00.000Z": "2026-08-28 16:00:00.000Z",
+        expected_wire = {
+            native_date["queryWire"]: native_datetime["queryWire"],
+            iso_1900["queryWire"]: iso_offset["queryWire"],
         }
+        assert {row[date_field]: row[datetime_field] for row in page.rows} == expected_wire
+
+        # Exports keep the query wire text verbatim in both formats; the XLSX
+        # writer emits text cells, never native dates or formulas.
+        for export_format in ("csv", "xlsx"):
+            target = tmp_path / f"native-dates-export.{export_format}"
+            export_grant = await tasks.register_host_export_target(
+                HostExportTargetParams(path=str(target.resolve()))
+            )
+            result = await runtime.export(
+                ExportParams(
+                    grant_id=export_grant.grant_id,
+                    collection=table["tableId"],
+                    query=query,
+                    format=export_format,
+                )
+            )
+            assert result.rows_written == 2
+            if export_format == "csv":
+                with target.open("r", encoding="utf-8-sig", newline="") as stream:
+                    exported = [
+                        (row[date_field], row[datetime_field]) for row in csv.DictReader(stream)
+                    ]
+            else:
+                export_book = load_workbook(target, read_only=True, data_only=False)
+                try:
+                    export_sheet = export_book.active
+                    assert export_sheet is not None
+                    export_rows = export_sheet.iter_rows()
+                    header_names = [cell.value for cell in next(export_rows)]
+                    exported = []
+                    for cells in export_rows:
+                        row = dict(zip(header_names, (cell.value for cell in cells), strict=True))
+                        for cell in cells:
+                            if cell.value is not None:
+                                assert cell.data_type == "s"
+                        exported.append((row[date_field], row[datetime_field]))
+                finally:
+                    export_book.close()
+            assert Counter(exported) == Counter(expected_wire.items())
     finally:
         sidecar.stop()
 

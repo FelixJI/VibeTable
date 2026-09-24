@@ -8,8 +8,10 @@
 - GitHub run：[main CI 34309394462](https://github.com/FelixJI/VibeTable/actions/runs/34309394462)
 - 报告契约：`contractVersion=2.0`
 - 结果：29/29 passed、0 failed、0 skipped。
-- 当前 manifest gap：4（`24-directory-replica-conflict`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`）。
+- 当前 manifest gap：5（`24-directory-replica-conflict`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`）。
 - S33 两真实 Host 的本地新包资格见对应资格记录；本节旧 main 样本没有这些结果，因此保留该样本的 gap。
+- S34/S35 的真实包证据见 [数据互操作资格矩阵](quality/data-io-interoperability.md)（本地 source-built 与新包单场景，非本节 main 样本）。
+- 当前 CI 将 S34/S35 放入独立的 `data-io` lane（`product-e2e-data-io` stage），其余 manifest 场景仍由 `resilience` lane 的 `product-e2e` stage 执行。两个 stage 各保留 1800 秒上限；聚合门禁核对场景选择精确覆盖当前 manifest、两分片均成功且绑定同一候选。本页旧 main 样本的 `ci-lane-resilience` 出处不受此后续配置变动影响。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：4（`07-attachment-history`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`28-relation-delta-preview`）。
 
