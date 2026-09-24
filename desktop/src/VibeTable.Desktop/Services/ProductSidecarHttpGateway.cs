@@ -444,8 +444,8 @@ public sealed partial class ProductSidecarHttpGateway : IProductSidecarGatewayCa
             || string.IsNullOrWhiteSpace(messageElement.GetString()))
             throw InvalidResponse();
         string message = messageElement.GetString()!;
-        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32170 or -32180 or -32080)
-            || (code is -32150 or -32170 or -32180 && !hasData))
+        if (code is not (-32600 or -32601 or -32602 or -32603 or -32150 or -32170 or -32180 or -32080 or -32040)
+            || (code is -32150 or -32170 or -32180 or -32040 && !hasData))
             throw InvalidResponse();
         if (code == -32150)
             ValidateProductErrorData(data);
@@ -453,6 +453,11 @@ public sealed partial class ProductSidecarHttpGateway : IProductSidecarGatewayCa
             ValidateContentErrorData(data, method);
         if (code == -32170 && !SurfaceRpcErrorContract.IsValid(method, data))
             throw InvalidResponse();
+        if (code == -32040)
+        {
+            if (message != "Paste error" || !TryReadPasteError(method, data, out message))
+                throw InvalidResponse();
+        }
         if (code == -32080 && !IsValidDashboardErrorData(method, message, data)
             && !IsValidPresetErrorData(method, message, data)
             && !(message == "Insights error" && ProductRpcErrorMapper.TryMapNamedRevision(method, data, out _)))
@@ -461,6 +466,49 @@ public sealed partial class ProductSidecarHttpGateway : IProductSidecarGatewayCa
             code,
             message,
             hasData ? data.Clone() : null);
+    }
+
+    private static bool TryReadPasteError(string method, JsonElement data, out string message)
+    {
+        message = "";
+        if (method is not ("table.previewPaste" or "table.applyPaste")
+            || data.ValueKind != JsonValueKind.Object)
+            return false;
+        string[] names = data.EnumerateObject().Select(item => item.Name).ToArray();
+        if (names.Length != names.Distinct(StringComparer.Ordinal).Count()
+            || names.Any(name => name is not ("kind" or "code" or "message" or "maxCells"
+                or "cellCount" or "currentSchemaRevision" or "expectedSchemaRevision" or "details"))
+            || !data.TryGetProperty("kind", out JsonElement kind)
+            || kind.ValueKind != JsonValueKind.String
+            || kind.GetString() != "paste_error"
+            || !data.TryGetProperty("code", out JsonElement errorCode)
+            || !IsNonEmptyString(errorCode)
+            || !data.TryGetProperty("message", out JsonElement detail)
+            || !IsNonEmptyString(detail))
+            return false;
+        string code = errorCode.GetString()!;
+        if (code is not ("schema_unknown" or "schema_mismatch" or "paste_overflow"
+            or "anchor_column_readonly" or "anchor_not_selected" or "paste_row_not_found"
+            or "paste_preview_invalid" or "paste_token_invalid" or "paste_token_unknown"
+            or "paste_token_expired" or "paste_token_consumed" or "paste_idempotency_mismatch"
+            or "paste_plan_invalid" or "mutation_invalid_response")
+            && (!PublicErrorCode.IsMatch(code)
+                || !WorkCalendarErrorPolicy.Accepts(code)
+                || code.StartsWith("pocketbase.", StringComparison.Ordinal)))
+            return false;
+        if ((data.TryGetProperty("maxCells", out JsonElement maxCells)
+                && (maxCells.ValueKind != JsonValueKind.Number || !maxCells.TryGetInt32(out _)))
+            || (data.TryGetProperty("cellCount", out JsonElement cellCount)
+                && (cellCount.ValueKind != JsonValueKind.Number || !cellCount.TryGetInt32(out _)))
+            || (data.TryGetProperty("currentSchemaRevision", out JsonElement current)
+                && !IsNonEmptyString(current))
+            || (data.TryGetProperty("expectedSchemaRevision", out JsonElement expected)
+                && expected.ValueKind != JsonValueKind.String)
+            || (data.TryGetProperty("details", out JsonElement details)
+                && details.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null)))
+            return false;
+        message = detail.GetString()!;
+        return true;
     }
 
     internal static bool IsValidDashboardErrorData(string method, string message, JsonElement data)

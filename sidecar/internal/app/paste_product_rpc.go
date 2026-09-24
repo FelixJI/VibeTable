@@ -325,14 +325,16 @@ func pasteInteger(raw json.RawMessage) (int, error) {
 	}
 	switch number := value.(type) {
 	case string:
-		parsed, err := strconv.ParseInt(number, 10, 64)
-		return int(parsed), err
+		return strconv.Atoi(number)
 	case json.Number:
-		if parsed, err := number.Int64(); err == nil {
-			return int(parsed), nil
+		if parsed, err := strconv.Atoi(number.String()); err == nil {
+			return parsed, nil
+		} else if !strings.ContainsAny(number.String(), ".eE") {
+			return 0, err
 		}
 		parsed, err := number.Float64()
-		if err != nil || math.IsInf(parsed, 0) || math.IsNaN(parsed) || math.Trunc(parsed) != parsed || parsed > float64(math.MaxInt) || parsed < float64(math.MinInt) {
+		upperBound := math.Ldexp(1, strconv.IntSize-1)
+		if err != nil || math.IsInf(parsed, 0) || math.IsNaN(parsed) || math.Trunc(parsed) != parsed || parsed >= upperBound || parsed < -upperBound {
 			return 0, errors.New("paste index must be an integer")
 		}
 		return int(parsed), nil
