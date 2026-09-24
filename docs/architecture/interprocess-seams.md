@@ -83,7 +83,10 @@ Web 终态不可被迟到交互或任务回包复活，终态面板不再显示�
 #369 的本地真实候选 S11（`build/qa/task369-plugin-owner/20260924T045540Z/product-e2e-report.json`）通过：
 原生授权文件读写、明确确认后的单条提交、字段越权拒绝，以及待确认时杀掉已归属的 Python 子进程后公开 task.get 的
 aborted/unknown、旧 resolve 的 expired、既有成功不变和 Go query 可用。S17 同候选通过（`build/qa/task369-interface/20260924T045641Z/product-e2e-report.json`）。
-这两份报告先于终态提示文案修正；最终 PR CI、独立审阅及合并后门禁另由 Issue/PR 记录，不据此宣称 L7/L9 全部完成。
+这两份报告先于终态提示文案修正；最终产品代码 aa389cd2 重建后 S11 再通过（31.915 秒，
+`build/qa/task369-final/20260924T050407Z/product-e2e-report.json`），包含终态不再等待的界面断言。
+[终态截图](../assets/screenshots/vibetable-plugin-task-aborted.png)来自该真实 WPF/WebView2 运行。
+最终 PR CI、独立审阅及合并后门禁另由 Issue/PR 记录，不据此宣称 L7/L9 全部完成。
 
 
 ## 维护规则
