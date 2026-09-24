@@ -124,10 +124,10 @@ Predictor 样本均为 `unsupported / extract.unsupported`、零正文；cycle �
 adapter、generation 事务和发布集成仍开放，不能因为本比较为零差异而关闭。
 ## Form、合并旋转页与空用户密码增量
 
-在既有 38 项预期不变的基础上，预注册三项 MUST 与一项 DISCOVERY，自有固定 PDF 由锁定版本的 ReportLab 4.4.9、pypdf 6.10.0 和 cryptography 50.0.1 生成。普通语料生成与 CI 只读取提交的 fixtures，不导入这些生产者包。只生成这次四项的命令是：
+在既有 38 项预期不变的基础上，预注册三项 MUST 与一项 DISCOVERY，自有固定 PDF 由锁定版本的 ReportLab 4.4.9、pypdf 6.10.0 和 cryptography 50.0.1 生成。普通语料生成与 CI 只读取提交的 fixtures，不导入这些生产者包。重建时使用独立的生产者工具环境，将其 Python 解释器绝对路径填入 `PDF_PRODUCER_PYTHON` 环境变量；该环境须提供上述固定版本，不修改项目依赖或锁文件。只生成这次四项的 PowerShell 命令是：
 
 ```text
-uv run --frozen --no-sync -- C:/Users/felji/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe tests/contract/generate_pdf_producer_fixtures.py --new-only
+uv run --frozen --no-sync -- "$env:PDF_PRODUCER_PYTHON" tests/contract/generate_pdf_producer_fixtures.py --new-only
 ```
 
 `independent-reportlab-form-reused.pdf` 在同页两次调用合法 Form XObject，该受限 fixture 预期 indexed、`A6FORMVISIBLE` 恰好两次且正文 26 个 token 字符；Form 类别整体仍处于 DISCOVERY，不扩大产品支持范围。`independent-pypdf-merged-rotated.pdf` 合并两个 ReportLab 单页源并旋转第二页，预期 indexed、两页且保留 `A6PAGEONE`、`A6PAGETWO`。`independent-rc4-128-empty-user-password.pdf` 和 `independent-aes-128-empty-user-password.pdf` 都有空 user password 与非空 owner password，预期 `passwordProtected / extract.password_required`、零正文。加密 fixtures 只在首次生成时创建；重新生成会有随机密文字节，不作为字节一致性契约。
