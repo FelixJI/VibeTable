@@ -10,8 +10,8 @@ import (
 
 func unrelatedRelationWriteRegistrations(t *testing.T) []productrpc.Registration {
 	t.Helper()
-	result := make([]productrpc.Registration, 0, len(relationWriteMethods))
-	for _, method := range relationWriteMethods {
+	result := make([]productrpc.Registration, 0, len(relationWriteMethods)+2)
+	for _, method := range append(append([]string{}, relationWriteMethods...), "table.applyPaste", "table.previewPaste") {
 		result = append(result, productrpc.Registration{
 			Method: method, Scope: productcapabilities.WorkspaceScope,
 			ValidateParams: func(json.RawMessage) error { t.Fatalf("unrelated %s validation", method); return nil },

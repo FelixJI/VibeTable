@@ -29,7 +29,6 @@ from backend.contracts.data_io import (
     GenerateTemplateParams,
     PreviewImportParams,
 )
-from backend.contracts.paste import ApplyPasteParams, PreviewPasteParams
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
     CancelInstallParams,
@@ -120,14 +119,12 @@ def _configure_pocketbase_data_io(
     client: PocketBaseClient,
     task_service: Any,
 ) -> ProductDataIoRuntime:
-    """Register the product-only paste/import/export vertical slice."""
+    """Register the remaining product import/export worker paths."""
 
     register_product_rpc_errors()
     register_application_errors(ErrorDomain.PASTE, ErrorDomain.IMPORT, ErrorDomain.EXPORT)
     runtime = ProductDataIoRuntime(client=client, task_service=task_service)
     runtime.register_tasks()
-    dispatcher.register("table.previewPaste", runtime.preview_paste, PreviewPasteParams)
-    dispatcher.register("table.applyPaste", runtime.apply_paste, ApplyPasteParams)
     dispatcher.register("data.previewImport", runtime.preview_import, PreviewImportParams)
     dispatcher.register("data.applyImport", runtime.apply_import, ApplyImportParams)
     dispatcher.register("data.export", runtime.export, ExportParams)

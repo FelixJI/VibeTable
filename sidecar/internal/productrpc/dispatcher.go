@@ -214,6 +214,9 @@ func (dispatcher *Dispatcher) Dispatch(ctx context.Context, raw []byte) Response
 		if data, public := surfaceErrorData(request.Method, err); public {
 			return errorResponse(request.ID, request.Wire, CodeSurface, "Interface error", data)
 		}
+		if data, public := pasteErrorData(request.Method, err); public {
+			return errorResponse(request.ID, request.Wire, CodePaste, "Paste error", data)
+		}
 		if data, public := productErrorData(err); public {
 			return errorResponse(
 				request.ID,

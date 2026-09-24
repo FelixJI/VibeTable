@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
 using VibeTable.Contracts.Generated;
+using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
@@ -21,7 +22,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
             RespectRequiredConstructorParameters = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         };
-    private readonly JsonRpcClient _client;
+    private readonly JsonRpcClient? _client;
     private readonly HostProductRpcInvoker? _hostInvoker;
     private bool _disposed;
 
@@ -32,15 +33,32 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     }
 
     internal JsonRpcProductDataGateway(HostProductRpcInvoker hostInvoker)
-        : this((hostInvoker ?? throw new ArgumentNullException(nameof(hostInvoker))).Client)
     {
-        _hostInvoker = hostInvoker;
+        _hostInvoker = hostInvoker ?? throw new ArgumentNullException(nameof(hostInvoker));
+        _client = hostInvoker.Client;
+        if (_client is not null)
+            _client.NotificationReceived += OnNotification;
     }
 
     internal HostSessionFileBroker EnableHostFiles()
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required.")).EnableHostFiles();
 
     public event Action<JsonElement>? TaskChanged;
+
+    public Task<PastePlan> PreviewPasteAsync(PreviewPasteRpcParams parameters, CancellationToken token)
+        => InvokePaste<PreviewPasteRpcParams, PastePlan>("table.previewPaste", parameters, token);
+
+    public Task<ApplyPasteResult> ApplyPasteAsync(ApplyPasteRpcParams parameters, CancellationToken token)
+        => InvokePaste<ApplyPasteRpcParams, ApplyPasteResult>("table.applyPaste", parameters, token);
+
+    private Task<TResult> InvokePaste<TParams, TResult>(string method, TParams parameters, CancellationToken token)
+        where TParams : notnull
+        where TResult : notnull
+    {
+        if (_hostInvoker is null)
+            throw new InvalidOperationException("Paste requires the bound Go authority route.");
+        return InvokeStrict<TParams, TResult>(method, parameters, token);
+    }
 
     Task<JsonElement> IHostCommandExportGateway.ExecuteExportAsync(JsonElement parameters, CancellationToken token)
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required."))
@@ -138,7 +156,8 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     {
         if (_disposed) return;
         _disposed = true;
-        _client.NotificationReceived -= OnNotification;
+        if (_client is not null)
+            _client.NotificationReceived -= OnNotification;
         _hostInvoker?.Dispose();
     }
 
@@ -147,7 +166,9 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
         return _hostInvoker?.InvokeAsync(method, parameters, token)
-            ?? _client.InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
+            ?? (_client ?? throw new BackendUnavailableException(
+                "The Python Product RPC binding is unavailable."))
+                .InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
     }
 
     internal Task<TResult> InvokeDashboardAsync<TParams, TResult>(

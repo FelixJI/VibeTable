@@ -569,24 +569,16 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         PasteStartCell startCell,
         IReadOnlyList<IReadOnlyList<PasteCell>> cells,
         CancellationToken token)
-        => _localState.PreviewPasteAsync(
-            collection,
-            schemaRevision,
-            selection,
-            startCell,
-            cells,
-            token);
+        => _product.PreviewPasteAsync(
+            new PreviewPasteRpcParams(collection, schemaRevision, selection, startCell, cells), token);
 
     public Task<ApplyPasteResult> ApplyPasteAsync(
         string collection,
         string token,
         string idempotencyKey,
         CancellationToken cancellationToken)
-        => _localState.ApplyPasteAsync(
-            collection,
-            token,
-            idempotencyKey,
-            cancellationToken);
+        => _product.ApplyPasteAsync(
+            new ApplyPasteRpcParams(collection, token, idempotencyKey), cancellationToken);
 
     public void Dispose()
     {

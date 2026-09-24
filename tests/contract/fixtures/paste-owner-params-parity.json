@@ -1,0 +1,613 @@
+[
+  {
+    "name": "canonical",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "column": null,
+            "rawValue": "value",
+            "parsedValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "missing-row-index",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "missing-column-index",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "missing-raw-value",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "null-raw-value",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "numeric-raw-value",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": 12
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "string-index",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": "2",
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 2,
+            "columnIndex": 0,
+            "column": null,
+            "rawValue": "value",
+            "parsedValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "integral-index",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 2.0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 2,
+            "column": null,
+            "rawValue": "value",
+            "parsedValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "fractional-index",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 2.5,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "null-selection",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": null,
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": null,
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "column": null,
+            "rawValue": "value",
+            "parsedValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "array-selection",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": [],
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": [],
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "column": null,
+            "rawValue": "value",
+            "parsedValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "missing-selection",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "object-row-key",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": {},
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "unicode-column-limit",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "column": null,
+            "rawValue": "value",
+            "parsedValue": null
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "unicode-column-over",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列列"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value"
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "unknown-cell",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "rawValue": "value",
+            "unknown": true
+          }
+        ]
+      ]
+    },
+    "accepted": false
+  },
+  {
+    "name": "empty-row",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        []
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": {
+        "rowKeys": []
+      },
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        []
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "snake-aliases",
+    "method": "table.previewPaste",
+    "params": {
+      "collection": "orders",
+      "schema_revision": "schema_1",
+      "selection": null,
+      "start_cell": {
+        "row_key": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "row_index": 0,
+            "column_index": 0,
+            "raw_value": "x",
+            "parsed_value": false
+          }
+        ]
+      ]
+    },
+    "normalized": {
+      "collection": "orders",
+      "schemaRevision": "schema_1",
+      "selection": null,
+      "startCell": {
+        "rowKey": null,
+        "column": "name"
+      },
+      "cells": [
+        [
+          {
+            "rowIndex": 0,
+            "columnIndex": 0,
+            "column": null,
+            "rawValue": "x",
+            "parsedValue": false
+          }
+        ]
+      ]
+    },
+    "accepted": true
+  },
+  {
+    "name": "apply-snake-alias",
+    "method": "table.applyPaste",
+    "params": {
+      "collection": "orders",
+      "token": "opaque",
+      "idempotency_key": "first-key"
+    },
+    "normalized": {
+      "collection": "orders",
+      "token": "opaque",
+      "idempotencyKey": "first-key"
+    },
+    "accepted": true
+  }
+]

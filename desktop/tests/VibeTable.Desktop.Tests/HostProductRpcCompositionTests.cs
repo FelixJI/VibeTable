@@ -19,7 +19,7 @@ public sealed class HostProductRpcCompositionTests
     {
         await using var fixture = await Fixture.OpenAsync();
         await fixture.Backend.StopAsync(CancellationToken.None);
-        Assert.IsNull(fixture.Factory.CaptureHostProductRpcBinding());
+        Assert.IsNull(fixture.Backend.Client);
         fixture.Http.Result = Json("""{"tables":[{"tableId":"orders","kind":"base","displayName":"Orders"}]}""");
         using var source = new TestSseStream(Encoding.UTF8.GetBytes(
             "id: rt:0\nevent: realtime.recovered\ndata: {\"contractVersion\":\"2.0\",\"topic\":\"realtime.recovered\",\"activeFormulaTasks\":[],\"terminalNotifications\":[]}\n\n"),
@@ -41,6 +41,97 @@ public sealed class HostProductRpcCompositionTests
         Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
         CollectionAssert.AreEqual(new[] { "database.collectionsChanged", "realtime.recovered" }, topics);
         Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task StoppedPythonKeepsGoPasteBindingButRejectsPythonAndRetiredSidecar()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        HostProductRpcBinding original = fixture.Factory.CaptureHostProductRpcBinding()!;
+        using var beforeStop = original.CreateGateway(fixture.Leases, fixture.Http);
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        HostProductRpcBinding current = fixture.Factory.CaptureHostProductRpcBinding()!;
+        Assert.IsNull(current.Client);
+        using var afterStop = current.CreateGateway(fixture.Leases, fixture.Http);
+
+        fixture.Http.Result = Json("""
+            {"collection":"orders","schemaRevision":"schema_1","capabilityHash":"schema_1","summary":{"updateRows":0,"insertRows":1,"skipRows":0,"errorCount":0,"warningCount":0},"rows":[{"kind":"insert","targetRowKey":null,"expectedDateUpdated":null,"changes":{"name":{"before":null,"after":"示例"}},"diagnostics":[]}],"diagnostics":[],"token":{"token":"opaque-plan","expiresAt":123456,"consumed":false},"overflow":false}
+            """);
+        PastePlan plan = await afterStop.PreviewPasteAsync(
+            new PreviewPasteRpcParams("orders", "schema_1", new Dictionary<string, object?>(),
+                new PasteStartCell(null, "name"),
+                new IReadOnlyList<PasteCell>[] { new[] { new PasteCell(0, 0, "name", "示例", null) } }),
+            CancellationToken.None);
+        Assert.AreEqual("opaque-plan", plan.Token.Token);
+        fixture.Http.Result = Json("""
+            {"collection":"orders","outcome":"committed","createdRowKeys":["row1"],"updatedRowKeys":[],"skippedRowKeys":[],"conflicts":[],"requestId":"apply-1"}
+            """);
+        ApplyPasteResult applied = await beforeStop.ApplyPasteAsync(
+            new ApplyPasteRpcParams("orders", plan.Token.Token, "apply-1"), CancellationToken.None);
+        Assert.AreEqual("committed", applied.Outcome);
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            afterStop.GetTaskStatusAsync(Json("""{"taskId":"missing"}"""), CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            afterStop.RegisterImportSourceAsync(Json("""{"path":"ignored"}"""), CancellationToken.None));
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+
+        await fixture.Sidecar.StopAsync(CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            beforeStop.ApplyPasteAsync(
+                new ApplyPasteRpcParams("orders", plan.Token.Token, "apply-2"), CancellationToken.None));
+        Assert.AreEqual(2, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task LazyTableGatewayKeepsGoPasteAfterPythonStops()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        fixture.Http.Result = Json("""
+            {"collection":"orders","schemaRevision":"schema_1","capabilityHash":"schema_1","summary":{"updateRows":0,"insertRows":1,"skipRows":0,"errorCount":0,"warningCount":0},"rows":[{"kind":"insert","targetRowKey":null,"expectedDateUpdated":null,"changes":{"name":{"before":null,"after":"示例"}},"diagnostics":[]}],"diagnostics":[],"token":{"token":"opaque-plan","expiresAt":123456,"consumed":false},"overflow":false}
+            """);
+        PastePlan plan = await lazy.PreviewPasteAsync("orders", "schema_1",
+            new Dictionary<string, object?>(), new PasteStartCell(null, "name"),
+            new IReadOnlyList<PasteCell>[] { new[] { new PasteCell(0, 0, "name", "示例", null) } },
+            CancellationToken.None);
+        Assert.AreEqual("opaque-plan", plan.Token.Token);
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            lazy.GetGridStateAsync("workspace", "orders", CancellationToken.None));
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task ReplacedPythonClientCannotUseItsRetiredHostBinding()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var old = fixture.Factory.CaptureHostProductRpcBinding()!
+            .CreateGateway(fixture.Leases, fixture.Http);
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        await fixture.Backend.StartAsync(CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            old.GetTaskStatusAsync(Json("""{"taskId":"missing"}"""), CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            old.RegisterImportSourceAsync(Json("""{"path":"ignored"}"""), CancellationToken.None));
+        Assert.AreEqual(0, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task BackendStopPublishesGoOnlyBindingForHostRebind()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        var rebound = new TaskCompletionSource<HostProductRpcBinding>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Factory.BindingChanged += () =>
+        {
+            if (fixture.Factory.CaptureHostProductRpcBinding() is { Client: null } binding)
+                rebound.TrySetResult(binding);
+        };
+        await fixture.Backend.StopAsync(CancellationToken.None);
+        HostProductRpcBinding current = await rebound.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsTrue(current.Matches(fixture.Factory.CaptureProductSidecarGeneration()!));
     }
 
     [TestMethod]
@@ -75,7 +166,7 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task HealthReaderRetainsBindingMismatchCodeForLateReply()
+    public async Task HealthReaderGoCallSurvivesPythonRestart()
     {
         await using var fixture = await Fixture.OpenAsync();
         var reader = new CurrentRuntimeUpdateWorkspaceSchemaReader(fixture.Factory, fixture.Leases, fixture.Http);
@@ -88,8 +179,7 @@ public sealed class HostProductRpcCompositionTests
             await fixture.Backend.StartAsync(CancellationToken.None);
         }
         finally { fixture.Http.ReplyGate.TrySetResult(); }
-        UpdateWorkspaceHealthException error = await Assert.ThrowsExactlyAsync<UpdateWorkspaceHealthException>(() => pending);
-        Assert.AreEqual("update.workspace_probe_binding_mismatch", error.Code);
+        Assert.AreEqual(1, await pending);
         Assert.AreEqual(1, fixture.Http.ProductCalls);
     }
 
@@ -298,7 +388,7 @@ public sealed class HostProductRpcCompositionTests
     [DataRow("workspace")]
     [DataRow("epoch")]
     [DataRow("starting")]
-    public async Task CaptureRejectsWrongSessionAndNonReadyClient(string condition)
+    public async Task CaptureRejectsWrongSessionAndKeepsGoWhenPythonIsStarting(string condition)
     {
         await using var fixture = await Fixture.OpenAsync();
         WorkspaceSessionV2 expected = condition switch
@@ -319,7 +409,14 @@ public sealed class HostProductRpcCompositionTests
         }
         try
         {
-            Assert.IsNull(fixture.Factory.CaptureHostProductRpcBinding(expected));
+            HostProductRpcBinding? binding = fixture.Factory.CaptureHostProductRpcBinding(expected);
+            if (condition == "starting")
+            {
+                Assert.IsNotNull(binding);
+                Assert.IsNull(binding.Client);
+            }
+            else
+                Assert.IsNull(binding);
             Assert.AreEqual(0, fixture.Http.ProductCalls);
         }
         finally
@@ -334,7 +431,7 @@ public sealed class HostProductRpcCompositionTests
     [DataRow("before")]
     [DataRow("result")]
     [DataRow("error")]
-    public async Task ReplacedPythonClientRejectsOldBindingBeforeSendAndAfterReply(string phase)
+    public async Task GoCallSurvivesPythonClientReplacementBeforeSendAndAfterReply(string phase)
     {
         await using var fixture = await Fixture.OpenAsync();
         HostProductRpcBinding old = fixture.Factory.CaptureHostProductRpcBinding()!;
@@ -357,10 +454,14 @@ public sealed class HostProductRpcCompositionTests
         HostProductRpcBinding current = fixture.Factory.CaptureHostProductRpcBinding()!;
         Assert.IsFalse(old.Matches(current));
         Assert.AreNotSame(old.Client, current.Client);
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
-            pending ?? gateway.ListTablesAsync(Json("{}"), CancellationToken.None));
-        Assert.AreEqual(phase == "before" ? 0 : 1, fixture.Http.ProductCalls);
-        Assert.AreEqual(phase == "before" ? 0 : 1, fixture.Http.ProductHandshakes);
+        if (phase == "error")
+            await Assert.ThrowsExactlyAsync<RpcRemoteException>(() => pending!);
+        else
+            Assert.AreEqual("orders", (await (pending
+                ?? gateway.ListTablesAsync(Json("{}"), CancellationToken.None)))
+                .GetProperty("tables")[0].GetString());
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+        Assert.AreEqual(1, fixture.Http.ProductHandshakes);
     }
 
     [TestMethod]

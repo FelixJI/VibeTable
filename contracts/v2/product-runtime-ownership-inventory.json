@@ -2595,11 +2595,10 @@
       "currentPath": [
         "renderer",
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -2614,7 +2613,6 @@
         "state": []
       },
       "stateHolders": [
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
@@ -2625,14 +2623,13 @@
         "04-json-round-trip",
         "09-atomic-import-scale"
       ],
-      "targetSlice": "L5+L7",
+      "targetSlice": "L7",
       "targetPr": null,
-      "deleteWhen": "Paste preview identity, conversion, revision, and apply authority live in Go and the Python PasteTokenStore and routes are deleted.",
+      "deleteWhen": "Completed: Go owns paste preview plans and single-use apply; no Python route or live token store.",
       "evidence": [
         "backend/__main__.py",
-        "backend/adapters/pocketbase/data_io.py",
-        "backend/application/paste_service.py",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "desktop/src/VibeTable.Desktop/Services/PocketBaseTableGateway.cs",
+        "sidecar/internal/app/app.go"
       ]
     },
     {
@@ -2730,8 +2727,7 @@
       "id": "state.data-preview-plans",
       "kind": "state",
       "names": [
-        "ImportService._plans",
-        "PasteTokenStore._plans"
+        "ImportService._plans"
       ],
       "currentPath": [
         "pythonBff"
@@ -2745,8 +2741,7 @@
         "write": [],
         "notification": [],
         "state": [
-          "ImportService._plans",
-          "PasteTokenStore._plans"
+          "ImportService._plans"
         ]
       },
       "stateHolders": [
@@ -2763,8 +2758,7 @@
       "targetPr": null,
       "deleteWhen": "Preview plan identity and all business validation live with Go authority; Worker execution can restart without losing a confirmed plan.",
       "evidence": [
-        "backend/application/import_service.py",
-        "backend/application/paste_service.py"
+        "backend/application/import_service.py"
       ]
     },
     {
@@ -2915,6 +2909,44 @@
         "desktop/src/VibeTable.Desktop/Services/HostCommandRequestController.cs",
         "desktop/src/VibeTable.Desktop/Services/HostShortcutStore.cs",
         "desktop/src/VibeTable.Desktop/Services/WindowsHostCommandActions.cs"
+      ]
+    },
+    {
+      "id": "state.paste-preview-plans",
+      "kind": "state",
+      "names": [
+        "pasteOwner.plans"
+      ],
+      "currentPath": [
+        "goSidecar"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [],
+        "write": [],
+        "notification": [],
+        "state": [
+          "pasteOwner.plans"
+        ]
+      },
+      "stateHolders": [
+        "goSidecar"
+      ],
+      "stateLifetime": "task",
+      "cancellation": "none",
+      "timeout": "operationBounded",
+      "productScenarios": [
+        "04-json-round-trip",
+        "09-atomic-import-scale"
+      ],
+      "targetSlice": "L7",
+      "targetPr": null,
+      "deleteWhen": "Completed: the Go paste owner retains the plan until consumed or expired; Python has no live paste state.",
+      "evidence": [
+        "sidecar/internal/app/paste_product_rpc.go"
       ]
     },
     {

@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
@@ -7,8 +6,7 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Backend-owned support operations used by the product workspace. Business
-/// records stay in the local data service; only per-user grid state and brokered atomic paste
-/// operations cross this JSON-RPC adapter.
+/// records and paste plans stay in Go; only per-user grid state crosses this adapter.
 /// </summary>
 public interface IWorkspaceSupportRpcGateway
 {
@@ -19,14 +17,4 @@ public interface IWorkspaceSupportRpcGateway
         string databaseId, string table, GridState state,
         string? revision, CancellationToken token);
 
-    Task<PastePlan> PreviewPasteAsync(
-        string collection, string schemaRevision,
-        IReadOnlyDictionary<string, object?> selection,
-        PasteStartCell startCell,
-        IReadOnlyList<IReadOnlyList<PasteCell>> cells,
-        CancellationToken token);
-
-    Task<ApplyPasteResult> ApplyPasteAsync(
-        string collection, string token, string idempotencyKey,
-        CancellationToken cancellationToken);
 }
