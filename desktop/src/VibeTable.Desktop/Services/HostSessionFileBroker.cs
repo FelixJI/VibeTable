@@ -53,7 +53,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             if (runId is not null && length > PluginBytes) throw new IOException("Plugin file is too large.");
             var grant = new Grant("grant-" + Guid.NewGuid().ToString("N"), full, write, runId,
                 _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0 + 300, length, mimeType);
-            _commitCurrent(() => _grants.Add(grant.Id, grant));
+            _commitCurrent(() => { linked.Token.ThrowIfCancellationRequested(); _grants.Add(grant.Id, grant); });
             return Descriptor(grant);
         }
         finally { _gate.Release(); }
@@ -262,6 +262,20 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         finally { _gate.Release(); }
     }
 
+    internal async Task RevokeRunAsync(string runId)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            foreach (Grant grant in _grants.Values.Where(item => item.RunId == runId))
+            {
+                grant.State = "revoked";
+                foreach (Transfer transfer in _transfers.Values.Where(item => ReferenceEquals(item.Grant, grant)))
+                    await CloseAsync(transfer).ConfigureAwait(false);
+            }
+        }
+        finally { _gate.Release(); }
+    }
     public void Retire()
     {
         if (Interlocked.Exchange(ref _retireStarted, 1) != 0) return;
@@ -269,7 +283,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         _ = DrainAsync();
     }
 
-    internal Task DrainCompletion => _drain.Task;
+    public Task DrainCompletion => _drain.Task;
 
     private async Task DrainAsync()
     {

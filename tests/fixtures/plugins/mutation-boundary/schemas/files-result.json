@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "bytes": {
+      "type": "integer"
+    },
+    "rows": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "bytes",
+    "rows"
+  ],
+  "additionalProperties": false
+}

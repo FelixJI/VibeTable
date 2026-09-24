@@ -334,7 +334,9 @@ public partial class MainWindow : Window
             _pluginSurfaces,
             pluginPackagePicker,
             _pluginResources,
-            new WindowsPluginFilePicker(),
+            _e2eControlsDir is null
+                ? new WindowsPluginFilePicker()
+                : new TestModePluginFilePicker(_e2eControlsDir),
             new GitHubPluginPackageSource(
                 Path.Combine(_productDataRoot, "plugin-downloads"),
                 () => _appPreferencesService.Read()),
@@ -641,7 +643,8 @@ public partial class MainWindow : Window
 
         IPluginRpcGateway? previousPluginGateway = _pluginGateway;
         _pluginGateway = new JsonRpcPluginGateway(client, (request, path, token) =>
-            hostFiles.IssueAsync(path, request.Direction == "write", request.RunId, token, request.MediaType));
+            hostFiles.IssueAsync(path, request.Direction == "write", request.RunId, token, request.MediaType),
+            hostFiles.RevokeRunAsync);
         _pluginDispatcher.SetGatewayAfterAuthorityTransition(
             _pluginGateway,
             PluginProjectContext.FromSession(_workspaceSessions.Current));

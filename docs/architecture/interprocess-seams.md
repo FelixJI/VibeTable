@@ -76,6 +76,15 @@ Host 回复的 future；`plugin.getTask` 已从 Python 退役，`plugin.cancelTa
 非终态任务立即结算为 `aborted`，错误码 `plugin_task_aborted` 并明确 `commitOutcome: unknown`，不宣称零写入也不自动重放；
 待确认交互与原生文件选择晚返回按代际拒绝，Host 文件 grant 撤销仍由 `HostSessionFileBroker` 的 Retire/DrainCompletion 观察。
 安装计划继续复用 `HostInstallPlanLeaseRegistry`（旧 plan 仍要求重新 inspect）；插件 catalog/audit/私有设置持久化路径不变。
+确认登记同时核对 run/project/plugin/action/interactionId 和期限，并在 Host 原子消费；文件选择回包核对完整请求及 run 取消令牌。
+任务终态撤销该 run 的文件授权，transport dispose 等待已退休 broker 的 DrainCompletion，首个终止观察者异常不阻断其他 owner。
+Web 终态不可被迟到交互或任务回包复活，终态面板不再显示仍在等待的提示。
+
+#369 的本地真实候选 S11（`build/qa/task369-plugin-owner/20260924T045540Z/product-e2e-report.json`）通过：
+原生授权文件读写、明确确认后的单条提交、字段越权拒绝，以及待确认时杀掉已归属的 Python 子进程后公开 task.get 的
+aborted/unknown、旧 resolve 的 expired、既有成功不变和 Go query 可用。S17 同候选通过（`build/qa/task369-interface/20260924T045641Z/product-e2e-report.json`）。
+这两份报告先于终态提示文案修正；最终 PR CI、独立审阅及合并后门禁另由 Issue/PR 记录，不据此宣称 L7/L9 全部完成。
+
 
 ## 维护规则
 

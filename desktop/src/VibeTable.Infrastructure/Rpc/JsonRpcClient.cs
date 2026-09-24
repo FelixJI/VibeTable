@@ -346,13 +346,16 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
     private void RaiseTerminated()
     {
         if (Interlocked.Exchange(ref _terminatedRaised, 1) != 0) return;
-        try
+        if (Terminated is not { } observers) return;
+        foreach (Action observer in observers.GetInvocationList())
         {
-            Terminated?.Invoke();
-        }
-        catch
-        {
-            // Observer failures must not break transport teardown.
+            try { observer(); }
+            catch (Exception error)
+            {
+                try { System.Diagnostics.Trace.TraceError(
+                    $"JSON-RPC termination observer failed: {error}"); }
+                catch { /* Diagnostics cannot interrupt remaining owners. */ }
+            }
         }
     }
 

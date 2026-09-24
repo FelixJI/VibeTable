@@ -547,6 +547,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         CancellationToken token)
     {
         HostPluginTaskBinding binding = CaptureTaskBinding();
+        if (request.ProjectKey != binding.Context.ProjectKey
+            || request.Context.ProjectKey != binding.Context.ProjectKey) throw StaleTask();
         string taskId = $"plugin-task-{Guid.NewGuid():N}"[..24];
         string runId = $"plugin-run-{Guid.NewGuid():N}"[..23];
         PluginRuntimeTaskSnapshot queued = new(
@@ -573,10 +575,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         catch (Exception)
         {
-            PostSingleSettlement(_taskRegistry.FailTask(
-                taskId,
-                "plugin_task_start_failed",
-                "插件任务未能启动，请重试。"));
+            PostSingleSettlement(_taskRegistry.AbortTask(taskId));
             throw;
         }
         if (!_taskRegistry.TryApplyStartResult(binding.Gateway, reported))
@@ -584,6 +583,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             SafeDiagnosticTrace(
                 "Plugin action start was rejected as stale; " +
                 $"taskId={taskId}");
+            PostSingleSettlement(_taskRegistry.AbortTask(taskId));
             await ObserveCancelAsync(
                 () => binding.Gateway.CancelTaskAsync(
                     new PluginTaskParams(taskId),
@@ -595,7 +595,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         // task before the start response arrived.
         return _taskRegistry.TryGetTask(taskId, out PluginRuntimeTaskSnapshot current)
             ? current
-            : reported;
+            : throw StaleTask();
     }
 
     /// <summary>
@@ -627,6 +627,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         if (outcome == HostPluginTaskCancelOutcome.NotFound) throw UnknownTask();
         if (outcome == HostPluginTaskCancelOutcome.Active)
         {
+            _ = ObserveRevokeRunAsync(binding.Gateway, snapshot.RunId);
             await ObserveCancelAsync(
                 () => binding.Gateway.CancelTaskAsync(request, token)).ConfigureAwait(false);
         }
@@ -642,12 +643,13 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginResolveInteractionParams request,
         CancellationToken token)
     {
-        IPluginRpcGateway? gateway = _taskRegistry.TryBeginInteractionResolve(request.RunId);
-        if (gateway is null)
-        {
-            return new PluginRuntimeInteractionResolveResult("expired", null);
-        }
-        return await gateway.ResolveInteractionAsync(request, token).ConfigureAwait(false);
+        PluginRuntimeInteractionResolveResult decision =
+            _taskRegistry.BeginInteractionResolve(request, out IPluginRpcGateway? gateway);
+        if (gateway is null) return decision;
+        // Python only wakes the execution future. Host has already consumed
+        // the public decision; transport failure cannot turn it into a retry.
+        await gateway.ResolveInteractionAsync(request, token).ConfigureAwait(false);
+        return decision;
     }
 
     private async Task ObserveCancelAsync(
@@ -793,6 +795,9 @@ public sealed class PluginRequestDispatcher : IDisposable
                 $"taskId={envelope.EntityId}");
             return;
         }
+        if (projected.Snapshot.Deserialize<PluginRuntimeTaskSnapshot>(JsonOptions) is { } task
+            && task.State is ("succeeded" or "failed" or "cancelled" or "aborted"))
+            _ = ObserveRevokeRunAsync(gateway, task.RunId);
         _reply.PostNotification("plugin.task.changed", projected);
     }
 
@@ -817,6 +822,8 @@ public sealed class PluginRequestDispatcher : IDisposable
     {
         foreach (HostPluginTaskSettlement settlement in settlements)
         {
+            _ = ObserveRevokeRunAsync(
+                _taskRegistry.GatewayForTask(settlement.Snapshot.TaskId), settlement.Snapshot.RunId);
             _reply.PostNotification("plugin.task.changed", settlement.Envelope);
         }
     }
@@ -825,10 +832,22 @@ public sealed class PluginRequestDispatcher : IDisposable
     {
         if (settlement is not null)
         {
+            _ = ObserveRevokeRunAsync(
+                _taskRegistry.GatewayForTask(settlement.Snapshot.TaskId), settlement.Snapshot.RunId);
             _reply.PostNotification("plugin.task.changed", settlement.Envelope);
         }
     }
 
+    private async Task ObserveRevokeRunAsync(IPluginRpcGateway? gateway, string runId)
+    {
+        if (gateway is null) return;
+        try { await gateway.RevokeRunFileGrantsAsync(runId).ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            SafeTrace(() => Trace.TraceError(
+                $"Plugin run file grant cleanup failed: {ex}"));
+        }
+    }
     private async void OnFileRequested(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
     {
         string? selectedPath = null;
@@ -839,8 +858,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 HostPluginTaskRegistry.PluginTaskJson.Options)
                 ?? throw new JsonException("Plugin file request did not deserialize.");
             requestId = request.RequestId;
-            if (!_taskRegistry.RecordFileRequest(
-                    gateway, request.RequestId, request.RunId))
+            if (!_taskRegistry.RecordFileRequest(gateway, envelope, request))
             {
                 SafeDiagnosticTrace(
                     "Plugin file request was rejected; " +
@@ -851,7 +869,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 selectedPath = await _filePicker.PickAsync(request, CancellationToken.None);
             }
-            if (_taskRegistry.TryBeginFileResolve(request.RequestId) is not
+            if (_taskRegistry.TryBeginFileResolve(request, out CancellationToken runToken) is not
                 IPluginRpcGateway current)
             {
                 SafeDiagnosticTrace(
@@ -861,7 +879,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             await current.ResolveFileAsync(
                 request, selectedPath,
-                CancellationToken.None);
+                runToken);
         }
         catch (Exception ex)
         {

@@ -912,7 +912,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "plugin.host",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     },
     {
@@ -920,7 +920,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.host",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     },
     {
@@ -928,7 +928,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     },
     {

@@ -181,6 +181,37 @@ describe("pluginStore", () => {
     expect(store.pendingConfirmation).toBeNull();
   });
 
+  it("keeps a terminal task closed when older interaction or task events arrive", () => {
+    const store = usePluginStore();
+    const running: PluginTaskSnapshot = {
+      taskId: "task-sticky", runId: "run-sticky", pluginId: "com.acme.clean",
+      pluginVersion: "1.2.0", actionId: "normalize", projectKey: "local:default",
+      collection: "customers", targetCount: 1, risk: "write", state: "running",
+      cancelRequested: false, result: null, error: null,
+    };
+    const interaction: PluginInteractionSnapshot = {
+      runId: running.runId, projectKey: running.projectKey,
+      pluginId: running.pluginId, actionId: running.actionId,
+      caller: "desktop-host", progress: null, cancelRequested: false,
+      pendingConfirmation: {
+        interactionId: "late-confirm", risk: "write", title: "确认",
+        preview: { summary: [], sampleRows: [], affectedCount: 1, warnings: [] },
+        expiresAt: 1_800_000_000,
+      },
+    };
+    store.applyTask({ ...running, state: "aborted" }, 5);
+    store.applyInteraction(interaction, 9);
+    store.applyTask(running, 10);
+    expect(store.activeTask?.state).toBe("aborted");
+    expect(store.pendingConfirmation).toBeNull();
+
+    const early = usePluginStore();
+    early.applyInteraction({ ...interaction, runId: "run-before-task" }, 2);
+    early.applyTask({ ...running, taskId: "task-before", runId: "run-before-task",
+      state: "failed" }, 3);
+    expect(early.activeTask?.state).toBe("failed");
+    expect(early.pendingConfirmation).toBeNull();
+  });
   it("clears confirmation when a task reaches a terminal state", () => {
     const store = usePluginStore();
     const running: PluginTaskSnapshot = {

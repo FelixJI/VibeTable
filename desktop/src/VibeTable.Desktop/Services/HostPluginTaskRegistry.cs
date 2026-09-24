@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using VibeTable.Contracts;
 
 namespace VibeTable.Desktop.Services;
@@ -116,9 +117,15 @@ internal sealed class HostPluginTaskRegistry
         ArgumentNullException.ThrowIfNull(gateway);
         lock (_gate)
         {
-            return SettleLocked(
+            IReadOnlyList<HostPluginTaskSettlement> settled = SettleLocked(
                 record => ReferenceEquals(record.Binding.Gateway, gateway),
                 "backend-client-lost");
+            if (ReferenceEquals(_gateway, gateway))
+            {
+                _gateway = null;
+                _gatewayGeneration += 1;
+            }
+            return settled;
         }
     }
 
@@ -185,7 +192,7 @@ internal sealed class HostPluginTaskRegistry
         {
             if (!ReferenceEquals(_gateway, gateway)) return false;
             if (!_tasks.TryGetValue(reported.TaskId, out HostPluginTaskRecord? record)
-                || !ReferenceEquals(record.Binding.Gateway, gateway)
+                || !IsCurrentLocked(record.Binding)
                 || !HasSameIdentityLocked(record, reported))
             {
                 return false;
@@ -202,38 +209,16 @@ internal sealed class HostPluginTaskRegistry
         }
     }
 
-    /// <summary>Settles one admitted task to a failed terminal state.</summary>
-    public HostPluginTaskSettlement? FailTask(
-        string taskId,
-        string code,
-        string message)
+    /// <summary>Settles a start with an unknown commit outcome.</summary>
+    public HostPluginTaskSettlement? AbortTask(string taskId)
     {
         lock (_gate)
         {
-            if (!_tasks.TryGetValue(taskId, out HostPluginTaskRecord? record)
-                || IsTerminalLocked(record))
-            {
-                return null;
-            }
-            PluginRuntimeSafeError error = new(
-                "vibetable.plugin-error.v1",
-                code,
-                message,
-                "reconfigure",
-                record.Snapshot.PluginId,
-                record.Snapshot.ActionId,
-                record.Snapshot.RunId,
-                new Dictionary<string, JsonElement>(),
-                null);
-            record.Snapshot = record.Snapshot with { State = "failed", Error = error };
-            record.Revision += 1;
-            _interactions.Remove(record.Snapshot.RunId, out _);
-            return new HostPluginTaskSettlement(
-                ProjectLocked(record, "plugin.task.changed"),
-                record.Snapshot);
+            return SettleLocked(
+                record => record.Snapshot.TaskId == taskId,
+                "start-response-unavailable").FirstOrDefault();
         }
     }
-
     /// <summary>
     /// Applies one execution report from the gateway that produced it. Reports
     /// for unknown tasks, foreign identities or already-terminal tasks are
@@ -249,7 +234,7 @@ internal sealed class HostPluginTaskRegistry
         {
             if (!ReferenceEquals(_gateway, gateway)) return null;
             if (!_tasks.TryGetValue(envelope.EntityId, out HostPluginTaskRecord? record)
-                || !ReferenceEquals(record.Binding.Gateway, gateway))
+                || !IsCurrentLocked(record.Binding))
             {
                 return null;
             }
@@ -275,12 +260,19 @@ internal sealed class HostPluginTaskRegistry
             record.Revision += 1;
             if (IsTerminalLocked(record))
             {
-                _interactions.Remove(record.Snapshot.RunId, out _);
+                CancelLifetimeLocked(record);
+                ClearPendingLocked(record.Snapshot.RunId);
             }
             return ProjectLocked(record, envelope.EventType);
         }
     }
 
+    public IPluginRpcGateway? GatewayForTask(string taskId)
+    {
+        lock (_gate)
+            return _tasks.TryGetValue(taskId, out HostPluginTaskRecord? record)
+                ? record.Binding.Gateway : null;
+    }
     public bool TryGetTask(string taskId, out PluginRuntimeTaskSnapshot snapshot)
     {
         lock (_gate)
@@ -318,106 +310,155 @@ internal sealed class HostPluginTaskRegistry
             // terminal state that has already been recorded.
             record.Snapshot = record.Snapshot with { CancelRequested = true };
             record.Revision += 1;
+            CancelLifetimeLocked(record);
+            ClearPendingLocked(record.Snapshot.RunId);
             snapshot = record.Snapshot;
             return HostPluginTaskCancelOutcome.Active;
         }
     }
 
-    /// <summary>Records a pending confirmation owned by this workspace shell.</summary>
-    public bool RecordInteraction(
-        IPluginRpcGateway gateway,
-        PluginEventEnvelope envelope)
+    /// <summary>Accepts only a current run's complete pending confirmation.</summary>
+    public bool RecordInteraction(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(gateway);
         ArgumentNullException.ThrowIfNull(envelope);
+        PluginRuntimeInteractionSnapshot? snapshot;
+        try
+        {
+            snapshot = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(
+                PluginTaskJson.Options);
+        }
+        catch (JsonException) { return false; }
+        PluginRuntimePendingConfirmation? pending = snapshot?.PendingConfirmation;
+        if (snapshot is null || pending is null
+            || string.IsNullOrWhiteSpace(pending.InteractionId)
+            || pending.ExpiresAt <= Now()) return false;
         lock (_gate)
         {
-            if (!ReferenceEquals(_gateway, gateway)) return false;
-            if (!_tasksByRun.TryGetValue(envelope.EntityId, out HostPluginTaskRecord? record)
-                || !ReferenceEquals(record.Binding.Gateway, gateway)
-                || IsTerminalLocked(record))
-            {
-                return false;
-            }
-            _interactions[record.Snapshot.RunId] =
-                new HostPluginInteractionRecord(record.Snapshot.RunId, gateway);
+            if (!ReferenceEquals(_gateway, gateway)
+                || !_tasksByRun.TryGetValue(envelope.EntityId, out HostPluginTaskRecord? record)
+                || !IsCurrentLocked(record.Binding)
+                || IsTerminalLocked(record)
+                || record.Snapshot.CancelRequested
+                || envelope.ProjectKey != record.Snapshot.ProjectKey
+                || snapshot.RunId != record.Snapshot.RunId
+                || snapshot.ProjectKey != record.Snapshot.ProjectKey
+                || snapshot.PluginId != record.Snapshot.PluginId
+                || snapshot.ActionId != record.Snapshot.ActionId
+                || snapshot.Caller != "desktop-host") return false;
+            if (_interactions.TryGetValue(snapshot.RunId, out HostPluginInteractionRecord? existing)
+                && (existing.Decision is null
+                    || existing.InteractionId == pending.InteractionId)) return false;
+            _interactions[snapshot.RunId] = new HostPluginInteractionRecord(
+                record.Binding, pending.InteractionId, pending.ExpiresAt);
             return true;
         }
     }
 
-    /// <summary>
-    /// Admits a resolution only while its run is still pending on the current
-    /// gateway generation; late confirmations from retired generations are
-    /// rejected without reaching the executor.
-    /// </summary>
-    public IPluginRpcGateway? TryBeginInteractionResolve(string runId)
+    /// <summary>Atomically decides a current confirmation before contacting Python.</summary>
+    public PluginRuntimeInteractionResolveResult BeginInteractionResolve(
+        PluginResolveInteractionParams request, out IPluginRpcGateway? gateway)
     {
+        gateway = null;
         lock (_gate)
         {
-            if (!_interactions.TryGetValue(runId, out HostPluginInteractionRecord? pending)
-                || !ReferenceEquals(pending.Gateway, _gateway))
-            {
-                return null;
-            }
-            if (!_tasksByRun.TryGetValue(runId, out HostPluginTaskRecord? record)
-                || !ReferenceEquals(record.Binding.Gateway, _gateway)
+            if (!_interactions.TryGetValue(request.RunId, out HostPluginInteractionRecord? pending)
+                || pending.InteractionId != request.InteractionId
+                || !_tasksByRun.TryGetValue(request.RunId, out HostPluginTaskRecord? record)
+                || !ReferenceEquals(record.Binding, pending.Binding)
                 || !IsVisibleInCurrentContextLocked(record)
-                || IsTerminalLocked(record))
-            {
-                return null;
-            }
-            return pending.Gateway;
+                || !IsCurrentLocked(pending.Binding)
+                || IsTerminalLocked(record)
+                || record.Snapshot.CancelRequested) return new("expired", null);
+            if (pending.Decision is not null)
+                return new("already-resolved", pending.Decision);
+            if (pending.ExpiresAt <= Now()) return new("expired", null);
+            if (request.Decision is not ("approved" or "rejected"))
+                return new("expired", null);
+            pending.Decision = request.Decision;
+            gateway = pending.Binding.Gateway;
+            return new("resolved", request.Decision);
         }
     }
 
-    public bool RecordFileRequest(
-        IPluginRpcGateway gateway,
-        string requestId,
-        string runId)
+    public bool RecordFileRequest(IPluginRpcGateway gateway, PluginEventEnvelope envelope,
+        PluginRuntimeFileRequest request)
     {
         lock (_gate)
         {
-            if (!ReferenceEquals(_gateway, gateway)) return false;
-            if (!_tasksByRun.TryGetValue(runId, out HostPluginTaskRecord? record)
-                || !ReferenceEquals(record.Binding.Gateway, gateway)
-                || IsTerminalLocked(record))
-            {
-                return false;
-            }
-            _fileRequests[requestId] = new HostPluginFileRecord(requestId, runId, gateway);
+            if (!ReferenceEquals(_gateway, gateway)
+                || !_tasksByRun.TryGetValue(request.RunId, out HostPluginTaskRecord? record)
+                || !IsCurrentLocked(record.Binding)
+                || IsTerminalLocked(record)
+                || record.Snapshot.CancelRequested
+                || request.RequestId != envelope.EntityId
+                || request.ProjectKey != envelope.ProjectKey
+                || request.ProjectKey != record.Snapshot.ProjectKey
+                || request.PluginId != record.Snapshot.PluginId
+                || request.ActionId != record.Snapshot.ActionId
+                || request.Direction is not ("read" or "write")
+                || request.ExpiresAt <= Now()
+                || _fileRequests.ContainsKey(request.RequestId)) return false;
+            _fileRequests.Add(request.RequestId, new HostPluginFileRecord(
+                record.Binding, request));
             return true;
         }
     }
 
-    /// <summary>
-    /// Consumes one native picker result only while its request is still
-    /// pending on the current gateway generation; a picker that returns after
-    /// the executor generation died is dropped without issuing a grant.
-    /// </summary>
-    public IPluginRpcGateway? TryBeginFileResolve(string requestId)
+    /// <summary>Consumes the exact live request before a path grant can be issued.</summary>
+    public IPluginRpcGateway? TryBeginFileResolve(
+        PluginRuntimeFileRequest request, out CancellationToken runToken)
     {
+        runToken = CancellationToken.None;
         lock (_gate)
         {
-            if (!_fileRequests.TryGetValue(requestId, out HostPluginFileRecord? pending)
-                || !ReferenceEquals(pending.Gateway, _gateway))
-            {
-                return null;
-            }
-            if (!_tasksByRun.TryGetValue(pending.RunId, out HostPluginTaskRecord? record)
-                || !ReferenceEquals(record.Binding.Gateway, _gateway)
-                || IsTerminalLocked(record))
-            {
-                return null;
-            }
-            return pending.Gateway;
+            if (!_fileRequests.TryGetValue(request.RequestId, out HostPluginFileRecord? pending)
+                || pending.Consumed
+                || pending.Request != request
+                || !_tasksByRun.TryGetValue(request.RunId, out HostPluginTaskRecord? record)
+                || !ReferenceEquals(record.Binding, pending.Binding)
+                || !IsCurrentLocked(pending.Binding)
+                || !IsVisibleInCurrentContextLocked(record)
+                || IsTerminalLocked(record)
+                || record.Snapshot.CancelRequested
+                || request.ExpiresAt <= Now()) return null;
+            pending.Consumed = true;
+            runToken = record.Lifetime.Token;
+            return pending.Binding.Gateway;
         }
     }
 
     public void ForgetFileRequest(string requestId)
     {
-        lock (_gate) _fileRequests.Remove(requestId, out _);
+        lock (_gate)
+        {
+            if (_fileRequests.TryGetValue(requestId, out HostPluginFileRecord? pending))
+                pending.Consumed = true;
+        }
     }
 
+    private static void CancelLifetimeLocked(HostPluginTaskRecord record)
+    {
+        // CancelAsync marks the token cancelled immediately and runs callbacks
+        // asynchronously, away from the registry gate.
+        Task cancellation = record.Lifetime.CancelAsync();
+        if (!cancellation.IsCompletedSuccessfully)
+            _ = cancellation.ContinueWith(
+                completed => System.Diagnostics.Trace.TraceError(
+                    $"Plugin task cancellation callback failed: {completed.Exception}"),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+    }
+    private static double Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+
+    private void ClearPendingLocked(string runId)
+    {
+        _interactions.Remove(runId);
+        foreach (string id in _fileRequests.Where(pair => pair.Value.Request.RunId == runId)
+            .Select(pair => pair.Key).ToArray())
+            _fileRequests.Remove(id);
+    }
     private IReadOnlyList<HostPluginTaskSettlement> SettleAllLocked(string reason)
         => SettleLocked(_ => true, reason);
 
@@ -445,7 +486,8 @@ internal sealed class HostPluginTaskRegistry
                 null);
             record.Snapshot = record.Snapshot with { State = "aborted", Error = error };
             record.Revision += 1;
-            _interactions.Remove(record.Snapshot.RunId, out _);
+            CancelLifetimeLocked(record);
+            ClearPendingLocked(record.Snapshot.RunId);
             settled.Add(new HostPluginTaskSettlement(
                 ProjectLocked(record, "plugin.task.changed"),
                 record.Snapshot));
@@ -488,7 +530,8 @@ internal sealed class HostPluginTaskRegistry
             if (_tasks.Count <= MaxTrackedTasks) break;
             _tasks.Remove(candidate.Snapshot.TaskId);
             _tasksByRun.Remove(candidate.Snapshot.RunId);
-            _interactions.Remove(candidate.Snapshot.RunId);
+            ClearPendingLocked(candidate.Snapshot.RunId);
+            candidate.Lifetime.Dispose();
         }
     }
 
@@ -526,16 +569,25 @@ internal sealed class HostPluginTaskRegistry
         public int Revision { get; set; } = revision;
         public long Order { get; } = System.Threading.Interlocked.Increment(ref _orderCounter);
         public bool ExecutionReportSeen { get; set; }
+        public CancellationTokenSource Lifetime { get; } = new();
     }
 
     private static long _orderCounter;
 
-    private sealed record HostPluginInteractionRecord(
-        string RunId,
-        IPluginRpcGateway Gateway);
+    private sealed class HostPluginInteractionRecord(
+        HostPluginTaskBinding binding, string interactionId, double expiresAt)
+    {
+        public HostPluginTaskBinding Binding { get; } = binding;
+        public string InteractionId { get; } = interactionId;
+        public double ExpiresAt { get; } = expiresAt;
+        public string? Decision { get; set; }
+    }
 
-    private sealed record HostPluginFileRecord(
-        string RequestId,
-        string RunId,
-        IPluginRpcGateway Gateway);
+    private sealed class HostPluginFileRecord(
+        HostPluginTaskBinding binding, PluginRuntimeFileRequest request)
+    {
+        public HostPluginTaskBinding Binding { get; } = binding;
+        public PluginRuntimeFileRequest Request { get; } = request;
+        public bool Consumed { get; set; }
+    }
 }

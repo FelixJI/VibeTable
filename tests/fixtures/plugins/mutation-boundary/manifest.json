@@ -17,15 +17,24 @@
     "data": [
       {
         "collection": "$active",
-        "operations": ["read", "create", "update"],
+        "operations": [
+          "read",
+          "create",
+          "update"
+        ],
         "fields": []
       }
     ],
-    "files": [],
+    "files": [
+      "pickRead",
+      "pickWrite"
+    ],
     "privateStorage": false,
     "network": {
       "domains": [],
-      "methods": ["GET"]
+      "methods": [
+        "GET"
+      ]
     }
   },
   "actions": [
@@ -40,7 +49,9 @@
       "mode": "local",
       "risk": "write",
       "invocation": "manual",
-      "placements": ["table.toolbar"],
+      "placements": [
+        "table.toolbar"
+      ],
       "requires": {
         "selection": "none"
       },
@@ -60,7 +71,9 @@
       "mode": "local",
       "risk": "write",
       "invocation": "manual",
-      "placements": ["table.toolbar"],
+      "placements": [
+        "table.toolbar"
+      ],
       "requires": {
         "selection": "none"
       },
@@ -68,6 +81,28 @@
       "formSchema": "schemas/empty.json",
       "inputSchema": "schemas/empty.json",
       "outputSchema": "schemas/result.json"
+    },
+    {
+      "actionId": "files-roundtrip",
+      "displayName": {
+        "zh-CN": "读取数据并验证原生文件授权"
+      },
+      "description": {
+        "zh-CN": "通过原生授权读取并复制测试文件"
+      },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "workers/files.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/files-result.json"
     }
   ],
   "ui": {

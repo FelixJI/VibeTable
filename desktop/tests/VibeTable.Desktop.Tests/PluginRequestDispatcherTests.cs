@@ -1118,6 +1118,7 @@ public sealed class PluginRequestDispatcherTests
         await dispatcher.DispatchAsync(Request(
             "plugin.action.start", "start-file-capability", StartActionPayload));
 
+        dispatcher.SetWorkspaceContext(ReadyContext());
         gateway.RaiseFileRequested();
         await gateway.FileResolution.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
@@ -1330,6 +1331,81 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task HostConfirmationUsesExactIdentityAndSingleDecision()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply, surfaces, new FakePluginPackageSourcePicker(null),
+            resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-exact-confirm", StartActionPayload));
+        string runId = AssertIsTaskSnapshot(reply.Payload).RunId;
+        gateway.RaiseInteractionRequested(runId);
+
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "wrong-confirm",
+            $$"""{"runId":"{{runId}}","interactionId":"wrong","decision":"approved"}"""));
+        Assert.AreEqual("expired",
+            Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload).Status);
+        Assert.AreEqual(0, gateway.ResolveInteractionCalls);
+
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "first-confirm",
+            $$"""{"runId":"{{runId}}","interactionId":"interaction-1","decision":"approved"}"""));
+        Assert.AreEqual("approved",
+            Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload).Decision);
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "repeat-confirm",
+            $$"""{"runId":"{{runId}}","interactionId":"interaction-1","decision":"rejected"}"""));
+        var repeated = Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload);
+        Assert.AreEqual("already-resolved", repeated.Status);
+        Assert.AreEqual("approved", repeated.Decision);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+    }
+
+    [TestMethod]
+    public async Task ForeignStartContextNeverReachesExecutor()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply, surfaces, new FakePluginPackageSourcePicker(null),
+            resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        string foreign = StartActionPayload.Replace(
+            """context":{"contract":"vibetable.command-context.v1","projectKey":"project-1" """.Trim(),
+            """context":{"contract":"vibetable.command-context.v1","projectKey":"foreign" """.Trim(),
+            StringComparison.Ordinal);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "foreign-context", foreign));
+        Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
+        Assert.IsFalse(gateway.StartCalled.Task.IsCompleted);
+    }
+
+    [TestMethod]
+    public async Task FileRequestCannotBeReplayedAfterItsNativeResolution()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply, surfaces, new FakePluginPackageSourcePicker(null),
+            resources, new FakePluginFilePicker(@"C:\trusted\output.csv"),
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-file-once", StartActionPayload));
+        gateway.RaiseFileRequested();
+        await gateway.FileResolution.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        gateway.RaiseFileRequested();
+        Assert.AreEqual(1, gateway.FileResolutions);
+    }
+    [TestMethod]
     public async Task NativeFileSelectionReturningAfterGenerationLossIsDropped()
     {
         var pickerGate = new TaskCompletionSource<string?>(
@@ -1350,6 +1426,7 @@ public sealed class PluginRequestDispatcherTests
         await dispatcher.DispatchAsync(Request(
             "plugin.action.start", "start-file", StartActionPayload));
 
+        dispatcher.SetWorkspaceContext(ReadyContext());
         gateway.RaiseFileRequested();
         dispatcher.SetGateway(replacement);
         pickerGate.TrySetResult(@"C:\trusted\late.csv");
@@ -1731,7 +1808,7 @@ public sealed class PluginRequestDispatcherTests
         {
             var request = new PluginRuntimeFileRequest(
                 "file-1", LastStarted.RunId, "project-1", CatalogSnapshot.PluginId,
-                "export", "write", [], "plugin-output.csv", "text/csv", 1_800_000_000);
+                LastStarted.ActionId, "write", [], "plugin-output.csv", "text/csv", 1_800_000_000);
             _fileRequested?.Invoke(new PluginEventEnvelope(
                 PluginContractVersions.Event,
                 "plugin.file.requested",

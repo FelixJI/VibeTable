@@ -5075,6 +5075,26 @@ async function scenario11(page, recorder, _network, runtime) {
       && await page.locator(".action-row button.run-button").first().isEnabled());
 
   const actions = page.locator(".action-row");
+  await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
+  await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
+  await page.getByTestId("plugin-action-start").click();
+  const fileStart = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("native file action received a Host task identity",
+    fileStart.type === "plugin.action.start" && Boolean(fileStart.payload?.taskId), { fileStart });
+  await page.locator(".result-card").waitFor({ timeout: 30_000 });
+  const fileTask = await rawBridgeRequest(page, "plugin.task.get", {
+    taskId: fileStart.payload.taskId,
+  });
+  const sourceBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-read-source.txt"));
+  const writtenBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-write-result.txt"));
+  recorder.check("native file grants completed read and write without exposing paths",
+    fileTask.payload?.state === "succeeded"
+      && fileTask.payload?.runId === fileStart.payload.runId
+      && fileTask.payload?.result?.table?.data?.rows === 0
+      && fileTask.payload?.result?.table?.data?.bytes === sourceBytes.length
+      && sourceBytes.equals(writtenBytes), { fileTask });
+  await page.getByTestId("plugin-action-close").click();
+
   await actions.filter({ hasText: "allowed-plan" }).locator("button.run-button").click();
   await page.getByTestId("plugin-action-start").click();
   const confirmation = page.getByTestId("plugin-confirmation");
@@ -5151,6 +5171,80 @@ async function scenario11(page, recorder, _network, runtime) {
       && await page.getByTestId("plugin-install-plan").isHidden()
       && (await page.locator(".status-strip").innerText()).includes("1.0.0"),
   { message: await upgradeFailure.innerText() });
+
+  // Hold a real confirmation open while its Python execution process exits.
+  // Host owns the public terminal state and must reject the old decision.
+  await actions.filter({ hasText: "allowed-plan" }).locator("button.run-button").click();
+  const pendingCapture = await page.evaluateHandle(() => {
+    const capture = { snapshot: null, release: null };
+    const listener = (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      const snapshot = message?.payload?.snapshot;
+      if (message?.type !== "plugin.interaction.requested"
+        || snapshot?.actionId !== "allowed-plan" || !snapshot.pendingConfirmation) return;
+      capture.snapshot = snapshot;
+    };
+    window.chrome.webview.addEventListener("message", listener);
+    capture.release = () => window.chrome.webview.removeEventListener("message", listener);
+    return capture;
+  });
+  try {
+    await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
+    await page.getByTestId("plugin-action-start").click();
+    const pendingStart = await waitForCapturedBridgeMessage(page, 30_000);
+    recorder.check("pending mutation has a Host task identity before process exit",
+      pendingStart.type === "plugin.action.start" && Boolean(pendingStart.payload?.taskId),
+      { pendingStart });
+    await confirmation.waitFor({ timeout: 30_000 });
+    const interaction = await pendingCapture.evaluate((capture) => capture.snapshot);
+    recorder.check("pending confirmation belongs to the same task run",
+      interaction?.runId === pendingStart.payload.runId
+        && Boolean(interaction?.pendingConfirmation?.interactionId), { interaction });
+    await requestPackagedProcessKill(runtime, "kill-backend", "plugin-pending-confirmation-owner");
+    const deadline = Date.now() + 30_000;
+    let abortedTask;
+    do {
+      abortedTask = await rawBridgeRequest(page, "plugin.task.get", {
+        taskId: pendingStart.payload.taskId,
+      });
+      if (abortedTask.payload?.state === "aborted") break;
+      await page.waitForTimeout(100);
+    } while (Date.now() < deadline);
+    recorder.check("Host preserves an explicit unknown-commit terminal after Python exits",
+      abortedTask.payload?.state === "aborted"
+        && abortedTask.payload?.runId === pendingStart.payload.runId
+        && abortedTask.payload?.error?.code === "plugin_task_aborted"
+        && abortedTask.payload?.error?.details?.commitOutcome === "unknown", { abortedTask });
+    await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
+    recorder.check("terminal task UI no longer waits for runtime updates",
+      !(await page.locator(".task-card").innerText()).includes("等待运行时更新"));
+    const oldDecision = await rawBridgeRequest(page, "plugin.interaction.resolve", {
+      runId: interaction.runId,
+      interactionId: interaction.pendingConfirmation.interactionId,
+      decision: "approved",
+    });
+    recorder.check("old confirmation cannot authorize work after its execution process exits",
+      oldDecision.payload?.status === "expired", { oldDecision });
+    const settledFileTask = await rawBridgeRequest(page, "plugin.task.get", {
+      taskId: fileStart.payload.taskId,
+    });
+    recorder.check("a confirmed successful task remains successful after Python exits",
+      settledFileTask.payload?.state === "succeeded", { settledFileTask });
+    const remainingRows = await rawBridgeRequest(page, "query.page", {
+      tableId: pluginTable.tableId,
+      query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    recorder.check("Go query remains available and the unapproved mutation was not replayed",
+      remainingRows.type === "query.page" && remainingRows.payload?.totalRows === 1,
+      { remainingRows });
+  } finally {
+    await pendingCapture.evaluate((capture) => capture.release());
+    await pendingCapture.dispose();
+  }
+
 }
 
 async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {

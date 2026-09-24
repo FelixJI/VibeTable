@@ -47,6 +47,7 @@ public interface IPluginRpcGateway : IDisposable
         PluginResolveInteractionParams request, CancellationToken token);
     Task<bool> ResolveFileAsync(
         PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token);
+    Task RevokeRunFileGrantsAsync(string runId) => Task.CompletedTask;
     Task<bool> CancelTaskAsync(
         PluginTaskParams request, CancellationToken token);
 }

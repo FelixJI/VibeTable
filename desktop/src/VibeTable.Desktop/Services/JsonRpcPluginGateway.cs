@@ -16,11 +16,14 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
     private readonly JsonRpcClient _client;
     private bool _disposed;
     private readonly Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? _issueFile;
+    private readonly Func<string, Task>? _revokeRun;
 
     public JsonRpcPluginGateway(JsonRpcClient client,
-        Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? issueFile = null)
+        Func<PluginRuntimeFileRequest, string, CancellationToken, Task<JsonElement>>? issueFile = null,
+        Func<string, Task>? revokeRun = null)
     {
         _issueFile = issueFile;
+        _revokeRun = revokeRun;
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _client.NotificationReceived += OnNotificationReceived;
     }
@@ -118,6 +121,8 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
             new PluginResolveFileParams(request.RequestId, grant), token).ConfigureAwait(false);
     }
 
+    public Task RevokeRunFileGrantsAsync(string runId)
+        => _revokeRun?.Invoke(runId) ?? Task.CompletedTask;
     public Task<bool> CancelTaskAsync(
         PluginTaskParams request, CancellationToken token)
         => InvokeAsync<PluginTaskParams, bool>(
