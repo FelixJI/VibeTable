@@ -29,6 +29,8 @@ def qualification_executable() -> Path:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=180,
     )
     return ARTIFACTS / "bin/PdfAdapterQualification/release/PdfAdapterQualification.exe"
@@ -198,6 +200,124 @@ def test_structure_discovery_pdf_fixtures(
         assert result["errorCode"] == "extract.unsupported"
     assert "A6 UNREACHABLE POISON" not in result["text"]
     if result["status"] == "indexed":
+        assert token in result["text"]
+    else:
+        assert result["text"] == ""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("filename", "pages", "tokens"),
+    [
+        ("independent-reportlab-form-reused.pdf", 1, {"A6FORMVISIBLE": 2}),
+        ("independent-pypdf-merged-rotated.pdf", 2, {"A6PAGEONE": 1, "A6PAGETWO": 1}),
+    ],
+)
+def test_independent_producer_page_structures(
+    qualification_executable: Path,
+    pdf_corpus: Path,
+    filename: str,
+    pages: int,
+    tokens: dict[str, int],
+) -> None:
+    completed = subprocess.run(
+        [
+            str(qualification_executable),
+            "--run",
+            str(pdf_corpus / filename),
+            "--memory-mib",
+            "1024",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    observation = json.loads(completed.stdout)
+    assert observation["allProcessesExited"] is True
+    assert observation["workerReason"] == "Succeeded"
+    assert observation["parsedPages"] == pages
+    assert observation["warningCount"] == 0
+    result = observation["result"]
+    assert result["status"] == "indexed"
+    assert result["errorCode"] is None
+    for token, count in tokens.items():
+        assert result["text"].count(token) == count
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "independent-rc4-128-empty-user-password.pdf",
+        "independent-aes-128-empty-user-password.pdf",
+    ],
+)
+def test_independent_producer_empty_password_security_handlers(
+    qualification_executable: Path, pdf_corpus: Path, filename: str
+) -> None:
+    completed = subprocess.run(
+        [
+            str(qualification_executable),
+            "--run",
+            str(pdf_corpus / filename),
+            "--memory-mib",
+            "1024",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    observation = json.loads(completed.stdout)
+    assert observation["allProcessesExited"] is True
+    assert observation["workerReason"] == "Succeeded"
+    result = observation["result"]
+    assert result["status"] == "passwordProtected"
+    assert result["errorCode"] == "extract.password_required"
+    assert result["text"] == ""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("filename", "status", "token", "has_warning"),
+    [
+        ("missing-glyph-mapping.pdf", "unsupported", "", True),
+        ("nonidentity-tounicode-cjk.pdf", "indexed", "数据工作", False),
+    ],
+)
+def test_missing_glyph_warning_and_complete_mapping(
+    qualification_executable: Path,
+    pdf_corpus: Path,
+    filename: str,
+    status: str,
+    token: str,
+    has_warning: bool,
+) -> None:
+    completed = subprocess.run(
+        [
+            str(qualification_executable),
+            "--run",
+            str(pdf_corpus / filename),
+            "--memory-mib",
+            "1024",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    observation = json.loads(completed.stdout)
+    assert observation["allProcessesExited"] is True
+    assert observation["workerReason"] == "Succeeded"
+    assert observation["parsedPages"] == 1
+    assert (observation["warningCount"] > 0) is has_warning
+    result = observation["result"]
+    assert result["status"] == status
+    if token:
         assert token in result["text"]
     else:
         assert result["text"] == ""

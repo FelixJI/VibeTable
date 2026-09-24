@@ -64,6 +64,8 @@ internal static class Program
         {
             file = Path.GetFileName(source),
             result = new { result.Status, result.Text, result.ErrorCode },
+            parsedPages = result.ParsedPages,
+            warningCount = result.WarningCount,
             elapsedMilliseconds = (long)run.WallTime.TotalMilliseconds,
             cpuMilliseconds = run.CpuTime.TotalMilliseconds,
             peakJobMemoryBytes = run.PeakJobMemoryBytes,

@@ -423,6 +423,47 @@
       "reason": "pypdf 6.10.0 以空用户密码和非空 owner password 生成的 AES PDF；不得静默绕过。"
     },
     {
+      "file": "independent-reportlab-form-reused.pdf",
+      "tier": "DISCOVERY",
+      "expectedStatuses": ["indexed"],
+      "requiredTokensWhenIndexed": ["A6FORMVISIBLE"],
+      "expectedCodePoints": 26,
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "ReportLab 4.4.9 生成合法 Form XObject 并在同页调用两次；可见 token 必须出现两次。"
+    },
+    {
+      "file": "independent-pypdf-merged-rotated.pdf",
+      "tier": "MUST",
+      "expectedStatuses": ["indexed"],
+      "requiredTokensWhenIndexed": ["A6PAGEONE", "A6PAGETWO"],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "reason": "pypdf 6.10.0 合并两份 ReportLab 单页源并旋转第二页；两页可见 token 均须保留。"
+    },
+    {
+      "file": "independent-rc4-128-empty-user-password.pdf",
+      "tier": "MUST",
+      "expectedStatuses": ["passwordProtected"],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.password_required",
+      "reason": "pypdf 6.10.0 以 RC4-128、空 user password 和非空 owner password 生成；不得自动打开并索引正文。"
+    },
+    {
+      "file": "independent-aes-128-empty-user-password.pdf",
+      "tier": "MUST",
+      "expectedStatuses": ["passwordProtected"],
+      "requiredTokensWhenIndexed": [],
+      "forbiddenTokens": [],
+      "emptyTextOnRejection": true,
+      "expectedCodePoints": 0,
+      "expectedErrorCode": "extract.password_required",
+      "reason": "pypdf 6.10.0 以 AES-128、空 user password 和非空 owner password 生成；不得自动打开并索引正文。"
+    },
+    {
       "file": "structure-object-stream.pdf",
       "tier": "DISCOVERY",
       "expectedStatuses": ["indexed", "unsupported"],
@@ -478,10 +519,10 @@
     }
   ],
   "remainingCoverage": [
-    "独立生产者覆盖目前仅限四份自有 ReportLab/pypdf 小样本；真实复杂生产者仍缺失",
+    "独立生产者覆盖目前仅限八份自有 ReportLab/pypdf 小样本；真实复杂生产者仍缺失",
     "object streams and predictors",
     "input/output exact-edge and deadline/cancellation boundaries",
-    "加密覆盖目前仅限两份自有 AES 小样本；真实复杂加密生产者和安全 handler 组合仍缺失",
+    "加密覆盖目前仅限四份自有 AES/RC4 小样本；真实复杂加密生产者和安全 handler 组合仍缺失",
     "对象流、Predictor 及深层/循环页树目前各限一份自有结构样本；真实复杂生产者组合仍缺失",
     "product status mapping and generation transaction"
   ]

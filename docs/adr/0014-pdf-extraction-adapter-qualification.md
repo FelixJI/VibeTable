@@ -46,3 +46,14 @@ Apache-2.0、MIT 及 PdfPig 捆绑资源的完整 NOTICE、SPDX/SBOM、离线 Wi
 
 当前文档可独立回滚，不改变产品行为。若候选不能满足任一采用条件，保留负证据并回到方案比较，不能把
 MUST 降成不支持、降低门禁或仅以生成样本通过结束 A6。
+
+## 2026-09-24 复核建议（#351）
+
+建议保留当前产品接线，继续不采纳 PdfPig 候选；本 ADR 维持提议状态。
+[本轮资格评估](../research/2026-09-10-pdf-adapter-runtime-qualification.md#2026-09-24-351-产品采用评估)
+区分了缺字 warning 拒绝、合法 Predictor 误拒、产品 source/revision 授权与 generation 事务缺口，
+并列出候选 DLL 的实验压缩成本及实际分发的许可/SBOM缺口。保守全拒不能替代支持范围资格，
+1 GiB 实验参数也不自动成为产品默认。旧扫描器已有 MUST 差距保持开放，不通过缩窄承诺宣布完成。
+
+若后续证据支持采用，单独建立产品集成 Task，验证任务输入能力、迟到结果/取消/崩溃结算、事务推进及
+同一 Windows x64 候选的包体、启动资源、NOTICE/SBOM；不得在资格 PR 中直接替换生产 adapter。
