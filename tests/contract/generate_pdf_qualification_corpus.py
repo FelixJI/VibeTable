@@ -9,6 +9,10 @@ PRODUCER_FIXTURES = (
     "independent-reportlab-flate.pdf",
     "independent-aes-user-password.pdf",
     "independent-aes-empty-user-password.pdf",
+    "independent-reportlab-form-reused.pdf",
+    "independent-pypdf-merged-rotated.pdf",
+    "independent-rc4-128-empty-user-password.pdf",
+    "independent-aes-128-empty-user-password.pdf",
 )
 
 
