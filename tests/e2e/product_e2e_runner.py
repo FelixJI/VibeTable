@@ -40,6 +40,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from qa.package_check import check_package  # noqa: E402
+from qa.product_scenario_manifest import (  # noqa: E402
+    Scenario,
+    load_scenarios,
+    select_scenarios,
+)
 from scripts.build_next import RepoPaths  # noqa: E402
 from scripts.node_toolchain import ensure_node  # noqa: E402
 from scripts.qa._windows_tcp_table import query_windows_tcp_table  # noqa: E402
@@ -50,11 +55,6 @@ from scripts.qa.windows_process_scope import (  # noqa: E402
     ScopeWaitResult,
     TargetTerminationResult,
     WindowsProcessScope,
-)
-from tests.e2e.product_scenario_manifest import (  # noqa: E402
-    Scenario,
-    load_scenarios,
-    select_scenarios,
 )
 from tests.e2e.windows_tcp_listener_owner import (  # noqa: E402
     OwnerLeaseCleanupReport,

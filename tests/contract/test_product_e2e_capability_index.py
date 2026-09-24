@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from qa.product_scenario_manifest import Scenario
 from scripts import generate_product_e2e_capability_index as capability_index
 from tests.e2e.product_e2e_runner import write_aggregate
-from tests.e2e.product_scenario_manifest import Scenario
 
 
 def _write_manifest(path: Path, scenarios: list[Scenario]) -> None:

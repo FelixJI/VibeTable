@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from qa import release_eligibility
-from tests.e2e.product_scenario_manifest import Scenario, load_scenarios
+from qa.product_scenario_manifest import Scenario, load_scenarios
 
 
 def _identity() -> dict[str, object]:
@@ -318,3 +320,17 @@ def test_aggregate_reports_rejects_missing_or_duplicate_lanes(
             tmp_path / "VibeTable.Next",
             tmp_path / "candidate.zip",
         )
+
+
+@pytest.mark.parametrize("entrypoint", ["qa/next.py", "qa/release_eligibility.py"])
+def test_release_entrypoints_start_without_site_packages(entrypoint: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-S", entrypoint, "--help"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "usage:" in completed.stdout

@@ -39,7 +39,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
         product_e2e_partition,
     )
 
-from tests.e2e.product_scenario_manifest import load_scenarios
+from qa.product_scenario_manifest import load_scenarios
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"

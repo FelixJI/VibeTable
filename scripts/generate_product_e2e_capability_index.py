@@ -57,7 +57,7 @@ _TRUSTED_REPOSITORY_IDENTITY = ("github.com", "felixji", "vibetable")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tests.e2e.product_scenario_manifest import (  # noqa: E402
+from qa.product_scenario_manifest import (  # noqa: E402
     SCENARIO_ID_PATTERN_TEXT,
     Scenario,
     load_scenarios,
