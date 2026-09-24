@@ -31,6 +31,7 @@
     "web-build",
     "fault-injection",
     "product-e2e",
+    "product-e2e-data-io",
     "runtime-baseline",
     "workbench-qualification",
     "smoke"

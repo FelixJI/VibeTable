@@ -4,6 +4,7 @@ import ctypes
 import json
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from ctypes import wintypes
@@ -398,16 +399,31 @@ def test_scope_close_attempts_every_owned_handle_and_retries_failures() -> None:
 
 
 def test_repeated_launch_and_close_does_not_leak_parent_handles() -> None:
-    _launch_and_close_batch(3)
-    baseline = _current_process_handle_count()
-
-    _launch_and_close_batch(16)
-    after_first_batch = _current_process_handle_count()
-    _launch_and_close_batch(16)
-    after_second_batch = _current_process_handle_count()
-
-    assert after_first_batch == baseline
-    assert after_second_batch == baseline
+    # The parent of the measured launches must not also host the full pytest
+    # suite's native runtimes and background activity. Keep the exact zero-growth
+    # assertion, with the same warmup and batches, in one dedicated parent process.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json; "
+            "from tests.e2e.test_windows_process_scope_integration import "
+            "_launch_and_close_batch as batch, _current_process_handle_count as count; "
+            "batch(3); baseline = count(); "
+            "batch(16); first = count(); "
+            "batch(16); second = count(); "
+            "print(json.dumps([baseline, first, second]))",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=90,
+        check=True,
+    )
+    baseline, after_first_batch, after_second_batch = json.loads(probe.stdout)
+    assert after_first_batch == baseline, probe.stdout
+    assert after_second_batch == baseline, probe.stdout
 
 
 def test_job_member_query_expands_the_pid_buffer_to_the_reported_size() -> None:

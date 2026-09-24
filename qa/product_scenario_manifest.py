@@ -8,7 +8,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-SCENARIO_MANIFEST = Path(__file__).with_name("pocketbase_product_scenarios.json")
+SCENARIO_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "tests/e2e/pocketbase_product_scenarios.json"
+)
 
 
 @dataclass(frozen=True)
