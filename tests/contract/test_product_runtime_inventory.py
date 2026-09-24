@@ -129,6 +129,8 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "version.promote",
         "version.save",
         "schema.table.create",
+        "table.applyPaste",
+        "table.previewPaste",
         "settings.commitWorkCalendar",
         "settings.readWorkCalendar",
     }

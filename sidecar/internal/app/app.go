@@ -430,7 +430,10 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			contentMetadata := metadata.NewContentService(pb, querySource)
 			presets := metadata.NewPreset(pb)
 			surfaces := metadata.NewSurface(pb)
+			paste := newPasteOwner(schemaCatalog.Describe, queryPort, importvalue.New(fieldchange.NewCatalog(pb)), mutationKernel, businessGate, capabilities.WorkspaceID)
 			productRegistrations := []productrpc.Registration{
+				pastePreviewRegistration(paste),
+				pasteApplyRegistration(paste),
 				dashboardRegistration("insights.dashboardQueryLimits", dashboardService, businessGate),
 				dashboardRegistration("insights.deleteDashboardWorkspace", dashboardService, businessGate),
 				dashboardRegistration("insights.executeDashboardQuery", dashboardService, businessGate),

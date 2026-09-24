@@ -9,14 +9,15 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 internal sealed class HostProductRpcBinding(
     object runtime,
-    JsonRpcClient client,
+    JsonRpcClient? client,
     ProductSidecarGenerationSnapshot snapshot,
     ProductRpcRouteSelector routes,
-    Func<Func<bool>, bool> tryUseCurrent)
+    Func<Func<bool>, bool> tryUsePython,
+    Func<Func<bool>, bool>? tryUseGo = null)
 {
     private readonly object _runtime = runtime;
     private readonly ProductSidecarGenerationSnapshot _snapshot = snapshot;
-    internal JsonRpcClient Client { get; } = client;
+    internal JsonRpcClient? Client { get; } = client;
 
     internal bool Matches(HostProductRpcBinding other)
         => ReferenceEquals(_runtime, other._runtime)
@@ -29,5 +30,5 @@ internal sealed class HostProductRpcBinding(
     internal JsonRpcProductDataGateway CreateGateway(
         IWorkspaceHostEpochLeaseSource leases, HttpMessageHandler? handler = null)
         => new(new HostProductRpcInvoker(Client, _snapshot, leases,
-            tryUseCurrent, routes, handler));
+            tryUsePython, routes, handler, tryUseGo ?? tryUsePython));
 }

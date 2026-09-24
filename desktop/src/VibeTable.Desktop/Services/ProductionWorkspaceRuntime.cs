@@ -194,17 +194,22 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                     && (runtime.WorkspaceId != expectedSession.WorkspaceId
                         || runtime.SessionEpoch != expectedSession.SessionEpoch)))
                 return null;
-            HostProductRpcBinding? binding = null;
-            runtime.Backend.TryUseReadyClient(client =>
+            JsonRpcClient? client = null;
+            runtime.Backend.TryUseReadyClient(ready =>
             {
-                if (CaptureProductSidecarGeneration() is not { } snapshot)
-                    return false;
-                return snapshot.TryUseCurrent(() =>
-                {
-                    binding = new(runtime, client, snapshot, new ProductRpcRouteSelector(_productPolicy),
-                        action => TryUseHostProductBinding(runtime, client, snapshot, action));
-                    return true;
-                });
+                client = ready;
+                return true;
+            });
+            if (CaptureProductSidecarGeneration() is not { } snapshot)
+                return null;
+            HostProductRpcBinding? binding = null;
+            snapshot.TryUseCurrent(() =>
+            {
+                binding = new(runtime, client, snapshot, new ProductRpcRouteSelector(_productPolicy),
+                    action => client is not null
+                        && TryUseHostProductBinding(runtime, client, snapshot, action),
+                    action => TryUseHostGoBinding(runtime, snapshot, action));
+                return true;
             });
             return binding;
         }
@@ -222,6 +227,17 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 && runtime.Backend.TryUseReadyClient(currentClient =>
                     ReferenceEquals(currentClient, client)
                     && ((IProductSidecarGenerationAuthority)this).TryUseCurrent(snapshot, action));
+        }
+    }
+
+    private bool TryUseHostGoBinding(
+        ProductionWorkspaceRuntime runtime,
+        ProductSidecarGenerationSnapshot snapshot, Func<bool> action)
+    {
+        lock (_gate)
+        {
+            return !_disposed && ReferenceEquals(_current, runtime)
+                && ((IProductSidecarGenerationAuthority)this).TryUseCurrent(snapshot, action);
         }
     }
 
@@ -448,6 +464,16 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         ClientReady?.Invoke();
     }
 
+    internal void NotifyBackendBindingChanged(ProductionWorkspaceRuntime runtime)
+    {
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_current, runtime))
+                return;
+        }
+        BindingChanged?.Invoke();
+    }
+
     internal void NotifySidecarCurrentChanged(ProductionWorkspaceRuntime runtime)
     {
         lock (_gate)
@@ -455,6 +481,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             if (_disposed || !ReferenceEquals(_current, runtime)) return;
         }
         ProductSidecarCurrentChanged?.Invoke();
+        BindingChanged?.Invoke();
     }
 
     internal void NotifyRecoveryFailed(
@@ -628,6 +655,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         Sidecar.StatusChanged += OnSidecarCurrentChanged;
         var localData = new LocalDataService(Sidecar);
         Backend = dependencies.Backend;
+        Backend.StateChanged += OnBackendStateChanged;
         Gateway = dependencies.Gateway;
         _runtime = new ProductRuntimeService(
             localData,
@@ -761,6 +789,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             return;
         _owner.Deactivate(this);
         _runtime.ClientReady -= OnClientReady;
+        Backend.StateChanged -= OnBackendStateChanged;
         Sidecar.StatusChanged -= OnSidecarCurrentChanged;
         _runtime.RecoveryFailed -= OnRecoveryFailed;
         Gateway.Dispose();
@@ -793,6 +822,9 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         if (Capabilities is not null)
             _owner.NotifyClientReady(this);
     }
+
+    private void OnBackendStateChanged(object? sender, BackendState state)
+        => _owner.NotifyBackendBindingChanged(this);
 
     private void OnSidecarCurrentChanged(object? sender, PocketBaseStatus status)
         => _owner.NotifySidecarCurrentChanged(this);

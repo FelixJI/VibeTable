@@ -75,7 +75,12 @@ from backend.contracts.query import (
     QuerySelectionProjectionResult,
     QueryViewResult,
 )
-from backend.contracts.paste import ApplyPasteResult, PastePlan
+from backend.contracts.paste import (
+    ApplyPasteParams,
+    ApplyPasteResult,
+    PastePlan,
+    PreviewPasteParams,
+)
 from backend.contracts.plugin import (
     ActionAvailability,
     InstallPlan,
@@ -389,6 +394,8 @@ def _registered_models() -> dict[str, type[BaseModel]]:
 
     result.update(
         {
+            "table.previewPaste": PreviewPasteParams,
+            "table.applyPaste": ApplyPasteParams,
             "insights.listDashboards": ListDashboardsParams,
             "insights.readDashboardWorkspace": DashboardWorkspaceParams,
             "insights.saveDashboardDraft": SaveDashboardDraftParams,

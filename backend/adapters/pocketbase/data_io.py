@@ -23,7 +23,7 @@ from backend.adapters.pocketbase.relation_io import (
 )
 from backend.application.export_service import ExportService, QueryPagePort
 from backend.application.import_service import ImportService
-from backend.application.paste_service import PasteError, PasteService
+from backend.application.paste_service import PasteError
 from backend.application.task_runtime import CancellationToken, ProgressReporter
 from backend.application.task_service import TaskService
 from backend.contracts.data_io import (
@@ -39,12 +39,6 @@ from backend.contracts.data_io import (
 from backend.contracts.data_profile import (
     CollectionProfile,
     collection_profile_from_definition,
-)
-from backend.contracts.paste import (
-    ApplyPasteParams,
-    ApplyPasteResult,
-    PastePlan,
-    PreviewPasteParams,
 )
 from backend.contracts.product_rpc import JsonObject, JsonValue
 
@@ -198,13 +192,6 @@ class ProductDataIoRuntime:
             definitions=self._definitions,
         )
         bulk = PocketBaseBulkMutationClient(client=client, auth=auth)
-        self._paste = PasteService(
-            client=read_port,
-            auth=auth,
-            bulk=bulk,
-            profiles=self._profiles,
-            project="local",
-        )
         self._import = ImportService(
             client=read_port,
             auth=auth,
@@ -226,14 +213,6 @@ class ProductDataIoRuntime:
     @property
     def profiles(self) -> dict[str, CollectionProfile]:
         return self._profiles
-
-    async def preview_paste(self, params: PreviewPasteParams) -> PastePlan:
-        await self._refresh(params.collection)
-        return await self._paste.preview(params)
-
-    async def apply_paste(self, params: ApplyPasteParams) -> ApplyPasteResult:
-        await self._refresh(params.collection)
-        return await self._paste.apply(params)
 
     async def preview_import(self, params: PreviewImportParams) -> ImportPlan:
         await self._refresh(params.collection)

@@ -48,9 +48,9 @@ def test_pocketbase_data_io_composition_registers_only_product_paths() -> None:
     )
 
     assert isinstance(runtime, ProductDataIoRuntime)
+    assert not hasattr(runtime, "_paste")
+    assert {"table.previewPaste", "table.applyPaste"}.isdisjoint(dispatcher.registered_methods)
     assert {
-        "table.previewPaste",
-        "table.applyPaste",
         "data.previewImport",
         "data.applyImport",
         "data.export",

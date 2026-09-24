@@ -69,9 +69,25 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
                         "No workspace runtime is bound.");
                 return _resolved ??= new PocketBaseTableGateway(
                     binding.CreateGateway(_leases, _handler),
-                    new JsonRpcWorkspaceSupportGateway(binding.Client));
+                    binding.Client is { } client
+                        ? new JsonRpcWorkspaceSupportGateway(client)
+                        : new UnavailableWorkspaceSupportGateway());
             }
         }
+    }
+
+    private sealed class UnavailableWorkspaceSupportGateway : IWorkspaceSupportRpcGateway
+    {
+        public Task<GridStateResult> GetGridStateAsync(
+            string databaseId, string table, CancellationToken token)
+            => Task.FromException<GridStateResult>(new BackendUnavailableException(
+                "The Python workspace support binding is unavailable."));
+
+        public Task<GridStateResult> SaveGridStateAsync(
+            string databaseId, string table, GridState state,
+            string? revision, CancellationToken token)
+            => Task.FromException<GridStateResult>(new BackendUnavailableException(
+                "The Python workspace support binding is unavailable."));
     }
 
     public Task<DatabaseOpenResult> OpenDatabaseAsync(string path, CancellationToken token)

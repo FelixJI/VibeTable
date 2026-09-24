@@ -611,14 +611,15 @@ public partial class MainWindow : Window
     private bool TryConfigureRpcGateways(ProductSidecarGenerationSnapshot snapshot)
     {
         HostProductRpcBinding? binding = _runtime.CaptureHostProductRpcBinding();
-        if (binding is null || !binding.Matches(snapshot)) return false;
+        if (binding?.Client is null || !binding.Matches(snapshot)) return false;
         ConfigureRpcGateways(binding);
         return true;
     }
 
     private void ConfigureRpcGateways(HostProductRpcBinding binding)
     {
-        JsonRpcClient client = binding.Client;
+        JsonRpcClient client = binding.Client
+            ?? throw new BackendUnavailableException("The Python client is unavailable.");
         _authorityTransition.Transition(null);
         _tableGateway.Bind(binding);
 
@@ -762,6 +763,12 @@ public partial class MainWindow : Window
             {
                 _authorityTransition.Transition(null);
                 _tableGateway.Bind(binding);
+                if (binding.Client is null && _pluginGateway is not null)
+                {
+                    _pluginDispatcher.ClearGatewayAfterAuthorityTransition(_pluginGateway);
+                    _pluginGateway.Dispose();
+                    _pluginGateway = null;
+                }
                 return;
             }
             _tableGateway.Unbind();
