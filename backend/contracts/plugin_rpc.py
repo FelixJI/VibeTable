@@ -58,6 +58,10 @@ class DescribePluginActionParams(PluginIdentityParams):
 
 class StartPluginActionParams(DescribePluginActionParams):
     input_payload: dict[str, Any] = Field(default_factory=dict, alias="input")
+    # Closed host-only execution identity: generated and registered by the
+    # WPF host registry before the executor is invoked.
+    task_id: str
+    run_id: str
 
 
 class ResolvePluginInteractionParams(PluginContract):

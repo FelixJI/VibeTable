@@ -152,7 +152,6 @@ async def test_product_rpc_registration_is_closed_and_provider_neutral(
         "plugin.resolveInteraction",
         "plugin.resolveFile",
         "plugin.cancelTask",
-        "plugin.getTask",
     }
     assert set(PRODUCT_RPC_REGISTRY) == expected_methods
     assert not PYTHON_PRODUCT_RPC_REGISTRY

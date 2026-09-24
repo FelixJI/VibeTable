@@ -434,14 +434,6 @@
       "effect": "read"
     },
     {
-      "method": "plugin.getTask",
-      "scope": "workspace",
-      "audience": "rendererPublic",
-      "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
-      "effect": "read"
-    },
-    {
       "method": "plugin.inspectInstall",
       "scope": "workspace",
       "audience": "rendererPublic",

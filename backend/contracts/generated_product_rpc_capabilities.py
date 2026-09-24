@@ -15,7 +15,6 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "plugin.cancelTask",
         "plugin.commitInstall",
         "plugin.describeAction",
-        "plugin.getTask",
         "plugin.inspectInstall",
         "plugin.listAudit",
         "plugin.listCatalog",

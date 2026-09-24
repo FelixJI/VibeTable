@@ -47,7 +47,6 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "plugin.cancelTask",
   "plugin.commitInstall",
   "plugin.describeAction",
-  "plugin.getTask",
   "plugin.inspectInstall",
   "plugin.listAudit",
   "plugin.listCatalog",

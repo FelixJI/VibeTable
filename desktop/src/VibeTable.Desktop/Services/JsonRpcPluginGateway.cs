@@ -30,6 +30,13 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
     public event Action<PluginEventEnvelope>? InteractionRequested;
     public event Action<PluginEventEnvelope>? FileRequested;
 
+    /// <inheritdoc />
+    public event Action? Terminated
+    {
+        add => _client.Terminated += value;
+        remove => _client.Terminated -= value;
+    }
+
     public Task<PluginRuntimeSnapshot[]> ListCatalogAsync(
         PluginCatalogListParams request, CancellationToken token)
         => InvokeAsync<PluginCatalogListParams, PluginRuntimeSnapshot[]>(
@@ -111,15 +118,10 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
             new PluginResolveFileParams(request.RequestId, grant), token).ConfigureAwait(false);
     }
 
-    public Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(
+    public Task<bool> CancelTaskAsync(
         PluginTaskParams request, CancellationToken token)
-        => InvokeAsync<PluginTaskParams, PluginRuntimeTaskSnapshot>(
+        => InvokeAsync<PluginTaskParams, bool>(
             "plugin.cancelTask", request, token);
-
-    public Task<PluginRuntimeTaskSnapshot> GetTaskAsync(
-        PluginTaskParams request, CancellationToken token)
-        => InvokeAsync<PluginTaskParams, PluginRuntimeTaskSnapshot>(
-            "plugin.getTask", request, token);
 
     public void Dispose()
     {

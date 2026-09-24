@@ -708,7 +708,6 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "plugin.cancelTask": _typed(PluginTaskSnapshot),
         "plugin.commitInstall": _typed(PluginSnapshot),
         "plugin.describeAction": _typed(ActionAvailability),
-        "plugin.getTask": _typed(PluginTaskSnapshot),
         "plugin.inspectInstall": _typed(InstallPlan),
         "plugin.listAudit": _typed(list[PluginAuditEvent], "PluginAuditEventList"),
         "plugin.listCatalog": _typed(list[PluginSnapshot], "PluginSnapshotList"),

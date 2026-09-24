@@ -30,9 +30,14 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly Func<PluginProjectContext?> _projectContext;
     private readonly object _gatewayGate = new();
     private readonly HostInstallPlanLeaseRegistry _installLeases;
+    private readonly HostPluginTaskRegistry _taskRegistry;
     private readonly ProductAuthorityEpoch _authority;
     private readonly bool _ownsAuthority;
     private IPluginRpcGateway? _gateway;
+    private Action<PluginEventEnvelope>? _taskChangedHandler;
+    private Action<PluginEventEnvelope>? _interactionRequestedHandler;
+    private Action<PluginEventEnvelope>? _fileRequestedHandler;
+    private Action? _gatewayTerminatedHandler;
     private bool _disposed;
 
     public PluginRequestDispatcher(
@@ -88,6 +93,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             cleanupTimeout,
             cleanupTimeProvider,
             cleanupTrace: TraceCleanupFailure);
+        _taskRegistry = new HostPluginTaskRegistry(_authority);
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
@@ -118,11 +124,17 @@ public sealed class PluginRequestDispatcher : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             _gateway = gateway;
             gateway.CatalogChanged += OnCatalogChanged;
-            gateway.TaskChanged += OnTaskChanged;
-            gateway.InteractionRequested += OnInteractionRequested;
-            gateway.FileRequested += OnFileRequested;
+            _taskChangedHandler = envelope => OnTaskChanged(gateway, envelope);
+            gateway.TaskChanged += _taskChangedHandler;
+            _interactionRequestedHandler = envelope => OnInteractionRequested(gateway, envelope);
+            gateway.InteractionRequested += _interactionRequestedHandler;
+            _fileRequestedHandler = envelope => OnFileRequested(gateway, envelope);
+            gateway.FileRequested += _fileRequestedHandler;
+            _gatewayTerminatedHandler = () => OnGatewayTerminated(gateway);
+            gateway.Terminated += _gatewayTerminatedHandler;
         }
         ReleaseLeases(_installLeases.SetGatewayAfterAuthorityTransition(gateway, context));
+        PostSettlements(_taskRegistry.SetGateway(gateway, context));
     }
 
     public void ClearGateway(IPluginRpcGateway gateway)
@@ -144,8 +156,20 @@ public sealed class PluginRequestDispatcher : IDisposable
         SetProjectContextAfterAuthorityTransition(context);
     }
 
-    internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context) =>
+    /// <summary>
+    /// Updates the workspace-open identity used for task history visibility.
+    /// The admission authority is deliberately unaffected: a Python client
+    /// loss must keep settled terminal states queryable for the same
+    /// workspace instead of hiding them as unknown tasks.
+    /// </summary>
+    public void SetWorkspaceContext(PluginProjectContext? context)
+        => _taskRegistry.SetWorkspaceContext(context);
+
+    internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context)
+    {
         ReleaseLeases(_installLeases.SetContextAfterAuthorityTransition(context));
+        PostSettlements(_taskRegistry.SetContext(context));
+    }
 
     public void InvalidateProjectContext() => SetProjectContext(null);
 
@@ -163,6 +187,24 @@ public sealed class PluginRequestDispatcher : IDisposable
             if (string.Equals(request.Type, "plugin.surface.event", StringComparison.Ordinal))
             {
                 DispatchSurfaceEvent(request);
+                return;
+            }
+            // Host-owned task lifecycle reads/writes never require a live
+            // Python client: the registry answers from workspace-owned state
+            // so a lost backend cannot leave a task permanently running.
+            if (string.Equals(request.Type, "plugin.task.get", StringComparison.Ordinal)
+                || string.Equals(request.Type, "plugin.task.cancel", StringComparison.Ordinal)
+                || string.Equals(request.Type, "plugin.interaction.resolve", StringComparison.Ordinal))
+            {
+                object ownedResult = request.Type switch
+                {
+                    "plugin.task.get" => GetTask(Read<PluginTaskParams>(request.Payload)),
+                    "plugin.task.cancel" => await CancelTaskAsync(
+                        Read<PluginTaskParams>(request.Payload), token).ConfigureAwait(false),
+                    _ => await ResolveInteractionAsync(
+                        Read<PluginResolveInteractionParams>(request.Payload), token).ConfigureAwait(false),
+                };
+                _reply.PostResponse(request.Type, request.RequestId, ownedResult);
                 return;
             }
             IPluginRpcGateway? gateway = CaptureGatewayOrNull();
@@ -213,14 +255,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                     Read<PluginUninstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.action.describe" => await gateway.DescribeActionAsync(
                     Read<PluginDescribeActionParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.action.start" => await gateway.StartActionAsync(
+                "plugin.action.start" => await StartActionAsync(
                     Read<PluginStartActionParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.interaction.resolve" => await gateway.ResolveInteractionAsync(
-                    Read<PluginResolveInteractionParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.task.cancel" => await gateway.CancelTaskAsync(
-                    Read<PluginTaskParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.task.get" => await gateway.GetTaskAsync(
-                    Read<PluginTaskParams>(request.Payload), token).ConfigureAwait(false),
                 _ => throw new PluginDispatchException(
                     "UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'."),
             };
@@ -498,6 +534,149 @@ public sealed class PluginRequestDispatcher : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Generates the task/run identity, registers the task in the host-owned
+    /// registry BEFORE the executor is invoked, and then starts the closed
+    /// host-only execution entry. The executor receives the identity and
+    /// returns only descriptive metadata echoing it; it never owns the
+    /// lifecycle. A start that fails or returns from a retired generation is
+    /// settled (failed/aborted) so no task ever exists without a host owner.
+    /// </summary>
+    private async Task<PluginRuntimeTaskSnapshot> StartActionAsync(
+        PluginStartActionParams request,
+        CancellationToken token)
+    {
+        HostPluginTaskBinding binding = CaptureTaskBinding();
+        string taskId = $"plugin-task-{Guid.NewGuid():N}"[..24];
+        string runId = $"plugin-run-{Guid.NewGuid():N}"[..23];
+        PluginRuntimeTaskSnapshot queued = new(
+            taskId,
+            runId,
+            request.PluginId,
+            "unknown",
+            request.ActionId,
+            binding.Context.ProjectKey,
+            request.Context.Collection,
+            request.Context.SelectedKeys.Count,
+            PluginRisk.Read,
+            "queued",
+            false,
+            null,
+            null,
+            null);
+        if (!_taskRegistry.AdmitTask(binding, queued)) throw StaleTask();
+        PluginRuntimeTaskSnapshot reported;
+        try
+        {
+            reported = await binding.Gateway.StartActionAsync(
+                request with { TaskId = taskId, RunId = runId }, token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            PostSingleSettlement(_taskRegistry.FailTask(
+                taskId,
+                "plugin_task_start_failed",
+                "插件任务未能启动，请重试。"));
+            throw;
+        }
+        if (!_taskRegistry.TryApplyStartResult(binding.Gateway, reported))
+        {
+            SafeDiagnosticTrace(
+                "Plugin action start was rejected as stale; " +
+                $"taskId={taskId}");
+            await ObserveCancelAsync(
+                () => binding.Gateway.CancelTaskAsync(
+                    new PluginTaskParams(taskId),
+                    CancellationToken.None)).ConfigureAwait(false);
+            throw StaleTask();
+        }
+        // Answer with the registry's authoritative snapshot: a faster
+        // execution report may legitimately have advanced or finished the
+        // task before the start response arrived.
+        return _taskRegistry.TryGetTask(taskId, out PluginRuntimeTaskSnapshot current)
+            ? current
+            : reported;
+    }
+
+    /// <summary>
+    /// Answers public task state from the host-owned registry. Python is never
+    /// queried, so a lost client cannot leave a task permanently running.
+    /// </summary>
+    private PluginRuntimeTaskSnapshot GetTask(PluginTaskParams request)
+    {
+        if (_taskRegistry.TryGetTask(request.TaskId, out PluginRuntimeTaskSnapshot snapshot))
+        {
+            return snapshot;
+        }
+        throw UnknownTask();
+    }
+
+    /// <summary>
+    /// Cancels through the host-owned registry. A terminal task is returned
+    /// unchanged — a late cancel can never overwrite a recorded success — and
+    /// the gateway call is only the execution-side handle trigger.
+    /// </summary>
+    private async Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(
+        PluginTaskParams request,
+        CancellationToken token)
+    {
+        var outcome = _taskRegistry.RequestCancel(
+            request.TaskId,
+            out PluginRuntimeTaskSnapshot snapshot,
+            out HostPluginTaskBinding binding);
+        if (outcome == HostPluginTaskCancelOutcome.NotFound) throw UnknownTask();
+        if (outcome == HostPluginTaskCancelOutcome.Active)
+        {
+            await ObserveCancelAsync(
+                () => binding.Gateway.CancelTaskAsync(request, token)).ConfigureAwait(false);
+        }
+        return snapshot;
+    }
+
+    /// <summary>
+    /// Resolves a confirmation only while its run is pending on the current
+    /// generation. Late confirmations are answered as expired without ever
+    /// reaching an executor, so they cannot revive a retired run.
+    /// </summary>
+    private async Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(
+        PluginResolveInteractionParams request,
+        CancellationToken token)
+    {
+        IPluginRpcGateway? gateway = _taskRegistry.TryBeginInteractionResolve(request.RunId);
+        if (gateway is null)
+        {
+            return new PluginRuntimeInteractionResolveResult("expired", null);
+        }
+        return await gateway.ResolveInteractionAsync(request, token).ConfigureAwait(false);
+    }
+
+    private async Task ObserveCancelAsync(
+        Func<Task<bool>> cancel)
+    {
+        try
+        {
+            await cancel().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // The cancel request itself is owned by the host registry; a
+            // failing execution-side trigger is traced and settled by events
+            // or by the generation settlement instead of surfacing an error.
+            SafeTrace(() => Trace.TraceError(DiagnosticEvent.Failure(
+                "VibeTable.Desktop.PluginRequestDispatcher",
+                "plugin.task.cancel",
+                ex.GetType().Name)));
+        }
+    }
+
+    private static PluginDispatchException StaleTask() => new(
+        "PLUGIN_TASK_STALE",
+        "Plugin task belongs to a retired project session.");
+
+    private static PluginDispatchException UnknownTask() => new(
+        "PLUGIN_TASK_NOT_FOUND",
+        "Plugin task was not found for the current project session.");
+
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
     {
         bool registered = _resourceHost.TryRegisterInstalled(
@@ -603,33 +782,94 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
     }
 
-    private void OnTaskChanged(PluginEventEnvelope envelope)
-        => _reply.PostNotification("plugin.task.changed", envelope);
-
-    private void OnInteractionRequested(PluginEventEnvelope envelope)
-        => _reply.PostNotification("plugin.interaction.requested", envelope);
-
-    private async void OnFileRequested(PluginEventEnvelope envelope)
+    private void OnTaskChanged(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
     {
-        IPluginRpcGateway? gateway;
-        lock (_gatewayGate) gateway = _gateway;
-        if (gateway is null) return;
+        PluginEventEnvelope? projected = _taskRegistry.ApplyExecutionReport(
+            gateway, envelope);
+        if (projected is null)
+        {
+            SafeDiagnosticTrace(
+                "Plugin task report was rejected; " +
+                $"taskId={envelope.EntityId}");
+            return;
+        }
+        _reply.PostNotification("plugin.task.changed", projected);
+    }
+
+    private void OnInteractionRequested(
+        IPluginRpcGateway gateway,
+        PluginEventEnvelope envelope)
+    {
+        if (!_taskRegistry.RecordInteraction(gateway, envelope))
+        {
+            SafeDiagnosticTrace(
+                "Plugin interaction was rejected; " +
+                $"runId={envelope.EntityId}");
+            return;
+        }
+        _reply.PostNotification("plugin.interaction.requested", envelope);
+    }
+
+    private void OnGatewayTerminated(IPluginRpcGateway gateway)
+        => PostSettlements(_taskRegistry.SettleGateway(gateway));
+
+    private void PostSettlements(IReadOnlyList<HostPluginTaskSettlement> settlements)
+    {
+        foreach (HostPluginTaskSettlement settlement in settlements)
+        {
+            _reply.PostNotification("plugin.task.changed", settlement.Envelope);
+        }
+    }
+
+    private void PostSingleSettlement(HostPluginTaskSettlement? settlement)
+    {
+        if (settlement is not null)
+        {
+            _reply.PostNotification("plugin.task.changed", settlement.Envelope);
+        }
+    }
+
+    private async void OnFileRequested(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
+    {
         string? selectedPath = null;
+        string? requestId = null;
         try
         {
-            var request = envelope.Snapshot.Deserialize<PluginRuntimeFileRequest>(JsonOptions)
+            var request = envelope.Snapshot.Deserialize<PluginRuntimeFileRequest>(
+                HostPluginTaskRegistry.PluginTaskJson.Options)
                 ?? throw new JsonException("Plugin file request did not deserialize.");
+            requestId = request.RequestId;
+            if (!_taskRegistry.RecordFileRequest(
+                    gateway, request.RequestId, request.RunId))
+            {
+                SafeDiagnosticTrace(
+                    "Plugin file request was rejected; " +
+                    $"requestId={request.RequestId}");
+                return;
+            }
             if (_filePicker is not null)
             {
                 selectedPath = await _filePicker.PickAsync(request, CancellationToken.None);
             }
-            await gateway.ResolveFileAsync(
+            if (_taskRegistry.TryBeginFileResolve(request.RequestId) is not
+                IPluginRpcGateway current)
+            {
+                SafeDiagnosticTrace(
+                    "Plugin file selection was dropped as stale; " +
+                    $"requestId={request.RequestId}");
+                return;
+            }
+            await current.ResolveFileAsync(
                 request, selectedPath,
                 CancellationToken.None);
         }
         catch (Exception ex)
         {
             SafeTrace(() => Trace.TraceError($"Plugin file request failed: {ex}"));
+        }
+        finally
+        {
+            if (requestId is not null) _taskRegistry.ForgetFileRequest(requestId);
         }
     }
 
@@ -651,9 +891,32 @@ public sealed class PluginRequestDispatcher : IDisposable
             return;
         }
         gateway.CatalogChanged -= OnCatalogChanged;
-        gateway.TaskChanged -= OnTaskChanged;
-        gateway.InteractionRequested -= OnInteractionRequested;
-        gateway.FileRequested -= OnFileRequested;
+        if (_taskChangedHandler is not null) gateway.TaskChanged -= _taskChangedHandler;
+        if (_interactionRequestedHandler is not null)
+            gateway.InteractionRequested -= _interactionRequestedHandler;
+        if (_fileRequestedHandler is not null) gateway.FileRequested -= _fileRequestedHandler;
+        if (_gatewayTerminatedHandler is not null) gateway.Terminated -= _gatewayTerminatedHandler;
+        _taskChangedHandler = null;
+        _interactionRequestedHandler = null;
+        _fileRequestedHandler = null;
+        _gatewayTerminatedHandler = null;
+        PostSettlements(_taskRegistry.ClearGateway(gateway));
+    }
+
+    private HostPluginTaskBinding CaptureTaskBinding()
+    {
+        HostPluginTaskBinding? binding = _taskRegistry.Capture();
+        if (binding is null
+            || binding.GatewayGeneration == 0
+            || binding.Context.SessionGeneration == 0
+            || string.IsNullOrWhiteSpace(binding.Context.ProjectKey)
+            || string.IsNullOrWhiteSpace(binding.Context.ProjectRevision))
+        {
+            throw new PluginDispatchException(
+                "PLUGIN_NOT_READY",
+                "Plugin services are not available for the current project.");
+        }
+        return binding;
     }
 
     private HostInstallPlanBinding CapturePluginBinding()

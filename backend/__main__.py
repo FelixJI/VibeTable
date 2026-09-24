@@ -170,8 +170,10 @@ def _register_plugin_methods(
         ResolvePluginInteractionParams,
     )
     dispatcher.register("plugin.resolveFile", service.resolve_file, ResolvePluginFileParams)
+    # plugin.cancelTask stays the closed host-only execution-cancel entry: the
+    # public task snapshot/query authority lives in the WPF host registry and
+    # Python is never asked for public task state.
     dispatcher.register("plugin.cancelTask", service.cancel_task, PluginTaskParams)
-    dispatcher.register("plugin.getTask", service.get_task, PluginTaskParams)
 
 
 async def _build_server() -> tuple[

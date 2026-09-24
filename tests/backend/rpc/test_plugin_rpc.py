@@ -37,8 +37,10 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
         "plugin.startAction",
         "plugin.resolveInteraction",
         "plugin.resolveFile",
+        # plugin.cancelTask is the closed host-only execution-cancel entry;
+        # plugin.getTask is retired because the WPF host registry is the
+        # single public owner of plugin task state.
         "plugin.cancelTask",
-        "plugin.getTask",
     }
     assert "plugin.listExternalFlowCandidates" not in dispatcher.registered_methods
     assert "plugin.bindExternalFlow" not in dispatcher.registered_methods

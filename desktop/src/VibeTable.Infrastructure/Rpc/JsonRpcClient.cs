@@ -43,6 +43,7 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
     private int _nextId;
     private int _disposed;
     private int _readerDead;
+    private int _terminatedRaised;
 
     public JsonRpcClient(IJsonLineTransport transport)
     {
@@ -59,6 +60,13 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
     /// the notification omits <c>params</c>).
     /// </summary>
     public event Action<string, JsonElement>? NotificationReceived;
+
+    /// <summary>
+    /// Raised exactly once when the reader loop terminates (transport failure,
+    /// clean EOF, host-file channel fault or disposal). Owners of cross-client
+    /// state observe this to settle work that can no longer be queried.
+    /// </summary>
+    public event Action? Terminated;
 
     public async Task<TResult> InvokeAsync<TParams, TResult>(
         string method,
@@ -141,6 +149,7 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
             return;
         }
 
+        RaiseTerminated();
         RetireHostFiles();
 
         // Fail anything still outstanding so awaiters never hang.
@@ -331,6 +340,20 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
         // fails fast instead of registering a TCS that can never resolve.
         Volatile.Write(ref _readerDead, 1);
         RetireHostFiles();
+        RaiseTerminated();
+    }
+
+    private void RaiseTerminated()
+    {
+        if (Interlocked.Exchange(ref _terminatedRaised, 1) != 0) return;
+        try
+        {
+            Terminated?.Invoke();
+        }
+        catch
+        {
+            // Observer failures must not break transport teardown.
+        }
     }
 
     private void ThrowIfDisposed()

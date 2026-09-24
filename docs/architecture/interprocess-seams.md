@@ -63,6 +63,17 @@ Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及�
 `DeviceSettingsRequestControllerTests` 以真实 session/临时 JSON 验证；尚无可见 UI 消费者，
 不把该测试当作 packaged UI/E2E 通过证据。
 
+## 插件任务/交互公开 owner（L7）
+
+`plugin.task.get` / `plugin.task.cancel` / `plugin.interaction.resolve` 由 WPF
+`HostPluginTaskRegistry` 唯一拥有：Host 生成 taskId/runId 并在调用执行器前登记，任务以 project/session/fence
+绑定到启动它的 gateway 代际，终态粘滞，迟到取消不能改写已记录的成功；执行报告早于 start 回包时不得降级。Python 仅保留执行上下文、取消句柄与等待
+Host 回复的 future；`plugin.getTask` 已从 Python 退役，`plugin.cancelTask`/`plugin.resolveInteraction`/
+`plugin.resolveFile` 只是封闭 host-only 执行入口。Python client 失效（transport 终止、重绑或项目上下文切换）时，
+非终态任务立即结算为 `aborted`，错误码 `plugin_task_aborted` 并明确 `commitOutcome: unknown`，不宣称零写入也不自动重放；
+待确认交互与原生文件选择晚返回按代际拒绝，Host 文件 grant 撤销仍由 `HostSessionFileBroker` 的 Retire/DrainCompletion 观察。
+安装计划继续复用 `HostInstallPlanLeaseRegistry`（旧 plan 仍要求重新 inspect）；插件 catalog/audit/私有设置持久化路径不变。
+
 ## 维护规则
 
 - 新跨进程 operation 同时更新本页、capability 矩阵、producer/Host/Web 的闭集测试和至少一条产品证据。

@@ -1110,8 +1110,13 @@ public sealed class PluginRequestDispatcherTests
             surfaces,
             new FakePluginPackageSourcePicker(null),
             resources,
-            new FakePluginFilePicker(selectedPath));
+            new FakePluginFilePicker(selectedPath),
+            projectContext: ReadyContext);
         dispatcher.SetGateway(gateway);
+        // File requests belong to an admitted run; the host admits the task
+        // through plugin.action.start before the picker event can be owned.
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-file-capability", StartActionPayload));
 
         gateway.RaiseFileRequested();
         await gateway.FileResolution.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -1193,6 +1198,334 @@ public sealed class PluginRequestDispatcherTests
         {
             Directory.Delete(packageRoot, recursive: true);
         }
+    }
+
+    private const string StartActionPayload = """{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"clean","context":{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":null,"selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"},"input":{}}""";
+
+    private static PluginRuntimeTaskSnapshot TaskState(
+        PluginRuntimeTaskSnapshot started,
+        string state,
+        bool cancelRequested = false) => started with { State = state, CancelRequested = cancelRequested };
+
+    [TestMethod]
+    public async Task TaskQueryAndCancelAreOwnedByHostWithoutPublicGatewayQuery()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-1", StartActionPayload));
+        PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
+        StringAssert.StartsWith(started.TaskId, "plugin-task-");
+        StringAssert.StartsWith(started.RunId, "plugin-run-");
+        gateway.RaiseTaskChanged(TaskState(started, "running"));
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-running",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        var running = AssertIsTaskSnapshot(reply.Payload);
+        Assert.AreEqual("running", running.State);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.cancel", "cancel-1",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        var cancelling = AssertIsTaskSnapshot(reply.Payload);
+        Assert.IsTrue(cancelling.CancelRequested);
+        Assert.AreEqual(1, gateway.CancelTaskCalls);
+
+        gateway.RaiseTaskChanged(TaskState(started, "succeeded", cancelRequested: true), revision: 2);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.cancel", "cancel-late",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        var succeeded = AssertIsTaskSnapshot(reply.Payload);
+        Assert.AreEqual("succeeded", succeeded.State);
+        Assert.AreEqual(1, gateway.CancelTaskCalls);
+    }
+
+    [TestMethod]
+    public async Task GatewayTerminationSettlesAbortedWithUnknownCommitBoundary()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-aborted", StartActionPayload));
+        PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseTaskChanged(TaskState(started, "running"));
+
+        gateway.RaiseTerminated();
+
+        Assert.AreEqual("plugin.task.changed", reply.NotificationType);
+        string settlement = JsonSerializer.Serialize(reply.NotificationPayload);
+        Assert.IsTrue(settlement.Contains("\"aborted\"", StringComparison.Ordinal));
+        Assert.IsTrue(settlement.Contains("plugin_task_aborted", StringComparison.Ordinal));
+        Assert.IsTrue(settlement.Contains("\"commitOutcome\":\"unknown\"", StringComparison.Ordinal));
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-aborted",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        var aborted = AssertIsTaskSnapshot(reply.Payload);
+        Assert.AreEqual("aborted", aborted.State);
+        Assert.AreEqual("plugin_task_aborted", aborted.Error!.Code);
+
+        gateway.RaiseTaskChanged(TaskState(started, "succeeded"), revision: 5);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-after-late-report",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        Assert.AreEqual("aborted", AssertIsTaskSnapshot(reply.Payload).State);
+    }
+
+    [TestMethod]
+    public async Task StaleConfirmationFromARetiredGenerationIsRejectedAsExpired()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-confirm", StartActionPayload));
+        PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(started.RunId);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.interaction.resolve",
+            "resolve-live",
+            $$"""{"runId":"{{started.RunId}}","interactionId":"interaction-1","decision":"approved"}"""));
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+
+        gateway.RaiseTerminated();
+        await dispatcher.DispatchAsync(Request(
+            "plugin.interaction.resolve",
+            "resolve-late",
+            $$"""{"runId":"{{started.RunId}}","interactionId":"interaction-1","decision":"approved"}"""));
+
+        var result = Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload);
+        Assert.AreEqual("expired", result.Status);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+    }
+
+    [TestMethod]
+    public async Task NativeFileSelectionReturningAfterGenerationLossIsDropped()
+    {
+        var pickerGate = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var replacement = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            new GatedPluginFilePicker(pickerGate.Task),
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-file", StartActionPayload));
+
+        gateway.RaiseFileRequested();
+        dispatcher.SetGateway(replacement);
+        pickerGate.TrySetResult(@"C:\trusted\late.csv");
+        await Task.Delay(50);
+
+        Assert.AreEqual(0, gateway.FileResolutions);
+        Assert.AreEqual(0, replacement.FileResolutions);
+    }
+
+    [TestMethod]
+    public async Task EarlyExecutionReportsAreNotDowngradedByTheStartResponse()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pendingStart = new TaskCompletionSource<PluginRuntimeTaskSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { PendingStart = pendingStart };
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+
+        // Notifications can beat the start response on the wire: the running
+        // and even the terminal report arrive before the queued echo.
+        Task starting = dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-early-reports", StartActionPayload));
+        await gateway.StartCalled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        PluginRuntimeTaskSnapshot started = gateway.LastStarted;
+        gateway.RaiseTaskChanged(started with { State = "running" });
+        gateway.RaiseTaskChanged(started with
+        {
+            State = "succeeded",
+            Result = new PluginRuntimeResult(
+                PluginContractVersions.Result,
+                "success",
+                "written",
+                [],
+                null,
+                [],
+                null,
+                []),
+        }, revision: 2);
+        pendingStart.TrySetResult(started with { State = "queued" });
+        await starting.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-after-early-reports",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        var snapshot = AssertIsTaskSnapshot(reply.Payload);
+        Assert.AreEqual("succeeded", snapshot.State);
+        Assert.AreEqual("written", snapshot.Result!.Summary);
+        // A cancel arriving after the early success cannot rewrite it.
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.cancel", "cancel-after-early-success",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        Assert.AreEqual("succeeded", AssertIsTaskSnapshot(reply.Payload).State);
+        Assert.AreEqual(0, gateway.CancelTaskCalls);
+    }
+
+    [TestMethod]
+    public async Task RegistryKeepsBoundedTerminalHistoryAcrossClientLoss()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var first = new FakePluginGateway();
+        using var second = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(first);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        PluginRuntimeTaskSnapshot? oldest = null;
+        PluginRuntimeTaskSnapshot? newest = null;
+        for (int index = 0; index < 300; index++)
+        {
+            await dispatcher.DispatchAsync(Request(
+                "plugin.action.start", $"start-history-{index}", StartActionPayload));
+            PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
+            first.RaiseTaskChanged(started with { State = "succeeded" });
+            if (index == 0) oldest = started;
+            newest = started;
+        }
+
+        // Replacing the client settles nothing (all terminal) but must keep
+        // the recent terminal states queryable for the same workspace.
+        dispatcher.SetGateway(second);
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-newest-after-rebind",
+            $$"""{"taskId":"{{newest!.TaskId}}"}"""));
+        Assert.AreEqual("succeeded", AssertIsTaskSnapshot(reply.Payload).State);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-oldest-pruned",
+            $$"""{"taskId":"{{oldest!.TaskId}}"}"""));
+        Assert.AreEqual("PLUGIN_TASK_NOT_FOUND", reply.FailureCode);
+    }
+
+    [TestMethod]
+    public async Task AuthorityLossBeforeGatewayClearKeepsAbortedQueryable()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-binding-loss", StartActionPayload));
+        PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseTaskChanged(TaskState(started, "running"));
+
+        // Real OnRuntimeBindingChanged wiring: the authority transition nulls
+        // the admission context first, then the gateway is cleared.
+        dispatcher.SetProjectContextAfterAuthorityTransition(null);
+        dispatcher.ClearGatewayAfterAuthorityTransition(gateway);
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-after-binding-loss",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+        var aborted = AssertIsTaskSnapshot(reply.Payload);
+        Assert.AreEqual("aborted", aborted.State);
+        Assert.AreEqual("plugin_task_aborted", aborted.Error!.Code);
+    }
+
+    [TestMethod]
+    public async Task ForeignWorkspaceSessionCannotQueryAnotherWorkspacesTask()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request(
+            "plugin.action.start", "start-foreign", StartActionPayload));
+        PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
+
+        dispatcher.SetWorkspaceContext(new PluginProjectContext(
+            "local:other", "other:2", 2));
+        await dispatcher.DispatchAsync(Request(
+            "plugin.task.get", "get-foreign",
+            $$"""{"taskId":"{{started.TaskId}}"}"""));
+
+        Assert.AreEqual("PLUGIN_TASK_NOT_FOUND", reply.FailureCode);
+    }
+
+    private static PluginRuntimeTaskSnapshot AssertIsTaskSnapshot(object? payload)
+        => Assert.IsInstanceOfType<PluginRuntimeTaskSnapshot>(payload)
+            ?? throw new InvalidOperationException("task snapshot payload is required");
+
+    private sealed class GatedPluginFilePicker(Task<string?> selection) : IPluginFilePicker
+    {
+        public Task<string?> PickAsync(
+            PluginRuntimeFileRequest request,
+            CancellationToken token) => selection;
     }
 
     private static RoutedWebRequest Request(string type, string requestId, string payload)
@@ -1294,6 +1627,9 @@ public sealed class PluginRequestDispatcherTests
         public Queue<TaskCompletionSource<PluginRuntimeInstallPlan>> PendingInspections { get; } = new();
         public TaskCompletionSource InspectStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource StartCalled { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<PluginRuntimeTaskSnapshot>? PendingStart { get; set; }
         public TaskCompletionSource CancelObserved { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public PluginInstallCancelParams? CancelRequest { get; private set; }
@@ -1309,6 +1645,10 @@ public sealed class PluginRequestDispatcherTests
         public TaskCompletionSource<PluginRuntimeSnapshot>? PendingUpgrade { get; set; }
         public CancellationToken UpgradeToken { get; private set; }
         public PluginRuntimeSnapshot CatalogSnapshot { get; set; } = DefaultSnapshot;
+        public PluginRuntimeTaskSnapshot? StartResult { get; set; }
+        public PluginRuntimeTaskSnapshot LastStarted { get; private set; } = Task;
+        public int CancelTaskCalls { get; private set; }
+        public int ResolveInteractionCalls { get; private set; }
         public Exception? CommitFailure { get; init; }
         public Exception? CancelFailure { get; init; }
         public TaskCompletionSource<bool>? PendingCancel { get; init; }
@@ -1339,6 +1679,14 @@ public sealed class PluginRequestDispatcherTests
             add => _fileRequested += value;
             remove => _fileRequested -= value;
         }
+        public event Action? Terminated
+        {
+            add => _terminated += value;
+            remove => _terminated -= value;
+        }
+        private Action? _terminated;
+
+        public void RaiseTerminated() => _terminated?.Invoke();
 
         public void RaiseCatalogChanged()
         {
@@ -1351,10 +1699,38 @@ public sealed class PluginRequestDispatcherTests
                 JsonSerializer.SerializeToElement(CatalogSnapshot)));
         }
 
+        public void RaiseTaskChanged(PluginRuntimeTaskSnapshot snapshot, int revision = 1)
+        {
+            _taskChanged?.Invoke(new PluginEventEnvelope(
+                PluginContractVersions.Event,
+                "plugin.task.changed",
+                snapshot.ProjectKey,
+                snapshot.TaskId,
+                revision,
+                JsonSerializer.SerializeToElement(snapshot)));
+        }
+
+        public void RaiseInteractionRequested(string runId)
+        {
+            var interaction = new PluginRuntimeInteractionSnapshot(
+                runId, "project-1", "com.acme.clean", "clean", "desktop-host",
+                null, new PluginRuntimePendingConfirmation(
+                    "interaction-1", PluginRisk.Write, "确认", 
+                    new PluginRuntimeConfirmationPreview([], [], 1, []), 1_800_000_000),
+                false);
+            _interactionRequested?.Invoke(new PluginEventEnvelope(
+                PluginContractVersions.Event,
+                "plugin.interaction.requested",
+                "project-1",
+                runId,
+                1,
+                JsonSerializer.SerializeToElement(interaction)));
+        }
+
         public void RaiseFileRequested()
         {
             var request = new PluginRuntimeFileRequest(
-                "file-1", "run-1", "project-1", CatalogSnapshot.PluginId,
+                "file-1", LastStarted.RunId, "project-1", CatalogSnapshot.PluginId,
                 "export", "write", [], "plugin-output.csv", "text/csv", 1_800_000_000);
             _fileRequested?.Invoke(new PluginEventEnvelope(
                 PluginContractVersions.Event,
@@ -1436,18 +1812,34 @@ public sealed class PluginRequestDispatcherTests
         public Task<PluginRuntimeActionAvailability> DescribeActionAsync(PluginDescribeActionParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(new PluginRuntimeActionAvailability(true, []));
         public Task<PluginRuntimeTaskSnapshot> StartActionAsync(PluginStartActionParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(Task);
-        public Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(PluginResolveInteractionParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", "rejected"));
+        {
+            // The host generates the identity; the executor only echoes it.
+            LastStarted = (StartResult ?? Task) with
+            {
+                TaskId = request.TaskId ?? Task.TaskId,
+                RunId = request.RunId ?? Task.RunId,
+            };
+            StartCalled.TrySetResult();
+            return PendingStart?.Task
+                ?? System.Threading.Tasks.Task.FromResult(LastStarted);
+        }
         public Task<bool> ResolveFileAsync(PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token)
         {
+            FileResolutions += 1;
             FileResolution.TrySetResult((request.RequestId, selectedPath));
             return System.Threading.Tasks.Task.FromResult(true);
         }
-        public Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(PluginTaskParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(Task);
-        public Task<PluginRuntimeTaskSnapshot> GetTaskAsync(PluginTaskParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(Task);
+        public int FileResolutions { get; private set; }
+        public Task<bool> CancelTaskAsync(PluginTaskParams request, CancellationToken token)
+        {
+            CancelTaskCalls += 1;
+            return System.Threading.Tasks.Task.FromResult(true);
+        }
+        public Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(PluginResolveInteractionParams request, CancellationToken token)
+        {
+            ResolveInteractionCalls += 1;
+            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", "rejected"));
+        }
         public void Dispose() { }
     }
 }

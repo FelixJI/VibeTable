@@ -120,7 +120,9 @@ public sealed record PluginStartActionParams(
     string PluginId,
     string ActionId,
     PluginRuntimeCommandContext Context,
-    JsonElement Input);
+    JsonElement Input,
+    string? TaskId = null,
+    string? RunId = null);
 public sealed record PluginResolveInteractionParams(
     string RunId,
     string InteractionId,

@@ -740,6 +740,7 @@ public partial class MainWindow : Window
             return;
         }
         PluginProjectContext? context = PluginProjectContext.FromSession(args.Session);
+        _pluginDispatcher.SetWorkspaceContext(context);
         _authorityTransition.Transition(context, _session.Token);
         if (context is null)
         {
