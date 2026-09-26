@@ -66,6 +66,29 @@ Host 捕获当前 workspace/epoch lease，在写入、同目录原子替换及�
 `DeviceSettingsRequestControllerTests` 以真实 session/临时 JSON 验证；尚无可见 UI 消费者，
 不把该测试当作 packaged UI/E2E 通过证据。
 
+## 插件任务/交互公开 owner（L7）
+
+`plugin.task.get` / `plugin.task.cancel` / `plugin.interaction.resolve` 由 WPF
+`HostPluginTaskRegistry` 唯一拥有：Host 生成 taskId/runId 并在调用执行器前登记，任务以 project/session/fence
+绑定到启动它的 gateway 代际，终态粘滞，迟到取消不能改写已记录的成功；执行报告早于 start 回包时不得降级。Python 仅保留执行上下文、取消句柄与等待
+Host 回复的 future；`plugin.getTask` 已从 Python 退役，`plugin.cancelTask`/`plugin.resolveInteraction`/
+`plugin.resolveFile` 只是封闭 host-only 执行入口。Python client 失效（transport 终止、重绑或项目上下文切换）时，
+非终态任务立即结算为 `aborted`，错误码 `plugin_task_aborted` 并明确 `commitOutcome: unknown`，不宣称零写入也不自动重放；
+待确认交互与原生文件选择晚返回按代际拒绝，Host 文件 grant 撤销仍由 `HostSessionFileBroker` 的 Retire/DrainCompletion 观察。
+安装计划继续复用 `HostInstallPlanLeaseRegistry`（旧 plan 仍要求重新 inspect）；插件 catalog/audit/私有设置持久化路径不变。
+确认登记同时核对 run/project/plugin/action/interactionId 和期限，并在 Host 原子消费；文件选择回包核对完整请求及 run 取消令牌。
+任务终态撤销该 run 的文件授权，transport dispose 等待已退休 broker 的 DrainCompletion，首个终止观察者异常不阻断其他 owner。
+Web 终态不可被迟到交互或任务回包复活，终态面板不再显示仍在等待的提示。
+
+#369 的本地真实候选 S11（`build/qa/task369-plugin-owner/20260924T045540Z/product-e2e-report.json`）通过：
+原生授权文件读写、明确确认后的单条提交、字段越权拒绝，以及待确认时杀掉已归属的 Python 子进程后公开 task.get 的
+aborted/unknown、旧 resolve 的 expired、既有成功不变和 Go query 可用。S17 同候选通过（`build/qa/task369-interface/20260924T045641Z/product-e2e-report.json`）。
+这两份报告先于终态提示文案修正；最终产品代码 aa389cd2 重建后 S11 再通过（31.915 秒，
+`build/qa/task369-final/20260924T050407Z/product-e2e-report.json`），包含终态不再等待的界面断言。
+[终态截图](../assets/screenshots/vibetable-plugin-task-aborted.png)来自该真实 WPF/WebView2 运行。
+最终 PR CI、独立审阅及合并后门禁另由 Issue/PR 记录，不据此宣称 L7/L9 全部完成。
+
+
 ## 维护规则
 
 - 新跨进程 operation 同时更新本页、capability 矩阵、producer/Host/Web 的闭集测试和至少一条产品证据。

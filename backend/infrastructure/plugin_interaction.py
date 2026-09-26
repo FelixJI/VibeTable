@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -179,8 +180,15 @@ class InMemoryInteractionAdapter:
 PluginInteractionNotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 
 
+@dataclass
+class _HostWaiter:
+    interaction_id: str
+    expires_at: float
+    future: asyncio.Future[bool]
+
+
 class HostConfirmationAdapter:
-    """Bounded local confirmation channel resolved by the trusted host UI."""
+    """Execution-side future only; the Host owns public pending and decisions."""
 
     def __init__(
         self,
@@ -191,8 +199,9 @@ class HostConfirmationAdapter:
         if timeout_seconds <= 0 or timeout_seconds > 900:
             raise ValueError("confirmation timeout must be between 0 and 900 seconds")
         self._timeout_seconds = timeout_seconds
-        self._adapter = InMemoryInteractionAdapter(clock=clock)
+        self._clock = clock
         self._sink: PluginInteractionNotificationSink | None = None
+        self._waiters: dict[str, _HostWaiter] = {}
         self._revisions: dict[str, int] = {}
 
     @property
@@ -212,52 +221,51 @@ class HostConfirmationAdapter:
         if self._sink is None:
             raise RuntimeError("host confirmation channel is unavailable")
         details = execution if isinstance(execution, dict) else {}
-        run_id = details.get("runId")
-        project_key = details.get("projectKey")
-        plugin_id = details.get("pluginId")
-        action_id = details.get("actionId")
-        if not all(
-            isinstance(value, str) and value
-            for value in (
-                run_id,
-                project_key,
-                plugin_id,
-                action_id,
-            )
-        ):
+        identity = {
+            key: details.get(key) for key in ("runId", "projectKey", "pluginId", "actionId")
+        }
+        if not all(isinstance(value, str) and value for value in identity.values()):
             raise RuntimeError("host confirmation execution identity is invalid")
-        assert isinstance(run_id, str)
-        assert isinstance(project_key, str)
-        assert isinstance(plugin_id, str)
-        assert isinstance(action_id, str)
-        self._adapter.open_run(
-            run_id=run_id,
-            project_key=project_key,
-            plugin_id=plugin_id,
-            action_id=action_id,
-            caller="desktop-host",
+        run_id = str(identity["runId"])
+        if run_id in self._waiters:
+            raise RuntimeError("a confirmation is already pending for this run")
+        expires_at = self._clock() + self._timeout_seconds
+        pending = PendingConfirmation(
+            interaction_id=f"interaction-{uuid.uuid4().hex}",
+            risk=risk,
+            title=(
+                f"确认影响 {preview.affected_count} 条记录"
+                if risk == "write"
+                else f"确认危险操作（{preview.affected_count} 条记录）"
+            ),
+            preview=preview,
+            expires_at=expires_at,
         )
-        waiter = asyncio.create_task(
-            self._adapter.request_confirmation(
-                run_id=run_id,
-                risk=risk,
-                title=(
-                    f"确认影响 {preview.affected_count} 条记录"
-                    if risk == "write"
-                    else f"确认危险操作（{preview.affected_count} 条记录）"
-                ),
-                preview=preview,
-                timeout_ms=int(self._timeout_seconds * 1000),
-            )
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._waiters[run_id] = _HostWaiter(pending.interaction_id, expires_at, future)
+        snapshot = InteractionSnapshot(
+            run_id=run_id,
+            project_key=str(identity["projectKey"]),
+            plugin_id=str(identity["pluginId"]),
+            action_id=str(identity["actionId"]),
+            caller="desktop-host",
+            pending_confirmation=pending,
         )
         try:
-            snapshot = await self._adapter.watch(run_id)
-            await self._publish(snapshot)
-            return await waiter
+            revision = self._revisions.get(run_id, 1) + 1
+            self._revisions[run_id] = revision
+            await self._sink(
+                PluginEventEnvelope(
+                    event_type="plugin.interaction.requested",
+                    project_key=snapshot.project_key,
+                    entity_id=run_id,
+                    revision=revision,
+                    snapshot=snapshot.model_dump(mode="json", by_alias=True),
+                )
+            )
+            return await asyncio.wait_for(future, timeout=self._timeout_seconds)
         finally:
-            if not waiter.done():
-                waiter.cancel()
-            self._adapter.close_run(run_id)
+            self._waiters.pop(run_id, None)
             self._revisions.pop(run_id, None)
 
     async def try_resolve(
@@ -266,37 +274,25 @@ class HostConfirmationAdapter:
         interaction_id: str,
         decision: InteractionDecision,
     ) -> InteractionResolveResult | None:
-        if not self._adapter.has_run(run_id):
+        waiter = self._waiters.get(run_id)
+        if waiter is None:
             return None
-        return await self._adapter.resolve(run_id, interaction_id, decision)
+        if (
+            waiter.interaction_id != interaction_id
+            or waiter.expires_at <= self._clock()
+            or waiter.future.done()
+        ):
+            return InteractionResolveResult(status="expired")
+        waiter.future.set_result(decision == "approved")
+        return InteractionResolveResult(status="resolved", decision=decision)
 
     async def request_cancel(self, run_id: str) -> CancelFlag | None:
-        if not self._adapter.has_run(run_id):
+        waiter = self._waiters.get(run_id)
+        if waiter is None:
             return None
-        result = await self._adapter.request_cancel(run_id)
-        snapshot = await self._adapter.get(run_id)
-        if snapshot.pending_confirmation is not None:
-            await self._adapter.resolve(
-                run_id,
-                snapshot.pending_confirmation.interaction_id,
-                "rejected",
-            )
-        return result
-
-    async def _publish(self, snapshot: InteractionSnapshot) -> None:
-        if self._sink is None:
-            raise RuntimeError("host confirmation channel is unavailable")
-        revision = self._revisions.get(snapshot.run_id, 1) + 1
-        self._revisions[snapshot.run_id] = revision
-        await self._sink(
-            PluginEventEnvelope(
-                event_type="plugin.interaction.requested",
-                project_key=snapshot.project_key,
-                entity_id=snapshot.run_id,
-                revision=revision,
-                snapshot=snapshot.model_dump(mode="json", by_alias=True),
-            )
-        )
+        if not waiter.future.done():
+            waiter.future.set_result(False)
+        return CancelFlag(cancel_requested=True)
 
 
 __all__ = ["HostConfirmationAdapter", "InMemoryInteractionAdapter"]

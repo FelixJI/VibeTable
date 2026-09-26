@@ -210,3 +210,9 @@ TempDir 删除 coordination 目录失败。两次有界聚焦复验均通过，�
 
 本节只记录接手、整合与诊断。当前组合的完整质量、最终包/S24、fresh required、独立审阅以及人工合并后主干资格，
 以 Task #342 / PR #333 的后续实际源码与报告记录为准；此前候选资格仍只属于各自源码。
+
+## 2026-09-26：CI 36238884400 fork-right 检查点取样竞态与等待契约修正
+
+PR #373（head `8fa4e73`）resilience lane 的 S24 fork-right 失败于 `waitForPublishedReplicaUi`：release-cache 预览门在 12:07:22.951Z 的 `replica.changed(replicated)` 后打开，20ms 后发出的 `replica.status` 于 12:07:23.416Z 读到 `syncing/pendingSync=true`。根因是取样竞态而非同步状态机缺陷：sidecar 复制 worker 每 30s 空闲再验证周期在开头保守写 `syncing`（`replica_conflict_handlers.go` 的 `synchronizeOnce`），.NET 监视器以 15s 节流采样并转发 `replica.changed`，两个异步样本可合法瞬时不一致；同 run 左侧 host 通过；具体由定时周期还是其他唤醒触发，现有日志不足以确认。释放缓存安全不依赖该 UI 门：`WorkspaceStorageBroker.ApplyReleaseAsync` 在 apply 时独立验证目录副本并核对保护高水位，不满足即 `workspace.release_cache_unsafe` fail-closed。
+
+因此不改生产同步状态机，仅把 `waitForPublishedReplicaUi` 检查点契约改为"同一 60s 预算内，权威 `replica.status` 返回精确 `advisory/replicated/pendingSync:false` 且同一样本 release-cache 门仍 enabled"；期间合法非 ready 状态以 250ms 间隔继续等待，RPC 错误立即失败，超时仍附原 `replicaReadiness` 诊断，最终 recorder.check 三元组与 details 形状不变。`waitForPublishedReplicaUi` 保持单函数与原 60s 预算：局部 deadline 覆盖门等待与检查点循环，合法非 ready 状态按 `Math.min(250, 剩余预算)` 间隔继续等待，RPC/DOM 应答落地后核对 deadline，预算内起请求但应答落在预算外不得通过。`tests/e2e/directory_replica_conflict_ui.test.mjs` 以脚本化状态序列（VM 提取真实 helper 与真实 `rawWorkspaceV2Request`，注入可控 `Date.now`/`setTimeout` 虚拟时钟，无真实 sleep）覆盖五例：门开后首个 status 为 `syncing` 后 `replicated`（旧单检查点实现 RED）、持续 `syncing` 按原 60s 预算失败并附诊断、RPC 失败不被等成通过、DOM 关闭不凭单独 `replicated` 放行、预算内起请求但应答落在预算外不能通过；旧实现 RED 为 4 失败/18 通过，最小化实现后 22/22 通过。

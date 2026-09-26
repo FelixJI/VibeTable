@@ -1,4 +1,12 @@
-"""Fail-closed execution runtime for local-worker plugin actions."""
+"""Fail-closed execution runtime for local-worker plugin actions.
+
+The WPF host owns the public plugin task lifecycle: it generates the task/run
+identity, registers every task before execution starts and answers all public
+queries. This runtime is the closed host-only executor: it receives the host
+identity, keeps only the execution context, the cancel handles and the futures
+waiting for host replies, and reports progress/terminal transitions back as
+execution reports. It never owns or serves queryable lifecycle state.
+"""
 
 from __future__ import annotations
 
@@ -61,6 +69,27 @@ class MutationPort(Protocol):
     async def apply(self, plan: MutationPlan) -> dict[str, Any]: ...
 
 
+class _ExecutionHandle:
+    """Internal execution context for one host-owned task."""
+
+    __slots__ = ("plugin_id", "project_key", "run_id", "task", "task_id")
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        run_id: str,
+        plugin_id: str,
+        project_key: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        self.task_id = task_id
+        self.run_id = run_id
+        self.plugin_id = plugin_id
+        self.project_key = project_key
+        self.task = task
+
+
 class PluginExecutionRuntime:
     def __init__(
         self,
@@ -74,8 +103,7 @@ class PluginExecutionRuntime:
         self._worker = worker_adapter
         self._confirmation = confirmation_adapter
         self._mutation = mutation_adapter
-        self._task_snapshots: dict[str, PluginTaskSnapshot] = {}
-        self._async_tasks: dict[str, asyncio.Task[None]] = {}
+        self._executions: dict[str, _ExecutionHandle] = {}
         self._notification_sink: PluginNotificationSink | None = None
         self._revision = 0
 
@@ -109,7 +137,19 @@ class PluginExecutionRuntime:
         action_id: str,
         context: CommandContext,
         input_payload: dict[str, Any],
+        *,
+        task_id: str,
+        run_id: str,
     ) -> PluginTaskSnapshot:
+        """Starts one execution for a task identity owned by the WPF host.
+
+        The returned snapshot is the execution's initial report for the host
+        registry; it is never a queryable lifecycle source.
+        """
+        if not task_id or not run_id:
+            raise ValueError("host execution identity is required")
+        if task_id in self._executions:
+            raise ValueError("plugin task identity is already executing")
         availability = self.describe(plugin_id, action_id, context)
         if not availability.available:
             raise ValueError(",".join(availability.reasons))
@@ -119,8 +159,6 @@ class PluginExecutionRuntime:
         action = _find_action(installation, action_id)
         if action is None:
             raise ValueError("plugin_action_not_found")
-        task_id = f"plugin-task-{uuid.uuid4().hex[:12]}"
-        run_id = f"plugin-run-{uuid.uuid4().hex[:12]}"
         snapshot = PluginTaskSnapshot(
             task_id=task_id,
             run_id=run_id,
@@ -133,7 +171,6 @@ class PluginExecutionRuntime:
             risk=action.risk,
             state="queued",
         )
-        self._task_snapshots[task_id] = snapshot
         task = asyncio.create_task(
             self._run(
                 snapshot,
@@ -144,15 +181,22 @@ class PluginExecutionRuntime:
             ),
             name=task_id,
         )
-        self._async_tasks[task_id] = task
-        task.add_done_callback(lambda _task: self._async_tasks.pop(task_id, None))
+        handle = _ExecutionHandle(
+            task_id=task_id,
+            run_id=run_id,
+            plugin_id=plugin_id,
+            project_key=context.project_key,
+            task=task,
+        )
+        self._executions[task_id] = handle
+        task.add_done_callback(lambda _task: self._executions.pop(task_id, None))
         # Give the newly-created task one scheduler turn before returning the
         # RPC response. Without this explicit handoff, a fast sequence of
         # plugin.action.start / plugin.task.get requests can keep the task at
         # its initial queued snapshot long enough for the renderer to time
         # out even though a worker slot is available.
         await asyncio.sleep(0)
-        return self._task_snapshots[task_id]
+        return snapshot
 
     async def _run(
         self,
@@ -166,7 +210,6 @@ class PluginExecutionRuntime:
         started_at = datetime.now(UTC).replace(microsecond=0)
         started_monotonic = time.monotonic()
         running = initial.model_copy(update={"state": "running"})
-        self._task_snapshots[initial.task_id] = running
         await self._emit(running)
         execution = {
             "taskId": initial.task_id,
@@ -205,7 +248,6 @@ class PluginExecutionRuntime:
                     ),
                 }
             )
-        self._task_snapshots[initial.task_id] = completed
         finished_at = datetime.now(UTC).replace(microsecond=0)
         self._registry.record_audit(
             PluginAuditEvent(
@@ -262,28 +304,23 @@ class PluginExecutionRuntime:
             raise ValueError("mutation plan was rejected")
         return PluginResult.model_validate(await self._mutation.apply(plan))
 
-    def get_task(self, task_id: str) -> PluginTaskSnapshot:
-        try:
-            return self._task_snapshots[task_id]
-        except KeyError as exc:
-            raise KeyError(f"unknown plugin task {task_id!r}") from exc
+    async def request_cancel(self, task_id: str) -> bool:
+        """Triggers the host-owned task's local cancel handle.
 
-    async def request_cancel(self, task_id: str) -> PluginTaskSnapshot:
-        current = self.get_task(task_id)
-        task = self._async_tasks.get(task_id)
-        if task is not None:
-            task.cancel()
-        updated = current.model_copy(update={"cancel_requested": True})
-        self._task_snapshots[task_id] = updated
-        return updated
+        Returns whether an active execution handle was cancelled. Public task
+        state after cancellation is owned by the host registry.
+        """
+        handle = self._executions.get(task_id)
+        if handle is None:
+            return False
+        handle.task.cancel()
+        return True
 
     async def cancel_plugin_tasks(self, project_key: str, plugin_id: str) -> int:
         targets = [
-            task_id
-            for task_id, snapshot in self._task_snapshots.items()
-            if snapshot.project_key == project_key
-            and snapshot.plugin_id == plugin_id
-            and snapshot.state in {"queued", "running"}
+            handle.task_id
+            for handle in self._executions.values()
+            if handle.project_key == project_key and handle.plugin_id == plugin_id
         ]
         for task_id in targets:
             await self.request_cancel(task_id)

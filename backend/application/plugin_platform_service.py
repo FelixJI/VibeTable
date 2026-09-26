@@ -302,10 +302,19 @@ class PluginPlatformService:
         action_id: str,
         context: CommandContext,
         input_payload: dict[str, Any],
+        task_id: str,
+        run_id: str,
     ) -> PluginTaskSnapshot:
         if context.project_key != project_key:
             raise ValueError("plugin context project does not match request")
-        return await self._runtime.start(plugin_id, action_id, context, input_payload)
+        return await self._runtime.start(
+            plugin_id,
+            action_id,
+            context,
+            input_payload,
+            task_id=task_id,
+            run_id=run_id,
+        )
 
     async def resolve_interaction(
         self,
@@ -337,11 +346,13 @@ class PluginPlatformService:
             )(request_id, grant)
         )
 
-    async def cancel_task(self, *, task_id: str) -> PluginTaskSnapshot:
-        return await self._runtime.request_cancel(task_id)
+    async def cancel_task(self, *, task_id: str) -> bool:
+        """Triggers the host-owned task's execution cancel handle.
 
-    def get_task(self, *, task_id: str) -> PluginTaskSnapshot:
-        return self._runtime.get_task(task_id)
+        Returns whether an active execution handle was found. Public task
+        state is owned by the WPF host registry; this is never a status query.
+        """
+        return await self._runtime.request_cancel(task_id)
 
     def _consume_plan(self, plan_id: str, project_revision: str) -> InstallPlan:
         try:

@@ -104,7 +104,7 @@
         "wpfHost",
         "renderer"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -118,7 +118,6 @@
         "state": []
       },
       "stateHolders": [
-        "pythonBff",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -130,12 +129,13 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "WPF owns confirmation and file-request pending state and settles every request when the task, session, or Worker ends.",
+      "deleteWhen": "Host owns public task/confirmation/file pending and generation settlement. Python retains only execution reports and reply futures. L9 still must replace the resident Python executor with an on-demand Worker; domain mutations remain Go-authoritative.",
       "evidence": [
         "backend/__main__.py",
         "backend/infrastructure/plugin_file_capability.py",
         "backend/infrastructure/plugin_interaction.py",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "tests/e2e/pocketbase_product_scenarios.json",
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
       ]
     },
     {
@@ -150,7 +150,7 @@
         "wpfHost",
         "renderer"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -163,8 +163,6 @@
         "state": []
       },
       "stateHolders": [
-        "nodeWorker",
-        "pythonBff",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -176,12 +174,13 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "WPF owns the task notification envelope and Worker termination always produces one terminal task settlement; domain mutations remain Go-authoritative.",
+      "deleteWhen": "Host owns public task/confirmation/file pending and generation settlement. Python retains only execution reports and reply futures. L9 still must replace the resident Python executor with an on-demand Worker; domain mutations remain Go-authoritative.",
       "evidence": [
         "backend/__main__.py",
         "backend/application/plugin_execution_runtime.py",
         "backend/infrastructure/plugin_worker.py",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "tests/e2e/pocketbase_product_scenarios.json",
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
       ]
     },
     {
@@ -1385,7 +1384,6 @@
       "names": [
         "plugin.cancelInstall",
         "plugin.cancelTask",
-        "plugin.getTask",
         "plugin.resolveFile",
         "plugin.resolveInteraction"
       ],
@@ -1400,9 +1398,7 @@
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
       "effects": {
-        "read": [
-          "plugin.getTask"
-        ],
+        "read": [],
         "write": [
           "plugin.cancelInstall",
           "plugin.cancelTask",
@@ -1413,26 +1409,28 @@
         "state": []
       },
       "stateHolders": [
+        "wpfHost",
         "pythonBff",
-        "nodeWorker",
-        "wpfHost"
+        "nodeWorker"
       ],
-      "stateLifetime": "task",
-      "cancellation": "processBound",
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
       "timeout": "operationBounded",
       "productScenarios": [
         "11-plugin-mutation",
         "17-interface-lifecycle"
       ],
-      "targetSlice": "L7+L9",
+      "targetSlice": "L7",
       "targetPr": null,
-      "deleteWhen": "WPF owns install and action task identity plus confirmation and file pending state, and Worker termination settles each pending operation.",
+      "deleteWhen": "Completed for task/interaction/file pending: the WPF HostPluginTaskRegistry owns plugin action task identity, public snapshots, cancel, confirmation and file pending for the workspace lifetime, Python serves only the closed host-only execution entries (cancelTask/resolveInteraction/resolveFile), plugin.getTask is retired, and a lost Python client settles every running task to an explicit aborted state with an unknown business-commit boundary. Remaining: remote install-plan cancel cleanup follows the L9 worker migration.",
       "evidence": [
         "backend/__main__.py",
         "backend/application/plugin_execution_runtime.py",
         "backend/application/plugin_platform_service.py",
         "backend/infrastructure/plugin_file_capability.py",
         "backend/infrastructure/plugin_interaction.py",
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs",
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs",
         "tests/e2e/pocketbase_product_scenarios.json"
       ]
     },

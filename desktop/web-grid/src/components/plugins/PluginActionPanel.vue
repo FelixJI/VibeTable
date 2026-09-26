@@ -27,6 +27,7 @@ const emit = defineEmits<{
   close: [];
 }>();
 const form = reactive<Record<string, unknown>>({});
+const taskIsActive = computed(() => props.task?.state === "queued" || props.task?.state === "running");
 
 const fields = computed(() => {
   const properties = props.description.inputSchema.properties;
@@ -115,9 +116,9 @@ watch(() => props.description, resetForm, { immediate: true });
         <code>{{ task.taskId }}</code>
       </div>
       <div class="progress-track"><i :style="{ width: `${task.progressPercent ?? 0}%` }"></i></div>
-      <div class="task-meta"><span>{{ task.progressMessage ?? '等待运行时更新' }}</span><b>{{ task.progressPercent ?? 0 }}%</b></div>
+      <div class="task-meta"><span>{{ taskIsActive ? (task.progressMessage ?? '等待运行时更新') : '任务已结束' }}</span><b>{{ task.progressPercent ?? 0 }}%</b></div>
       <button
-        v-if="task.state === 'queued' || task.state === 'running'"
+        v-if="taskIsActive"
         data-testid="plugin-task-cancel"
         class="quiet-button"
         type="button"

@@ -166,6 +166,36 @@ public sealed class TestModePluginPackageSourcePicker : IPluginPackageSourcePick
     }
 }
 
+/// <summary>Fixed native file picker protocol available only in explicit desktop test mode.</summary>
+public sealed class TestModePluginFilePicker : IPluginFilePicker
+{
+    private readonly string _controlsDirectory;
+
+    public TestModePluginFilePicker(string controlsDirectory)
+    {
+        _controlsDirectory = Path.GetFullPath(
+            controlsDirectory ?? throw new ArgumentNullException(nameof(controlsDirectory)));
+    }
+
+    public Task<string?> PickAsync(PluginRuntimeFileRequest request, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        string controlName = request.Direction switch
+        {
+            "read" => "plugin-file-read.txt",
+            "write" => "plugin-file-write.txt",
+            _ => throw new InvalidOperationException("Unsupported plugin file direction."),
+        };
+        string control = Path.Combine(_controlsDirectory, controlName);
+        if (!File.Exists(control))
+            throw new InvalidOperationException($"Missing test-mode control file: {controlName}");
+        string selected = Path.GetFullPath(File.ReadAllText(control).Trim());
+        if (request.Direction == "read" ? !File.Exists(selected)
+            : !Directory.Exists(Path.GetDirectoryName(selected)))
+            throw new FileNotFoundException("The test-mode plugin file path is unavailable.", selected);
+        return Task.FromResult<string?>(selected);
+    }
+}
 /// <summary>Native file boundary used only for an active, declared plugin capability.</summary>
 public sealed class WindowsPluginFilePicker : IPluginFilePicker
 {

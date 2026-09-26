@@ -48,6 +48,37 @@ public sealed class JsonRpcHostFilesTests
     }
 
     [TestMethod]
+    public async Task TerminationNotifiesEveryOwnerEvenWhenOneObserverThrows()
+    {
+        var transport = new Peer();
+        await using var client = new JsonRpcClient(transport);
+        int observed = 0;
+        client.Terminated += () => throw new InvalidOperationException("observer failed");
+        client.Terminated += () => Interlocked.Increment(ref observed);
+        transport.In.Writer.TryComplete();
+        await Task.Delay(50);
+        Assert.AreEqual(1, observed);
+    }
+
+    [TestMethod]
+    public async Task DisposeAwaitsRetiredFileBrokerDrain()
+    {
+        var transport = new Peer();
+        var client = new JsonRpcClient(transport);
+        var handler = new Handler
+        {
+            DrainGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        client.RegisterHostFileHandler(handler);
+        client.UnregisterHostFileHandler(handler);
+        Task disposing = client.DisposeAsync().AsTask();
+        await Task.Delay(50);
+        Assert.IsFalse(disposing.IsCompleted);
+        handler.DrainGate.SetResult();
+        await disposing.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(1, handler.Retired);
+    }
+    [TestMethod]
     public async Task UnknownCallbackMethodCannotReachNativeHandler()
     {
         var transport = new Peer();
@@ -68,6 +99,7 @@ public sealed class JsonRpcHostFilesTests
         internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TaskCompletionSource Completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal int Retired;
+        internal TaskCompletionSource? DrainGate;
         public async Task<JsonElement> HandleAsync(string action, JsonElement parameters, CancellationToken token)
         {
             Entered.TrySetResult();
@@ -75,6 +107,7 @@ public sealed class JsonRpcHostFilesTests
             finally { Completed.TrySetResult(); }
         }
         public void Retire() => Interlocked.Increment(ref Retired);
+        public Task DrainCompletion => DrainGate?.Task ?? Task.CompletedTask;
     }
 
     private sealed class Peer : IJsonLineTransport

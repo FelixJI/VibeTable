@@ -173,3 +173,132 @@ for (const stage of ["seed", "fork-left", "fork-right", "resolve", "verify-resol
       ...(!["seed", "fork-right"].includes(stage) ? ["workspace.close"] : [])]);
   });
 }
+
+// --- Replica readiness checkpoint contract -----------------------------------
+// waitForPublishedReplicaUi samples two async projections of the replica worker:
+// the UI release-cache gate (driven by throttled replica.changed events) and
+// the durable public replica.status projection, which re-enters "syncing" for
+// every periodic verification pass. The checkpoint must wait for one agreeing
+// sample inside its single 60s budget. These tests run the real helper and the
+// real rawWorkspaceV2Request on a controlled clock; no packaged Host starts.
+const rawWorkspaceV2RequestSource = runnerSource.slice(
+  runnerSource.indexOf("async function rawWorkspaceV2Request("),
+  runnerSource.indexOf("async function rawLifecycleWorkspaceV2Request("),
+);
+const replicaReadinessSource = runnerSource.slice(
+  runnerSource.indexOf("async function waitForPublishedReplicaUi("),
+  runnerSource.indexOf("async function replicaEditRow("),
+);
+const replicaSyncing = {
+  coordinationStrength: "advisory", syncState: "syncing", pendingSync: true,
+};
+const replicaReplicated = {
+  coordinationStrength: "advisory", syncState: "replicated", pendingSync: false,
+};
+
+function readinessHarness({ nextStatus, controlEnabled = () => true }) {
+  const observed = { replicaStatusRequests: 0, controlReads: 0, checks: [] };
+  let now = 0;
+  const advance = (ms) => { now += ms; };
+  const requestWorkspaceV2InPage = async ({ method }) => {
+    if (method === "snapshot.list") return { result: { snapshots: [], nextCursor: null } };
+    assert.equal(method, "replica.status");
+    observed.replicaStatusRequests += 1;
+    const next = nextStatus(observed.replicaStatusRequests, advance);
+    if (next instanceof Error) throw next;
+    return { result: next };
+  };
+  const document = {
+    querySelector(selector) {
+      assert.equal(selector, '[data-testid="workspace-storage-release-cache-preview"]');
+      observed.controlReads += 1;
+      return { disabled: !controlEnabled(observed.controlReads) };
+    },
+  };
+  const page = {
+    getByTestId(id) {
+      if (id === "nav-settings" || id === "settings-nav-storage") return { async click() {} };
+      if (id === "workspace-storage-release-cache-preview") return { async waitFor() {} };
+      throw new Error(`unexpected UI control ${id}`);
+    },
+    async waitForFunction(expression, argument, options) {
+      assert.ok(options.timeout > 0 && options.timeout <= 60_000);
+      if (!expression(argument)) throw new Error("release-cache gate did not open");
+    },
+    async evaluate(fn, argument) {
+      return fn(argument);
+    },
+  };
+  const recorder = {
+    check(name, passed, details) {
+      observed.checks.push({ name, passed: Boolean(passed) });
+      if (!passed) throw new Error(`assertion failed: ${name}: ${JSON.stringify(details)}`);
+    },
+  };
+  const waitForPublishedReplicaUi = runInNewContext(
+    `${rawWorkspaceV2RequestSource}\n${replicaReadinessSource}\nwaitForPublishedReplicaUi`,
+    {
+      requestWorkspaceV2InPage,
+      document,
+      Date: { now: () => now },
+      setTimeout: (resolve, ms) => { now += ms; resolve(); },
+    },
+  );
+  return { observed, run: () => waitForPublishedReplicaUi(page, recorder) };
+}
+
+test("readiness checkpoint survives a verification cycle that starts after the UI gate opened", async () => {
+  const harness = readinessHarness({
+    nextStatus: (request) => (request === 1 ? replicaSyncing : replicaReplicated),
+  });
+  await assert.doesNotReject(harness.run());
+  assert.equal(harness.observed.checks.length, 1);
+  assert.equal(harness.observed.checks[0].passed, true);
+  assert.ok(harness.observed.replicaStatusRequests >= 2,
+    "checkpoint must resample after a non-ready status");
+});
+
+test("a replica that never re-reaches replicated fails at the original readiness deadline", async () => {
+  const harness = readinessHarness({ nextStatus: () => replicaSyncing });
+  await assert.rejects(harness.run(), (error) =>
+    /did not reach one agreeing public status checkpoint/.test(error.message)
+      && error.message.includes("replicaReadiness=")
+      && error.message.includes('"syncState":"syncing"'));
+  assert.equal(harness.observed.checks.length, 0);
+  assert.ok(harness.observed.replicaStatusRequests >= 2,
+    "deadline failure must observe repeated samples plus diagnostics");
+});
+
+test("a failed replica.status RPC is never waited into a passing checkpoint", async () => {
+  const failure = new Error('replica.status failed closed: {"code":"workspace.operation_failed"}');
+  const harness = readinessHarness({ nextStatus: () => failure });
+  await assert.rejects(harness.run(), /failed closed/);
+  assert.equal(harness.observed.checks.length, 0);
+});
+
+test("an exact replicated status alone does not pass while the release-cache control is disabled", async () => {
+  const harness = readinessHarness({
+    nextStatus: () => replicaReplicated,
+    controlEnabled: (read) => read !== 2,
+  });
+  await assert.doesNotReject(harness.run());
+  assert.equal(harness.observed.checks.length, 1);
+  assert.equal(harness.observed.checks[0].passed, true);
+  assert.ok(harness.observed.replicaStatusRequests >= 2,
+    "a closed gate must force another authoritative sample");
+  assert.ok(harness.observed.controlReads >= 3,
+    "the gate must be re-read at every authoritative checkpoint");
+});
+
+test("a replicated response that only lands after the budget cannot pass", async () => {
+  const harness = readinessHarness({
+    nextStatus: (request, advance) => {
+      if (request === 1) advance(60_000); // The RPC starts inside the budget.
+      return replicaReplicated;
+    },
+  });
+  await assert.rejects(harness.run(), (error) =>
+    /did not reach one agreeing public status checkpoint/.test(error.message)
+      && error.message.includes('"syncState":"replicated"'));
+  assert.equal(harness.observed.checks.length, 0);
+});

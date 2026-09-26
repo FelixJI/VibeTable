@@ -93,10 +93,9 @@ var rpcDescriptors = []RPCDescriptor{
 	{Method: "path.resolveGrant", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: WpfHost, Effect: ReadEffect},
 	{Method: "path.revokeExportTarget", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "host.path", Owner: WpfHost, Effect: WriteEffect},
 	{Method: "plugin.cancelInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
-	{Method: "plugin.cancelTask", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.cancelTask", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.commitInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.describeAction", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
-	{Method: "plugin.getTask", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "plugin.inspectInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "plugin.listAudit", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "plugin.listCatalog", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
@@ -159,16 +158,16 @@ var rpcDescriptors = []RPCDescriptor{
 }
 
 var rpcMethods = map[CurrentOwner]map[string]struct{}{
-	PythonBff:    set("data.applyImport", "data.export", "data.generateTemplate", "data.previewImport", "plugin.cancelInstall", "plugin.cancelTask", "plugin.commitInstall", "plugin.describeAction", "plugin.getTask", "plugin.inspectInstall", "plugin.listAudit", "plugin.listCatalog", "plugin.listPendingCleanup", "plugin.resolveFile", "plugin.resolveInteraction", "plugin.rollback", "plugin.setEnabled", "plugin.startAction", "plugin.uninstall", "plugin.upgrade", "system.handshake", "task.cancelExecution", "task.settleExport", "task.startExecution"),
+	PythonBff:    set("data.applyImport", "data.export", "data.generateTemplate", "data.previewImport", "plugin.cancelInstall", "plugin.cancelTask", "plugin.commitInstall", "plugin.describeAction", "plugin.inspectInstall", "plugin.listAudit", "plugin.listCatalog", "plugin.listPendingCleanup", "plugin.resolveFile", "plugin.resolveInteraction", "plugin.rollback", "plugin.setEnabled", "plugin.startAction", "plugin.uninstall", "plugin.upgrade", "system.handshake", "task.cancelExecution", "task.settleExport", "task.startExecution"),
 	GoSidecar:    set("contentProfile.commit", "contentProfile.delete", "contentProfile.load", "events.reconcile", "field.change.apply", "field.change.cancel", "field.change.plan", "field.change.status", "field.recycleBin.list", "field.settings.describe", "file.list", "file.token", "formula.draft.validate", "formula.preview", "formula.validate", "history.applyRestore", "history.previewRestore", "history.read", "insights.dashboardQueryLimits", "insights.deleteDashboardWorkspace", "insights.executeDashboardQuery", "insights.listDashboards", "insights.panelManifest", "insights.readDashboardWorkspace", "insights.saveDashboardDraft", "interface.commit", "interface.delete", "interface.list", "interface.load", "lookup.list", "lookup.query", "lookup.valuePage", "mutation.apply", "mutation.preview", "preset.delete", "preset.list", "preset.save", "query.cursorFetch", "query.cursorOpen", "query.page", "query.readRows", "query.selectionOpen", "query.validateSnapshot", "query.view", "recordDocumentLink.commit", "recordDocumentLink.delete", "recordDocumentLink.list", "recordDocumentLink.repair", "relation.applyDelta", "relation.createTarget", "relation.inspectPair", "relation.previewDelta", "relation.searchTargets", "relation.updateSingle", "schema.delete", "schema.describe", "schema.getTable", "schema.list", "schema.table.create", "settings.commitWorkCalendar", "settings.readWorkCalendar", "table.applyPaste", "table.previewPaste", "version.compare", "version.create", "version.delete", "version.list", "version.promote", "version.save"),
 	WpfHost:      set("command.list", "command.run", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "task.cancel", "task.create", "task.status"),
 	PythonWorker: set(),
 }
 
 var eventTopics = map[CurrentOwner]map[string]struct{}{
-	PythonBff:    set("plugin.catalog.changed", "plugin.file.requested", "plugin.interaction.requested", "plugin.task.changed"),
+	PythonBff:    set("plugin.catalog.changed"),
 	GoSidecar:    set("data.changed", "realtime.recovered"),
-	WpfHost:      set("task.changed"),
+	WpfHost:      set("plugin.file.requested", "plugin.interaction.requested", "plugin.task.changed", "task.changed"),
 	PythonWorker: set(),
 }
 

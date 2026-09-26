@@ -1379,6 +1379,14 @@ def run_scenario(
         str(plugin_fixture.resolve()) + "\n",
         encoding="utf-8",
     )
+    plugin_read_source = controls_dir / "plugin-read-source.txt"
+    plugin_read_source.write_text("native plugin file grant\n", encoding="utf-8")
+    (controls_dir / "plugin-file-read.txt").write_text(
+        str(plugin_read_source.resolve()) + "\n", encoding="utf-8"
+    )
+    (controls_dir / "plugin-file-write.txt").write_text(
+        str((controls_dir / "plugin-write-result.txt").resolve()) + "\n", encoding="utf-8"
+    )
     attachment_base = {
         "12-backup-consistency": "backup",
         "18-workspace-search": "e2e-search-attachment",

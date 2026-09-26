@@ -16,6 +16,9 @@ public interface IPluginRpcGateway : IDisposable
     event Action<PluginEventEnvelope>? InteractionRequested;
     event Action<PluginEventEnvelope>? FileRequested;
 
+    /// <summary>Raised once when the backing client transport terminates.</summary>
+    event Action? Terminated;
+
     Task<PluginRuntimeSnapshot[]> ListCatalogAsync(
         PluginCatalogListParams request, CancellationToken token);
     Task<PluginRuntimeAuditEvent[]> ListAuditAsync(
@@ -44,8 +47,7 @@ public interface IPluginRpcGateway : IDisposable
         PluginResolveInteractionParams request, CancellationToken token);
     Task<bool> ResolveFileAsync(
         PluginRuntimeFileRequest request, string? selectedPath, CancellationToken token);
-    Task<PluginRuntimeTaskSnapshot> CancelTaskAsync(
-        PluginTaskParams request, CancellationToken token);
-    Task<PluginRuntimeTaskSnapshot> GetTaskAsync(
+    Task RevokeRunFileGrantsAsync(string runId) => Task.CompletedTask;
+    Task<bool> CancelTaskAsync(
         PluginTaskParams request, CancellationToken token);
 }
