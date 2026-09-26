@@ -17,6 +17,10 @@ SESSION_HEADER = "X-VibeTable-Session"
 MUTATION_PREVIEW_PATH = "/api/vibetable/v1/mutations/preview"
 MUTATION_APPLY_PATH = "/api/vibetable/v1/mutations/apply"
 IMPORT_PREVIEW_PATH = "/api/vibetable/v2/import-preview"
+IMPORT_PLAN_MINT_PATH = "/api/vibetable/v2/import-plans"
+IMPORT_PLAN_STAGE_PATH = "/api/vibetable/v2/import-plans/stage"
+IMPORT_PLAN_BIND_PATH = "/api/vibetable/v2/import-plans/bind"
+IMPORT_PLAN_SETTLE_PATH = "/api/vibetable/v2/import-plans/settle"
 QUERY_PATH = "/api/vibetable/v1/query"
 LOOKUP_DESCRIBE_PATH = "/api/vibetable/v1/lookups/describe"
 LOOKUP_QUERY_PATH = "/api/vibetable/v1/lookups/query"
@@ -144,6 +148,30 @@ class PocketBaseClient:
         return _object(
             await self._post(IMPORT_PREVIEW_PATH, request),
             "import preview",
+        )
+
+    async def mint_import_plan(self, request: Mapping[str, JsonValue]) -> JsonObject:
+        return _object(
+            await self._post(IMPORT_PLAN_MINT_PATH, request),
+            "import plan token",
+        )
+
+    async def stage_import_plan(self, request: Mapping[str, JsonValue]) -> JsonObject:
+        return _object(
+            await self._post(IMPORT_PLAN_STAGE_PATH, request),
+            "staged import plan",
+        )
+
+    async def bind_import_plan(self, request: Mapping[str, JsonValue]) -> JsonObject:
+        return _object(
+            await self._post(IMPORT_PLAN_BIND_PATH, request),
+            "import plan idempotency key",
+        )
+
+    async def settle_import_plan(self, request: Mapping[str, JsonValue]) -> JsonObject:
+        return _object(
+            await self._post(IMPORT_PLAN_SETTLE_PATH, request),
+            "import plan settlement",
         )
 
     async def query_page(
@@ -544,6 +572,10 @@ def _text(value: object, fallback: str) -> str:
 
 
 __all__ = [
+    "IMPORT_PLAN_BIND_PATH",
+    "IMPORT_PLAN_MINT_PATH",
+    "IMPORT_PLAN_SETTLE_PATH",
+    "IMPORT_PLAN_STAGE_PATH",
     "LOOKUP_DESCRIBE_PATH",
     "LOOKUP_QUERY_PATH",
     "METADATA_PATH",

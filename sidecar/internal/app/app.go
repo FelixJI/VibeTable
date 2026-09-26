@@ -15,7 +15,6 @@ import (
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/vibetable/vibetable/sidecar/internal/attachments"
 	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
@@ -258,19 +257,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		}
 
 		event.Server.Addr = rawListener.Addr().String()
-		event.Router.Bind(&hook.Handler[*core.RequestEvent]{
-			Id:       "vibetableSessionAuth",
-			Priority: -10_000,
-			Func: func(request *core.RequestEvent) error {
-				if !options.Session.Matches(request.Request.Header.Get(auth.HeaderName)) {
-					return request.JSON(http.StatusUnauthorized, map[string]any{
-						"code":    "session.unauthorized",
-						"message": "valid sidecar session secret required",
-					})
-				}
-				return request.Next()
-			},
-		})
+		bindVibetableSessionAuth(event.Router, options.Session)
 		if options.WorkspaceV2 != nil {
 			bindWorkspaceV2WriteBoundary(event)
 		}
@@ -362,9 +349,14 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			fieldProtectionVerifier,
 			businessGate,
 		)
+		importWorkspaceID := ""
+		if options.WorkspaceV2 != nil {
+			importWorkspaceID = options.WorkspaceV2.WorkspaceID
+		}
 		registerImportRoutes(
 			event.Router,
 			importvalue.New(fieldchange.NewCatalog(pb)),
+			newImportPlanOwner(importWorkspaceID),
 		)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, pb, formulaCompiler)

@@ -27,7 +27,7 @@ public sealed class ProductSidecarGatewayLifecycleTests
                 Assert.AreSame(candidate, binding.Current,
                     "database.opened must not expose an unbound Product route");
                 projections++;
-                return Task.CompletedTask;
+                return Task.FromResult(true);
             });
         await candidate.HandshakeStarted.Task.WaitAsync(TestTimeout);
         bool wasPending = !completion.IsCompleted;

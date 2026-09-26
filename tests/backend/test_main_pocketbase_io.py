@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +71,9 @@ def test_product_runtime_fails_closed_without_sidecar_session(monkeypatch: Any) 
 
 
 class _ImportTransport:
+    def __init__(self) -> None:
+        self.plan: dict[str, Any] | None = None
+
     async def request(
         self,
         method: str,
@@ -133,6 +137,26 @@ class _ImportTransport:
                     }
                 ],
             }
+        if method == "POST" and path.startswith("/api/vibetable/v2/import-plans"):
+            assert isinstance(json_body, dict)
+            assert json_body["contract"] == "vibetable.import-plans.v1"
+            token = "imp1." + "a" * 32
+            if path == "/api/vibetable/v2/import-plans":
+                assert self.plan is None
+                self.plan = dict(json_body)
+                return {"token": token, "expiresAt": time.time() + 600, "consumed": False}
+            assert self.plan is not None
+            assert json_body["token"] == token
+            if path == "/api/vibetable/v2/import-plans/stage":
+                for binding in ("grantId", "collection", "mode", "capabilityHash"):
+                    assert json_body[binding] == self.plan[binding]
+                return {**self.plan, "attempt": 1}
+            assert json_body["attempt"] == 1
+            if path == "/api/vibetable/v2/import-plans/bind":
+                return {"idempotencyKey": json_body["idempotencyPrefix"] + "-0"}
+            if path == "/api/vibetable/v2/import-plans/settle":
+                assert json_body["outcome"] == "committed"
+                return {"token": token, "consumed": True}
         if method == "POST" and path == "/api/vibetable/v1/mutations/apply":
             assert isinstance(json_body, dict)
             assert json_body["operations"][0]["values"]["f_payload01"] == {
@@ -341,6 +365,7 @@ async def test_build_server_dispatches_import_task_without_internal_error(
 def test_recovery_preview_probe_refreshes_schema_without_files_or_plans() -> None:
     class ReadOnlyTransport(_ImportTransport, _Transport):
         def __init__(self) -> None:
+            super().__init__()
             self.calls: list[tuple[str, str]] = []
 
         async def request(self, method: str, path: str, **kwargs: Any) -> Any:
@@ -353,7 +378,7 @@ def test_recovery_preview_probe_refreshes_schema_without_files_or_plans() -> Non
         client = PocketBaseClient(transport=transport, session_secret="test-only")
         dispatcher = RpcDispatcher()
         tasks = build_task_service()
-        runtime = _configure_pocketbase_data_io(dispatcher, client=client, task_service=tasks)
+        _configure_pocketbase_data_io(dispatcher, client=client, task_service=tasks)
         response = await dispatcher.dispatch(
             {
                 "jsonrpc": "2.0",
@@ -372,7 +397,7 @@ def test_recovery_preview_probe_refreshes_schema_without_files_or_plans() -> Non
         assert response["error"]["data"]["message"] == "schema changed since the grid was rendered"
         assert response["error"]["data"]["code"] == "schema_mismatch"
         assert transport.calls == [("GET", "/api/vibetable/v2/schema/tables/orders")]
-        assert not runtime._import._plans
+        assert transport.plan is None
         assert not tasks.grants._grants
 
     asyncio.run(run())
