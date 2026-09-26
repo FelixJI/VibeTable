@@ -44,7 +44,6 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "mutation.apply",
   "mutation.preview",
   "plugin.cancelInstall",
-  "plugin.cancelTask",
   "plugin.commitInstall",
   "plugin.describeAction",
   "plugin.inspectInstall",

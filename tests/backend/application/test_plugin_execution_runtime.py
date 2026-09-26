@@ -227,19 +227,6 @@ async def test_read_action_runs_once_with_immutable_package_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def _wait_terminal(events: list[Any]) -> str:
-    for _ in range(100):
-        if events and events[-1].snapshot["state"] in {
-            "succeeded",
-            "failed",
-            "cancelled",
-            "aborted",
-        }:
-            return str(events[-1].snapshot["state"])
-        await asyncio.sleep(0)
-    raise AssertionError("plugin task did not reach a terminal state")
-
-
 async def test_start_yields_until_background_execution_has_left_queued_state() -> None:
     worker_started = asyncio.Event()
     worker_release = asyncio.Event()

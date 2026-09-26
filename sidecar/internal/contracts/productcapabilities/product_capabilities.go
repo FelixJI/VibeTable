@@ -93,7 +93,7 @@ var rpcDescriptors = []RPCDescriptor{
 	{Method: "path.resolveGrant", Scope: GlobalScope, Audience: HostOnly, CapabilityID: "host.path", Owner: WpfHost, Effect: ReadEffect},
 	{Method: "path.revokeExportTarget", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "host.path", Owner: WpfHost, Effect: WriteEffect},
 	{Method: "plugin.cancelInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
-	{Method: "plugin.cancelTask", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
+	{Method: "plugin.cancelTask", Scope: WorkspaceScope, Audience: HostOnly, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.commitInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: WriteEffect},
 	{Method: "plugin.describeAction", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},
 	{Method: "plugin.inspectInstall", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "plugin.lifecycle", Owner: PythonBff, Effect: ReadEffect},

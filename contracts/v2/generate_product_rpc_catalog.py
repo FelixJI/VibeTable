@@ -712,7 +712,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "path.resolveGrant": _typed(SessionPathGrant),
         "path.revokeExportTarget": _typed(ExportTargetSettled),
         "plugin.cancelInstall": _typed(bool, "Boolean"),
-        "plugin.cancelTask": _typed(PluginTaskSnapshot),
+        "plugin.cancelTask": _typed(bool, "Boolean"),
         "plugin.commitInstall": _typed(PluginSnapshot),
         "plugin.describeAction": _typed(ActionAvailability),
         "plugin.inspectInstall": _typed(InstallPlan),

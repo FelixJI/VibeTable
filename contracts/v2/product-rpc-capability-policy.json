@@ -52,7 +52,7 @@
     {"method":"path.resolveGrant","scope":"global","audience":"hostOnly","capabilityId":"host.path"},
     {"method":"path.revokeExportTarget","scope":"workspace","audience":"hostOnly","capabilityId":"host.path"},
     {"method":"plugin.cancelInstall","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
-    {"method":"plugin.cancelTask","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
+    {"method":"plugin.cancelTask","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.commitInstall","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.describeAction","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     

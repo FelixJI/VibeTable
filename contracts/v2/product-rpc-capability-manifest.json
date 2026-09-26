@@ -412,7 +412,7 @@
     {
       "method": "plugin.cancelTask",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "plugin.lifecycle",
       "owner": "pythonBff",
       "effect": "write"
