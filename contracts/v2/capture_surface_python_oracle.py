@@ -9,8 +9,6 @@ import inspect
 import json
 from pathlib import Path
 
-from backend.application.surface_service import SurfaceService
-
 from backend.__main__ import _register_surface_methods
 from backend.application.revisioned_metadata_port import (
     MetadataConflictError,
@@ -20,6 +18,7 @@ from backend.application.revisioned_metadata_port import (
     MetadataWrite,
     json_object,
 )
+from backend.application.surface_service import SurfaceService
 from backend.rpc.dispatcher import RpcDispatcher
 
 PRODUCER = "12556e5db81dd49592d69b5af1780007ccd36c37"
