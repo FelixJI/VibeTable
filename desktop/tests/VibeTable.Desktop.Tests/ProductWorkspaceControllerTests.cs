@@ -48,7 +48,6 @@ public sealed class ProductWorkspaceControllerTests
                 Sessions,
                 new FixedDatabasePicker("local://workspace/test"),
                 Workspace,
-                Coordinator,
                 () => true,
                 () => false,
                 () => true,
@@ -461,36 +460,6 @@ public sealed class ProductWorkspaceControllerTests
         Assert.IsTrue(fixture.Traces.Any(trace => trace.Contains(
             "Database open cancellation terminal failed",
             StringComparison.Ordinal)));
-    }
-
-    [TestMethod]
-    public async Task HostAndRendererReopenShareCanonicalGridDatabaseIdentity()
-    {
-        using var fixture = new Fixture();
-        fixture.Gateway.DatabaseOpenResults["local://workspace/test"] = OpenResult();
-        fixture.Gateway.SelectionProjectionResults["tbl_attachments"] =
-            Projection("tbl_attachments");
-
-        await fixture.Controller.SuperviseOpenAsync();
-        await fixture.Coordinator.SwitchTableAsync("tbl_attachments");
-        fixture.Coordinator.RequestSave(new GridState());
-        await fixture.Coordinator.FlushAsync();
-
-        using var renderer = new WorkspaceRequestDispatcher(
-            fixture.Workspace,
-            new FakeDatabasePicker("local://workspace/test"),
-            fixture.Reply,
-            fixture.Coordinator,
-            authority: fixture.Authority,
-            databaseOpens: fixture.DatabaseOpens);
-        await renderer.DispatchAsyncForTesting(OpenRequest("renderer-reopen-same-source"));
-        await fixture.Coordinator.SwitchTableAsync("tbl_attachments");
-        fixture.Coordinator.RequestSave(new GridState());
-        await fixture.Coordinator.FlushAsync();
-
-        CollectionAssert.AreEqual(
-            new[] { "local://workspace/test", "local://workspace/test" },
-            fixture.Gateway.SavedGridStates.Select(state => state.DatabaseId).ToArray());
     }
 
     [TestMethod]

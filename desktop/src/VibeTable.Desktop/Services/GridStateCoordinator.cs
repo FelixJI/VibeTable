@@ -13,9 +13,8 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Debounce.</b> Search/filter requests are debounced 250 ms and state saves
-/// 500 ms so a user typing or dragging columns does not flood the backend.
-/// Superseded reads are cancelled.
+/// <b>Debounce.</b> Search/filter requests are debounced 250 ms so a user
+/// typing does not flood the backend. Superseded reads are cancelled.
 /// </para>
 /// <para>
 /// <b>Stale suppression.</b> Responses are ignored when the request generation
@@ -27,20 +26,16 @@ namespace VibeTable.Desktop.Services;
 /// invalidated on query, schema or data revision changes.
 /// </para>
 /// <para>
-/// <b>Flush.</b> Confirmed state is flushed on table switch and clean shutdown;
-/// shutdown does not block longer than 2 seconds.
+/// Persisted grid state is no longer owned by this coordinator: the public
+/// <c>gridState.get</c>/<c>gridState.save</c> requests are served by
+/// <see cref="GridPresentationRequestController"/> over the Host-owned
+/// <see cref="HostGridStateStore"/>.
 /// </para>
 /// </remarks>
 public sealed class GridStateCoordinator
 {
     /// <summary>Search/filter debounce window (ms).</summary>
     public const int QueryDebounceMs = 250;
-
-    /// <summary>State-save debounce window (ms).</summary>
-    public const int SaveDebounceMs = 500;
-
-    /// <summary>Maximum shutdown flush wait (ms).</summary>
-    public const int ShutdownFlushTimeoutMs = 2000;
 
     /// <summary>
     /// Bounded recovery window for notify-path reads hit by transient
@@ -58,20 +53,12 @@ public sealed class GridStateCoordinator
     private readonly ITableRpcGateway _gateway;
     private readonly Action<TableNotification> _notify;
     private readonly TimeProvider _timeProvider;
-    private readonly object _databaseGate = new();
 
     private int _generation;
     private CancellationTokenSource? _queryCts;
     private ITimer? _queryDebounce;
-    private ITimer? _saveDebounce;
-    private TaskCompletionSource<bool>? _pendingSave;
 
     private QuerySnapshot? _activeSnapshot;
-    private string? _databaseId;
-    private long _databaseGeneration;
-    private string? _currentTable;
-    private GridState? _confirmedState;
-    private string? _confirmedRevision;
     private int _lastDataRevision;
     private bool _cursorFetchInFlight;
 
@@ -97,55 +84,6 @@ public sealed class GridStateCoordinator
 
     /// <summary>The last confirmed data revision (0 before any read).</summary>
     public int LastDataRevision => _lastDataRevision;
-
-    /// <summary>
-    /// Sets the active database identity so grid-state get/save can be scoped.
-    /// </summary>
-    public void SetDatabase(string databaseId)
-    {
-        lock (_databaseGate)
-        {
-            _databaseGeneration += 1;
-            _databaseId = databaseId;
-        }
-    }
-
-    internal DatabaseBindingAdmission BeginDatabaseBinding(string databaseId)
-    {
-        lock (_databaseGate)
-        {
-            string? previous = _databaseId;
-            _databaseGeneration += 1;
-            _databaseId = databaseId;
-            return new DatabaseBindingAdmission(this, _databaseGeneration, previous);
-        }
-    }
-
-    private void RollbackDatabaseBinding(long generation, string? previous)
-    {
-        lock (_databaseGate)
-        {
-            if (_databaseGeneration != generation) return;
-            _databaseGeneration += 1;
-            _databaseId = previous;
-        }
-    }
-
-    internal sealed class DatabaseBindingAdmission(
-        GridStateCoordinator owner,
-        long generation,
-        string? previous) : IDisposable
-    {
-        private int _completed;
-
-        public void Complete() => Interlocked.Exchange(ref _completed, 1);
-
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref _completed, 1) == 0)
-                owner.RollbackDatabaseBinding(generation, previous);
-        }
-    }
 
     /// <summary>
     /// Requests a renderer-authored canonical query. WPF treats the JSON as an
@@ -186,7 +124,6 @@ public sealed class GridStateCoordinator
         string table, JsonElement query, TaskCompletionSource<TablePage>? completion,
         CancellationToken cancellationToken, bool notifyRecovery = false)
     {
-        _currentTable = table;
         int generation = Interlocked.Increment(ref _generation);
         CancelQuery();
         _queryCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -237,35 +174,6 @@ public sealed class GridStateCoordinator
     }
 
     /// <summary>
-    /// Requests a debounced grid-state save. Superseded saves within
-    /// <see cref="SaveDebounceMs"/> coalesce into one. Confirmed state is
-    /// flushed on table switch / shutdown via <see cref="FlushAsync"/>.
-    /// </summary>
-    public void RequestSave(GridState state)
-    {
-        if (_databaseId is null || _currentTable is null)
-        {
-            return;
-        }
-        var pending = _pendingSave;
-        if (pending is not null && !pending.Task.IsCompleted)
-        {
-            // A previous save is still debouncing; replace it.
-            pending.TrySetResult(false);
-        }
-        _pendingSave = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _confirmedState = state;
-        string? revision = _confirmedRevision ?? state.Revision;
-        var snapshot = (_databaseId, _currentTable, state, revision);
-        _saveDebounce?.Dispose();
-        _saveDebounce = _timeProvider.CreateTimer(
-            _ => _ = ExecuteSaveAsync(snapshot.Item1, snapshot.Item2, snapshot.Item3, snapshot.Item4),
-            null,
-            TimeSpan.FromMilliseconds(SaveDebounceMs),
-            Timeout.InfiniteTimeSpan);
-    }
-
-    /// <summary>
     /// Invalidates the active selection snapshot (e.g. after a query, schema or
     /// data revision change). Emits a null selection to subscribers.
     /// </summary>
@@ -294,42 +202,12 @@ public sealed class GridStateCoordinator
     }
 
     /// <summary>
-    /// Flushes any pending debounced save. Called on table switch and shutdown.
-    /// Waits at most <see cref="ShutdownFlushTimeoutMs"/> so shutdown is not
-    /// blocked indefinitely.
+    /// Cancels any in-flight query and invalidates the selection snapshot.
+    /// Called by the workspace service when the active table changes.
     /// </summary>
-    public async Task FlushAsync()
+    public void ResetForTableChange()
     {
-        if (_pendingSave is not null && !_pendingSave.Task.IsCompleted)
-        {
-            // Trigger the debounced save immediately.
-            _saveDebounce?.Dispose();
-            _saveDebounce = null;
-            if (_databaseId is not null && _currentTable is not null && _confirmedState is not null)
-            {
-                _ = ExecuteSaveAsync(_databaseId, _currentTable, _confirmedState, _confirmedRevision);
-            }
-            try
-            {
-                await Task.WhenAny(_pendingSave.Task, Task.Delay(ShutdownFlushTimeoutMs))
-                    .ConfigureAwait(false);
-            }
-            catch
-            {
-                // Best-effort flush; never block shutdown beyond the timeout.
-            }
-        }
-    }
-
-    /// <summary>
-    /// Switches table: flushes pending state, cancels in-flight queries, and
-    /// invalidates the selection snapshot.
-    /// </summary>
-    public async Task SwitchTableAsync(string table)
-    {
-        await FlushAsync().ConfigureAwait(false);
         CancelQuery();
-        _currentTable = table;
         _activeSnapshot = null;
         _lastDataRevision = 0;
         SelectionSnapshotChanged?.Invoke(null);
@@ -632,36 +510,6 @@ public sealed class GridStateCoordinator
         return false;
     }
 
-    private async Task ExecuteSaveAsync(
-        string databaseId, string table, GridState state, string? revision)
-    {
-        try
-        {
-            var result = await _gateway.SaveGridStateAsync(
-                databaseId, table, state, revision, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (result.Conflict)
-            {
-                // Stale revision: adopt the server's current state/revision.
-                _confirmedState = result.State;
-                _confirmedRevision = result.Revision;
-            }
-            else
-            {
-                _confirmedState = result.State;
-                _confirmedRevision = result.Revision;
-            }
-        }
-        catch
-        {
-            // Best-effort save; the local state is not authoritative.
-        }
-        finally
-        {
-            _pendingSave?.TrySetResult(true);
-        }
-    }
-
     private bool IsStale(int generation)
         => Volatile.Read(ref _generation) != generation;
 
@@ -672,30 +520,6 @@ public sealed class GridStateCoordinator
         {
             try { existing.Cancel(); } catch { /* best-effort */ }
             existing.Dispose();
-        }
-    }
-
-    /// <summary>
-    /// Loads the saved grid state for ``(databaseId, table)`` on table select.
-    /// Returns null when no database is set.
-    /// </summary>
-    public async Task<GridStateResult?> LoadStateAsync(string table)
-    {
-        if (_databaseId is null)
-        {
-            return null;
-        }
-        try
-        {
-            var result = await _gateway.GetGridStateAsync(
-                _databaseId, table, CancellationToken.None).ConfigureAwait(false);
-            _confirmedState = result.State;
-            _confirmedRevision = result.Revision;
-            return result;
-        }
-        catch
-        {
-            return null;
         }
     }
 }

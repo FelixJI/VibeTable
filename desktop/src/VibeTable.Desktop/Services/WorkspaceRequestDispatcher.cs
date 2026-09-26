@@ -131,7 +131,6 @@ public sealed class WorkspaceRequestDispatcher :
                 picker,
                 _reply,
                 () => _productController.CurrentGateway,
-                coordinator!,
                 readRecoveryTimeout,
                 ResolveSchemaLifecycleTimeout(schemaLifecycleTimeout),
                 () => _workspaceSessionToken,
