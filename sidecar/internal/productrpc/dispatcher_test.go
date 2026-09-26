@@ -266,6 +266,7 @@ func TestDispatchPublishesOnlyContractProductErrorCodes(t *testing.T) {
 		"",
 		"   ",
 		"field_invalid",
+		"plugin_internal_state",
 		" schema.field_invalid",
 		"schema.Field_invalid",
 		"pocketbase.internal",
@@ -288,6 +289,49 @@ func TestDispatchPublishesOnlyContractProductErrorCodes(t *testing.T) {
 					workspaceWire(0)+`,"params":{}}`,
 			))
 			assertError(t, response, CodeInternalError, "Internal error")
+		})
+	}
+
+	// The frozen plugin shared-state codes keep the Python catalog oracle's
+	// underscore spelling, like the historical restore set. They must cross
+	// as complete public Product envelopes with their frozen messages — the
+	// shape pluginPublicError forwards from pluginstore.PublicError — while
+	// any unfrozen private underscore code stays closed.
+	for _, published := range []PublicError{
+		{Code: "plugin_already_installed", Message: "plugin is already installed"},
+		{Code: "plugin_not_found", Message: "plugin is not installed"},
+		{Code: "plugin_blocked", Message: "plugin has blocking reasons"},
+	} {
+		t.Run(published.Code, func(t *testing.T) {
+			dispatcher := mustTestDispatcher(t, []productcapabilities.RPCDescriptor{{
+				Method: "test.frozenPluginPublicCode", Scope: productcapabilities.WorkspaceScope,
+			}}, Registration{
+				Method: "test.frozenPluginPublicCode", Scope: productcapabilities.WorkspaceScope,
+				ValidateParams: func(json.RawMessage) error { return nil },
+				Handler: func(context.Context, json.RawMessage) (any, error) {
+					return nil, &PublicError{Code: published.Code, Message: published.Message}
+				},
+			})
+
+			response := dispatcher.Dispatch(context.Background(), []byte(
+				`{"jsonrpc":"2.0","id":"request-1","method":"test.frozenPluginPublicCode","wire":`+
+					workspaceWire(0)+`,"params":{}}`,
+			))
+			if response.Error == nil || response.Error.Code != CodeProductData ||
+				response.Error.Message != "Product data error" {
+				t.Fatalf("response error = %#v", response.Error)
+			}
+			wantData := map[string]any{
+				"kind":      "product_data_error",
+				"message":   published.Message,
+				"code":      published.Code,
+				"path":      nil,
+				"details":   map[string]any{},
+				"retryable": false,
+			}
+			if !equalJSONValues(response.Error.Data, wantData) {
+				t.Fatalf("error data = %#v, want %#v", response.Error.Data, wantData)
+			}
 		})
 	}
 }
