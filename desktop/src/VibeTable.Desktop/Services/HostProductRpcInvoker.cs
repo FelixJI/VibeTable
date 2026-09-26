@@ -106,6 +106,12 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 EnsureCurrent(lease, call.Token, route == ProductRpcRoute.GoSidecar && !native);
                 return result;
             }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested
+                && !token.IsCancellationRequested && !lease.CancellationToken.IsCancellationRequested)
+            {
+                // Retiring this binding is a service outage, not caller cancellation.
+                throw Unavailable();
+            }
             catch
             {
                 // A late failure belongs to the retired binding just as a late result does.
