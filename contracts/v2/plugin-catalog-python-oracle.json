@@ -1,0 +1,755 @@
+{
+  "producer": "aa564213d9526d79a93182cd1db2a4dcbc08f1ef",
+  "producerSources": [
+    "backend/application/plugin_registry.py",
+    "backend/infrastructure/plugin_store.py",
+    "backend/contracts/plugin.py"
+  ],
+  "adapter": "PluginRegistry + PluginProjectStore (SQLite, temporary directory); not Go/PocketBase output",
+  "normalization": "audit event_id values come from a fixed uuid4 sequence and started_at/finished_at from a fixed UTC clock pinned inside backend.application.plugin_registry by the harness; no other producer behavior is replaced and no output is edited after capture",
+  "cases": [
+    {
+      "name": "install-snapshot",
+      "result": {
+        "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+        "pluginId": "com.example.reader",
+        "version": "1.2.0",
+        "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sourceType": "package",
+        "sourceLocation": "C:/Users/demo/Downloads/reader.vtplugin",
+        "developmentSourceLocation": null,
+        "sourceChanged": false,
+        "manifest": {
+          "$schema": "vibetable.plugin-manifest.v1",
+          "pluginId": "com.example.reader",
+          "version": "1.2.0",
+          "displayName": {
+            "en": "Reader",
+            "zh-CN": "阅读器"
+          },
+          "description": {},
+          "compatibility": {},
+          "permissions": {
+            "data": [],
+            "privateStorage": true
+          },
+          "actions": [
+            {
+              "actionId": "summarize",
+              "displayName": {
+                "en": "Summarize"
+              },
+              "description": {},
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "toolbar"
+              ],
+              "requires": {},
+              "workerEntry": "dist/worker.js",
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null
+            }
+          ],
+          "ui": {
+            "customViews": []
+          }
+        },
+        "schemas": {
+          "form": {
+            "type": "object"
+          }
+        },
+        "status": "disabled",
+        "disabledReason": "disabled_by_user",
+        "blockingReasons": [],
+        "revision": 1
+      }
+    },
+    {
+      "name": "install-duplicate-error",
+      "error": {
+        "type": "PluginRegistryError",
+        "message": "plugin is already installed",
+        "rpcErrorData": {
+          "code": "plugin_already_installed"
+        }
+      }
+    },
+    {
+      "name": "list-catalog-single",
+      "result": [
+        {
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "version": "1.2.0",
+          "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "sourceType": "package",
+          "sourceLocation": "C:/Users/demo/Downloads/reader.vtplugin",
+          "developmentSourceLocation": null,
+          "sourceChanged": false,
+          "manifest": {
+            "$schema": "vibetable.plugin-manifest.v1",
+            "pluginId": "com.example.reader",
+            "version": "1.2.0",
+            "displayName": {
+              "en": "Reader",
+              "zh-CN": "阅读器"
+            },
+            "description": {},
+            "compatibility": {},
+            "permissions": {
+              "data": [],
+              "privateStorage": true
+            },
+            "actions": [
+              {
+                "actionId": "summarize",
+                "displayName": {
+                  "en": "Summarize"
+                },
+                "description": {},
+                "mode": "local",
+                "risk": "read",
+                "invocation": "manual",
+                "placements": [
+                  "toolbar"
+                ],
+                "requires": {},
+                "workerEntry": "dist/worker.js",
+                "formSchema": null,
+                "inputSchema": null,
+                "outputSchema": null
+              }
+            ],
+            "ui": {
+              "customViews": []
+            }
+          },
+          "schemas": {
+            "form": {
+              "type": "object"
+            }
+          },
+          "status": "disabled",
+          "disabledReason": "disabled_by_user",
+          "blockingReasons": [],
+          "revision": 1
+        }
+      ]
+    },
+    {
+      "name": "set-enabled-lifecycle",
+      "enabled": {
+        "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+        "pluginId": "com.example.reader",
+        "version": "1.2.0",
+        "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sourceType": "package",
+        "sourceLocation": "C:/Users/demo/Downloads/reader.vtplugin",
+        "developmentSourceLocation": null,
+        "sourceChanged": false,
+        "manifest": {
+          "$schema": "vibetable.plugin-manifest.v1",
+          "pluginId": "com.example.reader",
+          "version": "1.2.0",
+          "displayName": {
+            "en": "Reader",
+            "zh-CN": "阅读器"
+          },
+          "description": {},
+          "compatibility": {},
+          "permissions": {
+            "data": [],
+            "privateStorage": true
+          },
+          "actions": [
+            {
+              "actionId": "summarize",
+              "displayName": {
+                "en": "Summarize"
+              },
+              "description": {},
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "toolbar"
+              ],
+              "requires": {},
+              "workerEntry": "dist/worker.js",
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null
+            }
+          ],
+          "ui": {
+            "customViews": []
+          }
+        },
+        "schemas": {
+          "form": {
+            "type": "object"
+          }
+        },
+        "status": "enabled",
+        "disabledReason": null,
+        "blockingReasons": [],
+        "revision": 2
+      },
+      "disabled": {
+        "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+        "pluginId": "com.example.reader",
+        "version": "1.2.0",
+        "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sourceType": "package",
+        "sourceLocation": "C:/Users/demo/Downloads/reader.vtplugin",
+        "developmentSourceLocation": null,
+        "sourceChanged": false,
+        "manifest": {
+          "$schema": "vibetable.plugin-manifest.v1",
+          "pluginId": "com.example.reader",
+          "version": "1.2.0",
+          "displayName": {
+            "en": "Reader",
+            "zh-CN": "阅读器"
+          },
+          "description": {},
+          "compatibility": {},
+          "permissions": {
+            "data": [],
+            "privateStorage": true
+          },
+          "actions": [
+            {
+              "actionId": "summarize",
+              "displayName": {
+                "en": "Summarize"
+              },
+              "description": {},
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "toolbar"
+              ],
+              "requires": {},
+              "workerEntry": "dist/worker.js",
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null
+            }
+          ],
+          "ui": {
+            "customViews": []
+          }
+        },
+        "schemas": {
+          "form": {
+            "type": "object"
+          }
+        },
+        "status": "disabled",
+        "disabledReason": "disabled_by_user",
+        "blockingReasons": [],
+        "revision": 3
+      }
+    },
+    {
+      "name": "set-enabled-missing-error",
+      "error": {
+        "type": "PluginRegistryError",
+        "message": "plugin is not installed",
+        "rpcErrorData": {
+          "code": "plugin_not_found"
+        }
+      }
+    },
+    {
+      "name": "set-enabled-blocked-error",
+      "error": {
+        "type": "PluginRegistryError",
+        "message": "plugin has blocking reasons",
+        "rpcErrorData": {
+          "code": "plugin_blocked"
+        }
+      }
+    },
+    {
+      "name": "store-cas-conflict-error",
+      "error": {
+        "type": "PluginStoreConflictError",
+        "message": "plugin revision mismatch: expected 0, found 1"
+      }
+    },
+    {
+      "name": "package-revision-persisted",
+      "saved": {
+        "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+        "pluginId": "com.example.reader",
+        "version": "1.2.0",
+        "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "localPath": "C:/Users/demo/.vibetable/plugin-packages/reader-1.2.0",
+        "manifest": {
+          "$schema": "vibetable.plugin-manifest.v1",
+          "pluginId": "com.example.reader",
+          "version": "1.2.0",
+          "displayName": {
+            "en": "Reader",
+            "zh-CN": "阅读器"
+          },
+          "description": {},
+          "compatibility": {},
+          "permissions": {
+            "data": [],
+            "privateStorage": true
+          },
+          "actions": [
+            {
+              "actionId": "summarize",
+              "displayName": {
+                "en": "Summarize"
+              },
+              "description": {},
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "toolbar"
+              ],
+              "requires": {},
+              "workerEntry": "dist/worker.js",
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null
+            }
+          ],
+          "ui": {
+            "customViews": []
+          }
+        },
+        "state": "current"
+      },
+      "listed": [
+        {
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "version": "1.2.0",
+          "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "localPath": "C:/Users/demo/.vibetable/plugin-packages/reader-1.2.0",
+          "manifest": {
+            "$schema": "vibetable.plugin-manifest.v1",
+            "pluginId": "com.example.reader",
+            "version": "1.2.0",
+            "displayName": {
+              "en": "Reader",
+              "zh-CN": "阅读器"
+            },
+            "description": {},
+            "compatibility": {},
+            "permissions": {
+              "data": [],
+              "privateStorage": true
+            },
+            "actions": [
+              {
+                "actionId": "summarize",
+                "displayName": {
+                  "en": "Summarize"
+                },
+                "description": {},
+                "mode": "local",
+                "risk": "read",
+                "invocation": "manual",
+                "placements": [
+                  "toolbar"
+                ],
+                "requires": {},
+                "workerEntry": "dist/worker.js",
+                "formSchema": null,
+                "inputSchema": null,
+                "outputSchema": null
+              }
+            ],
+            "ui": {
+              "customViews": []
+            }
+          },
+          "state": "current"
+        }
+      ]
+    },
+    {
+      "name": "private-setting-persisted",
+      "saved": {
+        "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+        "pluginId": "com.example.reader",
+        "settingKey": "columns",
+        "value": {
+          "selected": [
+            "name",
+            "amount"
+          ]
+        },
+        "revision": 1
+      },
+      "fetched": {
+        "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+        "pluginId": "com.example.reader",
+        "settingKey": "columns",
+        "value": {
+          "selected": [
+            "name",
+            "amount"
+          ]
+        },
+        "revision": 1
+      }
+    },
+    {
+      "name": "list-audit",
+      "reader": [
+        {
+          "eventId": "00000000-0000-4000-8000-000000000001",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "pluginVersion": "1.2.0",
+          "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "eventType": "install",
+          "outcome": "succeeded",
+          "actionId": null,
+          "runId": null,
+          "actor": "local-user",
+          "risk": null,
+          "targetCollection": null,
+          "targetCount": null,
+          "startedAt": "2026-01-01T08:00:00Z",
+          "finishedAt": "2026-01-01T08:00:00Z",
+          "durationMs": 0,
+          "errorCode": null,
+          "details": {}
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000002",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "pluginVersion": "1.2.0",
+          "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "eventType": "enable",
+          "outcome": "succeeded",
+          "actionId": null,
+          "runId": null,
+          "actor": "local-user",
+          "risk": null,
+          "targetCollection": null,
+          "targetCount": null,
+          "startedAt": "2026-01-01T08:00:00Z",
+          "finishedAt": "2026-01-01T08:00:00Z",
+          "durationMs": 0,
+          "errorCode": null,
+          "details": {}
+        },
+        {
+          "eventId": "00000000-0000-4000-8000-000000000003",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "pluginVersion": "1.2.0",
+          "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "eventType": "disable",
+          "outcome": "succeeded",
+          "actionId": null,
+          "runId": null,
+          "actor": "local-user",
+          "risk": null,
+          "targetCollection": null,
+          "targetCount": null,
+          "startedAt": "2026-01-01T08:00:00Z",
+          "finishedAt": "2026-01-01T08:00:00Z",
+          "durationMs": 0,
+          "errorCode": null,
+          "details": {}
+        }
+      ],
+      "blocked": []
+    },
+    {
+      "name": "persisted-four-kinds",
+      "rows": [
+        {
+          "kind": "audit",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "itemKey": "00000000-0000-4000-8000-000000000001",
+          "payload": {
+            "eventId": "00000000-0000-4000-8000-000000000001",
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.reader",
+            "pluginVersion": "1.2.0",
+            "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "eventType": "install",
+            "outcome": "succeeded",
+            "actionId": null,
+            "runId": null,
+            "actor": "local-user",
+            "risk": null,
+            "targetCollection": null,
+            "targetCount": null,
+            "startedAt": "2026-01-01T08:00:00Z",
+            "finishedAt": "2026-01-01T08:00:00Z",
+            "durationMs": 0,
+            "errorCode": null,
+            "details": {}
+          }
+        },
+        {
+          "kind": "audit",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "itemKey": "00000000-0000-4000-8000-000000000002",
+          "payload": {
+            "eventId": "00000000-0000-4000-8000-000000000002",
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.reader",
+            "pluginVersion": "1.2.0",
+            "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "eventType": "enable",
+            "outcome": "succeeded",
+            "actionId": null,
+            "runId": null,
+            "actor": "local-user",
+            "risk": null,
+            "targetCollection": null,
+            "targetCount": null,
+            "startedAt": "2026-01-01T08:00:00Z",
+            "finishedAt": "2026-01-01T08:00:00Z",
+            "durationMs": 0,
+            "errorCode": null,
+            "details": {}
+          }
+        },
+        {
+          "kind": "audit",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "itemKey": "00000000-0000-4000-8000-000000000003",
+          "payload": {
+            "eventId": "00000000-0000-4000-8000-000000000003",
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.reader",
+            "pluginVersion": "1.2.0",
+            "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "eventType": "disable",
+            "outcome": "succeeded",
+            "actionId": null,
+            "runId": null,
+            "actor": "local-user",
+            "risk": null,
+            "targetCollection": null,
+            "targetCount": null,
+            "startedAt": "2026-01-01T08:00:00Z",
+            "finishedAt": "2026-01-01T08:00:00Z",
+            "durationMs": 0,
+            "errorCode": null,
+            "details": {}
+          }
+        },
+        {
+          "kind": "installation",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.blocked",
+          "itemKey": "current",
+          "payload": {
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.blocked",
+            "version": "1.0.0",
+            "packageHash": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+            "sourceType": "local-folder",
+            "sourceLocation": "C:/Users/demo/dev/blocked-plugin",
+            "developmentSourceLocation": "C:/Users/demo/dev/blocked-plugin",
+            "sourceChanged": false,
+            "manifest": {
+              "$schema": "vibetable.plugin-manifest.v1",
+              "pluginId": "com.example.blocked",
+              "version": "1.0.0",
+              "displayName": {
+                "en": "Reader",
+                "zh-CN": "阅读器"
+              },
+              "description": {},
+              "compatibility": {},
+              "permissions": {
+                "data": [],
+                "privateStorage": true
+              },
+              "actions": [
+                {
+                  "actionId": "summarize",
+                  "displayName": {
+                    "en": "Summarize"
+                  },
+                  "description": {},
+                  "mode": "local",
+                  "risk": "read",
+                  "invocation": "manual",
+                  "placements": [
+                    "toolbar"
+                  ],
+                  "requires": {},
+                  "workerEntry": "dist/worker.js",
+                  "formSchema": null,
+                  "inputSchema": null,
+                  "outputSchema": null
+                }
+              ],
+              "ui": {
+                "customViews": []
+              }
+            },
+            "schemas": {},
+            "status": "disabled",
+            "disabledReason": "disabled_by_user",
+            "blockingReasons": [
+              "requires_reinstall"
+            ],
+            "revision": 1
+          }
+        },
+        {
+          "kind": "installation",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "itemKey": "current",
+          "payload": {
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.reader",
+            "version": "1.2.0",
+            "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "sourceType": "package",
+            "sourceLocation": "C:/Users/demo/Downloads/reader.vtplugin",
+            "developmentSourceLocation": null,
+            "sourceChanged": false,
+            "manifest": {
+              "$schema": "vibetable.plugin-manifest.v1",
+              "pluginId": "com.example.reader",
+              "version": "1.2.0",
+              "displayName": {
+                "en": "Reader",
+                "zh-CN": "阅读器"
+              },
+              "description": {},
+              "compatibility": {},
+              "permissions": {
+                "data": [],
+                "privateStorage": true
+              },
+              "actions": [
+                {
+                  "actionId": "summarize",
+                  "displayName": {
+                    "en": "Summarize"
+                  },
+                  "description": {},
+                  "mode": "local",
+                  "risk": "read",
+                  "invocation": "manual",
+                  "placements": [
+                    "toolbar"
+                  ],
+                  "requires": {},
+                  "workerEntry": "dist/worker.js",
+                  "formSchema": null,
+                  "inputSchema": null,
+                  "outputSchema": null
+                }
+              ],
+              "ui": {
+                "customViews": []
+              }
+            },
+            "schemas": {
+              "form": {
+                "type": "object"
+              }
+            },
+            "status": "disabled",
+            "disabledReason": "disabled_by_user",
+            "blockingReasons": [],
+            "revision": 3
+          }
+        },
+        {
+          "kind": "revision",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "itemKey": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "payload": {
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.reader",
+            "version": "1.2.0",
+            "packageHash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "localPath": "C:/Users/demo/.vibetable/plugin-packages/reader-1.2.0",
+            "manifest": {
+              "$schema": "vibetable.plugin-manifest.v1",
+              "pluginId": "com.example.reader",
+              "version": "1.2.0",
+              "displayName": {
+                "en": "Reader",
+                "zh-CN": "阅读器"
+              },
+              "description": {},
+              "compatibility": {},
+              "permissions": {
+                "data": [],
+                "privateStorage": true
+              },
+              "actions": [
+                {
+                  "actionId": "summarize",
+                  "displayName": {
+                    "en": "Summarize"
+                  },
+                  "description": {},
+                  "mode": "local",
+                  "risk": "read",
+                  "invocation": "manual",
+                  "placements": [
+                    "toolbar"
+                  ],
+                  "requires": {},
+                  "workerEntry": "dist/worker.js",
+                  "formSchema": null,
+                  "inputSchema": null,
+                  "outputSchema": null
+                }
+              ],
+              "ui": {
+                "customViews": []
+              }
+            },
+            "state": "current"
+          }
+        },
+        {
+          "kind": "setting",
+          "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+          "pluginId": "com.example.reader",
+          "itemKey": "columns",
+          "payload": {
+            "projectKey": "local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7",
+            "pluginId": "com.example.reader",
+            "settingKey": "columns",
+            "value": {
+              "selected": [
+                "name",
+                "amount"
+              ]
+            },
+            "revision": 1
+          }
+        }
+      ]
+    }
+  ]
+}
