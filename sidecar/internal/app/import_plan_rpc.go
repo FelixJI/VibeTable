@@ -128,6 +128,9 @@ func importPlanToken() (string, error) {
 
 func (owner *importPlanOwner) mint(request importPlanMintRequest) (importPlanTokenReply, error) {
 	var reply importPlanTokenReply
+	if owner.workspaceID == "" {
+		return reply, importPlanError("import_plan_invalid", "workspace identity is required", nil)
+	}
 	if request.Contract != importPlanContract {
 		return reply, importPlanError("import_plan_invalid", "unknown import plan contract", nil)
 	}

@@ -1,6 +1,6 @@
 """Provider-neutral import normalization and atomic-apply tests.
 
-The 30 test functions that predate the Issue #374 plan-owner migration are
+The test bodies that predate the Issue #374 plan-owner migration are
 the frozen public-semantics oracle: their bodies are unchanged and must keep
 passing against the Go-owned plan lifecycle. ``FakeProductMutationPort`` is a
 stand-in of the new Go ``importPlanOwner`` ports (single-use token, exclusive

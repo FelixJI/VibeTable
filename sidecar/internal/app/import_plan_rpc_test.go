@@ -40,7 +40,8 @@ func importPlanCode(t *testing.T, err error) string {
 	t.Helper()
 	var productErr *v2.ProductError
 	if !errors.As(err, &productErr) {
-		t.Fatalf("expected product error, got %v", err)
+		t.Errorf("expected product error, got %v", err)
+		return ""
 	}
 	return productErr.Code
 }
@@ -429,5 +430,13 @@ func TestImportPlanSettleRejectsUnknownOutcomeAndForeignContract(t *testing.T) {
 	}
 	if _, err := owner.mint(importPlanMintRequest{Contract: "other", Collection: "c", GrantID: "g", SchemaRevision: "s", CapabilityHash: "cap", SourceHash: "h", Mode: "create_only"}); importPlanCode(t, err) != "import_plan_invalid" {
 		t.Fatal("expected contract validation")
+	}
+}
+
+func TestImportPlanMintRequiresWorkspaceIdentity(t *testing.T) {
+	owner := newImportPlanOwner("")
+	_, err := owner.mint(importPlanMintRequest{Contract: importPlanContract})
+	if importPlanCode(t, err) != "import_plan_invalid" || len(owner.plans) != 0 {
+		t.Fatalf("unbound owner minted a plan: %v", err)
 	}
 }
