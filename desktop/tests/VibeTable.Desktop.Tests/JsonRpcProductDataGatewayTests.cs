@@ -321,7 +321,7 @@ public sealed class JsonRpcProductDataGatewayTests
 
 
     [TestMethod]
-    public async Task OnlyPythonImportExportNotificationsCrossTheProductBoundary()
+    public async Task HostPublishesOnlyAdmittedImportExportReports()
     {
         await using var fixture = new NotificationBindingFixture();
         JsonRpcProductDataGateway gateway = fixture.Gateway;
@@ -334,18 +334,47 @@ public sealed class JsonRpcProductDataGatewayTests
         fixture.Transport.EnqueueNotification("data.changed",
             """{"contractVersion":"2.0","topic":"data.changed","eventId":"must-not-forward"}""");
 
-        fixture.Transport.EnqueueNotification(
-            "task.changed",
-            """
-            {"contractVersion":"2.0","topic":"task.changed","eventId":"evt_2","sequence":13,
-             "occurredAt":"2026-07-24T08:31:00Z","taskId":"job_1",
-             "taskType":"import","state":"running","progress":0.5,
-             "cursor":"row:5000","error":null}
-            """);
+        fixture.Transport.EnqueueNotification("task.executionReport",
+            """{"taskId":"unknown","kind":"data.import","state":"running"}""");
+        fixture.Transport.EnqueueNotification("task.executionReport",
+            $$"""{"taskId":"{{fixture.TaskId}}","kind":"data.import","state":"running","progress":null,"result":null,"error":null}""");
+        fixture.Transport.EnqueueNotification("task.executionReport",
+            $$"""{"taskId":"{{fixture.TaskId}}","kind":"data.import","state":"running","progress":{"done":1,"total":2,"message":""},"result":null,"error":null}""");
 
         JsonElement change = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.AreEqual("job_1", change.GetProperty("taskId").GetString());
+        Assert.AreEqual(fixture.TaskId, change.GetProperty("taskId").GetString());
         Assert.AreEqual(0.5, change.GetProperty("progress").GetDouble());
+    }
+
+    [TestMethod]
+    public async Task WorkerExitKeepsUnknownReceiptAndRejectsLateReports()
+    {
+        await using var fixture = new NotificationBindingFixture();
+        fixture.Report("running", 1);
+        var changed = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Gateway.TaskChanged += value =>
+        {
+            if (value.GetProperty("state").GetString() == "failed") changed.TrySetResult(value);
+        };
+        await fixture.Transport.DisposeAsync();
+        await changed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        JsonElement aborted = fixture.Status();
+        Assert.AreEqual("aborted", aborted.GetProperty("state").GetString());
+        StringAssert.Contains(aborted.GetProperty("error").GetString()!, "待核实");
+        fixture.Report("succeeded", 2);
+        Assert.AreEqual("aborted", fixture.Status().GetProperty("state").GetString());
+    }
+
+    [TestMethod]
+    public async Task ConfirmedCommitSurvivesLateCancelAndWorkerExit()
+    {
+        await using var fixture = new NotificationBindingFixture();
+        fixture.Report("succeeded", 2);
+        Assert.IsNull(fixture.RequestCancel().Client);
+        fixture.Report("cancelled", 2);
+        fixture.RetireClient();
+        Assert.AreEqual("succeeded", fixture.Status().GetProperty("state").GetString());
     }
 
     private sealed class NotificationBindingFixture : IAsyncDisposable
@@ -356,8 +385,23 @@ public sealed class JsonRpcProductDataGatewayTests
         private readonly WorkspaceSessionManager _sessions;
         private readonly WorkspaceSessionEnvelopeFilter _leases;
         private readonly JsonRpcClient _client;
+        private readonly HostDataIoTaskRegistry _tasks = new();
         internal AutoRespondTransport Transport { get; } = new();
         internal JsonRpcProductDataGateway Gateway { get; }
+        internal string TaskId { get; }
+        internal JsonElement Status() => _tasks.Status(TaskId);
+        internal (JsonElement Snapshot, JsonRpcClient? Client) RequestCancel() => _tasks.RequestCancel(TaskId);
+        internal void RetireClient() => _tasks.RetireClient(_client);
+        internal void Report(string state, int done) => _tasks.ApplyReport(_client,
+            JsonSerializer.SerializeToElement(new
+            {
+                taskId = TaskId,
+                kind = "data.import",
+                state,
+                progress = new { done, total = 2, message = "" },
+                result = state == "succeeded" ? new { createdCount = 1 } : null,
+                error = (string?)null,
+            }));
 
         internal NotificationBindingFixture()
         {
@@ -369,13 +413,15 @@ public sealed class JsonRpcProductDataGatewayTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(Guid.NewGuid().ToString("D"), 1, 1, Guid.NewGuid().ToString("D")), []);
             // No RPC admission: this fixture tests only the paired client's notification path.
-            var binding = new HostProductRpcBinding(_runtime, _client, snapshot, ProductRpcRouteSelector.Default, _ => false);
+            var binding = new HostProductRpcBinding(_runtime, _client, snapshot, ProductRpcRouteSelector.Default, _tasks, _ => false);
             Gateway = binding.CreateGateway(_leases);
+            TaskId = _tasks.Admit(_client, snapshot.Identity, "data.import").TaskId;
         }
 
         public async ValueTask DisposeAsync()
         {
             Gateway.Dispose();
+            _tasks.Dispose();
             await _client.DisposeAsync();
             _leases.Dispose();
             await _sessions.DisposeAsync();

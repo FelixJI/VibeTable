@@ -1291,7 +1291,7 @@ public sealed class WebMessageRouterTests
             Assert.AreEqual(
                 route is "settings.readWorkCalendar" or "settings.commitWorkCalendar" or "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.change.apply" or "field.change.cancel" or "field.change.plan" or "field.change.status" or "field.recycleBin.list" or "field.settings.describe" or "file.list" or "file.token" or "formula.draft.validate" or "formula.preview" or "formula.validate" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "version.compare" or "version.create" or "version.delete" or "version.list" or "version.promote" or "version.save"
                     ? "goSidecar"
-                    : "pythonBff",
+                    : route is "task.create" or "task.status" or "task.cancel" ? "wpfHost" : "pythonBff",
                 capability.Owner,
                 route);
         }

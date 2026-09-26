@@ -6,6 +6,7 @@ internal enum ProductRpcRoute
 {
     PythonBff,
     GoSidecar,
+    HostDataIo,
 }
 
 internal interface IProductSidecarRpcForwarder
@@ -41,13 +42,19 @@ internal sealed class ProductRpcRouteSelector
         out ProductRpcRoute route)
     {
         route = default;
-        if (catalog == ProductRpcCapabilityCatalog.Workspace)
+        if (catalog == ProductRpcCapabilityCatalog.Workspace
+            && method is not ("task.create" or "task.status" or "task.cancel"))
         {
             route = ProductRpcRoute.PythonBff;
             return true;
         }
-        return _manifest.TryGet(method, out ProductRpcCapability capability)
-            && TryMapOwner(capability.Owner, out route);
+        if (!_manifest.TryGet(method, out ProductRpcCapability capability)) return false;
+        if (capability.Owner == "wpfHost" && method is ("task.create" or "task.status" or "task.cancel"))
+        {
+            route = ProductRpcRoute.HostDataIo;
+            return true;
+        }
+        return TryMapOwner(capability.Owner, out route);
     }
 
     internal bool TrySelectRelation(string method, out ProductRpcRoute route)

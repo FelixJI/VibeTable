@@ -814,6 +814,14 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "task.lifecycle",
+      "owner": "wpfHost",
+      "effect": "write"
+    },
+    {
+      "method": "task.cancelExecution",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "task.execution",
       "owner": "pythonBff",
       "effect": "write"
     },
@@ -822,7 +830,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "task.lifecycle",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -834,11 +842,19 @@
       "effect": "write"
     },
     {
+      "method": "task.startExecution",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "task.execution",
+      "owner": "pythonBff",
+      "effect": "write"
+    },
+    {
       "method": "task.status",
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "task.lifecycle",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "read"
     },
     {

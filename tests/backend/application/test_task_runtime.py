@@ -12,11 +12,13 @@ from typing import Any
 
 import pytest
 
+from backend.application.import_service import ImportFlowError
 from backend.application.path_grant import PathGrantError
 from backend.application.task_runtime import (
     CancellationToken,
-    TaskRuntime,
+    HostExecutionRuntime,
 )
+from tests.backend.legacy_task_runtime import TaskRuntime
 from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 # ---------------------------------------------------------------------------
@@ -26,6 +28,81 @@ from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 async def _noop_sink(_: Any) -> None:
     return None
+
+
+@pytest.mark.asyncio
+async def test_host_execution_reports_cancelled_export_even_before_worker_starts() -> None:
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    async def export(_task_id, _reporter, _token, _params):
+        raise AssertionError("revoked export must never start")
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    await runtime.settle_export_grant("grant")
+    assert [status.state for status in reports] == ["cancelled"]
+    assert await runtime.cancel("host-task") is False
+
+
+@pytest.mark.asyncio
+async def test_host_execution_reports_confirmed_result_after_late_cancel() -> None:
+    reports = []
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def sink(status):
+        reports.append(status)
+
+    async def import_data(_task_id, _reporter, _token, _params):
+        entered.set()
+        await finish.wait()
+        return {"createdCount": 1}
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.import", import_data)
+    await runtime.start("host-task", "data.import", {})
+    await entered.wait()
+    assert await runtime.cancel("host-task") is True
+    finish.set()
+    for _ in range(10):
+        if reports[-1].state == "succeeded":
+            break
+        await asyncio.sleep(0)
+    assert reports[-1].state == "succeeded"
+    assert reports[-1].result == {"createdCount": 1}
+
+
+@pytest.mark.asyncio
+async def test_host_execution_reports_unknown_import_without_zero_write_result() -> None:
+    reports = []
+    entered = asyncio.Event()
+    lost_reply = asyncio.Event()
+
+    async def sink(status):
+        reports.append(status)
+
+    async def import_data(_task_id, _reporter, _token, _params):
+        entered.set()
+        await lost_reply.wait()
+        raise ImportFlowError("Import submission outcome is unknown", code="import_outcome_unknown")
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.import", import_data)
+    await runtime.start("host-task", "data.import", {})
+    await entered.wait()
+    assert await runtime.cancel("host-task") is True
+    lost_reply.set()
+    for _ in range(10):
+        if reports and reports[-1].state == "failed":
+            break
+        await asyncio.sleep(0)
+    assert reports[-1].state == "failed"
+    assert "unknown" in reports[-1].error
+    assert reports[-1].result is None
 
 
 @pytest.mark.asyncio
@@ -165,7 +242,7 @@ async def test_completed_history_is_bounded() -> None:
         return {}
 
     runtime.register("test.bound", handler)
-    from backend.application.task_runtime import MAX_COMPLETED_TASKS
+    from tests.backend.legacy_task_runtime import MAX_COMPLETED_TASKS
 
     for _ in range(MAX_COMPLETED_TASKS + 5):
         await runtime.create("test.bound", {})

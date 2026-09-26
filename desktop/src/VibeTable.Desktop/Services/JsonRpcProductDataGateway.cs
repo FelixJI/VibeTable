@@ -36,6 +36,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     {
         _hostInvoker = hostInvoker ?? throw new ArgumentNullException(nameof(hostInvoker));
         _client = hostInvoker.Client;
+        _hostInvoker.TaskOwner.TaskChanged += OnHostTaskChanged;
         if (_client is not null)
             _client.NotificationReceived += OnNotification;
     }
@@ -158,6 +159,8 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
         _disposed = true;
         if (_client is not null)
             _client.NotificationReceived -= OnNotification;
+        if (_hostInvoker is not null)
+            _hostInvoker.TaskOwner.TaskChanged -= OnHostTaskChanged;
         _hostInvoker?.Dispose();
     }
 
@@ -250,9 +253,20 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
         }
     }
 
+    private void OnHostTaskChanged(JsonElement notification)
+    {
+        if (!_disposed) TaskChanged?.Invoke(notification);
+    }
     private void OnNotification(string method, JsonElement parameters)
     {
         if (_disposed) return;
+        if (_hostInvoker is not null && _client is not null
+            && string.Equals(method, "task.executionReport", StringComparison.Ordinal))
+        {
+            _hostInvoker.TaskOwner.ApplyReport(_client, parameters);
+            return;
+        }
+        if (_hostInvoker is not null) return;
         if (string.Equals(method, "task.changed", StringComparison.Ordinal)
             && parameters.ValueKind == JsonValueKind.Object
             && parameters.TryGetProperty("contractVersion", out var contractVersion)

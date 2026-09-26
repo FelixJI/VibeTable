@@ -12,6 +12,7 @@ internal sealed class HostProductRpcBinding(
     JsonRpcClient? client,
     ProductSidecarGenerationSnapshot snapshot,
     ProductRpcRouteSelector routes,
+    HostDataIoTaskRegistry taskOwner,
     Func<Func<bool>, bool> tryUsePython,
     Func<Func<bool>, bool>? tryUseGo = null)
 {
@@ -30,5 +31,5 @@ internal sealed class HostProductRpcBinding(
     internal JsonRpcProductDataGateway CreateGateway(
         IWorkspaceHostEpochLeaseSource leases, HttpMessageHandler? handler = null)
         => new(new HostProductRpcInvoker(Client, _snapshot, leases,
-            tryUsePython, routes, handler, tryUseGo ?? tryUsePython));
+            tryUsePython, routes, handler, tryUseGo ?? tryUsePython, taskOwner));
 }

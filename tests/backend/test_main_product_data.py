@@ -129,9 +129,8 @@ async def test_product_rpc_registration_is_closed_and_provider_neutral(
     }
     assert set(product_backend.server._dispatcher.registered_methods) == {
         "system.handshake",
-        "task.create",
-        "task.cancel",
-        "task.status",
+        "task.startExecution",
+        "task.cancelExecution",
         "task.settleExport",
         "data.previewImport",
         "data.applyImport",

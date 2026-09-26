@@ -259,6 +259,13 @@ async def test_build_server_dispatches_import_task_without_internal_error(
     server, plugin_service = await backend_main._build_server()
     try:
         dispatcher = server._dispatcher
+        reports: list[dict[str, Any]] = []
+
+        async def capture_report(method: str, params: Any) -> None:
+            if method == "task.executionReport":
+                reports.append(params)
+
+        server.notify = capture_report
         assert {
             "insights.dashboardQueryLimits",
             "insights.deleteDashboardWorkspace",
@@ -302,8 +309,9 @@ async def test_build_server_dispatches_import_task_without_internal_error(
             {
                 "jsonrpc": "2.0",
                 "id": 3,
-                "method": "task.create",
+                "method": "task.startExecution",
                 "params": {
+                    "taskId": "host-import-1",
                     "kind": "data.import",
                     "params": {
                         "grantId": grant_id,
@@ -317,25 +325,14 @@ async def test_build_server_dispatches_import_task_without_internal_error(
         )
         assert created is not None
         assert "error" not in created
-        task_id = created["result"]["taskId"]
-        status: dict[str, Any] | None = None
-        for request_id in range(4, 104):
-            status = await dispatcher.dispatch(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "method": "task.status",
-                    "params": {"taskId": task_id},
-                }
-            )
-            assert status is not None
-            assert "error" not in status
-            if status["result"]["state"] not in {"queued", "running"}:
+        for _ in range(100):
+            if reports and reports[-1]["state"] not in {"queued", "running"}:
                 break
             await asyncio.sleep(0)
-        assert status is not None
-        assert status["result"]["state"] == "succeeded"
-        assert status["result"]["result"]["createdCount"] == 1
+        assert created["result"] == {"accepted": True}
+        assert reports[-1]["taskId"] == "host-import-1"
+        assert reports[-1]["state"] == "succeeded"
+        assert reports[-1]["result"]["createdCount"] == 1
     finally:
         if plugin_service is not None:
             await plugin_service.close()

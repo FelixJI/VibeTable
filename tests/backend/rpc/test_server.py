@@ -288,9 +288,13 @@ async def test_real_task_composition_preserves_only_closed_host_grant_errors(
             json.dumps(
                 {
                     "jsonrpc": "2.0",
-                    "id": "export-create",
-                    "method": "task.create",
-                    "params": {"kind": "data.export", "params": {"grantId": "expired"}},
+                    "id": "export-start",
+                    "method": "task.startExecution",
+                    "params": {
+                        "taskId": "host-owned-task",
+                        "kind": "data.export",
+                        "params": {"grantId": "expired"},
+                    },
                 }
             ).encode()
             + b"\n"
@@ -319,15 +323,15 @@ async def test_real_task_composition_preserves_only_closed_host_grant_errors(
             json.dumps({"jsonrpc": "2.0", "id": callback["id"], **native_reply}).encode() + b"\n"
         )
         response = await asyncio.wait_for(frames.get(), 2)
-        assert response["id"] == "export-create"
+        assert response["id"] == "export-start"
         assert response["error"]["code"] == expected_code
         if expected_code == -32050:
             assert response["error"]["message"] == "Path grant error"
             assert response["error"]["data"]["kind"] == "path_grant_error"
         assert "private-path-marker" not in json.dumps(response)
         assert product_backend.transport.requests == []
-        task_service = server._dispatcher._handlers["task.create"][0].__self__
-        assert task_service.runtime._tasks == {}
+        task_service = server._dispatcher._handlers["task.startExecution"][0].__self__
+        assert task_service.runtime._handles == {}
     finally:
         reader.feed_eof()
         await asyncio.wait_for(serving, 2)
@@ -338,9 +342,9 @@ async def test_native_commit_outlives_callback_deadline_without_a_false_failed_t
 
     from backend.application.export_service import ExportService
     from backend.application.host_files import HostFiles
-    from backend.application.task_runtime import TaskRuntime
     from backend.contracts.data_io import ExportParams
     from tests.backend.application.test_export_service import FakeQueryPort, _manifest
+    from tests.backend.legacy_task_runtime import TaskRuntime
 
     reader = asyncio.StreamReader()
     committing = asyncio.Event()

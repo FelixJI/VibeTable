@@ -1466,7 +1466,7 @@ def run_scenario(
             (controls_dir / "migration-fault.phase").resolve()
         )
     mutation_barrier = None
-    if scenario.id == "09-atomic-import-scale":
+    if scenario.id in {"09-atomic-import-scale", "36-backend-import-exit"}:
         barrier_arm = controls_dir / "mutation-barrier.arm"
         barrier_arm.write_text("armed\n", encoding="utf-8")
         environment["VIBETABLE_E2E_MUTATION_BARRIER_DIR"] = str(controls_dir)

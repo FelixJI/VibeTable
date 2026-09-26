@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import os
 import sys
 import threading
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,8 +46,8 @@ from backend.contracts.plugin_rpc import (
 )
 from backend.contracts.system import HandshakeParams
 from backend.contracts.task import (
-    CreateTaskParams,
     ResolveGrantParams,
+    StartTaskExecutionParams,
     TaskIdParams,
 )
 from backend.infrastructure.diagnostic_logging import configure_diagnostic_logging
@@ -179,63 +177,11 @@ async def _build_server() -> tuple[
 ]:
     server_ref: RpcServer | None = None
 
-    task_sequence = 0
-
     async def notify_task_status(status: Any) -> None:
-        nonlocal task_sequence
         if server_ref is not None:
-            raw = (
-                status.model_dump(mode="json", by_alias=True)
-                if hasattr(status, "model_dump")
-                else dict(status)
-            )
-            task_sequence += 1
-            state = {
-                "queued": "pending",
-                "running": "running",
-                "succeeded": "succeeded",
-                "failed": "failed",
-                "cancelled": "cancelled",
-                "aborted": "failed",
-            }.get(str(raw.get("state")), "failed")
-            progress = raw.get("progress")
-            done = progress.get("done", 0) if isinstance(progress, dict) else 0
-            total = progress.get("total", 0) if isinstance(progress, dict) else 0
-            ratio = min(1.0, done / total) if isinstance(total, int) and total > 0 else 0.0
-            task_id = str(raw.get("taskId", "unknown"))
-            kind = str(raw.get("kind", "data.import"))
-            task_type = {
-                "data.import": "import",
-                "data.export": "export",
-            }.get(kind, "reconcile")
-            identity = f"{task_id}\0{state}\0{done}\0{total}".encode()
-            error_message = raw.get("error")
             await server_ref.notify(
-                "task.changed",
-                {
-                    "contractVersion": "2.0",
-                    "topic": "task.changed",
-                    "eventId": f"evt_task_{hashlib.sha256(identity).hexdigest()[:24]}",
-                    "sequence": task_sequence,
-                    "occurredAt": datetime.now(UTC).isoformat(),
-                    "taskId": task_id,
-                    "taskType": task_type,
-                    "state": state,
-                    "progress": ratio,
-                    "cursor": None,
-                    "error": (
-                        {
-                            "contractVersion": "2.0",
-                            "code": "task.failed",
-                            "path": None,
-                            "message": str(error_message),
-                            "details": {},
-                            "retryable": False,
-                        }
-                        if error_message
-                        else None
-                    ),
-                },
+                "task.executionReport",
+                status.model_dump(mode="json", by_alias=True),
             )
 
     loop = asyncio.get_running_loop()
@@ -252,7 +198,6 @@ async def _build_server() -> tuple[
         SystemService(lambda: dispatcher.registered_methods).handshake,
         HandshakeParams,
     )
-
     register_application_errors(ErrorDomain.PATH_GRANT)
 
     async def call_host_file(action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -263,9 +208,10 @@ async def _build_server() -> tuple[
     task_service = build_task_service(
         files=HostFiles(call_host_file), notification_sink=notify_task_status
     )
-    dispatcher.register("task.create", task_service.create_task, CreateTaskParams)
-    dispatcher.register("task.cancel", task_service.cancel_task, TaskIdParams)
-    dispatcher.register("task.status", task_service.status_task, TaskIdParams)
+    dispatcher.register(
+        "task.startExecution", task_service.start_execution, StartTaskExecutionParams
+    )
+    dispatcher.register("task.cancelExecution", task_service.cancel_execution, TaskIdParams)
     dispatcher.register("task.settleExport", task_service.settle_export, ResolveGrantParams)
 
     client = _product_runtime()
