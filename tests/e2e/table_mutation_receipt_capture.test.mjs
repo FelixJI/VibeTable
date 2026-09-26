@@ -365,3 +365,65 @@ test("timeout release and post failure clean up idempotently without leaking nat
   assert.equal(installed.harness.listeners.size, 0);
   assert.equal(installed.harness.webview.postMessage, installed.harness.originalPostMessage);
 });
+
+test("S07 seeds two committed visible records before starting named revision isolation", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./webview_product_scenarios.mjs", import.meta.url), "utf8");
+  const journey = source.slice(source.indexOf("async function namedRevisionJourney("));
+  const marker = '  await selectTable(page, "E2E Named Revisions");';
+  const begin = journey.indexOf(marker) + marker.length;
+  const end = journey.indexOf("  const cell =", begin);
+  assert.ok(begin >= marker.length && end > begin);
+  const compile = (name) => {
+    const start = source.indexOf(`async function ${name}(`);
+    const next = source.indexOf("\nasync function ", start + 1);
+    return new Function(`${source.slice(start, next)}; return ${name};`)();
+  };
+  const harness = createHarness();
+  globalThis.window = { chrome: { webview: harness.webview } };
+  const waits = [];
+  let visibleRows = 0;
+  let clicks = 0;
+  const button = {
+    waitFor: async () => {}, isDisabled: async () => false,
+    click: async () => {
+      clicks += 1;
+      harness.webview.postMessage(insertRequest({ scope: scope({ sequence: clicks }) }));
+    },
+  };
+  const page = {
+    getByTestId: () => button,
+    locator: () => ({ count: async () => visibleRows }),
+    evaluate: async (fn, argument) => fn(argument),
+    waitForTimeout: () => new Promise(resolve => waits.push(resolve)),
+    waitForFunction: (fn, argument) => fn(argument) ? Promise.resolve()
+      : new Promise(resolve => waits.push(() => {
+        assert.equal(fn(argument), true); resolve();
+      })),
+  };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const run = new AsyncFunction("page", "recorder", "insertRowFromToolbar",
+    "waitForVisibleRowCount", "installTableMutationReceiptCaptureInPage",
+    "waitForCapturedBridgeMessage", journey.slice(begin, end));
+  const result = run(page, { check: (_label, passed) => assert.ok(passed) },
+    compile("insertRowFromToolbar"), compile("waitForVisibleRowCount"),
+    installTableMutationReceiptCaptureInPage, waitForCapturedBridgeMessage);
+  result.catch(() => {});
+  await new Promise(setImmediate);
+  assert.equal(clicks, 1, "a completed click cannot release the second insert before its receipt");
+  harness.dispatch(insertSuccess());
+  waits.splice(0).forEach(wake => wake());
+  await new Promise(setImmediate);
+  assert.equal(clicks, 1, "the empty-to-populated UI transition must also finish before the second click");
+  visibleRows = 1;
+  waits.splice(0).forEach(wake => wake());
+  await new Promise(setImmediate);
+  assert.equal(clicks, 2);
+  harness.dispatch(insertSuccess({ payload: { rowKey: "row-2", row: { id: "row-2", name: "Ada" },
+    revision: revision({ dataRevision: 5 }) } }));
+  visibleRows = 2;
+  waits.splice(0).forEach(wake => wake());
+  await result;
+  assert.equal(harness.posted.length, 2);
+  assert.equal(harness.listeners.size, 0);
+});

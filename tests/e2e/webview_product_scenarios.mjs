@@ -4025,8 +4025,18 @@ async function namedRevisionJourney(page, recorder, runtime) {
   await page.locator(".n-drawer-header__close").last().click();
   const table = await createSingleFieldTable(page, "E2E Named Revisions", "Title", "text");
   await selectTable(page, "E2E Named Revisions");
-  await insertRowFromToolbar(page);
-  await insertRowFromToolbar(page);
+  // The first insert replaces the empty-table UI. A completed click alone
+  // does not mean the write or that transition has finished.
+  for (const expectedRows of [1, 2]) {
+    const capture = await page.evaluate(installTableMutationReceiptCaptureInPage,
+      { requestType: "table.insertRowRequested" });
+    await insertRowFromToolbar(page);
+    const receipt = await waitForCapturedBridgeMessage(page, 30_000, capture);
+    recorder.check(`named revision seed row ${expectedRows} has a committed native receipt`,
+      receipt.type === "table.rowsInserted" && receipt.payload?.rowKey !== undefined,
+      { receipt });
+    await waitForVisibleRowCount(page, expectedRows);
+  }
   const cell = page.locator(`.tabulator-cell[tabulator-field="${table.field.physicalName}"]`).first();
   const edit = async (value) => {
     const editor = await beginCellEdit(cell);
@@ -4070,7 +4080,9 @@ async function namedRevisionJourney(page, recorder, runtime) {
     tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
   });
   const other = scopedRows.payload?.rows?.find((row) => row.id !== compared.itemId);
-  if (!other?.id) throw new Error("named revision isolation requires a second actual record");
+  if (!other?.id) {
+    throw new Error(`named revision isolation requires a second actual record: ${JSON.stringify(scopedRows)}`);
+  }
   const otherList = await rawBridgeRequest(page, "version.list", { collection: table.tableId, itemId: other.id });
   const otherCompare = await rawBridgeRequest(page, "version.compare", {
     collection: table.tableId, itemId: other.id, versionId: created.id,
