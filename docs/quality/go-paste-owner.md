@@ -19,4 +19,8 @@ Apply 串行核对 token、collection、schema、过期与消费状态，首次�
 - Go 相邻测试覆盖未知提交重试、过期/schema/collection、并发唯一提交和 revision 冲突。
 - 产品 S10 在同一真实候选中，经公开 Host 粘贴桥预览，终止准确的 Python 子进程后消费原计划并再次预览，再核对 Go 权威行值；workspace 重开后明确拒绝旧未消费计划，并保留原旧 epoch 拒绝验证。
 
-此纵切不迁移 import/export/task/plugin，也不声称首次打开工作区已完全摆脱 Python。完整 required、独立审阅与合并后资格以对应 PR 的当前 SHA 和报告为准，局部测试不替代发布资格。
+此纵切不迁移 export/task/plugin，也不声称首次打开工作区已完全摆脱 Python；import 计划生命周期的后续迁移见下节。完整 required、独立审阅与合并后资格以对应 PR 的当前 SHA 和报告为准，局部测试不替代发布资格。
+
+## 导入计划 owner（#374 迁出 Python）
+
+`data.previewImport` / `data.applyImport` 的公开 DTO、错误码和 PythonBff 公开路由不变；但预览计划 token、单次消费、并发 claim 与幂等前缀绑定已迁入 Go `importPlanOwner`（`sidecar/internal/app/import_plan_rpc.go`，内部端口 `/api/vibetable/v2/import-plans[/stage|/bind|/settle]`，契约 `vibetable.import-plans.v1`，继承全局 session hook 与 workspace v2 写边界精确路径清单）。Python `ImportService` 只保留容器解析与短暂执行上下文：preview 结束把规范化计划 mint 给 Go 并取得 `imp1.` token；apply 按未知/过期/已消费/grant/目标与模式/capability 顺序 stage 独占 claim，经 Host `reserveImport` 准入后 bind 幂等前缀，执行仍走既有 MutationKernel / 关系 upsert 路径，最终 settle。与 paste 相同：600 秒固定 TTL 不可延长，计划随 sidecar/workspace 进程生命周期保留（过期 token 恒报 `import_token_expired`），仅确认 committed 才消费 token；业务写仍由 MutationKernel 与 business write gate 独占。每个 stage 签发递增 attempt lease，bind 与 rejected/unknown settle 均要求当前 attempt，迟到请求返回 `import_plan_stale`，不能释放或改绑新 claim；唯一例外是已签发且已绑定前缀 claim 的迟到 committed：它是终态真相并消费 token。未知/丢回执结算（#367 语义）不虚报零写入、不自动重放；grant/epoch 准入由 Host 唯一拥有，Python 仅转发 reserveImport/settleImport 并在 apply 中先行准入，token 不因 Python 重启复活旧 grant。owner 清单见 `contracts/v2/product-runtime-ownership-inventory.json` 的 `state.data-preview-plans`（goSidecar/importPlanOwner.plans）。

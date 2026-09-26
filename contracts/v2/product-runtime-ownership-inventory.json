@@ -2730,12 +2730,12 @@
       "id": "state.data-preview-plans",
       "kind": "state",
       "names": [
-        "ImportService._plans"
+        "importPlanOwner.plans"
       ],
       "currentPath": [
-        "pythonBff"
+        "goSidecar"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -2744,13 +2744,13 @@
         "write": [],
         "notification": [],
         "state": [
-          "ImportService._plans"
+          "importPlanOwner.plans"
         ]
       },
       "stateHolders": [
-        "pythonBff"
+        "goSidecar"
       ],
-      "stateLifetime": "task",
+      "stateLifetime": "workspace",
       "cancellation": "none",
       "timeout": "operationBounded",
       "productScenarios": [
@@ -2759,9 +2759,12 @@
       ],
       "targetSlice": "L7+L8",
       "targetPr": null,
-      "deleteWhen": "Preview plan identity and all business validation live with Go authority; Worker execution can restart without losing a confirmed plan.",
+      "deleteWhen": "Import plans are workspace-lifecycle state in Go; a Python worker restart must not resurrect retired grants or tokens and only re-previews create new plans. Remove this entry when the on-demand Worker drops the Python preview execution context entirely.",
       "evidence": [
-        "backend/application/import_service.py"
+        "sidecar/internal/app/import_plan_rpc.go",
+        "backend/application/import_service.py",
+        "backend/adapters/pocketbase/mutation.py",
+        "tests/backend/application/test_import_service.py"
       ]
     },
     {

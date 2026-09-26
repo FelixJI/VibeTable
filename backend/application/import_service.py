@@ -8,12 +8,12 @@ Process
 ----
 * :meth:`preview` reads the granted file (streaming for large workbooks),
   auto-maps or applies the explicit column mapping, resolves explicit relation
-  lookups, delegates raw cells to the authoritative Go preview, and returns an
-  :class:`ImportPlan` bound to the source hash + capability hash via a
-  single-use token.
-* :meth:`apply` submits every valid planned row in one frozen mutation request.
-  Cancellation is checked before submission; a rejected request therefore
-  leaves zero rows committed.
+  lookups, delegates raw cells to the authoritative Go preview, and stores the
+  final plan with the Go import plan owner, which returns a single-use token.
+* :meth:`apply` claims the stored plan from the Go owner, submits every valid
+  planned row in one frozen mutation request and settles the claim with the
+  authoritative outcome. Cancellation is checked before submission; a rejected
+  request therefore leaves zero rows committed.
 
 The Qt/controller ``confirm_cb`` callback is gone: preview is zero-write and
 returns the full plan; the host shows it and the user confirms via apply.
@@ -26,7 +26,6 @@ import csv
 import hashlib
 import logging
 import time
-import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -53,7 +52,9 @@ from backend.contracts.data_io import (
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import PastePlanRow
 
-#: How long an import preview token remains valid (seconds).
+#: How long an import preview token remains valid (seconds). The Go import
+#: plan owner enforces this frozen TTL; the value stays here as the public
+#: compatibility contract documentation and must not drift or be extended.
 IMPORT_TOKEN_TTL_SECONDS: float = 10 * 60.0
 
 #: Compatibility default retained by the public contract. Apply is atomic.
@@ -132,7 +133,12 @@ class RelationImportProvider(Protocol):
 
 
 class ImportMutationPort(PasteMutationPort, Protocol):
-    """Mutation port with Go-owned raw-cell normalization for import preview."""
+    """Mutation port with Go-owned raw-cell normalization for import preview.
+
+    The plan lifecycle ports store the normalized plan with the Go import plan
+    owner, which mints the single-use token and owns consumption, concurrent
+    staging and the idempotency-prefix binding. Python only forwards calls.
+    """
 
     async def preview_import(
         self,
@@ -141,6 +147,37 @@ class ImportMutationPort(PasteMutationPort, Protocol):
         schema_revision: str,
         rows: list[dict[str, Any]],
         row_modes: list[str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def mint_import_plan(
+        self,
+        *,
+        collection: str,
+        grant_id: str,
+        schema_revision: str,
+        capability_hash: str,
+        source_hash: str,
+        rows: list[dict[str, Any]],
+        mode: str,
+        upsert_key: str | None,
+    ) -> dict[str, Any]: ...
+
+    async def stage_import_plan(
+        self,
+        *,
+        token: str,
+        grant_id: str,
+        collection: str,
+        mode: str,
+        capability_hash: str,
+    ) -> dict[str, Any]: ...
+
+    async def bind_import_plan(
+        self, *, token: str, idempotency_prefix: str, attempt: int
+    ) -> dict[str, Any]: ...
+
+    async def settle_import_plan(
+        self, *, token: str, outcome: str, attempt: int
     ) -> dict[str, Any]: ...
 
 
@@ -319,47 +356,24 @@ def auto_map_columns(
 # ---------------------------------------------------------------------------
 
 
-class _StoredImportPlan:
-    """A preview plan retained server-side for a single apply."""
+@dataclass
+class _StagedImportPlan:
+    """A plan fetched from the Go owner for one transient apply execution.
 
-    __slots__ = (
-        "capability_hash",
-        "collection",
-        "consumed",
-        "expires_at",
-        "grant_id",
-        "idempotency_prefix",
-        "mode",
-        "rows",
-        "schema_revision",
-        "source_hash",
-        "upsert_key",
-    )
+    The staged copy exists only inside :meth:`ImportService.apply`; the
+    authoritative plan state (rows, bindings, consumption) stays with the Go
+    import plan owner until the final settle call.
+    """
 
-    def __init__(
-        self,
-        *,
-        collection: str,
-        grant_id: str,
-        schema_revision: str,
-        capability_hash: str,
-        source_hash: str,
-        rows: list[ImportPlanRow],
-        mode: str,
-        upsert_key: str | None,
-        expires_at: float,
-    ) -> None:
-        self.collection = collection
-        self.grant_id = grant_id
-        self.schema_revision = schema_revision
-        self.capability_hash = capability_hash
-        self.source_hash = source_hash
-        self.rows = rows
-        self.mode = mode
-        self.upsert_key = upsert_key
-        self.expires_at = expires_at
-        self.consumed = False
-        self.idempotency_prefix: str | None = None
+    collection: str
+    schema_revision: str
+    mode: str
+    upsert_key: str | None
+    rows: list[ImportPlanRow]
+    # Lease identity of the exclusive claim minted by the Go owner. Every
+    # claim-scoped call (bind, settle) must echo it so a delayed request from
+    # an earlier attempt cannot touch a newer claim on the same token.
+    attempt: int
 
 
 class ImportService:
@@ -383,7 +397,9 @@ class ImportService:
         self._files = files
         self._relation_provider = relation_provider
         self._clock = clock
-        self._plans: dict[str, _StoredImportPlan] = {}
+        # Serializes apply executions inside this worker process only. Plan
+        # consumption, concurrency and idempotency binding are owned by the Go
+        # import plan owner via the staged/settled lifecycle ports.
         self._apply_lock = asyncio.Lock()
 
     async def preview(self, params: PreviewImportParams) -> ImportPlan:
@@ -604,7 +620,7 @@ class ImportService:
             error_count=error_count,
             warning_count=warning_count,
         )
-        token = self._mint_plan(
+        token = await self._mint_plan(
             collection=params.collection,
             grant_id=params.grant_id,
             schema_revision=params.schema_revision,
@@ -648,32 +664,33 @@ class ImportService:
         cancelled: Callable[[], bool] | None = None,
     ) -> ApplyImportResult:
         profile = self._profile(params.collection)
-        stored = self._plans.get(params.token)
-        if stored is None:
-            raise ImportFlowError("import token not found", code="import_token_unknown")
-        if self._clock() >= stored.expires_at:
-            raise ImportFlowError("import token expired", code="import_token_expired")
-        if stored.consumed:
-            raise ImportFlowError("import token already used", code="import_token_consumed")
-        if stored.grant_id != params.grant_id:
-            raise ImportFlowError(
-                "import token belongs to another grant", code="import_grant_mismatch"
-            )
-        if stored.collection != params.collection or stored.mode != params.mode:
-            raise ImportFlowError(
-                "import target or mode changed since preview", code="import_plan_mismatch"
-            )
-        if stored.capability_hash != profile.capability_hash:
-            raise ImportFlowError("schema changed since preview", code="schema_mismatch")
-        async with self._files.reserve_import(params.grant_id, params.token) as commit_grant:
-            return await self._apply_reserved(
-                params, stored, profile, commit_grant, progress=progress, cancelled=cancelled
-            )
+        staged = await self._stage_plan(params, profile)
+        reserved = False
+        try:
+            # Construction is inside the guarded region: even a HostFiles
+            # adapter that fails while building the reservation must release
+            # the staged claim instead of leaving it in flight.
+            reservation = self._files.reserve_import(params.grant_id, params.token)
+            async with reservation as commit_grant:
+                reserved = True
+                return await self._apply_reserved(
+                    params,
+                    staged,
+                    profile,
+                    commit_grant,
+                    progress=progress,
+                    cancelled=cancelled,
+                )
+        finally:
+            if not reserved:
+                # The Host never admitted the apply; release the staged claim so
+                # an admitted retry is not blocked by a dead reservation.
+                await self._settle_quietly(params.token, "rejected", staged.attempt)
 
     async def _apply_reserved(
         self,
         params: ApplyImportParams,
-        stored: _StoredImportPlan,
+        staged: _StagedImportPlan,
         profile: CollectionProfile,
         commit_grant: Callable[[], None],
         *,
@@ -681,22 +698,24 @@ class ImportService:
         cancelled: Callable[[], bool] | None,
     ) -> ApplyImportResult:
         valid_rows = [
-            r for r in stored.rows if not any(d.severity == "error" for d in r.diagnostics)
+            r for r in staged.rows if not any(d.severity == "error" for d in r.diagnostics)
         ]
         total = len(valid_rows)
         if cancelled and cancelled():
+            await self._settle_quietly(params.token, "rejected", staged.attempt)
             raise asyncio.CancelledError
         requested_prefix = params.idempotency_prefix or (
             "imp-" + hashlib.sha256(params.token.encode("utf-8")).hexdigest()[:16]
         )
-        if stored.idempotency_prefix is None:
-            stored.idempotency_prefix = requested_prefix
-        elif stored.idempotency_prefix != requested_prefix:
-            raise ImportFlowError(
-                "import token is bound to a different idempotency prefix",
-                code="import_idempotency_mismatch",
-            )
-        prefix = stored.idempotency_prefix
+        try:
+            await self._bind_prefix(params.token, requested_prefix, staged.attempt)
+        except (Exception, asyncio.CancelledError):
+            # Bind precedes any business submission, so a transport failure or
+            # hard cancellation here is a clean rejection, never an unknown
+            # outcome: release the claim and re-raise unchanged.
+            await self._settle_quietly(params.token, "rejected", staged.attempt)
+            raise
+        prefix = requested_prefix
         idempotency_key = f"{prefix}-0"
         bulk_rows = [
             PastePlanRow(
@@ -707,7 +726,7 @@ class ImportService:
             )
             for row in valid_rows
         ]
-        requires_cross_table = stored.mode == "upsert" or any(
+        requires_cross_table = staged.mode == "upsert" or any(
             resolution.state == "create"
             for row in valid_rows
             for resolution in row.relation_resolutions
@@ -725,8 +744,8 @@ class ImportService:
                     collection=params.collection,
                     profile=profile,
                     rows=valid_rows,
-                    mode=stored.mode,
-                    upsert_key=stored.upsert_key,
+                    mode=staged.mode,
+                    upsert_key=staged.upsert_key,
                     idempotency_key=idempotency_key,
                 )
                 created_keys = relation_result.created_row_keys
@@ -740,7 +759,7 @@ class ImportService:
                     rows=bulk_rows,
                     row_revisions={},
                     idempotency_key=idempotency_key,
-                    schema_revision=stored.schema_revision,
+                    schema_revision=staged.schema_revision,
                 )
                 if result.outcome == "pending":
                     raise ImportFlowError(
@@ -755,6 +774,14 @@ class ImportService:
                 created_keys = [str(key) for key in result.created_row_keys]
                 updated_keys = [str(key) for key in result.updated_row_keys]
                 request_id = result.request_id
+        except asyncio.CancelledError:
+            # A hard cancellation after submission leaves the outcome unknown;
+            # before submission the plan is cleanly reusable. Either way the
+            # Go owner decides on the next staged attempt — nothing replays here.
+            await self._settle_quietly(
+                params.token, "unknown" if submitted else "rejected", staged.attempt
+            )
+            raise
         except Exception as exc:
             known_rejection = getattr(exc, "code", None) in {
                 "import_conflict",
@@ -762,6 +789,13 @@ class ImportService:
                 "import_upsert_key_not_unique",
                 "mutation.validation.failed",
             }
+            # Settle before notifying: a raising progress callback must not
+            # leave the claim in flight (its error still propagates unchanged,
+            # matching the frozen behavior for that edge).
+            if submitted and not known_rejection:
+                await self._settle_quietly(params.token, "unknown", staged.attempt)
+            else:
+                await self._settle_quietly(params.token, "rejected", staged.attempt)
             if progress:
                 safe_code = getattr(exc, "code", exc.__class__.__name__)
                 safe_parts = [f"atomic import failed [{safe_code}]"]
@@ -792,7 +826,13 @@ class ImportService:
             idempotency_key=idempotency_key,
         )
         commit_grant()
-        stored.consumed = True
+        try:
+            await self._settle_plan(params.token, "committed", staged.attempt)
+        except Exception:
+            # The business writes and the Host grant are already committed. The
+            # plan stays claimed (fail-closed) instead of pretending nothing
+            # happened; a late settle cannot change the reported result.
+            logger.warning("import.committed_plan_settlement_failed")
         if progress:
             try:
                 await progress(total, total, "atomic import committed")
@@ -820,7 +860,7 @@ class ImportService:
             )
         return profile
 
-    def _mint_plan(
+    async def _mint_plan(
         self,
         *,
         collection: str,
@@ -832,21 +872,102 @@ class ImportService:
         mode: str,
         upsert_key: str | None,
     ) -> ImportPreviewToken:
-        token = f"imp-{uuid.uuid4().hex[:24]}"
-        self._plans[token] = _StoredImportPlan(
-            collection=collection,
-            grant_id=grant_id,
+        """Store the plan with the Go owner, which mints the single-use token."""
+        payload = await self._plan_call(
+            lambda: self._bulk.mint_import_plan(
+                collection=collection,
+                grant_id=grant_id,
+                schema_revision=schema_revision,
+                capability_hash=capability_hash,
+                source_hash=source_hash,
+                rows=[row.model_dump(mode="json", by_alias=True) for row in rows],
+                mode=mode,
+                upsert_key=upsert_key,
+            )
+        )
+        token = payload.get("token")
+        expires_at = payload.get("expiresAt")
+        if not isinstance(token, str) or not token:
+            raise ImportFlowError("invalid import plan token reply", code="import_plan_invalid")
+        if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+            raise ImportFlowError("invalid import plan token expiry", code="import_plan_invalid")
+        return ImportPreviewToken(token=token, expires_at=float(expires_at), consumed=False)
+
+    async def _stage_plan(
+        self,
+        params: ApplyImportParams,
+        profile: CollectionProfile,
+    ) -> _StagedImportPlan:
+        """Claim the single apply of the stored plan and fetch its frozen rows."""
+        payload = await self._plan_call(
+            lambda: self._bulk.stage_import_plan(
+                token=params.token,
+                grant_id=params.grant_id,
+                collection=params.collection,
+                mode=params.mode,
+                capability_hash=profile.capability_hash,
+            )
+        )
+        raw_rows = payload.get("rows")
+        if not isinstance(raw_rows, list):
+            raise ImportFlowError("invalid staged import plan", code="import_plan_invalid")
+        try:
+            rows = [ImportPlanRow.model_validate(row) for row in raw_rows]
+            schema_revision = payload.get("schemaRevision")
+            mode = payload.get("mode")
+            attempt = payload.get("attempt")
+            if not isinstance(schema_revision, str) or not schema_revision:
+                raise ValueError("staged schema revision is missing")
+            if not isinstance(mode, str) or not mode:
+                raise ValueError("staged mode is missing")
+            if isinstance(attempt, bool) or not isinstance(attempt, int):
+                raise ValueError("staged attempt lease is missing")
+        except Exception as exc:
+            raise ImportFlowError("invalid staged import plan", code="import_plan_invalid") from exc
+        upsert_key = payload.get("upsertKey")
+        return _StagedImportPlan(
+            collection=params.collection,
             schema_revision=schema_revision,
-            capability_hash=capability_hash,
-            source_hash=source_hash,
-            rows=rows,
             mode=mode,
-            upsert_key=upsert_key,
-            expires_at=self._clock() + IMPORT_TOKEN_TTL_SECONDS,
+            upsert_key=upsert_key if isinstance(upsert_key, str) else None,
+            rows=rows,
+            attempt=attempt,
         )
-        return ImportPreviewToken(
-            token=token, expires_at=self._clock() + IMPORT_TOKEN_TTL_SECONDS, consumed=False
+
+    async def _bind_prefix(self, token: str, requested_prefix: str, attempt: int) -> None:
+        await self._plan_call(
+            lambda: self._bulk.bind_import_plan(
+                token=token, idempotency_prefix=requested_prefix, attempt=attempt
+            )
         )
+
+    async def _settle_plan(self, token: str, outcome: str, attempt: int) -> None:
+        await self._plan_call(
+            lambda: self._bulk.settle_import_plan(token=token, outcome=outcome, attempt=attempt)
+        )
+
+    async def _settle_quietly(self, token: str, outcome: str, attempt: int) -> None:
+        try:
+            await self._settle_plan(token, outcome, attempt)
+        except Exception:
+            # A settlement failure must not mask the original import outcome;
+            # the claim stays fail-closed with the Go owner.
+            logger.warning("import.plan_settlement_failed")
+
+    async def _plan_call(self, call: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+        try:
+            return await call()
+        except ImportFlowError:
+            raise
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if isinstance(code, str) and code:
+                raise ImportFlowError(
+                    str(exc) or "import plan owner rejected the call",
+                    code=code,
+                    data=getattr(exc, "data", None),
+                ) from exc
+            raise
 
 
 __all__ = [

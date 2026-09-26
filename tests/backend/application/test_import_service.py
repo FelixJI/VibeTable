@@ -1,13 +1,26 @@
-"""Provider-neutral import normalization and atomic-apply tests."""
+"""Provider-neutral import normalization and atomic-apply tests.
+
+The 30 test functions that predate the Issue #374 plan-owner migration are
+the frozen public-semantics oracle: their bodies are unchanged and must keep
+passing against the Go-owned plan lifecycle. ``FakeProductMutationPort`` is a
+stand-in of the new Go ``importPlanOwner`` ports (single-use token, exclusive
+staging, fixed 600s TTL, first-wins idempotency prefix, identical error
+codes); the real Go owner has its own contract tests in
+``sidecar/internal/app/import_plan_rpc_test.go`` and
+``import_plan_http_test.go``. Tests appended at the end cover the migration-
+specific concurrency and settlement boundaries.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
+import time as systime
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import pytest
@@ -15,6 +28,7 @@ from openpyxl import Workbook
 from openpyxl.utils.datetime import CALENDAR_MAC_1904
 
 from backend.adapters.pocketbase.client import PocketBaseClient
+from backend.adapters.pocketbase.mutation import PocketBaseBulkMutationClient
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.import_service import (
     MAX_ATOMIC_IMPORT_ROWS,
@@ -28,6 +42,7 @@ from backend.application.import_service import (
 from backend.application.paste_service import PasteError
 from backend.contracts.data_io import (
     ApplyImportParams,
+    ApplyImportResult,
     ImportColumnMapping,
     PreviewImportParams,
 )
@@ -57,7 +72,14 @@ def _field_value_corpus() -> list[dict[str, Any]]:
 
 
 class FakeProductMutationPort:
-    def __init__(self, result: ApplyPasteResult | None = None) -> None:
+    """Fake Go plan owner + mutation port mirroring the sidecar lifecycle.
+
+    The in-memory plan store reproduces the Go ``importPlanOwner`` semantics
+    (single-use consumption, exclusive staging, first-wins idempotency prefix,
+    fixed 600s TTL) so the Python service stays a thin execution context.
+    """
+
+    def __init__(self, result: ApplyPasteResult | None = None, clock: Any = None) -> None:
         self.result = result or ApplyPasteResult(
             collection="vibetable_demo",
             outcome="committed",
@@ -66,6 +88,10 @@ class FakeProductMutationPort:
         )
         self.calls: list[dict[str, Any]] = []
         self.preview_calls: list[dict[str, Any]] = []
+        self.plan_calls: list[tuple[str, dict[str, Any]]] = []
+        self._clock = clock or systime.time
+        self._plans: dict[str, dict[str, Any]] = {}
+        self._plan_seq = 0
 
     async def preview_import(
         self,
@@ -109,6 +135,138 @@ class FakeProductMutationPort:
     async def apply(self, **kwargs: Any) -> ApplyPasteResult:
         self.calls.append(kwargs)
         return self.result
+
+    def _reject(self, code: str, message: str) -> NoReturn:
+        raise PasteError(message, code=code)
+
+    async def mint_import_plan(
+        self,
+        *,
+        collection: str,
+        grant_id: str,
+        schema_revision: str,
+        capability_hash: str,
+        source_hash: str,
+        rows: list[dict[str, Any]],
+        mode: str,
+        upsert_key: str | None,
+    ) -> dict[str, Any]:
+        self._plan_seq += 1
+        token = f"imp1.fake{self._plan_seq:08d}"
+        self._plans[token] = {
+            "collection": collection,
+            "grant_id": grant_id,
+            "schema_revision": schema_revision,
+            "capability_hash": capability_hash,
+            "mode": mode,
+            "upsert_key": upsert_key,
+            "rows": rows,
+            "expires_at": self._clock() + 600.0,
+            "consumed": False,
+            "in_flight": False,
+            "attempt": 0,
+            "idempotency_prefix": None,
+        }
+        self.plan_calls.append(
+            ("mint", {"collection": collection, "grant_id": grant_id, "rows": len(rows)})
+        )
+        return {
+            "token": token,
+            "expiresAt": self._plans[token]["expires_at"],
+            "consumed": False,
+        }
+
+    def _staged_plan(
+        self, token: str, *, grant_id: str, collection: str, mode: str
+    ) -> dict[str, Any]:
+        plan = self._plans.get(token)
+        if plan is None:
+            self._reject("import_token_unknown", "import token not found")
+        if self._clock() >= plan["expires_at"]:
+            self._reject("import_token_expired", "import token expired")
+        if plan["consumed"]:
+            self._reject("import_token_consumed", "import token already used")
+        if plan["in_flight"]:
+            self._reject("import_token_busy", "import token is already being applied")
+        if plan["grant_id"] != grant_id:
+            self._reject("import_grant_mismatch", "import token belongs to another grant")
+        if plan["collection"] != collection or plan["mode"] != mode:
+            self._reject("import_plan_mismatch", "import target or mode changed since preview")
+        return plan
+
+    async def stage_import_plan(
+        self,
+        *,
+        token: str,
+        grant_id: str,
+        collection: str,
+        mode: str,
+        capability_hash: str,
+    ) -> dict[str, Any]:
+        self.plan_calls.append(
+            (
+                "stage",
+                {"token": token, "grant_id": grant_id, "collection": collection, "mode": mode},
+            )
+        )
+        plan = self._staged_plan(token, grant_id=grant_id, collection=collection, mode=mode)
+        if plan["capability_hash"] != capability_hash:
+            self._reject("schema_mismatch", "schema changed since preview")
+        plan["in_flight"] = True
+        plan["attempt"] += 1
+        return {
+            "collection": plan["collection"],
+            "schemaRevision": plan["schema_revision"],
+            "sourceHash": "sha256:fake",
+            "mode": plan["mode"],
+            "upsertKey": plan["upsert_key"],
+            "rows": plan["rows"],
+            "attempt": plan["attempt"],
+        }
+
+    async def bind_import_plan(
+        self, *, token: str, idempotency_prefix: str, attempt: int
+    ) -> dict[str, Any]:
+        self.plan_calls.append(("bind", {"token": token, "prefix": idempotency_prefix}))
+        plan = self._plans.get(token)
+        if plan is None or not plan["in_flight"]:
+            self._reject("import_token_busy", "import token is not staged for apply")
+        if plan["attempt"] != attempt:
+            self._reject("import_plan_stale", "stale attempt cannot bind the current plan claim")
+        if plan["idempotency_prefix"] is None:
+            plan["idempotency_prefix"] = idempotency_prefix
+        elif plan["idempotency_prefix"] != idempotency_prefix:
+            self._reject(
+                "import_idempotency_mismatch",
+                "import token is bound to a different idempotency prefix",
+            )
+        return {"idempotencyKey": plan["idempotency_prefix"] + "-0"}
+
+    async def settle_import_plan(self, *, token: str, outcome: str, attempt: int) -> dict[str, Any]:
+        self.plan_calls.append(("settle", {"token": token, "outcome": outcome}))
+        plan = self._plans.get(token)
+        if plan is None:
+            self._reject("import_token_unknown", "import token not found")
+        if outcome == "committed":
+            if attempt < 1 or attempt > plan["attempt"] or plan["idempotency_prefix"] is None:
+                self._reject(
+                    "import_plan_invalid",
+                    "committed settle must reference an issued, bound plan claim",
+                )
+            plan["consumed"] = True
+            plan["in_flight"] = False
+        elif outcome in {"rejected", "unknown"}:
+            if plan["consumed"]:
+                pass
+            elif plan["in_flight"] and plan["attempt"] != attempt:
+                self._reject(
+                    "import_plan_stale", "stale attempt cannot settle the current plan claim"
+                )
+            else:
+                plan["in_flight"] = False
+        else:
+            self._reject("import_plan_invalid", "unknown import plan settle outcome")
+        return {"token": token, "consumed": plan["consumed"]}
 
 
 class FakeRelationProvider:
@@ -237,7 +395,7 @@ def _service(
 ) -> tuple[ImportService, FakeProductMutationPort]:
     profile = profile or _profile()
     profiles = profiles or {profile.collection: profile}
-    mutation = mutation or FakeProductMutationPort()
+    mutation = mutation or FakeProductMutationPort(clock=clock)
 
     kwargs: dict[str, Any] = {}
     if clock is not None:
@@ -1034,3 +1192,362 @@ async def test_committed_import_task_keeps_result_when_final_notification_fails(
     with pytest.raises(ImportFlowError, match="already used"):
         await service.apply(params)
     assert len(mutation.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_error"),
+    [
+        ("transport", RuntimeError),
+        ("cancellation", asyncio.CancelledError),
+    ],
+)
+async def test_bind_failure_before_submission_releases_claim_without_apply(
+    tmp_path: Path, failure: str, expected_error: type[BaseException]
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+
+    class FailingBind(FakeProductMutationPort):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failed = False
+
+        async def bind_import_plan(self, *, token, idempotency_prefix, attempt):
+            if not self.failed:
+                self.failed = True
+                if failure == "cancellation":
+                    raise asyncio.CancelledError
+                raise RuntimeError("sidecar unreachable")
+            return await super().bind_import_plan(
+                token=token, idempotency_prefix=idempotency_prefix, attempt=attempt
+            )
+
+    mutation = FailingBind()
+    service, _ = _service(path, mutation=mutation)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+    params = ApplyImportParams(
+        grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+    )
+
+    with pytest.raises(expected_error):
+        await service.apply(params)
+
+    # No business submission happened and the claim was released, so the same
+    # token can be applied again cleanly.
+    assert mutation.calls == []
+    settles = [payload for name, payload in mutation.plan_calls if name == "settle"]
+    assert settles == [{"token": plan.token.token, "outcome": "rejected"}]
+    result = await service.apply(params)
+    assert result.created_count == 2
+    assert len(mutation.calls) == 1
+
+
+class _StaticAuth:
+    async def current_user(self) -> Any:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_failing_progress_callback_cannot_leave_staged_claim_in_flight(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    mutation = FakeProductMutationPort(
+        ApplyPasteResult(collection="vibetable_demo", outcome="conflict")
+    )
+    service, _ = _service(path, mutation=mutation)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+
+    async def progress(_done: int, _total: int, _message: str) -> None:
+        raise RuntimeError("private transport detail")
+
+    params = ApplyImportParams(
+        grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+    )
+    with pytest.raises(RuntimeError, match="private transport detail"):
+        await service.apply(params, progress=progress)
+
+    settles = [payload for name, payload in mutation.plan_calls if name == "settle"]
+    assert settles == [{"token": plan.token.token, "outcome": "rejected"}]
+    # The claim was released despite the callback failure: the same token can
+    # be applied again.
+    result = await service.apply(params)
+    assert result.created_count == 0
+
+
+@pytest.mark.asyncio
+async def test_failing_reservation_construction_releases_staged_claim(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, mutation = _service(path)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+
+    class BrokenFiles(FormatFiles):
+        def reserve_import(self, grant_id, plan_token):
+            raise RuntimeError("grant broker unavailable")
+
+    service._files = BrokenFiles(path)
+    params = ApplyImportParams(
+        grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+    )
+    with pytest.raises(RuntimeError, match="grant broker unavailable"):
+        await service.apply(params)
+
+    settles = [payload for name, payload in mutation.plan_calls if name == "settle"]
+    assert settles == [{"token": plan.token.token, "outcome": "rejected"}]
+
+
+@pytest.mark.asyncio
+async def test_pseudo_committed_settle_is_rejected_by_plan_owner() -> None:
+    mutation = FakeProductMutationPort()
+    # Direct port-level check mirroring the Go contract test: a committed
+    # settle that references no issued+bound claim must be refused.
+    minted = await mutation.mint_import_plan(
+        collection="vibetable_demo",
+        grant_id="grant-1",
+        schema_revision="schema-1",
+        capability_hash="cap-1",
+        source_hash="sha-1",
+        rows=[],
+        mode="create_only",
+        upsert_key=None,
+    )
+    with pytest.raises(PasteError) as unissued:
+        await mutation.settle_import_plan(token=minted["token"], outcome="committed", attempt=0)
+    assert unissued.value.code == "import_plan_invalid"
+    staged = await mutation.stage_import_plan(
+        token=minted["token"],
+        grant_id="grant-1",
+        collection="vibetable_demo",
+        mode="create_only",
+        capability_hash="cap-1",
+    )
+    with pytest.raises(PasteError) as unbound:
+        await mutation.settle_import_plan(
+            token=minted["token"], outcome="committed", attempt=staged["attempt"]
+        )
+    assert unbound.value.code == "import_plan_invalid"
+    await mutation.bind_import_plan(
+        token=minted["token"], idempotency_prefix="imp-x", attempt=staged["attempt"]
+    )
+    settled = await mutation.settle_import_plan(
+        token=minted["token"], outcome="committed", attempt=staged["attempt"]
+    )
+    assert settled["consumed"] is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_apply_of_one_token_executes_the_plan_once(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, mutation = _service(path)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+    params = ApplyImportParams(
+        grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+    )
+
+    outcomes = await asyncio.gather(
+        service.apply(params),
+        service.apply(params),
+        return_exceptions=True,
+    )
+
+    results = [item for item in outcomes if isinstance(item, ApplyImportResult)]
+    errors = [item for item in outcomes if isinstance(item, ImportFlowError)]
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert errors[0].code == "import_token_consumed"
+    assert len(mutation.calls) == 1
+    settles = [payload for name, payload in mutation.plan_calls if name == "settle"]
+    assert settles == [{"token": plan.token.token, "outcome": "committed"}]
+
+
+@pytest.mark.asyncio
+async def test_rejected_apply_keeps_token_and_prefix_binding_in_plan_owner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    mutation = FakeProductMutationPort(
+        ApplyPasteResult(collection="vibetable_demo", outcome="conflict")
+    )
+    service, _ = _service(path, mutation=mutation)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+    first = ApplyImportParams(
+        grant_id="grant-1",
+        collection="vibetable_demo",
+        token=plan.token.token,
+        idempotency_prefix="first-prefix",
+    )
+    result = await service.apply(first)
+    assert result.created_count == 0
+
+    with pytest.raises(ImportFlowError) as mismatch:
+        await service.apply(
+            ApplyImportParams(
+                grant_id="grant-1",
+                collection="vibetable_demo",
+                token=plan.token.token,
+                idempotency_prefix="other-prefix",
+            )
+        )
+    assert mismatch.value.code == "import_idempotency_mismatch"
+
+    retry = await service.apply(first)
+    assert retry.created_count == 0
+    assert len(mutation.calls) == 2
+    settles = [payload for name, payload in mutation.plan_calls if name == "settle"]
+    assert [item["outcome"] for item in settles] == ["rejected", "rejected", "rejected"]
+
+
+@pytest.mark.asyncio
+async def test_successful_apply_settles_committed_with_the_plan_owner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, mutation = _service(path)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+    await service.apply(
+        ApplyImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            token=plan.token.token,
+            idempotency_prefix="prefix-1",
+        )
+    )
+    sequence = [name for name, _ in mutation.plan_calls]
+    assert sequence == ["mint", "stage", "bind", "settle"]
+    assert mutation.plan_calls[-1][1] == {
+        "token": plan.token.token,
+        "outcome": "committed",
+    }
+    assert mutation.plan_calls[2][1] == {
+        "token": plan.token.token,
+        "prefix": "prefix-1",
+    }
+    assert mutation.plan_calls[0][1]["rows"] == 1
+
+
+@pytest.mark.asyncio
+async def test_plan_owner_lifecycle_uses_the_frozen_http_contract() -> None:
+    requests: list[tuple[str, dict[str, Any]]] = []
+
+    def receive(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append((request.url.path, body))
+        if request.url.path.endswith("/import-plans"):
+            return httpx.Response(
+                200, json={"token": "imp1.t", "expiresAt": 1.5, "consumed": False}
+            )
+        if request.url.path.endswith("/stage"):
+            return httpx.Response(
+                200,
+                json={
+                    "collection": "vibetable_demo",
+                    "schemaRevision": "schema-1",
+                    "sourceHash": "sha",
+                    "mode": "create_only",
+                    "upsertKey": None,
+                    "rows": [],
+                    "attempt": 1,
+                },
+            )
+        if request.url.path.endswith("/bind"):
+            return httpx.Response(200, json={"idempotencyKey": "prefix-0"})
+        return httpx.Response(200, json={"token": "imp1.t", "consumed": True})
+
+    transport = StdlibPocketBaseTransport(
+        PocketBaseConfig(base_url="http://127.0.0.1:1", session_secret="0" * 64),
+        http_transport=httpx.MockTransport(receive),
+    )
+    client = PocketBaseClient(transport=transport, session_secret="0" * 64)
+    port = PocketBaseBulkMutationClient(client=client, auth=_StaticAuth())
+
+    assert await port.mint_import_plan(
+        collection="vibetable_demo",
+        grant_id="grant-1",
+        schema_revision="schema-1",
+        capability_hash="cap-1",
+        source_hash="sha256:x",
+        rows=[{"sourceRow": 2, "values": {"number": "A-1"}}],
+        mode="create_only",
+        upsert_key=None,
+    ) == {"token": "imp1.t", "expiresAt": 1.5, "consumed": False}
+    staged = await port.stage_import_plan(
+        token="imp1.t",
+        grant_id="grant-1",
+        collection="vibetable_demo",
+        mode="create_only",
+        capability_hash="cap-1",
+    )
+    assert staged["schemaRevision"] == "schema-1"
+    assert staged["attempt"] == 1
+    assert await port.bind_import_plan(token="imp1.t", idempotency_prefix="prefix", attempt=1) == {
+        "idempotencyKey": "prefix-0"
+    }
+    assert await port.settle_import_plan(token="imp1.t", outcome="committed", attempt=1) == {
+        "token": "imp1.t",
+        "consumed": True,
+    }
+
+    paths = [item for item, _ in requests]
+    assert paths == [
+        "/api/vibetable/v2/import-plans",
+        "/api/vibetable/v2/import-plans/stage",
+        "/api/vibetable/v2/import-plans/bind",
+        "/api/vibetable/v2/import-plans/settle",
+    ]
+    contract = "vibetable.import-plans.v1"
+    assert requests[0][1]["contract"] == contract
+    assert requests[0][1]["grantId"] == "grant-1"
+    assert requests[0][1]["capabilityHash"] == "cap-1"
+    assert requests[0][1]["upsertKey"] is None
+    assert requests[1][1] == {
+        "contract": contract,
+        "token": "imp1.t",
+        "grantId": "grant-1",
+        "collection": "vibetable_demo",
+        "mode": "create_only",
+        "capabilityHash": "cap-1",
+    }
+    assert requests[2][1] == {
+        "contract": contract,
+        "token": "imp1.t",
+        "idempotencyPrefix": "prefix",
+        "attempt": 1,
+    }
+    assert requests[3][1] == {
+        "contract": contract,
+        "token": "imp1.t",
+        "outcome": "committed",
+        "attempt": 1,
+    }
