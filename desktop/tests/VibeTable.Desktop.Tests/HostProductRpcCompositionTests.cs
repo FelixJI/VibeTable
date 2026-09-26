@@ -312,6 +312,94 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetiredGridNotificationCannotPublishAfterNewBindingQuerySucceeds(bool unbind)
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        var time = new ManualTimeProvider();
+        var sink = new FakeWebReplySink();
+        var coordinator = new GridStateCoordinator(lazy, notification =>
+            TableNotificationPresenter.Post(sink, notification), time);
+        lazy.BindingChanged += coordinator.ResetForTableChange;
+        var controller = new GridRequestController(coordinator, sink);
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.ReplyGate = reply;
+        Task request = controller.DispatchAsync(new RoutedWebRequest(
+            "table.queryRequested", null,
+            Json("""{"table":"orders","query":{"offset":0,"limit":5}}"""), string.Empty));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+
+        using var releaseReady = new ManualResetEventSlim();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.BeforeSidecarReady = () =>
+        {
+            ready.TrySetResult();
+            Assert.IsTrue(releaseReady.Wait(TimeSpan.FromSeconds(5)));
+        };
+        Task? restarting = null;
+        try
+        {
+            await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await fixture.Sidecar.StopAsync(CancellationToken.None);
+            restarting = Task.Run(() => fixture.Sidecar.StartAsync(CancellationToken.None));
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            HostProductRpcBinding current = fixture.Factory.CaptureHostProductRpcBinding()!;
+            if (unbind) lazy.Unbind();
+            else lazy.Bind(current);
+
+            // The Product query.page route does not schedule a Coordinator query.
+            fixture.Http.ReplyGate = null;
+            fixture.Http.Result = Json("""{"rows":[],"offset":0,"limit":5,"filteredRows":0,"totalRows":0,"snapshot":{"schemaRevision":"schema_1","dataRevision":0}}""");
+            using var product = current.CreateGateway(fixture.Leases, fixture.Http);
+            JsonElement page = await product.QueryPageAsync(
+                Json("""{"tableId":"orders","query":{"offset":0,"limit":5}}"""), CancellationToken.None);
+            Assert.AreEqual(0, page.GetProperty("rows").GetArrayLength());
+            time.Advance(TimeSpan.FromSeconds(3));
+            reply.TrySetResult();
+            await request.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(0, sink.Replies.Count,
+                "A retired grid notification must not publish after the replacement binding succeeds.");
+        }
+        finally
+        {
+            reply.TrySetResult();
+            releaseReady.Set();
+            if (restarting is not null) await restarting.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [TestMethod]
+    public async Task UnchangedBindingKeepsPendingGridReadAndItsRealError()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        var time = new ManualTimeProvider();
+        var sink = new FakeWebReplySink();
+        var coordinator = new GridStateCoordinator(lazy, notification =>
+            TableNotificationPresenter.Post(sink, notification), time);
+        lazy.BindingChanged += coordinator.ResetForTableChange;
+        var controller = new GridRequestController(coordinator, sink);
+        var reply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Http.ReplyGate = reply;
+        Task request = controller.DispatchAsync(new RoutedWebRequest(
+            "table.queryRequested", null,
+            Json("""{"table":"orders","query":{"offset":0,"limit":5}}"""), string.Empty));
+        time.Advance(TimeSpan.FromMilliseconds(GridStateCoordinator.QueryDebounceMs));
+        await fixture.Http.RpcEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        Assert.IsFalse(request.IsCompleted);
+        fixture.Http.Error = true;
+        reply.TrySetResult();
+        await request.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual("operation.failed", sink.Replies.Single().Type);
+        Assert.AreEqual(1, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
     public async Task QueryPageUsesDefaultGoOwnerAndPreservesProductProjection()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);

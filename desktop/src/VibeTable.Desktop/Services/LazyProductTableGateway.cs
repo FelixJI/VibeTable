@@ -24,6 +24,8 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
     private PocketBaseTableGateway? _resolved;
     private bool _disposed;
 
+    internal event Action? BindingChanged;
+
     internal LazyProductTableGateway(
         IWorkspaceHostEpochLeaseSource leases, HttpMessageHandler? handler = null)
     {
@@ -41,6 +43,7 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
                 return;
             RetireResolved();
             _binding = binding;
+            BindingChanged?.Invoke();
         }
     }
 
@@ -48,12 +51,13 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
     {
         lock (_gate)
         {
-            if (_disposed)
+            if (_disposed || _binding is null)
             {
                 return;
             }
             RetireResolved();
             _binding = null;
+            BindingChanged?.Invoke();
         }
     }
 

@@ -350,6 +350,7 @@ public partial class MainWindow : Window
         _coordinator = new GridStateCoordinator(
             _tableGateway,
             notification => productWorkspace!.OnNotification(notification));
+        _tableGateway.BindingChanged += _coordinator.ResetForTableChange;
         _productWorkspace = new ProductWorkspaceController(
             _webBridge,
             _runtime,
