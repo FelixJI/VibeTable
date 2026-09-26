@@ -8878,12 +8878,37 @@ async function waitForPublishedReplicaUi(page, recorder) {
   // The existing replica.changed event enables this control only for verified,
   // non-pending replicas. Observe readiness without requesting cache release.
   await page.getByTestId("workspace-storage-release-cache-preview").waitFor({ state: "visible" });
+  // The replica worker re-enters "syncing" at the start of every periodic
+  // verification pass, so the throttled replica.changed gate and one status
+  // response can disagree transiently. One checkpoint requires the exact
+  // public status triple and the gate to agree in the same sample, inside the
+  // single 60s budget that also covers the gate wait.
+  const deadline = Date.now() + 60_000;
+  let lastObservation = null;
   try {
     await page.waitForFunction(() => document.querySelector(
       '[data-testid="workspace-storage-release-cache-preview"]',
-    )?.disabled === false, null, { timeout: 60_000 });
+    )?.disabled === false, null, { timeout: Math.max(deadline - Date.now(), 1) });
+    while (Date.now() < deadline) {
+      const replica = await rawWorkspaceV2Request(page, "replica.status", {});
+      const uiEnabled = await page.evaluate(() => document.querySelector(
+        '[data-testid="workspace-storage-release-cache-preview"]',
+      )?.disabled === false);
+      lastObservation = { replica, uiEnabled };
+      // A sample that only lands after the budget expired cannot pass.
+      if (Date.now() >= deadline) break;
+      const replicated = replica.result?.coordinationStrength === "advisory"
+        && replica.result.pendingSync === false && replica.result.syncState === "replicated";
+      if (uiEnabled && replicated) {
+        recorder.check("replicated UI readiness agrees with one exact public status checkpoint",
+          replicated, { replica });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now())));
+    }
+    throw new Error(`replicated UI readiness did not reach one agreeing public status checkpoint within its budget: ${JSON.stringify(lastObservation)}`);
   } catch (error) {
-    // Read only after the readiness gate failed; preserve its original failure.
+    // Read only after the readiness wait failed; preserve its original failure.
     try {
       const status = await rawWorkspaceV2Request(page, "replica.status", {});
       const snapshots = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
@@ -8893,11 +8918,6 @@ async function waitForPublishedReplicaUi(page, recorder) {
     }
     throw error;
   }
-  const replica = await rawWorkspaceV2Request(page, "replica.status", {});
-  recorder.check("replicated UI readiness agrees with one exact public status checkpoint",
-    replica.result?.coordinationStrength === "advisory"
-      && replica.result.pendingSync === false && replica.result.syncState === "replicated",
-  { replica });
 }
 
 async function replicaEditRow(page, recorder, state, value, session) {
