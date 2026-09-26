@@ -1132,7 +1132,7 @@ export interface PluginResult {
   readonly warnings: readonly string[];
 }
 
-/** Python runtime task — revision lives on PluginEventEnvelope, not the task. */
+/** Host-owned task snapshot — revision lives on PluginEventEnvelope, not the task. */
 export interface PluginTaskSnapshot {
   readonly taskId: string;
   readonly runId: string;

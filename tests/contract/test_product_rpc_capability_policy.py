@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 114
+    assert len(manifest["rpcMethods"]) == 113
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -240,7 +240,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 24
+    assert len(methods) == 23
     assert methods[0] == "data.applyImport"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",

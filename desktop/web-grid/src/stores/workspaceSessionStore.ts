@@ -129,6 +129,16 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     return true;
   }
 
+  function beginClose(): boolean {
+    if (!enabled.value || !hasOpenWorkspace.value || isTransitioning.value) return false;
+    switchOrigin = { writable: writable.value, provisional: provisional.value };
+    // Reuse the transition target so a queued ready bootstrap cannot reopen admission.
+    targetWorkspaceId.value = activeWorkspaceId.value;
+    sessionPhase.value = "draining";
+    errorCode.value = null;
+    return true;
+  }
+
   function reportTransitionPhase(phase: WorkspaceSessionV2["phase"]): void {
     if (!enabled.value || !isTransitioning.value) return;
     sessionPhase.value = phase;
@@ -280,6 +290,7 @@ export const useWorkspaceSessionStore = defineStore("workspace-session-v2", () =
     configureCapabilities,
     setWorkspaces,
     beginSwitch,
+    beginClose,
     reportTransitionPhase,
     applySession,
     failSwitch,

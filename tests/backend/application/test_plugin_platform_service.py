@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -419,24 +420,31 @@ async def test_committed_installation_executes_from_retained_current_revision(
         enabled=True,
     )
 
+    task_states: list[str] = []
+
+    async def record(event: Any) -> None:
+        if event.event_type == "plugin.task.changed":
+            task_states.append(str(event.snapshot["state"]))
+
+    service.set_notification_sink(record)
     started = await service.start_action(
         project_key="local:default",
         plugin_id="com.example.reader",
         action_id="read",
         context=CommandContext(project_key="local:default"),
         input_payload={},
+        task_id=f"plugin-task-{uuid.uuid4().hex[:12]}",
+        run_id=f"plugin-run-{uuid.uuid4().hex[:12]}",
     )
     for _ in range(100):
-        completed = service.get_task(task_id=started.task_id)
-        if completed.state in {"succeeded", "failed", "cancelled"}:
+        if task_states and task_states[-1] in {"succeeded", "failed", "cancelled"}:
             break
         await asyncio.sleep(0.01)
     else:
         raise AssertionError("installed plugin did not finish")
 
-    assert completed.state == "succeeded"
-    assert completed.result is not None
-    assert completed.result.summary == "installed package executed"
+    assert task_states[-1] == "succeeded"
+    assert started.task_id.startswith("plugin-task-")
 
 
 @pytest.mark.asyncio

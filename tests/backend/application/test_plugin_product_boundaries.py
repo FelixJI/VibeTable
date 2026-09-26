@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from typing import Any
 
 import pytest
 
@@ -56,13 +58,14 @@ async def _enabled_registry(
 async def _wait_for_completion(
     runtime: PluginExecutionRuntime,
     task_id: str,
+    states: list[dict[str, Any]],
 ):
     for _ in range(20):
-        task = runtime.get_task(task_id)
-        if task.state not in {"queued", "running"}:
+        task = states[-1] if states else None
+        if task is not None and task["state"] not in {"queued", "running"}:
             return task
         await asyncio.sleep(0)
-    return runtime.get_task(task_id)
+    return states[-1]
 
 
 @pytest.mark.asyncio
@@ -94,17 +97,25 @@ async def test_write_action_must_return_mutation_plan() -> None:
         mutation_adapter=mutation,
     )
 
+    states: list[dict[str, Any]] = []
+
+    async def record(event: Any) -> None:
+        states.append(event.snapshot)
+
+    runtime.set_notification_sink(record)
     handle = await runtime.start(
         plan.manifest.plugin_id,
         action.action_id,
         CommandContext(project_key=plan.project_key, collection="orders"),
         {},
+        task_id=f"plugin-task-{uuid.uuid4().hex[:12]}",
+        run_id=f"plugin-run-{uuid.uuid4().hex[:12]}",
     )
-    task = await _wait_for_completion(runtime, handle.task_id)
+    task = await _wait_for_completion(runtime, handle.task_id, states)
 
-    assert task.state == "failed"
-    assert task.error is not None
-    assert "mutation plan" in task.error.message
+    assert task["state"] == "failed"
+    assert task["error"] is not None
+    assert "mutation plan" in task["error"]["message"]
     assert mutation.plans == []
 
 
@@ -138,15 +149,23 @@ async def test_mutation_plan_cannot_escape_context_collection() -> None:
         mutation_adapter=mutation,
     )
 
+    states: list[dict[str, Any]] = []
+
+    async def record(event: Any) -> None:
+        states.append(event.snapshot)
+
+    runtime.set_notification_sink(record)
     handle = await runtime.start(
         plan.manifest.plugin_id,
         action.action_id,
         CommandContext(project_key=plan.project_key, collection="orders"),
         {},
+        task_id=f"plugin-task-{uuid.uuid4().hex[:12]}",
+        run_id=f"plugin-run-{uuid.uuid4().hex[:12]}",
     )
-    task = await _wait_for_completion(runtime, handle.task_id)
+    task = await _wait_for_completion(runtime, handle.task_id, states)
 
-    assert task.state == "failed"
-    assert task.error is not None
-    assert "collection" in task.error.message
+    assert task["state"] == "failed"
+    assert task["error"] is not None
+    assert "collection" in task["error"]["message"]
     assert mutation.plans == []

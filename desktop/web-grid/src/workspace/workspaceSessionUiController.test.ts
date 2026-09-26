@@ -11,6 +11,50 @@ import { createWorkspaceSessionUiController } from "./workspaceSessionUiControll
 describe("workspaceSessionUiController", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it.each(["success", "failure"] as const)("关闭在请求发出前退役读取并按结果结算：%s", async (outcome) => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    const workspaceId = "22222222-2222-4222-8222-222222222222";
+    session.setWorkspaces([{
+      contractVersion: "2.0", workspaceId, displayName: "Workspace",
+      selectedRoot: "D:\\Workspaces\\Two", activityRoot: null, storageKind: "fixed",
+      coordinationStrength: "strong", lastOpenedAt: null, lastKnownHealth: "healthy",
+      lastSnapshotAt: null, lastSyncAt: null, pendingSync: false,
+    }]);
+    const opened: WorkspaceSessionV2 = {
+      contractVersion: "2.0", workspaceId, sessionEpoch: 7, state: "openedWritable",
+      openMode: "writable", writable: true, provisional: false, phase: "idle", errorCode: null,
+    };
+    session.applySession(opened);
+    const protection = useWorkspaceProtectionStore();
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    let transitioningAtSend = false;
+    const controller = createWorkspaceSessionUiController({
+      session, protection, documents: useDocumentWorkspaceStore(), showCenter: ref(false),
+      request: async () => {
+        transitioningAtSend = session.isTransitioning;
+        await pending;
+        if (outcome === "failure") throw new Error("close rejected");
+        session.closeSession();
+      },
+      errorMessage: error => error instanceof Error ? error.message : String(error),
+      initializeConsumers: vi.fn(),
+    });
+    const closing = controller.execute({ method: "workspace.close", params: { reason: "user" } });
+    const staleReadyAccepted = session.applySession(opened);
+    const transitioningAfterReady = session.isTransitioning;
+    finish();
+    await expect(closing).resolves.toBe(outcome === "success");
+    expect(transitioningAtSend).toBe(true);
+    expect(staleReadyAccepted).toBe(false);
+    expect(transitioningAfterReady).toBe(true);
+    expect(session.isTransitioning).toBe(false);
+    expect(session.targetWorkspaceId).toBeNull();
+    expect(protection.busyOperation).toBeNull();
+    expect(session.hasOpenWorkspace).toBe(outcome === "failure");
+    expect(session.errorCode).toBe(outcome === "failure" ? "close rejected" : null);
+  });
   it("workspace.open 失败时清理 operation 并把错误投射到 session", async () => {
     const session = useWorkspaceSessionStore();
     session.configureCapabilities(["workspace.session.v2"]);

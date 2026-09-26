@@ -100,7 +100,7 @@ export async function resumeHostCommands(page, recorder, runtime, state) {
   for (const id of [state.exportId, state.urlId]) {
     await page.locator(`[data-shortcut-id="${id}"]`).click();
     await page.getByTestId("shortcut-delete").click();
-    await page.locator(".n-popconfirm:visible").getByRole("button", { name: /确认|确定|Confirm|OK/i }).click();
+    await page.locator(".n-popconfirm:visible").getByRole("button", { name: /确认|确定|Confirm|OK/i }).press("Enter");
     await page.locator(`[data-shortcut-id="${id}"]`).waitFor({ state: "detached" });
   }
   await close(page); await open(page);

@@ -14,7 +14,7 @@ export interface WorkspaceSessionUiController {
 export interface WorkspaceSessionUiDependencies {
   readonly session: Pick<ReturnType<typeof useWorkspaceSessionStore>,
     | "enabled" | "activeWorkspaceId" | "isTransitioning"
-    | "beginSwitch" | "failSwitch">;
+    | "beginSwitch" | "beginClose" | "failSwitch">;
   readonly protection: Pick<ReturnType<typeof useWorkspaceProtectionStore>,
     "beginOperation" | "finishOperation">;
   readonly documents: Pick<ReturnType<typeof useDocumentWorkspaceStore>,
@@ -49,6 +49,7 @@ export function createWorkspaceSessionUiController(
       if (!owned) return "stale";
       if (
         action.method === "workspace.open" || action.method === "workspace.switch"
+        || action.method === "workspace.close"
       ) {
         dependencies.session.failSwitch(message);
       }
@@ -60,6 +61,10 @@ export function createWorkspaceSessionUiController(
     if (!dependencies.session.enabled) return false;
     const lease = dependencies.protection.beginOperation(action.method);
     if (!lease) return false;
+    if (action.method === "workspace.close" && !dependencies.session.beginClose()) {
+      dependencies.protection.finishOperation(lease);
+      return false;
+    }
     return (await executeAcquired(action, lease)) === "succeeded";
   }
 

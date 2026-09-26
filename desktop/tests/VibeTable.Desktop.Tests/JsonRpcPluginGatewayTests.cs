@@ -50,7 +50,6 @@ public sealed class JsonRpcPluginGatewayTests
         await gateway.ResolveInteractionAsync(new("run-1", "i-1", "rejected"), CancellationToken.None);
         await gateway.ResolveFileAsync(new("file-1", "run-1", "project-1", "plugin-1", "action-1", "write", [], "output.txt", "text/plain", 9999999999), @"C:\trusted\output.txt", CancellationToken.None);
         await gateway.CancelTaskAsync(new("task-1"), CancellationToken.None);
-        await gateway.GetTaskAsync(new("task-1"), CancellationToken.None);
 
         CollectionAssert.AreEqual(
             new[]
@@ -68,9 +67,11 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.resolveInteraction",
                 "plugin.resolveFile",
                 "plugin.cancelTask",
-                "plugin.getTask",
             },
             transport.Methods);
+        // plugin.getTask is retired: the WPF host registry answers public
+        // task queries and the gateway never carries the method.
+        Assert.IsFalse(transport.Methods.Contains("plugin.getTask"));
         Assert.IsFalse(transport.SerializedRequests.Contains("rpc.invoke", StringComparison.Ordinal));
         Assert.AreEqual(
             "source-1",
@@ -119,8 +120,9 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.uninstall" =>
                     """{"uninstalled":true,"privateSettingsRetained":true}""",
                 "plugin.describeAction" => """{"available":true,"reasons":[]}""",
-                "plugin.startAction" or "plugin.cancelTask" or "plugin.getTask" =>
+                "plugin.startAction" =>
                     """{"taskId":"t","runId":"r","pluginId":"x","pluginVersion":"1.0.0","actionId":"a","projectKey":"p","collection":null,"targetCount":0,"risk":"read","state":"queued","cancelRequested":false,"result":null,"error":null}""",
+                "plugin.cancelTask" => "true",
                 "plugin.resolveInteraction" => """{"status":"resolved","decision":"rejected"}""",
                 "plugin.resolveFile" => "true",
                 _ =>

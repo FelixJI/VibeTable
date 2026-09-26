@@ -43,6 +43,7 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
     private int _nextId;
     private int _disposed;
     private int _readerDead;
+    private int _terminatedRaised;
 
     public JsonRpcClient(IJsonLineTransport transport)
     {
@@ -59,8 +60,13 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
     /// the notification omits <c>params</c>).
     /// </summary>
     public event Action<string, JsonElement>? NotificationReceived;
+
+    /// <summary>
+    /// Raised exactly once when the reader loop terminates (transport failure,
+    /// clean EOF, host-file channel fault or disposal). Owners of cross-client
+    /// state observe this to settle work that can no longer be queried.
+    /// </summary>
     public event Action? Terminated;
-    private int _terminatedRaised;
 
     public async Task<TResult> InvokeAsync<TParams, TResult>(
         string method,
@@ -346,8 +352,9 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
             try { observer(); }
             catch (Exception error)
             {
-                System.Diagnostics.Trace.TraceError(
-                    $"JSON-RPC termination observer failed: {error}");
+                try { System.Diagnostics.Trace.TraceError(
+                    $"JSON-RPC termination observer failed: {error}"); }
+                catch { /* Diagnostics cannot interrupt remaining owners. */ }
             }
         }
     }

@@ -120,6 +120,7 @@ export const usePluginStore = defineStore("plugins", () => {
     const currentTaskRevision = taskRevisionById.value[snapshot.taskId] ?? 0;
     const taskRevision = eventRevision ?? currentTaskRevision + 1;
     if (current && taskRevision <= currentTaskRevision) return current;
+    if (current && ["succeeded", "failed", "cancelled", "aborted"].includes(current.state)) return current;
     taskRevisionById.value = {
       ...taskRevisionById.value,
       [snapshot.taskId]: taskRevision,
@@ -142,7 +143,7 @@ export const usePluginStore = defineStore("plugins", () => {
       const nextPending = { ...pendingInteractionByRun.value };
       delete nextPending[snapshot.runId];
       pendingInteractionByRun.value = nextPending;
-      applyInteraction(pendingInteraction.snapshot, pendingInteraction.revision);
+      if (!terminal) applyInteraction(pendingInteraction.snapshot, pendingInteraction.revision);
       return taskById.value[snapshot.taskId] ?? projected;
     }
     return projected;
@@ -160,6 +161,7 @@ export const usePluginStore = defineStore("plugins", () => {
       }
       return;
     }
+    if (["succeeded", "failed", "cancelled", "aborted"].includes(current.state)) return;
     const currentInteractionRevision = interactionRevisionByRun.value[snapshot.runId] ?? 0;
     if (eventRevision <= currentInteractionRevision) return;
     interactionRevisionByRun.value = {

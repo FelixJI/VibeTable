@@ -12,6 +12,7 @@ public interface IHostFileRequestHandler
 {
     Task<JsonElement> HandleAsync(string action, JsonElement parameters, CancellationToken token);
     void Retire();
+    Task DrainCompletion { get; }
 }
 
 /// <summary>A grant rejection whose fixed message is safe on the worker channel.</summary>
@@ -21,6 +22,7 @@ public sealed partial class JsonRpcClient
 {
     private readonly object _hostFileGate = new();
     private readonly ConcurrentDictionary<string, Task> _hostFileCalls = new();
+    private readonly ConcurrentBag<Task> _retiredHostFileDrains = new();
     private readonly CancellationTokenSource _hostFileLifetime = new();
     private IHostFileRequestHandler? _hostFileHandler;
 
@@ -42,6 +44,7 @@ public sealed partial class JsonRpcClient
         {
             if (!ReferenceEquals(_hostFileHandler, handler)) return;
             _hostFileHandler = null;
+            _retiredHostFileDrains.Add(handler.DrainCompletion);
         }
         handler.Retire();
     }
@@ -120,6 +123,7 @@ public sealed partial class JsonRpcClient
         {
             handler = _hostFileHandler;
             _hostFileHandler = null;
+            if (handler is not null) _retiredHostFileDrains.Add(handler.DrainCompletion);
         }
         _hostFileLifetime.Cancel();
         handler?.Retire();
@@ -128,7 +132,8 @@ public sealed partial class JsonRpcClient
     private async Task DrainHostFilesAsync()
     {
         Task[] calls;
-        lock (_hostFileGate) calls = _hostFileCalls.Values.ToArray();
+        lock (_hostFileGate)
+            calls = _hostFileCalls.Values.Concat(_retiredHostFileDrains).ToArray();
         await Task.WhenAll(calls).ConfigureAwait(false);
     }
 

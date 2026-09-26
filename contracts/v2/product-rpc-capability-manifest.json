@@ -412,7 +412,7 @@
     {
       "method": "plugin.cancelTask",
       "scope": "workspace",
-      "audience": "rendererPublic",
+      "audience": "hostOnly",
       "capabilityId": "plugin.lifecycle",
       "owner": "pythonBff",
       "effect": "write"
@@ -427,14 +427,6 @@
     },
     {
       "method": "plugin.describeAction",
-      "scope": "workspace",
-      "audience": "rendererPublic",
-      "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
-      "effect": "read"
-    },
-    {
-      "method": "plugin.getTask",
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
@@ -936,7 +928,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "plugin.host",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     },
     {
@@ -944,7 +936,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.host",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     },
     {
@@ -952,7 +944,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "notification"
     },
     {
