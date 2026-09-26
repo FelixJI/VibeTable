@@ -446,7 +446,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -454,7 +454,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -462,7 +462,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "read"
     },
     {
@@ -494,7 +494,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "write"
     },
     {
@@ -920,7 +920,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "goSidecar",
       "effect": "notification"
     },
     {

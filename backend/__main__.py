@@ -14,6 +14,7 @@ from typing import Any
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
+from backend.adapters.pocketbase.plugin_store import PocketBasePluginStore
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.host_files import HostFiles
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
@@ -33,13 +34,10 @@ from backend.contracts.plugin_rpc import (
     CommitInstallParams,
     DescribePluginActionParams,
     InspectInstallParams,
-    PluginIdentityParams,
-    PluginProjectParams,
     PluginTaskParams,
     ResolvePluginFileParams,
     ResolvePluginInteractionParams,
     RollbackPluginParams,
-    SetPluginEnabledParams,
     StartPluginActionParams,
     UninstallPluginParams,
     UpgradePluginParams,
@@ -54,7 +52,6 @@ from backend.infrastructure.diagnostic_logging import configure_diagnostic_loggi
 from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
 from backend.infrastructure.plugin_interaction import HostConfirmationAdapter
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
-from backend.infrastructure.plugin_store import PluginProjectStore
 from backend.infrastructure.plugin_worker import NodePluginWorkerAdapter
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.error_registry import ErrorDomain, register_application_errors
@@ -139,17 +136,12 @@ def _register_plugin_methods(
     service: PluginPlatformService,
 ) -> None:
     register_application_errors(ErrorDomain.PLUGIN)
-    dispatcher.register("plugin.listCatalog", service.list_catalog, PluginProjectParams)
-    dispatcher.register("plugin.listAudit", service.list_audit, PluginIdentityParams)
-    dispatcher.register(
-        "plugin.listPendingCleanup",
-        service.list_pending_cleanup,
-        PluginProjectParams,
-    )
+    # plugin.listCatalog/listAudit/setEnabled and the pending-cleanup
+    # projection are answered by the Go plugin catalog through the Host;
+    # Python only keeps the closed install/execution surface.
     dispatcher.register("plugin.inspectInstall", service.inspect_install, InspectInstallParams)
     dispatcher.register("plugin.commitInstall", service.commit_install, CommitInstallParams)
     dispatcher.register("plugin.cancelInstall", service.cancel_install, CancelInstallParams)
-    dispatcher.register("plugin.setEnabled", service.set_enabled, SetPluginEnabledParams)
     dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginParams)
     dispatcher.register("plugin.rollback", service.rollback, RollbackPluginParams)
     dispatcher.register("plugin.uninstall", service.uninstall, UninstallPluginParams)
@@ -229,7 +221,11 @@ async def _build_server() -> tuple[
             )
         )
 
-        store = PluginProjectStore(state_root / "plugins.db")
+        store = PocketBasePluginStore(
+            client=client,
+            package_cache=state_root / "plugin-packages",
+        )
+        package_lifecycle = LocalPluginPackageLifecycle(store.package_cache)
         registry = PluginRegistry(store=store)
         confirmation = HostConfirmationAdapter()
         file_capability = HostFileCapabilityAdapter(files=task_service.files)
@@ -237,6 +233,7 @@ async def _build_server() -> tuple[
             store=store,
             profiles={},
             client=client,
+            package_lifecycle=package_lifecycle,
             file_adapter=file_capability,
         )
         mutation = PocketBasePluginMutationAdapter(
@@ -254,7 +251,7 @@ async def _build_server() -> tuple[
             registry=registry,
             runtime=runtime,
             store=store,
-            package_lifecycle=LocalPluginPackageLifecycle(store.package_cache),
+            package_lifecycle=package_lifecycle,
             confirmation_adapter=confirmation,
             file_adapter=file_capability,
         )

@@ -17,6 +17,15 @@ from backend.contracts.plugin import PluginManifest
 from backend.infrastructure.plugin_package import inspect_plugin_package, pack_plugin
 
 
+def _compact_package_digest(package_hash: str) -> str:
+    """Return the fixed lowercase Base32 cache segment for one package hash."""
+
+    digest = package_hash.removeprefix("sha256:")
+    # Lowercase Base32 retains all digest bits while keeping long Windows
+    # cache paths shorter than their hexadecimal equivalent.
+    return base64.b32encode(bytes.fromhex(digest)).rstrip(b"=").decode("ascii").lower()
+
+
 def _filesystem_package_path(path: Path) -> Path:
     """Return a filesystem-safe absolute path without weakening package identity."""
 
@@ -45,15 +54,18 @@ class LocalPluginPackageLifecycle(PluginPackageLifecycle):
             manifest=PluginManifest.model_validate(inspected.manifest),
         )
 
+    def retained_location(self, package_hash: str) -> str:
+        """Derive the content-addressed cache path for one package hash."""
+
+        return str(self._cache_destination(package_hash))
+
+    def _cache_destination(self, package_hash: str) -> Path:
+        raw = self._cache_root / f"{_compact_package_digest(package_hash)}.vtplugin"
+        return _filesystem_package_path(raw)
+
     def retain(self, *, source_location: str, expected_hash: str) -> str:
-        digest = expected_hash.removeprefix("sha256:")
-        # Lowercase Base32 retains all digest bits while keeping long Windows
-        # cache paths shorter than their hexadecimal equivalent.
-        compact_digest = (
-            base64.b32encode(bytes.fromhex(digest)).rstrip(b"=").decode("ascii").lower()
-        )
-        destination = self._cache_root / f"{compact_digest}.vtplugin"
-        filesystem_destination = _filesystem_package_path(destination)
+        filesystem_destination = self._cache_destination(expected_hash)
+        destination = Path(str(filesystem_destination))
         destination.parent.mkdir(parents=True, exist_ok=True)
         if filesystem_destination.is_file():
             if inspect_plugin_package(filesystem_destination).package_hash != expected_hash:

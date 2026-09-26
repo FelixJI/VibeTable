@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "migrations": [
     {
       "id": 2026072401,
@@ -61,6 +61,12 @@
       "name": "computation_dependencies",
       "source": "2026090601_computation_dependencies.go",
       "sha256": "5267878f998415a356890939a46cf4c3e750631ed064a12fa580588fd3abe400"
+    },
+    {
+      "id": 2026092601,
+      "name": "plugin_shared_state",
+      "source": "2026092601_plugin_shared_state.go",
+      "sha256": "2c462a55d8688d7ed2294eb0c9c11d8c14e482224dc43943dd0c3d240d50f969"
     }
   ]
 }

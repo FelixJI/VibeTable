@@ -80,7 +80,7 @@ internal sealed class ProductRealtimeStream
     {
         if (bytes.Length > BoundedSseReadStream.MaxJsonBytes)
             throw new InvalidDataException("Realtime JSON exceeds the wire budget.");
-        if (topic is not ("data.changed" or "task.changed" or "realtime.recovered")) throw InvalidFrame();
+        if (topic is not ("data.changed" or "task.changed" or "plugin.catalog.changed" or "realtime.recovered")) throw InvalidFrame();
         JsonElement payload;
         try
         {

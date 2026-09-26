@@ -32,6 +32,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/lookup"
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrpc"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
@@ -425,6 +426,23 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				return err
 			}
 			capabilities := workspaceRuntime.Capabilities()
+			plugins := pluginstore.New(pb, capabilities.WorkspaceID, func() {
+				if err := realtimeHub.PublishPending(); err != nil {
+					options.Logger.Error("plugin.catalog_notification_failed", "errorCode", "realtime.storage_failed")
+				}
+			})
+			complete, importErr := plugins.LegacyImportComplete()
+			if importErr == nil && !complete {
+				importErr = businessGate(context.Background(), "plugin.import", plugins.ImportMarkerKey(), func(ctx context.Context) error {
+					_, err := plugins.ImportLegacySQLite(ctx, filepath.Join(options.DataDir, "state", "plugins.db"))
+					return err
+				})
+			}
+			if importErr != nil {
+				_ = rawListener.Close()
+				return fmt.Errorf("import legacy plugin state: %w", importErr)
+			}
+			registerPluginStoreRoutes(event.Router, plugins, businessGate)
 			schemaCatalog := schemaapi.New(pb)
 			dashboardService := metadata.NewDashboard(pb, queryPort)
 			contentMetadata := metadata.NewContentService(pb, querySource)
@@ -496,6 +514,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			for _, method := range []string{"version.list", "version.create", "version.save", "version.compare", "version.promote", "version.delete"} {
 				productRegistrations = append(productRegistrations, contentVersionRegistration(method, versions, businessGate))
 			}
+			productRegistrations = append(productRegistrations, PluginSharedStateRegistrations(plugins, businessGate)...)
 			productDispatcher, err := productrpc.New(productrpc.Identity{
 				WorkspaceID:  capabilities.WorkspaceID,
 				SessionEpoch: capabilities.SessionEpoch,

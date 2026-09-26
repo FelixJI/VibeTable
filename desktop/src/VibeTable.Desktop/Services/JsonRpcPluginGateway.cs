@@ -28,7 +28,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         _client.NotificationReceived += OnNotificationReceived;
     }
 
-    public event Action<PluginEventEnvelope>? CatalogChanged;
     public event Action<PluginEventEnvelope>? TaskChanged;
     public event Action<PluginEventEnvelope>? InteractionRequested;
     public event Action<PluginEventEnvelope>? FileRequested;
@@ -39,21 +38,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         add => _client.Terminated += value;
         remove => _client.Terminated -= value;
     }
-
-    public Task<PluginRuntimeSnapshot[]> ListCatalogAsync(
-        PluginCatalogListParams request, CancellationToken token)
-        => InvokeAsync<PluginCatalogListParams, PluginRuntimeSnapshot[]>(
-            "plugin.listCatalog", request, token);
-
-    public Task<PluginRuntimeAuditEvent[]> ListAuditAsync(
-        PluginAuditListParams request, CancellationToken token)
-        => InvokeAsync<PluginAuditListParams, PluginRuntimeAuditEvent[]>(
-            "plugin.listAudit", request, token);
-
-    public Task<PluginRuntimeAuditEvent[]> ListPendingCleanupAsync(
-        PluginCatalogListParams request, CancellationToken token)
-        => InvokeAsync<PluginCatalogListParams, PluginRuntimeAuditEvent[]>(
-            "plugin.listPendingCleanup", request, token);
 
     public Task<PluginRuntimeInstallPlan> InspectInstallAsync(
         PluginInspectInstallParams request, CancellationToken token)
@@ -69,11 +53,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         PluginInstallCancelParams request, CancellationToken token)
         => InvokeAsync<PluginInstallCancelParams, bool>(
             "plugin.cancelInstall", request, token);
-
-    public Task<PluginRuntimeSnapshot> SetEnabledAsync(
-        PluginSetEnabledParams request, CancellationToken token)
-        => InvokeAsync<PluginSetEnabledParams, PluginRuntimeSnapshot>(
-            "plugin.setEnabled", request, token);
 
     public Task<PluginRuntimeSnapshot> UpgradeAsync(
         PluginUpgradeParams request, CancellationToken token)
@@ -155,7 +134,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
 
         string? expectedEventType = method switch
         {
-            "plugin.catalogChanged" => "plugin.catalog.changed",
             "plugin.taskChanged" => "plugin.task.changed",
             "plugin.interactionRequested" => "plugin.interaction.requested",
             "plugin.fileRequested" => "plugin.file.requested",
@@ -190,9 +168,6 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
 
         switch (method)
         {
-            case "plugin.catalogChanged":
-                CatalogChanged?.Invoke(envelope);
-                break;
             case "plugin.taskChanged":
                 TaskChanged?.Invoke(envelope);
                 break;

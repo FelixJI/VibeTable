@@ -88,7 +88,7 @@ class FakeRegistry:
         self.snapshot = snapshot
         self.audit: list[PluginAuditEvent] = []
 
-    def get(self, project_key: str, plugin_id: str) -> PluginSnapshot | None:
+    async def get(self, project_key: str, plugin_id: str) -> PluginSnapshot | None:
         if (
             self.snapshot is not None
             and project_key == self.snapshot.project_key
@@ -97,7 +97,7 @@ class FakeRegistry:
             return self.snapshot
         return None
 
-    def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
+    async def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
         self.audit.append(event)
         return event
 
@@ -158,7 +158,8 @@ def test_constructor_rejects_unknown_adapters() -> None:
         )
 
 
-def test_describe_centralizes_plugin_and_context_availability() -> None:
+@pytest.mark.asyncio
+async def test_describe_centralizes_plugin_and_context_availability() -> None:
     runtime = PluginExecutionRuntime(
         registry=FakeRegistry(
             _snapshot(
@@ -169,7 +170,7 @@ def test_describe_centralizes_plugin_and_context_availability() -> None:
         worker_adapter=RecordingWorker({}),
     )
 
-    availability = runtime.describe(
+    availability = await runtime.describe(
         "com.example.summary",
         "summarize",
         _context(),

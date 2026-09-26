@@ -91,6 +91,11 @@ from backend.contracts.plugin import (
     PluginTaskSnapshot,
     UninstallResult,
 )
+from backend.contracts.plugin_rpc import (
+    PluginIdentityParams,
+    PluginProjectParams,
+    SetPluginEnabledParams,
+)
 from backend.contracts.presets_versions_dashboards import (
     ContentVersionEntry,
     DashboardQueryLimits,
@@ -401,6 +406,10 @@ def _registered_models() -> dict[str, type[BaseModel]]:
             "task.status": TaskIdParams,
             "table.previewPaste": PreviewPasteParams,
             "table.applyPaste": ApplyPasteParams,
+            "plugin.listAudit": PluginIdentityParams,
+            "plugin.listCatalog": PluginProjectParams,
+            "plugin.listPendingCleanup": PluginProjectParams,
+            "plugin.setEnabled": SetPluginEnabledParams,
             "insights.listDashboards": ListDashboardsParams,
             "insights.readDashboardWorkspace": DashboardWorkspaceParams,
             "insights.saveDashboardDraft": SaveDashboardDraftParams,

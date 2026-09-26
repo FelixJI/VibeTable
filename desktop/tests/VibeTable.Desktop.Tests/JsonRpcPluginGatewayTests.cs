@@ -28,11 +28,9 @@ public sealed class JsonRpcPluginGatewayTests
             JsonDocument.Parse("{}").RootElement.Clone(),
             "1.0.0");
 
-        await gateway.ListCatalogAsync(new("project-1"), CancellationToken.None);
         await gateway.InspectInstallAsync(new("project-1", "revision-1", "source-1"), CancellationToken.None);
         await gateway.CommitInstallAsync(new("plan-1", "revision-1"), CancellationToken.None);
         await gateway.CancelInstallAsync(new("plan-1"), CancellationToken.None);
-        await gateway.SetEnabledAsync(new("project-1", "com.acme.clean", false), CancellationToken.None);
         await gateway.UpgradeAsync(
             new("project-1", "com.acme.clean", "upgrade-1", "revision-2"), CancellationToken.None);
         await gateway.RollbackAsync(new("project-1", "com.acme.clean"), CancellationToken.None);
@@ -54,11 +52,9 @@ public sealed class JsonRpcPluginGatewayTests
         CollectionAssert.AreEqual(
             new[]
             {
-                "plugin.listCatalog",
                 "plugin.inspectInstall",
                 "plugin.commitInstall",
                 "plugin.cancelInstall",
-                "plugin.setEnabled",
                 "plugin.upgrade",
                 "plugin.rollback",
                 "plugin.uninstall",
@@ -75,19 +71,19 @@ public sealed class JsonRpcPluginGatewayTests
         Assert.IsFalse(transport.SerializedRequests.Contains("rpc.invoke", StringComparison.Ordinal));
         Assert.AreEqual(
             "source-1",
-            transport.Requests[1].GetProperty("params").GetProperty("sourceLocation").GetString());
+            transport.Requests[0].GetProperty("params").GetProperty("sourceLocation").GetString());
         Assert.AreEqual(
             "project-1",
-            transport.Requests[9].GetProperty("params").GetProperty("context")
+            transport.Requests[7].GetProperty("params").GetProperty("context")
                 .GetProperty("projectKey").GetString());
         Assert.IsTrue(
-            transport.Requests[9].GetProperty("params").GetProperty("input")
+            transport.Requests[7].GetProperty("params").GetProperty("input")
                 .GetProperty("trim").GetBoolean());
         Assert.AreEqual(
             "rejected",
-            transport.Requests[10].GetProperty("params").GetProperty("decision").GetString());
+            transport.Requests[8].GetProperty("params").GetProperty("decision").GetString());
         Assert.AreEqual("opaque",
-            transport.Requests[11].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
+            transport.Requests[9].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
         Assert.IsFalse(transport.SerializedRequests.Contains("trusted", StringComparison.Ordinal));
     }
 
