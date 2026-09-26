@@ -68,26 +68,9 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
                     ?? throw new BackendUnavailableException(
                         "No workspace runtime is bound.");
                 return _resolved ??= new PocketBaseTableGateway(
-                    binding.CreateGateway(_leases, _handler),
-                    binding.Client is { } client
-                        ? new JsonRpcWorkspaceSupportGateway(client)
-                        : new UnavailableWorkspaceSupportGateway());
+                    binding.CreateGateway(_leases, _handler));
             }
         }
-    }
-
-    private sealed class UnavailableWorkspaceSupportGateway : IWorkspaceSupportRpcGateway
-    {
-        public Task<GridStateResult> GetGridStateAsync(
-            string databaseId, string table, CancellationToken token)
-            => Task.FromException<GridStateResult>(new BackendUnavailableException(
-                "The Python workspace support binding is unavailable."));
-
-        public Task<GridStateResult> SaveGridStateAsync(
-            string databaseId, string table, GridState state,
-            string? revision, CancellationToken token)
-            => Task.FromException<GridStateResult>(new BackendUnavailableException(
-                "The Python workspace support binding is unavailable."));
     }
 
     public Task<DatabaseOpenResult> OpenDatabaseAsync(string path, CancellationToken token)
@@ -141,13 +124,6 @@ public sealed class LazyProductTableGateway : ITableRpcGateway, IDisposable
     public Task<SnapshotValidation> ValidateSnapshotAsync(
         QuerySnapshot snapshot, int? currentRevision, CancellationToken token)
         => Gateway.ValidateSnapshotAsync(snapshot, currentRevision, token);
-    public Task<GridStateResult> GetGridStateAsync(
-        string databaseId, string table, CancellationToken token)
-        => Gateway.GetGridStateAsync(databaseId, table, token);
-    public Task<GridStateResult> SaveGridStateAsync(
-        string databaseId, string table, GridState state,
-        string? revision, CancellationToken token)
-        => Gateway.SaveGridStateAsync(databaseId, table, state, revision, token);
     public Task<PastePlan> PreviewPasteAsync(
         string collection, string schemaRevision,
         IReadOnlyDictionary<string, object?> selection,

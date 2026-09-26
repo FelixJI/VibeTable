@@ -924,7 +924,7 @@
       "productScenarios": [],
       "targetSlice": "L6",
       "targetPr": null,
-      "deleteWhen": "C# owns the device-local grid-state store and optimistic revision, and the Python LocalStateStore route is removed.",
+      "deleteWhen": "Completed: C# owns the device-local grid-state store and optimistic revision, and the Python LocalStateStore route is removed.",
       "evidence": [
         "desktop/src/VibeTable.Desktop/Services/GridPresentationRequestController.cs",
         "desktop/src/VibeTable.Desktop/Services/HostGridStateStore.cs",
@@ -2803,13 +2803,12 @@
       "id": "state.device-grid",
       "kind": "state",
       "names": [
-        "GridStateService._store",
-        "LocalStateStore.grid_state"
+        "HostGridStateStore.stateDirectory"
       ],
       "currentPath": [
-        "pythonBff"
+        "wpfHost"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -2818,12 +2817,11 @@
         "write": [],
         "notification": [],
         "state": [
-          "GridStateService._store",
-          "LocalStateStore.grid_state"
+          "HostGridStateStore.stateDirectory"
         ]
       },
       "stateHolders": [
-        "pythonBff"
+        "wpfHost"
       ],
       "stateLifetime": "device",
       "cancellation": "none",
@@ -2831,10 +2829,10 @@
       "productScenarios": [],
       "targetSlice": "L6",
       "targetPr": null,
-      "deleteWhen": "C# owns the device-local grid-state persistence and revision contract and Python no longer opens vibetable-state.db.",
+      "deleteWhen": "Completed: C# owns the device-local grid-state persistence and revision contract; the Python GridStateService and LocalStateStore route is removed and Python no longer opens vibetable-state.db.",
       "evidence": [
-        "backend/application/grid_state_service.py",
-        "backend/state/local_state_store.py"
+        "desktop/src/VibeTable.Desktop/Services/HostGridStateStore.cs",
+        "desktop/src/VibeTable.Desktop/Services/GridPresentationRequestController.cs"
       ]
     },
     {

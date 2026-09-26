@@ -128,26 +128,6 @@ public interface ITableRpcGateway
         CancellationToken token);
 
     /// <summary>
-    /// B3 Task 3: calls <c>gridState.get</c>. Returns the saved grid state for
-    /// ``(databaseId, table)`` or a default with a fresh revision.
-    /// </summary>
-    Task<GridStateResult> GetGridStateAsync(
-        string databaseId,
-        string table,
-        CancellationToken token);
-
-    /// <summary>
-    /// B3 Task 3: calls <c>gridState.save</c>. Returns the new revision, or
-    /// <c>Conflict=true</c> when the carried revision is stale.
-    /// </summary>
-    Task<GridStateResult> SaveGridStateAsync(
-        string databaseId,
-        string table,
-        GridState state,
-        string? revision,
-        CancellationToken token);
-
-    /// <summary>
     /// B2 Task 2: calls <c>table.previewPaste</c>. Produces a zero-write plan
     /// describing exactly what will change plus a single-use token bound to the
     /// user/collection/schema/rows/payload. The host shows the plan for

@@ -1,9 +1,10 @@
-"""Language-neutral contract tests for the B3 query/state fixtures.
+"""Contract tests for the B3 query/state fixtures.
 
 Asserts the Python Pydantic models accept the exact wire shape stored in the
 fixture files under ``tests/contract/fixtures``. The C# client
 (``B3ContractsFixtureTests``) and the TS contracts pin the same shapes, so
-these tests guard the cross-language contract.
+these tests guard the cross-language contract. The grid-state fixture is
+pinned by the C# client only: Python no longer owns the grid-state route.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from backend.contracts.grid_state import GridState, GridStateResult
 from backend.contracts.query import TableQuery
 from backend.contracts.selection import QuerySnapshot, SelectionSnapshot
 
@@ -116,28 +116,3 @@ def test_selection_snapshot_fixture_is_valid_python_model() -> None:
     assert sel.data_revision == 42
     assert sel.row_keys == [17, 23, 41]
     assert sel.query_snapshot.table == "contracts"
-
-
-def test_grid_state_fixture_is_valid_python_model() -> None:
-    payload = _load("grid-state.json")
-    state = GridState.model_validate(payload)
-    assert len(state.columns) == 2
-    assert state.density == "comfortable"
-    assert state.forced_remote is False
-    assert len(state.sorts) == 1
-
-
-def test_grid_state_result_round_trips() -> None:
-    state = GridState(
-        columns=[],
-        density="compact",
-        forced_remote=True,
-    )
-    result = GridStateResult(state=state, revision="rev-1", conflict=False)
-    dumped = result.model_dump(by_alias=True, mode="json")
-    assert dumped["revision"] == "rev-1"
-    assert dumped["conflict"] is False
-    # Round-trip back.
-    restored = GridStateResult.model_validate(dumped)
-    assert restored.state.density == "compact"
-    assert restored.state.forced_remote is True

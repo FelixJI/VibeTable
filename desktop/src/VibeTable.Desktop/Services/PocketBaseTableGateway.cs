@@ -27,16 +27,13 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         new(JsonSerializerDefaults.Web);
 
     private readonly IProductDataRpcGateway _product;
-    private readonly IWorkspaceSupportRpcGateway _localState;
     private readonly ConcurrentDictionary<string, JsonElement> _schemas = new();
     private bool _disposed;
 
     public PocketBaseTableGateway(
-        IProductDataRpcGateway product,
-        IWorkspaceSupportRpcGateway localState)
+        IProductDataRpcGateway product)
     {
         _product = product ?? throw new ArgumentNullException(nameof(product));
-        _localState = localState ?? throw new ArgumentNullException(nameof(localState));
     }
 
     public async Task<DatabaseOpenResult> OpenDatabaseAsync(
@@ -547,20 +544,6 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             token).ConfigureAwait(false);
         return ReadSnapshotValidation(response);
     }
-
-    public Task<GridStateResult> GetGridStateAsync(
-        string databaseId,
-        string table,
-        CancellationToken token)
-        => _localState.GetGridStateAsync(databaseId, table, token);
-
-    public Task<GridStateResult> SaveGridStateAsync(
-        string databaseId,
-        string table,
-        GridState state,
-        string? revision,
-        CancellationToken token)
-        => _localState.SaveGridStateAsync(databaseId, table, state, revision, token);
 
     public Task<PastePlan> PreviewPasteAsync(
         string collection,

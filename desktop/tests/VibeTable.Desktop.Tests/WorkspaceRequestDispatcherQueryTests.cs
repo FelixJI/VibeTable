@@ -20,7 +20,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new FakeDatabasePicker(null),
             sink,
             () => null,
-            new GridStateCoordinator(gateway, _ => { }),
             pluginBindings: bindings);
 
         await controller.DispatchAsync(Request("database.openRequested", "open-cancel"));
@@ -44,7 +43,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new FakeDatabasePicker("local://workspace"),
             sink,
             () => null,
-            new GridStateCoordinator(gateway, _ => { }),
             pluginBindings: bindings);
 
         await controller.DispatchAsync(Request("database.openRequested", "open-ready"));
@@ -66,7 +64,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             ["records"], [], TestDisplayNames.For("records"));
         gateway.SelectionProjectionResults["records"] = Projection("records");
         var workspace = new TableWorkspaceService(gateway);
-        var grid = new GridStateCoordinator(gateway, _ => { });
         var sink = new ReentrantTableRequestSink(workspace);
         using var bindings = ReadyBindings(new PluginProjectContext(
             "local:workspace", "workspace:9", 9));
@@ -75,7 +72,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new FakeDatabasePicker("local://workspace"),
             sink,
             () => null,
-            grid,
             pluginBindings: bindings);
 
         await controller.DispatchAsync(Request(
@@ -86,10 +82,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         Assert.IsTrue(selected);
         Assert.AreEqual("local://workspace", sink.DatabaseObservedDuringPost);
         Assert.AreEqual(0, sink.FailedCount);
-        await grid.SwitchTableAsync("records");
-        grid.RequestSave(new GridState());
-        await grid.FlushAsync();
-        Assert.AreEqual("local://workspace", gateway.SavedGridStates.Single().DatabaseId);
     }
 
     [TestMethod]
@@ -282,7 +274,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new FakeDatabasePicker("local://workspace"),
             sink,
             () => null,
-            new GridStateCoordinator(gateway, _ => { }),
             pluginBindings: bindings);
 
         Task original = controller.DispatchAsync(Request(
@@ -450,8 +441,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
         gateway.SelectionProjectionResults["old_records"] = Projection("old_records");
         var workspace = new TableWorkspaceService(gateway);
         await workspace.OpenDatabaseAsync("local://old");
-        var grid = new GridStateCoordinator(gateway, _ => { });
-        grid.SetDatabase("grid-old");
         var sink = new ThrowOnOpenedReplySink();
         using var bindings = ReadyBindings(new PluginProjectContext(
             "local:workspace", "workspace:9", 9));
@@ -460,7 +449,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new FakeDatabasePicker("local://workspace"),
             sink,
             () => null,
-            grid,
             pluginBindings: bindings);
 
         await controller.DispatchAsync(Request(
@@ -468,10 +456,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
 
         Assert.AreEqual("local://old", workspace.CurrentDatabase);
         Assert.IsTrue(await workspace.SelectTableAsync("old_records"));
-        await grid.SwitchTableAsync("old_records");
-        grid.RequestSave(new GridState());
-        await grid.FlushAsync();
-        Assert.AreEqual("grid-old", gateway.SavedGridStates.Single().DatabaseId);
         Assert.AreEqual(0, sink.OpenedCount);
         Assert.AreEqual(1, sink.FailedCount);
     }
@@ -491,7 +475,6 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             new FakeDatabasePicker("local://workspace"),
             sink,
             () => null,
-            new GridStateCoordinator(gateway, _ => { }),
             pluginBindings: bindings);
 
         await controller.DispatchAsync(Request(
@@ -729,15 +712,14 @@ public sealed class WorkspaceRequestDispatcherQueryTests
     }
 
     [TestMethod]
-    public void DatabaseOpenRouteRequiresCompleteGridCommitDependency()
+    public void DatabaseOpenRouteRejectsNullWorkspaceDependency()
     {
         Assert.ThrowsExactly<ArgumentNullException>(() =>
             new WorkspaceTableRequestController(
-                new TableWorkspaceService(new FakeTableRpcGateway()),
+                null!,
                 new FakeDatabasePicker("local://configured"),
                 new FakeWebReplySink(),
-                () => null,
-                (GridStateCoordinator)null!));
+                () => null));
     }
 
     [TestMethod]

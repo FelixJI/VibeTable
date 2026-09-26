@@ -195,3 +195,9 @@ CI `34468066165` 的 release smoke 中 S02 编辑器未就绪、S08 等待超时
 同一呈现保存消费者的完整wire测试改用既有ManualTimeProvider，明确推进查询和保存debounce后再核原有全部断言。原测试独立等待600ms不保证保存timer已执行；固定延迟保存回调、保留旧等待可稳定取得Single空集合RED。改为受控推进后，当前Host分支25项直接相关测试通过；没有修改生产debounce或扩大等待。S24 CI缺少调度trace，不能把受控RED写成已观测到其具体线程交错。该测试修复归入本Host完整意图，S24源码保持原状。
 
 随后同步DataIO主干时保留S33和S34两场景登记；上述新包证据属于e7eb组合，后续组合仍需fresh CI，不改写为合并后CI/CD已通过。
+
+## 2026-09-24：遗留 Python gridState 接线清账（#368）
+
+在 PR366 合入后的最新 main（041fac87）上完成 L6 余项清账：删除无活跃消费者的旧保存链，公开 gridState.get/save 仍由 HostRequestDispatcher→GridPresentationRequestController→HostGridStateStore 独占，用户存储格式（workspace UUID 分目录 grid-state.json）与 workspace 隔离不变。
+
+逐条核实后的删除：Web `gridState.saveRequested` 仅剩 hostBridge.ts 白名单与 contracts/index.ts 类型，无 producer，已退出；GridRequestController 不再分发该名字，WebMessageRouter 继续以 UNKNOWN_TYPE 拒绝（既有回归保留）。GridStateCoordinator 删除 RequestSave/FlushAsync/LoadStateAsync/SetDatabase/SwitchTableAsync 与 _databaseId/_databaseGeneration/_confirmedState/_confirmedRevision/_currentTable，保留全部活跃 query/selection 逻辑；DatabaseOpenCommit 只保留 TableWorkspaceService.DatabaseOpenAdmission 的 commit/rollback（Enqueue 完成、Dispose 回滚），真实 workspace admission/回滚回归仍覆盖。ITableRpcGateway/LazyProductTableGateway/PocketBaseTableGateway 的 Get/SaveGridStateAsync 与 IWorkspaceSupportRpcGateway/JsonRpcWorkspaceSupportGateway 整体删除；backend/application/grid_state_service.py 与 backend/state（LocalStateStore）删除，backend.__main__ 从未注册 gridState，无未注册方法调用残留。backend/contracts/grid_state.py 只保留 Host* 模型（catalog 生成器消费），遗留 Python GridState/GridStateGetParams/GridStateSaveParams/GridStateResult 与其 service/store/b3 契约测试删除；固定 producer oracle（grid_state-python-oracle.json）按历史 SHA 回放，与当前树无关，保留并通过。inventory state.device-grid 改为唯一 Host owner（wpfHost/HostGridStateStore），rpc.grid-state deleteWhen 标记 Completed；legacy-surface 新增被删路径与 gridState.saveRequested/旧方法名字面量回归守卫。
