@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Rpc;
 
@@ -15,6 +16,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
     private readonly ProductRealtimeDelivery _delivery;
     private readonly Action<TableSummary> _applyCatalog;
     private readonly Action<string> _failed;
+    private readonly Func<JsonElement, PluginEventEnvelope>? _projectPluginCatalog;
     private readonly HttpMessageHandler? _handler;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private Binding? _requested;
@@ -29,7 +31,8 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         IWorkspaceHostEpochLeaseSource leases, ProductRealtimeDelivery delivery,
         Action<TableSummary> applyCatalog, Action<string> failed,
         HttpMessageHandler? handler = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null)
     {
         _authority = authority;
         _capture = capture;
@@ -38,6 +41,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         _delivery = delivery;
         _applyCatalog = applyCatalog;
         _failed = failed;
+        _projectPluginCatalog = projectPluginCatalog;
         _handler = handler;
         _delay = delay ?? Task.Delay;
         authority.CurrentChanged += Refresh;
@@ -145,7 +149,10 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                                 if (summary is not null)
                                     post("database.collectionsChanged", new
                                     { tables = summary.Tables, views = summary.Views, displayNames = summary.DisplayNames });
-                                post(frame.Topic, frame.Payload);
+                                if (frame.Topic == "plugin.catalog.changed")
+                                    post(frame.Topic, (_projectPluginCatalog
+                                        ?? throw new InvalidOperationException("Plugin projection is unavailable."))(frame.Payload));
+                                else post(frame.Topic, frame.Payload);
                                 if (summary is not null) _applyCatalog(summary);
                                 _bookmark = frame.Cursor;
                                 return true;

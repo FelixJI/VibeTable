@@ -7114,7 +7114,8 @@ async function scenario16(page, recorder, _network, runtime) {
 }
 
 async function scenario17(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const projectKey = databaseOpened.payload.projectKey.trim();
   await page.getByTestId("nav-plugins").click();
   await page.getByTestId("plugin-install-folder").click();
   const pluginInstallPlan = page.getByTestId("plugin-install-plan");
@@ -7292,6 +7293,15 @@ async function scenario17(page, recorder, _network, runtime) {
   recorder.check("Interface authoring and approved runtime actions persist three records",
     beforeRestart.type === "query.page" && beforeRestart.payload?.rows?.length === 3,
     { beforeRestart });
+  const pluginCatalogBefore = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey });
+  const pluginAuditParams = { projectKey, pluginId: "com.vibetable.e2e.mutation-boundary" };
+  const pluginAuditBefore = await rawBridgeRequest(page, "plugin.audit.list", pluginAuditParams);
+  recorder.check("plugin restart baseline includes the installed identity and lifecycle audit",
+    pluginCatalogBefore.type === "plugin.catalog.list"
+      && pluginCatalogBefore.payload?.some(item => item.pluginId === pluginAuditParams.pluginId)
+      && pluginAuditBefore.type === "plugin.audit.list"
+      && pluginAuditBefore.payload?.some(event => event.eventType === "install"),
+    { pluginCatalogBefore, pluginAuditBefore });
   const quiet = await waitForBridgeDiagnosticsToSettle(page);
   recorder.check("Interface restart begins from a quiescent bridge",
     quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
@@ -7329,6 +7339,14 @@ async function scenario17(page, recorder, _network, runtime) {
   const freshLoad = await waitForCapturedBridgeMessage(page, 30_000);
   recorder.check("fresh public Interface load preserves the complete pages, bindings and actions after restart",
     isDeepStrictEqual(freshLoad.payload, committed.payload), { committed, freshLoad });
+  const pluginCatalogAfter = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey });
+  const pluginAuditAfter = await rawBridgeRequest(page, "plugin.audit.list", pluginAuditParams);
+  recorder.check("Go plugin installation and complete audit survive the real sidecar restart",
+    pluginCatalogAfter.type === "plugin.catalog.list"
+      && pluginAuditAfter.type === "plugin.audit.list"
+      && isDeepStrictEqual(pluginCatalogAfter.payload, pluginCatalogBefore.payload)
+      && isDeepStrictEqual(pluginAuditAfter.payload, pluginAuditBefore.payload),
+    { pluginCatalogBefore, pluginCatalogAfter, pluginAuditBefore, pluginAuditAfter });
   await page.getByTestId("interface-run").click();
   await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "17-interface-restarted.png"), fullPage: true });

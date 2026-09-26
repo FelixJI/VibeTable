@@ -23,6 +23,7 @@ LOOKUP_QUERY_PATH = "/api/vibetable/v1/lookups/query"
 RELATION_DESCRIBE_PATH = "/api/vibetable/v1/relations/describe"
 SCHEMA_TABLE_PATH = "/api/vibetable/v2/schema/tables"
 REALTIME_RECONCILE_PATH = "/api/vibetable/v1/events/reconcile"
+PLUGIN_STORE_PATH = "/api/vibetable/v1/plugins/store"
 METADATA_PATH = "/api/vibetable/v1/metadata"
 _METADATA_NAMESPACES = frozenset(
     {
@@ -330,6 +331,15 @@ class PocketBaseClient:
             "dashboard metadata commit",
         )
 
+    async def plugin_store(
+        self,
+        operation: str,
+        request: Mapping[str, JsonValue],
+    ) -> JsonValue:
+        """Invoke one fixed operation on the Go-owned plugin shared catalog."""
+        body: dict[str, JsonValue] = {"operation": operation, **request}
+        return await self._post(PLUGIN_STORE_PATH, body)
+
     async def query_lookups(
         self,
         *,
@@ -549,6 +559,7 @@ __all__ = [
     "METADATA_PATH",
     "MUTATION_APPLY_PATH",
     "MUTATION_PREVIEW_PATH",
+    "PLUGIN_STORE_PATH",
     "QUERY_PATH",
     "REALTIME_RECONCILE_PATH",
     "RELATION_DESCRIBE_PATH",

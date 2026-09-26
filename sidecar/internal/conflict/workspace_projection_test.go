@@ -12,6 +12,7 @@ func TestWorkspaceCandidatesUseBusinessIdentityAndKnownSharedDefinitions(t *test
 	definitions := sqliteCollectionProjection{ID: "pbc_tables", Name: "vibetable_tables", Records: []json.RawMessage{json.RawMessage(`{"table_id":"tbl_orders","collection_id":"pbc_records","physical_name":"physical_records","display_name":"Orders"}`)}}
 	shared := sqliteCollectionProjection{ID: "pbc_settings", Name: "vibetable_shared_settings", Records: []json.RawMessage{json.RawMessage(`{"logical_id":"preferences","payload_json":"{\"tableId\":\"tbl_orders\"}"}`)}}
 	collections := []sqliteCollectionProjection{business, definitions, shared, {ID: "pbc_audit", Name: "vibetable_audit_events"}, {ID: "pbc_auth", Name: "users"}, {ID: "pbc_unknown", Name: "vibetable_unknown"}, {ID: "pbc_jobs", Name: "vibetable_jobs"}, {ID: "pbc_attachments", Name: "vibetable_attachment_meta"}, {ID: "pbc_versions", Name: "vibetable_attachment_versions"}, {ID: "pbc_computations", Name: "vibetable_computation_dependencies"}}
+	collections = append(collections, sqliteCollectionProjection{ID: "pbc_plugins", Name: "vibetable_plugin_records"}, sqliteCollectionProjection{ID: "pbc_plugin_markers", Name: "vibetable_plugin_import_markers"})
 	project := func(collections []sqliteCollectionProjection) (map[string]TableState, error) {
 		tables := map[string]TableState{}
 		for _, collection := range collections {
@@ -34,6 +35,7 @@ func TestWorkspaceCandidatesUseBusinessIdentityAndKnownSharedDefinitions(t *test
 		"pbc_attachments":  {"schema:attachment_meta", SettingsItem, "attachment_meta"},
 		"pbc_versions":     {"schema:attachment_versions", SettingsItem, "attachment_versions"},
 		"pbc_computations": {"schema:computation_dependencies", SettingsItem, "computation_dependencies"},
+		"pbc_plugins":      {"plugin:shared-state", SettingsItem, "plugin_shared_state"},
 	}
 	if len(candidates) != len(expected) {
 		t.Fatalf("candidate scope = %#v", candidates)

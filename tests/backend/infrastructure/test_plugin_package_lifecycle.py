@@ -65,6 +65,7 @@ def test_local_lifecycle_inspects_retains_and_discards_package(tmp_path: Path) -
     assert retained_inspection.source_type == "package"
     assert retained_inspection.package_hash == inspected.package_hash
     assert retained.name == f"{compact}.vtplugin"
+    assert lifecycle.retained_location(inspected.package_hash) == retained_location
     assert lifecycle.is_available(retained_location)
 
     lifecycle.discard(retained_location)

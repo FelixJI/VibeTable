@@ -112,6 +112,9 @@ export function usePluginService(): PluginService {
     initialized = true;
     unsubscribe = [
       bridge.on("plugin.catalog.changed", applyEnvelope),
+      bridge.on("realtime.recovered", () => {
+        if (store.projectContextReady) void list().catch(() => { /* list records the visible failure. */ });
+      }),
       bridge.on("plugin.task.changed", applyEnvelope),
       bridge.on("plugin.interaction.requested", applyEnvelope),
     ];
@@ -151,12 +154,13 @@ export function usePluginService(): PluginService {
 
   async function list(): Promise<readonly PluginSnapshot[]> {
     const projectKey = store.projectKey;
+    const generation = store.projectContextGeneration;
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
       { errorPolicy: "background" },
     );
-    if (store.projectKey !== projectKey) return snapshots;
+    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
     return snapshots;
   }

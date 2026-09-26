@@ -19,6 +19,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 )
 
 const (
@@ -78,6 +79,10 @@ type Hub struct {
 func New(app core.App) *Hub {
 	return &Hub{app: app, subscribers: map[uint64]*subscriber{}}
 }
+
+// PublishPending wakes live subscribers from the same durable outbox used by
+// catch-up. Owners call this only after their transaction commits.
+func (hub *Hub) PublishPending() error { return hub.drainDurable() }
 
 func (hub *Hub) Publish(
 	ctx context.Context,
@@ -420,6 +425,14 @@ func readRows(db dbx.Builder, where string, params dbx.Params) ([]outboxRow, err
 func decodeOutboxRow(row outboxRow) (Event, error) {
 	raw := []byte(row.PayloadJSON)
 	switch row.Topic {
+	case "plugin.catalog.changed":
+		var event pluginstore.CatalogChangedEvent
+		if decodeStrict(raw, &event) != nil || event.EventID != row.EventID || !pluginstore.ValidateCatalogEvent(event) {
+			return Event{}, corruptOutbox()
+		}
+		if _, err := time.Parse(time.RFC3339, event.OccurredAt); err != nil {
+			return Event{}, corruptOutbox()
+		}
 	case "data.changed":
 		var event mutation.DataChangedEvent
 		if mutation.DecodeStrict(raw, &event) != nil ||

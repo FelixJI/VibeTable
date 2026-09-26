@@ -174,6 +174,14 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
                 .InvokeAsync<JsonElement, JsonElement>(method, parameters, token);
     }
 
+    internal Task<JsonElement> InvokePluginCatalogAsync(string method, JsonElement parameters, CancellationToken token)
+    {
+        if (method is not ("plugin.listCatalog" or "plugin.listAudit" or "plugin.listPendingCleanup" or "plugin.setEnabled"))
+            throw new ArgumentException("Unknown plugin catalog method.", nameof(method));
+        return (_hostInvoker ?? throw new InvalidOperationException("Plugin catalog requires the bound Go authority."))
+            .InvokeAsync(method, parameters, token);
+    }
+
     internal Task<TResult> InvokeDashboardAsync<TParams, TResult>(
         string method, TParams parameters, CancellationToken token)
         where TParams : notnull

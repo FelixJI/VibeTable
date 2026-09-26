@@ -16,13 +16,9 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "plugin.commitInstall",
         "plugin.describeAction",
         "plugin.inspectInstall",
-        "plugin.listAudit",
-        "plugin.listCatalog",
-        "plugin.listPendingCleanup",
         "plugin.resolveFile",
         "plugin.resolveInteraction",
         "plugin.rollback",
-        "plugin.setEnabled",
         "plugin.startAction",
         "plugin.uninstall",
         "plugin.upgrade",
@@ -66,6 +62,10 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
+        "plugin.listAudit",
+        "plugin.listCatalog",
+        "plugin.listPendingCleanup",
+        "plugin.setEnabled",
         "preset.delete",
         "preset.list",
         "preset.save",
@@ -129,9 +129,10 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
 }
 
 PRODUCT_EVENT_TOPICS_BY_CURRENT_OWNER = {
-    "pythonBff": ("plugin.catalog.changed",),
+    "pythonBff": (),
     "goSidecar": (
         "data.changed",
+        "plugin.catalog.changed",
         "realtime.recovered",
     ),
     "wpfHost": (

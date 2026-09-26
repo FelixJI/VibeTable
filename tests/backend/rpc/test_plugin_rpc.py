@@ -23,13 +23,9 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
     _register_plugin_methods(dispatcher, Service())  # type: ignore[arg-type]
 
     assert set(dispatcher.registered_methods) == {
-        "plugin.listCatalog",
-        "plugin.listAudit",
-        "plugin.listPendingCleanup",
         "plugin.inspectInstall",
         "plugin.commitInstall",
         "plugin.cancelInstall",
-        "plugin.setEnabled",
         "plugin.upgrade",
         "plugin.rollback",
         "plugin.uninstall",
@@ -42,6 +38,12 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
         # single public owner of plugin task state.
         "plugin.cancelTask",
     }
+    # The Go plugin catalog answers the public catalog/audit/enable surface
+    # and the empty pending-cleanup projection through the Host.
+    assert "plugin.listCatalog" not in dispatcher.registered_methods
+    assert "plugin.listAudit" not in dispatcher.registered_methods
+    assert "plugin.setEnabled" not in dispatcher.registered_methods
+    assert "plugin.listPendingCleanup" not in dispatcher.registered_methods
     assert "plugin.listExternalFlowCandidates" not in dispatcher.registered_methods
     assert "plugin.bindExternalFlow" not in dispatcher.registered_methods
     assert "plugin.resolveDrift" not in dispatcher.registered_methods

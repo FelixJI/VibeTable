@@ -342,7 +342,21 @@ public partial class MainWindow : Window
                 () => _appPreferencesService.Read()),
             message => _readiness?.Trace(message),
             () => PluginProjectContext.FromSession(_workspaceSessions.Current),
-            productAuthority);
+            productAuthority,
+            sharedRpc: async (method, parameters, token) =>
+            {
+                HostProductRpcBinding binding = _runtime.CaptureHostProductRpcBinding()
+                    ?? throw new BackendUnavailableException("Plugin catalog is unavailable.");
+                using JsonRpcProductDataGateway gateway = binding.CreateGateway(_workspaceSessionFilter);
+                return await gateway.InvokePluginCatalogAsync(method, parameters, token).ConfigureAwait(false);
+            },
+            packageCacheRoot: projectKey =>
+            {
+                WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;
+                return workspace is not null && projectKey == $"local:{workspace.WorkspaceId:N}"
+                    ? Path.Combine(WorkspaceLayout.Paths(ProductionWorkspaceRuntimeFactory.RuntimeRoot(workspace)).Data,
+                        "state", "plugin-packages") : null;
+            });
         var dailyQuotes = new DailyQuoteHostClient();
         _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);
@@ -383,7 +397,8 @@ public partial class MainWindow : Window
             () => Volatile.Read(ref _updateHealthProbeInProgress) == 0
                 ? _runtime.CaptureProductSidecarGeneration() : null,
             _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
-            _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code));
+            _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code),
+            projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent);
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,

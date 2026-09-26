@@ -54,11 +54,11 @@
         "plugin.catalog.changed"
       ],
       "currentPath": [
-        "pythonBff",
+        "goSidecar",
         "wpfHost",
         "renderer"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -71,9 +71,8 @@
         "state": []
       },
       "stateHolders": [
-        "pythonBff",
         "goSidecar",
-        "wpfHost"
+        "pocketBase"
       ],
       "stateLifetime": "workspace",
       "cancellation": "none",
@@ -84,12 +83,12 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Go owns the shared plugin catalog and audit revision and emits catalog notifications without a Python-owned catalog envelope.",
+      "deleteWhen": "Completed: Go/PocketBase owns plugin shared state and durable catalog events; Host projects only locally retained package resources.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/application/plugin_platform_service.py",
-        "backend/application/plugin_registry.py",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "sidecar/internal/pluginstore/service.go",
+        "sidecar/internal/app/plugin_product_rpc.go",
+        "sidecar/internal/app/plugin_store_routes.go",
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs"
       ]
     },
     {
@@ -1440,22 +1439,23 @@
       "names": [
         "plugin.listAudit",
         "plugin.listCatalog",
+        "plugin.listPendingCleanup",
         "plugin.setEnabled"
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
       "effects": {
         "read": [
           "plugin.listAudit",
-          "plugin.listCatalog"
+          "plugin.listCatalog",
+          "plugin.listPendingCleanup"
         ],
         "write": [
           "plugin.setEnabled"
@@ -1464,7 +1464,6 @@
         "state": []
       },
       "stateHolders": [
-        "pythonBff",
         "goSidecar",
         "pocketBase"
       ],
@@ -1477,12 +1476,12 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Go is the sole shared catalog and audit authority and Python plugins.db is no longer a business-state source.",
+      "deleteWhen": "Completed: Go/PocketBase owns plugin shared state and durable catalog events; Host projects only locally retained package resources.",
       "evidence": [
-        "backend/__main__.py",
-        "backend/application/plugin_registry.py",
-        "backend/infrastructure/plugin_store.py",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "sidecar/internal/pluginstore/service.go",
+        "sidecar/internal/app/plugin_product_rpc.go",
+        "sidecar/internal/app/plugin_store_routes.go",
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs"
       ]
     },
     {
@@ -1490,8 +1489,7 @@
       "kind": "rpc",
       "names": [
         "plugin.describeAction",
-        "plugin.inspectInstall",
-        "plugin.listPendingCleanup"
+        "plugin.inspectInstall"
       ],
       "currentPath": [
         "wpfHost",
@@ -1505,8 +1503,7 @@
       "effects": {
         "read": [
           "plugin.describeAction",
-          "plugin.inspectInstall",
-          "plugin.listPendingCleanup"
+          "plugin.inspectInstall"
         ],
         "write": [],
         "notification": [],
@@ -2995,14 +2992,16 @@
       "id": "state.plugin-catalog-identity",
       "kind": "state",
       "names": [
-        "PluginProjectStore._audit",
-        "PluginProjectStore._installations",
-        "PluginProjectStore._revisions"
+        "vibetable_plugin_records.audit",
+        "vibetable_plugin_records.installation",
+        "vibetable_plugin_records.revision",
+        "vibetable_plugin_records.setting"
       ],
       "currentPath": [
-        "pythonBff"
+        "goSidecar",
+        "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
       "targetOwner": "GO_AUTHORITY",
       "authority": "GO_AUTHORITY",
@@ -3011,13 +3010,15 @@
         "write": [],
         "notification": [],
         "state": [
-          "PluginProjectStore._audit",
-          "PluginProjectStore._installations",
-          "PluginProjectStore._revisions"
+          "vibetable_plugin_records.audit",
+          "vibetable_plugin_records.installation",
+          "vibetable_plugin_records.revision",
+          "vibetable_plugin_records.setting"
         ]
       },
       "stateHolders": [
-        "pythonBff"
+        "goSidecar",
+        "pocketBase"
       ],
       "stateLifetime": "workspace",
       "cancellation": "none",
@@ -3028,24 +3029,27 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Go stores the sole plugin installation, package identity, revision, and audit records and Python plugins.db is removed as a business authority.",
+      "deleteWhen": "Completed: Go/PocketBase owns plugin shared state and durable catalog events; Host projects only locally retained package resources.",
       "evidence": [
-        "backend/application/plugin_registry.py",
-        "backend/infrastructure/plugin_store.py"
+        "sidecar/internal/pluginstore/service.go",
+        "sidecar/internal/app/plugin_product_rpc.go",
+        "sidecar/internal/app/plugin_store_routes.go",
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs"
       ]
     },
     {
       "id": "state.plugin-confirmation",
       "kind": "state",
       "names": [
-        "HostConfirmationAdapter._adapter",
         "HostConfirmationAdapter._revisions",
-        "InMemoryInteractionAdapter._runs"
+        "HostConfirmationAdapter._waiters",
+        "HostPluginTaskRegistry._interactions"
       ],
       "currentPath": [
+        "wpfHost",
         "pythonBff"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -3054,9 +3058,9 @@
         "write": [],
         "notification": [],
         "state": [
-          "HostConfirmationAdapter._adapter",
           "HostConfirmationAdapter._revisions",
-          "InMemoryInteractionAdapter._runs"
+          "HostConfirmationAdapter._waiters",
+          "HostPluginTaskRegistry._interactions"
         ]
       },
       "stateHolders": [
@@ -3072,21 +3076,24 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "WPF owns pending confirmation, decision, revision, timeout, and cancellation state and Worker exit cannot strand a confirmation.",
+      "deleteWhen": "Completed for confirmation state: the WPF HostPluginTaskRegistry owns pending confirmation, decision, revision, timeout and cancellation state; HostConfirmationAdapter keeps only the execution-side reply future and transport sequence, so Worker exit cannot strand a confirmation. InMemoryInteractionAdapter._runs is a test fake and is no longer listed as production state.",
       "evidence": [
-        "backend/infrastructure/plugin_interaction.py"
+        "backend/infrastructure/plugin_interaction.py",
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
       ]
     },
     {
       "id": "state.plugin-file-requests",
       "kind": "state",
       "names": [
-        "HostFileCapabilityAdapter._pending"
+        "HostFileCapabilityAdapter._pending",
+        "HostPluginTaskRegistry._fileRequests"
       ],
       "currentPath": [
+        "wpfHost",
         "pythonBff"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -3095,7 +3102,8 @@
         "write": [],
         "notification": [],
         "state": [
-          "HostFileCapabilityAdapter._pending"
+          "HostFileCapabilityAdapter._pending",
+          "HostPluginTaskRegistry._fileRequests"
         ]
       },
       "stateHolders": [
@@ -3111,9 +3119,10 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Python retains only pending Plugin picker replies; Host owns run-scoped file grants and native IO. Pending picker orchestration moves with the later Plugin lifecycle slice.",
+      "deleteWhen": "Completed for file pending: the WPF HostPluginTaskRegistry owns the public pending file-request record and generation settlement; HostFileCapabilityAdapter keeps only the picker reply future for an active execution, and Host owns run-scoped file grants and native IO. Pending picker orchestration moves with the later plugin lifecycle slice.",
       "evidence": [
-        "backend/infrastructure/plugin_file_capability.py"
+        "backend/infrastructure/plugin_file_capability.py",
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
       ]
     },
     {
@@ -3158,7 +3167,7 @@
       "id": "state.plugin-package-cache",
       "kind": "state",
       "names": [
-        "PluginProjectStore.package_cache"
+        "LocalPluginPackageLifecycle._cache_root"
       ],
       "currentPath": [
         "pythonBff"
@@ -3172,14 +3181,14 @@
         "write": [],
         "notification": [],
         "state": [
-          "PluginProjectStore.package_cache"
+          "LocalPluginPackageLifecycle._cache_root"
         ]
       },
       "stateHolders": [
         "pythonBff",
         "pythonWorker"
       ],
-      "stateLifetime": "workspace",
+      "stateLifetime": "device",
       "cancellation": "processBound",
       "timeout": "none",
       "productScenarios": [
@@ -3190,22 +3199,22 @@
       "deleteWhen": "Only the on-demand Worker owns retained local package bytes; Go package identity and audit records never depend on a live Worker process.",
       "evidence": [
         "backend/infrastructure/plugin_package_lifecycle.py",
-        "backend/infrastructure/plugin_store.py"
+        "desktop/src/VibeTable.Desktop/Services/PluginRetainedPackage.cs"
       ]
     },
     {
       "id": "state.plugin-task",
       "kind": "state",
       "names": [
-        "PluginExecutionRuntime._async_tasks",
-        "PluginExecutionRuntime._revision",
-        "PluginExecutionRuntime._task_snapshots"
+        "PluginExecutionRuntime._executions",
+        "PluginExecutionRuntime._revision"
       ],
       "currentPath": [
+        "wpfHost",
         "pythonBff",
         "nodeWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -3214,9 +3223,8 @@
         "write": [],
         "notification": [],
         "state": [
-          "PluginExecutionRuntime._async_tasks",
-          "PluginExecutionRuntime._revision",
-          "PluginExecutionRuntime._task_snapshots"
+          "PluginExecutionRuntime._executions",
+          "PluginExecutionRuntime._revision"
         ]
       },
       "stateHolders": [
@@ -3233,9 +3241,10 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "WPF owns plugin task snapshots, notification sequence, cancellation, and terminal settlement; Node and Python Workers hold execution context only.",
+      "deleteWhen": "Completed for task state: the WPF HostPluginTaskRegistry owns public task snapshots, notification sequence, cancellation and terminal settlement; PluginExecutionRuntime keeps only execution futures and the execution-report transport sequence, never a queryable second authority.",
       "evidence": [
-        "backend/application/plugin_execution_runtime.py"
+        "backend/application/plugin_execution_runtime.py",
+        "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
       ]
     },
     {

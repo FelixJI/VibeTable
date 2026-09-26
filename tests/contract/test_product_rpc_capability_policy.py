@@ -104,6 +104,10 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
+        "plugin.listAudit",
+        "plugin.listCatalog",
+        "plugin.listPendingCleanup",
+        "plugin.setEnabled",
         "preset.delete",
         "preset.list",
         "preset.save",
@@ -170,12 +174,12 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         == "goSidecar"
     )
     assert {item["owner"] for item in manifest["eventTopics"]} == {
-        "pythonBff",
         "goSidecar",
         "wpfHost",
     }
     events = {item["topic"]: item for item in manifest["eventTopics"]}
     assert events["data.changed"]["owner"] == "goSidecar"
+    assert events["plugin.catalog.changed"]["owner"] == "goSidecar"
     assert events["realtime.recovered"]["owner"] == "goSidecar"
     assert events["task.changed"]["owner"] == "wpfHost"
     assert events["plugin.interaction.requested"]["audience"] == "rendererPublic"
@@ -240,7 +244,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 23
+    assert len(methods) == 19
     assert methods[0] == "data.applyImport"
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
@@ -277,6 +281,10 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
+        "plugin.listAudit",
+        "plugin.listCatalog",
+        "plugin.listPendingCleanup",
+        "plugin.setEnabled",
         "preset.delete",
         "preset.list",
         "preset.save",

@@ -247,7 +247,36 @@ describe("pluginService canonical wire", () => {
     expect(usePluginStore().lastError).toBe("invalid manifest");
   });
 
-  it("discards a late catalog response after the active project changes", async () => {
+  it("refreshes the complete catalog after realtime recovery", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const posted: unknown[] = [];
+    const bridge = createHostBridge({
+      generateRequestId: () => "catalog-recovered",
+      webview: {
+        postMessage: (message) => posted.push(message),
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    store.replaceCatalog(snapshot.projectKey, [snapshot]);
+    const service = usePluginService();
+    service.init();
+
+    listener?.({ data: { type: "realtime.recovered", payload: {} } });
+    expect(posted).toEqual([{
+      type: "plugin.catalog.list",
+      requestId: "catalog-recovered",
+      payload: { projectKey: snapshot.projectKey },
+    }]);
+    listener?.({ data: { type: "plugin.catalog.list", requestId: "catalog-recovered", payload: [] } });
+    await vi.waitFor(() => expect(store.plugins).toEqual([]));
+    service.dispose();
+  });
+
+  it.each(["project:b", "project:a"])("discards a late catalog after switching to %s", async (nextProject) => {
     let listener: ((event: { data: unknown }) => void) | undefined;
     const bridge = createHostBridge({
       generateRequestId: () => "catalog-a",
@@ -262,14 +291,14 @@ describe("pluginService canonical wire", () => {
     const store = usePluginStore();
     store.setProjectContext("project:a", "r1");
     const pending = usePluginService().list();
-    store.setProjectContext("project:b", "r1");
+    store.setProjectContext(nextProject, "r2");
 
     listener?.({
       data: { type: "plugin.catalog.list", requestId: "catalog-a", payload: [snapshot] },
     });
     await pending;
 
-    expect(store.projectKey).toBe("project:b");
+    expect(store.projectKey).toBe(nextProject);
     expect(store.plugins).toEqual([]);
   });
 
