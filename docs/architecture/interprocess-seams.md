@@ -83,4 +83,4 @@ schema/cursor 投影并保留请求 tableId 与三项 revision 配对。Python �
 
 ## Go 权威实时恢复（L4）
 
-`ProductRealtimeSession` 通过认证 Go v2 SSE 接收活动公式任务与有限终态通知，在 renderer 业务订阅就绪后交付；WPF 管理连接代际、epoch 和投递生命周期，不建立任务权威缓存。Python SSE supervisor、latest revision cache 与 data.changed 二次包装删除；Python 本地 import/export task.changed producer 保留。恢复失败不得推进 bookmark，旧 epoch 不得交付。细节和完整验收边界见 [ADR 0012](../adr/0012-go-owned-realtime-recovery.md)。
+`ProductRealtimeSession` 通过认证 Go v2 SSE 接收活动公式任务与有限终态通知，在 renderer 业务订阅就绪后交付；WPF 管理连接代际、epoch 和投递生命周期，不建立任务权威缓存。Python SSE supervisor、latest revision cache 与 data.changed 二次包装删除。Data IO 的 `task.create/status/cancel` 由 Host 工作区对象持有，Python 仅执行并上报；旧执行通道退出后 Host 保留 `aborted` 与业务结果待核实的公开快照，不自动重放。导出 grant 仍由 HostSessionFileBroker 和发起调用的作用域绑定、撤销与结算。导入提交收到明确冲突或验证拒绝仍沿用 `failedRows`；回执 `pending` 或提交结论不明时上报失败且不返回零写入结果。恢复失败不得推进 bookmark，旧 epoch 不得交付。细节和完整验收边界见 [ADR 0012](../adr/0012-go-owned-realtime-recovery.md)。

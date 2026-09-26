@@ -7,7 +7,6 @@ import asyncio
 import json
 from pathlib import Path
 
-from backend.state import local_state_store as store_module
 from pydantic import ValidationError
 
 from backend.application import grid_state_service as service_module
@@ -17,6 +16,7 @@ from backend.contracts.grid_state import (
     GridStateResult,
     GridStateSaveParams,
 )
+from backend.state import local_state_store as store_module
 
 PRODUCER = "9fa626a13840830037bcb82eaddc0adf8617075b"
 

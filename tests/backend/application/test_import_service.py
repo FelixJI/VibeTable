@@ -776,6 +776,58 @@ async def test_failed_atomic_apply_commits_nothing_and_keeps_grant(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_pending_go_receipt_cannot_be_reported_as_zero_write_success(tmp_path: Path) -> None:
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    consumed: list[str] = []
+    mutation = FakeProductMutationPort(
+        ApplyPasteResult(collection="vibetable_demo", outcome="pending")
+    )
+    service, _ = _service(path, consumed=consumed, mutation=mutation)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+
+    with pytest.raises(ImportFlowError, match="outcome is unknown") as error:
+        await service.apply(
+            ApplyImportParams(
+                grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+            )
+        )
+
+    assert error.value.code == "import_outcome_unknown"
+    assert len(mutation.calls) == 1
+    assert consumed == []
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_go_error_cannot_claim_zero_writes(tmp_path: Path) -> None:
+    class UnconfirmedMutation(FakeProductMutationPort):
+        async def apply(self, **kwargs: Any) -> ApplyPasteResult:
+            del kwargs
+            raise PasteError("sidecar response failed", code="sidecar.request_failed")
+
+    path = tmp_path / "source.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, _ = _service(path, mutation=UnconfirmedMutation())
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        )
+    )
+
+    with pytest.raises(ImportFlowError) as error:
+        await service.apply(
+            ApplyImportParams(
+                grant_id="grant-1", collection="vibetable_demo", token=plan.token.token
+            )
+        )
+    assert error.value.code == "import_outcome_unknown"
+
+
+@pytest.mark.asyncio
 async def test_failed_atomic_apply_surfaces_safe_product_path_and_message(
     tmp_path: Path,
 ) -> None:
@@ -932,7 +984,7 @@ async def test_committed_import_task_keeps_result_when_final_notification_fails(
     import asyncio
 
     from backend.application.host_files import HostFiles
-    from backend.application.task_runtime import TaskRuntime
+    from tests.backend.legacy_task_runtime import TaskRuntime
 
     path = tmp_path / "source.csv"
     _write_csv(path, ["number"], [["A-1"], ["A-2"]])

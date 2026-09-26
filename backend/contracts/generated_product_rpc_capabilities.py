@@ -28,10 +28,9 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "plugin.uninstall",
         "plugin.upgrade",
         "system.handshake",
-        "task.cancel",
-        "task.create",
+        "task.cancelExecution",
         "task.settleExport",
-        "task.status",
+        "task.startExecution",
     ),
     "goSidecar": (
         "contentProfile.commit",
@@ -123,6 +122,9 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "shortcut.launch",
         "shortcut.list",
         "shortcut.save",
+        "task.cancel",
+        "task.create",
+        "task.status",
     ),
     "pythonWorker": (),
 }

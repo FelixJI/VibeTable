@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：34
+- 场景：35
 - 唯一能力：56
-- 场景—能力关联：74
+- 场景—能力关联：75
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -28,7 +28,7 @@
 | `dashboard.filtering` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.lifecycle` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.visualization` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
-| `data-import.atomic` | <code>09-atomic-import-scale</code>（粘贴或导入中途失败无半提交） |
+| `data-import.atomic` | <code>09-atomic-import-scale</code>（粘贴或导入中途失败无半提交）、<code>36-backend-import-exit</code>（运行中导入遇 Python 退出仍保留 Host 状态） |
 | `data-io.interop` | <code>35-data-io-interoperability</code>（数据互操作代表矩阵） |
 | `data-io.round-trip` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
 | `data.json` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
@@ -111,3 +111,4 @@
 | <code>33-host-grid-presentation</code> | Host 网格呈现与命令快捷方式保存和恢复 | 第一真实 Host 通过关键词、密度、列宽拖动、排序、冻结、隐藏和完整 OR/空值过滤控件保存，经正常退出后第二真实 Host 使用相同 local-data 与 workspace UUID 从既有工作区卡片选择原表；两阶段分别保留 CDP、control、readiness 和 lifecycle 证据，并由 Host get 与真实 UI 核对完整呈现状态恢复。 通过真实管理UI创建、编辑与执行导出及HTTPS快捷方式；原生确认取消不启动浏览器；跨工作区及第二Host重开保留定义，实际导出CSV并核对内容，再从UI删除。 | `grid.state`、`host.commands` |
 | <code>34-relation-lookup-data-io</code> | Relation 导入与 Lookup 文本导出 | 复用固定 corpus，先通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。再在同一真实 UI 内完成关系映射配置、重新预检、确认导入与 Lookup 选列导出，独立读取 CSV 与 XLSX 产物核对中文、公式样文本（字符串而非公式）与稳定关系 ID，确认 UI 导出不改变两端权威记录。 | `relation.import`、`lookup.export` |
 | <code>35-data-io-interoperability</code> | 数据互操作代表矩阵 | 从冻结语料出发，真实工具栏导入 UTF-8 BOM CSV 的 NFC/NFD、Emoji/ZWJ、CJK、RTL 与 locale-case 代表值及日期文本，一次真实取消保持权威与 revision 不变，重新选择后确认；XLSX 原生日期/毫秒与公式样文本经同一 UI 导入，CSV 与 XLSX 导出独立读文件核对码点、日期 wire 文本与字符串单元格；源与目标使用 CJK+NFD+Emoji 文件名，至少一条超过 260 字符的路径经真实 Host 授权导入；导出前后权威行与 schema/data revision 保持不变。 | `data-io.interop` |
+| <code>36-backend-import-exit</code> | 运行中导入遇 Python 退出仍保留 Host 状态 | 真实 1,000 行导入在 Go 首条未提交记录后精确终止 Python，Host 仍可查询 aborted/业务结果待核实快照，不伪报零写入或自动重放，UI 离开忙碌状态。 | `data-import.atomic` |

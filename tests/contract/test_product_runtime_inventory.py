@@ -166,6 +166,9 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "gridState.save",
         "settings.readDevice",
         "settings.saveDevice",
+        "task.cancel",
+        "task.create",
+        "task.status",
     }
     device_settings = inventory.require("rpc", "settings.readDevice")
     assert device_settings.group_id == "rpc.device-settings"

@@ -20,12 +20,14 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
     private readonly Func<Func<bool>, bool> _tryUseCurrent;
     private readonly Func<Func<bool>, bool> _tryUseGoCurrent;
     private readonly ProductRpcRouteSelector _routes;
+    private readonly HostDataIoTaskRegistry _taskOwner;
     private readonly ProductSidecarHttpGateway _sidecar;
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _ready;
     private bool _disposed;
 
     internal JsonRpcClient? Client => _client;
+    internal HostDataIoTaskRegistry TaskOwner => _taskOwner;
 
     internal HostProductRpcInvoker(
         JsonRpcClient? client,
@@ -34,7 +36,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         Func<Func<bool>, bool> tryUseCurrent,
         ProductRpcRouteSelector? routes = null,
         HttpMessageHandler? handler = null,
-        Func<Func<bool>, bool>? tryUseGoCurrent = null)
+        Func<Func<bool>, bool>? tryUseGoCurrent = null,
+        HostDataIoTaskRegistry? taskOwner = null)
     {
         _client = client;
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
@@ -42,6 +45,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         _tryUseCurrent = tryUseCurrent ?? throw new ArgumentNullException(nameof(tryUseCurrent));
         _tryUseGoCurrent = tryUseGoCurrent ?? _tryUseCurrent;
         _routes = routes ?? ProductRpcRouteSelector.Default;
+        _taskOwner = taskOwner ?? new HostDataIoTaskRegistry();
+        _taskOwner.BindClient(client, snapshot.Identity);
         _sidecar = new ProductSidecarHttpGateway(snapshot.Context, snapshot.Identity,
             snapshot.Registrations, handler);
     }
@@ -84,6 +89,11 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                     EnsureCurrent(lease, call.Token);
                     result = await InvokeNativeFileAsync(method, parameters, call.Token).ConfigureAwait(false);
                 }
+                else if (route == ProductRpcRoute.HostDataIo)
+                {
+                    result = await InvokeTaskAsync(method, parameters, call.Token)
+                        .ConfigureAwait(false);
+                }
                 else if (route == ProductRpcRoute.PythonBff)
                 {
                     result = await StartCurrent(() => _client!.InvokeAsync<JsonElement, JsonElement>(
@@ -103,7 +113,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                         _ => throw new InvalidOperationException("Invalid Product RPC response."),
                     };
                 }
-                EnsureCurrent(lease, call.Token, route == ProductRpcRoute.GoSidecar && !native);
+                EnsureCurrent(lease, call.Token, (route is ProductRpcRoute.GoSidecar or ProductRpcRoute.HostDataIo) && !native);
                 return result;
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested
@@ -115,12 +125,73 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             catch
             {
                 // A late failure belongs to the retired binding just as a late result does.
-                EnsureCurrent(lease, call.Token, route == ProductRpcRoute.GoSidecar && !native);
+                EnsureCurrent(lease, call.Token, (route is ProductRpcRoute.GoSidecar or ProductRpcRoute.HostDataIo) && !native);
                 throw;
             }
         }
     }
 
+    private async Task<JsonElement> InvokeTaskAsync(
+        string method, JsonElement parameters, CancellationToken token)
+    {
+        if (method == "task.status")
+        {
+            string id = parameters.GetProperty("taskId").GetString()
+                ?? throw new JsonException("Task ID is required.");
+            return _taskOwner.Status(id);
+        }
+        if (method == "task.cancel")
+        {
+            string id = parameters.GetProperty("taskId").GetString()
+                ?? throw new JsonException("Task ID is required.");
+            var (snapshot, client) = _taskOwner.RequestCancel(id);
+            if (client is not null && ReferenceEquals(client, _client))
+            {
+                try
+                {
+                    await StartCurrent(() => client.InvokeAsync<JsonElement, bool>(
+                        "task.cancelExecution", parameters, token)).ConfigureAwait(false);
+                }
+                catch (Exception) when (!token.IsCancellationRequested)
+                {
+                    // Transport retirement settles the Host record. A lost cancel
+                    // reply is never treated as a confirmed worker cancellation.
+                }
+            }
+            return snapshot;
+        }
+        if (method != "task.create")
+            throw new JsonException("Unknown Host Data IO task method.");
+        string kind = parameters.GetProperty("kind").GetString()
+            ?? throw new JsonException("Task kind is required.");
+        JsonElement taskParams = parameters.GetProperty("params");
+        JsonRpcClient clientForStart = _client
+            ?? throw Unavailable();
+        var (taskId, _) = _taskOwner.Admit(
+            clientForStart, _snapshot.Identity, kind);
+        try
+        {
+            JsonElement request = JsonSerializer.SerializeToElement(new
+            {
+                taskId,
+                kind,
+                @params = taskParams,
+            }, WireOptions);
+            JsonElement accepted = await StartCurrent(() =>
+                clientForStart.InvokeAsync<JsonElement, JsonElement>(
+                    "task.startExecution", request, token)).ConfigureAwait(false);
+            if (!accepted.TryGetProperty("accepted", out JsonElement confirmed)
+                || confirmed.ValueKind != JsonValueKind.True)
+                throw new JsonException("Worker did not acknowledge Data IO execution.");
+            return _taskOwner.Status(taskId);
+        }
+        catch
+        {
+            _taskOwner.AbortTask(taskId,
+                "数据任务启动回执不可确认；业务提交结果待核实，请核对数据后重新预览。");
+            throw;
+        }
+    }
     internal async Task<JsonElement> ExecuteExportAsync(JsonElement parameters, CancellationToken token)
     {
         if (_client is null)
@@ -142,6 +213,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 if (state == "succeeded") return status.GetProperty("result").Clone();
                 if (state == "failed") throw new InvalidOperationException("Export failed.");
                 if (state == "cancelled") throw new OperationCanceledException("Export cancelled.");
+                if (state == "aborted") throw new InvalidOperationException(
+                    "Export execution was interrupted; the output outcome is unknown.");
                 if (state is not ("queued" or "running")) throw new JsonException("Invalid export state.");
                 await Task.Delay(100, token).ConfigureAwait(false);
                 status = await InvokeAsync("task.status", JsonSerializer.SerializeToElement(new { taskId }), token)

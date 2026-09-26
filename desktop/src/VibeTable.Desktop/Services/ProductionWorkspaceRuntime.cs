@@ -206,6 +206,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             snapshot.TryUseCurrent(() =>
             {
                 binding = new(runtime, client, snapshot, new ProductRpcRouteSelector(_productPolicy),
+                    runtime.DataIoTasks,
                     action => client is not null
                         && TryUseHostProductBinding(runtime, client, snapshot, action),
                     action => TryUseHostGoBinding(runtime, snapshot, action));
@@ -624,6 +625,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
     private readonly DesktopWorkspaceAuthority _authority;
     private readonly ProductRuntimeService _runtime;
     private readonly string _dataDirectory;
+    internal HostDataIoTaskRegistry DataIoTasks { get; } = new();
     private int _started;
     private int _disposed;
 
@@ -792,6 +794,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         Backend.StateChanged -= OnBackendStateChanged;
         Sidecar.StatusChanged -= OnSidecarCurrentChanged;
         _runtime.RecoveryFailed -= OnRecoveryFailed;
+        DataIoTasks.Dispose();
         Gateway.Dispose();
         await _runtime.DisposeAsync().ConfigureAwait(false);
     }
@@ -824,7 +827,10 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
     }
 
     private void OnBackendStateChanged(object? sender, BackendState state)
-        => _owner.NotifyBackendBindingChanged(this);
+    {
+        if (state != BackendState.Ready) DataIoTasks.RetireClient(null);
+        _owner.NotifyBackendBindingChanged(this);
+    }
 
     private void OnSidecarCurrentChanged(object? sender, PocketBaseStatus status)
         => _owner.NotifySidecarCurrentChanged(this);

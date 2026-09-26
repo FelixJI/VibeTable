@@ -76,6 +76,9 @@ ignore = [
     "RUF003", # 注释中的中文标点
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
+
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 # 独立运行脚本需要在标准导入后兼容仓库内导入。

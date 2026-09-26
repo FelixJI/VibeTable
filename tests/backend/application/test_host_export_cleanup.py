@@ -9,11 +9,11 @@ import pytest
 
 from backend.application.export_service import ExportService
 from backend.application.path_grant import PathGrantError
-from backend.application.task_runtime import TaskRuntime
 from backend.contracts.data_io import ExportParams
 from backend.contracts.task import CreateTaskParams, ResolveGrantParams
 from tests.backend.application.test_export_service import FakeQueryPort, _manifest
 from tests.backend.host_files_fixture import FileTaskFixture as TaskService
+from tests.backend.legacy_task_runtime import TaskRuntime
 from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 

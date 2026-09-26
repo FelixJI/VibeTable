@@ -13,6 +13,20 @@ namespace VibeTable.Desktop.Tests;
 public sealed partial class HostProductRpcInvokerTests
 {
     [TestMethod]
+    public void DataIoTaskMethodsRouteOnlyToHost()
+    {
+        foreach (string method in new[] { "task.create", "task.status", "task.cancel" })
+        {
+            Assert.IsTrue(ProductRpcRouteSelector.Default.TrySelectProduct(
+                method, ProductRpcCapabilityCatalog.Workspace, out ProductRpcRoute route));
+            Assert.AreEqual(ProductRpcRoute.HostDataIo, route);
+        }
+        Assert.IsTrue(ProductRpcRouteSelector.Default.TrySelectProduct(
+            "task.settleExport", ProductRpcCapabilityCatalog.Workspace, out ProductRpcRoute worker));
+        Assert.AreEqual(ProductRpcRoute.PythonBff, worker);
+    }
+
+    [TestMethod]
     public async Task TablePasteUsesGoForPreviewAndApplyWithoutPythonFallback()
     {
         await using var fixture = await HostFixture.OpenAsync();
@@ -808,7 +822,7 @@ public sealed partial class HostProductRpcInvokerTests
             transport.ReleaseCleanup.TrySetResult();
             await Assert.ThrowsAsync<OperationCanceledException>(() => export.WaitAsync(TimeSpan.FromSeconds(2)));
             if (closing is not null) await closing.WaitAsync(TimeSpan.FromSeconds(2));
-            CollectionAssert.AreEqual(new[] { "task.create", "task.settleExport" }, transport.Methods);
+            CollectionAssert.AreEqual(new[] { "task.startExecution", "task.settleExport" }, transport.Methods);
             Assert.AreEqual("known-grant", transport.CleanupGrant);
         }
         finally
@@ -821,7 +835,7 @@ public sealed partial class HostProductRpcInvokerTests
     }
 
     [TestMethod]
-    public async Task RetiredPythonTaskStatusReportsBackendUnavailable()
+    public async Task RetiredPythonImportPreviewReportsBackendUnavailable()
     {
         var transport = new CommandTransport();
         await using var fixture = await HostFixture.OpenAsync(transport: transport);
@@ -838,7 +852,7 @@ public sealed partial class HostProductRpcInvokerTests
             Sequence = 1,
         };
         Task request = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
-            "task.status", "retiring-task-status", Json("""{"taskId":"task-in-flight"}"""), "", scope));
+            "data.previewImport", "retiring-import-preview", Json("""{"grantId":"grant","collection":"orders","schemaRevision":"schema-1"}"""), "", scope));
         await transport.Created.Task.WaitAsync(TimeSpan.FromSeconds(3));
         dispatcher.ClearProductDataGateway(gateway);
         gateway.Dispose();
@@ -863,7 +877,7 @@ public sealed partial class HostProductRpcInvokerTests
             JsonElement request = Json(line);
             string method = request.GetProperty("method").GetString()!;
             Methods.Add(method);
-            if (method is "task.create" or "task.status") { Created.TrySetResult(); return; } // Server admission succeeded; its reply is lost.
+            if (method is "task.startExecution" or "data.previewImport") { Created.TrySetResult(); return; } // Worker admission succeeded; its reply is lost.
             Assert.AreEqual("task.settleExport", method);
             CleanupGrant = request.GetProperty("params").GetProperty("grantId").GetString();
             CleanupEntered.TrySetResult();

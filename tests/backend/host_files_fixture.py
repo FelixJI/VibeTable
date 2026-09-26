@@ -7,6 +7,7 @@ its byte-only HostFiles port without launching a WPF application for each row.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import uuid
@@ -15,9 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from backend.application.host_files import FileBuffer, HostFiles
-from backend.application.task_runtime import TaskRuntime
-from backend.application.task_service import TaskService
-from backend.contracts.task import SessionPathGrant
+from backend.application.path_grant import PathGrantError
+from backend.contracts.task import (
+    CreateTaskParams,
+    ExportTargetSettled,
+    ResolveGrantParams,
+    SessionPathGrant,
+    TaskIdParams,
+    TaskStatus,
+)
+from tests.backend.legacy_task_runtime import TaskRuntime
 from tests.backend.path_grant_fixture import SessionPathGrantStore
 
 
@@ -83,12 +91,39 @@ class LocalFilePeer:
         return {"closed": True}
 
 
-class FileTaskFixture(TaskService):
+class FileTaskFixture:
     def __init__(
         self, runtime: TaskRuntime | None = None, grants: SessionPathGrantStore | None = None
     ):
         self.peer = LocalFilePeer(grants)
-        super().__init__(runtime or TaskRuntime(), self.peer.files)
+        self.runtime = runtime or TaskRuntime()
+        self.files = self.peer.files
+        self._export_admission = asyncio.Lock()
+
+    async def create_task(self, params: CreateTaskParams) -> TaskStatus:
+        if params.kind != "data.export":
+            return await self.runtime.create(params.kind, params.params)
+        grant_id = params.params.get("grantId")
+        if not isinstance(grant_id, str):
+            raise ValueError("Export requires a grantId.")
+        async with self._export_admission:
+            descriptor = await self.files.describe(grant_id)
+            if descriptor.purpose != "export_target" or descriptor.direction != "write":
+                raise PathGrantError(
+                    "Export requires a writable Host grant.", code="grant_direction_mismatch"
+                )
+            return await self.runtime.create(params.kind, params.params, export_grant_id=grant_id)
+
+    async def cancel_task(self, params: TaskIdParams) -> TaskStatus:
+        return await self.runtime.cancel(params.task_id)
+
+    async def status_task(self, params: TaskIdParams) -> TaskStatus:
+        return self.runtime.status(params.task_id)
+
+    async def settle_export(self, params: ResolveGrantParams) -> ExportTargetSettled:
+        async with self._export_admission:
+            await self.runtime.settle_export_grant(params.grant_id)
+        return ExportTargetSettled(grant_id=params.grant_id, settled=True)
 
     @property
     def grants(self):

@@ -2643,10 +2643,9 @@
       "currentPath": [
         "renderer",
         "wpfHost",
-        "pythonBff",
         "pythonWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -2684,10 +2683,12 @@
       ]
     },
     {
-      "id": "rpc.worker-export-settlement",
+      "id": "rpc.worker-task-execution",
       "kind": "rpc",
       "names": [
-        "task.settleExport"
+        "task.cancelExecution",
+        "task.settleExport",
+        "task.startExecution"
       ],
       "currentPath": [
         "wpfHost",
@@ -2700,7 +2701,9 @@
       "effects": {
         "read": [],
         "write": [
-          "task.settleExport"
+          "task.cancelExecution",
+          "task.settleExport",
+          "task.startExecution"
         ],
         "notification": [],
         "state": []
@@ -2716,7 +2719,7 @@
       ],
       "targetSlice": "L7",
       "targetPr": null,
-      "deleteWhen": "Host revokes native grants first; this worker-only endpoint joins existing Python export tasks until task ownership migrates.",
+      "deleteWhen": "Host owns public task snapshots and cancellation; these host-only Python entry points execute, cancel and join the captured worker's file writers until Data IO moves to an on-demand Worker.",
       "evidence": [
         "backend/application/task_service.py",
         "backend/application/task_runtime.py",
@@ -3391,15 +3394,13 @@
       "id": "state.task-execution",
       "kind": "state",
       "names": [
-        "TaskRuntime._async_tasks",
-        "TaskRuntime._tasks",
-        "TaskRuntime._tokens"
+        "HostDataIoTaskRegistry._tasks"
       ],
       "currentPath": [
-        "pythonBff",
+        "wpfHost",
         "pythonWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -3408,14 +3409,10 @@
         "write": [],
         "notification": [],
         "state": [
-          "TaskRuntime._async_tasks",
-          "TaskRuntime._tasks",
-          "TaskRuntime._tokens"
+          "HostDataIoTaskRegistry._tasks"
         ]
       },
       "stateHolders": [
-        "pythonBff",
-        "pythonWorker",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -3429,19 +3426,19 @@
       "targetPr": null,
       "deleteWhen": "WPF owns task snapshots, cancellation tokens, and execution settlement and a Worker crash cannot erase or strand the task record.",
       "evidence": [
-        "backend/application/task_runtime.py"
+        "desktop/src/VibeTable.Desktop/Services/HostDataIoTaskRegistry.cs"
       ]
     },
     {
       "id": "state.task-notification-sequence",
       "kind": "state",
       "names": [
-        "notify_task_status.task_sequence"
+        "HostDataIoTaskRegistry._sequence"
       ],
       "currentPath": [
-        "pythonBff"
+        "wpfHost"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -3450,11 +3447,10 @@
         "write": [],
         "notification": [],
         "state": [
-          "notify_task_status.task_sequence"
+          "HostDataIoTaskRegistry._sequence"
         ]
       },
       "stateHolders": [
-        "pythonBff",
         "wpfHost"
       ],
       "stateLifetime": "process",
@@ -3468,7 +3464,7 @@
       "targetPr": null,
       "deleteWhen": "WPF generates renderer task-notification ordering from the authoritative task lifecycle and Python no longer synthesizes sequence numbers.",
       "evidence": [
-        "backend/__main__.py"
+        "desktop/src/VibeTable.Desktop/Services/HostDataIoTaskRegistry.cs"
       ]
     }
   ]

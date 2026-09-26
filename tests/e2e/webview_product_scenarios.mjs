@@ -4736,7 +4736,6 @@ async function scenario10(page, recorder, _network, runtime) {
     baselineRowCount === 1,
     { baselineRowCount },
   );
-
   const sidecarRecoveryStarted = performance.now();
   const fault = await requestPackagedProcessKill(
     runtime,
@@ -4829,7 +4828,6 @@ async function scenario10(page, recorder, _network, runtime) {
     backendFault.processName === "vibetable-backend.exe",
     { backendFault },
   );
-
   const retainedApply = await pasteBridgeRequest(page, "table.applyPasteRequested", {
     collection: tableId, token: retainedPaste.token.token,
     idempotencyKey: "paste-plan-survives-python-exit",
@@ -9153,6 +9151,65 @@ async function scenario32(page, recorder) {
   recorder.check("clearing custom dates preserves a new committed revision", cleared.payload?.overrides?.length === 0 && cleared.payload?.revision && cleared.payload.revision !== confirmed.payload?.revision, { cleared });
 }
 
+async function scenario36(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const table = await createSimpleTable(page, "E2E Backend Exit Import", "Value");
+  await selectTable(page, "E2E Backend Exit Import");
+  const rows = [table.field.physicalName];
+  for (let index = 0; index < 1_000; index += 1) rows.push(`backend-exit-${index}`);
+  await fs.writeFile(path.join(runtime.controlsDir, "import-source.csv"),
+    `${rows.join("\n")}\n`, "utf8");
+  await chooseToolbarMore(page, "import");
+  const capture = await beginImportFaultOutcomeCapture(page);
+  let task;
+  let barrier;
+  try {
+    await confirmImportPreview(page);
+    task = await capture.waitForCreatedTask();
+    barrier = await waitForMutationBarrier(runtime);
+  } finally {
+    await capture.release();
+  }
+  let fault;
+  try {
+    fault = await requestPackagedProcessKill(runtime, "kill-backend",
+      "interrupt active 1k-row import after first uncommitted record");
+  } finally {
+    await fs.writeFile(path.join(runtime.controlsDir, "mutation-barrier.release"),
+      "released\n", "utf8");
+  }
+  recorder.check("exact packaged Python exited during the active import transaction",
+    fault.processName === "vibetable-backend.exe"
+      && barrier.point === "after_record" && barrier.pid > 0,
+    { fault, barrier, task });
+  const status = await rawBridgeRequest(page, "task.status", { taskId: task.taskId });
+  recorder.check("Host retains aborted task and an explicit unknown outcome without a fake result",
+    status.type === "task.status"
+      && status.payload?.taskId === task.taskId
+      && status.payload?.state === "aborted"
+      && status.payload?.result == null
+      && /待核实|unknown/i.test(status.payload?.error ?? ""),
+    { status });
+  const visibleError = page.getByTestId("import-apply-error");
+  await visibleError.waitFor({ timeout: 30_000 });
+  const errorText = (await visibleError.innerText()).trim();
+  recorder.check("the import UI explains that the business outcome is unknown",
+    /待核实|unknown/i.test(errorText), { errorText });
+  await visibleError.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "36-import-aborted-after-backend-exit.png"),
+    fullPage: true,
+  });
+  const failedUi = await waitForFailedImportUi(page, Date.now() + 30_000);
+  recorder.check("faulted import visibly leaves busy state and allows a fresh preview",
+    failedUi.errorLength > 0 && failedUi.newImportAvailable, { failedUi });
+  const retained = await rawBridgeRequest(page, "task.status", { taskId: task.taskId });
+  recorder.check("late Go settlement cannot overwrite the Host terminal snapshot",
+    retained.payload?.state === "aborted" && retained.payload?.result == null,
+    { retained });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -9198,6 +9255,7 @@ const scenarios = {
       parseCsv, canonicalJsonText, chooseToolbarMore,
     },
   ),
+  "36-backend-import-exit": scenario36,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

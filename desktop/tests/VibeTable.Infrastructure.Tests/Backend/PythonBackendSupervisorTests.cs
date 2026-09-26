@@ -674,10 +674,9 @@ public sealed class PythonBackendSupervisorTests
                 new[]
                 {
                     "system.handshake",
-                    "task.cancel",
-                    "task.create",
+                    "task.cancelExecution",
+                    "task.startExecution",
                     "task.settleExport",
-                    "task.status",
                 },
                 result.Capabilities);
         }

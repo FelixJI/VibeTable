@@ -138,6 +138,7 @@ from backend.contracts.settings_commands import (
 )
 from backend.contracts.system import HandshakeResult
 from backend.contracts.task import (
+    CreateTaskParams,
     ExportTargetSettled,
     SessionPathGrant,
     TaskStatus,
@@ -146,6 +147,7 @@ from backend.contracts.task import (
     RequestImportSourceGrantParams,
     RequestExportTargetGrantParams,
     ResolveGrantParams,
+    TaskIdParams,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -394,6 +396,9 @@ def _registered_models() -> dict[str, type[BaseModel]]:
 
     result.update(
         {
+            "task.create": CreateTaskParams,
+            "task.cancel": TaskIdParams,
+            "task.status": TaskIdParams,
             "table.previewPaste": PreviewPasteParams,
             "table.applyPaste": ApplyPasteParams,
             "insights.listDashboards": ListDashboardsParams,
@@ -878,9 +883,11 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "table.applyPaste": _typed(ApplyPasteResult),
         "table.previewPaste": _typed(PastePlan),
         "task.cancel": _typed(TaskStatus),
+        "task.cancelExecution": _manual("CancelExecutionResult", True),
         "task.create": _typed(TaskStatus),
-        "task.status": _typed(TaskStatus),
         "task.settleExport": _typed(ExportTargetSettled),
+        "task.startExecution": _manual("StartExecutionResult", {"accepted": True}),
+        "task.status": _typed(TaskStatus),
         "version.compare": _typed(VersionCompareResult),
         "version.create": _typed(ContentVersionEntry),
         "version.delete": _manual("DeleteVersionResult", delete_trace),
