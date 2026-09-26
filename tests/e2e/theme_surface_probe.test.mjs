@@ -78,7 +78,7 @@ after(async () => {
 test("connected theme sampling never reads a stale Tabulator cell", { timeout: 10_000 }, async (t) => {
   const phases = observeTestPhases(t);
   t.after(() => phases.close());
-  {
+  try {
     await phases.phase("render Tabulator fixture", () => page.setContent(`
       <style>
         html.dark { color-scheme: dark; }
@@ -170,5 +170,40 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
         /Timeout 50ms exceeded/,
       );
     });
+  } catch (error) {
+    try {
+      const state = await page.evaluate(() => {
+        const box = (element) => {
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          return {
+            width: rect.width,
+            height: rect.height,
+            offsetWidth: element.offsetWidth,
+            offsetHeight: element.offsetHeight,
+            display: getComputedStyle(element).display,
+            visibility: getComputedStyle(element).visibility,
+          };
+        };
+        const table = window.__themeProbeTable;
+        return {
+          grid: box(document.querySelector("#grid")),
+          tableholder: box(document.querySelector(".tabulator-tableholder")),
+          firstCell: box(document.querySelector(".tabulator-row .tabulator-cell")),
+          domRowCount: document.querySelectorAll(".tabulator-row").length,
+          domCellCount: document.querySelectorAll(".tabulator-row .tabulator-cell").length,
+          table: table
+            ? {
+              initialized: table.initialized ?? null,
+              renderMode: table.rowManager?.getRenderMode?.() ?? null,
+            }
+            : null,
+        };
+      });
+      t.diagnostic(`theme probe fixture state on failure: ${JSON.stringify(state)}`);
+    } catch (diagnosticError) {
+      t.diagnostic(`theme probe fixture state unavailable: ${diagnosticError}`);
+    }
+    throw error;
   }
 });
