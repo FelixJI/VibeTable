@@ -171,8 +171,9 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
       );
     });
   } catch (error) {
+    let diagnosticTimer;
     try {
-      const state = await page.evaluate(() => {
+      const diagnosticPromise = page.evaluate(() => {
         const box = (element) => {
           if (!element) return null;
           const rect = element.getBoundingClientRect();
@@ -200,9 +201,20 @@ test("connected theme sampling never reads a stale Tabulator cell", { timeout: 1
             : null,
         };
       });
+      const state = await Promise.race([
+        diagnosticPromise,
+        new Promise((_, reject) => {
+          diagnosticTimer = setTimeout(
+            () => reject(new Error("fixture state diagnostic exceeded 1000ms")),
+            1_000,
+          );
+        }),
+      ]);
       t.diagnostic(`theme probe fixture state on failure: ${JSON.stringify(state)}`);
     } catch (diagnosticError) {
       t.diagnostic(`theme probe fixture state unavailable: ${diagnosticError}`);
+    } finally {
+      clearTimeout(diagnosticTimer);
     }
     throw error;
   }
