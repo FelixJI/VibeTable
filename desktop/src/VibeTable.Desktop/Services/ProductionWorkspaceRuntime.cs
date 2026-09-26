@@ -30,6 +30,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
     private readonly ProductSidecarGenerationSnapshotCache
         _productSidecarGenerations = new();
     private IProductSidecarGatewayLifecycle? _productSidecarGatewayLifecycle;
+    private Func<CancellationToken, Task>? _bindProductGateways;
     private ProductionWorkspaceRuntime? _current;
     private bool _disposed;
 
@@ -150,7 +151,8 @@ public sealed class ProductionWorkspaceRuntimeFactory :
     }
 
     internal void RegisterProductSidecarGatewayLifecycle(
-        IProductSidecarGatewayLifecycle lifecycle)
+        IProductSidecarGatewayLifecycle lifecycle,
+        Func<CancellationToken, Task>? bindProductGateways = null)
     {
         ArgumentNullException.ThrowIfNull(lifecycle);
         lock (_gate)
@@ -163,6 +165,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                     "The product Sidecar lifecycle already has an owner.");
             }
             _productSidecarGatewayLifecycle = lifecycle;
+            _bindProductGateways = bindProductGateways;
         }
     }
 
@@ -420,8 +423,11 @@ public sealed class ProductionWorkspaceRuntimeFactory :
             await current.DisposeAsync().ConfigureAwait(false);
     }
 
-    internal void Activate(ProductionWorkspaceRuntime runtime)
+    internal async Task ActivateAsync(
+        ProductionWorkspaceRuntime runtime,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -432,7 +438,23 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         }
         ProductSidecarCurrentChanged?.Invoke();
         BindingChanged?.Invoke();
-        ClientReady?.Invoke();
+        try
+        {
+            if (_bindProductGateways is { } bind)
+                await bind(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_gate)
+            {
+                if (_disposed || !ReferenceEquals(_current, runtime))
+                    throw new BackendUnavailableException("The workspace runtime was retired during activation.");
+            }
+            ClientReady?.Invoke();
+        }
+        catch
+        {
+            Deactivate(runtime);
+            throw;
+        }
     }
 
     internal void Deactivate(ProductionWorkspaceRuntime runtime)
@@ -716,20 +738,17 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         if (Volatile.Read(ref _started) == 0)
             throw new InvalidOperationException(
                 "Workspace runtime has not started.");
-        WorkspaceV2SidecarCapabilities? capabilities = null;
         await budget.RunAsync(
             WorkspaceActivationStage.Verification,
             async token =>
             {
                 VerifyManifestBinding();
-                capabilities = await Gateway.GetCapabilitiesAsync(token)
+                WorkspaceV2SidecarCapabilities capabilities = await Gateway.GetCapabilitiesAsync(token)
                     .ConfigureAwait(false);
+                VerifyCapabilities(capabilities);
+                Capabilities = capabilities;
+                await _owner.ActivateAsync(this, token).ConfigureAwait(false);
             }).ConfigureAwait(false);
-        if (capabilities is null)
-            throw new InvalidOperationException("Workspace capabilities were not verified.");
-        VerifyCapabilities(capabilities);
-        Capabilities = capabilities;
-        _owner.Activate(this);
     }
 
     private void VerifyCapabilities(WorkspaceV2SidecarCapabilities capabilities)
@@ -772,9 +791,13 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         if (Volatile.Read(ref _started) == 0)
             throw new InvalidOperationException(
                 "Workspace runtime has already stopped.");
-        await _runtime.ResumeIngressAsync(cancellationToken)
-            .ConfigureAwait(false);
-        _owner.Activate(this);
+        _owner.Deactivate(this);
+        using var activation = WorkspaceActivationBudget.Begin(
+            WorkspaceId, SessionEpoch, ActivationPolicy, cancellationToken);
+        await activation.RunAsync(WorkspaceActivationStage.Backend,
+            _runtime.ResumeIngressAsync).ConfigureAwait(false);
+        await activation.RunAsync(WorkspaceActivationStage.Verification,
+            token => _owner.ActivateAsync(this, token)).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)

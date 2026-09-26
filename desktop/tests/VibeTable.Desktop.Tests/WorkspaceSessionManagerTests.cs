@@ -1,5 +1,8 @@
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Backend;
+using VibeTable.Infrastructure.PocketBase;
+using VibeTable.Infrastructure.Rpc;
 using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Tests;
@@ -7,6 +10,105 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class WorkspaceSessionManagerTests
 {
+    [TestMethod]
+    [DataRow("ready")]
+    [DataRow("failed")]
+    [DataRow("retired")]
+    [DataRow("cancelled")]
+    [DataRow("host-failed")]
+    [DataRow("host-retired")]
+    [DataRow("runtime-retired")]
+    [DataRow("timeout")]
+    public async Task OpenWaitsForProductGatewayActivation(string outcome)
+    {
+        var time = new ManualTimeProvider();
+        using var fixture = new SessionFixture(time);
+        WorkspaceRegistryEntryV2 workspace = fixture.AddWorkspace("Binding", "Binding");
+        await using var production = new ProductionWorkspaceRuntimeFactory(
+            new PocketBaseLaunchOptions
+            {
+                ExecutablePath = "sidecar.exe", DataDirectory = "unused",
+                ExpectedIdentity = new PocketBaseExpectedIdentity("ready", "2.0", "0.40.1", "5", "hash"),
+            },
+            new BackendLaunchOptions { Command = "backend.exe" });
+        await using var runtime = (ProductionWorkspaceRuntime)production.Create(workspace, 1);
+        var authority = new ControlledGenerationAuthority();
+        var binding = new ControlledSidecarBinding();
+        var candidate = new ControlledGatewayCandidate(ignoreCancellation: true);
+        var snapshot = new ProductSidecarGenerationSnapshot(runtime, 1,
+            new PocketBaseAdminContext(new Uri("http://127.0.0.1:8090/_/"),
+                new Uri("http://127.0.0.1:8090/"), "X-VibeTable-Session", "test-secret"),
+            new ProductSidecarIdentity(workspace.WorkspaceId.ToString("D"), 1, 1,
+                Guid.NewGuid().ToString("D")), []);
+        authority.SetCurrent(snapshot);
+        using var lifecycle = new ProductSidecarGatewayLifecycle(authority, binding, _ => candidate);
+        int clientReady = 0;
+        production.ClientReady += () => clientReady++;
+        var hostStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hostReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        production.RegisterProductSidecarGatewayLifecycle(lifecycle, async token =>
+        {
+            if (!await MainWindow.CompleteProductGatewayBindingAsync(
+                    lifecycle.TryReplaceAsync(snapshot, token), async () =>
+                    {
+                        hostStarted.TrySetResult();
+                        return await hostReady.Task.WaitAsync(token);
+                    }))
+                throw new BackendUnavailableException("The binding was retired.");
+        });
+        fixture.RuntimeFactory.Verify = budget => budget.RunAsync(
+            WorkspaceActivationStage.Verification, token => production.ActivateAsync(runtime, token));
+        int opened = 0;
+        fixture.Manager.Changed += (_, args) =>
+        {
+            if (args.Session.State == WorkspaceSessionState.OpenedWritable) opened++;
+        };
+        using var caller = new CancellationTokenSource();
+        Task<WorkspaceSessionV2> opening = fixture.Manager.OpenAsync(
+            workspace.WorkspaceId, WorkspaceOpenMode.Writable, caller.Token);
+        TimeSpan timeout = TimeSpan.FromSeconds(5);
+        await candidate.HandshakeStarted.Task.WaitAsync(timeout);
+        bool handshakePending = !opening.IsCompleted && opened == 0 && !fixture.Manager.Current.Writable;
+        Assert.IsNull(PluginProjectContext.FromSession(fixture.Manager.Current));
+        Assert.AreEqual(0, clientReady);
+        if (outcome == "retired") authority.SetCurrent(null);
+        if (outcome == "cancelled") caller.Cancel();
+        if (outcome == "timeout") time.Advance(WorkspaceActivationPolicy.Default.VerificationTimeout);
+        if (outcome == "failed") candidate.FailHandshake(new InvalidOperationException("handshake failed"));
+        else candidate.CompleteHandshake();
+        if (outcome is "ready" or "host-failed" or "host-retired" or "runtime-retired")
+        {
+            await hostStarted.Task.WaitAsync(timeout);
+            Assert.IsFalse(opening.IsCompleted, "workspace.open escaped the pending host gateway binding");
+            Assert.AreEqual(0, opened);
+            if (outcome == "runtime-retired") production.Deactivate(runtime);
+            if (outcome == "host-failed") hostReady.SetException(new InvalidOperationException("host failed"));
+            else hostReady.SetResult(outcome != "host-retired");
+        }
+        if (outcome == "ready")
+        {
+            Assert.AreEqual(WorkspaceSessionState.OpenedWritable, (await opening.WaitAsync(timeout)).State);
+            Assert.AreSame(candidate, binding.Current);
+            Assert.IsNotNull(PluginProjectContext.FromSession(fixture.Manager.Current));
+        }
+        else
+        {
+            if (outcome == "cancelled")
+                await Assert.ThrowsAsync<OperationCanceledException>(() => opening.WaitAsync(timeout));
+            else if (outcome == "timeout")
+                await Assert.ThrowsExactlyAsync<WorkspaceActivationTimeoutException>(() => opening.WaitAsync(timeout));
+            else if (outcome is "failed" or "host-failed")
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => opening.WaitAsync(timeout));
+            else
+                await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => opening.WaitAsync(timeout));
+            Assert.AreEqual(WorkspaceSessionState.Closed, fixture.Manager.Current.State);
+            Assert.IsNull(production.CurrentWorkspace);
+        }
+        Assert.IsTrue(handshakePending, "workspace.open escaped the pending capability handshake");
+        Assert.AreEqual(outcome == "ready" ? 1 : 0, opened);
+        Assert.AreEqual(outcome == "ready" ? 1 : 0, clientReady);
+    }
+
     [TestMethod]
     public async Task OpenAndCloseRotateEpochAndOwnAtMostOneRuntime()
     {
@@ -309,7 +411,7 @@ public sealed class WorkspaceSessionManagerTests
     }
     private sealed class SessionFixture : IDisposable
     {
-        public SessionFixture()
+        public SessionFixture(TimeProvider? activationTimeProvider = null)
         {
             Root = Path.Combine(Path.GetTempPath(), "vibetable-session-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
@@ -321,7 +423,8 @@ public sealed class WorkspaceSessionManagerTests
                 Registry,
                 RuntimeFactory,
                 Protection,
-                Lease);
+                Lease,
+                activationTimeProvider: activationTimeProvider);
         }
 
         public string Root { get; }
@@ -382,6 +485,7 @@ public sealed class WorkspaceSessionManagerTests
         public Guid? FailNextStopFor { get; set; }
         public ulong BoundSessionEpoch { get; private set; }
         public bool UsePersistedAuthority { get; set; }
+        public Func<WorkspaceActivationBudget, Task>? Verify { get; set; }
         public ulong ReadLastSessionEpoch(WorkspaceRegistryEntryV2 workspace) =>
             UsePersistedAuthority ? new DesktopWorkspaceAuthorityStore().TryRead(workspace)?.LastSessionEpoch ?? 0 : 0;
 
@@ -423,7 +527,8 @@ public sealed class WorkspaceSessionManagerTests
                 return Task.CompletedTask;
             }
 
-            public Task VerifyAsync(WorkspaceActivationBudget budget) => Task.CompletedTask;
+            public Task VerifyAsync(WorkspaceActivationBudget budget) =>
+                owner.Verify?.Invoke(budget) ?? Task.CompletedTask;
             public Task DrainAsync(CancellationToken cancellationToken)
             {
                 if (owner.FailNextDrainFor == WorkspaceId)
