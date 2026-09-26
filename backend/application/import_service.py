@@ -712,6 +712,7 @@ class ImportService:
             for row in valid_rows
             for resolution in row.relation_resolutions
         )
+        submitted = False
         try:
             if requires_cross_table:
                 if self._relation_provider is None:
@@ -719,6 +720,7 @@ class ImportService:
                         "atomic relation/upsert import is not configured",
                         code="relation_provider_unavailable",
                     )
+                submitted = True
                 relation_result = await self._relation_provider.apply_chunk(
                     collection=params.collection,
                     profile=profile,
@@ -731,6 +733,7 @@ class ImportService:
                 updated_keys = relation_result.updated_row_keys
                 request_id = relation_result.request_id
             else:
+                submitted = True
                 result = await self._bulk.apply(
                     collection=params.collection,
                     profile=profile,
@@ -753,6 +756,12 @@ class ImportService:
                 updated_keys = [str(key) for key in result.updated_row_keys]
                 request_id = result.request_id
         except Exception as exc:
+            known_rejection = getattr(exc, "code", None) in {
+                "import_conflict",
+                "import_upsert_key_missing",
+                "import_upsert_key_not_unique",
+                "mutation.validation.failed",
+            }
             if progress:
                 safe_code = getattr(exc, "code", exc.__class__.__name__)
                 safe_parts = [f"atomic import failed [{safe_code}]"]
@@ -764,6 +773,11 @@ class ImportService:
                     if safe_message:
                         safe_parts.append(safe_message)
                 await progress(total, total, ": ".join(safe_parts))
+            if submitted and not known_rejection:
+                raise ImportFlowError(
+                    "Import submission outcome is unknown; verify the data before previewing again",
+                    code="import_outcome_unknown",
+                ) from exc
             return ApplyImportResult(
                 collection=params.collection,
                 created_count=0,

@@ -69,7 +69,7 @@ public sealed class HostProductRpcCompositionTests
         ApplyPasteResult applied = await beforeStop.ApplyPasteAsync(
             new ApplyPasteRpcParams("orders", plan.Token.Token, "apply-1"), CancellationToken.None);
         Assert.AreEqual("committed", applied.Outcome);
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+        await Assert.ThrowsExactlyAsync<KeyNotFoundException>(() =>
             afterStop.GetTaskStatusAsync(Json("""{"taskId":"missing"}"""), CancellationToken.None));
         await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
             afterStop.RegisterImportSourceAsync(Json("""{"path":"ignored"}"""), CancellationToken.None));
@@ -111,7 +111,7 @@ public sealed class HostProductRpcCompositionTests
             .CreateGateway(fixture.Leases, fixture.Http);
         await fixture.Backend.StopAsync(CancellationToken.None);
         await fixture.Backend.StartAsync(CancellationToken.None);
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+        await Assert.ThrowsExactlyAsync<KeyNotFoundException>(() =>
             old.GetTaskStatusAsync(Json("""{"taskId":"missing"}"""), CancellationToken.None));
         await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
             old.RegisterImportSourceAsync(Json("""{"path":"ignored"}"""), CancellationToken.None));

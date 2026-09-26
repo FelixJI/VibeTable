@@ -59,6 +59,8 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
     /// the notification omits <c>params</c>).
     /// </summary>
     public event Action<string, JsonElement>? NotificationReceived;
+    public event Action? Terminated;
+    private int _terminatedRaised;
 
     public async Task<TResult> InvokeAsync<TParams, TResult>(
         string method,
@@ -141,6 +143,7 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
             return;
         }
 
+        RaiseTerminated();
         RetireHostFiles();
 
         // Fail anything still outstanding so awaiters never hang.
@@ -331,6 +334,22 @@ public sealed partial class JsonRpcClient : IAsyncDisposable
         // fails fast instead of registering a TCS that can never resolve.
         Volatile.Write(ref _readerDead, 1);
         RetireHostFiles();
+        RaiseTerminated();
+    }
+
+    private void RaiseTerminated()
+    {
+        if (Interlocked.Exchange(ref _terminatedRaised, 1) != 0) return;
+        if (Terminated is not { } observers) return;
+        foreach (Action observer in observers.GetInvocationList())
+        {
+            try { observer(); }
+            catch (Exception error)
+            {
+                System.Diagnostics.Trace.TraceError(
+                    $"JSON-RPC termination observer failed: {error}");
+            }
+        }
     }
 
     private void ThrowIfDisposed()

@@ -21,7 +21,9 @@ public sealed class ProductRpcRouteSelectorTests
                 endpoint.CapabilityCatalog,
                 out ProductRpcRoute route), method);
             Assert.AreEqual(method is "settings.readWorkCalendar" or "settings.commitWorkCalendar" or "contentProfile.commit" or "contentProfile.delete" or "contentProfile.load" or "recordDocumentLink.commit" or "recordDocumentLink.delete" or "recordDocumentLink.list" or "recordDocumentLink.repair" or "relation.inspectPair" or "events.reconcile" or "field.change.apply" or "field.change.cancel" or "field.change.plan" or "field.change.status" or "field.recycleBin.list" or "field.settings.describe" or "file.list" or "file.token" or "formula.draft.validate" or "formula.preview" or "formula.validate" or "history.read" or "lookup.list" or "mutation.apply" or "mutation.preview" or "preset.list" or "preset.save" or "preset.delete" or "query.page" or "query.view" or "query.cursorOpen" or "query.cursorFetch" or "query.readRows" or "query.selectionOpen" or "query.validateSnapshot" or "schema.describe" or "schema.getTable" or "version.compare" or "version.create" or "version.delete" or "version.list" or "version.promote" or "version.save" or "schema.list"
-                ? ProductRpcRoute.GoSidecar : ProductRpcRoute.PythonBff,
+                ? ProductRpcRoute.GoSidecar
+                : method is "task.create" or "task.status" or "task.cancel"
+                    ? ProductRpcRoute.HostDataIo : ProductRpcRoute.PythonBff,
                 route, method);
         }
         foreach (string method in RelationLookupRpcRegistry.RequestTypes)

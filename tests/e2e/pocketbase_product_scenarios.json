@@ -209,5 +209,11 @@
     "title": "数据互操作代表矩阵",
     "requirement": "从冻结语料出发，真实工具栏导入 UTF-8 BOM CSV 的 NFC/NFD、Emoji/ZWJ、CJK、RTL 与 locale-case 代表值及日期文本，一次真实取消保持权威与 revision 不变，重新选择后确认；XLSX 原生日期/毫秒与公式样文本经同一 UI 导入，CSV 与 XLSX 导出独立读文件核对码点、日期 wire 文本与字符串单元格；源与目标使用 CJK+NFD+Emoji 文件名，至少一条超过 260 字符的路径经真实 Host 授权导入；导出前后权威行与 schema/data revision 保持不变。",
     "capabilities": ["data-io.interop"]
+  },
+  {
+    "id": "36-backend-import-exit",
+    "title": "运行中导入遇 Python 退出仍保留 Host 状态",
+    "requirement": "真实 1,000 行导入在 Go 首条未提交记录后精确终止 Python，Host 仍可查询 aborted/业务结果待核实快照，不伪报零写入或自动重放，UI 离开忙碌状态。",
+    "capabilities": ["data-import.atomic"]
   }
 ]

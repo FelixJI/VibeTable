@@ -114,6 +114,14 @@ class ExportTargetSettled(CamelModel):
     settled: Literal[True]
 
 
+class StartTaskExecutionParams(CamelModel):
+    """Closed Host-only execution admission; public IDs are allocated by Host."""
+
+    task_id: str = Field(min_length=1, max_length=128)
+    kind: Literal["data.import", "data.export"]
+    params: dict[str, Any]
+
+
 class TaskIdParams(CamelModel):
     """Parameters for ``task.cancel`` / ``task.status``.
 
@@ -224,6 +232,7 @@ __all__ = [
     "RequestImportSourceGrantParams",
     "ResolveGrantParams",
     "SessionPathGrant",
+    "StartTaskExecutionParams",
     "TaskIdParams",
     "TaskOutcome",
     "TaskProgress",
