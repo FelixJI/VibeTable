@@ -47,7 +47,11 @@
     "backend/contracts/table_admin.py",
     "desktop/web-grid/src/services/identifierMappingService.ts",
     "desktop/web-grid/src/services/identifierMappingService.test.ts",
-    "desktop/web-grid/src/stores/identifierMappingStore.ts"
+    "desktop/web-grid/src/stores/identifierMappingStore.ts",
+    "backend/application/grid_state_service.py",
+    "backend/state/local_state_store.py",
+    "desktop/src/VibeTable.Desktop/Services/IWorkspaceSupportRpcGateway.cs",
+    "desktop/src/VibeTable.Desktop/Services/JsonRpcWorkspaceSupportGateway.cs"
   ],
   "forbiddenRpcMethods": [
     "backup.list",
@@ -296,7 +300,9 @@
       "literals": [
         "ReadTablePageAsync",
         "QueryTablePageAsync",
-        "QueryTableViewAsync"
+        "QueryTableViewAsync",
+        "GetGridStateAsync",
+        "SaveGridStateAsync"
       ]
     },
     {
@@ -308,7 +314,8 @@
         "private static Dictionary<string, object?> QueryBody(",
         "private static Dictionary<string, object?> ViewBody(",
         "ReconcileIdentifierMappingsAsync",
-        "workspace.v1_write_disabled"
+        "workspace.v1_write_disabled",
+        "_localState"
       ]
     },
     {
@@ -316,13 +323,32 @@
       "literals": [
         "ReadTablePageAsync",
         "QueryTablePageAsync",
-        "QueryTableViewAsync"
+        "QueryTableViewAsync",
+        "IWorkspaceSupportRpcGateway"
+      ]
+    },
+    {
+      "path": "backend/contracts/grid_state.py",
+      "literals": [
+        "class GridState(",
+        "class GridStateGetParams",
+        "class GridStateSaveParams",
+        "class GridStateResult"
+      ]
+    },
+    {
+      "path": "desktop/src/VibeTable.Desktop/Services/GridRequestController.cs",
+      "literals": [
+        "\"gridState.saveRequested\""
       ]
     },
     {
       "path": "desktop/src/VibeTable.Desktop/Services/GridStateCoordinator.cs",
       "literals": [
-        "TableQuery query"
+        "TableQuery query",
+        "RequestSave",
+        "LoadStateAsync",
+        "SaveGridStateAsync"
       ]
     },
     {
@@ -342,14 +368,16 @@
     {
       "path": "desktop/web-grid/src/bridge/hostBridge.ts",
       "literals": [
-        "\"table.pageRequested\""
+        "\"table.pageRequested\"",
+        "\"gridState.saveRequested\""
       ]
     },
     {
       "path": "desktop/web-grid/src/contracts/index.ts",
       "literals": [
         "\"table.pageRequested\"",
-        "\"client\""
+        "\"client\"",
+        "\"gridState.saveRequested\""
       ]
     },
     {

@@ -499,7 +499,7 @@ public sealed partial class HostProductRpcInvokerTests
         await fixture.Http.HandshakeEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         gateway.Dispose();
-        await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(3)));
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() => pending.WaitAsync(TimeSpan.FromSeconds(3)));
 
         Assert.AreEqual(0, fixture.Http.Calls.Count);
         await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() =>
@@ -834,6 +834,35 @@ public sealed partial class HostProductRpcInvokerTests
         }
     }
 
+    [TestMethod]
+    public async Task RetiredPythonImportPreviewReportsBackendUnavailable()
+    {
+        var transport = new CommandTransport();
+        await using var fixture = await HostFixture.OpenAsync(transport: transport);
+        using JsonRpcProductDataGateway gateway = fixture.Gateway(useGeneratedPolicy: true);
+        var sink = new FakeWebReplySink();
+        using var dispatcher = fixture.Dispatcher(sink);
+        dispatcher.SetProductDataGateway(gateway);
+        var scope = new WorkspaceWireScope
+        {
+            Scope = "workspace",
+            WorkspaceId = fixture.Session.WorkspaceId!.Value,
+            SessionEpoch = fixture.Session.SessionEpoch,
+            OperationId = Guid.NewGuid(),
+            Sequence = 1,
+        };
+        Task request = dispatcher.DispatchAsyncForTesting(new RoutedWebRequest(
+            "data.previewImport", "retiring-import-preview", Json("""{"grantId":"grant","collection":"orders","schemaRevision":"schema-1"}"""), "", scope));
+        await transport.Created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        dispatcher.ClearProductDataGateway(gateway);
+        gateway.Dispose();
+        await request.WaitAsync(TimeSpan.FromSeconds(3));
+        var reply = sink.Replies.Single();
+        Assert.AreEqual("operation.failed", reply.Type);
+        JsonElement payload = JsonSerializer.SerializeToElement(reply.Payload);
+        Assert.AreEqual("BACKEND_UNAVAILABLE", payload.GetProperty("code").GetString());
+    }
+
     private sealed class CommandTransport : IJsonLineTransport
     {
         private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
@@ -848,7 +877,7 @@ public sealed partial class HostProductRpcInvokerTests
             JsonElement request = Json(line);
             string method = request.GetProperty("method").GetString()!;
             Methods.Add(method);
-            if (method == "task.startExecution") { Created.TrySetResult(); return; } // Worker admission succeeded; its reply is lost.
+            if (method is "task.startExecution" or "data.previewImport") { Created.TrySetResult(); return; } // Worker admission succeeded; its reply is lost.
             Assert.AreEqual("task.settleExport", method);
             CleanupGrant = request.GetProperty("params").GetProperty("grantId").GetString();
             CleanupEntered.TrySetResult();
@@ -918,7 +947,7 @@ public sealed partial class HostProductRpcInvokerTests
         }
 
         internal PocketBaseTableGateway TableGateway() => new(
-            Gateway(useGeneratedPolicy: true), new JsonRpcWorkspaceSupportGateway(_client));
+            Gateway(useGeneratedPolicy: true));
 
         internal WorkspaceRequestDispatcher Dispatcher(IWebReplySink sink)
         {

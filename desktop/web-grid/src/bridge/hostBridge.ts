@@ -438,7 +438,6 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // B3 query + state requests.
   "table.queryRequested",
   "table.cursorRequested",
-  "gridState.saveRequested",
   "gridState.get",
   "gridState.save",
   // B2 paste preview + apply requests.

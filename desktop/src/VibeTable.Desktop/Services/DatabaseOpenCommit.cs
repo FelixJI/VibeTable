@@ -4,50 +4,33 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Owns the state-first database-open commit shared by renderer and host
-/// producers. Both workspace discovery state and grid persistence binding are
-/// admitted before the terminal is enqueued; any exception rolls both back.
+/// producers. The workspace discovery admission is committed before the
+/// terminal is enqueued and rolled back when the terminal fails.
 /// </summary>
 internal sealed class DatabaseOpenCommit : IDisposable
 {
     private readonly TableWorkspaceService.DatabaseOpenAdmission _workspace;
-    private readonly GridStateCoordinator.DatabaseBindingAdmission _grid;
     private int _completed;
 
     private DatabaseOpenCommit(
-        TableWorkspaceService.DatabaseOpenAdmission workspace,
-        GridStateCoordinator.DatabaseBindingAdmission grid)
+        TableWorkspaceService.DatabaseOpenAdmission workspace)
     {
         _workspace = workspace;
-        _grid = grid;
     }
 
     public static DatabaseOpenCommit Begin(
         TableWorkspaceService workspace,
-        GridStateCoordinator grid,
         string source,
         DatabaseOpenResult result)
     {
-        ArgumentNullException.ThrowIfNull(grid);
-        TableWorkspaceService.DatabaseOpenAdmission workspaceAdmission =
-            workspace.BeginDatabaseOpenAdmission(source, result);
-        try
-        {
-            GridStateCoordinator.DatabaseBindingAdmission gridAdmission =
-                grid.BeginDatabaseBinding(source);
-            return new DatabaseOpenCommit(workspaceAdmission, gridAdmission);
-        }
-        catch
-        {
-            workspaceAdmission.Dispose();
-            throw;
-        }
+        return new DatabaseOpenCommit(
+            workspace.BeginDatabaseOpenAdmission(source, result));
     }
 
     public void Enqueue(Action terminal)
     {
         ArgumentNullException.ThrowIfNull(terminal);
         terminal();
-        _grid.Complete();
         _workspace.Complete();
         Interlocked.Exchange(ref _completed, 1);
     }
@@ -55,7 +38,6 @@ internal sealed class DatabaseOpenCommit : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _completed, 1) != 0) return;
-        _grid.Dispose();
         _workspace.Dispose();
     }
 }

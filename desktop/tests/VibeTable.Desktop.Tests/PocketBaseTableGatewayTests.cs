@@ -27,7 +27,7 @@ public sealed class PocketBaseTableGatewayTests
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client), new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         var result = await gateway.InsertRowAsync("orders", new Dictionary<string, object?>
         {
             ["id"] = "copiedrow000001",
@@ -64,8 +64,7 @@ public sealed class PocketBaseTableGatewayTests
             """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         var opened = await gateway.OpenDatabaseAsync("ignored", CancellationToken.None);
         var page = await QueryViewAsync(gateway, "orders", 0, 100);
@@ -102,8 +101,7 @@ public sealed class PocketBaseTableGatewayTests
             """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         var page = await QueryViewAsync(gateway, "orders", 0, 100);
 
@@ -136,8 +134,7 @@ public sealed class PocketBaseTableGatewayTests
             """{"rows":[{"id":"row-1","title":"After","__vibetableDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}""");
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         var result = await gateway.UpdateCellAsync(
             "orders",
@@ -188,8 +185,7 @@ public sealed class PocketBaseTableGatewayTests
             """{"rows":[{"id":"row-1","title":"After","__vibetableDigest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}]}""");
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         await gateway.UpdateCellAsync(
             "orders",
@@ -216,8 +212,7 @@ public sealed class PocketBaseTableGatewayTests
             """{"rows":[{"id":"row-1","title":"Changed elsewhere","__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}""");
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         await Assert.ThrowsExactlyAsync<TableEditConflictException>(() =>
             gateway.UpdateCellAsync(
@@ -259,8 +254,7 @@ public sealed class PocketBaseTableGatewayTests
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         var oldValue = new Dictionary<string, object?>
         {
             ["a"] = new Dictionary<string, object?>
@@ -296,8 +290,7 @@ public sealed class PocketBaseTableGatewayTests
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         await Assert.ThrowsExactlyAsync<TableEditConflictException>(() =>
             gateway.UpdateCellAsync(
@@ -335,8 +328,7 @@ public sealed class PocketBaseTableGatewayTests
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         await gateway.DeleteRowsAsync(
             "orders",
@@ -364,8 +356,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond("schema.getTable", Schema("orders"));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             gateway.DeleteRowsAsync(
@@ -423,8 +414,7 @@ public sealed class PocketBaseTableGatewayTests
             """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         var schema = await gateway.GetEditSchemaAsync(
             "items", CancellationToken.None);
@@ -458,8 +448,7 @@ public sealed class PocketBaseTableGatewayTests
             SchemaWithFields("items", title, location));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         EditSchemaResult schema = await gateway.GetEditSchemaAsync(
             "items", CancellationToken.None);
@@ -498,8 +487,7 @@ public sealed class PocketBaseTableGatewayTests
             """));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         var page = await QueryViewAsync(gateway, "items", 0, 100);
 
@@ -530,8 +518,7 @@ public sealed class PocketBaseTableGatewayTests
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         var page = await gateway.QueryTableViewRawAsync(
             "orders",
@@ -581,8 +568,7 @@ public sealed class PocketBaseTableGatewayTests
             """);
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         using var query = JsonDocument.Parse(
             """{"filters":[{"field":"title","operator":"raw_sql","value":{"x":1}}],"sorts":[],"offset":0,"limit":50,"groups":[],"summaries":[],"groupOffset":0,"groupLimit":100}""");
 
@@ -603,8 +589,7 @@ public sealed class PocketBaseTableGatewayTests
         transport.Respond("query.cursorFetch", CursorWindow("row-2", null, false));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         using var query = JsonDocument.Parse(
             """{"filters":[{"field":"title","operator":"raw_sql","value":{"x":1}}],"sorts":[],"limit":500,"groups":[{"field":"title"}],"summaries":[]}""");
 
@@ -640,8 +625,7 @@ public sealed class PocketBaseTableGatewayTests
             SelectionProjectionJson("schema_0002", 2, "row-new", null, false));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         using var query = JsonDocument.Parse("""{"filters":[],"sorts":[],"limit":500}""");
 
         Task<TableSelectionProjection> old = gateway.OpenTableSelectionAsync(
@@ -677,8 +661,7 @@ public sealed class PocketBaseTableGatewayTests
             SelectionProjectionJson("schema_0002", 2, "row-new", null, false));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         using var query = JsonDocument.Parse("""{"filters":[],"sorts":[],"limit":500}""");
 
         Task<EditSchemaResult> oldRead = gateway.GetEditSchemaAsync(
@@ -712,8 +695,7 @@ public sealed class PocketBaseTableGatewayTests
             }));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         using var query = JsonDocument.Parse(
             """{"filters":[],"sorts":[],"limit":500,"groups":[],"summaries":[]}""");
 
@@ -741,8 +723,7 @@ public sealed class PocketBaseTableGatewayTests
             }));
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
         using var query = JsonDocument.Parse(
             """{"filters":[],"sorts":[],"limit":500}""");
 
@@ -764,8 +745,7 @@ public sealed class PocketBaseTableGatewayTests
             """{"kind":"product_data_error","message":"cursor changed","code":"query.cursor_stale","path":"cursor","details":{},"retryable":false}""");
         await using var client = new JsonRpcClient(transport);
         using var gateway = new PocketBaseTableGateway(
-            new JsonRpcProductDataGateway(client),
-            new JsonRpcWorkspaceSupportGateway(client));
+            new JsonRpcProductDataGateway(client));
 
         RpcRemoteException exception = await Assert.ThrowsExactlyAsync<RpcRemoteException>(
             () => gateway.FetchTableCursorAsync("opaque", CancellationToken.None));

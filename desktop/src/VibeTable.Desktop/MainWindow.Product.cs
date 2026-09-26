@@ -354,7 +354,6 @@ public partial class MainWindow : Window
             _workspaceSessions,
             _databasePicker,
             _workspace,
-            _coordinator,
             () => _router.IsReady,
             () => Volatile.Read(ref _closing) != 0,
             HasCurrentProductGateways,

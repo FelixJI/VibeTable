@@ -98,8 +98,6 @@ public sealed class HostProductRpcCompositionTests
             new IReadOnlyList<PasteCell>[] { new[] { new PasteCell(0, 0, "name", "示例", null) } },
             CancellationToken.None);
         Assert.AreEqual("opaque-plan", plan.Token.Token);
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
-            lazy.GetGridStateAsync("workspace", "orders", CancellationToken.None));
         Assert.AreEqual(1, fixture.Http.ProductCalls);
     }
 
@@ -251,24 +249,6 @@ public sealed class HostProductRpcCompositionTests
         }
         finally { fixture.Http.ReplyGate.TrySetResult(); }
         Assert.AreEqual(2, fixture.Http.ProductCalls);
-    }
-
-    [TestMethod]
-    public async Task LazyGatewayKeepsWorkspaceSupportOnReplacedPythonClient()
-    {
-        await using var fixture = await Fixture.OpenAsync();
-        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
-        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
-        _ = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
-            lazy.GetGridStateAsync("workspace", "orders", CancellationToken.None));
-        await fixture.Backend.StopAsync(CancellationToken.None);
-        await fixture.Backend.StartAsync(CancellationToken.None);
-        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
-        RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
-            lazy.GetGridStateAsync("workspace", "orders", CancellationToken.None));
-        Assert.AreEqual(-32601, error.Code); // Reached the paired new fake backend, not a disposed client.
-        Assert.AreEqual(0, fixture.Http.ProductCalls);
-        Assert.AreEqual(0, fixture.Http.ProductHandshakes);
     }
 
     [TestMethod]
