@@ -4,12 +4,58 @@ using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Rpc;
 using VibeTable.Infrastructure.Workspace;
+using System.Text.Json;
 
 namespace VibeTable.Desktop.Tests;
 
 [TestClass]
 public sealed class WorkspaceSessionManagerTests
 {
+    [TestMethod]
+    public async Task HostFileGatewayInstallsWhileVerifyingButGrantsRequireOpenedSession()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 workspace = fixture.AddWorkspace("Host files", "HostFiles");
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        fixture.Manager.SetRequestDrainHook(filter);
+        var transport = new CountingQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        var snapshot = new ProductSidecarGenerationSnapshot(new object(), 1,
+            new PocketBaseAdminContext(new Uri("http://127.0.0.1:8090/_/"),
+                new Uri("http://127.0.0.1:8090/"), "X-VibeTable-Session", "test-secret"),
+            new ProductSidecarIdentity(workspace.WorkspaceId.ToString("D"), 1, 1,
+                Guid.NewGuid().ToString("D")), []);
+        var binding = new HostProductRpcBinding(snapshot.RuntimeAuthority, client, snapshot,
+            ProductRpcRouteSelector.Default, new HostDataIoTaskRegistry(), action => action());
+        using JsonRpcProductDataGateway gateway = binding.CreateGateway(filter);
+        var configured = new TaskCompletionSource<HostSessionFileBroker>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.RuntimeFactory.Verify = async _ =>
+        {
+            Assert.AreEqual(WorkspaceSessionPhase.Verifying, fixture.Manager.Current.Phase);
+            // The same eager setup called by MainWindow.ConfigureRpcGateways.
+            configured.SetResult(gateway.EnableHostFiles());
+            await ready.Task;
+        };
+        Task<WorkspaceSessionV2> opening = fixture.Manager.OpenAsync(workspace.WorkspaceId, WorkspaceOpenMode.Writable);
+        await Task.WhenAny(configured.Task, opening).WaitAsync(TimeSpan.FromSeconds(5));
+        if (opening.IsCompleted) await opening; // Preserve the actual binding exception and stack.
+        HostSessionFileBroker files = await configured.Task;
+        string target = Path.Combine(fixture.Root, "output.csv");
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            files.IssueAsync(target, true, null, CancellationToken.None));
+        Assert.IsFalse(opening.IsCompleted);
+        ready.SetResult();
+        await opening;
+        JsonElement grant = await files.IssueAsync(target, true, null, CancellationToken.None);
+        await files.HandleAsync("openWrite", JsonSerializer.SerializeToElement(new
+            { grantId = grant.GetProperty("grantId").GetString() }), CancellationToken.None);
+        await fixture.Manager.CloseAsync("test").WaitAsync(TimeSpan.FromSeconds(5));
+        await files.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsFalse(File.Exists(target));
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
     [TestMethod]
     [DataRow("ready")]
     [DataRow("failed")]
