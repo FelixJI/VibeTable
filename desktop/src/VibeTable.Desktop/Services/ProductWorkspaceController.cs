@@ -113,7 +113,6 @@ internal sealed class ProductWorkspaceController : IDisposable
     {
         WorkspaceSessionV2 session = _sessions.Current;
         return _isRendererReady()
-            && _runtime.CurrentBackend?.State == BackendState.Ready
             && _hasProductGateway()
             && _runtime.CurrentWorkspace?.WorkspaceId == session.WorkspaceId
             && ProductWorkspaceOpenPolicy.CanProject(session);

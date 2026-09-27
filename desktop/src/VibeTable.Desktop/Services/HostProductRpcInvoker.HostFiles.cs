@@ -1,19 +1,20 @@
 using System.Text.Json;
+using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
 
 internal sealed partial class HostProductRpcInvoker
 {
     private HostSessionFileBroker? _files;
-    private HostSessionFileBroker Files => _files ?? throw new InvalidOperationException("Host file binding is not enabled.");
+    private HostSessionFileBroker Files => _hostFiles?.Invoke() ?? _files ?? throw new InvalidOperationException("Host file binding is not enabled.");
 
     internal HostSessionFileBroker EnableHostFiles()
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_client is null)
-                throw Unavailable();
+            if (_hostFiles is not null) return _hostFiles();
+            if (_client is null) throw Unavailable();
             if (_files is not null) return _files;
             var broker = new HostSessionFileBroker(CaptureLease, CommitCurrent);
             try { _client.RegisterHostFileHandler(broker); }
@@ -24,7 +25,7 @@ internal sealed partial class HostProductRpcInvoker
 
     private void CommitCurrent(Action action)
     {
-        if (!_tryUseCurrent(() => { action(); return true; })) throw Unavailable();
+        if (!_tryUseGoCurrent(() => { action(); return true; })) throw Unavailable();
     }
 
     private static bool IsNativeFileMethod(string method) => method is
@@ -47,7 +48,11 @@ internal sealed partial class HostProductRpcInvoker
             case "path.revokeExportTarget":
                 string id = parameters.GetProperty("grantId").GetString()!;
                 await Files.RevokeAsync(id).ConfigureAwait(false);
-                return await _client!.InvokeAsync<JsonElement, JsonElement>("task.settleExport", parameters, token).ConfigureAwait(false);
+                JsonRpcClient? client = _ensurePython is null ? _client : _taskOwner.CurrentClient;
+                return client is not null
+                    ? await StartPython(client, () => client.InvokeAsync<JsonElement, JsonElement>(
+                        "task.settleExport", parameters, token)).ConfigureAwait(false)
+                    : JsonSerializer.SerializeToElement(new { grantId = id, settled = true });
             case "file.applyHostChange":
                 return await _sidecar.ApplyHostFileChangeAsync(parameters, token).ConfigureAwait(false);
             case "file.saveHostFile":

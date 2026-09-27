@@ -910,7 +910,7 @@ test("Go readiness cannot complete an owned Python binding probe", async () => {
   assert.deepEqual(released, ["go", "python"]);
 });
 
-test("active-table recovery sends a valid retained Python read after Go readiness", async () => {
+test("active-table recovery stays on Go without implicitly starting Python", async () => {
   const { readFile } = await import("node:fs/promises");
   const scenarios = await readFile(new URL("./webview_product_scenarios.mjs", import.meta.url), "utf8");
   const start = scenarios.indexOf("async function waitForActiveTableBackend(");
@@ -925,13 +925,11 @@ test("active-table recovery sends a valid retained Python read after Go readines
   )(async (_page, method, params) => {
     calls.push({ method, params });
     if (method === "query.page") return { type: method, payload: recoveredPage };
-    assert.equal(method, "data.previewImport");
-    assert.deepEqual(params, { collection: "orders", grantId: "e2e-python-recovery-probe", schemaRevision: "e2e-python-recovery-probe" });
-    return pythonProbeTerminal("python");
+    assert.fail(`Go recovery unexpectedly invoked ${method}`);
   }, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams, isPythonRecoveryReady, SidecarRecoveryContractError,
   async () => assert.fail("unexpected failure"), async () => assert.fail("typed probe replies are not diagnostic failures"));
   assert.equal(await run({ waitForTimeout: async () => assert.fail("unexpected retry") }, "orders", 1), recoveredPage);
-  assert.deepEqual(calls.map(call => call.method), ["query.page", "data.previewImport"]);
+  assert.deepEqual(calls.map(call => call.method), ["query.page"]);
 });
 
 function pythonProbeTerminal(requestId) {
@@ -953,4 +951,26 @@ test("Python readiness accepts only its exact correlated schema rejection", asyn
     await assert.rejects(window.observe("python"), SidecarRecoveryContractError);
     await window.close();
   }
+});
+
+
+test("lazy topology requires complete verified Host and Sidecar membership", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./webview_product_scenarios.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("async function observePackagedPythonCount(");
+  const end = source.indexOf("\nasync function requestSidecarKill(", start);
+  const host = { pid: 1, processName: "VibeTable.Next.exe", identityVerified: true };
+  const sidecar = { pid: 2, processName: "vibetable-pb.exe", identityVerified: true };
+  const python = { pid: 3, processName: "vibetable-backend.exe", identityVerified: true };
+  let members = [host, sidecar];
+  const observe = new Function("requestPackagedProcessKill", `${source.slice(start, end)}; return observePackagedPythonCount;`)(
+    async (_runtime, action) => { assert.equal(action, "observe-processes"); return { members }; },
+  );
+  await observe({}, 0);
+  for (const invalid of [[], [host], [host, sidecar, python], [host, sidecar, { ...python, identityVerified: false }]]) {
+    members = invalid;
+    await assert.rejects(observe({}, 0));
+  }
+  members = [host, sidecar, python];
+  await observe({}, 1);
 });

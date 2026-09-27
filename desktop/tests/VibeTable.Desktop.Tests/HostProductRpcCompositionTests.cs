@@ -71,8 +71,10 @@ public sealed class HostProductRpcCompositionTests
         Assert.AreEqual("committed", applied.Outcome);
         await Assert.ThrowsExactlyAsync<KeyNotFoundException>(() =>
             afterStop.GetTaskStatusAsync(Json("""{"taskId":"missing"}"""), CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
-            afterStop.RegisterImportSourceAsync(Json("""{"path":"ignored"}"""), CancellationToken.None));
+        JsonElement grant = await afterStop.RegisterExportTargetAsync(JsonSerializer.SerializeToElement(
+            new { path = Path.Combine(Path.GetTempPath(), "lazy-export.csv") }), CancellationToken.None);
+        Assert.IsTrue(grant.TryGetProperty("grantId", out _));
+        Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
         Assert.AreEqual(2, fixture.Http.ProductCalls);
 
         await fixture.Sidecar.StopAsync(CancellationToken.None);
@@ -102,24 +104,142 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
-    public async Task ReplacedPythonClientCannotUseItsRetiredHostBinding()
+    public async Task GrantSurvivesFirstAttachAndGatewayDisposeButNeverAClientRetirement()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
-        using var old = fixture.Factory.CaptureHostProductRpcBinding()!
-            .CreateGateway(fixture.Leases, fixture.Http);
+        HostProductRpcBinding binding = fixture.Factory.CaptureHostProductRpcBinding()!;
+        Assert.IsNull(binding.Client);
+        using var first = binding.CreateGateway(fixture.Leases, fixture.Http);
+        HostSessionFileBroker files = first.EnableHostFiles();
+        string path = Path.Combine(Path.GetTempPath(), "lazy-export.csv");
+        JsonElement grant = await first.RegisterExportTargetAsync(
+            JsonSerializer.SerializeToElement(new { path }), CancellationToken.None);
+        string id = grant.GetProperty("grantId").GetString()!;
+        first.Dispose();
+        using var second = binding.CreateGateway(fixture.Leases, fixture.Http);
+        Assert.AreSame(files, second.EnableHostFiles());
+        JsonRpcClient client = await binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        Assert.AreSame(files, second.EnableHostFiles());
+        Assert.AreEqual(id, (await files.DescribeAsync(id, CancellationToken.None)).GetProperty("grantId").GetString());
+        Assert.IsTrue(binding.Matches(fixture.Factory.CaptureHostProductRpcBinding()!));
         await fixture.Backend.StopAsync(CancellationToken.None);
-        await fixture.Backend.StartAsync(CancellationToken.None);
-        await Assert.ThrowsExactlyAsync<KeyNotFoundException>(() =>
-            old.GetTaskStatusAsync(Json("""{"taskId":"missing"}"""), CancellationToken.None));
-        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
-            old.RegisterImportSourceAsync(Json("""{"path":"ignored"}"""), CancellationToken.None));
+        JsonRpcClient replacement = await binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        Assert.AreNotSame(client, replacement);
+        Assert.AreNotSame(files, second.EnableHostFiles());
+        await Assert.ThrowsExactlyAsync<HostPathGrantException>(() =>
+            second.EnableHostFiles().DescribeAsync(id, CancellationToken.None));
         Assert.AreEqual(0, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task FirstDataIoAndPluginWaitShareClientWithoutChangingGoGateway()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.BackendOptions.Environment["__VIBETABLE_HANDSHAKE_DELAY_SECONDS"] = "0.2";
+        HostProductRpcBinding binding = fixture.Factory.CaptureHostProductRpcBinding()!;
+        using var lazy = new LazyProductTableGateway(fixture.Leases, fixture.Http);
+        int changed = 0;
+        lazy.BindingChanged += () => changed++;
+        lazy.Bind(binding);
+        using var gateway = binding.CreateGateway(fixture.Leases, fixture.Http);
+        Task data = Assert.ThrowsExactlyAsync<RpcRemoteException>(() => gateway.PreviewImportAsync(
+            Json("""{"collection":"orders","grantId":"unused","schemaRevision":"schema_1"}"""), CancellationToken.None));
+        Task<JsonRpcClient> plugin = binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        Task<JsonRpcClient> another = binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        await Task.WhenAll(data, plugin, another);
+        Assert.AreSame(await plugin, await another);
+        Assert.AreSame(await plugin, fixture.Backend.Client);
+        lazy.Bind(fixture.Factory.CaptureHostProductRpcBinding()!);
+        Assert.AreEqual(1, changed);
+        Assert.AreEqual(0, fixture.Http.ProductCalls);
+    }
+
+    [TestMethod]
+    public async Task DelayedStartingNotificationCannotRetireTheAttachedClientOrTask()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.BeforeBackendState = state =>
+        {
+            if (state != BackendState.Starting) return;
+            entered.TrySetResult();
+            Assert.IsTrue(release.Wait(TimeSpan.FromSeconds(5)));
+        };
+        fixture.Backend.StateChanged += (_, state) =>
+        {
+            if (state == BackendState.Starting) delivered.TrySetResult();
+        };
+        HostProductRpcBinding binding = fixture.Factory.CaptureHostProductRpcBinding()!;
+        ProductSidecarGenerationSnapshot snapshot = fixture.Factory.CaptureProductSidecarGeneration()!;
+        Task<JsonRpcClient> starting = binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            JsonRpcClient client = await starting.WaitAsync(TimeSpan.FromSeconds(5));
+            var tasks = ((ProductionWorkspaceRuntime)snapshot.RuntimeAuthority).DataIoTasks;
+            string id = tasks.Admit(client, snapshot.Identity, "data.import").TaskId;
+            release.Set();
+            await delivered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreSame(client, tasks.CurrentClient);
+            Assert.AreEqual("queued", tasks.Status(id).GetProperty("state").GetString());
+        }
+        finally { release.Set(); }
+    }
+
+    [TestMethod]
+    public async Task ClosingWorkspaceCancelsLazyHandshakeAndJoinsTheActualChild()
+    {
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        fixture.BackendOptions.Environment["__VIBETABLE_HANDSHAKE_DELAY_SECONDS"] = "30";
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Backend.StateChanged += (_, state) =>
+        {
+            if (state == BackendState.Starting) entered.TrySetResult();
+        };
+        Task<JsonRpcClient> starting = fixture.Factory.CaptureHostProductRpcBinding()!
+            .EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task closing = fixture.CloseAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => starting.WaitAsync(TimeSpan.FromSeconds(5)));
+        await closing.WaitAsync(TimeSpan.FromSeconds(5));
+        // The supervisor deliberately preserves Faulted after a failed handshake.
+        Assert.AreEqual(BackendState.Faulted, fixture.Backend.State);
+        Assert.IsNull(fixture.Backend.Client);
+        Assert.IsTrue(fixture.Backend.HasExited);
+        Assert.IsNull(fixture.Factory.CaptureHostProductRpcBinding());
+    }
+
+    [TestMethod]
+    public async Task PreSpawnFailureLeavesGoAvailableAndOnlyANewRequestStartsPython()
+    {
+        int starts = 0;
+        await using var fixture = await Fixture.OpenAsync(beforePythonStart: () =>
+        {
+            if (++starts == 1) throw new IOException("test pre-spawn failure");
+        });
+        HostProductRpcBinding binding = fixture.Factory.CaptureHostProductRpcBinding()!;
+        WorkspaceSessionV2 original = fixture.Session;
+        await Assert.ThrowsExactlyAsync<IOException>(() =>
+            binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None));
+        Assert.AreEqual(1, starts);
+        Assert.IsNull(fixture.Backend.Client);
+        using var gateway = binding.CreateGateway(fixture.Leases, fixture.Http);
+        Assert.AreEqual("orders", (await gateway.ListTablesAsync(Json("{}"), CancellationToken.None))
+            .GetProperty("tables")[0].GetString());
+        Assert.AreEqual(original.WorkspaceId, fixture.Session.WorkspaceId);
+        Assert.AreEqual(original.SessionEpoch, fixture.Session.SessionEpoch);
+        JsonRpcClient client = await binding.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        Assert.AreSame(client, fixture.Backend.Client);
+        Assert.AreEqual(2, starts);
     }
 
     [TestMethod]
     public async Task BackendStopPublishesGoOnlyBindingForHostRebind()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
+        await fixture.Factory.CaptureHostProductRpcBinding()!.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
         var rebound = new TaskCompletionSource<HostProductRpcBinding>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.Factory.BindingChanged += () =>
@@ -411,6 +531,8 @@ public sealed class HostProductRpcCompositionTests
         Assert.IsFalse(result.TryGetProperty("querySnapshot", out _));
         Assert.AreEqual(1, fixture.Http.ProductCalls);
         Assert.AreEqual(1, fixture.Http.ProductHandshakes);
+        Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
+        Assert.IsNull(fixture.Backend.Client);
     }
 
     [TestMethod]
@@ -520,7 +642,7 @@ public sealed class HostProductRpcCompositionTests
         }
         finally { fixture.Http.ReplyGate?.TrySetResult(); }
         HostProductRpcBinding current = fixture.Factory.CaptureHostProductRpcBinding()!;
-        Assert.IsFalse(old.Matches(current));
+        Assert.IsTrue(old.Matches(current));
         Assert.AreNotSame(old.Client, current.Client);
         if (phase == "error")
             await Assert.ThrowsExactlyAsync<RpcRemoteException>(() => pending!);
@@ -784,10 +906,11 @@ public sealed class HostProductRpcCompositionTests
         internal PocketBaseSupervisor Sidecar { get; private set; } = null!;
         internal HttpPeer Http { get; }
         internal Action? BeforeSidecarReady { get; set; }
+        internal Action<BackendState>? BeforeBackendState { get; set; }
         internal WorkspaceSessionV2 Session => _sessions.Current;
         internal WorkspaceSessionManager Sessions => _sessions;
 
-        private Fixture(bool useTestPolicy)
+        private Fixture(bool useTestPolicy, Action? beforePythonStart = null)
         {
             ProductRpcCapabilityManifest productPolicy = useTestPolicy
                 ? ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
@@ -824,17 +947,18 @@ public sealed class HostProductRpcCompositionTests
                     };
                     BackendOptions = backendOptions;
                     Backend = new PythonBackendSupervisor(backendOptions);
+                    Backend.StateChanged += (_, state) => BeforeBackendState?.Invoke(state);
                     return new(Sidecar, Backend, new WorkspaceV2HttpGateway(Sidecar, Http));
                 },
-                productPolicy);
+                productPolicy, beforePythonStart: beforePythonStart);
             _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), Factory);
             Leases = new WorkspaceSessionEnvelopeFilter(_sessions);
             _sessions.SetRequestDrainHook(Leases);
         }
 
-        internal static async Task<Fixture> OpenAsync(bool useTestPolicy = true)
+        internal static async Task<Fixture> OpenAsync(bool useTestPolicy = true, Action? beforePythonStart = null)
         {
-            var fixture = new Fixture(useTestPolicy);
+            var fixture = new Fixture(useTestPolicy, beforePythonStart);
             try
             {
                 WorkspaceLayoutResult layout = WorkspaceLayout.Create(Path.Combine(fixture._root, "workspace"),

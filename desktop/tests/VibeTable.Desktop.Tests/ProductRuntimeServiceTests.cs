@@ -1,3 +1,4 @@
+using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
@@ -10,7 +11,7 @@ public sealed class ProductRuntimeServiceTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
 
     [TestMethod]
-    [DataRow("capabilities"), DataRow("product"), DataRow("python"), DataRow("final")]
+    [DataRow("capabilities"), DataRow("product"), DataRow("final")]
     public async Task NewReadySupersedesBlockedRecoveryWithoutLosingLatest(
         string blockedStage)
     {
@@ -51,19 +52,14 @@ public sealed class ProductRuntimeServiceTests
 
         Assert.AreEqual(1, Volatile.Read(ref readyCount));
         CollectionAssert.AreEqual(new long[] { 1, 2 }, coordinator.Prepared.ToArray());
-        Assert.AreEqual(
-            blockedStage is "python" or "final" ? 3 : 2,
-            fixture.Backend.StartCalls);
-        Dictionary<string, string> lastStart = fixture.Backend.StartEnvironments[^1];
-        Assert.AreEqual("http://127.0.0.1:43102", lastStart["VIBETABLE_SIDECAR_URL"]);
-        Assert.AreEqual("second-secret", lastStart["VIBETABLE_SIDECAR_SESSION_SECRET"]);
+        Assert.AreEqual(0, fixture.Backend.StartCalls);
         Assert.AreEqual(3, fixture.Backend.StopCalls);
         Assert.AreEqual(coordinator.ExpectedClear, coordinator.ClearCalls);
     }
 
     [TestMethod]
-    [DataRow("capabilities", false), DataRow("product", false), DataRow("python", false), DataRow("final", false)]
-    [DataRow("capabilities", true), DataRow("product", true), DataRow("python", true), DataRow("final", true)]
+    [DataRow("capabilities", false), DataRow("product", false), DataRow("final", false)]
+    [DataRow("capabilities", true), DataRow("product", true), DataRow("final", true)]
     public async Task StopAndDisposeCancelAndJoinEveryRecoveryStage(
         string blockedStage,
         bool disposeFirst)
@@ -253,11 +249,11 @@ public sealed class ProductRuntimeServiceTests
         WorkspaceActivationReport report = budget.Complete();
 
         CollectionAssert.AreEqual(
-            new[] { "sidecar", "bind", "backend" },
+            new[] { "sidecar", "bind" },
             order);
         Assert.AreEqual(1, localData.StartCalls);
-        Assert.AreEqual(1, backend.StartCalls);
-        Assert.AreEqual(TimeSpan.FromSeconds(33), report.Elapsed);
+        Assert.AreEqual(0, backend.StartCalls);
+        Assert.AreEqual(TimeSpan.FromSeconds(31), report.Elapsed);
         Assert.IsTrue(traces.Any(message =>
             message.StartsWith(
                 "workspace.activation.sidecar.ready_record.completed ",
@@ -265,45 +261,108 @@ public sealed class ProductRuntimeServiceTests
     }
 
     [TestMethod]
-    public async Task StartAsync_BackendConsumesTheSameAbsoluteDeadline()
+    public async Task LazyStartCoalescesCallersAndOnlyCancelsOneWaiter()
     {
-        var time = new ManualTimeProvider();
-        var localData = new FakeLocalDataService(_ =>
+        await using var fixture = await StartRuntimeAsync(new FakeRecoveryCoordinator());
+        Assert.AreEqual(0, fixture.Backend.StartCalls);
+        var entered = NewSignal();
+        var release = NewSignal();
+        fixture.Backend.Starting = async (_, token) =>
         {
-            time.Advance(TimeSpan.FromSeconds(50));
-            return Task.CompletedTask;
-        });
-        var sidecar = new FakePocketBaseSupervisor(
-            () => time.Advance(TimeSpan.FromSeconds(20)));
-        var backend = new FakeBackendSupervisor(
-            token => Task.Delay(Timeout.InfiniteTimeSpan, token));
-        await using var runtime = new ProductRuntimeService(
-            localData,
-            sidecar,
-            backend,
-            new Dictionary<string, string>());
-        using var budget = WorkspaceActivationBudget.Begin(
-            Guid.Parse("44444444-4444-4444-8444-444444444444"),
-            13,
-            new WorkspaceActivationPolicy(
-                totalTimeout: TimeSpan.FromSeconds(125),
-                sidecarTimeout: TimeSpan.FromSeconds(60),
-                backendTimeout: TimeSpan.FromSeconds(60),
-                verificationTimeout: TimeSpan.FromSeconds(5)),
-            CancellationToken.None,
-            time);
-
-        Task start = runtime.StartAsync(budget);
-        time.Advance(TimeSpan.FromSeconds(55));
-
-        WorkspaceActivationTimeoutException error =
-            await Assert.ThrowsExactlyAsync<WorkspaceActivationTimeoutException>(
-                () => start);
-        Assert.AreEqual(WorkspaceActivationStage.Backend, error.Stage);
-        Assert.AreEqual(1, localData.StartCalls);
-        Assert.AreEqual(1, backend.StartCalls);
-        Assert.AreEqual(WorkspaceActivationOutcome.TimedOut, budget.Report.Outcome);
+            entered.SetResult();
+            await release.Task.WaitAsync(token);
+        };
+        using var caller = new CancellationTokenSource();
+        int attached = 0;
+        int released = 0;
+        WorkspaceRequestEpochLease Capture() => Lease(CancellationToken.None, () => released++);
+        Task Attach(CancellationToken _) { attached++; return Task.CompletedTask; }
+        Task first = fixture.Runtime.EnsureBackendAsync(Capture, Attach, TestTimeout, caller.Token);
+        await entered.Task.WaitAsync(TestTimeout);
+        Task second = fixture.Runtime.EnsureBackendAsync(Capture, Attach, TestTimeout, CancellationToken.None);
+        caller.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => first);
+        Assert.IsFalse(second.IsCompleted);
+        Assert.AreEqual(0, released);
+        release.SetResult();
+        await second.WaitAsync(TestTimeout);
+        Assert.AreEqual(1, fixture.Backend.StartCalls);
+        Assert.AreEqual(1, attached);
+        Assert.AreEqual(1, released);
     }
+
+    [TestMethod]
+    [DataRow("epoch"), DataRow("stop"), DataRow("ingress"), DataRow("dispose"), DataRow("timeout")]
+    public async Task LazyStartCancellationKeepsItsLeaseUntilSupervisorTeardown(string reason)
+    {
+        await using var fixture = await StartRuntimeAsync(new FakeRecoveryCoordinator());
+        using var epoch = new CancellationTokenSource();
+        var entered = NewSignal();
+        var teardown = NewSignal();
+        var release = NewSignal();
+        int leases = 0;
+        fixture.Backend.Starting = async (_, token) =>
+        {
+            entered.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        };
+        fixture.Backend.Teardown = async (_, _) =>
+        {
+            teardown.TrySetResult();
+            await release.Task;
+        };
+        Task starting = fixture.Runtime.EnsureBackendAsync(
+            () => { leases++; return Lease(epoch.Token, () => leases--); },
+            _ => throw new AssertFailedException("Cancelled startup cannot attach."),
+            reason == "timeout" ? TimeSpan.FromMilliseconds(100) : TestTimeout, CancellationToken.None);
+        await entered.Task.WaitAsync(TestTimeout);
+        Task stop = Task.CompletedTask;
+        if (reason == "epoch") epoch.Cancel();
+        else if (reason == "stop") stop = fixture.Runtime.StopAsync(CancellationToken.None);
+        else if (reason == "ingress") stop = fixture.Runtime.StopIngressAsync(CancellationToken.None);
+        else if (reason == "dispose") stop = fixture.Runtime.DisposeAsync().AsTask();
+        try
+        {
+            await teardown.Task.WaitAsync(TestTimeout);
+            Assert.AreEqual(1, leases);
+            Assert.IsFalse(starting.IsCompleted);
+            if (reason is "stop" or "ingress" or "dispose") Assert.IsFalse(stop.IsCompleted);
+        }
+        finally { release.TrySetResult(); }
+        await Assert.ThrowsAsync<OperationCanceledException>(() => starting.WaitAsync(TestTimeout));
+        await stop.WaitAsync(TestTimeout);
+        Assert.AreEqual(0, leases);
+        Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
+    }
+
+    [TestMethod]
+    public async Task FailedLazyStartRetriesOnlyOnANewRequestAndResumeStaysGoOnly()
+    {
+        await using var fixture = await StartRuntimeAsync(new FakeRecoveryCoordinator());
+        fixture.Backend.Starting = (count, _) => count == 1
+            ? Task.FromException(new IOException("spawn failed")) : Task.CompletedTask;
+        Task Start() => fixture.Runtime.EnsureBackendAsync(
+            () => Lease(CancellationToken.None, () => { }), _ => Task.CompletedTask,
+            TestTimeout, CancellationToken.None);
+        await Assert.ThrowsExactlyAsync<IOException>(Start);
+        Assert.AreEqual(1, fixture.Backend.StartCalls);
+        Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
+        await Start();
+        Assert.AreEqual(2, fixture.Backend.StartCalls);
+        await fixture.Runtime.StopIngressAsync(CancellationToken.None);
+        await fixture.Runtime.ResumeIngressAsync(CancellationToken.None);
+        Assert.AreEqual(BackendState.Stopped, fixture.Backend.State);
+        Assert.AreEqual(2, fixture.Backend.StartCalls);
+        await Start();
+        Assert.AreEqual(3, fixture.Backend.StartCalls);
+    }
+
+    private static WorkspaceRequestEpochLease Lease(CancellationToken token, Action release)
+        => new(new WorkspaceWireScope
+        {
+            Scope = "workspace", WorkspaceId = Guid.NewGuid(), SessionEpoch = 1,
+            OperationId = Guid.NewGuid(), Sequence = 1,
+        }, token, release);
 
     private sealed class FakeLocalDataService(
         Func<CancellationToken, Task> start) : ILocalDataService

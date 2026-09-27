@@ -20,6 +20,9 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
     private readonly Func<Func<bool>, bool> _tryUseCurrent;
     private readonly Func<Func<bool>, bool> _tryUseGoCurrent;
     private readonly ProductRpcRouteSelector _routes;
+    private readonly Func<CancellationToken, Task<JsonRpcClient>>? _ensurePython;
+    private readonly Func<JsonRpcClient, Func<bool>, bool>? _tryUseExactPython;
+    private readonly Func<HostSessionFileBroker>? _hostFiles;
     private readonly HostDataIoTaskRegistry _taskOwner;
     private readonly ProductSidecarHttpGateway _sidecar;
     private readonly CancellationTokenSource _lifetime = new();
@@ -37,7 +40,10 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         ProductRpcRouteSelector? routes = null,
         HttpMessageHandler? handler = null,
         Func<Func<bool>, bool>? tryUseGoCurrent = null,
-        HostDataIoTaskRegistry? taskOwner = null)
+        HostDataIoTaskRegistry? taskOwner = null,
+        Func<CancellationToken, Task<JsonRpcClient>>? ensurePython = null,
+        Func<JsonRpcClient, Func<bool>, bool>? tryUseExactPython = null,
+        Func<HostSessionFileBroker>? hostFiles = null)
     {
         _client = client;
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
@@ -46,7 +52,10 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         _tryUseGoCurrent = tryUseGoCurrent ?? _tryUseCurrent;
         _routes = routes ?? ProductRpcRouteSelector.Default;
         _taskOwner = taskOwner ?? new HostDataIoTaskRegistry();
-        _taskOwner.BindClient(client, snapshot.Identity);
+        _ensurePython = ensurePython;
+        _tryUseExactPython = tryUseExactPython;
+        _hostFiles = hostFiles;
+        if (ensurePython is null) _taskOwner.BindClient(client, snapshot.Identity);
         _sidecar = new ProductSidecarHttpGateway(snapshot.Context, snapshot.Identity,
             snapshot.Registrations, handler);
     }
@@ -71,6 +80,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             }
             using var call = CancellationTokenSource.CreateLinkedTokenSource(
                 token, lifetime, lease.CancellationToken);
+            JsonRpcClient? execution = null;
             try
             {
                 if (route == ProductRpcRoute.GoSidecar)
@@ -86,7 +96,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 JsonElement result;
                 if (native)
                 {
-                    EnsureCurrent(lease, call.Token);
+                    EnsureCurrent(lease, call.Token, go: true);
                     result = await InvokeNativeFileAsync(method, parameters, call.Token).ConfigureAwait(false);
                 }
                 else if (route == ProductRpcRoute.HostDataIo)
@@ -96,8 +106,10 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 }
                 else if (route == ProductRpcRoute.PythonBff)
                 {
-                    result = await StartCurrent(() => _client!.InvokeAsync<JsonElement, JsonElement>(
+                    execution = await EnsurePythonAsync(call.Token).ConfigureAwait(false);
+                    result = await StartPython(execution, () => execution.InvokeAsync<JsonElement, JsonElement>(
                         method, parameters, call.Token)).ConfigureAwait(false);
+                    EnsurePythonCurrent(execution);
                 }
                 else
                 {
@@ -113,7 +125,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                         _ => throw new InvalidOperationException("Invalid Product RPC response."),
                     };
                 }
-                EnsureCurrent(lease, call.Token, (route is ProductRpcRoute.GoSidecar or ProductRpcRoute.HostDataIo) && !native);
+                EnsureCurrent(lease, call.Token, go: true);
                 return result;
             }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested
@@ -125,14 +137,15 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             catch
             {
                 // A late failure belongs to the retired binding just as a late result does.
-                EnsureCurrent(lease, call.Token, (route is ProductRpcRoute.GoSidecar or ProductRpcRoute.HostDataIo) && !native);
+                if (execution is not null) EnsurePythonCurrent(execution);
+                EnsureCurrent(lease, call.Token, go: true);
                 throw;
             }
         }
     }
 
     private async Task<JsonElement> InvokeTaskAsync(
-        string method, JsonElement parameters, CancellationToken token)
+        string method, JsonElement parameters, CancellationToken token, JsonRpcClient? execution = null)
     {
         if (method == "task.status")
         {
@@ -145,11 +158,11 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             string id = parameters.GetProperty("taskId").GetString()
                 ?? throw new JsonException("Task ID is required.");
             var (snapshot, client) = _taskOwner.RequestCancel(id);
-            if (client is not null && ReferenceEquals(client, _client))
+            if (client is not null)
             {
                 try
                 {
-                    await StartCurrent(() => client.InvokeAsync<JsonElement, bool>(
+                    await StartPython(client, () => client.InvokeAsync<JsonElement, bool>(
                         "task.cancelExecution", parameters, token)).ConfigureAwait(false);
                 }
                 catch (Exception) when (!token.IsCancellationRequested)
@@ -165,8 +178,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         string kind = parameters.GetProperty("kind").GetString()
             ?? throw new JsonException("Task kind is required.");
         JsonElement taskParams = parameters.GetProperty("params");
-        JsonRpcClient clientForStart = _client
-            ?? throw Unavailable();
+        JsonRpcClient clientForStart = execution ?? await EnsurePythonAsync(token).ConfigureAwait(false);
+        EnsurePythonCurrent(clientForStart);
         var (taskId, _) = _taskOwner.Admit(
             clientForStart, _snapshot.Identity, kind);
         try
@@ -177,7 +190,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 kind,
                 @params = taskParams,
             }, WireOptions);
-            JsonElement accepted = await StartCurrent(() =>
+            JsonElement accepted = await StartPython(clientForStart, () =>
                 clientForStart.InvokeAsync<JsonElement, JsonElement>(
                     "task.startExecution", request, token)).ConfigureAwait(false);
             if (!accepted.TryGetProperty("accepted", out JsonElement confirmed)
@@ -194,21 +207,24 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
     }
     internal async Task<JsonElement> ExecuteExportAsync(JsonElement parameters, CancellationToken token)
     {
-        if (_client is null)
-            throw Unavailable();
         using WorkspaceRequestEpochLease lease = CaptureLease();
-        EnsureCurrent(lease, token);
+        using var call = CancellationTokenSource.CreateLinkedTokenSource(token, lease.CancellationToken);
+        token = call.Token;
+        EnsureCurrent(lease, token, go: true);
+        JsonRpcClient client = await EnsurePythonAsync(token).ConfigureAwait(false);
+        HostSessionFileBroker files = Files;
         string grantId = parameters.GetProperty("grantId").GetString()
             ?? throw new JsonException("Export grant is required.");
         try
         {
-            JsonElement status = await InvokeAsync("task.create", JsonSerializer.SerializeToElement(
-                new { kind = "data.export", @params = parameters }), token).ConfigureAwait(false);
+            JsonElement status = await InvokeTaskAsync("task.create", JsonSerializer.SerializeToElement(
+                new { kind = "data.export", @params = parameters }), token, client).ConfigureAwait(false);
             string taskId = status.GetProperty("taskId").GetString()
                 ?? throw new JsonException("Export task ID is missing.");
             while (true)
             {
-                EnsureCurrent(lease, token);
+                EnsureCurrent(lease, token, go: true);
+                EnsurePythonCurrent(client);
                 string? state = status.GetProperty("state").GetString();
                 if (state == "succeeded") return status.GetProperty("result").Clone();
                 if (state == "failed") throw new InvalidOperationException("Export failed.");
@@ -227,14 +243,39 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             // Only this captured client's export grant can be retired after epoch cancellation.
             // Keep our lease until the server has closed its writers; never use a new binding.
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await Files.RevokeAsync(grantId).ConfigureAwait(false);
-            JsonElement settled = await _client!.InvokeAsync<JsonElement, JsonElement>(
+            await files.RevokeAsync(grantId).ConfigureAwait(false);
+            JsonElement settled = await client.InvokeAsync<JsonElement, JsonElement>(
                 "task.settleExport", JsonSerializer.SerializeToElement(new { grantId }), cleanup.Token)
                 .ConfigureAwait(false);
             if (settled.GetProperty("grantId").GetString() != grantId
                 || !settled.GetProperty("settled").GetBoolean())
                 throw new InvalidOperationException("Export cleanup was not confirmed.");
         }
+    }
+
+    private Task<JsonRpcClient> EnsurePythonAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (_ensurePython is not null) return _ensurePython(token);
+        JsonRpcClient client = _client ?? throw Unavailable();
+        EnsurePythonCurrent(client);
+        return Task.FromResult(client);
+    }
+
+    private bool TryUsePython(JsonRpcClient client, Func<bool> action)
+        => _tryUseExactPython is not null ? _tryUseExactPython(client, action)
+            : ReferenceEquals(client, _client) && _tryUseCurrent(action);
+
+    private void EnsurePythonCurrent(JsonRpcClient client)
+    {
+        if (!TryUsePython(client, () => true)) throw Unavailable();
+    }
+
+    private Task<T> StartPython<T>(JsonRpcClient client, Func<Task<T>> start)
+    {
+        Task<T>? pending = null;
+        if (!TryUsePython(client, () => { pending = start(); return true; })) throw Unavailable();
+        return pending!;
     }
 
     private void EnsureCurrent(WorkspaceRequestEpochLease lease, CancellationToken token, bool go = false)
@@ -281,7 +322,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             _disposed = true;
         }
         _lifetime.Cancel();
-        if (_files is not null) _client!.UnregisterHostFileHandler(_files);
+        if (_hostFiles is null && _files is not null) _client!.UnregisterHostFileHandler(_files);
         _sidecar.Dispose();
         _lifetime.Dispose();
     }
