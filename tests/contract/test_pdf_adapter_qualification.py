@@ -41,10 +41,14 @@ def test_pdf_worker_process_limits_and_cleanup(qualification_executable: Path) -
     completed = subprocess.run(
         [str(qualification_executable), "--check-process-boundary"],
         cwd=ROOT,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=90,
+    )
+    assert completed.returncode == 0, (
+        f"PDF process-boundary exited with {completed.returncode}\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
     report = json.loads(completed.stdout)
     assert report["passed"] is True
