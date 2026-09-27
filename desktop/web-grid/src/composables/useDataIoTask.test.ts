@@ -216,12 +216,15 @@ describe("useDataIoTask", () => {
     const { task, service } = setup({}, () => context.value);
 
     expect(task.canPreviewImport.value).toBe(false);
-    expect(task.canExport.value).toBe(true);
+    expect(task.canExport.value).toBe(false);
     await task.previewImport();
     expect(service.previewImport).not.toHaveBeenCalled();
+    await task.exportData("csv");
+    expect(service.loadExportLookupContext).not.toHaveBeenCalled();
 
     context.value = { collection: "orders", schemaRevision: "schema_0001" };
     expect(task.canPreviewImport.value).toBe(true);
+    expect(task.canExport.value).toBe(true);
     await task.previewImport();
     expect(service.previewImport).toHaveBeenCalledOnce();
 
@@ -229,6 +232,26 @@ describe("useDataIoTask", () => {
     context.value = { collection: null, schemaRevision: null };
     expect(task.canPreviewImport.value).toBe(false);
     expect(task.canExport.value).toBe(false);
+  });
+
+  it("pauses export while the UI schema reloads and resumes once it is restored", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    const { task, service, exportSucceeded } = setup({}, () => context.value);
+
+    context.value.schemaRevision = null;
+    expect(task.canExport.value).toBe(false);
+    await task.exportData("csv");
+    expect(service.loadExportLookupContext).not.toHaveBeenCalled();
+    expect(task.exportPanel.value).toBeNull();
+
+    context.value.schemaRevision = "schema_0001";
+    expect(task.canExport.value).toBe(true);
+    await task.exportData("csv");
+    expect(task.exportPanel.value?.collection).toBe("orders");
+    await task.confirmExportData();
+    expect(service.exportData).toHaveBeenCalledWith(
+      "orders", {}, "csv", undefined, expect.any(Function), expect.any(Function));
+    expect(exportSucceeded).toHaveBeenCalledOnce();
   });
 
   it("owns the preview/apply lifecycle and refreshes only after a successful apply", async () => {
