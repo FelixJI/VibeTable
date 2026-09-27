@@ -364,6 +364,7 @@ public partial class MainWindow : Window
         _coordinator = new GridStateCoordinator(
             _tableGateway,
             notification => productWorkspace!.OnNotification(notification));
+        _tableGateway.BindingChanged += _coordinator.ResetForTableChange;
         _productWorkspace = new ProductWorkspaceController(
             _webBridge,
             _runtime,
@@ -392,7 +393,8 @@ public partial class MainWindow : Window
         _productSidecarGatewayLifecycle =
             new ProductSidecarGatewayLifecycle(_runtime, _dispatcher);
         _runtime.RegisterProductSidecarGatewayLifecycle(
-            _productSidecarGatewayLifecycle);
+            _productSidecarGatewayLifecycle,
+            BindProductGatewaysAsync);
         _productRealtime = new ProductRealtimeSession(_runtime,
             () => Volatile.Read(ref _updateHealthProbeInProgress) == 0
                 ? _runtime.CaptureProductSidecarGeneration() : null,
@@ -557,7 +559,7 @@ public partial class MainWindow : Window
 
     private void OnRuntimeClientReady()
     {
-        if (Volatile.Read(ref _closing) != 0) return;
+        if (Volatile.Read(ref _closing) != 0 || HasCurrentProductGateways()) return;
         ProductSidecarGenerationSnapshot? productSidecarGeneration =
             _runtime.CaptureProductSidecarGeneration();
         if (productSidecarGeneration is not null)
@@ -567,6 +569,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task BindProductGatewaysAsync(CancellationToken cancellationToken)
+    {
+        using var binding = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _session.Token);
+        ProductSidecarGenerationSnapshot snapshot = _runtime.CaptureProductSidecarGeneration()
+            ?? throw new BackendUnavailableException("The workspace Sidecar generation is unavailable.");
+        if (!await CompleteProductGatewayBindingAsync(
+                _productSidecarGatewayLifecycle.TryReplaceAsync(snapshot, binding.Token),
+                () => ConfigureRpcGatewaysAsync(snapshot, binding.Token)).ConfigureAwait(false)
+            || !HasCurrentProductGateways())
+            throw new BackendUnavailableException("The workspace gateway binding was retired.");
+    }
+
     private async Task TryReplaceProductSidecarGatewayAsync(
         ProductSidecarGenerationSnapshot snapshot)
     {
@@ -574,7 +589,7 @@ public partial class MainWindow : Window
         {
             await CompleteProductGatewayBindingAsync(
                 _productSidecarGatewayLifecycle.TryReplaceAsync(snapshot, _session.Token),
-                () => ConfigureRpcGatewaysAsync(snapshot)).ConfigureAwait(true);
+                () => ConfigureRpcGatewaysAsync(snapshot, _session.Token)).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (
             _session.IsCancellationRequested
@@ -591,13 +606,13 @@ public partial class MainWindow : Window
         }
     }
 
-    internal static async Task CompleteProductGatewayBindingAsync(
+    internal static async Task<bool> CompleteProductGatewayBindingAsync(
         Task<bool> sidecarBinding,
-        Func<Task> configure)
+        Func<Task<bool>> configure)
     {
-        // Keep database.opened behind the Product Sidecar capability handshake.
-        if (await sidecarBinding.ConfigureAwait(true))
-            await configure().ConfigureAwait(true);
+        // Both workspace.open and database.opened require the same installed generation.
+        return await sidecarBinding.ConfigureAwait(false)
+            && await configure().ConfigureAwait(false);
     }
 
     private bool HasCurrentProductGateways()
@@ -606,22 +621,16 @@ public partial class MainWindow : Window
             && _runtime.CaptureHostProductRpcBinding() is { } current
             && configured.Matches(current);
 
-    private async Task ConfigureRpcGatewaysAsync(ProductSidecarGenerationSnapshot snapshot)
+    private async Task<bool> ConfigureRpcGatewaysAsync(
+        ProductSidecarGenerationSnapshot snapshot,
+        CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _closing) != 0) return;
-        try
-        {
-            bool configured = await Dispatcher.InvokeAsync(() => TryConfigureRpcGateways(snapshot))
-                .Task
-                .ConfigureAwait(true);
-            if (!configured) return; // This ready continuation belongs to a retired generation.
-        }
-        catch (Exception exception)
-        {
-            const string code = "backend.gateway_binding_failed";
-            _readiness?.Trace($"{code}:{exception.GetType().Name}");
-            _readiness?.WriteError($"{code} ({exception.GetType().Name})");
-        }
+        return await Dispatcher.InvokeAsync(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Volatile.Read(ref _closing) == 0 && TryConfigureRpcGateways(snapshot);
+            }, System.Windows.Threading.DispatcherPriority.Normal, cancellationToken)
+            .Task.ConfigureAwait(false);
     }
 
     private bool TryConfigureRpcGateways(ProductSidecarGenerationSnapshot snapshot)

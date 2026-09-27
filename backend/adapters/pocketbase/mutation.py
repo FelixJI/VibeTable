@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import secrets as pysecrets
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
-from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
+from backend.adapters.pocketbase.client import (
+    JsonObject,
+    PocketBaseClient,
+    PocketBaseProductError,
+)
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
 from backend.application.paste_service import (
     ApplyPasteConflict,
@@ -23,6 +28,8 @@ class _CurrentUserProvider(Protocol):
 
 class PocketBaseBulkMutationClient:
     """Compatibility port for PasteService backed only by MutationKernel."""
+
+    IMPORT_PLAN_CONTRACT = "vibetable.import-plans.v1"
 
     def __init__(self, *, client: PocketBaseClient, auth: _CurrentUserProvider) -> None:
         self._client = client
@@ -49,6 +56,100 @@ class PocketBaseBulkMutationClient:
                 ],
             }
         )
+
+    async def mint_import_plan(
+        self,
+        *,
+        collection: str,
+        grant_id: str,
+        schema_revision: str,
+        capability_hash: str,
+        source_hash: str,
+        rows: list[dict[str, Any]],
+        mode: str,
+        upsert_key: str | None,
+    ) -> dict[str, Any]:
+        """Store a normalized preview plan with the Go plan owner.
+
+        The sidecar mints the single-use token, owns the fixed TTL and keeps
+        the plan rows; Python retains no parallel writable plan copy.
+        """
+        return await self._plan_call(
+            self._client.mint_import_plan,
+            {
+                "contract": self.IMPORT_PLAN_CONTRACT,
+                "collection": collection,
+                "grantId": grant_id,
+                "schemaRevision": schema_revision,
+                "capabilityHash": capability_hash,
+                "sourceHash": source_hash,
+                "mode": mode,
+                "upsertKey": upsert_key,
+                "rows": rows,
+            },
+        )
+
+    async def stage_import_plan(
+        self,
+        *,
+        token: str,
+        grant_id: str,
+        collection: str,
+        mode: str,
+        capability_hash: str,
+    ) -> dict[str, Any]:
+        """Claim the single apply of a stored plan and fetch its frozen rows."""
+        return await self._plan_call(
+            self._client.stage_import_plan,
+            {
+                "contract": self.IMPORT_PLAN_CONTRACT,
+                "token": token,
+                "grantId": grant_id,
+                "collection": collection,
+                "mode": mode,
+                "capabilityHash": capability_hash,
+            },
+        )
+
+    async def bind_import_plan(
+        self, *, token: str, idempotency_prefix: str, attempt: int
+    ) -> dict[str, Any]:
+        """Bind the plan's idempotency prefix to the staged claim (first use wins)."""
+        return await self._plan_call(
+            self._client.bind_import_plan,
+            {
+                "contract": self.IMPORT_PLAN_CONTRACT,
+                "token": token,
+                "idempotencyPrefix": idempotency_prefix,
+                "attempt": attempt,
+            },
+        )
+
+    async def settle_import_plan(self, *, token: str, outcome: str, attempt: int) -> dict[str, Any]:
+        """Report the staged claim's outcome to the owner."""
+        return await self._plan_call(
+            self._client.settle_import_plan,
+            {
+                "contract": self.IMPORT_PLAN_CONTRACT,
+                "token": token,
+                "outcome": outcome,
+                "attempt": attempt,
+            },
+        )
+
+    async def _plan_call(
+        self,
+        method: Callable[[Mapping[str, Any]], Awaitable[JsonObject]],
+        request: Mapping[str, Any],
+    ) -> JsonObject:
+        try:
+            return dict(await method(json_object(request)))
+        except PocketBaseProductError as exc:
+            raise PasteError(
+                str(exc),
+                code=exc.code,
+                data=exc.rpc_error_data,
+            ) from exc
 
     async def preview_paste(
         self,

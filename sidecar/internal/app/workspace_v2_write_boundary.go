@@ -28,6 +28,14 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	"/api/vibetable/v1/mutations/preview":        {},
 	"/api/vibetable/v1/events/reconcile":         {},
 	"/api/vibetable/v2/import-preview":           {},
+	// Import plan lifecycle ports only mutate Go in-memory plan state (token,
+	// claim, idempotency prefix). Business writes still go exclusively through
+	// the coordinated MutationKernel paths above. Exact paths only — unknown
+	// import-plans paths must stay fail-closed like every other legacy write.
+	"/api/vibetable/v2/import-plans":        {},
+	"/api/vibetable/v2/import-plans/stage":  {},
+	"/api/vibetable/v2/import-plans/bind":   {},
+	"/api/vibetable/v2/import-plans/settle": {},
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
