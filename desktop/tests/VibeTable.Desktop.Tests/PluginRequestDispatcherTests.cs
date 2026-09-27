@@ -652,7 +652,9 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
-    public async Task AuthorityTransitionAfterCommitLeasePreventsOldGatewayEntry()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetirementAfterCommitLeasePreventsOldGatewayEntry(bool retireGateway)
     {
         using var authority = new ProductAuthorityEpoch();
         PluginProjectContext context = ReadyContext();
@@ -672,7 +674,15 @@ public sealed class PluginRequestDispatcherTests
             out HostInstallPlanOperation? operation,
             out _));
         await using HostInstallPlanOperation owned = operation!;
-        authority.Transition(context with { SessionGeneration = 2 });
+        if (retireGateway)
+        {
+            registry.RetireGateway(gateway);
+            Assert.IsTrue(authority.IsCurrent(binding.Authority));
+        }
+        else
+        {
+            authority.Transition(context with { SessionGeneration = 2 });
+        }
 
         bool started = registry.TryStartOperation(
             owned,
@@ -753,7 +763,7 @@ public sealed class PluginRequestDispatcherTests
         await oldGateway.InspectStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         dispatcher.SetGateway(newGateway);
         pendingInspection.SetResult(
-            FakePluginGateway.InstallPlan("plan-stale-budget", "project-1", "1"));
+            FakePluginGateway.InstallPlan(oldGateway.InspectRequest!.PlanId, "project-1", "1"));
         await inspection.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
@@ -791,7 +801,7 @@ public sealed class PluginRequestDispatcherTests
             """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
         await oldGateway.InspectStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
         dispatcher.SetGateway(newGateway);
-        pendingPlan.SetResult(FakePluginGateway.InstallPlan("plan-old", "project-1", "1"));
+        pendingPlan.SetResult(FakePluginGateway.InstallPlan(oldGateway.InspectRequest!.PlanId, "project-1", "1"));
         await pending;
 
         Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
@@ -844,7 +854,7 @@ public sealed class PluginRequestDispatcherTests
                 dispatcher.Dispose();
                 break;
         }
-        pendingPlan.SetResult(FakePluginGateway.InstallPlan("plan-old", "project-1", "1"));
+        pendingPlan.SetResult(FakePluginGateway.InstallPlan(oldGateway.InspectRequest!.PlanId, "project-1", "1"));
         await pending;
 
         Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
