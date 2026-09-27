@@ -8630,13 +8630,16 @@ async function activateWorkspaceThroughUi(page, { method, activate, waitForHydra
   return { databaseOpened, session };
 }
 
-async function readDirectoryReplicaCheckpoint(page, tableId) {
+async function readDirectoryReplicaCheckpoint(page, tableId, publishedRecorder = null) {
+  const published = publishedRecorder
+    ? await waitForPublishedReplicaUi(page, publishedRecorder)
+    : null;
   const query = await rawBridgeRequest(page, "query.page", {
     tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 10 },
   });
-  const replicaReply = await rawWorkspaceV2Request(page, "replica.status", {});
-  return { query, replica: replicaReply.result };
+  const replica = published ?? (await rawWorkspaceV2Request(page, "replica.status", {})).result;
+  return { query, replica };
 }
 
 async function scenario23(page, recorder, _network, runtime) {
@@ -8808,7 +8811,7 @@ async function scenario23(page, recorder, _network, runtime) {
       && reopened.databaseOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
   { initialSession, reopened });
 
-  const beforeRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const beforeRestart = await readDirectoryReplicaCheckpoint(page, table.tableId, recorder);
   const beforeRow = beforeRestart.query.payload?.rows?.[0];
   const beforeSnapshot = beforeRestart.query.payload?.snapshot;
   const replica = beforeRestart.replica;
@@ -8851,7 +8854,7 @@ async function scenario23(page, recorder, _network, runtime) {
       && replacementOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
   { kill, replacementOpened, session });
 
-  const afterRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const afterRestart = await readDirectoryReplicaCheckpoint(page, table.tableId, recorder);
   const afterRow = afterRestart.query.payload?.rows?.[0];
   const afterSnapshot = afterRestart.query.payload?.snapshot;
   recorder.check("replacement sidecar preserves the exact row, revisions, and replica status",
@@ -8941,7 +8944,8 @@ async function waitForPublishedReplicaUi(page, recorder) {
       if (uiEnabled && replicated) {
         recorder.check("replicated UI readiness agrees with one exact public status checkpoint",
           replicated, { replica });
-        return;
+        // Return this accepted sample; another status read can enter a new verification pass.
+        return replica.result;
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now())));
     }
