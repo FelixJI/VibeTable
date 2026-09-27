@@ -6,7 +6,12 @@ from typing import Any
 
 from pydantic import Field
 
-from backend.contracts.plugin import CommandContext, InteractionDecision, PluginContract
+from backend.contracts.plugin import (
+    CommandContext,
+    InstallPlan,
+    InteractionDecision,
+    PluginContract,
+)
 from backend.contracts.task import SessionPathGrant
 
 
@@ -15,17 +20,40 @@ class PluginProjectParams(PluginContract):
 
 
 class InspectInstallParams(PluginContract):
+    """Public inspection DTO: the renderer never fills the native source."""
+
     project_key: str
     project_revision: str
     source_location: str
 
 
+class InspectInstallExecutionParams(PluginContract):
+    """Host-gateway inspection payload with the host-generated plan identity."""
+
+    project_key: str
+    project_revision: str
+    source_location: str
+    plan_id: str
+
+
 class CommitInstallParams(PluginContract):
+    """Public frozen renderer commit DTO: plan id plus revision only."""
+
     plan_id: str
     project_revision: str
 
 
+class CommitInstallExecutionParams(PluginContract):
+    """Host-gateway commit payload: the full plan from the consumed lease."""
+
+    project_key: str
+    plan: InstallPlan
+    project_revision: str
+
+
 class CancelInstallParams(PluginContract):
+    """Public frozen renderer cancel DTO; the worker registration is retired."""
+
     plan_id: str
 
 
@@ -39,7 +67,18 @@ class SetPluginEnabledParams(PluginIdentityParams):
 
 
 class UpgradePluginParams(PluginIdentityParams):
+    """Public frozen renderer upgrade DTO: identity plus plan id and revision."""
+
     plan_id: str
+    project_revision: str
+
+
+class UpgradePluginExecutionParams(PluginContract):
+    """Host-gateway upgrade payload: the full plan from the consumed lease."""
+
+    project_key: str
+    plugin_id: str
+    plan: InstallPlan
     project_revision: str
 
 
@@ -81,8 +120,10 @@ class PluginTaskParams(PluginContract):
 
 __all__ = [
     "CancelInstallParams",
+    "CommitInstallExecutionParams",
     "CommitInstallParams",
     "DescribePluginActionParams",
+    "InspectInstallExecutionParams",
     "InspectInstallParams",
     "PluginIdentityParams",
     "PluginProjectParams",
@@ -93,5 +134,6 @@ __all__ = [
     "SetPluginEnabledParams",
     "StartPluginActionParams",
     "UninstallPluginParams",
+    "UpgradePluginExecutionParams",
     "UpgradePluginParams",
 ]

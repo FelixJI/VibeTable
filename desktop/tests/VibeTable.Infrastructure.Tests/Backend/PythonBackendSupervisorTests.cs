@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -8,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 using VibeTable.Contracts;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.Rpc;
@@ -192,7 +194,7 @@ public sealed class PythonBackendSupervisorTests
                 CancellationToken.None);
             Assert.AreEqual("1.0", result.ProtocolVersion);
             CollectionAssert.AreEquivalent(
-                new[] { "system.handshake", "test.delay", "test.exit" },
+                new[] { "system.handshake", "test.delay", "test.exit", "test.startBusyNode" },
                 result.Capabilities);
         }
         finally
@@ -293,7 +295,6 @@ public sealed class PythonBackendSupervisorTests
 
             // Wait briefly for the supervisor's exit handler to run.
             await WaitForStateAsync(supervisor, BackendState.Faulted, TimeSpan.FromSeconds(2));
-            Assert.IsNotNull(supervisor.Client);
             Assert.IsFalse(supervisor.TryUseReadyClient(_ =>
                 throw new AssertFailedException("Faulted client admitted a call.")));
         }
@@ -304,6 +305,98 @@ public sealed class PythonBackendSupervisorTests
 
         Assert.AreEqual(BackendState.Faulted, supervisor.State);
         await AssertChildGoneAsync(supervisor);
+    }
+
+    [TestMethod]
+    public void JobAssignment_AccessDeniedDoesNotClaimOwnership()
+    {
+        using var job = JobObject.Create();
+        // Query-only access cannot assign this process to a Job; error 5 must
+        // not be mistaken for membership in some other, unrelated Job.
+        using SafeProcessHandle handle = OpenProcess(0x1000, false, Environment.ProcessId);
+        Assert.IsFalse(handle.IsInvalid);
+        var error = Assert.ThrowsExactly<Win32Exception>(() =>
+            job.AssignProcess(handle.DangerousGetHandle()));
+        Assert.AreEqual(5, error.NativeErrorCode);
+    }
+
+    [TestMethod]
+    public async Task UnexpectedExit_DoesNotStopQueuedReplacement()
+    {
+        var options = FakeOptions(env: new Dictionary<string, string>
+        {
+            ["__VIBETABLE_HANDSHAKE_DELAY_SECONDS"] = "30",
+            ["__VIBETABLE_REPORT_PID"] = "1",
+        });
+        await using var supervisor = new PythonBackendSupervisor(options);
+        var firstPid = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        supervisor.LogReceived += (_, line) =>
+        {
+            int index = line.LastIndexOf(" pid=", StringComparison.Ordinal);
+            if (index >= 0 && int.TryParse(line[(index + 5)..], out int pid))
+                firstPid.TrySetResult(pid);
+        };
+        Task firstStart = supervisor.StartAsync(CancellationToken.None);
+        using Process first = Process.GetProcessById(
+            await firstPid.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        // Queue replacement before the exit cleanup can acquire _lifecycle.
+        // The first Start still owns the lock while its handshake is pending.
+        options.Environment["__VIBETABLE_HANDSHAKE_DELAY_SECONDS"] = "0";
+        Task replacement = supervisor.StartAsync(CancellationToken.None);
+        first.Kill();
+        await AssertThrowsAsync<InvalidOperationException>(() => firstStart);
+        await replacement.WaitAsync(TimeSpan.FromSeconds(5));
+        JsonRpcClient client = supervisor.Client!;
+        // A lifecycle turn queued after replacement also waits behind old
+        // cleanup. It must reject Ready, rather than restart a killed G2.
+        await AssertThrowsAsync<InvalidOperationException>(() =>
+            supervisor.StartAsync(CancellationToken.None));
+        Assert.AreSame(client, supervisor.Client);
+        JsonElement reply = await client.InvokeAsync<object, JsonElement>(
+            "test.delay", new { seconds = 0 }, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, reply.GetProperty("slept").GetDouble());
+        Assert.AreEqual(BackendState.Ready, supervisor.State);
+        Assert.IsFalse(supervisor.HasExited);
+    }
+
+    [TestMethod]
+    public async Task UnexpectedExit_KillsBusyNodeBeforeStop()
+    {
+        await using var supervisor = new PythonBackendSupervisor(FakeOptions());
+        await supervisor.StartAsync(CancellationToken.None);
+        string nodeVersion = File.ReadAllText(Path.Combine(RepoRoot, ".node-version")).Trim();
+        string nodeExecutable = Path.Combine(
+            RepoRoot, ".tools", "node", $"node-v{nodeVersion}-win-x64", "node.exe");
+        Assert.IsTrue(File.Exists(nodeExecutable), "Repository-pinned Node is required.");
+        JsonElement children = await supervisor.Client!.InvokeAsync<object, JsonElement>(
+            "test.startBusyNode", new { nodeExecutable }, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        using Process python = Process.GetProcessById(children.GetProperty("pythonPid").GetInt32());
+        using Process node = Process.GetProcessById(children.GetProperty("nodePid").GetInt32());
+        try
+        {
+            Console.WriteLine($"Busy Node {node.Id}; killing only Python {python.Id}.");
+            python.Kill();
+            await python.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            await WaitForStateAsync(supervisor, BackendState.Faulted, TimeSpan.FromSeconds(3));
+            try
+            {
+                await node.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+            }
+            catch (TimeoutException)
+            {
+                Assert.Fail($"Busy Node {node.Id} survived Python {python.Id} exit before Stop/Dispose.");
+            }
+            Console.WriteLine($"Busy Node {node.Id} exited before Stop/Dispose.");
+        }
+        finally
+        {
+            // The assertion above must observe supervisor cleanup, never this fallback.
+            await supervisor.StopAsync(CancellationToken.None);
+            if (!node.HasExited) node.Kill();
+            await node.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        }
     }
 
     [TestMethod]
@@ -688,6 +781,10 @@ public sealed class PythonBackendSupervisorTests
         Assert.AreEqual(BackendState.Stopped, supervisor.State);
         await AssertChildGoneAsync(supervisor);
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeProcessHandle OpenProcess(
+        uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, int processId);
 
     // ---------- helpers ----------
 

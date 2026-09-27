@@ -12,133 +12,54 @@ internal sealed record HostInstallPlanBinding(
     PluginProjectContext Context,
     ProductAuthoritySnapshot Authority);
 
+/// <summary>
+/// One admitted install plan together with its optional host-owned download.
+/// The full plan is the host's execution payload: Python receives it verbatim
+/// at commit/upgrade time and never keeps an acceptable-plan ledger of its own.
+/// </summary>
 internal sealed record HostInstallPlanLease(
-    string PlanId,
-    string PluginId,
+    PluginRuntimeInstallPlan Plan,
     HostInstallPlanBinding Binding,
-    DownloadedPluginPackage? Package);
-
-internal sealed class HostInstallPlanCleanup(
-    TimeSpan timeout,
-    TimeProvider timeProvider,
-    Action<string>? trace)
+    DownloadedPluginPackage? Package)
 {
-    public async Task<bool> ReleaseAsync(
-        HostInstallPlanLease lease,
-        CancellationToken cancellationToken = default)
-    {
-        lease.Package?.Dispose();
-        return await CancelRemoteAsync(
-            lease.Binding.Gateway,
-            lease.PlanId,
-            cancellationToken).ConfigureAwait(false);
-    }
+    public string PlanId => Plan.PlanId;
 
-    public async Task<bool> CancelRemoteAsync(
-        IPluginRpcGateway gateway,
-        string planId,
-        CancellationToken cancellationToken = default)
-    {
-        Task<bool>? cancellation = null;
-        try
-        {
-            using var deadline = new CancellationTokenSource(timeout, timeProvider);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-                cancellationToken,
-                deadline.Token);
-            cancellation = gateway.CancelInstallAsync(
-                new PluginInstallCancelParams(planId),
-                linked.Token);
-            return await cancellation.WaitAsync(timeout, timeProvider, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            Observe(cancellation);
-            throw;
-        }
-        catch (Exception exception) when (
-            exception is TimeoutException or OperationCanceledException)
-        {
-            Observe(cancellation);
-            SafeTrace("PLUGIN_INSTALL_CANCEL_TIMEOUT");
-            return false;
-        }
-        catch
-        {
-            Observe(cancellation);
-            SafeTrace("PLUGIN_INSTALL_CANCEL_FAILED");
-            return false;
-        }
-    }
-
-    private static void Observe(Task<bool>? cancellation)
-    {
-        if (cancellation is not null)
-            _ = ObserveLateCancellationAsync(cancellation);
-    }
-
-    private void SafeTrace(string code)
-    {
-        try
-        {
-            trace?.Invoke(code);
-        }
-        catch
-        {
-        }
-    }
-
-    private static async Task ObserveLateCancellationAsync(Task<bool> cancellation)
-    {
-        try
-        {
-            await cancellation.ConfigureAwait(false);
-        }
-        catch
-        {
-        }
-    }
+    public string PluginId => Plan.Manifest.PluginId;
 }
 
 internal sealed class HostInstallPlanOperation(
     HostInstallPlanLease plan,
-    ProductAuthorityEpoch.ProductAuthorityOperationLease authority,
-    HostInstallPlanCleanup cleanup) : IAsyncDisposable
+    ProductAuthorityEpoch.ProductAuthorityOperationLease authority) : IAsyncDisposable
 {
-    private int _completed;
     private int _disposed;
 
     public HostInstallPlanLease Plan { get; } = plan;
     public ProductAuthorityEpoch.ProductAuthorityOperationLease Authority { get; } = authority;
 
-    public void Complete() => Interlocked.Exchange(ref _completed, 1);
-
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return ValueTask.CompletedTask;
         try
         {
+            // There is no backend plan to cancel: the consumed lease and its
+            // download are host-owned resources and their disposal is local.
             Plan.Package?.Dispose();
-            if (Volatile.Read(ref _completed) == 0)
-            {
-                await cleanup.CancelRemoteAsync(
-                    Plan.Binding.Gateway,
-                    Plan.PlanId).ConfigureAwait(false);
-            }
         }
         finally
         {
             Authority.Dispose();
         }
+        return ValueTask.CompletedTask;
     }
 }
 
 /// <summary>
-/// Owns host-side install-plan and downloaded-package leases. Every gateway or
-/// context transition and every admission/consumption is serialized by one
-/// lock; cancellation and disposal are deliberately performed by the caller
-/// after ownership has left the lock.
+/// Sole authority for install-plan admission, consumption, cancellation and
+/// invalidation. Every gateway or context transition and every
+/// admission/consumption is serialized by one lock; package disposal and
+/// authority-epoch transitions are deliberately performed by the caller after
+/// ownership has left the lock. A terminated Python client retires its plan
+/// bindings immediately without touching the shared Go epoch.
 /// </summary>
 internal sealed class HostInstallPlanLeaseRegistry
 {
@@ -149,25 +70,11 @@ internal sealed class HostInstallPlanLeaseRegistry
     private PluginProjectContext? _context;
     private long _gatewayGeneration;
     private readonly ProductAuthorityEpoch _authority;
-    private readonly HostInstallPlanCleanup _cleanup;
 
-    public HostInstallPlanLeaseRegistry(
-        ProductAuthorityEpoch authority,
-        TimeSpan? cleanupTimeout = null,
-        TimeProvider? timeProvider = null,
-        Action<string>? cleanupTrace = null)
+    public HostInstallPlanLeaseRegistry(ProductAuthorityEpoch authority)
     {
         _authority = authority ?? throw new ArgumentNullException(nameof(authority));
-        TimeSpan timeout = cleanupTimeout ?? TimeSpan.FromSeconds(2);
-        if (timeout <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(cleanupTimeout));
-        _cleanup = new HostInstallPlanCleanup(
-            timeout,
-            timeProvider ?? TimeProvider.System,
-            cleanupTrace);
     }
-
-    internal HostInstallPlanCleanup Cleanup => _cleanup;
 
     public IReadOnlyList<HostInstallPlanLease> SetGateway(
         IPluginRpcGateway gateway,
@@ -227,6 +134,36 @@ internal sealed class HostInstallPlanLeaseRegistry
         }
     }
 
+    /// <summary>
+    /// Retires the plan bindings of one gateway whose transport terminated.
+    /// The shared authority epoch is deliberately untouched: a dead Python
+    /// client must not retire the Go epoch that outlives it. Disposal of the
+    /// released downloads happens outside the lock.
+    /// </summary>
+    public IReadOnlyList<HostInstallPlanLease> RetireGateway(IPluginRpcGateway expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        lock (_gate)
+        {
+            List<HostInstallPlanLease> released = [];
+            foreach (HostInstallPlanLease lease in _leases.Values)
+            {
+                if (ReferenceEquals(lease.Binding.Gateway, expected))
+                    released.Add(lease);
+            }
+            foreach (HostInstallPlanLease lease in released)
+            {
+                _leases.Remove(lease.PlanId);
+            }
+            if (ReferenceEquals(_gateway, expected))
+            {
+                _gateway = null;
+                _gatewayGeneration += 1;
+            }
+            return released;
+        }
+    }
+
     public HostInstallPlanBinding? Capture()
     {
         lock (_gate)
@@ -257,8 +194,7 @@ internal sealed class HostInstallPlanLeaseRegistry
                 || plan.ProjectKey != binding.Context.ProjectKey
                 || plan.ProjectRevision != binding.Context.ProjectRevision) return false;
             _leases.Remove(plan.PlanId, out replaced);
-            _leases.Add(plan.PlanId, new HostInstallPlanLease(
-                plan.PlanId, plan.Manifest.PluginId, binding, package));
+            _leases.Add(plan.PlanId, new HostInstallPlanLease(plan, binding, package));
             return true;
         }
     }
@@ -294,11 +230,45 @@ internal sealed class HostInstallPlanLeaseRegistry
                 rejected = plan;
                 return false;
             }
-            operation = new HostInstallPlanOperation(
-                plan,
-                authorityLease,
-                _cleanup);
+            operation = new HostInstallPlanOperation(plan, authorityLease);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Starts an already-consumed plan's execution only after re-verifying its
+    /// binding inside the registry lock, so a gateway retirement or context
+    /// transition that happened after consumption cannot reach the gateway.
+    /// Lock order is registry first, authority second, as everywhere else.
+    /// </summary>
+    public bool TryStartOperation(
+        HostInstallPlanOperation operation,
+        Func<CancellationToken, Task<PluginRuntimeSnapshot>> start,
+        out Task<PluginRuntimeSnapshot>? pending)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(start);
+        lock (_gate)
+        {
+            pending = null;
+            if (!IsCurrentLocked(operation.Plan.Binding)) return false;
+            return _authority.TryStart(operation.Authority, start, out pending);
+        }
+    }
+
+    /// <summary>
+    /// Projects an execution result only while its binding is still current:
+    /// a late result from a retired gateway is rejected without retiring the
+    /// shared authority epoch.
+    /// </summary>
+    public bool TryFinishOperation(HostInstallPlanOperation operation, Action terminal)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(terminal);
+        lock (_gate)
+        {
+            if (!IsCurrentLocked(operation.Plan.Binding)) return false;
+            return _authority.TryFinish(operation.Authority, terminal);
         }
     }
 

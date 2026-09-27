@@ -30,17 +30,16 @@ from backend.contracts.data_io import (
 )
 from backend.contracts.plugin import PluginEventEnvelope
 from backend.contracts.plugin_rpc import (
-    CancelInstallParams,
-    CommitInstallParams,
+    CommitInstallExecutionParams,
     DescribePluginActionParams,
-    InspectInstallParams,
+    InspectInstallExecutionParams,
     PluginTaskParams,
     ResolvePluginFileParams,
     ResolvePluginInteractionParams,
     RollbackPluginParams,
     StartPluginActionParams,
     UninstallPluginParams,
-    UpgradePluginParams,
+    UpgradePluginExecutionParams,
 )
 from backend.contracts.system import HandshakeParams
 from backend.contracts.task import (
@@ -138,11 +137,20 @@ def _register_plugin_methods(
     register_application_errors(ErrorDomain.PLUGIN)
     # plugin.listCatalog/listAudit/setEnabled and the pending-cleanup
     # projection are answered by the Go plugin catalog through the Host;
-    # Python only keeps the closed install/execution surface.
-    dispatcher.register("plugin.inspectInstall", service.inspect_install, InspectInstallParams)
-    dispatcher.register("plugin.commitInstall", service.commit_install, CommitInstallParams)
-    dispatcher.register("plugin.cancelInstall", service.cancel_install, CancelInstallParams)
-    dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginParams)
+    # Python only keeps the closed install/execution surface. The install
+    # handlers take the private host-gateway execution payloads: the full
+    # plan arrives from a consumed WPF lease while the frozen public DTOs
+    # stay in the renderer contract catalog.
+    dispatcher.register(
+        "plugin.inspectInstall", service.inspect_install, InspectInstallExecutionParams
+    )
+    dispatcher.register(
+        "plugin.commitInstall", service.commit_install, CommitInstallExecutionParams
+    )
+    # plugin.cancelInstall has no worker registration: the WPF host owns
+    # cancellation by taking and disposing its install-plan lease; the public
+    # renderer capability keeps its frozen DTO in the Host contract catalog.
+    dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginExecutionParams)
     dispatcher.register("plugin.rollback", service.rollback, RollbackPluginParams)
     dispatcher.register("plugin.uninstall", service.uninstall, UninstallPluginParams)
     dispatcher.register(

@@ -49,7 +49,7 @@
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
 | `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
-| `plugin.mutation` | <code>11-plugin-mutation</code>（插件 mutation plan 与越权拒绝） |
+| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
@@ -87,7 +87,7 @@
 | <code>08-stale-conflict</code> | 两次过期编辑显示明确冲突 | 两个基于同一旧版本的编辑中，后提交者看到可操作的显式冲突，且不会静默覆盖。 | `mutation.conflict`、`release.smoke` |
 | <code>09-atomic-import-scale</code> | 粘贴或导入中途失败无半提交 | 1,000 行单事务导入在中途故障后，业务记录、审计、幂等键和 outbox 均严格为零。 | `data-import.atomic` |
 | <code>10-sse-reconnect</code> | SSE 断线重连且不重复应用 | 真实 sidecar 断开后 UI 自动追赶且事件只应用一次；精确终止打包 BFF 后通过 workspace 关闭/重开恢复，轮换 session epoch，并拒绝旧 epoch 写入。 | `realtime.reconnect`、`workspace.lifecycle` |
-| <code>11-plugin-mutation</code> | 插件 mutation plan 与越权拒绝 | 插件操作先显示 mutation plan；授权变更成功，未授权字段或能力被拒绝并写入审计。 | `plugin.mutation` |
+| <code>11-plugin-mutation</code> | 插件安装、重启与执行清理 | 插件安装与 mutation 需明确确认，文件能力和越权拒绝可验证；确认中及计算中 Python 崩溃后任务结算、Node 回收。真实 Host 重启后 catalog/audit 零执行进程可读，缺本机包缓存时执行明确失败。 | `plugin.mutation` |
 | <code>12-backup-consistency</code> | 工作区快照恢复一致性 | 从当前版本界面创建并恢复工作区快照；恢复后业务数据、附件和行历史精确回到快照权威状态，同时保留快照之后产生的不可回滚审计记录与外部 ledger 链；派生搜索 generation 必须失效并重建后重新命中恢复附件。 | `snapshot.restore`、`attachment.history`、`history.restore`、`workspace-search.rebuild`、`audit.ledger` |
 | <code>13-protection-policy</code> | 工作区保护策略与仓库验证 | 通过真实 Settings UI 执行 repository.verify、读取并更新 retention policy、预览 cleanup，并仅在计划确认为零删除时一次性执行 retention.apply；过期 policy revision 必须稳定拒绝，direct workspace 不伪造 replica，Apply 必须返回零删除数与零回收字节数。 | `workspace.protection` |
 | <code>14-document-diff</code> | 真实文件历史版本比较 | 通过 host-only picker 导入真实 TXT 历史版本，以真实 restore revision 建立当前版本后，从 FileRevisionTree 的“与当前版本比较”执行 closed document.diffRequested；验证本地化 identical 结果、两阶段 effective CAS 的 stale 失败，以及 renderer 原始 fileHistory.materializeDiffPair 请求被拒绝。 | `file-history.diff` |

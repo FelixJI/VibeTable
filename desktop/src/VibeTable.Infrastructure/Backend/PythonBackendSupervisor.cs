@@ -231,12 +231,17 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
             ProcessGeneration? generation = null;
             try
             {
-                (Process process, JobObject job) = SpawnProcessAndBindJob();
+                (Process process, JobObject job) = SpawnProcess();
                 generation = new ProcessGeneration(process, job, stopTimeout);
                 lock (_stateGate)
                 {
                     _generation = generation;
                 }
+
+                // Own the started process before assignment can fail, so the
+                // existing failure teardown also reaps an unassigned child.
+                if (JobObject.IsSupported)
+                    job.AssignProcess(process.SafeHandle.DangerousGetHandle());
 
                 generation.ExitHandler = (_, _) => OnProcessExited(generation);
                 process.Exited += generation.ExitHandler;
@@ -454,7 +459,7 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
 
     // ---------- internals ----------
 
-    private (Process Process, JobObject Job) SpawnProcessAndBindJob()
+    private (Process Process, JobObject Job) SpawnProcess()
     {
         var psi = new ProcessStartInfo
         {
@@ -519,24 +524,6 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
             throw new InvalidOperationException(
                 $"Failed to spawn backend '{_options.Command} {_options.Arguments}': " +
                 $"{ex.Message}", ex);
-        }
-
-        // Bind the child to the Job Object ASAP so descendants are covered.
-        // SafeProcessHandle gives us the OS handle we need to call
-        // AssignProcessToJobObject.
-        if (JobObject.IsSupported)
-        {
-            try
-            {
-                job.AssignProcess(process.SafeHandle.DangerousGetHandle());
-            }
-            catch
-            {
-                // Soft-failure: Dispose path still force-kills via Process.Kill.
-                // We deliberately don't surface this — the supervisor must
-                // still function (with degraded cleanup) if Job Object
-                // assignment is denied.
-            }
         }
 
         return (process, job);
@@ -628,7 +615,7 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
     private void OnProcessExited(ProcessGeneration generation)
     {
         int previous = generation.ObserveExit();
-
+        bool unexpected = false;
         lock (_stateGate)
         {
             if (ReferenceEquals(_generation, generation)
@@ -636,7 +623,32 @@ public sealed class PythonBackendSupervisor : IBackendSupervisor
                 && _state is BackendState.Starting or BackendState.Ready)
             {
                 TransitionLocked(BackendState.Faulted);
+                unexpected = true;
             }
+        }
+        if (unexpected)
+            _ = CleanupUnexpectedExitAsync(generation);
+    }
+
+    private async Task CleanupUnexpectedExitAsync(ProcessGeneration generation)
+    {
+        await _lifecycle.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            // A queued Start/Stop may already have retired this generation.
+            // Never clean the replacement that now owns the supervisor.
+            if (ReferenceEquals(Volatile.Read(ref _generation), generation))
+                await TeardownGenerationAsync(generation, requestGraceful: false)
+                    .ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            Trace.TraceError(DiagnosticEvent.Failure(
+                nameof(PythonBackendSupervisor), "backend.cleanup", "BACKEND_EXIT_CLEANUP_FAILED"));
+        }
+        finally
+        {
+            _lifecycle.Release();
         }
     }
 

@@ -28,11 +28,12 @@ public sealed class JsonRpcPluginGatewayTests
             JsonDocument.Parse("{}").RootElement.Clone(),
             "1.0.0");
 
-        await gateway.InspectInstallAsync(new("project-1", "revision-1", "source-1"), CancellationToken.None);
-        await gateway.CommitInstallAsync(new("plan-1", "revision-1"), CancellationToken.None);
-        await gateway.CancelInstallAsync(new("plan-1"), CancellationToken.None);
+        await gateway.InspectInstallAsync(
+            new("project-1", "revision-1", "source-1", "plan-host-1"), CancellationToken.None);
+        await gateway.CommitInstallAsync(
+            new("project-1", CommitPlan, "revision-1"), CancellationToken.None);
         await gateway.UpgradeAsync(
-            new("project-1", "com.acme.clean", "upgrade-1", "revision-2"), CancellationToken.None);
+            new("project-1", "com.acme.clean", UpgradePlan, "revision-2"), CancellationToken.None);
         await gateway.RollbackAsync(new("project-1", "com.acme.clean"), CancellationToken.None);
         await gateway.UninstallAsync(new("project-1", "com.acme.clean"), CancellationToken.None);
         await gateway.DescribeActionAsync(
@@ -54,7 +55,6 @@ public sealed class JsonRpcPluginGatewayTests
             {
                 "plugin.inspectInstall",
                 "plugin.commitInstall",
-                "plugin.cancelInstall",
                 "plugin.upgrade",
                 "plugin.rollback",
                 "plugin.uninstall",
@@ -66,26 +66,70 @@ public sealed class JsonRpcPluginGatewayTests
             },
             transport.Methods);
         // plugin.getTask is retired: the WPF host registry answers public
-        // task queries and the gateway never carries the method.
+        // task queries. plugin.cancelInstall is retired on the wire: the host
+        // owns cancel by taking and disposing the install-plan lease locally.
         Assert.IsFalse(transport.Methods.Contains("plugin.getTask"));
+        Assert.IsFalse(transport.Methods.Contains("plugin.cancelInstall"));
         Assert.IsFalse(transport.SerializedRequests.Contains("rpc.invoke", StringComparison.Ordinal));
+        Assert.AreEqual(
+            "plan-host-1",
+            transport.Requests[0].GetProperty("params").GetProperty("planId").GetString());
         Assert.AreEqual(
             "source-1",
             transport.Requests[0].GetProperty("params").GetProperty("sourceLocation").GetString());
+        // The private commit payload carries the full plan from the consumed
+        // host lease, never the renderer's plan-id-only DTO.
+        Assert.AreEqual(
+            "plan-host-1",
+            transport.Requests[1].GetProperty("params").GetProperty("plan")
+                .GetProperty("planId").GetString());
+        Assert.AreEqual(
+            "package.vtplugin",
+            transport.Requests[1].GetProperty("params").GetProperty("plan")
+                .GetProperty("sourceLocation").GetString());
+        Assert.AreEqual(
+            "plan-host-2",
+            transport.Requests[2].GetProperty("params").GetProperty("plan")
+                .GetProperty("planId").GetString());
+        Assert.AreEqual(
+            "com.acme.clean",
+            transport.Requests[2].GetProperty("params").GetProperty("plan")
+                .GetProperty("manifest").GetProperty("pluginId").GetString());
         Assert.AreEqual(
             "project-1",
-            transport.Requests[7].GetProperty("params").GetProperty("context")
+            transport.Requests[5].GetProperty("params").GetProperty("context")
                 .GetProperty("projectKey").GetString());
         Assert.IsTrue(
-            transport.Requests[7].GetProperty("params").GetProperty("input")
+            transport.Requests[6].GetProperty("params").GetProperty("input")
                 .GetProperty("trim").GetBoolean());
         Assert.AreEqual(
             "rejected",
-            transport.Requests[8].GetProperty("params").GetProperty("decision").GetString());
+            transport.Requests[7].GetProperty("params").GetProperty("decision").GetString());
         Assert.AreEqual("opaque",
-            transport.Requests[9].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
+            transport.Requests[8].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
         Assert.IsFalse(transport.SerializedRequests.Contains("trusted", StringComparison.Ordinal));
     }
+
+    private static PluginRuntimeInstallPlan Plan(string planId) => new(
+        planId,
+        "project-1",
+        "revision-1",
+        "package",
+        "package.vtplugin",
+        new string('a', 64),
+        new PluginRuntimeManifest(
+            "vibetable.plugin-manifest.v1",
+            "com.acme.clean",
+            "1.0.0",
+            new Dictionary<string, string>(),
+            new Dictionary<string, string>(),
+            JsonDocument.Parse("{}").RootElement.Clone(),
+            JsonDocument.Parse("{}").RootElement.Clone(),
+            [],
+            JsonDocument.Parse("{}").RootElement.Clone()),
+        new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>());
+    private static PluginRuntimeInstallPlan CommitPlan => Plan("plan-host-1");
+    private static PluginRuntimeInstallPlan UpgradePlan => Plan("plan-host-2");
 
     private sealed class AutoRespondTransport : IJsonLineTransport
     {

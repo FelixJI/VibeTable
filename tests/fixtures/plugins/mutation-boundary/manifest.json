@@ -103,6 +103,28 @@
       "formSchema": "schemas/empty.json",
       "inputSchema": "schemas/empty.json",
       "outputSchema": "schemas/files-result.json"
+    },
+    {
+      "actionId": "busy-compute",
+      "displayName": {
+        "zh-CN": "进入不可中断的持续计算"
+      },
+      "description": {
+        "zh-CN": "写入 started 标记后进入同步忙循环，验证宿主 Job 清理"
+      },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "requires": {
+        "selection": "none"
+      },
+      "workerEntry": "workers/busy.js",
+      "formSchema": "schemas/empty.json",
+      "inputSchema": "schemas/empty.json",
+      "outputSchema": "schemas/result.json"
     }
   ],
   "ui": {

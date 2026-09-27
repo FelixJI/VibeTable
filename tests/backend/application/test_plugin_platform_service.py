@@ -276,9 +276,11 @@ async def test_install_and_uninstall_use_package_lifecycle_tasks() -> None:
         project_key="local:default",
         project_revision="project-r1",
         source_location=source_location,
+        plan_id="plan-host-lifecycle",
     )
     await service.commit_install(
-        plan_id=plan.plan_id,
+        project_key="local:default",
+        plan=plan,
         project_revision="project-r1",
     )
     retained_location = f"memory://{package_hash}"
@@ -308,9 +310,11 @@ async def test_inspect_and_commit_recheck_and_retain_immutable_package(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-recheck",
     )
     installed = await service.commit_install(
-        plan_id=plan.plan_id,
+        project_key="local:default",
+        plan=plan,
         project_revision="project-r1",
     )
 
@@ -337,6 +341,7 @@ async def test_commit_rejects_source_changed_after_inspection(tmp_path: Path) ->
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-source-changed",
     )
     (source / "schemas" / "input.json").write_text(
         '{"type":"array"}',
@@ -345,14 +350,16 @@ async def test_commit_rejects_source_changed_after_inspection(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="changed"):
         await service.commit_install(
-            plan_id=plan.plan_id,
+            project_key="local:default",
+            plan=plan,
             project_revision="project-r1",
         )
-
-    assert service.cancel_install(plan_id=plan.plan_id) is False
-    with pytest.raises(ValueError, match="not found"):
+    # There is no local ledger to consume: the same payload is re-checked
+    # and rejected deterministically on every attempt.
+    with pytest.raises(ValueError, match="changed"):
         await service.commit_install(
-            plan_id=plan.plan_id,
+            project_key="local:default",
+            plan=plan,
             project_revision="project-r1",
         )
 
@@ -378,9 +385,11 @@ async def test_duplicate_commit_fails_closed_without_local_compensation(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-duplicate-first",
     )
     await service.commit_install(
-        plan_id=first.plan_id,
+        project_key="local:default",
+        plan=first,
         project_revision="project-r1",
     )
     first_revisions = await store.list_package_revisions(
@@ -392,11 +401,13 @@ async def test_duplicate_commit_fails_closed_without_local_compensation(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-duplicate-second",
     )
 
     with pytest.raises(PluginRegistryError) as error:
         await service.commit_install(
-            plan_id=second.plan_id,
+            project_key="local:default",
+            plan=second,
             project_revision="project-r1",
         )
 
@@ -406,27 +417,6 @@ async def test_duplicate_commit_fails_closed_without_local_compensation(
     assert len(installations) == 1
     assert installations[0].plugin_id == "com.example.reader"
     assert Path(retained).is_file()
-
-
-@pytest.mark.asyncio
-async def test_cancel_install_discards_the_pending_plan(tmp_path: Path) -> None:
-    source = tmp_path / "reader"
-    _write_plugin(source)
-    store = InMemoryPluginStore()
-    service = _service(store, package_cache=tmp_path / "cache")
-    plan = await service.inspect_install(
-        project_key="local:default",
-        project_revision="project-r1",
-        source_location=str(source),
-    )
-
-    assert service.cancel_install(plan_id=plan.plan_id) is True
-    assert service.cancel_install(plan_id=plan.plan_id) is False
-    with pytest.raises(ValueError, match="not found"):
-        await service.commit_install(
-            plan_id=plan.plan_id,
-            project_revision="project-r1",
-        )
 
 
 @pytest.mark.asyncio
@@ -461,9 +451,11 @@ async def test_committed_installation_executes_from_retained_current_revision(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-node-execution",
     )
     await service.commit_install(
-        plan_id=plan.plan_id,
+        project_key="local:default",
+        plan=plan,
         project_revision="project-r1",
     )
     await registry.set_enabled(
@@ -518,9 +510,11 @@ async def test_install_commit_does_not_emit_a_second_catalog_event(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-no-event",
     )
     await service.commit_install(
-        plan_id=plan.plan_id,
+        project_key="local:default",
+        plan=plan,
         project_revision="project-r1",
     )
     enabled = await registry.set_enabled(
@@ -557,20 +551,23 @@ async def test_upgrade_retains_previous_package_and_rollback_restores_it(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source_v1),
+        plan_id="plan-host-v1-rollback",
     )
     await service.commit_install(
-        plan_id=first.plan_id,
+        project_key="local:default",
+        plan=first,
         project_revision="project-r1",
     )
     second = await service.inspect_install(
         project_key="local:default",
         project_revision="project-r2",
         source_location=str(source_v2),
+        plan_id="plan-host-v2-rollback",
     )
     upgraded = await service.upgrade(
         project_key="local:default",
         plugin_id="com.example.reader",
-        plan_id=second.plan_id,
+        plan=second,
         project_revision="project-r2",
     )
     rolled_back = await service.rollback(
@@ -609,20 +606,23 @@ async def test_hidden_upgrade_does_not_duplicate_the_go_catalog_event(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source_v1),
+        plan_id="plan-host-v1-hidden",
     )
     await service.commit_install(
-        plan_id=first.plan_id,
+        project_key="local:default",
+        plan=first,
         project_revision="project-r1",
     )
     second = await service.inspect_install(
         project_key="local:default",
         project_revision="project-r2",
         source_location=str(source_v2),
+        plan_id="plan-host-v2-hidden",
     )
     await service.upgrade(
         project_key="local:default",
         plugin_id="com.example.reader",
-        plan_id=second.plan_id,
+        plan=second,
         project_revision="project-r2",
     )
 
@@ -663,11 +663,13 @@ async def test_commit_failure_keeps_original_error_and_retained_package(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-commit-failure",
     )
 
     with pytest.raises(PluginRegistryError) as error:
         await service.commit_install(
-            plan_id=plan.plan_id,
+            project_key="local:default",
+            plan=plan,
             project_revision="project-r1",
         )
 
@@ -679,34 +681,255 @@ async def test_commit_failure_keeps_original_error_and_retained_package(
 
 
 @pytest.mark.asyncio
-async def test_upgrade_identity_failure_consumes_plan_once(tmp_path: Path) -> None:
+async def test_upgrade_identity_failure_never_reaches_the_source(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "reader"
     _write_plugin(source)
-    service = _service(InMemoryPluginStore(), package_cache=tmp_path / "cache")
+    packages = InMemoryPluginPackageLifecycle()
+    packages.add(str(source), _reader_manifest(), f"sha256:{'5' * 64}")
+    store = InMemoryPluginStore()
+    registry = PluginRegistry(store=store)
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=InMemoryPluginWorkerAdapter(),
+    )
+    service = PluginPlatformService(
+        store=store,
+        registry=registry,
+        runtime=runtime,
+        package_lifecycle=packages,
+    )
     plan = await service.inspect_install(
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-upgrade-identity",
     )
 
     with pytest.raises(ValueError, match="identity"):
         await service.upgrade(
             project_key="local:default",
             plugin_id="com.example.other",
-            plan_id=plan.plan_id,
+            plan=plan,
             project_revision="project-r1",
         )
-    with pytest.raises(ValueError, match="not found"):
-        await service.upgrade(
-            project_key="local:default",
-            plugin_id="com.example.reader",
-            plan_id=plan.plan_id,
-            project_revision="project-r1",
-        )
+    # The top-level identity check precedes any source access: no ledger was
+    # consumed, nothing was retained and the store stayed untouched.
+    assert packages.inspect_calls == [str(source)]
+    assert packages.retain_calls == []
+    assert await store.list_package_revisions("local:default", "com.example.reader") == []
 
 
 @pytest.mark.asyncio
-async def test_upgrade_source_failure_consumes_plan_once(tmp_path: Path) -> None:
+async def test_commit_executes_from_the_host_full_plan_without_a_local_ledger(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    store = InMemoryPluginStore()
+    packages = InMemoryPluginPackageLifecycle()
+    packages.add(str(source), _reader_manifest(), f"sha256:{'2' * 64}")
+    registry = PluginRegistry(store=store)
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=InMemoryPluginWorkerAdapter(),
+    )
+    service = PluginPlatformService(
+        store=store,
+        registry=registry,
+        runtime=runtime,
+        package_lifecycle=packages,
+    )
+
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+        plan_id="plan-host-1",
+    )
+
+    assert plan.plan_id == "plan-host-1"
+    installed = await service.commit_install(
+        project_key="local:default",
+        plan=plan,
+        project_revision="project-r1",
+    )
+
+    assert installed.status == "disabled"
+    assert packages.retain_calls == [(str(source), plan.package_hash)]
+    # Python keeps no independent acceptable-commit ledger and no remote
+    # cancel registration: the WPF host owns plan admission and cancel.
+    assert not hasattr(service, "cancel_install")
+    assert not hasattr(service, "_consume_plan")
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_source_manifest_or_type_drift_beyond_hash(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    store = InMemoryPluginStore()
+    packages = InMemoryPluginPackageLifecycle()
+    package_hash = f"sha256:{'3' * 64}"
+    packages.add(str(source), _reader_manifest(), package_hash)
+    registry = PluginRegistry(store=store)
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=InMemoryPluginWorkerAdapter(),
+    )
+    service = PluginPlatformService(
+        store=store,
+        registry=registry,
+        runtime=runtime,
+        package_lifecycle=packages,
+    )
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+        plan_id="plan-host-manifest",
+    )
+
+    # A tampered full-plan payload keeps the inspected hash but drifts the
+    # manifest: a hash-only recheck would accept this forgery.
+    tampered_manifest = plan.model_copy(
+        update={"manifest": plan.manifest.model_copy(update={"version": "9.9.9"})},
+    )
+    with pytest.raises(ValueError, match="changed"):
+        await service.commit_install(
+            project_key="local:default",
+            plan=tampered_manifest,
+            project_revision="project-r1",
+        )
+
+    # Same payload drift for the source type.
+    tampered_type = plan.model_copy(update={"source_type": "package"})
+    with pytest.raises(ValueError, match="changed"):
+        await service.commit_install(
+            project_key="local:default",
+            plan=tampered_type,
+            project_revision="project-r1",
+        )
+
+    assert packages.retain_calls == []
+    assert await store.list_installations("local:default") == []
+
+
+@pytest.mark.asyncio
+async def test_commit_rejects_top_level_identity_drift(tmp_path: Path) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    store = InMemoryPluginStore()
+    packages = InMemoryPluginPackageLifecycle()
+    packages.add(str(source), _reader_manifest(), f"sha256:{'4' * 64}")
+    registry = PluginRegistry(store=store)
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=InMemoryPluginWorkerAdapter(),
+    )
+    service = PluginPlatformService(
+        store=store,
+        registry=registry,
+        runtime=runtime,
+        package_lifecycle=packages,
+    )
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+        plan_id="plan-host-identity",
+    )
+
+    with pytest.raises(ValueError, match="revision"):
+        await service.commit_install(
+            project_key="local:default",
+            plan=plan,
+            project_revision="project-r2",
+        )
+    with pytest.raises(ValueError, match="project does not match"):
+        await service.commit_install(
+            project_key="local:other",
+            plan=plan,
+            project_revision="project-r1",
+        )
+
+    assert packages.retain_calls == []
+
+
+@pytest.mark.asyncio
+async def test_upgrade_rejects_foreign_plan_identity_at_execution(tmp_path: Path) -> None:
+    source_v1 = tmp_path / "reader-v1"
+    source_v2 = tmp_path / "reader-v2"
+    _write_plugin(source_v1, version="1.0.0")
+    _write_plugin(source_v2, version="2.0.0")
+    store = InMemoryPluginStore()
+    service = _service(store, package_cache=tmp_path / "cache")
+    first = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source_v1),
+        plan_id="plan-host-v1",
+    )
+    await service.commit_install(
+        project_key="local:default",
+        plan=first,
+        project_revision="project-r1",
+    )
+    second = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r2",
+        source_location=str(source_v2),
+        plan_id="plan-host-v2",
+    )
+
+    with pytest.raises(ValueError, match="identity"):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id="com.example.other",
+            plan=second,
+            project_revision="project-r2",
+        )
+    with pytest.raises(ValueError, match="revision"):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id="com.example.reader",
+            plan=second,
+            project_revision="project-r1",
+        )
+
+    revisions = await store.list_package_revisions("local:default", "com.example.reader")
+    assert [item.version for item in revisions] == ["1.0.0"]
+
+
+def _reader_manifest() -> PluginManifest:
+    return PluginManifest.model_validate(
+        {
+            "$schema": "vibetable.plugin-manifest.v1",
+            "pluginId": "com.example.reader",
+            "version": "1.0.0",
+            "displayName": {"en": "Reader"},
+            "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+            "permissions": {"data": [], "files": [], "privateStorage": False},
+            "actions": [
+                {
+                    "actionId": "read",
+                    "displayName": {"en": "Read"},
+                    "mode": "local",
+                    "risk": "read",
+                    "workerEntry": "dist/workers/read.js",
+                }
+            ],
+            "ui": {"customViews": []},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_upgrade_source_failure_is_deterministic_without_a_ledger(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "reader"
     _write_plugin(source)
     service = _service(InMemoryPluginStore(), package_cache=tmp_path / "cache")
@@ -714,6 +937,7 @@ async def test_upgrade_source_failure_consumes_plan_once(tmp_path: Path) -> None
         project_key="local:default",
         project_revision="project-r1",
         source_location=str(source),
+        plan_id="plan-host-upgrade-source",
     )
     (source / "schemas" / "input.json").write_text('{"type":"array"}', encoding="utf-8")
 
@@ -721,13 +945,15 @@ async def test_upgrade_source_failure_consumes_plan_once(tmp_path: Path) -> None
         await service.upgrade(
             project_key="local:default",
             plugin_id="com.example.reader",
-            plan_id=plan.plan_id,
+            plan=plan,
             project_revision="project-r1",
         )
-    with pytest.raises(ValueError, match="not found"):
+    # No ledger exists to consume: the same payload fails the source recheck
+    # deterministically on every attempt.
+    with pytest.raises(ValueError, match="changed"):
         await service.upgrade(
             project_key="local:default",
             plugin_id="com.example.reader",
-            plan_id=plan.plan_id,
+            plan=plan,
             project_revision="project-r1",
         )

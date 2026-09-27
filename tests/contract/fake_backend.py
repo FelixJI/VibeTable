@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from typing import Any
@@ -63,7 +64,8 @@ PROTOCOL_VERSION = "1.0"
 BACKEND_VERSION = "0.1.0"
 
 #: Methods implemented by this hermetic fake backend.
-CAPABILITIES = ["system.handshake", "test.delay", "test.exit"]
+CAPABILITIES = ["system.handshake", "test.delay", "test.exit", "test.startBusyNode"]
+_BUSY_CHILDREN: list[subprocess.Popen[bytes]] = []
 
 
 def _write_frame(payload: dict[str, Any]) -> None:
@@ -155,6 +157,31 @@ def _handle_line(line: str) -> bool:
             _write_frame(_handshake_result(req_id))
         return True
 
+    if method == "test.startBusyNode":
+        child = subprocess.Popen(
+            [
+                params["nodeExecutable"],
+                "-e",
+                'require("fs").writeSync(1, "ready\\n"); while (true) {}',
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        _BUSY_CHILDREN.append(child)
+        assert child.stdout is not None
+        if child.stdout.readline() != b"ready\n":
+            raise RuntimeError("busy Node did not become ready")
+        child.stdout.close()
+        _write_frame(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"pythonPid": os.getpid(), "nodePid": child.pid},
+            }
+        )
+        return True
+
     if method == "test.exit":
         # Acknowledge, then exit immediately. The supervisor should observe an
         # unexpected process exit and transition to Faulted.
@@ -190,6 +217,8 @@ def main() -> int:
     # supervisor's stderr-capture test can rely on it.
     generation_label = os.environ.get("__VIBETABLE_GENERATION_LABEL")
     sentinel = STDERR_SENTINEL if not generation_label else f"{STDERR_SENTINEL}:{generation_label}"
+    if os.environ.get("__VIBETABLE_REPORT_PID") == "1":
+        sentinel += f" pid={os.getpid()}"
     sys.stderr.write(sentinel + "\n")
     sys.stderr.flush()
 

@@ -135,9 +135,8 @@ internal sealed class JobObject : IDisposable
 
     /// <summary>
     /// Binds the given process handle to this job. On non-Windows no-ops.
-    /// Safe to call once per child; the OS rejects duplicate assignment with
-    /// an access-denied error which we intentionally swallow (the child is
-    /// already covered).
+    /// Assignment failure is fatal: membership in another job does not prove
+    /// membership in this generation's kill-on-close job.
     /// </summary>
     public void AssignProcess(IntPtr processHandle)
     {
@@ -153,14 +152,8 @@ internal sealed class JobObject : IDisposable
         if (!AssignProcessToJobObject(_handle, processHandle))
         {
             int err = Marshal.GetLastWin32Error();
-            // ERROR_ACCESS_DENIED (5) is benign: the process is already in a
-            // job (nested jobs are allowed on Vista+, but the simplest case is
-            // a re-assignment to the same job). Anything else is a real error.
-            if (err != 5)
-            {
-                throw new Win32Exception(err,
-                    "AssignProcessToJobObject failed.");
-            }
+            throw new Win32Exception(err,
+                "AssignProcessToJobObject failed.");
         }
     }
 

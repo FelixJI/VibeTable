@@ -1326,7 +1326,7 @@ def persist_product_e2e_evidence(
             runtime_root / "host",
             run_destination / "_runtime" / scenario_number / "host",
         )
-        if scenario_id == "33-host-grid-presentation":
+        if scenario_id in {"11-plugin-mutation", "33-host-grid-presentation"}:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase
                 if not phase_root.is_dir():

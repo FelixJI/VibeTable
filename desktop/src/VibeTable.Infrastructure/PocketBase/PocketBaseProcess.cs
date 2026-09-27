@@ -76,15 +76,7 @@ internal sealed class SystemPocketBaseProcessFactory : IPocketBaseProcessFactory
             }
             return new SystemPocketBaseProcess(process, job);
         }
-        catch (Win32Exception exception)
-        {
-            process.Dispose();
-            job.Dispose();
-            throw new InvalidOperationException(
-                $"Unable to start the local data sidecar: {exception.Message}",
-                exception);
-        }
-        catch
+        catch (Exception exception)
         {
             try
             {
@@ -99,6 +91,9 @@ internal sealed class SystemPocketBaseProcessFactory : IPocketBaseProcessFactory
             }
             process.Dispose();
             job.Dispose();
+            if (exception is Win32Exception)
+                throw new InvalidOperationException(
+                    $"Unable to start the local data sidecar: {exception.Message}", exception);
             throw;
         }
     }

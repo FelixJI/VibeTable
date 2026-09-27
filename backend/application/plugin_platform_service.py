@@ -91,7 +91,6 @@ class PluginPlatformService:
         self._runtime = runtime
         self._store = store
         self._package_lifecycle = package_lifecycle
-        self._plans: dict[str, InstallPlan] = {}
         self._notification_sink: NotificationSink | None = None
         self._confirmation_adapter = confirmation_adapter
         self._file_adapter = file_adapter
@@ -115,10 +114,18 @@ class PluginPlatformService:
         project_key: str,
         project_revision: str,
         source_location: str,
+        plan_id: str,
     ) -> InstallPlan:
+        """Builds the plan under the host-generated identity.
+
+        Python keeps no acceptable-plan ledger: admission, consumption,
+        cancellation and invalidation are owned by the WPF host lease
+        registry, so nothing is stored here and a plan that never reached the
+        host cannot be committed later.
+        """
         inspected = self._package_lifecycle.inspect(source_location)
-        plan = InstallPlan(
-            plan_id=f"plugin-plan-{uuid.uuid4().hex[:12]}",
+        return InstallPlan(
+            plan_id=plan_id,
             project_key=project_key,
             project_revision=project_revision,
             source_type=inspected.source_type,
@@ -126,16 +133,20 @@ class PluginPlatformService:
             package_hash=inspected.package_hash,
             manifest=inspected.manifest,
         )
-        self._plans[plan.plan_id] = plan
-        return plan
 
     async def commit_install(
         self,
         *,
-        plan_id: str,
+        project_key: str,
+        plan: InstallPlan,
         project_revision: str,
     ) -> PluginSnapshot:
-        plan = self._consume_plan(plan_id, project_revision)
+        self._verify_execution_identity(
+            plan,
+            project_key=project_key,
+            plugin_id=None,
+            project_revision=project_revision,
+        )
         validate_install_plan(plan)
         self._recheck_plan_source(plan)
         retained_path = self._package_lifecycle.retain(
@@ -169,20 +180,20 @@ class PluginPlatformService:
             raise commit_error
         return installed
 
-    def cancel_install(self, *, plan_id: str) -> bool:
-        return self._plans.pop(plan_id, None) is not None
-
     async def upgrade(
         self,
         *,
         project_key: str,
         plugin_id: str,
-        plan_id: str,
+        plan: InstallPlan,
         project_revision: str,
     ) -> PluginSnapshot:
-        plan = self._consume_plan(plan_id, project_revision)
-        if plan.project_key != project_key or plan.manifest.plugin_id != plugin_id:
-            raise ValueError("upgrade plan identity does not match the installation")
+        self._verify_execution_identity(
+            plan,
+            project_key=project_key,
+            plugin_id=plugin_id,
+            project_revision=project_revision,
+        )
         self._recheck_plan_source(plan)
         retained_path = self._package_lifecycle.retain(
             source_location=plan.source_location,
@@ -375,19 +386,34 @@ class PluginPlatformService:
         """
         return await self._runtime.request_cancel(task_id)
 
-    def _consume_plan(self, plan_id: str, project_revision: str) -> InstallPlan:
-        try:
-            plan = self._plans[plan_id]
-        except KeyError as exc:
-            raise ValueError("plugin install plan was not found") from exc
+    def _verify_execution_identity(
+        self,
+        plan: InstallPlan,
+        *,
+        project_key: str,
+        plugin_id: str | None,
+        project_revision: str,
+    ) -> None:
+        """Cross-process payload consistency for the host-consumed plan.
+
+        This is not a second admission authority: it only proves that the
+        full plan received over the wire is the one the host lease held for
+        this exact project, plugin and revision.
+        """
+        if plan.project_key != project_key:
+            raise ValueError("plugin plan project does not match the request")
         if plan.project_revision != project_revision:
             raise ValueError("plugin project revision changed")
-        del self._plans[plan_id]
-        return plan
+        if plugin_id is not None and plan.manifest.plugin_id != plugin_id:
+            raise ValueError("upgrade plan identity does not match the installation")
 
     def _recheck_plan_source(self, plan: InstallPlan) -> None:
         checked = self._package_lifecycle.inspect(plan.source_location)
-        if checked.package_hash != plan.package_hash:
+        if (
+            checked.package_hash != plan.package_hash
+            or checked.source_type != plan.source_type
+            or checked.manifest != plan.manifest
+        ):
             raise ValueError("plugin source changed after inspection")
 
     async def _prune_package_revisions(self, project_key: str, plugin_id: str) -> None:

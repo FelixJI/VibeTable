@@ -199,3 +199,75 @@ for (const [name, mutate] of Object.entries(brokenPresentations)) {
     await assert.rejects(resumeDom(mutate));
   });
 }
+
+// ---- S11 plugin host restart helpers ----
+
+const verifiedProcessMembers = eval(`(${extract(
+  "function verifiedProcessMembers", "function countProcessMembers",
+)})`);
+const countProcessMembers = eval(`(${extract(
+  "function countProcessMembers", "async function waitForPackagedMemberExit",
+)})`);
+const waitForPackagedMemberExitSource = extract(
+  "async function waitForPackagedMemberExit", "async function waitForBusyPluginMarker",
+);
+
+function memberSnapshot(pids, processName = "node.exe") {
+  return { status: "completed", action: "observe-processes", members: pids.map(pid => ({
+    pid, processName, identityVerified: true,
+  })) };
+}
+
+test("waiting for a packaged member exit polls the exact pid until it disappears", async () => {
+  const waitForPackagedMemberExit = eval(`(${waitForPackagedMemberExitSource})`);
+  const snapshots = [
+    memberSnapshot([4242, 9000]),
+    memberSnapshot([9000]),
+  ];
+  const observations = [];
+  const requestPackagedProcessKill = async (_runtime, action, reason) => {
+    assert.equal(action, "observe-processes");
+    assert.equal(reason, "verify member 4242 exited");
+    observations.push(0);
+    return snapshots[Math.min(observations.length - 1, snapshots.length - 1)];
+  };
+  const result = await waitForPackagedMemberExit({}, 4242, 2_000);
+  assert.equal(result.pid, 4242);
+  assert.equal(countProcessMembers(result.snapshot.members, "node.exe"), 1);
+  assert.ok(!result.snapshot.members.some(member => member.pid === 4242));
+  assert.equal(observations.length, 2);
+});
+
+test("waiting for a packaged member exit propagates an observation failure immediately", async () => {
+  const waitForPackagedMemberExit = eval(`(${waitForPackagedMemberExitSource})`);
+  let calls = 0;
+  const requestPackagedProcessKill = async () => {
+    calls += 1;
+    throw new Error("Python orchestrator did not acknowledge the observe-processes fault request");
+  };
+  await assert.rejects(
+    waitForPackagedMemberExit({}, 4242, 60_000),
+    /acknowledge the observe-processes fault request/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("waiting for a packaged member exit rejects a snapshot without verified identities", async () => {
+  const waitForPackagedMemberExit = eval(`(${waitForPackagedMemberExitSource})`);
+  let snapshot = null;
+  const requestPackagedProcessKill = async () => snapshot;
+  for (const invalid of [
+    { status: "completed", action: "observe-processes" },
+    {
+      status: "completed",
+      action: "observe-processes",
+      members: [{ pid: 4242, processName: "node.exe", identityVerified: false }],
+    },
+  ]) {
+    snapshot = invalid;
+    await assert.rejects(
+      waitForPackagedMemberExit({}, 4242, 60_000),
+      /not a verified legal snapshot/,
+    );
+  }
+});

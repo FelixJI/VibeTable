@@ -4280,6 +4280,98 @@ async function observePackagedPythonCount(runtime, expected) {
   return observed;
 }
 
+function verifiedProcessMembers(members) {
+  if (!Array.isArray(members)
+    || members.some(member => member?.identityVerified !== true
+      || typeof member?.processName !== "string" || !member.processName)) {
+    throw new Error(
+      `process member observation is not a verified legal snapshot: ${JSON.stringify(members)}`,
+    );
+  }
+  return members;
+}
+
+// Fail closed like observePackagedPythonCount: counting requires a verified
+// legal snapshot, so missing evidence can never read as zero processes.
+function countProcessMembers(members, processName) {
+  const lowered = processName.toLowerCase();
+  return verifiedProcessMembers(members)
+    .filter(member => member.processName.toLowerCase() === lowered).length;
+}
+
+// Wait until one exact Job-scoped PID disappears. Killing the Python parent
+// reclaims its busy Node worker asynchronously through the Host Job, so the
+// bounded poll observes that expected transition without inventing retries:
+// an observation failure or an unverifiable snapshot is an evidence gap that
+// propagates immediately, and a missing members list is never read as exit.
+async function waitForPackagedMemberExit(runtime, pid, timeoutMs = 10_000) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`packaged member pid must be a positive integer: ${pid}`);
+  }
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastObserved = null;
+  while (Date.now() < deadline) {
+    const observed = await requestPackagedProcessKill(
+      runtime,
+      "observe-processes",
+      `verify member ${pid} exited`,
+    );
+    if (!Array.isArray(observed.members)
+      || observed.members.some(member => member.identityVerified !== true)) {
+      throw new Error(
+        `packaged member observation is not a verified legal snapshot: ${JSON.stringify(observed)}`,
+      );
+    }
+    if (!observed.members.some(member => member.pid === pid)) {
+      return { pid, elapsedMs: Date.now() - startedAt, snapshot: observed };
+    }
+    lastObserved = observed;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `packaged member ${pid} did not exit within ${timeoutMs}ms: ${JSON.stringify(lastObserved)}`,
+  );
+}
+
+// The busy plugin Worker announces itself through a Host-written file grant,
+// never through worker stdout: Node may buffer stdout forever once killed.
+async function waitForBusyPluginMarker(markerPath, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const content = await fs.readFile(markerPath, "utf8");
+      if (content === "busy-compute-started\n") return content;
+      lastError = new Error(`unexpected busy marker payload: ${JSON.stringify(content)}`);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      lastError = error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`busy plugin marker was never written: ${lastError}`);
+}
+
+async function listRetainedPluginPackages(workspaceRoot) {
+  // VIBETABLE_STATE_DIR is <workspace>/.vibetable/data/state, so the retained
+  // package cache is that state root's plugin-packages directory.
+  const cacheDirectory = path.join(
+    String(workspaceRoot), ".vibetable", "data", "state", "plugin-packages",
+  );
+  const entries = await fs.readdir(cacheDirectory);
+  return {
+    cacheDirectory,
+    packages: entries.filter(name => name.endsWith(".vtplugin")).sort(),
+    entries: entries.sort(),
+  };
+}
+
+function findCatalogEntry(catalogPayload, pluginId) {
+  return (Array.isArray(catalogPayload) ? catalogPayload : [])
+    .find(entry => entry?.pluginId === pluginId) ?? null;
+}
+
 async function requestSidecarKill(runtime, reason) {
   return requestPackagedProcessKill(runtime, "kill-sidecar", reason);
 }
@@ -5276,6 +5368,116 @@ async function scenario11(page, recorder, _network, runtime) {
     await pendingCapture.dispose();
   }
 
+  // A compute-busy plugin Worker must be reclaimed through the Host-owned Job
+  // when only its Python parent is killed. The kill is issued inside the
+  // Worker's natural 15s budget (measured from before the action-start click,
+  // never from a later response), the exact busy Node PID disappears within a
+  // bounded wait, and the busy task settles to the Host's aborted terminal
+  // instead of a timeout failure.
+  const busyWriteControl = path.join(runtime.controlsDir, "plugin-file-write.txt");
+  const busyWriteControlBefore = await fs.readFile(busyWriteControl, "utf8");
+  const busyMarkerPath = path.join(runtime.controlsDir, "plugin-busy-started.txt");
+  await fs.writeFile(busyWriteControl, `${busyMarkerPath}\n`, "utf8");
+  try {
+    // The pending-confirmation crash leaves its action modal mounted; close
+    // it first so its overlay cannot swallow the busy action's run click.
+    await page.getByTestId("plugin-action-close").click();
+    await page.locator("aside.action-panel").waitFor({ state: "hidden", timeout: 10_000 });
+    await actions.filter({ hasText: "busy-compute" }).locator("button.run-button").click();
+    await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
+    const busyActionStartedAt = Date.now();
+    await page.getByTestId("plugin-action-start").click();
+    const busyStart = await waitForCapturedBridgeMessage(page, 30_000);
+    recorder.check("busy compute action received a Host task identity",
+      busyStart.type === "plugin.action.start" && Boolean(busyStart.payload?.taskId),
+      { busyStart });
+    await waitForBusyPluginMarker(busyMarkerPath);
+    const markerSeenAt = Date.now();
+    const busyTaskBeforeKill = await rawBridgeRequest(page, "plugin.task.get", {
+      taskId: busyStart.payload.taskId,
+    });
+    const busyTopology = await requestPackagedProcessKill(
+      runtime,
+      "observe-processes",
+      "verify busy plugin worker topology",
+    );
+    const busyNodes = verifiedProcessMembers(busyTopology.members)
+      .filter(member => member.processName.toLowerCase() === "node.exe");
+    recorder.check("the busy plugin Worker is the only Node member while computing",
+      busyTaskBeforeKill.payload?.state === "running"
+        && busyTaskBeforeKill.payload?.runId === busyStart.payload.runId
+        && busyNodes.length === 1 && busyNodes[0].identityVerified === true,
+      { busyTaskBeforeKill, busyTopology });
+    const busyNodePid = busyNodes[0].pid;
+    const busyKill = await requestPackagedProcessKill(
+      runtime,
+      "kill-backend",
+      "plugin-busy-worker-owner",
+    );
+    const killIssuedAt = Date.now();
+    recorder.check("the Python-only kill was issued inside the Worker's natural budget",
+      busyKill.processName === "vibetable-backend.exe" && busyKill.pid !== busyNodePid
+        && killIssuedAt - busyActionStartedAt < 15_000,
+      { busyKill, killLatencyMs: killIssuedAt - busyActionStartedAt });
+    const busyCleanup = await waitForPackagedMemberExit(runtime, busyNodePid, 10_000);
+    recorder.check("killing only Python reclaims the exact busy Node through the Host Job",
+      busyCleanup.pid === busyNodePid
+        && countProcessMembers(busyCleanup.snapshot.members, "vibetable.next.exe") === 1
+        && countProcessMembers(busyCleanup.snapshot.members, "vibetable-pb.exe") === 1
+        && countProcessMembers(busyCleanup.snapshot.members, "node.exe") === 0
+        && countProcessMembers(busyCleanup.snapshot.members, "vibetable-backend.exe") === 0,
+    {
+      busyNodePid,
+      cleanupElapsedMs: busyCleanup.elapsedMs,
+      killLatencyMs: killIssuedAt - busyActionStartedAt,
+      markerSeenMs: markerSeenAt - busyActionStartedAt,
+      snapshot: busyCleanup.snapshot,
+    });
+    const busyTerminalDeadline = Date.now() + 30_000;
+    let busyTaskTerminal;
+    do {
+      busyTaskTerminal = await rawBridgeRequest(page, "plugin.task.get", {
+        taskId: busyStart.payload.taskId,
+      });
+      if (busyTaskTerminal.payload?.state === "aborted") break;
+      if (["succeeded", "failed", "cancelled"].includes(busyTaskTerminal.payload?.state)) {
+        throw new Error(
+          `busy plugin task settled through ${busyTaskTerminal.payload.state} instead of the Host aborted terminal: `
+            + JSON.stringify(busyTaskTerminal),
+        );
+      }
+      await page.waitForTimeout(100);
+    } while (Date.now() < busyTerminalDeadline);
+    recorder.check("the reclaimed busy task keeps an explicit unknown-commit terminal",
+      busyTaskTerminal.payload?.state === "aborted"
+        && busyTaskTerminal.payload?.runId === busyStart.payload.runId
+        && busyTaskTerminal.payload?.error?.code === "plugin_task_aborted"
+        && busyTaskTerminal.payload?.error?.details?.commitOutcome === "unknown",
+      { busyTaskTerminal });
+    await page.getByTestId("plugin-action-close").click();
+  } finally {
+    await fs.writeFile(busyWriteControl, busyWriteControlBefore, "utf8");
+  }
+
+  const catalogResponse = await rawBridgeRequest(page, "plugin.catalog.list", {
+    projectKey,
+  });
+  const catalogEntry = findCatalogEntry(catalogResponse.payload, "com.vibetable.e2e.mutation-boundary");
+  recorder.check("the installed plugin stays in the Go catalog after its backend exits",
+    catalogEntry?.pluginId === "com.vibetable.e2e.mutation-boundary"
+      && catalogEntry.status === "enabled"
+      && /^sha256:[0-9a-f]{64}$/.test(String(catalogEntry.packageHash)),
+    { catalogEntry });
+  const seedSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession,
+  );
+  return {
+    workspaceId: seedSession.workspaceId,
+    projectKey,
+    pluginId: "com.vibetable.e2e.mutation-boundary",
+    tableId: pluginTable.tableId,
+    packageHash: catalogEntry.packageHash,
+  };
 }
 
 async function rebuildWorkspaceSearchAndWaitForTerminal(page, timeout = 120_000) {
@@ -6145,6 +6347,169 @@ async function scenario33(page, recorder, _network, runtime) {
       first: first.physicalName, second: second.physicalName },
     state: reopened.payload.state,
     revision: reopened.payload.revision,
+  };
+}
+
+// S11 resume: after a real Host restart, daily catalog/audit reads must be
+// answered by the Go authority with zero Python/Node processes, a plugin
+// action must still execute through a lazily started Python, and a missing
+// local retained cache must fail closed with a diagnosable error while the
+// catalog entry survives.
+async function resumePluginHostRestart(page, recorder, statePath, runtime) {
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const session = await activateHostPresentationWorkspace(page, recorder, state.workspaceId);
+  const assertZeroExecutionProcesses = async (label) => {
+    const observed = await requestPackagedProcessKill(
+      runtime,
+      "observe-processes",
+      "verify zero execution processes after Host restart",
+    );
+    recorder.check(label,
+      countProcessMembers(observed.members, "vibetable-backend.exe") === 0
+        && countProcessMembers(observed.members, "node.exe") === 0
+        && countProcessMembers(observed.members, "vibetable.next.exe") === 1
+        && countProcessMembers(observed.members, "vibetable-pb.exe") === 1,
+      { observed });
+    return observed;
+  };
+
+  await page.getByTestId("nav-plugins").click();
+  const pluginRow = page.locator("button.plugin-row")
+    .filter({ hasText: state.pluginId });
+  await pluginRow.waitFor({ timeout: 60_000 });
+  recorder.check("the restarted Host renders the installed plugin from the Go catalog",
+    await pluginRow.isVisible(), { pluginId: state.pluginId });
+  await assertZeroExecutionProcesses(
+    "restarted Host reads the installed catalog without Python or Node");
+
+  const catalogResponse = await rawBridgeRequest(page, "plugin.catalog.list", {
+    projectKey: state.projectKey,
+  });
+  const catalogEntry = findCatalogEntry(catalogResponse.payload, state.pluginId);
+  recorder.check("the installed catalog entry survived the Host restart unchanged",
+    catalogEntry?.packageHash === state.packageHash
+      && catalogEntry.projectKey === state.projectKey
+      && catalogEntry.status === "enabled",
+    { catalogEntry, expectedPackageHash: state.packageHash });
+
+  const auditResponse = await rawBridgeRequest(page, "plugin.audit.list", {
+    projectKey: state.projectKey,
+    pluginId: state.pluginId,
+  });
+  const auditEvents = Array.isArray(auditResponse.payload) ? auditResponse.payload : [];
+  recorder.check("the seeded plugin audit history is readable after the Host restart",
+    auditEvents.length > 0
+      && auditEvents.every(event => event.pluginId === state.pluginId)
+      && auditEvents.some(event => event.eventType === "install"),
+    { auditEvents });
+  await assertZeroExecutionProcesses(
+    "daily catalog and audit reads never start Python or Node");
+
+  await pluginRow.click();
+  const actions = page.locator(".action-row");
+  await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
+  await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
+  await page.getByTestId("plugin-action-start").click();
+  const restartStart = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("a plugin action still runs after the Host restart",
+    restartStart.type === "plugin.action.start" && Boolean(restartStart.payload?.taskId),
+    { restartStart });
+  await page.locator(".result-card").waitFor({ timeout: 30_000 });
+  const restartTask = await rawBridgeRequest(page, "plugin.task.get", {
+    taskId: restartStart.payload.taskId,
+  });
+  const sourceBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-read-source.txt"));
+  const writtenBytes = await fs.readFile(path.join(runtime.controlsDir, "plugin-write-result.txt"));
+  recorder.check("the restarted action completed its native file roundtrip",
+    restartTask.payload?.state === "succeeded"
+      && restartTask.payload?.runId === restartStart.payload.runId
+      && sourceBytes.equals(writtenBytes), { restartTask });
+  await page.getByTestId("plugin-action-close").click();
+  const afterAction = await requestPackagedProcessKill(
+    runtime,
+    "observe-processes",
+    "verify lazy execution topology after restart action",
+  );
+  recorder.check("the restarted action lazily started Python and reclaimed its Node worker",
+    countProcessMembers(afterAction.members, "vibetable-backend.exe") === 1
+      && countProcessMembers(afterAction.members, "node.exe") === 0,
+    { afterAction });
+
+  // Withhold the exact retained package file. The isolated workspace has
+  // exactly one installed plugin, the just-completed real action already read
+  // this package through the product boundary, and the catalog packageHash
+  // evidence above names its identity. The next action must fail closed and
+  // diagnosably without spawning any Node process, never falling back to a
+  // shared absolute path, and the catalog entry must survive the miss.
+  const retained = await listRetainedPluginPackages(state.workspaceRoot);
+  recorder.check("the retained cache holds exactly the one installed package",
+    retained.packages.length === 1 && retained.entries.length === 1,
+    { retained, catalogPackageHash: state.packageHash });
+  const retainedPath = path.join(retained.cacheDirectory, retained.packages[0]);
+  const withheldPath = `${retainedPath}.withheld`;
+  await fs.rename(retainedPath, withheldPath);
+  try {
+    await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
+    await beginBridgeMessageCapture(page, ["plugin.action.start", "operation.failed"]);
+    await page.getByTestId("plugin-action-start").click();
+    const withheldStart = await waitForCapturedBridgeMessage(page, 30_000);
+    recorder.check("the withheld-cache action still receives a Host task identity",
+      withheldStart.type === "plugin.action.start" && Boolean(withheldStart.payload?.taskId),
+      { withheldStart });
+    const withheldFailure = page.getByTestId("plugin-task-error");
+    await withheldFailure.waitFor({ timeout: 30_000 });
+    const withheldDeadline = Date.now() + 30_000;
+    let withheldTask;
+    do {
+      withheldTask = await rawBridgeRequest(page, "plugin.task.get", {
+        taskId: withheldStart.payload.taskId,
+      });
+      if (withheldTask.payload?.state === "failed") break;
+      if (withheldTask.payload?.state === "aborted") {
+        throw new Error(
+          `withheld-cache task was aborted as if its backend died: ${JSON.stringify(withheldTask)}`,
+        );
+      }
+      await page.waitForTimeout(100);
+    } while (Date.now() < withheldDeadline);
+    recorder.check("a missing retained cache fails closed with a diagnosable safe error",
+      withheldTask.payload?.state === "failed"
+        && withheldTask.payload?.error?.code === "plugin_action_failed"
+        && /load/i.test(String(withheldTask.payload?.error?.message)),
+      { withheldTask });
+    recorder.check("the missing-cache failure is visible to the user with its safe error code",
+      (await withheldFailure.innerText()).includes("plugin_action_failed"),
+      { failureText: await withheldFailure.innerText() });
+    const withheldTopology = await requestPackagedProcessKill(
+      runtime,
+      "observe-processes",
+      "verify no worker process executed without the retained cache",
+    );
+    recorder.check("no worker process was executed while the cache was withheld",
+      countProcessMembers(withheldTopology.members, "node.exe") === 0,
+      { withheldTopology });
+    const withheldCatalog = await rawBridgeRequest(page, "plugin.catalog.list", {
+      projectKey: state.projectKey,
+    });
+    const withheldEntry = findCatalogEntry(withheldCatalog.payload, state.pluginId);
+    recorder.check("the catalog entry survives a missing retained cache",
+      withheldEntry?.packageHash === state.packageHash
+        && withheldEntry.status === "enabled",
+      { withheldEntry });
+    await page.getByTestId("plugin-action-close").click();
+  } finally {
+    await fs.rename(withheldPath, retainedPath);
+  }
+  const restoredPackage = await fs.stat(retainedPath);
+  recorder.check("the withheld package was restored into the isolated cache",
+    restoredPackage.isFile(),
+    { retainedPath });
+  return {
+    workspaceId: session.workspaceId,
+    projectKey: state.projectKey,
+    pluginId: state.pluginId,
+    tableId: state.tableId,
+    packageHash: state.packageHash,
   };
 }
 
@@ -9689,13 +10054,25 @@ async function main() {
     observePage(page);
     await installBridgeDiagnostics(page);
     const implementation = args["persistent-phase"] === "seed"
-      ? (candidate, checks, network, runtime) => args.scenario === "33-host-grid-presentation"
-        ? scenario33(candidate, checks, network, runtime)
-        : seedNaturalRetentionAging(candidate, checks)
+      ? (candidate, checks, network, runtime) => {
+        if (args.scenario === "33-host-grid-presentation") {
+          return scenario33(candidate, checks, network, runtime);
+        }
+        if (args.scenario === "11-plugin-mutation") {
+          return scenario11(candidate, checks, network, runtime);
+        }
+        return seedNaturalRetentionAging(candidate, checks);
+      }
       : args["persistent-phase"] === "resume"
-        ? (candidate, checks, _network, runtime) => args.scenario === "33-host-grid-presentation"
-          ? resumeHostPresentation(candidate, checks, args.state, runtime)
-          : resumeNaturalRetentionAging(candidate, checks, args.state)
+        ? (candidate, checks, _network, runtime) => {
+          if (args.scenario === "33-host-grid-presentation") {
+            return resumeHostPresentation(candidate, checks, args.state, runtime);
+          }
+          if (args.scenario === "11-plugin-mutation") {
+            return resumePluginHostRestart(candidate, checks, args.state, runtime);
+          }
+          return resumeNaturalRetentionAging(candidate, checks, args.state);
+        }
         : scenarios[args.scenario];
     if (implementation) {
       const phaseResult = await implementation(page, recorder, network, {
