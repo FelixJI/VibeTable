@@ -381,8 +381,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             second.WorkspaceId,
             WorkspaceOpenMode.Writable);
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-        await switching.WaitAsync(TimeSpan.FromSeconds(2));
+        // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+        await dispatch;
+        await switching;
 
         Assert.AreEqual(1, sidecar.CallCount);
         AssertRetiredReply(sink, "go-cancel");
@@ -446,8 +447,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             Assert.IsFalse(switching.IsCompleted,
                 "The late reply must settle while the retired epoch still blocks the switch.");
             response.SetResult(lateSuccess);
-            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-            WorkspaceSessionV2 current = await switching.WaitAsync(TimeSpan.FromSeconds(2));
+            await dispatch;
+            WorkspaceSessionV2 current = await switching;
 
             Assert.AreEqual(1, sidecar.CallCount);
             AssertRetiredReply(sink, "go-late");
@@ -476,13 +477,13 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                 response.TrySetResult(lateSuccess);
                 try
                 {
-                    await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+                    await dispatch;
                 }
                 finally
                 {
                     if (switching is not null)
                     {
-                        await switching.WaitAsync(TimeSpan.FromSeconds(2));
+                        await switching;
                     }
                 }
             }
@@ -531,8 +532,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
         response.TrySetResult(new ProductSidecarSuccess(request.Wire.Clone(),
             JsonSerializer.SerializeToElement(new { overrides = Array.Empty<object>(), revision = "old" })));
-        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
-        WorkspaceSessionV2 current = await switching.WaitAsync(TimeSpan.FromSeconds(2));
+        await dispatch;
+        WorkspaceSessionV2 current = await switching;
         Assert.AreEqual(1, sidecar.CallCount);
         Assert.AreEqual(0, sink.Replies.Count);
         controller.SetProductSidecarForwarder(new ControlledProductSidecarForwarder((call, _) =>
