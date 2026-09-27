@@ -77,7 +77,7 @@
 
 | 场景 | 标题 | 需求 | 能力 |
 |---|---|---|---|
-| <code>01-offline-first-start</code> | 干净数据目录离线首次启动 | 真实发布包在独立数据目录启动，WPF、Python、PocketBase、WebView2 与 renderer 全部就绪；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。 | `workspace.lifecycle`、`offline.start`、`release.smoke` |
+| <code>01-offline-first-start</code> | 干净数据目录离线首次启动 | 真实发布包在独立数据目录启动，WPF、WebView2、renderer 与 PocketBase sidecar 就绪；Python backend 与插件 Node 按需启动，普通首启不启动；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。 | `workspace.lifecycle`、`offline.start`、`release.smoke` |
 | <code>02-all-field-schema</code> | Schema v2 字段家族与稳定身份 | 宿主创建空表并分配不透明表身份；通过统一 Field Settings v2 能力、计划和应用创建全部普通字段家族，同类型显示变更不改变字段身份；select label/color 修改不改记录内 optionId；Ctrl+Z 只撤销数据编辑、不撤销字段；停用与恢复经过回收站，renderer 无法调用旧通用 schema 写入口。 | `schema.v2`、`release.smoke` |
 | <code>03-schema-errors</code> | 前端与服务端 typed diagnostic | 统一字段抽屉在本地阻止无效草稿；服务端拒绝无效 v2 字段意图并返回稳定错误码；旧 schema.validate 路由在 renderer 边界不可达。 | `schema.v2`、`contract.diagnostics` |
 | <code>04-json-round-trip</code> | JSON 编辑、筛选、粘贴、导入与导出不变 | JSON 值经结构化编辑、剪贴板粘贴、host picker 导入和导出后，与权威查询做规范化深比较并保持完全一致。 | `data.json`、`data-io.round-trip` |

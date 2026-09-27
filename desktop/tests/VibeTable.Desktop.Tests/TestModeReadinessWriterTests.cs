@@ -23,7 +23,8 @@ public sealed class TestModeReadinessWriterTests
             var root = document.RootElement;
             Assert.IsTrue(root.GetProperty("ready").GetBoolean());
             Assert.AreEqual("shell", root.GetProperty("mode").GetString());
-            Assert.IsTrue(root.GetProperty("backendReady").GetBoolean());
+            Assert.IsTrue(root.GetProperty("hostReady").GetBoolean());
+            Assert.IsFalse(root.TryGetProperty("backendReady", out _));
             Assert.IsTrue(root.GetProperty("webViewReady").GetBoolean());
             Assert.IsTrue(root.GetProperty("rendererReady").GetBoolean());
             Assert.AreEqual(JsonValueKind.Null, root.GetProperty("error").ValueKind);
@@ -57,6 +58,8 @@ public sealed class TestModeReadinessWriterTests
             JsonElement root = document.RootElement;
             Assert.IsTrue(root.GetProperty("ready").GetBoolean());
             Assert.AreEqual("shell", root.GetProperty("mode").GetString());
+            Assert.IsTrue(root.GetProperty("hostReady").GetBoolean());
+            Assert.IsFalse(root.TryGetProperty("backendReady", out _));
             JsonElement probe = root.GetProperty("workspaceProbe");
             Assert.AreEqual("healthy", probe.GetProperty("status").GetString());
             Assert.AreEqual(

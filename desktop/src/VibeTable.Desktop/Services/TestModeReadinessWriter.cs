@@ -7,8 +7,9 @@ namespace VibeTable.Desktop.Services;
 
 /// <summary>
 /// Writes the machine-readable shell-readiness file consumed by the desktop
-/// smoke test. The file is written once after backend handshake, WebView2
+/// smoke test. The file is written once after host startup, WebView2
 /// navigation, and the renderer <c>app.ready</c> handshake all succeed.
+/// Shell readiness does not require a workspace or a Python worker.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -61,9 +62,9 @@ public sealed class TestModeReadinessWriter
     }
 
     /// <summary>
-    /// Writes the shell smoke result after the real backend
-    /// handshake, WebView2 navigation, and renderer <c>app.ready</c> bridge
-    /// handshake have all completed. No external server is required
+    /// Writes the shell smoke result after the host reaches StartupState.Ready
+    /// and the renderer <c>app.ready</c> bridge handshake has completed.
+    /// No external server or Python worker is required
     /// for this startup-contract check.
     /// </summary>
     public void WriteShellReady()
@@ -76,7 +77,7 @@ public sealed class TestModeReadinessWriter
         {
             ready = true,
             mode = "shell",
-            backendReady = true,
+            hostReady = true,
             webViewReady = true,
             rendererReady = true,
             error = (string?)null,
@@ -102,7 +103,7 @@ public sealed class TestModeReadinessWriter
         {
             ready = true,
             mode = "shell",
-            backendReady = true,
+            hostReady = true,
             webViewReady = true,
             rendererReady = true,
             workspaceProbe = new

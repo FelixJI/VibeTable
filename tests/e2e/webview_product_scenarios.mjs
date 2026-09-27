@@ -4372,6 +4372,39 @@ function findCatalogEntry(catalogPayload, pluginId) {
     .find(entry => entry?.pluginId === pluginId) ?? null;
 }
 
+// Ordinary-business scenarios whose real product flows must complete without
+// ever starting an on-demand Worker. Scenarios that deliberately wake Python
+// (import/export/data IO/plugin actions/explicit probes) must never be listed
+// here; their topology is asserted inside their own flows instead.
+const ORDINARY_WORKER_FREE_SCENARIOS = new Set([
+  "01-offline-first-start",
+  "02-all-field-schema",
+  "03-schema-errors",
+  "05-formula-lifecycle",
+  "06-relation-fanout",
+  "08-stale-conflict",
+]);
+
+// One closed-set topology observation at the common dispatch entry: after a
+// listed scenario's real business completes, the packaged Job must hold
+// exactly one Host and one Go sidecar, and zero Python backend / plugin Node
+// processes. Reuses the fail-closed observe-processes member contract.
+async function assertOrdinaryWorkerFreeTopology(recorder, runtime, scenarioId) {
+  const observed = await requestPackagedProcessKill(
+    runtime,
+    "observe-processes",
+    `verify ${scenarioId} completed without worker processes`,
+  );
+  recorder.check(
+    `${scenarioId} finished with one Host, one sidecar and zero worker processes`,
+    countProcessMembers(observed.members, "vibetable.next.exe") === 1
+      && countProcessMembers(observed.members, "vibetable-pb.exe") === 1
+      && countProcessMembers(observed.members, "vibetable-backend.exe") === 0
+      && countProcessMembers(observed.members, "node.exe") === 0,
+    { observed },
+  );
+}
+
 async function requestSidecarKill(runtime, reason) {
   return requestPackagedProcessKill(runtime, "kill-sidecar", reason);
 }
@@ -10055,7 +10088,7 @@ async function main() {
         }
         : scenarios[args.scenario];
     if (implementation) {
-      const phaseResult = await implementation(page, recorder, network, {
+      const runtime = {
         evidenceDir,
         controlsDir: path.resolve(args["controls-dir"]),
         pythonExecutable: args["python-executable"],
@@ -10069,8 +10102,12 @@ async function main() {
             details,
           });
         },
-      });
+      };
+      const phaseResult = await implementation(page, recorder, network, runtime);
       if (phaseResult && args["persistent-phase"]) Object.assign(result, phaseResult);
+      if (ORDINARY_WORKER_FREE_SCENARIOS.has(args.scenario)) {
+        await assertOrdinaryWorkerFreeTopology(recorder, runtime, args.scenario);
+      }
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
     result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);

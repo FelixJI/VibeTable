@@ -1341,6 +1341,7 @@ def wait_for_self_update_activation(
     target_version: str,
     process_id: int,
     *,
+    process_scope: WindowsProcessScope,
     timeout_seconds: float = 120,
 ) -> dict[str, Any]:
     """Wait until full shell readiness authorizes the updater cleanup."""
@@ -1363,7 +1364,7 @@ def wait_for_self_update_activation(
             if (
                 not all(
                     payload.get(field) is True
-                    for field in ("backendReady", "webViewReady", "rendererReady")
+                    for field in ("hostReady", "webViewReady", "rendererReady")
                 )
                 or payload.get("mode") != "shell"
             ):
@@ -1417,62 +1418,15 @@ def wait_for_self_update_activation(
             raise BuildError("desktop self-update smoke process exited before activation completed")
         # The writer may publish completion between our read and its exit.
         # Once exit is observed, validate the final files once without waiting.
-        process_exited = wait_for_windows_process_exit(process_id, timeout_seconds=0)
+        observed = process_scope.wait_empty(timeout=0)
+        if observed.remaining_pids is None:
+            raise BuildError("desktop self-update smoke could not observe its process scope")
+        process_exited = observed.success
         if not process_exited:
             time.sleep(0.1)
     if readiness_payload is None:
         raise BuildError("desktop self-update smoke shell did not become ready")
     raise BuildError("desktop self-update smoke restart handoff did not complete")
-
-
-def wait_for_windows_process_exit(process_id: int, *, timeout_seconds: float) -> bool:
-    """Wait for one exact Windows process without guessing by executable name."""
-    if os.name != "nt":
-        raise BuildError("desktop self-update process waiting requires Windows")
-    import ctypes
-    from ctypes import wintypes
-
-    synchronize = 0x00100000
-    wait_object_0 = 0
-    wait_timeout = 0x00000102
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = kernel32.OpenProcess(synchronize, False, process_id)
-    if not handle:
-        return windows_process_exited_after_open_failure(ctypes.get_last_error())
-    try:
-        milliseconds = max(0, min(int(timeout_seconds * 1000), 0xFFFFFFFE))
-        result = kernel32.WaitForSingleObject(handle, milliseconds)
-        if result == wait_object_0:
-            return True
-        if result == wait_timeout:
-            return False
-        raise BuildError("desktop self-update process wait failed")
-    finally:
-        kernel32.CloseHandle(handle)
-
-
-def windows_process_exited_after_open_failure(error_code: int) -> bool:
-    """Interpret only a nonexistent PID as an already-exited process."""
-    error_invalid_parameter = 87
-    if error_code == error_invalid_parameter:
-        return True
-    raise BuildError(f"desktop self-update process open failed: Win32 error {error_code}")
-
-
-def terminate_windows_process_tree(process_id: int) -> None:
-    """Best-effort cleanup for the exact smoke process and its child tree."""
-    subprocess.run(
-        ["taskkill", "/PID", str(process_id), "/T", "/F"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=30,
-    )
 
 
 def read_self_update_process_evidence(
@@ -2030,7 +1984,7 @@ def _wait_for_self_update_rollback(
             or restored.get("mode") != "shell"
             or not all(
                 restored.get(field) is True
-                for field in ("backendReady", "webViewReady", "rendererReady")
+                for field in ("hostReady", "webViewReady", "rendererReady")
             )
         ):
             raise BuildError("desktop self-update smoke restored shell readiness is invalid")
@@ -2558,6 +2512,11 @@ def run_desktop_self_update_smoke(
     repo_root: Path,
 ) -> None:
     """Exercise the published host's process-out update path without user data access."""
+    try:
+        from scripts.qa.windows_process_scope import ProcessLaunchSpec, WindowsProcessScope
+    except ModuleNotFoundError:  # pragma: no cover - direct script execution
+        from qa.windows_process_scope import ProcessLaunchSpec, WindowsProcessScope
+
     if os.name != "nt":
         raise BuildError("desktop self-update smoke requires Windows")
     package = package_root.resolve()
@@ -2596,33 +2555,36 @@ def run_desktop_self_update_smoke(
     external_sentinel.parent.mkdir()
     external_sentinel.write_text("preserve-user-data", encoding="utf-8")
 
+    applied_scope: WindowsProcessScope | None = None
     blocking_parent = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(120)"],
         cwd=root,
     )
-    token = secrets.token_hex(32)
-    plan = {
-        "SchemaVersion": 1,
-        "TargetRoot": str(target),
-        "SourceRoot": str(source),
-        "StagingRoot": str(stage),
-        "ParentProcessId": blocking_parent.pid,
-        "CurrentVersion": "1.0.0",
-        "TargetVersion": "1.0.1",
-        "Token": token,
-        "SmokeTest": True,
-    }
-    plan_path = stage / "update-plan.json"
-    plan_path.write_text(json.dumps(plan), encoding="utf-8")
-    environment = os.environ.copy()
-    environment[SELF_UPDATE_SMOKE_TOKEN_ENV] = token
-    applied: subprocess.Popen[bytes] | None = None
     try:
-        applied = subprocess.Popen(
-            [str(source / HOST_EXE_NAME), "--apply-update", str(plan_path)],
-            cwd=source,
-            env=environment,
+        token = secrets.token_hex(32)
+        plan = {
+            "SchemaVersion": 1,
+            "TargetRoot": str(target),
+            "SourceRoot": str(source),
+            "StagingRoot": str(stage),
+            "ParentProcessId": blocking_parent.pid,
+            "CurrentVersion": "1.0.0",
+            "TargetVersion": "1.0.1",
+            "Token": token,
+            "SmokeTest": True,
+        }
+        plan_path = stage / "update-plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        environment = os.environ.copy()
+        environment[SELF_UPDATE_SMOKE_TOKEN_ENV] = token
+        applied_scope = WindowsProcessScope.launch(
+            ProcessLaunchSpec(
+                [str(source / HOST_EXE_NAME), "--apply-update", str(plan_path)],
+                cwd=source,
+                env=environment,
+            )
         )
+        applied = applied_scope.root
         wait_for_self_update_activation_pointer(
             root / PENDING_UPDATE_ACTIVATION_POINTER,
             target=target,
@@ -2633,24 +2595,12 @@ def run_desktop_self_update_smoke(
         blocking_parent.terminate()
         blocking_parent.wait(timeout=30)
         applied_returncode = applied.wait(timeout=120)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise BuildError("desktop self-update smoke could not run the published host") from exc
-    finally:
-        try:
-            if blocking_parent.poll() is None:
-                blocking_parent.terminate()
-                blocking_parent.wait(timeout=30)
-        finally:
-            if applied is not None and applied.poll() is None:
-                terminate_windows_process_tree(applied.pid)
-    if applied_returncode != 0:
-        raise BuildError(f"desktop self-update smoke updater exited with {applied_returncode}")
+        if applied_returncode != 0:
+            raise BuildError(f"desktop self-update smoke updater exited with {applied_returncode}")
 
-    completion = target / SELF_UPDATE_SMOKE_COMPLETION_FILE
-    readiness_root = root / SELF_UPDATE_SMOKE_READINESS_DIR
-    readiness = readiness_root / SHELL_READINESS_FILE
-    process_id: int | None = None
-    try:
+        completion = target / SELF_UPDATE_SMOKE_COMPLETION_FILE
+        readiness_root = root / SELF_UPDATE_SMOKE_READINESS_DIR
+        readiness = readiness_root / SHELL_READINESS_FILE
         process_id = read_self_update_process_evidence(
             readiness_root / SELF_UPDATE_SMOKE_PROCESS_FILE,
             token=token,
@@ -2662,26 +2612,41 @@ def run_desktop_self_update_smoke(
             token,
             "1.0.1",
             process_id,
+            process_scope=applied_scope,
         )
-        if not wait_for_windows_process_exit(process_id, timeout_seconds=30):
-            raise BuildError("desktop self-update smoke process did not exit")
-    except Exception:
-        if process_id is not None:
-            terminate_windows_process_tree(process_id)
-        raise
-    if stage.exists():
-        raise BuildError("desktop self-update smoke did not clean its staging directory")
-    if (root / PENDING_UPDATE_ACTIVATION_POINTER).exists():
-        raise BuildError("desktop self-update smoke retained its activation pointer")
-    identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
-    if identity.get("version") != "1.0.1":
-        raise BuildError("desktop self-update smoke retained the old package identity")
-    if (target / "resources" / "self-update-smoke.txt").read_text(encoding="utf-8") != "new":
-        raise BuildError("desktop self-update smoke did not replace package resources")
-    if install_sentinel.read_text(encoding="utf-8") != "preserve-install-root":
-        raise BuildError("desktop self-update smoke overwrote an unknown install-root file")
-    if external_sentinel.read_text(encoding="utf-8") != "preserve-user-data":
-        raise BuildError("desktop self-update smoke overwrote external user data")
+        # Cleanup can reclaim a failed smoke, but only natural exit proves success.
+        exited = applied_scope.wait_empty(timeout=30)
+        if not exited.success:
+            raise BuildError(
+                "desktop self-update smoke process scope did not exit naturally: "
+                f"remaining={exited.remaining_pids}; errors={exited.errors}"
+            )
+        if stage.exists():
+            raise BuildError("desktop self-update smoke did not clean its staging directory")
+        if (root / PENDING_UPDATE_ACTIVATION_POINTER).exists():
+            raise BuildError("desktop self-update smoke retained its activation pointer")
+        identity = json.loads((target / "release.json").read_text(encoding="utf-8"))
+        if identity.get("version") != "1.0.1":
+            raise BuildError("desktop self-update smoke retained the old package identity")
+        if (target / "resources" / "self-update-smoke.txt").read_text(encoding="utf-8") != "new":
+            raise BuildError("desktop self-update smoke did not replace package resources")
+        if install_sentinel.read_text(encoding="utf-8") != "preserve-install-root":
+            raise BuildError("desktop self-update smoke overwrote an unknown install-root file")
+        if external_sentinel.read_text(encoding="utf-8") != "preserve-user-data":
+            raise BuildError("desktop self-update smoke overwrote external user data")
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BuildError("desktop self-update smoke could not run the published host") from exc
+    finally:
+        try:
+            if blocking_parent.poll() is None:
+                blocking_parent.terminate()
+                blocking_parent.wait(timeout=30)
+        finally:
+            if applied_scope is not None:
+                try:
+                    cleanup_self_update_process_scope(applied_scope)
+                finally:
+                    applied_scope.close()
     _run_desktop_self_update_rollback_smokes(package, root)
 
 

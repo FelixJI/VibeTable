@@ -2,9 +2,9 @@
 
 The test launches the built WPF executable and waits for a readiness report
 that can only be written after three production boundaries succeed: the real
-Python backend handshake, real WebView2 navigation to the bundled web build,
-and the renderer-to-host ``app.ready`` bridge message. Data integration is
-covered by the backend and contract suites.
+host startup, real WebView2 navigation to the bundled web build, and the
+renderer-to-host ``app.ready`` bridge message. A workspace and Python worker
+are not required for shell readiness.
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ def require_webview2_or_skip(report: dict[str, object]) -> None:
 
 
 @pytest.mark.e2e
-def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -> None:
+def test_next_shell_reaches_host_webview_and_renderer_ready(tmp_path: Path) -> None:
     if sys.platform != "win32":
         pytest.fail("VibeTable WPF smoke requires a Windows desktop with WebView2")
 
@@ -224,7 +224,7 @@ def test_next_shell_reaches_backend_webview_and_renderer_ready(tmp_path: Path) -
 
     assert report.get("ready") is True, report
     assert report.get("mode") == "shell", report
-    assert report.get("backendReady") is True, report
+    assert report.get("hostReady") is True, report
     assert report.get("webViewReady") is True, report
     assert report.get("rendererReady") is True, report
     assert report.get("error") is None, report
