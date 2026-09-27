@@ -6357,7 +6357,13 @@ async function scenario33(page, recorder, _network, runtime) {
 // catalog entry survives.
 async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
-  const session = await activateHostPresentationWorkspace(page, recorder, state.workspaceId);
+  const { start, switched } = await activateRestartedWorkspace(page, state.workspaceId);
+  recorder.check("restarted Host reopens the seeded plugin workspace writable",
+    switched.result?.workspaceId === state.workspaceId
+      && Number.isSafeInteger(switched.result?.sessionEpoch)
+      && switched.result.sessionEpoch > 0
+      && switched.result?.state === "openedWritable",
+    { start, expected: state.workspaceId, switched: switched.result });
   const assertZeroExecutionProcesses = async (label) => {
     const observed = await requestPackagedProcessKill(
       runtime,
@@ -6505,7 +6511,7 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
     restoredPackage.isFile(),
     { retainedPath });
   return {
-    workspaceId: session.workspaceId,
+    workspaceId: switched.result?.workspaceId,
     projectKey: state.projectKey,
     pluginId: state.pluginId,
     tableId: state.tableId,
@@ -6515,7 +6521,13 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
 
 async function resumeHostPresentation(page, recorder, statePath, runtime) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
-  const session = await activateHostPresentationWorkspace(page, recorder, state.workspaceId);
+  const { start, switched } = await activateRestartedWorkspace(page, state.workspaceId);
+  recorder.check("restarted Host resumes the seeded workspace UUID writable",
+    switched.result?.workspaceId === state.workspaceId
+      && Number.isSafeInteger(switched.result?.sessionEpoch)
+      && switched.result.sessionEpoch > 0
+      && switched.result?.state === "openedWritable",
+    { start, expected: state.workspaceId, switched: switched.result });
   await page.getByTestId("nav-tables").click();
   await selectTable(page, "E2E Host Presentation");
   const keyword = page.getByTestId("view-keyword").locator("input");
@@ -6586,50 +6598,7 @@ async function resumeHostPresentation(page, recorder, statePath, runtime) {
     { keyword: await keyword.inputValue(), filterUi });
   await page.getByTestId("view-filter-trigger").click();
   await resumeHostCommands(page, recorder, runtime, state.commands);
-  return { workspaceId: session.workspaceId, tableId: state.tableId, state: restored.payload?.state, revision: restored.payload?.revision };
-}
-
-async function activateHostPresentationWorkspace(page, recorder, workspaceId) {
-  const active = () => page.evaluate(() => window.__vibetableE2EBridgeDiagnostics?.workspaceSession ?? null);
-  const targetTestId = `workspace-delete-${workspaceId}`;
-  const targetSession = page.waitForFunction(
-    (workspaceId) => window.__vibetableE2EBridgeDiagnostics?.workspaceSession?.workspaceId === workspaceId,
-    workspaceId,
-    { timeout: 60_000 },
-  );
-  const targetCard = page.getByTestId(targetTestId);
-  const cardReady = targetCard.waitFor({ state: "visible", timeout: 60_000 }).then(() =>
-    page.waitForFunction(
-      (testId) => {
-        const card = document.querySelector(`[data-testid="${testId}"]`)?.closest(".workspace-card");
-        const button = card?.querySelector("button[aria-label]");
-        return button instanceof HTMLButtonElement && !button.disabled;
-      },
-      targetTestId,
-      { timeout: 60_000 },
-    ),
-  );
-  const activation = await Promise.race([
-    targetSession.then(() => "session"),
-    cardReady.then(() => "card"),
-  ]);
-  let session = await active();
-  if (activation === "card" && session?.workspaceId !== workspaceId) {
-    const opened = await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
-    if (!opened) {
-      // Auto-open can finish after the preceding read, or disable the button
-      // while still pending. Recheck identity, then await the same target wait.
-      session = await active();
-      recorder.check("restarted Host does not substitute another active workspace",
-        session == null || session.workspaceId === workspaceId,
-        { expectedWorkspaceId: workspaceId, opened, session });
-    }
-  }
-  await targetSession;
-  session = await active();
-  recorder.check("restarted Host resumes the seeded workspace UUID",
-    session?.workspaceId === workspaceId, { expected: workspaceId, session });
-  return session;
+  return { workspaceId: switched.result?.workspaceId, tableId: state.tableId, state: restored.payload?.state, revision: restored.payload?.revision };
 }
 
 function equivalentPresentationState(actual, expected) {
@@ -9905,45 +9874,7 @@ function openNaturalAgingWorkspaceInPage(targetTestId) {
 
 async function resumeNaturalRetentionAging(page, recorder, statePath) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
-  const center = page.getByTestId("workspace-center");
-  const home = page.getByTestId("home-view");
-  const start = await Promise.race([
-    center.waitFor({ state: "visible", timeout: 60_000 }).then(() => "center"),
-    home.waitFor({ state: "visible", timeout: 60_000 }).then(() => "home"),
-  ]);
-  const switchParams = { targetWorkspaceId: state.workspaceId, openMode: "writable" };
-  let switched;
-  try {
-    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
-  } catch (error) {
-    const prefix = "workspace.switch failed closed: ";
-    let failure;
-    try {
-      failure = error instanceof Error && error.message.startsWith(prefix)
-        ? JSON.parse(error.message.slice(prefix.length))
-        : null;
-    } catch {
-      throw error;
-    }
-    if (!["workspace.capability_unavailable", "workspace.session_required"]
-      .includes(failure?.code)) throw error;
-    const activeSession = page.waitForFunction(
-      hasActiveNaturalAgingWorkspaceSessionInPage,
-      undefined,
-      { timeout: 60_000 },
-    );
-    const targetTestId = `workspace-delete-${state.workspaceId}`;
-    const activation = await Promise.race([
-      activeSession.then(() => "session"),
-      page.getByTestId(targetTestId).waitFor({ state: "visible", timeout: 60_000 })
-        .then(() => "center"),
-    ]);
-    if (activation === "center") {
-      await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
-    }
-    await activeSession;
-    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
-  }
+  const { start, switched } = await activateRestartedWorkspace(page, state.workspaceId);
   recorder.check(
     "resume switch opens the seeded workspace writable",
     switched.result?.workspaceId === state.workspaceId
@@ -9986,6 +9917,51 @@ async function resumeNaturalRetentionAging(page, recorder, statePath) {
     secondApply.payload?.result?.deletedObjects === 0 && secondApply.payload?.result?.reclaimedBytes === 0,
   { secondApply });
   return {};
+}
+
+// Auto-open may precede diagnostic listener attachment. Bind the seeded UUID
+// through workspace.switch; retain the existing explicit no-session fallback.
+async function activateRestartedWorkspace(page, workspaceId) {
+  const center = page.getByTestId("workspace-center");
+  const home = page.getByTestId("home-view");
+  const start = await Promise.race([
+    center.waitFor({ state: "visible", timeout: 60_000 }).then(() => "center"),
+    home.waitFor({ state: "visible", timeout: 60_000 }).then(() => "home"),
+  ]);
+  const switchParams = { targetWorkspaceId: workspaceId, openMode: "writable" };
+  let switched;
+  try {
+    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
+  } catch (error) {
+    const prefix = "workspace.switch failed closed: ";
+    let failure;
+    try {
+      failure = error instanceof Error && error.message.startsWith(prefix)
+        ? JSON.parse(error.message.slice(prefix.length))
+        : null;
+    } catch {
+      throw error;
+    }
+    if (!["workspace.capability_unavailable", "workspace.session_required"]
+      .includes(failure?.code)) throw error;
+    const activeSession = page.waitForFunction(
+      hasActiveNaturalAgingWorkspaceSessionInPage,
+      undefined,
+      { timeout: 60_000 },
+    );
+    const targetTestId = `workspace-delete-${workspaceId}`;
+    const activation = await Promise.race([
+      activeSession.then(() => "session"),
+      page.getByTestId(targetTestId).waitFor({ state: "visible", timeout: 60_000 })
+        .then(() => "center"),
+    ]);
+    if (activation === "center") {
+      await page.evaluate(openNaturalAgingWorkspaceInPage, targetTestId);
+    }
+    await activeSession;
+    switched = await rawWorkspaceV2Request(page, "workspace.switch", switchParams);
+  }
+  return { start, switched };
 }
 
 async function main() {

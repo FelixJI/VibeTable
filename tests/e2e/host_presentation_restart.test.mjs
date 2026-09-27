@@ -10,83 +10,99 @@ const extract = (start, end) => source.slice(source.indexOf(start), source.index
 const openNaturalAgingWorkspaceInPage = eval(`(${extract(
   "function openNaturalAgingWorkspaceInPage", "async function resumeNaturalRetentionAging",
 )})`);
-const activateHostPresentationWorkspace = eval(`(${extract(
-  "async function activateHostPresentationWorkspace", "function equivalentPresentationState",
-)})`);
+const activateRestartedWorkspaceSource = extract(
+  "async function activateRestartedWorkspace", "async function main",
+);
 
-function activationPage(mode) {
+function restartedWorkspaceHarness({ start = "home", switches }) {
   const workspaceId = "11111111-1111-4111-8111-111111111111";
-  const evidence = { clicks: 0, attempts: 0, sessionReads: 0, targetWaits: 0 };
-  const waiters = [];
-  globalThis.window = { __vibetableE2EBridgeDiagnostics: { workspaceSession: null } };
-  const activate = (id = workspaceId) => {
-    window.__vibetableE2EBridgeDiagnostics.workspaceSession = { workspaceId: id, sessionEpoch: 1 };
-    waiters.forEach(waiter => waiter());
+  const evidence = { switchCalls: 0, cardWaits: 0, cardClicks: 0, sessionWaits: 0 };
+  let releaseSessionWait = null;
+  const rawWorkspaceV2Request = async (_page, method, params) => {
+    assert.equal(method, "workspace.switch");
+    assert.deepEqual(params, { targetWorkspaceId: workspaceId, openMode: "writable" });
+    const outcome = switches[Math.min(evidence.switchCalls, switches.length - 1)];
+    evidence.switchCalls += 1;
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
   };
-  class Button {
-    disabled = false;
-    click() { evidence.clicks += 1; activate(); }
-  }
-  globalThis.HTMLButtonElement = Button;
-  const button = new Button();
-  const card = { querySelector(selector) {
-    assert.equal(selector, "button[aria-label]");
-    return button;
-  } };
-  globalThis.document = { querySelector(selector) {
-    assert.equal(selector, `[data-testid="workspace-delete-${workspaceId}"]`);
-    return { closest(selector) { assert.equal(selector, ".workspace-card"); return card; } };
-  } };
+  const hasActiveNaturalAgingWorkspaceSessionInPage = () => {
+    evidence.sessionWaits += 1;
+    return false;
+  };
+  const openNaturalAgingWorkspaceInPageForRestart = () => {
+    evidence.cardClicks += 1;
+    releaseSessionWait?.();
+    return true;
+  };
   const page = {
     getByTestId(id) {
+      if (id === "workspace-center" || id === "home-view") {
+        const visible = id === (start === "center" ? "workspace-center" : "home-view");
+        return { waitFor: () => visible
+          ? Promise.resolve()
+          // A hidden element's visibility wait stays pending, never rejects:
+          // the product race is won by whichever view is actually shown.
+          : new Promise(() => {}) };
+      }
       assert.equal(id, `workspace-delete-${workspaceId}`);
-      return { waitFor: async () => undefined };
+      return { waitFor: async () => {
+        evidence.cardWaits += 1;
+      } };
     },
     waitForFunction(callback, argument) {
-      if (argument === workspaceId) evidence.targetWaits += 1;
-      if (callback(argument)) return Promise.resolve();
-      return new Promise(resolve => waiters.push(() => {
-        if (callback(argument)) resolve();
-      }));
+      assert.equal(callback, hasActiveNaturalAgingWorkspaceSessionInPage);
+      assert.equal(argument, undefined);
+      return new Promise(resolve => {
+        releaseSessionWait = resolve;
+      });
     },
     async evaluate(callback, argument) {
-      if (callback === openNaturalAgingWorkspaceInPage) {
-        evidence.attempts += 1;
-        // The card won the race and the previous session read returned null.
-        // Auto-open completes before the in-page callback gets to the button.
-        if (mode === "interleaved") activate();
-        if (mode === "wrong-interleaved") activate("other-workspace");
-        if (mode === "pending") button.disabled = true;
-        const result = callback(argument);
-        return result;
-      }
-      evidence.sessionReads += 1;
-      const result = callback(argument);
-      if (mode === "pending" && evidence.sessionReads === 2) queueMicrotask(activate);
-      return result;
+      assert.equal(callback, openNaturalAgingWorkspaceInPage);
+      assert.equal(argument, `workspace-delete-${workspaceId}`);
+      return openNaturalAgingWorkspaceInPageForRestart();
     },
   };
-  if (mode === "already-active") activate();
-  const recorder = { check(name, passed) { assert.ok(passed, name); } };
-  return { page, recorder, workspaceId, evidence };
+  const activateRestartedWorkspace = eval(`(${activateRestartedWorkspaceSource})`);
+  return {
+    page,
+    workspaceId,
+    evidence,
+    run: () => activateRestartedWorkspace(page, workspaceId),
+  };
 }
 
-for (const mode of ["interleaved", "pending", "click", "already-active"]) {
-  test(`Host restart activates the exact workspace: ${mode}`, async () => {
-    const { page, recorder, workspaceId, evidence } = activationPage(mode);
-    const session = await activateHostPresentationWorkspace(page, recorder, workspaceId);
-    assert.equal(session.workspaceId, workspaceId);
-    assert.equal(evidence.clicks, mode === "click" ? 1 : 0);
-    assert.equal(evidence.attempts, mode === "already-active" ? 0 : 1);
-    assert.equal(evidence.targetWaits, 1);
-  });
-}
+test("restarted workspace activation binds the UUID through the direct switch response", async () => {
+  const switched = { result: { workspaceId: "11111111-1111-4111-8111-111111111111", sessionEpoch: 2, state: "openedWritable" } };
+  const harness = restartedWorkspaceHarness({ switches: [switched] });
+  const outcome = await harness.run();
+  assert.equal(outcome.start, "home");
+  assert.deepEqual(outcome.switched, switched);
+  assert.equal(harness.evidence.switchCalls, 1);
+  assert.equal(harness.evidence.sessionWaits, 0);
+  assert.equal(harness.evidence.cardWaits, 0);
+  assert.equal(harness.evidence.cardClicks, 0);
+});
 
-test("Host restart rejects another UUID completing between read and open", async () => {
-  const { page, recorder, workspaceId, evidence } = activationPage("wrong-interleaved");
-  await assert.rejects(activateHostPresentationWorkspace(page, recorder, workspaceId));
-  assert.equal(evidence.clicks, 0);
-  assert.equal(evidence.attempts, 1);
+test("restarted workspace activation opens the UUID card once when no session exists yet", async () => {
+  const noSession = new Error('workspace.switch failed closed: {"code":"workspace.session_required"}');
+  const switched = { result: { workspaceId: "11111111-1111-4111-8111-111111111111", sessionEpoch: 1, state: "openedWritable" } };
+  const harness = restartedWorkspaceHarness({ start: "center", switches: [noSession, switched] });
+  const outcome = await harness.run();
+  assert.equal(outcome.start, "center");
+  assert.deepEqual(outcome.switched, switched);
+  assert.equal(harness.evidence.switchCalls, 2);
+  assert.equal(harness.evidence.cardWaits, 1);
+  assert.equal(harness.evidence.cardClicks, 1);
+});
+
+test("restarted workspace activation propagates an unknown switch failure without retry", async () => {
+  const failure = new Error('workspace.switch failed closed: {"code":"workspace.operation_failed"}');
+  const harness = restartedWorkspaceHarness({ switches: [failure] });
+  await assert.rejects(harness.run(), /workspace.operation_failed/);
+  assert.equal(harness.evidence.switchCalls, 1);
+  assert.equal(harness.evidence.cardWaits, 0);
+  assert.equal(harness.evidence.cardClicks, 0);
 });
 
 async function resumeDom(mutate = () => {}) {
@@ -153,7 +169,12 @@ async function resumeDom(mutate = () => {}) {
   };
   const recorder = { check(name, passed) { assert.ok(passed, name); } };
   const fs = { readFile: async () => JSON.stringify(expected) };
-  const activateHostPresentationWorkspace = async () => ({ workspaceId: expected.workspaceId });
+  const activateRestartedWorkspace = async () => ({
+    start: "home",
+    switched: {
+      result: { workspaceId: expected.workspaceId, sessionEpoch: 2, state: "openedWritable" },
+    },
+  });
   const selectTable = async () => {};
   const rawBridgeRequest = async (_page, method) => {
     assert.equal(method, "gridState.get", "resume must not reapply Host state to repair the UI");
@@ -165,7 +186,7 @@ async function resumeDom(mutate = () => {}) {
   // Command controls have their own UI/real-package assertions; this probe isolates presentation restoration.
   const resumeHostCommands = async () => {};
   const resumeHostPresentation = eval(`(${extract(
-    "async function resumeHostPresentation", "async function activateHostPresentationWorkspace",
+    "async function resumeHostPresentation", "function equivalentPresentationState",
   )})`);
   return resumeHostPresentation(page, recorder, "state.json");
 }
