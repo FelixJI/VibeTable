@@ -6411,6 +6411,9 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   await assertZeroExecutionProcesses(
     "daily catalog and audit reads never start Python or Node");
 
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "E2E Plugin Target");
+  await page.getByTestId("nav-plugins").click();
   await pluginRow.click();
   const actions = page.locator(".action-row");
   await actions.filter({ hasText: "files-roundtrip" }).locator("button.run-button").click();
@@ -6418,7 +6421,8 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
   await page.getByTestId("plugin-action-start").click();
   const restartStart = await waitForCapturedBridgeMessage(page, 30_000);
   recorder.check("a plugin action still runs after the Host restart",
-    restartStart.type === "plugin.action.start" && Boolean(restartStart.payload?.taskId),
+    restartStart.type === "plugin.action.start" && Boolean(restartStart.payload?.taskId)
+      && restartStart.payload.collection === state.tableId,
     { restartStart });
   await page.locator(".result-card").waitFor({ timeout: 30_000 });
   const restartTask = await rawBridgeRequest(page, "plugin.task.get", {
@@ -9884,7 +9888,7 @@ async function resumeNaturalRetentionAging(page, recorder, statePath) {
     { start, expected: state.workspaceId, switched: switched.result },
   );
   await page.getByTestId("nav-home").click();
-  await home.waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("home-view").waitFor({ state: "visible", timeout: 60_000 });
 
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-storage").click();

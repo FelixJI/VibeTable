@@ -162,12 +162,15 @@ def _run_resume_navigation_contract() -> dict[str, object]:
     resume_start = source.index("async function resumeNaturalRetentionAging")
     active_helper = source[active_start:open_start]
     open_helper = source[open_start:resume_start]
-    resume = source[resume_start : source.index("async function main()")]
+    activation_start = source.index("async function activateRestartedWorkspace")
+    resume = source[resume_start:activation_start]
+    activation = source[activation_start : source.index("async function main()")]
     harness = f"""
 const workspaceId = {json.dumps(workspace_id)};
 const activeSource = {json.dumps(active_helper)};
 const openSource = {json.dumps(open_helper)};
 const resumeSource = {json.dumps(resume)};
+const activationSource = {json.dumps(activation)};
 class HTMLButtonElement {{
   constructor(disabled, onClick) {{ this.disabled = disabled; this.clicks = 0; this.onClick = onClick; }}
   click() {{ this.clicks += 1; this.onClick(); }}
@@ -192,6 +195,7 @@ const never = () => new Promise(() => {{}});
 async function runResume(scenario) {{
   const evidence = {{ requests: [], waits: 0, waitIds: [], evaluateCalls: 0, clicks: [] }};
   const start = scenario.endsWith("home") ? "home" : "center";
+  let homeVisible = start === "home";
   const needsRecovery = ["stable-center", "center-auto", "prebootstrap-home"].includes(scenario);
   const activeWaiters = [];
   const setActive = () => {{
@@ -221,11 +225,15 @@ async function runResume(scenario) {{
     getByTestId(testId) {{ return {{
       waitFor: async () => {{
         if (testId === "workspace-center") return start === "center" ? undefined : never();
-        if (testId === "home-view") return start === "home" ? undefined : never();
+        if (testId === "home-view") return homeVisible ? undefined : never();
         evidence.waitIds.push(testId);
         return ["stable-center", "center-auto"].includes(scenario) ? undefined : never();
       }},
-      click: async () => {{ evidence.clicks.push(testId); throw new Error("navigation-complete"); }},
+      click: async () => {{
+        evidence.clicks.push(testId);
+        if (testId === "nav-home") homeVisible = true;
+        else throw new Error("navigation-complete");
+      }},
     }}; }},
     waitForFunction(callback) {{
       evidence.waits += 1;
@@ -249,6 +257,7 @@ async function runResume(scenario) {{
     if (!passed) throw new Error(`assertion failed: ${{name}}`);
     if (name === "resume switch opens the seeded workspace writable") evidence.start = details.start;
   }} }};
+  const activateRestartedWorkspace = eval(`(${{activationSource}})`);
   const resumeNaturalRetentionAging = eval(`(${{resumeSource}})`);
   try {{ await resumeNaturalRetentionAging(page, recorder, "state.json"); }}
   catch (error) {{ evidence.error = error.message; }}
@@ -289,7 +298,7 @@ def test_resume_navigation_uses_exact_open_button_and_fails_closed() -> None:
         "requests": [switch_request, switch_request],
         "waits": 1,
         "waitIds": [target_test_id],
-        "clicks": ["nav-home"],
+        "clicks": ["nav-home", "nav-settings"],
         "start": "center",
         "error": "navigation-complete",
     }
@@ -325,7 +334,7 @@ def test_resume_navigation_uses_exact_open_button_and_fails_closed() -> None:
             "waits": 0,
             "waitIds": [],
             "evaluateCalls": 0,
-            "clicks": ["nav-home"],
+            "clicks": ["nav-home", "nav-settings"],
             "start": start,
             "error": "navigation-complete",
         }
