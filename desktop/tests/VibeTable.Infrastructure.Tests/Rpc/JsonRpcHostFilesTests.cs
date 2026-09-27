@@ -53,10 +53,15 @@ public sealed class JsonRpcHostFilesTests
         var transport = new Peer();
         await using var client = new JsonRpcClient(transport);
         int observed = 0;
+        var notification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         client.Terminated += () => throw new InvalidOperationException("observer failed");
-        client.Terminated += () => Interlocked.Increment(ref observed);
+        client.Terminated += () =>
+        {
+            Interlocked.Increment(ref observed);
+            notification.TrySetResult();
+        };
         transport.In.Writer.TryComplete();
-        await Task.Delay(50);
+        await notification.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.AreEqual(1, observed);
     }
 
