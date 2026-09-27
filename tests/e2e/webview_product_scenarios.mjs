@@ -8744,9 +8744,9 @@ async function scenario23(page, recorder, _network, runtime) {
   { insertReceipt, editTerminal });
   await cell.filter({ hasText: value }).waitFor({ state: "visible", timeout: 30_000 });
 
-  await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-storage").click();
-  await page.getByTestId("storage-settings").waitFor({ state: "visible", timeout: 30_000 });
+  // Publish the committed edit before release; the initial replicated UI state
+  // can remain stale until the next replica.changed observation.
+  await publishReplicaProtectionThroughUi(page, recorder, { workspaceId, workspaceName }, initialSession);
   await page.getByTestId("workspace-storage-release-cache-preview").click({ timeout: 90_000 });
   await page.getByTestId("workspace-storage-confirmation").locator("input").fill(workspaceName);
   await beginWorkspaceV2MethodCapture(page, "workspace.storage.apply");
@@ -8970,6 +8970,21 @@ async function replicaEditRow(page, recorder, state, value, session) {
       && checkpoint.query.payload.snapshot.schemaRevision === receipt.payload.revision?.schemaRevision
       && checkpoint.query.payload.snapshot.dataRevision === receipt.payload.revision?.dataRevision,
   { checkpoint });
+  const protection = await publishReplicaProtectionThroughUi(page, recorder, state, session);
+  const protectedRow = await rawBridgeRequest(page, "query.page", {
+    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  recorder.check("the published protection belongs to the unchanged branch row and revisions",
+    protectedRow.type === "query.page" && protectedRow.payload?.rows?.length === 1
+      && protectedRow.payload.rows[0].id === state.rowId
+      && protectedRow.payload.rows[0][state.column] === value
+      && protectedRow.payload.snapshot?.table === state.tableId
+      && protectedRow.payload.snapshot.schemaRevision === receipt.payload.revision.schemaRevision
+      && protectedRow.payload.snapshot.dataRevision === receipt.payload.revision.dataRevision,
+  { protectedRow, protection });
+}
+
+async function publishReplicaProtectionThroughUi(page, recorder, state, session) {
   // Workspace close awaits a foreground protection snapshot, unlike window exit.
   // Reopen retains local authority and lets its worker finish publishing that snapshot.
   const beforeClose = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
@@ -9003,17 +9018,7 @@ async function replicaEditRow(page, recorder, state, value, session) {
       && protections.length === 1 && protections[0].state === "ready"
       && protections[0].integrity === "verified" && protections[0].syncState === "replicated",
   { beforeClose, afterClose, protections });
-  const protectedRow = await rawBridgeRequest(page, "query.page", {
-    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
-  });
-  recorder.check("the published protection belongs to the unchanged branch row and revisions",
-    protectedRow.type === "query.page" && protectedRow.payload?.rows?.length === 1
-      && protectedRow.payload.rows[0].id === state.rowId
-      && protectedRow.payload.rows[0][state.column] === value
-      && protectedRow.payload.snapshot?.table === state.tableId
-      && protectedRow.payload.snapshot.schemaRevision === receipt.payload.revision.schemaRevision
-      && protectedRow.payload.snapshot.dataRevision === receipt.payload.revision.dataRevision,
-  { protectedRow, protection: protections[0] });
+  return protections[0];
 }
 
 async function verifyReplicaRecoveryPreviews(page, recorder, recoverySnapshotIds, runtime) {
