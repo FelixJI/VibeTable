@@ -144,7 +144,9 @@ Python supervisor 复用已有 lifecycle 锁清理意外退出的精确 ProcessG
 Job assignment 失败沿已有 teardown 回收已启动进程；`ERROR_ACCESS_DENIED` 不能证明进程已被当前 Job 接管。
 相邻 supervisor 回归在任何显式 Stop/Dispose 前检查真实繁忙 Node 退出，并验证排队新代仍可调用。
 真实包的 S11 同时覆盖确认、文件能力、崩溃结算、Host 重启后的 catalog 和缺本机包缓存诊断；
-具体候选、结果与未完成门禁以当前 PR/Issue 的验证记录为准。
+2026-09-27 主干固定样本（61d）已将上述 L8/L9 范围连同 L10 六个普通场景（S01/02/03/05/06/08）
+真实业务完成后的零 Worker Job 成员观测（Host/Go 各 1、Python/Node 各 0）一并验收，见
+[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)。
 
 ## Shell readiness 与按需 Worker
 

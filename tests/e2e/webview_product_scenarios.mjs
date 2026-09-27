@@ -9534,6 +9534,17 @@ async function scenario24(page, recorder, _network, runtime) {
       inspected.request.payload.params.conflictId === state.resolution.conflictId,
     { listed, inspected });
     await verifyReplicaRecoveryPreviews(page, recorder, state.resolution.recoverySnapshotIds, runtime);
+    await waitForPublishedReplicaUi(page, recorder);
+    const protections = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
+    const protection = protections.result.snapshots.find((snapshot) =>
+      snapshot.snapshotId === state.resolution.protectionSnapshotId);
+    const subsequentProtections = protections.result.snapshots.filter((snapshot) =>
+      snapshot.trigger === "protection" && snapshot.catalogRevision >= protection?.catalogRevision);
+    recorder.check("normal close protection and subsequent protections survive restart verified and published",
+      protections.result.nextCursor === null && protection?.trigger === "protection"
+        && subsequentProtections.length > 0 && subsequentProtections.every((snapshot) =>
+          snapshot.state === "ready" && snapshot.integrity === "verified"
+            && snapshot.syncState === "replicated"), { protection, protections });
     return;
   }
   if (stage === "seed") {
@@ -9608,6 +9619,8 @@ async function scenario24(page, recorder, _network, runtime) {
     dataRevision: resolved.query.payload.snapshot.dataRevision,
   };
   await verifyReplicaRecoveryPreviews(page, recorder, state.resolution.recoverySnapshotIds, runtime);
+  const protection = await publishReplicaProtectionThroughUi(page, recorder, state, opened.session);
+  state.resolution.protectionSnapshotId = protection.snapshotId;
   await fs.writeFile(runtime.replicaState, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 
 }

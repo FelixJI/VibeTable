@@ -134,6 +134,10 @@ func TestPersistentHeadReopensCanonicalEmptyHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	root, revision := reopened.Head()
+	if root != "" || revision != 1 {
+		t.Fatalf("canonical empty head root=%q revision=%d", root, revision)
+	}
 	if reopened.Root() != "" || len(reopened.List()) != 0 {
 		t.Fatalf(
 			"canonical empty history root=%q documents=%#v",

@@ -342,3 +342,82 @@ test("a replicated response that only lands after the budget cannot pass", async
       && error.message.includes('"syncState":"replicated"'));
   assert.equal(harness.observed.checks.length, 0);
 });
+
+function resolvedScenarioHarness({ protection = {}, subsequentProtections = [], replicaFailure = null } = {}) {
+  const saved = {
+    ...state, workspaceName: "Seed", workspaceId: "seed-id", rowId: "row-seed",
+    column: "value", right: "replica", resolution: {
+      conflictId: "resolved", recoverySnapshotIds: ["recovery"],
+      schemaRevision: 2, dataRevision: 8, protectionSnapshotId: "protection",
+    },
+  };
+  const observed = { publicationWaits: 0, snapshotReads: 0 };
+  const control = {
+    async waitFor() {}, async click() {}, async isVisible() { return false; },
+    getByRole() { return control; }, locator() { return control; },
+  };
+  const page = { getByTestId() { return control; } };
+  const scenario = runInNewContext(`${scenarioStartup}\nscenario24`, {
+    fs: { async readFile() { return JSON.stringify(saved); } },
+    async openWorkspaceCenterFromSwitcher() {},
+    async activateWorkspaceThroughUi() {
+      return { session: { workspaceId: saved.workspaceId, sessionEpoch: 9,
+        provisional: true, state: "openedProvisional" }, databaseOpened: { payload: {
+        projectKey: "local:seedid", projectRevision: "seedid:9",
+      } } };
+    },
+    async readDirectoryReplicaCheckpoint() { return { query: { type: "query.page", payload: {
+      rows: [{ id: saved.rowId, value: saved.right }], snapshot: { table: saved.tableId,
+        schemaRevision: 2, dataRevision: 8 },
+    } } }; },
+    async replicaUiMethod(_page, _recorder, method, action) {
+      await action();
+      const detail = inspected("resolved", [{ ...item, state: "ready" }], "ready");
+      return { result: method === "conflict.list"
+        ? { conflicts: [{ conflictId: "resolved", state: "ready" }], nextCursor: null } : detail,
+      request: { payload: { params: { conflictId: "resolved" } } } };
+    },
+    requireResolvedReplicaConflict,
+    async verifyReplicaRecoveryPreviews() {},
+    async waitForPublishedReplicaUi() {
+      observed.publicationWaits += 1;
+      if (replicaFailure) throw replicaFailure;
+    },
+    async rawWorkspaceV2Request(_page, method) {
+      assert.equal(method, "snapshot.list");
+      observed.snapshotReads += 1;
+      return { result: { nextCursor: null, snapshots: [{ snapshotId: "protection",
+        trigger: "protection", catalogRevision: 7, state: "ready", integrity: "verified",
+        syncState: "replicated", ...protection }, ...subsequentProtections] } };
+    },
+  });
+  return { observed, run: () => scenario(page, {
+    check(name, condition) { if (!condition) throw new Error(`assertion failed: ${name}`); },
+  }, null, { replicaStage: "verify-resolved", replicaState: "saved-state" }) };
+}
+
+test("S24 restart requires the normal post-resolution protection to remain verified and published", async () => {
+  const harness = resolvedScenarioHarness();
+  await harness.run();
+  assert.equal(harness.observed.publicationWaits, 1);
+  assert.equal(harness.observed.snapshotReads, 1);
+});
+
+for (const protection of [
+  { state: "corrupt", integrity: "corrupt", syncState: "failed" },
+  { snapshotId: "unrelated" },
+  { syncState: "pending" },
+]) test(`S24 restart rejects unusable normal protection ${JSON.stringify(protection)}`, async () => {
+  await assert.rejects(resolvedScenarioHarness({ protection }).run(), /protection/);
+});
+
+test("S24 restart cannot pass when the resolved branch cannot finish local publication", async () => {
+  await assert.rejects(resolvedScenarioHarness({ replicaFailure: new Error("replica remains failed") }).run(),
+    /replica remains failed/);
+});
+test("S24 restart rejects a newly closed corrupt protection even when the recorded protection is healthy", async () => {
+  await assert.rejects(resolvedScenarioHarness({ subsequentProtections: [{
+    snapshotId: "restart-close", trigger: "protection", catalogRevision: 8,
+    state: "corrupt", integrity: "corrupt", syncState: "failed",
+  }] }).run(), /protection/);
+});

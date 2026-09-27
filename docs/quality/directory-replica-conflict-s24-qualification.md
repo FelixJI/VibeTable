@@ -1,6 +1,6 @@
 # S24 目录副本冲突资格
 
-当前资格以 [PR #333](https://github.com/FelixJI/VibeTable/pull/333) 最新 head 的验收记录和 required 为准。下文各 SHA 的构建、S24 与审阅结果是历史固定源码证据，不能替代后续组合或合并后 main 的资格。历史失败及其修复证据保留。
+当前资格以 61d 主干固定样本（main CI 36316404213，见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)）为准：声明范围（两端冲突选择、败方恢复预览、重启可达性）的 seed/fork-left/fork-right/resolve/verify-resolved 五阶段共 84 项断言通过，保留为固定实测样本。verify-resolved 阶段额外出现的 replica 实际异常（replica.status failed / pendingSync 与新增 corrupt 保护快照项）并非本次故障注入，旧 b744 样本同样存在；其 producer 根因经正式补审确认为稳定 P2（S24-R2-F1，完整公开报告见 [Issue #341 评论 5855979696](https://github.com/FelixJI/VibeTable/issues/341#issuecomment-5855979696)）：纯表 apply 提交非空 filehistory root 时，snapshotFiles 错误使用空 document 集合的 max 版本 0，bundle 严格拒绝，正常关闭因此新增 protection corrupt；两个恢复副本本身健康。问题整改中：整改落地并经同主干后继证据复验前，本页不升格为完整 Closed，不据此宣称同步收敛，Task #341 与 Goal #339 均未完成验收。此前的全范围实现代码补审 PASS（Issue #341 评论 5855401997）保留为历史记录，不代表当前整改状态。[PR #333](https://github.com/FelixJI/VibeTable/pull/333) 降为历史固定源码证据；下文各 SHA 的构建、S24 与审阅结果是历史固定源码证据，不能替代后续组合或合并后 main 的资格。历史失败及其修复证据保留。
 
 ## 完整意图与来源
 

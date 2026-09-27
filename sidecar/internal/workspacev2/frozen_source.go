@@ -66,7 +66,13 @@ func (source *frozenSource) Freeze(
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
-	files, fileRevision, err := source.snapshotFiles(ctx)
+	historyRoot, fileHeadRevision := source.history.Head()
+	fileRevision := fileHeadRevision
+	if historyRoot == "" {
+		// An absent history root keeps the bundle's canonical zero revision.
+		fileRevision = 0
+	}
+	files, err := source.snapshotFiles(ctx)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
@@ -88,7 +94,7 @@ func (source *frozenSource) Freeze(
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
 	dataRevision, computationWatermark, pendingWork, searchGeneration, err :=
-		source.snapshotDerivedState(ctx, fileRevision)
+		source.snapshotDerivedState(ctx, fileHeadRevision)
 	if err != nil {
 		return snapshot.BarrierView{}, writecoordinator.FrozenRoots{}, err
 	}
@@ -106,7 +112,7 @@ func (source *frozenSource) Freeze(
 	filePayload, err := json.Marshal(map[string]any{
 		"formatVersion": 1,
 		"workspaceId":   source.manifest.WorkspaceID,
-		"historyRoot":   source.history.Root(),
+		"historyRoot":   historyRoot,
 		"fileRevision":  fileRevision,
 	})
 	if err != nil {
@@ -402,17 +408,11 @@ func (source *frozenSource) appendPendingAudit(ctx context.Context) error {
 
 func (source *frozenSource) snapshotFiles(
 	ctx context.Context,
-) (map[string][]byte, uint64, error) {
+) (map[string][]byte, error) {
 	documents := source.history.List()
 	result := make(map[string][]byte, len(documents))
-	var (
-		total        int64
-		fileRevision uint64
-	)
+	var total int64
 	for _, document := range documents {
-		if document.TopologyRevision > fileRevision {
-			fileRevision = document.TopologyRevision
-		}
 		if document.Status != filehistory.DocumentActive ||
 			document.EffectiveRevisionID == "" {
 			continue
@@ -426,11 +426,11 @@ func (source *frozenSource) snapshotFiles(
 		}
 		if effective == nil || effective.Size < 0 ||
 			effective.Size > maxSnapshotWorkingSet-total {
-			return nil, 0, errors.New("snapshot.file_state_too_large")
+			return nil, errors.New("snapshot.file_state_too_large")
 		}
 		reader, err := source.repository.Open(ctx, effective.ObjectID)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		content, readErr := io.ReadAll(io.LimitReader(
 			reader,
@@ -438,16 +438,16 @@ func (source *frozenSource) snapshotFiles(
 		))
 		closeErr := reader.Close()
 		if err := errors.Join(readErr, closeErr); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		if int64(len(content)) != effective.Size ||
 			digestBytes(content) != effective.ContentHash {
-			return nil, 0, filehistory.ErrStateCorrupt
+			return nil, filehistory.ErrStateCorrupt
 		}
 		result[document.RelativePath] = content
 		total += effective.Size
 	}
-	return result, fileRevision, nil
+	return result, nil
 }
 
 func (source *frozenSource) workspaceSettings(
