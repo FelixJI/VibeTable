@@ -25,7 +25,6 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
     assert set(dispatcher.registered_methods) == {
         "plugin.inspectInstall",
         "plugin.commitInstall",
-        "plugin.cancelInstall",
         "plugin.upgrade",
         "plugin.rollback",
         "plugin.uninstall",
@@ -38,6 +37,10 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
         # single public owner of plugin task state.
         "plugin.cancelTask",
     }
+    # plugin.cancelInstall keeps its public renderer capability but the
+    # worker registration is retired: the WPF host owns cancel by taking and
+    # disposing the install-plan lease without any backend round trip.
+    assert "plugin.cancelInstall" not in dispatcher.registered_methods
     # The Go plugin catalog answers the public catalog/audit/enable surface
     # and the empty pending-cleanup projection through the Host.
     assert "plugin.listCatalog" not in dispatcher.registered_methods

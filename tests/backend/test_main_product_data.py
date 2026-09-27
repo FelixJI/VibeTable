@@ -138,7 +138,6 @@ async def test_product_rpc_registration_is_closed_and_provider_neutral(
         "data.generateTemplate",
         "plugin.inspectInstall",
         "plugin.commitInstall",
-        "plugin.cancelInstall",
         "plugin.upgrade",
         "plugin.rollback",
         "plugin.uninstall",

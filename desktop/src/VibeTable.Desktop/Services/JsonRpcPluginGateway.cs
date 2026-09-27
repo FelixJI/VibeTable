@@ -40,23 +40,18 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
     }
 
     public Task<PluginRuntimeInstallPlan> InspectInstallAsync(
-        PluginInspectInstallParams request, CancellationToken token)
-        => InvokeAsync<PluginInspectInstallParams, PluginRuntimeInstallPlan>(
+        PluginInspectInstallExecutionParams request, CancellationToken token)
+        => InvokeAsync<PluginInspectInstallExecutionParams, PluginRuntimeInstallPlan>(
             "plugin.inspectInstall", request, token);
 
     public Task<PluginRuntimeSnapshot> CommitInstallAsync(
-        PluginCommitInstallParams request, CancellationToken token)
-        => InvokeAsync<PluginCommitInstallParams, PluginRuntimeSnapshot>(
+        PluginCommitInstallExecutionParams request, CancellationToken token)
+        => InvokeAsync<PluginCommitInstallExecutionParams, PluginRuntimeSnapshot>(
             "plugin.commitInstall", request, token);
 
-    public Task<bool> CancelInstallAsync(
-        PluginInstallCancelParams request, CancellationToken token)
-        => InvokeAsync<PluginInstallCancelParams, bool>(
-            "plugin.cancelInstall", request, token);
-
     public Task<PluginRuntimeSnapshot> UpgradeAsync(
-        PluginUpgradeParams request, CancellationToken token)
-        => InvokeAsync<PluginUpgradeParams, PluginRuntimeSnapshot>(
+        PluginUpgradeExecutionParams request, CancellationToken token)
+        => InvokeAsync<PluginUpgradeExecutionParams, PluginRuntimeSnapshot>(
             "plugin.upgrade", request, token);
 
     public Task<PluginRuntimeSnapshot> RollbackAsync(

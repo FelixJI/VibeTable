@@ -1190,13 +1190,14 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
 
 
+@pytest.mark.parametrize("scenario", ["11-plugin-mutation", "33-host-grid-presentation"])
 @pytest.mark.parametrize("failed_phase", ["seed", "resume"])
 def test_product_e2e_failure_evidence_retains_host_restart_phases(
     tmp_path: Path,
     failed_phase: str,
+    scenario: str,
 ) -> None:
     run = tmp_path / "source" / "20260921T133903Z"
-    scenario = "33-host-grid-presentation"
     run.mkdir(parents=True)
     (run / "product-e2e-report.json").write_text(
         json.dumps(

@@ -1381,25 +1381,22 @@
       "id": "rpc.plugin-host-pending",
       "kind": "rpc",
       "names": [
-        "plugin.cancelInstall",
         "plugin.cancelTask",
         "plugin.resolveFile",
         "plugin.resolveInteraction"
       ],
       "currentPath": [
-        "renderer",
         "wpfHost",
-        "pythonBff",
+        "pythonWorker",
         "nodeWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "pythonWorker",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
       "effects": {
         "read": [],
         "write": [
-          "plugin.cancelInstall",
           "plugin.cancelTask",
           "plugin.resolveFile",
           "plugin.resolveInteraction"
@@ -1409,7 +1406,7 @@
       },
       "stateHolders": [
         "wpfHost",
-        "pythonBff",
+        "pythonWorker",
         "nodeWorker"
       ],
       "stateLifetime": "workspace",
@@ -1419,9 +1416,9 @@
         "11-plugin-mutation",
         "17-interface-lifecycle"
       ],
-      "targetSlice": "L7",
+      "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Completed for task/interaction/file pending: the WPF HostPluginTaskRegistry owns plugin action task identity, public snapshots, cancel, confirmation and file pending for the workspace lifetime, Python serves only the closed host-only execution entries (cancelTask/resolveInteraction/resolveFile), plugin.getTask is retired, and a lost Python client settles every running task to an explicit aborted state with an unknown business-commit boundary. Remaining: remote install-plan cancel cleanup follows the L9 worker migration.",
+      "deleteWhen": "Completed: WPF owns task identity, public snapshots, confirmation and file pending; the on-demand Python executor keeps only cancellation handles and active reply futures behind closed host-only entries. Client loss settles running tasks as aborted with an unknown business-commit boundary.",
       "evidence": [
         "backend/__main__.py",
         "backend/application/plugin_execution_runtime.py",
@@ -1431,6 +1428,45 @@
         "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs",
         "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs",
         "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.plugin-install-cancel",
+      "kind": "rpc",
+      "names": [
+        "plugin.cancelInstall"
+      ],
+      "currentPath": [
+        "renderer",
+        "wpfHost"
+      ],
+      "currentRoute": "wpfHost",
+      "classification": "HOST_NATIVE",
+      "targetOwner": "HOST_NATIVE",
+      "authority": "HOST_NATIVE",
+      "effects": {
+        "read": [],
+        "write": [
+          "plugin.cancelInstall"
+        ],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "wpfHost"
+      ],
+      "stateLifetime": "task",
+      "cancellation": "none",
+      "timeout": "none",
+      "productScenarios": [
+        "11-plugin-mutation"
+      ],
+      "targetSlice": "L9",
+      "targetPr": null,
+      "deleteWhen": "Completed: Host atomically consumes the install-plan lease and releases its downloaded package locally; cancel never starts or calls Python.",
+      "evidence": [
+        "desktop/src/VibeTable.Desktop/Services/HostInstallPlanLeaseRegistry.cs",
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs"
       ]
     },
     {
@@ -1493,10 +1529,9 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "pythonWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "pythonWorker",
       "classification": "PYTHON_WORKER",
       "targetOwner": "PYTHON_WORKER",
       "authority": "PYTHON_WORKER",
@@ -1510,7 +1545,6 @@
         "state": []
       },
       "stateHolders": [
-        "pythonBff",
         "pythonWorker"
       ],
       "stateLifetime": "task",
@@ -1522,7 +1556,7 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "An on-demand Python Worker performs bounded package and manifest inspection and the persistent BFF inspection handlers are removed.",
+      "deleteWhen": "Completed: Host starts the existing Python supervisor on demand for bounded package inspection; Host issues and retains the full install plan, and Python keeps no acceptable-plan ledger.",
       "evidence": [
         "backend/__main__.py",
         "backend/application/plugin_platform_service.py",
@@ -1542,13 +1576,12 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
         "pythonWorker",
         "nodeWorker",
         "goSidecar",
         "pocketBase"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "pythonWorker",
       "classification": "PYTHON_WORKER",
       "targetOwner": "PYTHON_WORKER",
       "authority": "PYTHON_WORKER",
@@ -1565,7 +1598,6 @@
         "state": []
       },
       "stateHolders": [
-        "pythonBff",
         "pythonWorker",
         "nodeWorker",
         "goSidecar",
@@ -1581,7 +1613,7 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "The on-demand Worker owns package and Node execution only, Go owns shared catalog, audit, and mutation state, WPF owns task settlement, and the persistent BFF lifecycle route is removed.",
+      "deleteWhen": "Completed: the on-demand Python executor performs package and task-scoped Node execution. Host owns plan admission and task settlement; Go/PocketBase owns committed installation, revision, audit and mutation state. Hidden lifecycle methods remain hidden.",
       "evidence": [
         "backend/__main__.py",
         "backend/application/plugin_execution_runtime.py",
@@ -3050,7 +3082,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff"
+        "pythonWorker"
       ],
       "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
@@ -3067,7 +3099,7 @@
         ]
       },
       "stateHolders": [
-        "pythonBff",
+        "pythonWorker",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -3094,7 +3126,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff"
+        "pythonWorker"
       ],
       "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
@@ -3110,7 +3142,7 @@
         ]
       },
       "stateHolders": [
-        "pythonBff",
+        "pythonWorker",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -3122,7 +3154,7 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "Completed for file pending: the WPF HostPluginTaskRegistry owns the public pending file-request record and generation settlement; HostFileCapabilityAdapter keeps only the picker reply future for an active execution, and Host owns run-scoped file grants and native IO. Pending picker orchestration moves with the later plugin lifecycle slice.",
+      "deleteWhen": "Completed for file pending: the WPF HostPluginTaskRegistry owns the public pending file-request record and generation settlement; HostFileCapabilityAdapter keeps only the picker reply future for an active execution, and Host owns run-scoped file grants and native IO. Client termination invalidates pending picker replies through the existing Host gateway binding.",
       "evidence": [
         "backend/infrastructure/plugin_file_capability.py",
         "desktop/src/VibeTable.Desktop/Services/HostPluginTaskRegistry.cs"
@@ -3132,12 +3164,12 @@
       "id": "state.plugin-install-plans",
       "kind": "state",
       "names": [
-        "PluginPlatformService._plans"
+        "HostInstallPlanLeaseRegistry._leases"
       ],
       "currentPath": [
-        "pythonBff"
+        "wpfHost"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
@@ -3146,11 +3178,10 @@
         "write": [],
         "notification": [],
         "state": [
-          "PluginPlatformService._plans"
+          "HostInstallPlanLeaseRegistry._leases"
         ]
       },
       "stateHolders": [
-        "pythonBff",
         "wpfHost"
       ],
       "stateLifetime": "task",
@@ -3161,8 +3192,10 @@
       ],
       "targetSlice": "L7+L9",
       "targetPr": null,
-      "deleteWhen": "WPF owns install task identity and settlement while the Worker may retain only ephemeral execution context and Go owns committed package identity.",
+      "deleteWhen": "Completed: Host owns the complete install plan, identity, consumption, cancellation and binding invalidation. Python validates only the full request payload and selected package at execution time; client restart cannot revive a consumed plan.",
       "evidence": [
+        "desktop/src/VibeTable.Desktop/Services/HostInstallPlanLeaseRegistry.cs",
+        "desktop/src/VibeTable.Desktop/Services/PluginRequestDispatcher.cs",
         "backend/application/plugin_platform_service.py"
       ]
     },
@@ -3173,9 +3206,9 @@
         "LocalPluginPackageLifecycle._cache_root"
       ],
       "currentPath": [
-        "pythonBff"
+        "pythonWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "pythonWorker",
       "classification": "PYTHON_WORKER",
       "targetOwner": "PYTHON_WORKER",
       "authority": "PYTHON_WORKER",
@@ -3188,7 +3221,6 @@
         ]
       },
       "stateHolders": [
-        "pythonBff",
         "pythonWorker"
       ],
       "stateLifetime": "device",
@@ -3199,7 +3231,7 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "Only the on-demand Worker owns retained local package bytes; Go package identity and audit records never depend on a live Worker process.",
+      "deleteWhen": "Completed: the on-demand Python executor retains local package bytes; Go package identity and audit records survive its exit. Missing local bytes fail execution closed without following shared absolute paths.",
       "evidence": [
         "backend/infrastructure/plugin_package_lifecycle.py",
         "desktop/src/VibeTable.Desktop/Services/PluginRetainedPackage.cs"
@@ -3214,7 +3246,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "pythonBff",
+        "pythonWorker",
         "nodeWorker"
       ],
       "currentRoute": "wpfHost",
@@ -3231,7 +3263,7 @@
         ]
       },
       "stateHolders": [
-        "pythonBff",
+        "pythonWorker",
         "nodeWorker",
         "wpfHost"
       ],
@@ -3259,10 +3291,10 @@
         "NodePluginWorkerAdapter._semaphore"
       ],
       "currentPath": [
-        "pythonBff",
+        "pythonWorker",
         "nodeWorker"
       ],
-      "currentRoute": "pythonBff",
+      "currentRoute": "pythonWorker",
       "classification": "PYTHON_WORKER",
       "targetOwner": "PYTHON_WORKER",
       "authority": "PYTHON_WORKER",
@@ -3277,9 +3309,8 @@
         ]
       },
       "stateHolders": [
-        "pythonBff",
-        "nodeWorker",
-        "pythonWorker"
+        "pythonWorker",
+        "nodeWorker"
       ],
       "stateLifetime": "process",
       "cancellation": "processBound",
@@ -3290,7 +3321,7 @@
       ],
       "targetSlice": "L9",
       "targetPr": null,
-      "deleteWhen": "The on-demand Worker bounds concurrency and child processes per task, refreshes derived profiles from Go, and exits without owning durable business state.",
+      "deleteWhen": "Completed: the on-demand Python executor bounds task-scoped Node processes and derives profiles from Go. The Host closes the exact generation Job on Python exit, including a Node process busy computing; no durable business state belongs to either executor.",
       "evidence": [
         "backend/infrastructure/plugin_worker.py"
       ]

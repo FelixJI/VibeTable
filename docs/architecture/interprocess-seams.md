@@ -125,7 +125,26 @@ Go outbox 发布 `plugin.catalog.changed`，Host 在当前 epoch、gateway gener
 包的 source/localPath 字段不授予执行或资源能力：Host 只按既有 packageHash/Base32 规则定位当前
 runtime data root 的 `state/plugin-packages/*.vtplugin`，缺本机保留包时不生成资源链接；重新定位后
 使用新 runtime root。Python 执行前复用既有包检查校验预期 packageHash。Host 保留确认、文件 grant
-与 surface token 能力；完整安装计划仍由 Python 配合 Host plan lease 持有，隐藏升级/回滚/卸载未开放为公开 RPC。
+与 surface token 能力；隐藏升级/回滚/卸载未开放为公开 RPC。
+
+## 插件安装计划与执行进程（L9）
+
+`HostInstallPlanLeaseRegistry` 保存完整安装计划与下载包 lease。Host 签发 planId、核对 inspect 回显，
+并将计划绑定到 workspace/session、Go authority epoch 和具体 Python gateway 代际。公开 renderer
+commit/upgrade DTO 保持不变；Host 原子消费 lease 后才构造带完整计划的私有执行参数。
+Python 不再维护 `_plans` 或接受远端 cancelInstall；它在执行时校验请求身份、重新检查源包与 manifest，
+沿既有 packageHash/retain 契约保留本机包，再调用 Go 原子安装事务。
+
+取消安装只在 Host 消费 lease、释放下载包，不启动 Python。未知、重复或旧代计划无法提交；
+Python transport 终止立即退休该 gateway 的计划绑定，已消费操作在开始和投影结果时再次检查绑定。
+这不会退休仍可用的 Go epoch，也不会因 Python 重启恢复计划或自动重放未知提交。
+
+Python supervisor 复用已有 lifecycle 锁清理意外退出的精确 ProcessGeneration：关闭该代 Windows Job，
+使正在计算且不读取 stdin 的 Node 也退出。若排队补启已替换旧代，旧清理直接结束，不影响新客户端。
+Job assignment 失败沿已有 teardown 回收已启动进程；`ERROR_ACCESS_DENIED` 不能证明进程已被当前 Job 接管。
+相邻 supervisor 回归在任何显式 Stop/Dispose 前检查真实繁忙 Node 退出，并验证排队新代仍可调用。
+真实包的 S11 同时覆盖确认、文件能力、崩溃结算、Host 重启后的 catalog 和缺本机包缓存诊断；
+具体候选、结果与未完成门禁以当前 PR/Issue 的验证记录为准。
 
 ## 维护规则
 

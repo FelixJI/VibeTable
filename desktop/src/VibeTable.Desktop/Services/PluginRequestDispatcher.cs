@@ -51,8 +51,6 @@ public sealed class PluginRequestDispatcher : IDisposable
         IPluginFilePicker? filePicker = null,
         Func<PluginProjectContext?>? projectContext = null,
         ProductAuthorityEpoch? authority = null,
-        TimeSpan? cleanupTimeout = null,
-        TimeProvider? cleanupTimeProvider = null,
         Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
         Func<string, string?>? packageCacheRoot = null,
         Func<CancellationToken, Task>? ensureGateway = null)
@@ -66,8 +64,6 @@ public sealed class PluginRequestDispatcher : IDisposable
             null,
             projectContext,
             authority,
-            cleanupTimeout,
-            cleanupTimeProvider,
             sharedRpc,
             packageCacheRoot,
             ensureGateway)
@@ -84,8 +80,6 @@ public sealed class PluginRequestDispatcher : IDisposable
         Action<string>? diagnosticTrace = null,
         Func<PluginProjectContext?>? projectContext = null,
         ProductAuthorityEpoch? authority = null,
-        TimeSpan? cleanupTimeout = null,
-        TimeProvider? cleanupTimeProvider = null,
         Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
         Func<string, string?>? packageCacheRoot = null,
         Func<CancellationToken, Task>? ensureGateway = null)
@@ -103,11 +97,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         _ensureGateway = ensureGateway;
         _authority = authority ?? new ProductAuthorityEpoch();
         _ownsAuthority = authority is null;
-        _installLeases = new HostInstallPlanLeaseRegistry(
-            _authority,
-            cleanupTimeout,
-            cleanupTimeProvider,
-            cleanupTrace: TraceCleanupFailure);
+        _installLeases = new HostInstallPlanLeaseRegistry(_authority);
         _taskRegistry = new HostPluginTaskRegistry(_authority);
     }
 
@@ -235,25 +225,28 @@ public sealed class PluginRequestDispatcher : IDisposable
             // so a lost backend cannot leave a task permanently running.
             if (string.Equals(request.Type, "plugin.task.get", StringComparison.Ordinal)
                 || string.Equals(request.Type, "plugin.task.cancel", StringComparison.Ordinal)
-                || string.Equals(request.Type, "plugin.interaction.resolve", StringComparison.Ordinal))
+                || string.Equals(request.Type, "plugin.interaction.resolve", StringComparison.Ordinal)
+                || string.Equals(request.Type, "plugin.install.cancel", StringComparison.Ordinal))
             {
                 object ownedResult = request.Type switch
                 {
                     "plugin.task.get" => GetTask(Read<PluginTaskParams>(request.Payload)),
                     "plugin.task.cancel" => await CancelTaskAsync(
                         Read<PluginTaskParams>(request.Payload), token).ConfigureAwait(false),
-                    _ => await ResolveInteractionAsync(
+                    "plugin.interaction.resolve" => await ResolveInteractionAsync(
                         Read<PluginResolveInteractionParams>(request.Payload), token).ConfigureAwait(false),
+                    _ => CancelInstall(
+                        Read<PluginInstallCancelParams>(request.Payload)),
                 };
                 _reply.PostResponse(request.Type, request.RequestId, ownedResult);
                 return;
             }
             if (request.Type is not ("plugin.install.inspect" or "plugin.install.github.inspect"
-                or "plugin.install.commit" or "plugin.install.cancel" or "plugin.lifecycle.upgrade"
+                or "plugin.install.commit" or "plugin.lifecycle.upgrade"
                 or "plugin.lifecycle.rollback" or "plugin.lifecycle.uninstall"
                 or "plugin.action.describe" or "plugin.action.start"))
                 throw new PluginDispatchException("UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'.");
-            if (_ensureGateway is not null && request.Type != "plugin.install.cancel")
+            if (_ensureGateway is not null)
             {
                 PluginProjectContext? context = _projectContext();
                 if (context is null) throw new PluginDispatchException("PLUGIN_NOT_READY", "Plugin project context is unavailable.");
@@ -292,8 +285,6 @@ public sealed class PluginRequestDispatcher : IDisposable
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
                     Read<PluginGitHubInspectParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.install.cancel" => await CancelInstallAsync(
-                    Read<PluginInstallCancelParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.lifecycle.rollback" => ProjectSnapshot(await gateway.RollbackAsync(
                     Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
@@ -408,15 +399,19 @@ public sealed class PluginRequestDispatcher : IDisposable
                 "Plugin source selection was cancelled.");
         }
         HostInstallPlanBinding binding = CapturePluginBinding();
+        // The host owns the plan identity: the id is generated here, sent with
+        // the private inspection payload and its echo is verified before the
+        // plan is ever admitted to the lease registry.
+        string planId = NewInstallPlanId();
         var plan = await binding.Gateway.InspectInstallAsync(
-            request with
-            {
-                ProjectKey = binding.Context.ProjectKey,
-                ProjectRevision = binding.Context.ProjectRevision,
-                SourceLocation = sourceLocation,
-            },
+            new PluginInspectInstallExecutionParams(
+                binding.Context.ProjectKey,
+                binding.Context.ProjectRevision,
+                sourceLocation,
+                planId),
             token).ConfigureAwait(false);
-        await AdmitInstallPlanAsync(binding, plan, null).ConfigureAwait(false);
+        VerifyPlanEcho(plan, planId);
+        AdmitInstallPlan(binding, plan, null);
         return plan with { SourceLocation = HostManagedSource };
     }
 
@@ -436,20 +431,36 @@ public sealed class PluginRequestDispatcher : IDisposable
         try
         {
             HostInstallPlanBinding binding = CapturePluginBinding();
+            string planId = NewInstallPlanId();
             var plan = await binding.Gateway.InspectInstallAsync(
-                new PluginInspectInstallParams(
+                new PluginInspectInstallExecutionParams(
                     binding.Context.ProjectKey,
                     binding.Context.ProjectRevision,
-                    download.Path),
+                    download.Path,
+                    planId),
                 token).ConfigureAwait(false);
+            VerifyPlanEcho(plan, planId);
             DownloadedPluginPackage admittedPackage = download;
             download = null;
-            await AdmitInstallPlanAsync(binding, plan, admittedPackage).ConfigureAwait(false);
+            AdmitInstallPlan(binding, plan, admittedPackage);
             return plan with { SourceLocation = HostManagedSource };
         }
         finally
         {
             download?.Dispose();
+        }
+    }
+
+    private static string NewInstallPlanId()
+        => $"plugin-plan-{Guid.NewGuid():N}"[..24];
+
+    private static void VerifyPlanEcho(PluginRuntimeInstallPlan plan, string planId)
+    {
+        if (!string.Equals(plan.PlanId, planId, StringComparison.Ordinal))
+        {
+            throw new PluginDispatchException(
+                "PLUGIN_INSTALL_PLAN_STALE",
+                "Plugin install plan identity was not echoed by the backend.");
         }
     }
 
@@ -466,10 +477,15 @@ public sealed class PluginRequestDispatcher : IDisposable
         try
         {
             HostInstallPlanBinding binding = operation.Plan.Binding;
-            if (!_authority.TryStart(
-                    operation.Authority,
+            // The full execution payload comes exclusively from the consumed
+            // lease; the renderer's frozen commit DTO never carries it.
+            if (!_installLeases.TryStartOperation(
+                    operation,
                     _ => binding.Gateway.CommitInstallAsync(
-                        request with { ProjectRevision = binding.Context.ProjectRevision },
+                        new PluginCommitInstallExecutionParams(
+                            binding.Context.ProjectKey,
+                            operation.Plan.Plan,
+                            binding.Context.ProjectRevision),
                         linked.Token),
                     out Task<PluginRuntimeSnapshot>? pending)
                 || pending is null)
@@ -478,7 +494,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
                 .ConfigureAwait(false);
-            if (!_authority.TryFinish(operation.Authority, () =>
+            if (!_installLeases.TryFinishOperation(operation, () =>
             {
                 _reply.PostResponse(
                     routed.Type,
@@ -488,7 +504,6 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 throw StaleInstallPlan();
             }
-            operation.Complete();
         }
         catch (OperationCanceledException) when (operation.Authority.Token.IsCancellationRequested)
         {
@@ -510,14 +525,14 @@ public sealed class PluginRequestDispatcher : IDisposable
         try
         {
             HostInstallPlanBinding binding = operation.Plan.Binding;
-            if (!_authority.TryStart(
-                    operation.Authority,
+            if (!_installLeases.TryStartOperation(
+                    operation,
                     _ => binding.Gateway.UpgradeAsync(
-                        request with
-                        {
-                            ProjectKey = binding.Context.ProjectKey,
-                            ProjectRevision = binding.Context.ProjectRevision,
-                        },
+                        new PluginUpgradeExecutionParams(
+                            binding.Context.ProjectKey,
+                            request.PluginId,
+                            operation.Plan.Plan,
+                            binding.Context.ProjectRevision),
                         linked.Token),
                     out Task<PluginRuntimeSnapshot>? pending)
                 || pending is null)
@@ -526,7 +541,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
                 .ConfigureAwait(false);
-            if (!_authority.TryFinish(operation.Authority, () =>
+            if (!_installLeases.TryFinishOperation(operation, () =>
             {
                 _reply.PostResponse(
                     routed.Type,
@@ -536,7 +551,6 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 throw StaleInstallPlan();
             }
-            operation.Complete();
         }
         catch (OperationCanceledException) when (operation.Authority.Token.IsCancellationRequested)
         {
@@ -544,19 +558,15 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
     }
 
-    private async Task<PluginInstallCancelResult> CancelInstallAsync(
-        PluginInstallCancelParams request,
-        CancellationToken token)
+    private PluginInstallCancelResult CancelInstall(
+        PluginInstallCancelParams request)
     {
+        // Cancellation is host-owned and fully local: the plan lease is taken
+        // and its download disposed without any backend round trip. Python
+        // holds no acceptable-plan ledger, so there is nothing to cancel there.
         bool owned = _installLeases.TryTake(request.PlanId, out HostInstallPlanLease? lease);
-        IPluginRpcGateway gateway = lease?.Binding.Gateway ?? CaptureGateway();
-        bool backendCancelled = lease is null
-            ? await _installLeases.Cleanup.CancelRemoteAsync(
-                gateway,
-                request.PlanId,
-                token).ConfigureAwait(false)
-            : await _installLeases.Cleanup.ReleaseAsync(lease, token).ConfigureAwait(false);
-        return new PluginInstallCancelResult(backendCancelled || owned);
+        lease?.Package?.Dispose();
+        return new PluginInstallCancelResult(owned);
     }
 
     private async Task<PluginRuntimeUninstallResult> UninstallAsync(
@@ -851,7 +861,12 @@ public sealed class PluginRequestDispatcher : IDisposable
     }
 
     private void OnGatewayTerminated(IPluginRpcGateway gateway)
-        => PostSettlements(_taskRegistry.SettleGateway(gateway));
+    {
+        // A dead Python client retires its plan bindings immediately; the
+        // shared Go epoch stays alive and later bindings start a new client.
+        ReleaseLeases(_installLeases.RetireGateway(gateway));
+        PostSettlements(_taskRegistry.SettleGateway(gateway));
+    }
 
     private void PostSettlements(IReadOnlyList<HostPluginTaskSettlement> settlements)
     {
@@ -987,27 +1002,17 @@ public sealed class PluginRequestDispatcher : IDisposable
         return binding;
     }
 
-    private IPluginRpcGateway CaptureGateway()
-    {
-        lock (_gatewayGate)
-        {
-            return _gateway ?? throw new PluginDispatchException(
-                "PLUGIN_NOT_READY",
-                "Plugin services are not available for the current project.");
-        }
-    }
-
-    private async Task AdmitInstallPlanAsync(
+    private void AdmitInstallPlan(
         HostInstallPlanBinding binding,
         PluginRuntimeInstallPlan plan,
         DownloadedPluginPackage? package)
     {
         if (!_installLeases.TryAdmit(binding, plan, package, out HostInstallPlanLease? replaced))
         {
+            // Nothing was admitted and Python keeps no plan, so the orphaned
+            // download is the only resource to release.
             package?.Dispose();
-            await _installLeases.Cleanup.CancelRemoteAsync(
-                binding.Gateway,
-                plan.PlanId).ConfigureAwait(false);
+            ReleaseLease(replaced);
             throw new PluginDispatchException(
                 "PLUGIN_INSTALL_PLAN_STALE",
                 "Plugin install plan is stale for the current project session.");
@@ -1026,16 +1031,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 out HostInstallPlanLease? rejected)
             || operation is null)
         {
-            if (rejected is not null)
-            {
-                ReleaseLease(rejected);
-            }
-            else
-            {
-                IPluginRpcGateway? gateway = CaptureGatewayOrNull();
-                if (gateway is not null)
-                    _ = _installLeases.Cleanup.CancelRemoteAsync(gateway, planId);
-            }
+            rejected?.Package?.Dispose();
             throw StaleInstallPlan();
         }
         return operation;
@@ -1044,15 +1040,6 @@ public sealed class PluginRequestDispatcher : IDisposable
     private static PluginDispatchException StaleInstallPlan() => new(
         "PLUGIN_INSTALL_PLAN_STALE",
         "Plugin install plan is stale for the current project session.");
-
-    private void TraceCleanupFailure(string code)
-    {
-        SafeTrace(() => Trace.TraceError(DiagnosticEvent.Failure(
-                "VibeTable.Desktop.PluginRequestDispatcher",
-                "plugin.install.cancel",
-                code)));
-        SafeDiagnosticTrace($"Plugin install cleanup failed; code={code}");
-    }
 
     private void SafeDiagnosticTrace(string message)
         => SafeTrace(() => _diagnosticTrace?.Invoke(message));
@@ -1072,15 +1059,12 @@ public sealed class PluginRequestDispatcher : IDisposable
     {
         foreach (HostInstallPlanLease lease in leases)
         {
-            ReleaseLease(lease);
+            lease.Package?.Dispose();
         }
     }
 
     private void ReleaseLease(HostInstallPlanLease? lease)
-    {
-        if (lease is null) return;
-        _ = _installLeases.Cleanup.ReleaseAsync(lease);
-    }
+        => lease?.Package?.Dispose();
 
     private IPluginRpcGateway? CaptureGatewayOrNull()
     {

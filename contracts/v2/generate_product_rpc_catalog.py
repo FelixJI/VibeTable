@@ -92,9 +92,13 @@ from backend.contracts.plugin import (
     UninstallResult,
 )
 from backend.contracts.plugin_rpc import (
+    CancelInstallParams,
+    CommitInstallParams,
+    InspectInstallParams,
     PluginIdentityParams,
     PluginProjectParams,
     SetPluginEnabledParams,
+    UpgradePluginParams,
 )
 from backend.contracts.presets_versions_dashboards import (
     ContentVersionEntry,
@@ -447,9 +451,15 @@ def _registered_models() -> dict[str, type[BaseModel]]:
         }
     )
     # Host-owned methods retain their full public parameter contract after
-    # their Python dispatcher registrations are removed.
+    # their Python dispatcher registrations are removed, and the install
+    # lifecycle keeps its frozen renderer DTOs while the worker handlers
+    # accept the private host-gateway full-plan execution payloads.
     result.update(
         {
+            "plugin.inspectInstall": InspectInstallParams,
+            "plugin.commitInstall": CommitInstallParams,
+            "plugin.cancelInstall": CancelInstallParams,
+            "plugin.upgrade": UpgradePluginParams,
             "path.registerImportSource": HostImportSourceParams,
             "path.registerExportTarget": HostExportTargetParams,
             "path.requestImportSource": RequestImportSourceGrantParams,

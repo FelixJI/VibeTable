@@ -406,7 +406,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "wpfHost",
       "effect": "write"
     },
     {
@@ -414,7 +414,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -422,7 +422,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -430,7 +430,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "read"
     },
     {
@@ -438,7 +438,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "read"
     },
     {
@@ -470,7 +470,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "plugin.host",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -478,7 +478,7 @@
       "scope": "workspace",
       "audience": "hostOnly",
       "capabilityId": "plugin.host",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -486,7 +486,7 @@
       "scope": "workspace",
       "audience": "rendererInternal",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -502,7 +502,7 @@
       "scope": "workspace",
       "audience": "rendererPublic",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -510,7 +510,7 @@
       "scope": "workspace",
       "audience": "rendererInternal",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {
@@ -518,7 +518,7 @@
       "scope": "workspace",
       "audience": "rendererInternal",
       "capabilityId": "plugin.lifecycle",
-      "owner": "pythonBff",
+      "owner": "pythonWorker",
       "effect": "write"
     },
     {

@@ -82,6 +82,28 @@ _NATURAL_AGING_SCENARIO = Scenario(
     requirement="A1 two-phase 24-hour natural retention acceptance",
 )
 
+# Scenarios that prove persistence across a real Host restart run the shared
+# seed/resume acceptance below. Each entry names the seed result fields its
+# resume phase needs; the two scenarios deliberately require different seed
+# contracts instead of sharing a generic state shape.
+_PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "33-host-grid-presentation": (
+        "workspaceId",
+        "tableId",
+        "fields",
+        "state",
+        "revision",
+        "commands",
+    ),
+    "11-plugin-mutation": (
+        "workspaceId",
+        "projectKey",
+        "pluginId",
+        "tableId",
+        "packageHash",
+    ),
+}
+
 
 class _ScopeRoot(Protocol):
     pid: int
@@ -1836,7 +1858,7 @@ def run_product_acceptance(
         write_aggregate(report_path, audit=audit, results=results)
         print(f"[product-e2e] scenario {scenario.id} start", flush=True)
         scenario_started = time.monotonic()
-        if scenario.id == "33-host-grid-presentation":
+        if scenario.id in _PERSISTENT_RESTART_SEED_FIELDS:
             result = _run_host_presentation_restart_acceptance(
                 scenario,
                 package_root=package_root.resolve(),
@@ -1870,7 +1892,10 @@ def _run_host_presentation_restart_acceptance(
     run_root: Path,
     node: str,
 ) -> dict[str, Any]:
-    """Run S33 in two real Host processes sharing only the approved data paths."""
+    """Run a restart scenario in two real Host processes sharing approved data."""
+    required = _PERSISTENT_RESTART_SEED_FIELDS.get(scenario.id)
+    if required is None:
+        raise ValueError(f"scenario has no persistent restart acceptance: {scenario.id}")
     persistent_root = (run_root / scenario.id / "persistent").resolve()
     state_path = persistent_root / "seed-state.json"
     readiness_dir = persistent_root / "host"
@@ -1896,7 +1921,6 @@ def _run_host_presentation_restart_acceptance(
         return _host_presentation_phase_failure(
             scenario, phase_results, "HOST_PRESENTATION_SEED_FAILED"
         )
-    required = ("workspaceId", "tableId", "fields", "state", "revision", "commands")
     created_workspace_root = _resolve_persistent_workspace_root(
         workspace_root, readiness_dir, seed.get("workspaceId")
     )
@@ -1958,7 +1982,11 @@ def _host_presentation_phase_failure(
     code: str,
 ) -> dict[str, Any]:
     return {
-        **_failure_result(scenario, code=code, message="S33 两阶段真实 Host 持久化资格未完成。"),
+        **_failure_result(
+            scenario,
+            code=code,
+            message="两阶段真实 Host 重启资格未完成。",
+        ),
         "phases": dict(phases),
     }
 

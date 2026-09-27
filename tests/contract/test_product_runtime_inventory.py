@@ -162,6 +162,7 @@ def test_inventory_covers_the_fresh_product_catalog_with_migrated_current_owners
         "path.requestImportSource",
         "path.resolveGrant",
         "path.revokeExportTarget",
+        "plugin.cancelInstall",
         "shortcut.list",
         "shortcut.save",
         "shortcut.delete",

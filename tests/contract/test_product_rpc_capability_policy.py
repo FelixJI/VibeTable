@@ -64,6 +64,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "path.requestImportSource",
         "path.resolveGrant",
         "path.revokeExportTarget",
+        "plugin.cancelInstall",
         "shortcut.list",
         "shortcut.save",
         "shortcut.delete",
@@ -104,6 +105,16 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
         "lookup.valuePage",
         "mutation.apply",
         "mutation.preview",
+        "plugin.cancelTask",
+        "plugin.commitInstall",
+        "plugin.describeAction",
+        "plugin.inspectInstall",
+        "plugin.resolveFile",
+        "plugin.resolveInteraction",
+        "plugin.rollback",
+        "plugin.startAction",
+        "plugin.uninstall",
+        "plugin.upgrade",
         "plugin.listAudit",
         "plugin.listCatalog",
         "plugin.listPendingCleanup",
@@ -244,8 +255,20 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert '"schema.getTable"' in public_types
     assert '"plugin.upgrade"' not in public_types
     methods = current_owner_methods("pythonBff")
-    assert len(methods) == 19
+    assert len(methods) == 8
     assert methods[0] == "data.applyImport"
+    assert current_owner_methods("pythonWorker") == (
+        "plugin.cancelTask",
+        "plugin.commitInstall",
+        "plugin.describeAction",
+        "plugin.inspectInstall",
+        "plugin.resolveFile",
+        "plugin.resolveInteraction",
+        "plugin.rollback",
+        "plugin.startAction",
+        "plugin.uninstall",
+        "plugin.upgrade",
+    )
     assert current_owner_methods("goSidecar") == (
         "contentProfile.commit",
         "contentProfile.delete",
@@ -334,6 +357,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
         "path.requestImportSource",
         "path.resolveGrant",
         "path.revokeExportTarget",
+        "plugin.cancelInstall",
         "settings.readDevice",
         "settings.saveDevice",
         "shortcut.delete",

@@ -61,8 +61,8 @@
   },
   {
     "id": "11-plugin-mutation",
-    "title": "插件 mutation plan 与越权拒绝",
-    "requirement": "插件操作先显示 mutation plan；授权变更成功，未授权字段或能力被拒绝并写入审计。",
+    "title": "插件安装、重启与执行清理",
+    "requirement": "插件安装与 mutation 需明确确认，文件能力和越权拒绝可验证；确认中及计算中 Python 崩溃后任务结算、Node 回收。真实 Host 重启后 catalog/audit 零执行进程可读，缺本机包缓存时执行明确失败。",
     "capabilities": ["plugin.mutation"]
   },
   {

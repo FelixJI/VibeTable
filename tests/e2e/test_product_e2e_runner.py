@@ -4281,3 +4281,143 @@ def test_host_presentation_resume_state_comparison_is_structural_and_complete() 
 
     assert completed.returncode == 0, completed.stderr
     assert "waitForShell" not in resume
+
+
+def _plugin_restart_workspace(persistent: runner._PersistentScenarioRun) -> None:
+    workspace_id = "11111111-2222-4111-8111-111111111111"
+    created_root = persistent.workspace_root
+    manifest = created_root / ".vibetable" / "workspace.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+    registry = (
+        persistent.readiness_dir
+        / "local-data"
+        / "VibeTable"
+        / "shell"
+        / "workspace-registry-v2.json"
+    )
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    registry.write_text(
+        json.dumps(
+            {"workspaces": [{"workspaceId": workspace_id, "selectedRoot": str(created_root)}]}
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_plugin_host_restart_seed_and_resume_share_the_plugin_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario("11-plugin-mutation", "plugin", "restart")
+    workspace_id = "11111111-2222-4111-8111-111111111111"
+    package_hash = "sha256:" + "3f" * 32
+    calls: list[runner._PersistentScenarioRun] = []
+
+    def two_phases(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent)
+        _plugin_restart_workspace(persistent)
+        if persistent.phase != "seed":
+            return {"status": "passed", "lifecycle": {"status": "passed"}}
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "workspaceId": workspace_id,
+            "projectKey": f"local:{workspace_id}",
+            "pluginId": "com.vibetable.e2e.mutation-boundary",
+            "tableId": "table-plugin",
+            "packageHash": package_hash,
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", two_phases)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "passed"
+    assert [run.phase for run in calls] == ["seed", "resume"]
+    assert calls[0].readiness_dir == calls[1].readiness_dir
+    assert calls[1].workspace_root == calls[0].workspace_root
+    state = json.loads(calls[1].state_path.read_text(encoding="utf-8"))
+    assert state["workspaceId"] == workspace_id
+    assert state["projectKey"] == f"local:{workspace_id}"
+    assert state["pluginId"] == "com.vibetable.e2e.mutation-boundary"
+    assert state["packageHash"] == package_hash
+    assert state["workspaceRoot"] == str(calls[1].workspace_root)
+    assert set(result["phases"]) == {"seed", "resume"}
+
+
+def test_plugin_host_restart_seed_missing_plugin_identity_is_invalid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario("11-plugin-mutation", "plugin", "restart")
+    workspace_id = "11111111-2222-4111-8111-111111111111"
+    calls: list[str] = []
+
+    def seed_without_hash(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent.phase)
+        _plugin_restart_workspace(persistent)
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "workspaceId": workspace_id,
+            "projectKey": f"local:{workspace_id}",
+            "pluginId": "com.vibetable.e2e.mutation-boundary",
+            "tableId": "table-plugin",
+        }
+
+    monkeypatch.setattr(runner, "run_scenario", seed_without_hash)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
+    assert calls == ["seed"]
+    assert not (tmp_path / "evidence" / scenario.id / "persistent" / "seed-state.json").exists()
+
+
+def test_plugin_host_restart_acceptance_is_selected_only_for_its_scenarios(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routed: list[str] = []
+
+    def record_restart(scenario: Any, **_kwargs: object) -> dict[str, Any]:
+        routed.append(scenario.id)
+        return _passing_scenario_result(scenario)
+
+    _patch_acceptance_preflight(
+        monkeypatch,
+        run_scenario=_passing_scenario_result,
+        host_presentation_restart=record_restart,
+    )
+
+    exit_code, report = runner.run_product_acceptance(
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence",
+        selected=("11-plugin-mutation",),
+    )
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert routed == ["11-plugin-mutation"]
+
+    routed.clear()
+    _patch_acceptance_preflight(
+        monkeypatch,
+        run_scenario=_passing_scenario_result,
+        host_presentation_restart=record_restart,
+    )
+    exit_code, report = runner.run_product_acceptance(
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence2",
+        selected=("01-offline-first-start",),
+    )
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert routed == []
+    assert (tmp_path / "evidence2").exists()
