@@ -236,6 +236,69 @@ public sealed class HostProductRpcCompositionTests
     }
 
     [TestMethod]
+    [DataRow(false), DataRow(true)]
+    public async Task ProtectionRollbackRetiresReadyPythonAndNextExecutionReattaches(bool cancelProtection)
+    {
+        int starts = 0;
+        var protection = new ControlledProtectionHook();
+        await using var fixture = await Fixture.OpenAsync(useTestPolicy: false,
+            beforePythonStart: () => starts++, protection: protection, mode: WorkspaceOpenMode.Writable);
+        WorkspaceSessionV2 session = fixture.Session;
+        HostProductRpcBinding original = fixture.Factory.CaptureHostProductRpcBinding()!;
+        JsonRpcClient oldClient = await original.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        ProductSidecarGenerationSnapshot snapshot = fixture.Factory.CaptureProductSidecarGeneration()!;
+        var tasks = ((ProductionWorkspaceRuntime)snapshot.RuntimeAuthority).DataIoTasks;
+        string taskId = tasks.Admit(oldClient, snapshot.Identity, "data.import").TaskId;
+        using var previousGateway = original.CreateGateway(fixture.Leases, fixture.Http);
+        HostSessionFileBroker oldFiles = previousGateway.EnableHostFiles();
+        JsonElement grant = await oldFiles.IssueAsync(Path.Combine(Path.GetTempPath(), "rollback-export.csv"),
+            true, null, CancellationToken.None);
+        string grantId = grant.GetProperty("grantId").GetString()!;
+        using var cancellation = new CancellationTokenSource();
+        protection.Protect = token =>
+        {
+            Assert.AreEqual(WorkspaceSessionPhase.Protecting, fixture.Session.Phase);
+            Assert.AreEqual(BackendState.Ready, fixture.Backend.State,
+                "Protection fails after request drain but before runtime ingress drain.");
+            if (!cancelProtection) throw new IOException("snapshot failed");
+            cancellation.Cancel();
+            return Task.FromCanceled(token);
+        };
+        if (cancelProtection)
+            await Assert.ThrowsAsync<OperationCanceledException>(() => fixture.Sessions.CloseAsync("test", cancellation.Token));
+        else
+            await Assert.ThrowsExactlyAsync<IOException>(() => fixture.Sessions.CloseAsync("test", cancellation.Token));
+        protection.Protect = _ => Task.CompletedTask;
+        Assert.AreEqual(session.WorkspaceId, fixture.Session.WorkspaceId);
+        Assert.AreEqual(session.SessionEpoch, fixture.Session.SessionEpoch);
+        Assert.AreEqual(WorkspaceSessionPhase.Idle, fixture.Session.Phase);
+        Assert.AreEqual(1, starts, "Rollback must not eagerly restart Python.");
+        HostProductRpcBinding resumed = fixture.Factory.CaptureHostProductRpcBinding()!;
+        using var gateway = resumed.CreateGateway(fixture.Leases, fixture.Http);
+        fixture.Http.Result = Json("""{"tables":["orders"]}""");
+        Assert.AreEqual("orders", (await gateway.ListTablesAsync(Json("{}"), CancellationToken.None))
+            .GetProperty("tables")[0].GetString());
+        Task data = Assert.ThrowsExactlyAsync<RpcRemoteException>(() => gateway.PreviewImportAsync(
+            Json("""{"collection":"orders","grantId":"probe","schemaRevision":"schema_1"}"""), CancellationToken.None));
+        Task<JsonRpcClient> plugin = resumed.EnsurePythonClientAsync(fixture.Leases, CancellationToken.None);
+        await Task.WhenAll(data, plugin);
+        Assert.AreNotSame(oldClient, await plugin);
+        Assert.AreEqual(2, starts);
+        Assert.AreEqual("aborted", tasks.Status(taskId).GetProperty("state").GetString());
+        StringAssert.Contains(tasks.Status(taskId).GetProperty("error").GetString()!, "待核实");
+        Assert.AreNotSame(oldFiles, gateway.EnableHostFiles());
+        await Assert.ThrowsExactlyAsync<HostPathGrantException>(() =>
+            gateway.EnableHostFiles().DescribeAsync(grantId, CancellationToken.None));
+    }
+
+    private sealed class ControlledProtectionHook : IWorkspaceProtectionHook
+    {
+        internal Func<CancellationToken, Task> Protect { get; set; } = _ => Task.CompletedTask;
+        public Task ProtectAsync(Guid workspaceId, ulong sessionEpoch, string reason, CancellationToken token)
+            => Protect(token);
+    }
+
+    [TestMethod]
     public async Task BackendStopPublishesGoOnlyBindingForHostRebind()
     {
         await using var fixture = await Fixture.OpenAsync(useTestPolicy: false);
@@ -910,7 +973,8 @@ public sealed class HostProductRpcCompositionTests
         internal WorkspaceSessionV2 Session => _sessions.Current;
         internal WorkspaceSessionManager Sessions => _sessions;
 
-        private Fixture(bool useTestPolicy, Action? beforePythonStart = null)
+        private Fixture(bool useTestPolicy, Action? beforePythonStart = null,
+            IWorkspaceProtectionHook? protection = null)
         {
             ProductRpcCapabilityManifest productPolicy = useTestPolicy
                 ? ProductRpcCapabilityManifest.CreateForTests(new ProductRpcCapability(
@@ -951,14 +1015,15 @@ public sealed class HostProductRpcCompositionTests
                     return new(Sidecar, Backend, new WorkspaceV2HttpGateway(Sidecar, Http));
                 },
                 productPolicy, beforePythonStart: beforePythonStart);
-            _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), Factory);
+            _sessions = new WorkspaceSessionManager(new WorkspaceRegistry(_root), Factory, protection);
             Leases = new WorkspaceSessionEnvelopeFilter(_sessions);
             _sessions.SetRequestDrainHook(Leases);
         }
 
-        internal static async Task<Fixture> OpenAsync(bool useTestPolicy = true, Action? beforePythonStart = null)
+        internal static async Task<Fixture> OpenAsync(bool useTestPolicy = true, Action? beforePythonStart = null,
+            IWorkspaceProtectionHook? protection = null, WorkspaceOpenMode mode = WorkspaceOpenMode.ReadOnly)
         {
-            var fixture = new Fixture(useTestPolicy, beforePythonStart);
+            var fixture = new Fixture(useTestPolicy, beforePythonStart, protection);
             try
             {
                 WorkspaceLayoutResult layout = WorkspaceLayout.Create(Path.Combine(fixture._root, "workspace"),
@@ -978,7 +1043,7 @@ public sealed class HostProductRpcCompositionTests
                     LastSyncAt = null,
                     PendingSync = false,
                 });
-                await fixture._sessions.OpenAsync(layout.Manifest.WorkspaceId, WorkspaceOpenMode.ReadOnly);
+                await fixture._sessions.OpenAsync(layout.Manifest.WorkspaceId, mode);
                 return fixture;
             }
             catch { await fixture.DisposeAsync(); throw; }

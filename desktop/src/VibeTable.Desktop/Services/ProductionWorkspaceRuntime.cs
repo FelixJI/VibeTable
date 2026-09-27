@@ -916,6 +916,9 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             throw new InvalidOperationException(
                 "Workspace runtime has already stopped.");
         _owner.Deactivate(this);
+        // Protection can fail after request drain but before runtime drain.
+        // Retire that still-ready client before reopening the Host epoch.
+        await _runtime.StopIngressAsync(CancellationToken.None).ConfigureAwait(false);
         RetireHostFiles();
         using var activation = WorkspaceActivationBudget.Begin(
             WorkspaceId, SessionEpoch, ActivationPolicy, cancellationToken);
