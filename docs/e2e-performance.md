@@ -13,7 +13,7 @@
 - S34/S35 的真实包证据见 [数据互操作资格矩阵](quality/data-io-interoperability.md)（本地 source-built 与新包单场景，非本节 main 样本）。
 - 当前 CI 将 S34/S35 放入独立的 `data-io` lane（`product-e2e-data-io` stage），其余 manifest 场景仍由 `resilience` lane 的 `product-e2e` stage 执行。两个 stage 各保留 1800 秒上限；聚合门禁核对场景选择精确覆盖当前 manifest、两分片均成功且绑定同一候选。本页旧 main 样本的 `ci-lane-resilience` 出处不受此后续配置变动影响。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：5（`07-attachment-history`、`11-plugin-mutation`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`28-relation-delta-preview`）。
+- 当前 manifest changed：6（`01-offline-first-start`、`07-attachment-history`、`11-plugin-mutation`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`28-relation-delta-preview`）。
 
 同一 main 候选覆盖该样本当时登记的 29 个场景：01–23、26–31，累计 382 项断言通过。S06 两端关系字段的真实 UI 编辑、冻结计划与应用，以及 S26–S31 的 Lookup 描述、关系搜索与预览、来源分页、查询快照与关系完整性检查，均获得本次打包报告；不再沿用旧 S06 语义或六场缺口。
 

@@ -56,7 +56,7 @@ Go/UUID/epoch 保持可用且仍零 Python，第二次显式请求才启动成�
 参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。
 `lookup.valuePage` 经同一policy直达既有Go relation服务，以目录revision和稳定fieldId绑定来源分页；
 Python专属分页转译已删除；lookup.query也已迁移，供冻结独立输入和其他路径使用的revision helper保留。完整原件与资格状态见[分页资格](../quality/lookup-value-page.md)。
-`file.token` 与本地 import/export task producer 按后续切片处理。
+`file.token` 按生成 policy 归 Go sidecar；本地 import/export task 与文件 grant 由 Host 持有，Python 仅保留执行上下文，见下文。
 `HostProductRpcInvokerTests` 在 typed gateway seam 使用实际 HTTP/JSON-RPC adapter 和 session drain
 验证此契约；进程和网络由测试 peer 提供。
 `HostProductRpcCompositionTests` 通过真实 factory/runtime、Python supervisor 和 session close，验证
@@ -146,6 +146,11 @@ Job assignment 失败沿已有 teardown 回收已启动进程；`ERROR_ACCESS_DE
 真实包的 S11 同时覆盖确认、文件能力、崩溃结算、Host 重启后的 catalog 和缺本机包缓存诊断；
 具体候选、结果与未完成门禁以当前 PR/Issue 的验证记录为准。
 
+## Shell readiness 与按需 Worker
+
+测试模式的 `hostReady` 表示现有 Host StartupState.Ready 与 renderer router 准入；
+`webViewReady`、`rendererReady` 继续独立校验。Shell 可以尚未打开 workspace，
+因此不以 Python 进程存在作为就绪条件；更新激活仍由 `workspaceProbe` 额外证明工作区健康。
 ## 维护规则
 
 - 新跨进程 operation 同时更新本页、capability 矩阵、producer/Host/Web 的闭集测试和至少一条产品证据。

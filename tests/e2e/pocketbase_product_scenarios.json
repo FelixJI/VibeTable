@@ -2,7 +2,7 @@
   {
     "id": "01-offline-first-start",
     "title": "干净数据目录离线首次启动",
-    "requirement": "真实发布包在独立数据目录启动，WPF、Python、PocketBase、WebView2 与 renderer 全部就绪；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。",
+    "requirement": "真实发布包在独立数据目录启动，WPF、WebView2、renderer 与 PocketBase sidecar 就绪；Python backend 与插件 Node 按需启动，普通首启不启动；renderer 不直接外联，VibeTable 自有进程仅使用 loopback。",
     "capabilities": ["workspace.lifecycle", "offline.start", "release.smoke"]
   },
   {

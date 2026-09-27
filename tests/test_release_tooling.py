@@ -18,7 +18,12 @@ import pytest
 from qa import fault_injection, package_check, release_candidate
 from qa.package_check import check_package
 from scripts import build_next
-from scripts.qa.windows_process_scope import ProcessScopeQueryError, WindowsProcessScope
+from scripts.qa.windows_process_scope import (
+    ProcessLaunchSpec,
+    ProcessScopeQueryError,
+    ScopeWaitResult,
+    WindowsProcessScope,
+)
 from scripts.release import (
     _ensure_clean_worktree,
     activate_upgrade,
@@ -832,7 +837,7 @@ def _write_strict_self_update_rollback_fixture(
             {
                 "ready": True,
                 "mode": "shell",
-                "backendReady": True,
+                "hostReady": True,
                 "webViewReady": True,
                 "rendererReady": True,
                 "error": None,
@@ -1601,9 +1606,9 @@ def test_self_update_cleanup_terminates_the_owned_scope_only(
         ),
     )
     monkeypatch.setattr(
-        build_next,
-        "terminate_windows_process_tree",
-        lambda process_id: pytest.fail(f"unexpected bare-PID termination: {process_id}"),
+        build_next.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("unexpected subprocess cleanup outside the scope"),
     )
 
     build_next.cleanup_self_update_process_scope(process_scope)
@@ -1651,9 +1656,11 @@ def test_self_update_rollback_scenarios_bound_updater_wait_to_failure_budget() -
     ] == [120, 120, 120, 180]
 
 
-def test_health_failure_blocker_is_owned_before_plan_preparation(
+@pytest.mark.parametrize("rollback", [False, True])
+def test_self_update_blocker_is_owned_before_plan_preparation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    rollback: bool,
 ) -> None:
     calls: list[tuple[str, float | None]] = []
 
@@ -1683,15 +1690,150 @@ def test_health_failure_blocker_is_owned_before_plan_preparation(
         "token_hex",
         lambda _size: (_ for _ in ()).throw(RuntimeError("plan preparation failed")),
     )
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / build_next.HOST_EXE_NAME).touch()
+    monkeypatch.setattr(build_next, "os", SimpleNamespace(name="nt", path=os.path))
+
+    def run() -> None:
+        if rollback:
+            build_next._run_desktop_self_update_rollback_smoke(
+                package,
+                tmp_path / "health-failure",
+                scenario=build_next._HEALTH_FAILURE_ROLLBACK_SCENARIO,
+            )
+        else:
+            build_next.run_desktop_self_update_smoke(
+                package, tmp_path / "build" / "self-update-smoke", repo_root=tmp_path
+            )
 
     with pytest.raises(RuntimeError, match="plan preparation failed"):
-        build_next._run_desktop_self_update_rollback_smoke(
-            tmp_path / "package",
-            tmp_path / "health-failure",
-            scenario=build_next._HEALTH_FAILURE_ROLLBACK_SCENARIO,
-        )
+        run()
 
     assert calls == [("terminate", None), ("wait", 30)]
+
+
+@pytest.mark.parametrize("outcome", ["empty", "descendant", "query_failed", "readiness_failed"])
+def test_self_update_success_requires_natural_scope_exit_and_cleans_owned_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / build_next.HOST_EXE_NAME).touch()
+    (package / "release.json").write_text("{}", encoding="utf-8")
+    (package / "resources").mkdir()
+    root = tmp_path / "build" / "self-update-smoke"
+    events: list[str] = []
+    blocker = Mock(pid=123)
+    blocker.poll.return_value = 0
+    monkeypatch.setattr(
+        build_next, "os", SimpleNamespace(name="nt", path=os.path, environ={}, link=os.link)
+    )
+
+    def popen(command: list[str], **_kwargs: object) -> Mock:
+        assert command[0] == sys.executable, "updater launched outside its owned scope"
+        return blocker
+
+    monkeypatch.setattr(build_next.subprocess, "Popen", popen)
+    monkeypatch.setattr(
+        build_next, "wait_for_self_update_activation_pointer", lambda *_a, **_k: None
+    )
+
+    def updater_exits(timeout: float) -> int:
+        assert timeout == 120
+        events.append("updater-exited")
+        target = root / "VibeTable.Next"
+        stage = root / ".VibeTable.Next.update-smoke"
+        plan = json.loads((stage / "update-plan.json").read_text(encoding="utf-8"))
+        source = stage / "package" / build_next.ARCHIVE_ROOT_NAME
+        shutil.copy2(source / "release.json", target / "release.json")
+        shutil.copy2(source / "resources" / "self-update-smoke.txt", target / "resources")
+        shutil.rmtree(stage)
+        readiness = root / build_next.SELF_UPDATE_SMOKE_READINESS_DIR
+        readiness.mkdir()
+        identity = {"token": plan["Token"], "targetVersion": "1.0.1", "processId": 701}
+        (readiness / build_next.SELF_UPDATE_SMOKE_PROCESS_FILE).write_text(
+            json.dumps(identity), encoding="utf-8"
+        )
+        (readiness / build_next.SHELL_READINESS_FILE).write_text(
+            json.dumps(
+                {
+                    "ready": outcome != "readiness_failed",
+                    "mode": "shell",
+                    "hostReady": True,
+                    "webViewReady": True,
+                    "rendererReady": True,
+                    "error": "health rejected",
+                    "writtenAt": "2026-08-27T03:00:00+00:00",
+                    "workspaceProbe": {
+                        "status": "skippedNoRegisteredWorkspace",
+                        "workspaceId": None,
+                        "sessionEpoch": None,
+                        "tableCount": None,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (target / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE).write_text(
+            json.dumps({**identity, "confirmedAt": "2026-08-27T03:00:01+00:00"}), encoding="utf-8"
+        )
+        return 0
+
+    def wait_empty(*, timeout: float) -> ScopeWaitResult:
+        assert "updater-exited" in events
+        assert "closed" not in events
+        events.append("natural-wait" if timeout else "cleanup-wait")
+        if outcome == "empty":
+            return ScopeWaitResult(())
+        if outcome == "query_failed":
+            return ScopeWaitResult(None, ("query failed",))
+        return ScopeWaitResult((701,), ("remaining descendant",))
+
+    def terminate_all(*, timeout: float) -> SimpleNamespace:
+        assert timeout == 30
+        events.append("terminated")
+        return SimpleNamespace(success=True)
+
+    scope = SimpleNamespace(
+        root=SimpleNamespace(pid=501, wait=updater_exits),
+        wait_empty=wait_empty,
+        terminate_all=terminate_all,
+        close=lambda: events.append("closed"),
+    )
+
+    def launch(spec: ProcessLaunchSpec) -> WindowsProcessScope:
+        assert spec.command[1] == "--apply-update"
+        events.append("launched")
+        return cast(WindowsProcessScope, scope)
+
+    monkeypatch.setattr(WindowsProcessScope, "launch", launch)
+    monkeypatch.setattr(
+        build_next,
+        "_run_desktop_self_update_rollback_smokes",
+        lambda *_args: events.append("rollback-batch"),
+    )
+
+    def run() -> None:
+        build_next.run_desktop_self_update_smoke(package, root, repo_root=tmp_path)
+
+    if outcome == "empty":
+        run()
+        assert events == [
+            "launched",
+            "updater-exited",
+            "natural-wait",
+            "cleanup-wait",
+            "closed",
+            "rollback-batch",
+        ]
+    else:
+        message = "shell failed" if outcome == "readiness_failed" else "did not exit"
+        with pytest.raises(build_next.BuildError, match=message):
+            run()
+        assert events[-3:] == ["cleanup-wait", "terminated", "closed"]
+        assert "rollback-batch" not in events
+        assert ("natural-wait" in events) == (outcome != "readiness_failed")
 
 
 def test_health_failure_user_data_sentinel_uses_packaged_host_local_data_root(
@@ -1724,11 +1866,13 @@ def test_self_update_activation_rejects_cleanup_before_shell_readiness(
             "token",
             "1.0.1",
             123,
+            process_scope=cast(WindowsProcessScope, SimpleNamespace()),
             timeout_seconds=0.1,
         )
 
 
-def test_self_update_activation_requires_all_shell_boundaries(tmp_path: Path) -> None:
+@pytest.mark.parametrize("missing", ["hostReady", "webViewReady", "rendererReady"])
+def test_self_update_activation_requires_all_shell_boundaries(tmp_path: Path, missing: str) -> None:
     completion = tmp_path / build_next.SELF_UPDATE_SMOKE_COMPLETION_FILE
     readiness = (
         tmp_path / build_next.SELF_UPDATE_SMOKE_READINESS_DIR / build_next.SHELL_READINESS_FILE
@@ -1739,9 +1883,11 @@ def test_self_update_activation_requires_all_shell_boundaries(tmp_path: Path) ->
             {
                 "ready": True,
                 "mode": "shell",
-                "backendReady": True,
+                "hostReady": True,
                 "webViewReady": True,
-                "rendererReady": False,
+                "rendererReady": True,
+                "backendReady": True,
+                missing: False,
             }
         ),
         encoding="utf-8",
@@ -1754,6 +1900,7 @@ def test_self_update_activation_requires_all_shell_boundaries(tmp_path: Path) ->
             "token",
             "1.0.1",
             123,
+            process_scope=cast(WindowsProcessScope, SimpleNamespace()),
             timeout_seconds=0.1,
         )
 
@@ -1769,7 +1916,7 @@ def test_self_update_activation_requires_workspace_probe_evidence(tmp_path: Path
             {
                 "ready": True,
                 "mode": "shell",
-                "backendReady": True,
+                "hostReady": True,
                 "webViewReady": True,
                 "rendererReady": True,
             }
@@ -1784,6 +1931,7 @@ def test_self_update_activation_requires_workspace_probe_evidence(tmp_path: Path
             "token",
             "1.0.1",
             123,
+            process_scope=cast(WindowsProcessScope, SimpleNamespace()),
             timeout_seconds=0.1,
         )
 
@@ -1806,7 +1954,7 @@ def test_self_update_activation_binds_readiness_before_completion(
             {
                 "ready": True,
                 "mode": "shell",
-                "backendReady": True,
+                "hostReady": True,
                 "webViewReady": True,
                 "rendererReady": True,
                 "workspaceProbe": {
@@ -1828,19 +1976,18 @@ def test_self_update_activation_binds_readiness_before_completion(
     }
     observations = 0
 
-    def observe_exit(process_id: int, *, timeout_seconds: float) -> bool:
+    def observe_exit(*, timeout: float) -> ScopeWaitResult:
         nonlocal observations
         observations += 1
-        assert process_id == os.getpid()
-        assert timeout_seconds == 0
+        assert timeout == 0
         if completion_mode != "missing":
             completion.write_text(json.dumps(completion_payload), encoding="utf-8")
-        return True
+        return ScopeWaitResult(())
 
     def unexpected_sleep(seconds: float) -> None:
         pytest.fail("an exited writer must not require another timed wait")
 
-    monkeypatch.setattr(build_next, "wait_for_windows_process_exit", observe_exit)
+    process_scope = cast(WindowsProcessScope, SimpleNamespace(wait_empty=observe_exit))
     monkeypatch.setattr(build_next.time, "sleep", unexpected_sleep)
     if completion_mode == "before_wait":
         completion.write_text(json.dumps(completion_payload), encoding="utf-8")
@@ -1852,6 +1999,7 @@ def test_self_update_activation_binds_readiness_before_completion(
             "token",
             "1.0.1",
             os.getpid(),
+            process_scope=process_scope,
             timeout_seconds=1,
         )
 
@@ -1866,11 +2014,21 @@ def test_self_update_activation_binds_readiness_before_completion(
     assert observations == (0 if completion_mode == "before_wait" else 1)
 
 
-def test_windows_process_open_failure_only_accepts_a_missing_pid() -> None:
-    assert build_next.windows_process_exited_after_open_failure(87) is True
-
-    with pytest.raises(build_next.BuildError, match="Win32 error 5"):
-        build_next.windows_process_exited_after_open_failure(5)
+def test_self_update_activation_rejects_unobservable_scope(tmp_path: Path) -> None:
+    process_scope = cast(
+        WindowsProcessScope,
+        SimpleNamespace(wait_empty=lambda *, timeout: ScopeWaitResult(None, ("Job query failed",))),
+    )
+    with pytest.raises(build_next.BuildError, match="could not observe its process scope"):
+        build_next.wait_for_self_update_activation(
+            tmp_path / "completion",
+            tmp_path / "readiness",
+            "token",
+            "1.0.1",
+            123,
+            process_scope=process_scope,
+            timeout_seconds=0.1,
+        )
 
 
 def test_release_archive_name_contains_version_platform_and_architecture() -> None:
