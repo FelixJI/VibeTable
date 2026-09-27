@@ -6,7 +6,7 @@
 > 状态：Active；用于承接 2026-08-17 成熟度审计中尚未完成的事项，并指导后续运行时职责收敛  
 > 适用范围：Windows 10/11 x64 离线优先桌面产品、现行 Vue/WPF/Python/Go 运行时与发布门禁
 
-> **2026-09-27 当前状态**：本指南的 L5–L10 运行时职责收敛（写入/元数据/设备能力/插件共享目录与安装执行生命周期/按需 Worker、普通启动去 Python）已在 61d 主干取得固定候选资格（main CI 36316404213 全部 job 成功、两分片产品 E2E 精确覆盖 35 场、CD 未发布），证据见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)与各规范页。这不代表整份路线或 Goal #339 已收尾：N-1 迁移器仍按 Goal 决策暂停，PDF 保留现有 adapter，目录镜像不含败方实际 restore/二次运输收敛/云同步/exclusive writer，未验视图（Calendar/Timeline datetime 与 range）与 Formula Partial 等边界维持原文。下文各阶段描述保留制定时点原貌，仅作历史与依赖参考。
+> **2026-09-27 当前状态**：本指南的 L5–L10 运行时职责收敛（写入/元数据/设备能力/插件共享目录与安装执行生命周期/按需 Worker、普通启动去 Python）已在 main@0bdbc1b 主干取得最终固定样本资格（main CI 36333755042 全部 job 成功、两分片产品 E2E 精确覆盖 35 场共 681 项断言、CD 36337135634 成功且正式发布步骤 skipped），期间暴露的 S24-R2-F1 保护快照实际异常已由 [PR386](https://github.com/FelixJI/VibeTable/pull/386) 修复，后续资格测试由 [PR388](https://github.com/FelixJI/VibeTable/pull/388) 完善，并经同 0b 证据补审验收（含 c2e6052b 主干失败的中间历史），证据见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)与各规范页。这不代表整份路线或 Goal #339 已收尾：N-1 迁移器仍按 Goal 决策暂停，PDF 保留现有 adapter，目录镜像不含败方实际 restore/二次运输收敛/云同步/exclusive writer，未验视图（Calendar/Timeline datetime 与 range）与 Formula Partial 等边界维持原文。下文各阶段描述保留制定时点原貌，仅作历史与依赖参考。
 
 本文件以用户提供的 2026-08-17 成熟度审计为历史输入，逐项核对当时的功能判断、TD-01～TD-14、
 30/60/90 天路线和稳定发布验收清单。它不是把旧审计改一个日期，也不覆盖旧审计当时成立的事实；

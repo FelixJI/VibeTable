@@ -4,21 +4,25 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@61d4b40759489c751a03bb595a27422e9ecd4f5b`
-- GitHub run：[main CI 36316404213](https://github.com/FelixJI/VibeTable/actions/runs/36316404213)
+- source SHA：`GitHub/main@0bdbc1b29ba237dd17f5d6f85be90bd99a2d1268`
+- GitHub run：[main CI 36333755042](https://github.com/FelixJI/VibeTable/actions/runs/36333755042)
 - 报告契约：`contractVersion=2.0`
 - 结果：35/35 passed、0 failed、0 skipped。
 - 当前 manifest gap：无。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：1（`24-directory-replica-conflict`）。
+- 当前 manifest changed：无。
 
-同一 61d 主干候选的两份分片报告精确覆盖该源码 manifest 的 35 个场景；当前 S24 新增正常关闭保护点完整性门禁，61d 旧样本不覆盖该增量：`resilience` lane 33 场（artifact 内部路径 `lane-evidence/resilience/20260927T115753Z/product-e2e-report.json`）与 `data-io` lane 2 场（`lane-evidence/data-io/20260927T115335Z/product-e2e-report.json`），两分片 lane 报告 commit 均为 61d4b407，聚合门禁核对场景选择精确覆盖当前 manifest 且两分片均成功。覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`。
+同一 0bdbc1b 主干候选的两份分片报告精确覆盖当前 manifest 的 35 个场景：`resilience` lane 33 场（artifact 内部路径 `lane-evidence/resilience/20260927T165554Z/product-e2e-report.json`）与 `data-io` lane 2 场（`lane-evidence/data-io/20260927T165201Z/product-e2e-report.json`），两分片 lane 报告 commit 均为 0bdbc1b，聚合门禁核对场景选择精确覆盖当前 manifest 且两分片均成功。覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`。
 
-按实际阶段口径统计共 676 项断言通过：S11 与 S33 的顶层断言是 phases.resume 镜像，只计 seed/resume 两份 phase 报告各一次；S24 计五个真实阶段（14/14/14/26/16，共 84 项）；其余场景按顶层报告计。未确认 bridge failure、pending request 与 pageErrors 均为 0；acknowledgedFailures 共 34 项，全部为场景显式确认的预期失败。36 份唯一归档 lifecycle 证据全部成功；成功 CI 仅归档聚合报告，S24 的 8 份逐 Host 原件仅在失败场景归档，本次未读取，退出清理由已审阅的 fail-closed runner 与成功阶段链证明。
+按实际阶段口径统计共 681 项断言通过：S11 与 S33 的顶层断言是 phases.resume 镜像，只计 seed/resume 两份 phase 报告各一次；S24 计五个真实阶段（14/14/14/29/18，共 89 项）；其余场景按顶层报告计。未确认 bridge failure、pending request 与 pageErrors 均为 0；acknowledgedFailures 共 38 项，全部为场景显式确认的预期失败。36 份唯一归档 lifecycle 证据全部成功；成功 CI 仅归档聚合报告，S24 的 8 份逐 Host 原件仅在失败场景归档，本次未读取，退出清理由已审阅的 fail-closed runner 与成功阶段链证明。
 
-六个普通业务场景（S01/02/03/05/06/08）在真实业务完成后经完整 Job 成员观测核验：Host 与 Go sidecar 各 1、Python backend 与插件 Node 各 0；Job 中同时存在 conhost 等宿主附属进程，不据此声称整个 Job 仅两进程，也不声称全时段事件审计。S24 在声明范围（两端冲突选择、败方恢复预览、重启可达性）的五阶段全部通过；verify-resolved 阶段额外出现的 replica 实际异常（replica.status failed / pendingSync 与新增 corrupt 保护快照项；并非本次故障注入，旧 b744 样本同样存在）经正式补审确认为稳定 P2（S24-R2-F1，完整公开报告见 [Issue #341 评论 5855979696](https://github.com/FelixJI/VibeTable/issues/341#issuecomment-5855979696)）：纯表 apply 提交非空 filehistory root 时，snapshotFiles 错误使用空 document 集合的 max 版本 0，bundle 严格拒绝，正常关闭因此新增 protection corrupt；两个恢复副本本身健康。问题整改中：本样本保留为 61d 固定实测样本，不宣称 P2 已修复，不据此宣称同步收敛，S24 母任务与 Goal 均未完成验收。
+六个普通业务场景（S01/02/03/05/06/08）在真实业务完成后经完整 Job 成员观测核验：Host 与 Go sidecar 各 1、Python backend 与插件 Node 各 0；Job 中同时存在 conhost 等宿主附属进程，不据此声称整个 Job 仅两进程，也不声称全时段事件审计。S24 在声明范围（两端冲突选择、败方恢复预览、重启可达性）的五阶段全部通过；61d 样本中 verify-resolved 阶段暴露的 replica 实际异常（replica.status failed / pendingSync 与新增 corrupt 保护快照项；并非故障注入，旧 b744 样本同样存在）经正式补审确认为稳定 P2（S24-R2-F1，完整公开报告见 [Issue #341 评论 5855979696](https://github.com/FelixJI/VibeTable/issues/341#issuecomment-5855979696)）：纯表 apply 提交非空 filehistory root 时，snapshotFiles 错误使用空 document 集合的 max 版本 0，bundle 严格拒绝，正常关闭因此新增 protection corrupt。该 P2 已由 [PR386](https://github.com/FelixJI/VibeTable/pull/386) 修复（权威 filehistory head 版本与 snapshot 元数据一致，严格 bundle 校验保留，并新增 S24 正常关闭保护点完整性门禁）；后续资格失败诊断输出与 .NET 终止通知同步测试由 [PR388](https://github.com/FelixJI/VibeTable/pull/388) 完善后收敛为本 0b 主干样本，其中两个新增保护快照均 ready/verified/replicated，最终公开 replica 为 replicated、pendingSync=false。S24 已以声明范围由 Task #341 验收关闭（完整独立补审与 AC1–6 见 [Issue #341 评论 5858178011](https://github.com/FelixJI/VibeTable/issues/341#issuecomment-5858178011)）；该范围不含败方实际 restore、二次运输收敛、云盘 offline/reconnect、exclusive writer 或公开手动同步，不据此宣称同步收敛。
 
-四组件 desktop-host、web-grid、python-backend、pocketbase-sidecar freshness 全部通过，packageAudit 通过。启动、静默工作集、包体与 RPC 数值以[真实包运行时基线](quality/packaged-runtime-baseline.md)的 2026-09-27 样本为唯一权威表；S10 恢复四项计时以[打包产品恢复时延](quality/packaged-recovery-baseline.md)为准，本页不重复第二套数字。关联 CD 36319246538 成功：Stage release 执行，正式 Publish/provenance/SBOM attestation 步骤均 skipped，普通合并未发布。
+四组件 desktop-host、web-grid、python-backend、pocketbase-sidecar freshness 全部通过，packageAudit 通过。启动、静默工作集、包体与 RPC 数值以[真实包运行时基线](quality/packaged-runtime-baseline.md)的当前对照表（含本 0b 最终样本列）为唯一权威；S10 恢复四项计时以[打包产品恢复时延](quality/packaged-recovery-baseline.md)为准，本页不重复第二套数字。关联 CD 36337135634 成功：Stage release 执行，正式 Publish、provenance/SBOM attestation 与 Verify closed E2E 步骤均 skipped，普通合并未发布；`release-state.json` 记录 publish=false、reason=plan-unchanged、source_sha=0bdbc1b，普通合并的 release-candidate 产物仅承载该状态哨兵，真实产品候选在 CI 候选交接（ci-candidate-handoff/prepare）中归档；0b 候选的 release lane 报告记录 269 个文件、ZIP 146888718 bytes。
+
+## 前一固定样本 2026-09-27（61d，历史）
+
+以下为前一固定样本的历史记录，保留真实事实，不作为当前资格。该样本绑定 main 61d4b407、CI run 36316404213（两分片内部路径 `lane-evidence/resilience/20260927T115753Z` 与 `lane-evidence/data-io/20260927T115335Z`）与报告契约 2.0：35 场全部通过、0 failed、0 skipped；按同一阶段口径共 676 项断言（S24 五阶段 14/14/14/26/16，共 84 项）、acknowledgedFailures 34 项、36 份唯一归档 lifecycle 全部成功；六普通场景零 Worker 观测与四组件 freshness 同当前节口径。该样本 verify-resolved 阶段暴露上述 S24-R2-F1 实际异常（时点表述为“问题整改中”），修复与主干复验见当前证据节；其 S23 恢复与 S07/S17/S28/S32 等中间状态叙述见下方 2026-09-09 历史节与各自资格记录，此处不重复。
 
 ## 2026-09-09 主干固定样本（历史）
 
@@ -84,7 +88,9 @@ S10 恢复测量（历史样本）：sidecar kill→可读表 2273.97ms，backen
 
 ## 本次主干 CI/CD 归属
 
-61d 主干 CI 36316404213 的 14 个 job 全部 success（含全部严格 `required`），两分片产品 E2E、固定候选构建、package contract、更新恢复与生命周期证据均在该 run 内。关联 CD 36319246538 成功：Stage release 执行，正式 Publish、provenance/SBOM attestation 与 closed-evidence 步骤均 skipped，普通合并未发布；候选交接归档的四项资产、build identity 与 SPDX 2.3 SBOM 已按既有 checksum 契约核对，不叠加新 hash 层。先前 main312 的覆盖率收集失败、L9 旧 main 36312515247 的 core 失败均保留为历史失败，不能改写为对应 SHA 通过；61d 是后继主干的完整补验。
+0bdbc1b 主干 CI 36333755042 的 14 个 job 全部 success（含全部严格 `required`），两分片产品 E2E、固定候选构建、package contract、更新恢复与生命周期证据均在该 run 内。关联 CD 36337135634 成功：Stage release 执行，正式 Publish、provenance/SBOM attestation 与 Verify closed E2E 步骤均 skipped，普通合并未发布；`release-state.json` 记录 publish=false、reason=plan-unchanged、source_sha=0bdbc1b，普通合并的 release-candidate 产物仅承载该状态哨兵，真实产品候选在 CI 候选交接（ci-candidate-handoff/prepare）中归档，按既有 checksum 契约核对，不叠加新 hash 层。
+
+中间历史保留：PR386 squash 为 c2e6052b 后，c2 主干 CI36324919070 整体 failure（core/required 失败；其中 PDF qualification 步骤 exit1 且缺少详细输出，诊断输出由 PR388 补齐），CD36328134058 整体 skipped；PR388 旧提交 1b 的 CI36327492700 中 core/required 失败、resilience lane 因新提交取消，其余 job 成功。两者保留为历史失败/取消，不能改写为通过；0bdbc1b 是后继主干的完整补验。先前 main312 的覆盖率收集失败、L9 旧 main 36312515247 的 core 失败同样保留为历史失败。
 
 ## 测量口径
 
