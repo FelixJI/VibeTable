@@ -14,7 +14,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     private readonly TimeProvider _time;
     private readonly SemaphoreSlim _gate = new(1);
     private readonly CancellationTokenSource _retired = new();
-    private readonly CancellationTokenRegistration _epochRegistration;
+    private CancellationTokenRegistration? _epochRegistration;
     private readonly Dictionary<string, Grant> _grants = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Transfer> _transfers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Reservation> _reservations = new(StringComparer.Ordinal);
@@ -27,8 +27,6 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         _capture = capture;
         _commitCurrent = commitCurrent;
         _time = time ?? TimeProvider.System;
-        using WorkspaceRequestEpochLease lease = _capture();
-        _epochRegistration = lease.CancellationToken.Register(Retire);
     }
 
     internal async Task<JsonElement> IssueAsync(string path, bool write, string? runId,
@@ -39,6 +37,9 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         await _gate.WaitAsync(linked.Token).ConfigureAwait(false);
         try
         {
+            // Installation precedes Opened. Bind retirement with the first admitted
+            // file grant; construction must not require a business request lease.
+            _epochRegistration ??= lease.CancellationToken.Register(Retire);
             linked.Token.ThrowIfCancellationRequested();
             PruneExpiredReceipts();
             if (_grants.Count >= 128) throw new InvalidOperationException("Too many file grants.");
@@ -300,7 +301,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         }
         finally
         {
-            _epochRegistration.Unregister();
+            _epochRegistration?.Unregister();
             _gate.Release();
             if (errors.Count > 0) _drain.TrySetException(errors);
             else _drain.TrySetResult();
