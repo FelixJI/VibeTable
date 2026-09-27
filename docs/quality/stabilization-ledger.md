@@ -66,3 +66,9 @@
 场景 `23-directory-replica-recovery` 已进入可信 main 的打包报告，见[已通过的产品 E2E 样本](../e2e-performance.md#当前产品-e2e-证据)。公开释放活动缓存后同 UUID 重开，再经精确 sidecar 终止和替代进程 readiness，记录、revision 与 replica 状态保持；退出清理亦通过。
 
 这补齐了目录副本恢复的首次通过记录。2026-09-09 后继主干的完整打包样本再次通过 S23，精确出处见上方规范证据链接；CI34026490000 的历史失败仍未归因，不能由新样本注销，也不将它描述为本次主干失败。V-02 所述手动 `replica.synchronize` 保持 Internal only，不以内部协调成功替代公开手动同步、跨设备 reconnect、冲突或 exclusive-writer 资格。
+
+## 2026-09-27 运行时职责收敛主干资格
+
+L5–L10 运行时职责收敛（写入/元数据/设备能力/插件共享目录/安装与执行生命周期/按需 Worker 与普通启动去 Python）已在 61d 主干取得固定候选资格：main CI 36316404213 全部 job 成功，两分片产品 E2E 精确覆盖当前 manifest 35 场，未确认 bridge failure/pending/pageErrors 为 0，36 份唯一归档 lifecycle 全部成功；六个普通业务场景经完整 Job 成员观测核验 Host/Go 各 1、Python/Node 各 0。同源运行时基线在新拓扑下 backend 采样为 0（包内 Python 文件体积仍计入包体），启动/工作集/包体/RPC 与恢复数值见各自规范页。关联 CD 36319246538 成功，正式 Publish/provenance/SBOM attestation 均 skipped，未发布。
+
+L9 旧 main 36312515247 的 core 失败（Edge 准备阶段耗尽既有 15 秒总预算）保留为历史失败，不归因改写，由 61d 后继主干完整补验闭合。V-06 的 Go 临时目录删除待定项继续遗留，交由 GitHub `required` 干净 runner 判定。S24 声明范围五阶段通过；verify-resolved 额外出现的 replica 实际异常（corrupt 保护快照项非本次故障注入，旧 b744 样本同样存在）经正式补审确认为稳定 P2（S24-R2-F1），整改中，落地并经后继主干证据复验前不升格，Task #341 与 Goal #339 均未完成验收，详见能力矩阵与唯一资格记录。

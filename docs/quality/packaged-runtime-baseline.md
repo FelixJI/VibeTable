@@ -42,4 +42,23 @@ uv run python -m tests.e2e.packaged_runtime_baseline `
 | 展开包总计 | 260576833 bytes |
 | schema.getTable / query.page p95 | 8.4 / 4.2ms |
 
-这是单次新进程、独立 WebView2 目录下的样本，working set 不是峰值或全设备 RSS。展开包字节不是 ZIP 下载体积。此报告的 recovery 仍为 not-measured；同一 CI 的产品 E2E 报告另有 S10 故障恢复计时，见规范证据页，不能把两种测量来源混写。尚未完成 Worker 拓扑后的前后对比，不据本次数字宣称性能改善或 L0/L10 全部完成。
+这是单次新进程、独立 WebView2 目录下的样本，working set 不是峰值或全设备 RSS。展开包字节不是 ZIP 下载体积。此报告的 recovery 仍为 not-measured；同一 CI 的产品 E2E 报告另有 S10 故障恢复计时，见规范证据页，不能把两种测量来源混写。该时点尚未完成 Worker 拓扑后的前后对比，不据本次数字宣称性能改善或 L0/L10 全部完成；当前按需拓扑的同源对比见下节 2026-09-27 样本。
+
+## 2026-09-27 主干固定样本（按需 Worker 拓扑）
+
+61d 主干 CI 36316404213 的 `ci-lane-resilience` 产出同源报告（artifact 内部路径 `lane-evidence/resilience/packaged-runtime-baseline.json`，见[当前产品 E2E 证据](../e2e-performance.md#当前产品-e2e-证据)）。报告 passed、errors 为空，source 与候选 identity 均绑定 61d；采样为 fresh 进程/WebView2/工作区，OS 文件缓存未清。本节是启动/工作集/包体/RPC 的唯一权威当前表。
+
+| 测量 | 2026-09-27（61d，按需拓扑） | 2026-09-09（25b26039，历史三进程） |
+|---|---:|---:|
+| launch → Host ready | 1898.5262ms | 1878.3761ms |
+| workspace open request → opened | 2423.1301ms | 4345.8069ms |
+| workspace open request → first table stable | 6021.1972ms | 8374.3995ms |
+| quiet 端点 working set：Host / Python / Go | 259010560 / 0 / 178868224 bytes | 258797568 / 71327744 / 211374080 bytes |
+| quiet 端点 working set 合计 | 437878784 bytes | 541499392 bytes |
+| `runtimeProcessCounts`（Host/backend/sidecar） | 1 / 0 / 1 | 当时文档未列该计数字段（样本为常驻三进程，Python 工作集非 0） |
+| 展开包：Host / Python / Go / Web / 未分类 | 71895908 / 32621358 / 135203735 / 16108054 / 6174219 bytes | 71822180 / 34445775 / 134173027 / 15887786 / 4248065 bytes |
+| 展开包总计 | 262003274 bytes | 260576833 bytes |
+| schema.getTable p50 / p95 / max（30 样本） | 6.8 / 10.0 / 18.7ms | p95 8.4ms（p50/max 未记录） |
+| query.page p50 / p95 / max（30 样本） | 2.8 / 3.6 / 4.2ms | p95 4.2ms（p50/max 未记录） |
+
+口径与边界：两次均为单次新进程、独立 WebView2 目录的端点采样，working set 为静默窗口端点值而非峰值或全设备 RSS，排除 WebView2 进程；OS 文件缓存未清，冷启动对比不构成因果或稳定收益证明。按需拓扑下 Python backend 采样时未运行（working set 记 0，非查询缺失），包内 Python 文件体积仍计入 `packageBytes.backend`（其分量较历史样本减小）；展开包总计较历史样本略增。launch 耗时与 schema.getTable p95 较历史样本未改善，如实记录，不承诺性能全面改善。历史样本缺失的 p50/max 保持未记录，不补造。

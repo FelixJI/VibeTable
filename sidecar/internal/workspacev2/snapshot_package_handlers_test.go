@@ -82,15 +82,14 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	); err != nil {
 		t.Fatal(err)
 	}
-	files, fileRevision, err := (&frozenSource{
+	files, err := (&frozenSource{
 		history:    runtime.history,
 		repository: runtime.repository,
 	}).snapshotFiles(ctx)
-	if err != nil || len(files) != 0 || fileRevision == 0 {
+	if err != nil || len(files) != 0 {
 		t.Fatalf(
-			"deleted-only snapshot files=%#v revision=%d err=%v",
+			"deleted-only snapshot files=%#v err=%v",
 			files,
-			fileRevision,
 			err,
 		)
 	}
@@ -105,6 +104,9 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if record.FileRevision == 0 {
+		t.Fatal("deleted-only snapshot lost its published file-history revision")
 	}
 	entries, packageManifest, err := runtime.snapshotPackageEntries(
 		ctx, record,

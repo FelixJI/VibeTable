@@ -1369,6 +1369,14 @@ func (service *Service) Root() objectrepo.ManifestID {
 	return service.root
 }
 
+// Head returns the published root and its workspace-wide revision together.
+// Document topology revisions are independent and cannot identify this head.
+func (service *Service) Head() (objectrepo.ManifestID, uint64) {
+	service.mu.RLock()
+	defer service.mu.RUnlock()
+	return service.root, service.headRevision
+}
+
 // PreviewSnapshotRestore compares the immutable snapshot root with the
 // current authoritative file-history projection without creating repository
 // objects or changing the published head.

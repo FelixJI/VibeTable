@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -407,6 +408,85 @@ func testConflictBusinessPublicRecovery(t *testing.T, foreign bool) {
 			}
 		}
 	}
+	// A pure table/settings resolution still publishes a file-history head even
+	// when there are no documents. Its next normal protection must be usable,
+	// not only the two pinned recovery snapshots from before the resolution.
+	if len(runtime.history.List()) != 0 || runtime.history.Root() == "" {
+		t.Fatal("fixture did not resolve business changes with an empty published history")
+	}
+	token, _ := runtime.coordinator.Current()
+	protection, captured, err := runtime.snapshots.Capture(ctx, snapshot.CaptureRequest{
+		WorkspaceID: testWorkspaceID, Authority: token.Authority(),
+		Trigger: snapshot.TriggerProtection, Pinned: true,
+	})
+	requireSnapshotRestore(t, err)
+	if !captured || protection.LocalRecovery {
+		t.Fatalf("normal protection capture = %#v, captured=%v", protection, captured)
+	}
+	requireSnapshotRestore(t, snapshot.ValidateSnapshotBundle(ctx, runtime.repository, protection))
+	_, headRevision := runtime.history.Head()
+	if protection.FileRevision != headRevision || headRevision == 0 {
+		t.Fatalf("protection fileRevision=%d, published head=%d", protection.FileRevision, headRevision)
+	}
+	if foreign {
+		requireSnapshotRestore(t, runtime.replicaConflict.manager.Synchronize(ctx))
+		state, err := runtime.replicaConflict.manager.SnapshotSyncState(ctx, protection)
+		requireSnapshotRestore(t, err)
+		if state != "replicated" {
+			t.Fatalf("post-resolution protection publication = %s", state)
+		}
+	}
+	protected := call("snapshot.list", map[string]any{"limit": 200})
+	foundProtection := false
+	for _, raw := range protected["snapshots"].([]any) {
+		item := raw.(map[string]any)
+		if item["snapshotId"] == protection.SnapshotID {
+			foundProtection = item["state"] == "ready" && item["integrity"] == "verified"
+		}
+	}
+	if !foundProtection {
+		t.Fatal("post-resolution protection is not publicly ready and verified")
+	}
+	t.Run("canonical-empty-head", func(t *testing.T) {
+		// Restoring canonical empty history can advance the durable head without
+		// creating a root. Snapshot metadata stays zero while search follows the
+		// actual head revision, not the absent root or document topology.
+		store, err := filehistory.OpenPersistentHeadStore(filepath.Join(t.TempDir(), "empty-head.db"))
+		requireSnapshotRestore(t, err)
+		defer store.Close()
+		_, counters := runtime.coordinator.Current()
+		_, err = store.CompareAndSwap(ctx, filehistory.CurrentHead{WorkspaceID: testWorkspaceID}, filehistory.CurrentHead{
+			WorkspaceID: testWorkspaceID, Revision: 1, MutationRevision: counters.MutationRevision,
+			SessionEpoch: token.SessionEpoch, FenceEpoch: token.FenceEpoch, ClaimID: token.ClaimID,
+		})
+		requireSnapshotRestore(t, err)
+		emptyHistory, err := filehistory.OpenCurrent(ctx, runtime.repository, runtime.coordinator, store)
+		requireSnapshotRestore(t, err)
+		root, revision := emptyHistory.Head()
+		if root != "" || revision != 1 {
+			t.Fatalf("canonical empty head = %q, %d", root, revision)
+		}
+		source := runtime.frozenSource
+		previousHistory, previousSearch, previousStatus := source.history, source.search, source.searchStatus
+		source.history, source.search, source.searchStatus = emptyHistory, nil, nil
+		defer func() {
+			source.history, source.search, source.searchStatus = previousHistory, previousSearch, previousStatus
+		}()
+		empty, captured, err := runtime.snapshots.Capture(ctx, snapshot.CaptureRequest{
+			WorkspaceID: testWorkspaceID, Authority: token.Authority(), Trigger: snapshot.TriggerProtection,
+		})
+		requireSnapshotRestore(t, err)
+		if !captured || empty.FileRevision != 0 {
+			t.Fatalf("canonical empty snapshot = %#v, captured=%v", empty, captured)
+		}
+		bundle, err := snapshot.LoadSnapshotBundle(ctx, runtime.repository, empty)
+		requireSnapshotRestore(t, err)
+		var manifest snapshot.Manifest
+		requireSnapshotRestore(t, json.Unmarshal(bundle.Manifest.Payload, &manifest))
+		if !manifest.PendingWork.SearchRebuild || !strings.HasSuffix(manifest.PendingWork.SearchCheckpoint, "file=0/1") {
+			t.Fatalf("empty root hid the durable file-head search lag: %#v", manifest.PendingWork)
+		}
+	})
 }
 
 // Publication and authority behavior use the existing verified transport double;
@@ -416,6 +496,14 @@ type foreignRecoveryRemote struct {
 	incoming []replica.IncomingConflict
 }
 
-func (remote *foreignRecoveryRemote) DiscoverConflicts(context.Context, replica.ConflictScan) ([]replica.IncomingConflict, error) {
-	return remote.incoming, nil
+func (remote *foreignRecoveryRemote) DiscoverConflicts(_ context.Context, scan replica.ConflictScan) ([]replica.IncomingConflict, error) {
+	// This fixture holds one immutable branch comparison. A later protection
+	// changes the local head; the old conflict ID cannot describe that new pair.
+	var matching []replica.IncomingConflict
+	for _, candidate := range remote.incoming {
+		if candidate.Set.Local.SnapshotID == scan.LocalSnapshotID {
+			matching = append(matching, candidate)
+		}
+	}
+	return matching, nil
 }
