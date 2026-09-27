@@ -4268,6 +4268,18 @@ async function requestPackagedProcessKill(runtime, action, reason) {
   throw new Error(`Python orchestrator did not acknowledge the ${action} fault request`);
 }
 
+async function observePackagedPythonCount(runtime, expected) {
+  const observed = await requestPackagedProcessKill(runtime, "observe-processes", "verify lazy Python topology");
+  const members = observed.members;
+  const count = name => members.filter(member => member.processName.toLowerCase() === name).length;
+  if (!Array.isArray(members) || members.some(member => member.identityVerified !== true)
+    || count("vibetable.next.exe") !== 1 || count("vibetable-pb.exe") !== 1
+    || count("vibetable-backend.exe") !== expected) {
+    throw new Error(`unexpected lazy Python Job topology: ${JSON.stringify(observed)}`);
+  }
+  return observed;
+}
+
 async function requestSidecarKill(runtime, reason) {
   return requestPackagedProcessKill(runtime, "kill-sidecar", reason);
 }
@@ -4538,18 +4550,7 @@ async function waitForActiveTableBackend(page, tableId, expectedRows, timeoutMs 
       && lastResponse.payload?.rows?.length === expectedRows
       && lastResponse.payload?.snapshot?.schemaRevision
     ) {
-      const recoveredPage = lastResponse.payload;
-      // query.page is Go-owned and can recover before the Python write gateway.
-      // Probe that gateway through its read-only contract within the same deadline.
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) break;
-      lastResponse = await rawBridgeRequest(
-        page, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams(tableId), Math.min(20_000, remainingMs),
-      );
-      if (Date.now() >= deadline) break;
-      if (isPythonRecoveryReady(lastResponse)) {
-        return recoveredPage;
-      }
+      return lastResponse.payload;
     }
     if (!await acknowledgeExpectedSidecarRecoveryFailure(
       lastResponse,
@@ -4736,6 +4737,8 @@ async function scenario10(page, recorder, _network, runtime) {
     baselineRowCount === 1,
     { baselineRowCount },
   );
+  recorder.check("ordinary workspace open, query and edit keep zero Python children", true,
+    await observePackagedPythonCount(runtime, 0));
   const sidecarRecoveryStarted = performance.now();
   const fault = await requestPackagedProcessKill(
     runtime,
@@ -4797,6 +4800,24 @@ async function scenario10(page, recorder, _network, runtime) {
     stableGrid.rowCount === 2 && stableGrid.matchingCellCount === 1,
     { stableGrid },
   );
+
+  recorder.check("Go recovery and editing keep zero Python children", true,
+    await observePackagedPythonCount(runtime, 0));
+  const lazySession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await fs.writeFile(path.join(runtime.controlsDir, "python-start-fail-once.request"), "fail before spawn\n", "utf8");
+  const firstPython = await rawBridgeRequest(page, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams(tableId));
+  recorder.check("first explicit Python request reports the injected pre-spawn failure",
+    firstPython.type === "operation.failed" && firstPython.payload?.code === "PRODUCT_DATA_FAILED", { firstPython });
+  await acknowledgeExpectedBridgeFailure(page, firstPython);
+  const afterFailure = await waitForActiveTableBackend(page, tableId, 2);
+  const unchangedSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  recorder.check("failed lazy start leaves Go and workspace identity usable",
+    afterFailure.rows.length === 2 && unchangedSession.workspaceId === lazySession.workspaceId
+      && unchangedSession.sessionEpoch === lazySession.sessionEpoch,
+    { lazySession, unchangedSession, processes: await observePackagedPythonCount(runtime, 0) });
+  const pythonReady = await rawBridgeRequest(page, pythonRecoveryReadinessMethod, pythonRecoveryReadinessParams(tableId));
+  recorder.check("a new explicit request starts Python and returns the exact schema rejection",
+    isPythonRecoveryReady(pythonReady), { pythonReady, processes: await observePackagedPythonCount(runtime, 1) });
 
   const pasteRowId = mutation.payload.affectedRows[0].recordId;
   const pasteRequest = {
@@ -8609,13 +8630,16 @@ async function activateWorkspaceThroughUi(page, { method, activate, waitForHydra
   return { databaseOpened, session };
 }
 
-async function readDirectoryReplicaCheckpoint(page, tableId) {
+async function readDirectoryReplicaCheckpoint(page, tableId, publishedRecorder = null) {
+  const published = publishedRecorder
+    ? await waitForPublishedReplicaUi(page, publishedRecorder)
+    : null;
   const query = await rawBridgeRequest(page, "query.page", {
     tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 10 },
   });
-  const replicaReply = await rawWorkspaceV2Request(page, "replica.status", {});
-  return { query, replica: replicaReply.result };
+  const replica = published ?? (await rawWorkspaceV2Request(page, "replica.status", {})).result;
+  return { query, replica };
 }
 
 async function scenario23(page, recorder, _network, runtime) {
@@ -8787,7 +8811,7 @@ async function scenario23(page, recorder, _network, runtime) {
       && reopened.databaseOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
   { initialSession, reopened });
 
-  const beforeRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const beforeRestart = await readDirectoryReplicaCheckpoint(page, table.tableId, recorder);
   const beforeRow = beforeRestart.query.payload?.rows?.[0];
   const beforeSnapshot = beforeRestart.query.payload?.snapshot;
   const replica = beforeRestart.replica;
@@ -8830,7 +8854,7 @@ async function scenario23(page, recorder, _network, runtime) {
       && replacementOpened.payload?.projectRevision === `${identity}:${session.sessionEpoch}`,
   { kill, replacementOpened, session });
 
-  const afterRestart = await readDirectoryReplicaCheckpoint(page, table.tableId);
+  const afterRestart = await readDirectoryReplicaCheckpoint(page, table.tableId, recorder);
   const afterRow = afterRestart.query.payload?.rows?.[0];
   const afterSnapshot = afterRestart.query.payload?.snapshot;
   recorder.check("replacement sidecar preserves the exact row, revisions, and replica status",
@@ -8920,7 +8944,8 @@ async function waitForPublishedReplicaUi(page, recorder) {
       if (uiEnabled && replicated) {
         recorder.check("replicated UI readiness agrees with one exact public status checkpoint",
           replicated, { replica });
-        return;
+        // Return this accepted sample; another status read can enter a new verification pass.
+        return replica.result;
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now())));
     }

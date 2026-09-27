@@ -45,10 +45,8 @@ internal interface IProductRuntimeRecoveryCoordinator
 }
 
 /// <summary>
-/// Owns the product runtime topology: the private local data process starts
-/// before Python, its ephemeral connection material is copied directly into
-/// the child environment, and a sidecar recovery rotates the Python RPC
-/// client before consumers are notified.
+/// Owns Sidecar readiness and the shared, epoch-leased Python startup.
+/// Recovery publishes Go readiness; only an execution request starts Python.
 /// </summary>
 public sealed class ProductRuntimeService : IAsyncDisposable
 {
@@ -60,12 +58,15 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     private readonly IBackendSupervisor _backend;
     private readonly IDictionary<string, string> _backendEnvironment;
     private readonly IProductRuntimeRecoveryCoordinator? _recoveryCoordinator;
+    private readonly Action? _beforePythonStart;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly object _recoveryGate = new();
     private readonly Lazy<Task> _dispose;
     private RecoveryRequest? _pendingRecovery;
     private ActiveRecovery? _activeRecovery;
     private Task? _recoveryWorker;
+    private Task? _pythonStart;
+    private CancellationTokenSource? _pythonStartCancellation;
     private long _latestGenerationId;
     private int _started;
     private int _disposed;
@@ -84,7 +85,8 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         IPocketBaseSupervisor sidecar,
         IBackendSupervisor backend,
         IDictionary<string, string> backendEnvironment,
-        IProductRuntimeRecoveryCoordinator? recoveryCoordinator)
+        IProductRuntimeRecoveryCoordinator? recoveryCoordinator,
+        Action? beforePythonStart = null)
     {
         _localData = localData ?? throw new ArgumentNullException(nameof(localData));
         _sidecar = sidecar ?? throw new ArgumentNullException(nameof(sidecar));
@@ -92,6 +94,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         _backendEnvironment = backendEnvironment
             ?? throw new ArgumentNullException(nameof(backendEnvironment));
         _recoveryCoordinator = recoveryCoordinator;
+        _beforePythonStart = beforePythonStart;
         _dispose = new(DisposeCoreAsync);
         _sidecar.StatusChanged += OnSidecarStatusChanged;
     }
@@ -131,13 +134,8 @@ public sealed class ProductRuntimeService : IAsyncDisposable
                     }
                 }).ConfigureAwait(false);
             _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
-            await budget.RunAsync(
-                WorkspaceActivationStage.Backend,
-                async token =>
-                {
-                    if (_backend.State != BackendState.Ready)
-                        await _backend.StartAsync(token).ConfigureAwait(false);
-                }).ConfigureAwait(false);
+            lock (_recoveryGate)
+                _latestGenerationId = _recoveryCoordinator?.CaptureCurrentGeneration()?.GenerationId ?? 0;
             Volatile.Write(ref _started, 1);
         }
         catch
@@ -156,6 +154,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     {
         Task? disposal = null;
         Volatile.Write(ref _started, 0);
+        await CancelAndJoinPythonAsync().ConfigureAwait(false);
         await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
         await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
@@ -193,6 +192,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     {
         Task? disposal = null;
         Volatile.Write(ref _started, 0);
+        await CancelAndJoinPythonAsync().ConfigureAwait(false);
         await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
         await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
@@ -227,9 +227,6 @@ public sealed class ProductRuntimeService : IAsyncDisposable
                 throw new InvalidOperationException(
                     "The workspace Sidecar is no longer ready.");
             _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
-            if (_backend.State != BackendState.Ready)
-                await _backend.StartAsync(cancellationToken)
-                    .ConfigureAwait(false);
             Volatile.Write(ref _started, 1);
         }
         finally
@@ -239,6 +236,92 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         Notify(nameof(ClientReady), ClientReady, observer => observer());
     }
 
+    // One start belongs to the runtime and epoch, never to the first waiter.
+    internal Task EnsureBackendAsync(
+        Func<WorkspaceRequestEpochLease> captureLease,
+        Func<CancellationToken, Task> attach,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Task pending;
+        lock (_recoveryGate)
+        {
+            ThrowIfDisposed();
+            if (Volatile.Read(ref _started) == 0)
+                throw new InvalidOperationException("Python ingress is closed.");
+            if (_pythonStart is null || (_pythonStart.IsCompleted
+                && (!_pythonStart.IsCompletedSuccessfully || _backend.State != BackendState.Ready)))
+            {
+                _pythonStartCancellation = new CancellationTokenSource();
+                _pythonStart = StartPythonAsync(captureLease, attach, timeout, _pythonStartCancellation);
+            }
+            pending = _pythonStart;
+        }
+        return pending.WaitAsync(cancellationToken);
+    }
+
+    private async Task StartPythonAsync(
+        Func<WorkspaceRequestEpochLease> captureLease,
+        Func<CancellationToken, Task> attach,
+        TimeSpan timeout,
+        CancellationTokenSource ingress)
+    {
+        await Task.Yield();
+        using (ingress)
+        using (WorkspaceRequestEpochLease lease = captureLease())
+        using (var startup = CancellationTokenSource.CreateLinkedTokenSource(
+            ingress.Token, lease.CancellationToken))
+        {
+            startup.CancelAfter(timeout);
+            await _lifecycle.WaitAsync(startup.Token).ConfigureAwait(false);
+            bool attached = false;
+            try
+            {
+                startup.Token.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref _started) == 0)
+                    throw new InvalidOperationException("Python ingress is closed.");
+                _sidecar.ConfigureBackendEnvironment(_backendEnvironment);
+                if (_backend.State != BackendState.Ready)
+                {
+                    _beforePythonStart?.Invoke();
+                    await _backend.StartAsync(startup.Token).ConfigureAwait(false);
+                }
+                await attach(startup.Token).ConfigureAwait(false);
+                startup.Token.ThrowIfCancellationRequested();
+                attached = true;
+            }
+            finally
+            {
+                try
+                {
+                    // Request drain waits on this independent lease. Do not release
+                    // it while the supervisor still owns a starting child or writers.
+                    if (!attached)
+                        await _backend.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                finally { _lifecycle.Release(); }
+            }
+        }
+    }
+
+    private async Task CancelAndJoinPythonAsync()
+    {
+        Task? pending;
+        CancellationTokenSource? cancellation;
+        lock (_recoveryGate)
+        {
+            pending = _pythonStart;
+            cancellation = _pythonStartCancellation;
+        }
+        Cancel(cancellation);
+        if (pending is not null)
+        {
+            try { await pending.ConfigureAwait(false); }
+            catch (Exception) { /* The caller observes startup failure; teardown has joined. */ }
+        }
+    }
+
     public ValueTask DisposeAsync() => new(_dispose.Value);
 
     private async Task DisposeCoreAsync()
@@ -246,6 +329,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
         Volatile.Write(ref _disposed, 1);
         Volatile.Write(ref _started, 0);
         _sidecar.StatusChanged -= OnSidecarStatusChanged;
+        await CancelAndJoinPythonAsync().ConfigureAwait(false);
         await CancelAndJoinRecoveryAsync().ConfigureAwait(false);
         await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
@@ -289,6 +373,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
             superseded = _activeRecovery?.Cancellation;
             _recoveryWorker ??= Task.Run(RunRecoveryWorkerAsync);
         }
+        Cancel(_pythonStartCancellation);
         Cancel(superseded);
     }
 
@@ -341,6 +426,7 @@ public sealed class ProductRuntimeService : IAsyncDisposable
     {
         IProductRuntimeRecoveryCandidate? candidate = null;
         bool published = false;
+        await CancelAndJoinPythonAsync().ConfigureAwait(false);
         await _lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
@@ -359,7 +445,6 @@ public sealed class ProductRuntimeService : IAsyncDisposable
                 return;
             active.Cancellation.Token.ThrowIfCancellationRequested();
             ConfigureBackendEnvironment(candidate.Generation.Context);
-            await _backend.StartAsync(active.Cancellation.Token).ConfigureAwait(false);
             if (!candidate.TryCommit(() => TryCommit(active)))
                 return;
             published = TryPublish(active);

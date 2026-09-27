@@ -14,27 +14,43 @@
 
 ## 宿主 Product 调用与 Go owner
 
-`JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method、严格 Schema v2 解析；
-Python client 就绪时继续接收其通知。invoker 只读现有生成 policy/Workspace catalog 分类，拥有固定代际
-HTTP 实例与一次共享握手；握手独立持有 epoch lease 至实际 HTTP 完成，单个 caller 的取消不终止
-其他 caller 的握手，epoch drain／Dispose 取消全部自有调用。
-每次调用取得现有 workspace epoch lease，在发送及返回（包括错误）时核对绑定；不重试到新代际，
-不 fallback、shadow 或双发。Product wire 只有原 scope 字段，fence/claim 仍由 capabilities 验证。
+`JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method 与严格 Schema v2 解析；
+invoker 按生成 policy/Workspace catalog 选择 Go、Host 或 Python owner。Go HTTP 握手独立持有
+workspace epoch lease 至实际请求完成，单 caller 取消仅结束自身等待。
 
-`ProductionWorkspaceRuntimeFactory.CaptureHostProductRpcBinding` 只在已建立的当前 workspace
-runtime 及 Sidecar generation 上捕获不透明绑定，可附期望 workspace UUID/epoch。Go owner
-调用在发送及返回时核对当前 runtime、canonical Sidecar snapshot 与 workspace epoch lease；
-Python owner 和 native file grant 还要求捕获的精确 Python client 处于 Ready。Python 停止后
-Go binding 可不含 client，grid state 等 Python support 操作稳定拒绝；Sidecar 或 session 换代
-仍拒绝旧绑定。callback 只同步启动调用，不持锁等待异步完成，也不保证子进程不会退出。
-一次 capture 不延长 runtime 寿命，首次打开 workspace 仍按原启动契约完成 Python 验证。
-内部 construction seam 复用真实 supervisors 与现有 process/health/HTTP adapter；默认生成 policy
-与测试注入 policy 的 selector 和 canonical registrations 均保持同源。
+`ProductionWorkspaceRuntimeFactory.CaptureHostProductRpcBinding` 捕获固定 runtime、workspace
+UUID/epoch 和 canonical Sidecar snapshot。Go binding identity 不含 Python client：普通打开、
+查询、编辑、workspace 恢复及 Sidecar 重启均只恢复 Go/Host 准入，不启动或等待 Python。
+首次 CSV/XLSX preview/template/import/export，以及必要插件执行，经同一 runtime 的按需入口
+启动现有 Python supervisor。并发共享一个启动 Task；共享启动拥有独立 Host epoch lease、
+runtime ingress 取消与既有 BackendTimeout。单 caller 不取消其他等待者；失败后仅新请求重试。
+SessionManager 先 request drain 后 runtime drain，因此启动失败/取消必须等待 supervisor 真正
+teardown 才释放共享 lease；StopIngress/Stop/Dispose 在 lifecycle 锁外 cancel/join。
 
-三个 Host-origin 生产入口已消费该 binding：MainWindow 在 Ready 时将配对 client 交给其余 Python
-gateways，Python 停止时保留 Go table binding 并撤下 plugin gateway；LazyProductTableGateway 按完整 tuple 复用/轮换 Product 与 workspace-support，旧网关保留
-至既有 Host shutdown；update health reader 按期望 UUID/epoch 捕获并用短生命周期 gateway 读取
-schema.list，保持健康错误码与严格响应解析。它们不依赖 renderer gateway lifecycle。
+共享启动成功返回前，runtime 已为精确 client 安装文件 handler、DataIO report 与 Terminated
+订阅。DataIO 报告由 runtime 的 HostDataIoTaskRegistry 消费，不依赖某个 gateway 构造或存活。
+任务查询和既有任务取消不启动 Python；旧执行退出后保留 unknown/aborted 及已确认终态，
+不自动重放。乱序 Backend.StateChanged 仅触发重新观察绑定，不能无条件退休当前 client。
+Python 调用在启动及返回时验证精确 client；Sidecar、UUID 或 epoch 换代拒绝旧请求。
+
+HostSessionFileBroker 属于 runtime 的当前 Go binding，可在 Python 尚未启动时签发 grant。
+第一次 null→client 附着保留既有 grant；真实 client、Sidecar 或 epoch 退休使旧 grant 失效，
+不能迁移到下一 client。短生命周期 gateway Dispose 不退休共享 broker。导出清理始终使用
+发起时捕获的 client 和 broker，不会启动或调用替换代际。
+
+MainWindow 在 workspace activation 的 Verify 内完成 Go/Product/Table/Document gateway 安装。
+首次 Python 附着不重建这些 gateway、不推进 authority transition、不 resetGrid；插件执行
+单独等待精确 client gateway 安装。LazyProductTableGateway 按稳定 Go binding 复用网关；
+update health reader 只读 schema.list，不启动 Python。内部 construction seam 继续复用真实
+supervisors 与既有 process/health/HTTP adapter。
+
+真实 S10 先通过完整、身份已验证的 Host Job 成员证明普通操作和 Go 恢复为零 Python，再
+显式调用既有 schema_mismatch probe。仅 TestMode + controls dir 可消费一次
+`python-start-fail-once.request`，在 supervisor spawn 前抛出启动失败；S10 核对首请求失败、
+Go/UUID/epoch 保持可用且仍零 Python，第二次显式请求才启动成功。该证据不代表已创建子进程
+的清理覆盖；后者由 supervisor、epoch teardown 回归和 S36 承担。S18/preset 共用的恢复 helper
+保持纯 Go；原精确 Python kill 与 Go paste token 契约保留。
+
 现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
 `query.view` 以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
 参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。

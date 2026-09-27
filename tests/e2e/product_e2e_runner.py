@@ -101,6 +101,8 @@ class _SnapshotScope(_RootScope, Protocol):
 
 
 class _FaultScope(Protocol):
+    def snapshot(self) -> ProcessScopeSnapshot: ...
+
     def terminate_unique(self, executable_name: str) -> TargetTerminationResult: ...
 
 
@@ -971,6 +973,30 @@ def _audit_ledger_proof(ledger_path: Path) -> dict[str, Any]:
 
 def _handle_fault_request(request: dict[str, Any], host_scope: _FaultScope) -> dict[str, Any]:
     action = request.get("action")
+    if action == "observe-processes":
+        try:
+            snapshot = host_scope.snapshot()
+        except (OSError, RuntimeError) as exc:
+            return {
+                "status": "failed",
+                "code": "PROCESS_SCOPE_OBSERVATION_FAILED",
+                "errors": [str(exc)],
+            }
+        members = [
+            {
+                "pid": member.pid,
+                "processName": member.executable_name,
+                "identityVerified": member.identity_verified,
+            }
+            for member in snapshot.members
+        ]
+        if any(not member.identity_verified for member in snapshot.members):
+            return {
+                "status": "failed",
+                "code": "PROCESS_SCOPE_MEMBER_UNVERIFIED",
+                "members": members,
+            }
+        return {"status": "completed", "action": action, "members": members}
     targets = {
         "kill-sidecar": (
             "vibetable-pb.exe",

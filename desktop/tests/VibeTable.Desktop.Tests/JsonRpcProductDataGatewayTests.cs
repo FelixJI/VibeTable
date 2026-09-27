@@ -377,6 +377,19 @@ public sealed class JsonRpcProductDataGatewayTests
         Assert.AreEqual("succeeded", fixture.Status().GetProperty("state").GetString());
     }
 
+    [TestMethod]
+    public async Task ReportsAttachBeforeFirstExecutionAndOutliveTheGateway()
+    {
+        await using var fixture = new NotificationBindingFixture(attachAfterGateway: true);
+        var terminal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Tasks.TaskChanged += _ => terminal.TrySetResult();
+        fixture.Gateway.Dispose();
+        fixture.Transport.EnqueueNotification("task.executionReport",
+            $$"""{"taskId":"{{fixture.TaskId}}","kind":"data.import","state":"succeeded","progress":{"done":1,"total":1,"message":""},"result":{"createdCount":1},"error":null}""");
+        await terminal.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("succeeded", fixture.Status().GetProperty("state").GetString());
+    }
+
     private sealed class NotificationBindingFixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "vibetable-notifications-" + Guid.NewGuid().ToString("N"));
@@ -388,6 +401,7 @@ public sealed class JsonRpcProductDataGatewayTests
         private readonly HostDataIoTaskRegistry _tasks = new();
         internal AutoRespondTransport Transport { get; } = new();
         internal JsonRpcProductDataGateway Gateway { get; }
+        internal HostDataIoTaskRegistry Tasks => _tasks;
         internal string TaskId { get; }
         internal JsonElement Status() => _tasks.Status(TaskId);
         internal (JsonElement Snapshot, JsonRpcClient? Client) RequestCancel() => _tasks.RequestCancel(TaskId);
@@ -403,7 +417,7 @@ public sealed class JsonRpcProductDataGatewayTests
                 error = (string?)null,
             }));
 
-        internal NotificationBindingFixture()
+        internal NotificationBindingFixture(bool attachAfterGateway = false)
         {
             _sessions = new(new WorkspaceRegistry(_root), _runtime);
             _leases = new(_sessions);
@@ -413,8 +427,10 @@ public sealed class JsonRpcProductDataGatewayTests
                     new Uri("http://127.0.0.1:12345/"), "X-VibeTable-Session", "test-session"),
                 new ProductSidecarIdentity(Guid.NewGuid().ToString("D"), 1, 1, Guid.NewGuid().ToString("D")), []);
             // No RPC admission: this fixture tests only the paired client's notification path.
-            var binding = new HostProductRpcBinding(_runtime, _client, snapshot, ProductRpcRouteSelector.Default, _tasks, _ => false);
+            var binding = new HostProductRpcBinding(_runtime, attachAfterGateway ? null : _client,
+                snapshot, ProductRpcRouteSelector.Default, _tasks, _ => false);
             Gateway = binding.CreateGateway(_leases);
+            if (attachAfterGateway) _tasks.BindClient(_client, snapshot.Identity);
             TaskId = _tasks.Admit(_client, snapshot.Identity, "data.import").TaskId;
         }
 

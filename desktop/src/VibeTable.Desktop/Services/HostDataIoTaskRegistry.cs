@@ -16,6 +16,7 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
     private readonly Dictionary<string, Record> _tasks = new(StringComparer.Ordinal);
     private JsonRpcClient? _client;
     private Action? _clientTerminatedHandler;
+    private Action<string, JsonElement>? _reportHandler;
     private ProductSidecarIdentity? _identity;
     private long _generation;
     private long _sequence;
@@ -23,6 +24,7 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
     private static readonly JsonSerializerOptions Wire = new(JsonSerializerDefaults.Web);
 
     internal event Action<JsonElement>? TaskChanged;
+    internal JsonRpcClient? CurrentClient { get { lock (_gate) return _client; } }
 
     internal void BindClient(JsonRpcClient? client, ProductSidecarIdentity identity)
     {
@@ -32,13 +34,24 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (ReferenceEquals(client, _client) && identity == _identity) return;
             changed = AbortCurrentLocked("数据执行通道已更换；业务提交结果待核实，请核对数据后重新预览。");
-            if (_client is not null && _clientTerminatedHandler is not null)
-                _client.Terminated -= _clientTerminatedHandler;
+            if (_client is not null)
+            {
+                if (_clientTerminatedHandler is not null) _client.Terminated -= _clientTerminatedHandler;
+                if (_reportHandler is not null) _client.NotificationReceived -= _reportHandler;
+            }
             _client = client;
             _identity = identity;
             _generation++;
             _clientTerminatedHandler = client is null ? null : () => RetireClient(client);
-            if (client is not null) client.Terminated += _clientTerminatedHandler;
+            _reportHandler = client is null ? null : (method, payload) =>
+            {
+                if (method == "task.executionReport") ApplyReport(client, payload);
+            };
+            if (client is not null)
+            {
+                client.NotificationReceived += _reportHandler;
+                client.Terminated += _clientTerminatedHandler;
+            }
         }
         Publish(changed);
     }
@@ -143,8 +156,11 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
             if (expected is not null && !ReferenceEquals(expected, _client)) return;
             changed = AbortCurrentLocked(
                 "数据执行通道已中断；业务提交结果待核实，请核对数据后重新预览。");
-            if (_client is not null && _clientTerminatedHandler is not null)
-                _client.Terminated -= _clientTerminatedHandler;
+            if (_client is not null)
+            {
+                if (_clientTerminatedHandler is not null) _client.Terminated -= _clientTerminatedHandler;
+                if (_reportHandler is not null) _client.NotificationReceived -= _reportHandler;
+            }
             _client = null;
             _generation++;
         }
@@ -245,8 +261,11 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
             changed = AbortCurrentLocked(
                 "工作区已关闭；业务提交结果待核实，请核对数据后重新预览。");
             _disposed = true;
-            if (_client is not null && _clientTerminatedHandler is not null)
-                _client.Terminated -= _clientTerminatedHandler;
+            if (_client is not null)
+            {
+                if (_clientTerminatedHandler is not null) _client.Terminated -= _clientTerminatedHandler;
+                if (_reportHandler is not null) _client.NotificationReceived -= _reportHandler;
+            }
             _client = null;
             _generation++;
         }

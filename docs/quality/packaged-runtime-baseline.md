@@ -2,6 +2,8 @@
 
 `uv run python -m tests.e2e.packaged_runtime_baseline` 在一个新宿主进程、独立 WebView2 用户目录和新 workspace 中测量。输入必须通过现有候选校验，报告绑定包归档和 `build-identity.json` 的 source SHA；版本号相同不代表源码相同。
 
+`measurements.runtimeProcessCounts` 记录 Job 快照中已验证的 Host、Python backend 和 Go sidecar 数量。Host 与 Go 各须恰有一个；Python backend 为 0 时，`workingSetBytes.backend` 为 0，明确表示采样时未运行，并非内存查询缺失。成员身份无法确认、进程重复或运行中的必需进程内存无法读取都会使报告失败；包内 Python 文件体积仍计入 `packageBytes.backend`。
+
 ```powershell
 uv run python -m tests.e2e.packaged_runtime_baseline `
   --package-root dist/VibeTable.Next `

@@ -60,7 +60,8 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         Func<PocketBaseLaunchOptions, BackendLaunchOptions,
             ProductionWorkspaceRuntimeDependencies> createDependencies,
         ProductRpcCapabilityManifest? productPolicy = null,
-        IEnumerable<WorkspaceRegistryEntryV2>? knownWorkspaces = null)
+        IEnumerable<WorkspaceRegistryEntryV2>? knownWorkspaces = null,
+        Action? beforePythonStart = null)
     {
         _sidecarTemplateFactory = sidecarTemplateFactory
             ?? throw new ArgumentNullException(nameof(sidecarTemplateFactory));
@@ -69,6 +70,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         _createDependencies = createDependencies
             ?? throw new ArgumentNullException(nameof(createDependencies));
         _productPolicy = productPolicy ?? ProductRpcCapabilityManifest.Default;
+        BeforePythonStart = beforePythonStart;
         _authority = new DesktopWorkspaceAuthorityStore();
         InitialSessionEpoch = knownWorkspaces is null
             ? 0
@@ -78,6 +80,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                 .Max();
     }
 
+    internal Action? BeforePythonStart { get; }
     public ulong InitialSessionEpoch { get; }
 
     public ulong ReadLastSessionEpoch(WorkspaceRegistryEntryV2 workspace) =>
@@ -212,14 +215,17 @@ public sealed class ProductionWorkspaceRuntimeFactory :
                     runtime.DataIoTasks,
                     action => client is not null
                         && TryUseHostProductBinding(runtime, client, snapshot, action),
-                    action => TryUseHostGoBinding(runtime, snapshot, action));
+                    action => TryUseHostGoBinding(runtime, snapshot, action),
+                    (leases, token) => runtime.EnsurePythonClientAsync(snapshot, leases, token),
+                    (exact, action) => TryUseHostProductBinding(runtime, exact, snapshot, action),
+                    leases => runtime.GetHostFiles(snapshot, leases));
                 return true;
             });
             return binding;
         }
     }
 
-    private bool TryUseHostProductBinding(
+    internal bool TryUseHostProductBinding(
         ProductionWorkspaceRuntime runtime, JsonRpcClient client,
         ProductSidecarGenerationSnapshot snapshot, Func<bool> action)
     {
@@ -234,7 +240,7 @@ public sealed class ProductionWorkspaceRuntimeFactory :
         }
     }
 
-    private bool TryUseHostGoBinding(
+    internal bool TryUseHostGoBinding(
         ProductionWorkspaceRuntime runtime,
         ProductSidecarGenerationSnapshot snapshot, Func<bool> action)
     {
@@ -648,6 +654,12 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
     private readonly ProductRuntimeService _runtime;
     private readonly string _dataDirectory;
     internal HostDataIoTaskRegistry DataIoTasks { get; } = new();
+    private readonly object _pythonGate = new();
+    private HostSessionFileBroker? _files;
+    private ProductSidecarGenerationSnapshot? _fileSnapshot;
+    private JsonRpcClient? _fileClient;
+    private Action? _fileClientTerminated;
+
     private int _started;
     private int _disposed;
 
@@ -686,7 +698,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             Sidecar,
             Backend,
             backendOptions.Environment,
-            new RecoveryCoordinator(this));
+            new RecoveryCoordinator(this), owner.BeforePythonStart);
         _runtime.ClientReady += OnClientReady;
         _runtime.RecoveryFailed += OnRecoveryFailed;
     }
@@ -770,6 +782,118 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
     internal void CommitCapabilities(WorkspaceV2SidecarCapabilities capabilities)
         => Capabilities = capabilities;
 
+    internal HostSessionFileBroker GetHostFiles(
+        ProductSidecarGenerationSnapshot snapshot, IWorkspaceHostEpochLeaseSource leases)
+    {
+        HostSessionFileBroker? result = null;
+        if (!_owner.TryUseHostGoBinding(this, snapshot, () =>
+        {
+            lock (_pythonGate)
+            {
+                if (_fileSnapshot is not null && !ReferenceEquals(_fileSnapshot, snapshot))
+                    throw new BackendUnavailableException("The file binding is retired.");
+                _fileSnapshot = snapshot;
+                result = _files ??= new HostSessionFileBroker(
+                    () => CaptureHostLease(snapshot, leases),
+                    action =>
+                    {
+                        if (!_owner.TryUseHostGoBinding(this, snapshot, () => { action(); return true; }))
+                            throw new BackendUnavailableException("The file binding is retired.");
+                    });
+            }
+            return true;
+        })) throw new BackendUnavailableException("The workspace binding is retired.");
+        return result!;
+    }
+
+    private WorkspaceRequestEpochLease CaptureHostLease(
+        ProductSidecarGenerationSnapshot snapshot, IWorkspaceHostEpochLeaseSource leases)
+    {
+        if (!_owner.TryUseHostGoBinding(this, snapshot, () => true)
+            || !leases.TryCaptureHost(WorkspaceId, SessionEpoch, Guid.NewGuid(), out var lease)
+            || lease is null)
+            throw new BackendUnavailableException("The workspace epoch is retired.");
+        return lease;
+    }
+
+    internal async Task<JsonRpcClient> EnsurePythonClientAsync(
+        ProductSidecarGenerationSnapshot snapshot, IWorkspaceHostEpochLeaseSource leases,
+        CancellationToken token)
+    {
+        using WorkspaceRequestEpochLease caller = CaptureHostLease(snapshot, leases);
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(token, caller.CancellationToken);
+        await _runtime.EnsureBackendAsync(() => CaptureHostLease(snapshot, leases), _ =>
+        {
+            JsonRpcClient client = Backend.Client
+                ?? throw new BackendUnavailableException("Python did not publish a client.");
+            if (!_owner.TryUseHostProductBinding(this, client, snapshot, () =>
+            {
+                HostSessionFileBroker files = GetHostFiles(snapshot, leases);
+                lock (_pythonGate)
+                {
+                    if (!ReferenceEquals(_fileClient, client))
+                    {
+                        _fileClient = client;
+                        _fileClientTerminated = () => RetireHostFiles(client);
+                        client.Terminated += _fileClientTerminated;
+                        try
+                        {
+                            DataIoTasks.BindClient(client, snapshot.Identity);
+                            // This final registration also rejects a client whose reader
+                            // terminated before our subscriptions could be installed.
+                            client.RegisterHostFileHandler(files);
+                        }
+                        catch
+                        {
+                            RetireHostFiles(client);
+                            DataIoTasks.RetireClient(client);
+                            throw;
+                        }
+                    }
+                }
+                return true;
+            })) throw new BackendUnavailableException("Python startup belongs to a retired binding.");
+            return Task.CompletedTask;
+        }, ActivationPolicy.BackendTimeout, wait.Token).ConfigureAwait(false);
+        wait.Token.ThrowIfCancellationRequested();
+        JsonRpcClient? ready = null;
+        if (!_owner.TryUseHostGoBinding(this, snapshot, () => Backend.TryUseReadyClient(client =>
+        {
+            lock (_pythonGate)
+            {
+                if (!ReferenceEquals(client, _fileClient)) return false;
+                ready = client;
+                return true;
+            }
+        }))) throw new BackendUnavailableException("Python startup belongs to a retired binding.");
+        return ready!;
+    }
+
+    private void RetireHostFiles(JsonRpcClient? expected = null,
+        ProductSidecarGenerationSnapshot? expectedSnapshot = null)
+    {
+        HostSessionFileBroker? files;
+        JsonRpcClient? client;
+        lock (_pythonGate)
+        {
+            if (expected is not null && !ReferenceEquals(expected, _fileClient)) return;
+            if (expectedSnapshot is not null && !ReferenceEquals(expectedSnapshot, _fileSnapshot)) return;
+            files = _files;
+            client = _fileClient;
+            if (client is not null && _fileClientTerminated is not null)
+                client.Terminated -= _fileClientTerminated;
+            _files = null;
+            _fileSnapshot = null;
+            _fileClient = null;
+            _fileClientTerminated = null;
+        }
+        if (files is not null)
+        {
+            if (client is not null) client.UnregisterHostFileHandler(files);
+            files.Retire();
+        }
+    }
+
     public async Task DrainAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _started) == 0)
@@ -792,6 +916,10 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
             throw new InvalidOperationException(
                 "Workspace runtime has already stopped.");
         _owner.Deactivate(this);
+        // Protection can fail after request drain but before runtime drain.
+        // Retire that still-ready client before reopening the Host epoch.
+        await _runtime.StopIngressAsync(CancellationToken.None).ConfigureAwait(false);
+        RetireHostFiles();
         using var activation = WorkspaceActivationBudget.Begin(
             WorkspaceId, SessionEpoch, ActivationPolicy, cancellationToken);
         await activation.RunAsync(WorkspaceActivationStage.Backend,
@@ -813,6 +941,7 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
         _owner.Deactivate(this);
+        RetireHostFiles();
         _runtime.ClientReady -= OnClientReady;
         Backend.StateChanged -= OnBackendStateChanged;
         Sidecar.StatusChanged -= OnSidecarCurrentChanged;
@@ -851,12 +980,17 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
 
     private void OnBackendStateChanged(object? sender, BackendState state)
     {
-        if (state != BackendState.Ready) DataIoTasks.RetireClient(null);
         _owner.NotifyBackendBindingChanged(this);
     }
 
     private void OnSidecarCurrentChanged(object? sender, PocketBaseStatus status)
-        => _owner.NotifySidecarCurrentChanged(this);
+    {
+        ProductSidecarGenerationSnapshot? snapshot;
+        lock (_pythonGate) snapshot = _fileSnapshot;
+        if (snapshot is not null && !_owner.TryUseHostGoBinding(this, snapshot, () => true))
+            RetireHostFiles(expectedSnapshot: snapshot);
+        _owner.NotifySidecarCurrentChanged(this);
+    }
 
     private void OnRecoveryFailed(Exception exception)
         => _owner.NotifyRecoveryFailed(this, exception);

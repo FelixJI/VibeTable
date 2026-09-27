@@ -52,6 +52,7 @@ public partial class MainWindow : Window
     private readonly IProductSidecarGatewayLifecycle _productSidecarGatewayLifecycle;
     private readonly ProductRealtimeSession _productRealtime;
     private HostProductRpcBinding? _configuredProductBinding;
+    private JsonRpcClient? _pluginClient;
     private readonly PluginProjectContextBindingRegistry _databaseOpens;
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
@@ -216,7 +217,15 @@ public partial class MainWindow : Window
         _runtime = new ProductionWorkspaceRuntimeFactory(
             sidecarOptionsFactory,
             () => BackendLaunchOptions.ResolveForHost(),
-            knownWorkspaces);
+            ProductionWorkspaceRuntimeDependencies.Create,
+            knownWorkspaces: knownWorkspaces,
+            beforePythonStart: _e2eControlsDir is null ? null : () =>
+            {
+                string request = Path.Combine(_e2eControlsDir, "python-start-fail-once.request");
+                if (!File.Exists(request)) return;
+                File.Delete(request);
+                throw new IOException("TestMode: Python startup failed before supervisor spawn.");
+            });
         _repositoryOnboarding = new WorkspaceRepositoryOnboardingService(
             sidecarOptionsFactory,
             _runtime.PrepareRepositoryOnboarding);
@@ -350,6 +359,7 @@ public partial class MainWindow : Window
                 using JsonRpcProductDataGateway gateway = binding.CreateGateway(_workspaceSessionFilter);
                 return await gateway.InvokePluginCatalogAsync(method, parameters, token).ConfigureAwait(false);
             },
+            ensureGateway: EnsurePluginGatewayAsync,
             packageCacheRoot: projectKey =>
             {
                 WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;
@@ -636,15 +646,13 @@ public partial class MainWindow : Window
     private bool TryConfigureRpcGateways(ProductSidecarGenerationSnapshot snapshot)
     {
         HostProductRpcBinding? binding = _runtime.CaptureHostProductRpcBinding();
-        if (binding?.Client is null || !binding.Matches(snapshot)) return false;
+        if (binding is null || !binding.Matches(snapshot)) return false;
         ConfigureRpcGateways(binding);
         return true;
     }
 
     private void ConfigureRpcGateways(HostProductRpcBinding binding)
     {
-        JsonRpcClient client = binding.Client
-            ?? throw new BackendUnavailableException("The Python client is unavailable.");
         _authorityTransition.Transition(null);
         _tableGateway.Bind(binding);
 
@@ -655,7 +663,7 @@ public partial class MainWindow : Window
             _productGateway.Dispose();
         }
         _productGateway = binding.CreateGateway(_workspaceSessionFilter);
-        HostSessionFileBroker hostFiles = _productGateway.EnableHostFiles();
+        _productGateway.EnableHostFiles();
         _productGateway.TaskChanged += OnProductTaskChanged;
         _dispatcher.SetProductDataGateway(_productGateway);
 
@@ -664,14 +672,13 @@ public partial class MainWindow : Window
             _session.Token);
         _dispatcher.SetSurfaceGateway(_productGateway);
 
-        IPluginRpcGateway? previousPluginGateway = _pluginGateway;
-        _pluginGateway = new JsonRpcPluginGateway(client, (request, path, token) =>
-            hostFiles.IssueAsync(path, request.Direction == "write", request.RunId, token, request.MediaType),
-            hostFiles.RevokeRunAsync);
-        _pluginDispatcher.SetGatewayAfterAuthorityTransition(
-            _pluginGateway,
-            PluginProjectContext.FromSession(_workspaceSessions.Current));
-        previousPluginGateway?.Dispose();
+        if (_pluginGateway is not null)
+        {
+            _pluginDispatcher.ClearGatewayAfterAuthorityTransition(_pluginGateway);
+            _pluginGateway.Dispose();
+            _pluginGateway = null;
+            _pluginClient = null;
+        }
 
         _documentWorkspace?.Dispose();
         _documentWorkspace = new WorkspaceDocumentOsAdapter(
@@ -699,6 +706,32 @@ public partial class MainWindow : Window
             PostRuntimeReady();
             OpenProductWorkspaceWhenReady();
         }
+    }
+
+    private async Task EnsurePluginGatewayAsync(CancellationToken token)
+    {
+        HostProductRpcBinding binding = _runtime.CaptureHostProductRpcBinding()
+            ?? throw new BackendUnavailableException("Plugin runtime is unavailable.");
+        JsonRpcClient client = await binding.EnsurePythonClientAsync(_workspaceSessionFilter, token)
+            .ConfigureAwait(false);
+        await Dispatcher.InvokeAsync(() =>
+        {
+            token.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _closing) != 0
+                || _configuredProductBinding is not { } current || !current.Matches(binding)
+                || !binding.TryUsePython(client, () => true))
+                throw new BackendUnavailableException("Plugin runtime was retired during startup.");
+            if (ReferenceEquals(_pluginClient, client) && _pluginGateway is not null) return;
+            HostSessionFileBroker files = _productGateway!.EnableHostFiles();
+            IPluginRpcGateway? previous = _pluginGateway;
+            _pluginGateway = new JsonRpcPluginGateway(client, (request, path, cancellation) =>
+                files.IssueAsync(path, request.Direction == "write", request.RunId, cancellation, request.MediaType),
+                files.RevokeRunAsync);
+            _pluginClient = client;
+            _pluginDispatcher.SetGatewayAfterAuthorityTransition(
+                _pluginGateway, PluginProjectContext.FromSession(_workspaceSessions.Current));
+            previous?.Dispose();
+        }, System.Windows.Threading.DispatcherPriority.Normal, token).Task.ConfigureAwait(false);
     }
 
     private WorkspaceDocumentBinding? CurrentWorkspaceDocumentBinding()
@@ -787,13 +820,15 @@ public partial class MainWindow : Window
             HostProductRpcBinding? binding = _runtime.CaptureHostProductRpcBinding();
             if (binding is not null)
             {
-                _authorityTransition.Transition(null);
+                bool sameGoBinding = _configuredProductBinding?.Matches(binding) == true;
+                if (!sameGoBinding) _authorityTransition.Transition(null);
                 _tableGateway.Bind(binding);
                 if (binding.Client is null && _pluginGateway is not null)
                 {
                     _pluginDispatcher.ClearGatewayAfterAuthorityTransition(_pluginGateway);
                     _pluginGateway.Dispose();
                     _pluginGateway = null;
+                    _pluginClient = null;
                 }
                 return;
             }
@@ -863,8 +898,7 @@ public partial class MainWindow : Window
             return;
         }
         _workspaceProduct.PostBootstrap();
-        if (_runtime.CurrentBackend?.State == BackendState.Ready
-            && _productGateway is not null)
+        if (HasCurrentProductGateways())
         {
             PostRuntimeReady();
             OpenProductWorkspaceWhenReady();

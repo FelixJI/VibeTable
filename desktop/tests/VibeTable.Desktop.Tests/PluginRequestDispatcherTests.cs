@@ -39,6 +39,48 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    [DataRow(false), DataRow(true)]
+    public async Task ExecutionWaitsForLazyGatewayButCatalogAndHostTasksDoNotStartIt(bool switchContext)
+    {
+        var reply = new RecordingReplySink();
+        PluginProjectContext context = ReadyContext();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int starts = 0;
+        PluginRequestDispatcher dispatcher = null!;
+        using (dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources, projectContext: () => context,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot })),
+            ensureGateway: async token =>
+            {
+                starts++;
+                entered.TrySetResult();
+                await attached.Task.WaitAsync(token);
+                dispatcher.SetGateway(gateway);
+            }))
+        {
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "catalog", "{}"));
+            await dispatcher.DispatchAsync(Request("plugin.task.get", "task", """{"taskId":"missing"}"""));
+            await dispatcher.DispatchAsync(Request("plugin.task.cancel", "cancel", """{"taskId":"missing"}"""));
+            Assert.AreEqual(0, starts);
+            Task execution = dispatcher.DispatchAsync(Request("plugin.action.describe", "describe",
+                """{"pluginId":"clean","actionId":"run"}"""));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(execution.IsCompleted);
+            Assert.IsFalse(dispatcher.HasGateway);
+            if (switchContext) context = context with { SessionGeneration = 2 };
+            attached.SetResult();
+            await execution.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(1, starts);
+            if (switchContext) Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
+            else Assert.AreEqual("plugin.action.describe", reply.ResponseType);
+        }
+    }
+
+    [TestMethod]
     public async Task UnexpectedCommitFailureWritesContentFreeScenarioDiagnostic()
     {
         var reply = new RecordingReplySink();

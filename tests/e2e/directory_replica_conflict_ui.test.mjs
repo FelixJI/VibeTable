@@ -189,6 +189,10 @@ const replicaReadinessSource = runnerSource.slice(
   runnerSource.indexOf("async function waitForPublishedReplicaUi("),
   runnerSource.indexOf("async function replicaEditRow("),
 );
+const replicaCheckpointSource = runnerSource.slice(
+  runnerSource.indexOf("async function readDirectoryReplicaCheckpoint("),
+  runnerSource.indexOf("async function scenario23("),
+);
 const replicaSyncing = {
   coordinationStrength: "advisory", syncState: "syncing", pendingSync: true,
 };
@@ -235,17 +239,53 @@ function readinessHarness({ nextStatus, controlEnabled = () => true }) {
       if (!passed) throw new Error(`assertion failed: ${name}: ${JSON.stringify(details)}`);
     },
   };
-  const waitForPublishedReplicaUi = runInNewContext(
-    `${rawWorkspaceV2RequestSource}\n${replicaReadinessSource}\nwaitForPublishedReplicaUi`,
+  const helpers = runInNewContext(
+    `${rawWorkspaceV2RequestSource}\n${replicaReadinessSource}\n${replicaCheckpointSource}\n({ waitForPublishedReplicaUi, readDirectoryReplicaCheckpoint })`,
     {
       requestWorkspaceV2InPage,
+      async rawBridgeRequest(_page, method, payload) {
+        observed.statusReadsAtQuery = observed.replicaStatusRequests;
+        assert.equal(method, "query.page");
+        assert.equal(payload.tableId, "table-seed");
+        return { type: "query.page", payload: { rows: [{ id: "row-seed" }] } };
+      },
       document,
       Date: { now: () => now },
       setTimeout: (resolve, ms) => { now += ms; resolve(); },
     },
   );
-  return { observed, run: () => waitForPublishedReplicaUi(page, recorder) };
+  return {
+    observed,
+    run: () => helpers.waitForPublishedReplicaUi(page, recorder),
+    checkpoint: (published = true) => helpers.readDirectoryReplicaCheckpoint(
+      page, "table-seed", published ? recorder : undefined,
+    ),
+  };
 }
+
+test("published checkpoint consumes the accepted status without another racing status read", async () => {
+  const harness = readinessHarness({
+    nextStatus: (request) => (request === 2 ? replicaReplicated : replicaSyncing),
+  });
+  const checkpoint = await harness.checkpoint();
+  assert.equal(checkpoint.query.payload.rows[0].id, "row-seed");
+  assert.equal(harness.observed.statusReadsAtQuery, 2,
+    "row evidence must be queried after the replica readiness wait");
+  assert.equal(checkpoint.replica, replicaReplicated);
+  assert.equal(harness.observed.replicaStatusRequests, 2,
+    "the agreeing sample must be returned, not replaced by a fresh status read");
+  assert.equal(harness.observed.checks.length, 1);
+});
+
+test("ordinary checkpoint preserves the immediate pending-state read", async () => {
+  const harness = readinessHarness({ nextStatus: () => replicaSyncing });
+  const checkpoint = await harness.checkpoint(false);
+  assert.equal(checkpoint.replica, replicaSyncing);
+  assert.equal(harness.observed.statusReadsAtQuery, 0);
+  assert.equal(harness.observed.replicaStatusRequests, 1);
+  assert.equal(harness.observed.controlReads, 0);
+  assert.equal(harness.observed.checks.length, 0);
+});
 
 test("readiness checkpoint survives a verification cycle that starts after the UI gate opened", async () => {
   const harness = readinessHarness({

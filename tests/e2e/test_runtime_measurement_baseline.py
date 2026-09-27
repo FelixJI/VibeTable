@@ -203,6 +203,11 @@ def test_report_has_closed_identity_timing_working_set_and_package_groups(tmp_pa
         "sidecar": 300,
         "total": 600,
     }
+    assert report["measurements"]["runtimeProcessCounts"] == {
+        "host": 1,
+        "backend": 1,
+        "sidecar": 1,
+    }
     package_sizes = report["measurements"]["packageBytes"]
     assert set(package_sizes) == {
         "host",
@@ -356,10 +361,11 @@ def test_timeline_rejects_duplicate_out_of_order_and_non_monotonic_marks() -> No
     ("members", "code"),
     [
         (
-            (
-                ProcessWorkingSetMember(10, "VibeTable.Next.exe", True, 100),
-                ProcessWorkingSetMember(12, "vibetable-pb.exe", True, 300),
-            ),
+            (ProcessWorkingSetMember(12, "vibetable-pb.exe", True, 300),),
+            "RUNTIME_PROCESS_MISSING",
+        ),
+        (
+            (ProcessWorkingSetMember(10, "VibeTable.Next.exe", True, 100),),
             "RUNTIME_PROCESS_MISSING",
         ),
         (
@@ -405,6 +411,51 @@ def test_report_fails_closed_for_missing_ambiguous_or_unmeasured_runtime(
         )
 
     assert error.value.code == code
+
+
+def test_report_measures_verified_backend_absence(tmp_path: Path) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    _write_candidate(package_root)
+
+    report = build_runtime_measurement_foundation_report(
+        package_root=package_root,
+        phases=_phases(),
+        working_sets=_working_sets(
+            ProcessWorkingSetMember(10, "VibeTable.Next.exe", True, 100),
+            ProcessWorkingSetMember(12, "vibetable-pb.exe", True, 300),
+            ProcessWorkingSetMember(13, "msedgewebview2.exe", True, 400),
+        ),
+    )
+
+    assert report["measurements"]["runtimeProcessCounts"] == {
+        "host": 1,
+        "backend": 0,
+        "sidecar": 1,
+    }
+    assert report["measurements"]["workingSetBytes"] == {
+        "host": 100,
+        "backend": 0,
+        "sidecar": 300,
+        "total": 400,
+    }
+
+
+def test_report_does_not_infer_backend_absence_from_unknown_member(tmp_path: Path) -> None:
+    package_root = tmp_path / "VibeTable.Next"
+    _write_candidate(package_root)
+
+    with pytest.raises(BaselineMeasurementError) as error:
+        build_runtime_measurement_foundation_report(
+            package_root=package_root,
+            phases=_phases(),
+            working_sets=_working_sets(
+                ProcessWorkingSetMember(10, "VibeTable.Next.exe", True, 100),
+                ProcessWorkingSetMember(12, "vibetable-pb.exe", True, 300),
+                ProcessWorkingSetMember(14),
+            ),
+        )
+
+    assert error.value.code == "RUNTIME_PROCESS_UNVERIFIED"
 
 
 @pytest.mark.parametrize(

@@ -364,7 +364,11 @@ export function createWorkspaceV2HostAdapter(bridge: HostBridge): {
     session.setWorkspaces(bootstrap.workspaces);
     if (!session.applySession(bootstrap.session)) return;
     configureWorkspaceWire(session.activeWorkspaceId, session.sessionEpoch);
-    if (session.snapshotEnabled) protection.setSnapshots(bootstrap.snapshots);
+    // Host bootstraps carry a placeholder empty timeline even after hydration.
+    // snapshot.list owns removals; workspace/epoch changes reset the store.
+    if (session.snapshotEnabled && bootstrap.snapshots.length > 0) {
+      protection.setSnapshots(bootstrap.snapshots);
+    }
     if (session.capabilities.includes("repository.settings.v2")) {
       protection.setStorage(bootstrap.storage);
     }

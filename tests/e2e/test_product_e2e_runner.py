@@ -15,6 +15,9 @@ import pytest
 from scripts.node_toolchain import ensure_node
 from scripts.qa.windows_process_scope import (
     ProcessScopeLaunchError,
+    ProcessScopeMember,
+    ProcessScopeQueryError,
+    ProcessScopeSnapshot,
     ProcessWorkingSetMember,
     ProcessWorkingSetSnapshot,
 )
@@ -1079,6 +1082,55 @@ def test_fault_controller_uses_verified_job_target_cardinality(
     )
 
     assert response == expected
+
+
+@pytest.mark.parametrize("backend_present", [False, True])
+def test_process_observation_preserves_verified_job_members(backend_present: bool) -> None:
+    members = [
+        ProcessScopeMember(42, "VibeTable.Next.exe", True),
+        ProcessScopeMember(43, "vibetable-pb.exe", True),
+    ]
+    if backend_present:
+        members.append(ProcessScopeMember(44, "vibetable-backend.exe", True))
+
+    class FakeScope:
+        @staticmethod
+        def snapshot() -> ProcessScopeSnapshot:
+            return ProcessScopeSnapshot(tuple(members))
+
+    result = runner._handle_fault_request({"action": "observe-processes"}, FakeScope())
+
+    assert result["status"] == "completed"
+    assert result["action"] == "observe-processes"
+    assert result["members"] == [
+        {"pid": member.pid, "processName": member.executable_name, "identityVerified": True}
+        for member in members
+    ]
+
+
+@pytest.mark.parametrize("query_failed", [False, True])
+def test_process_observation_never_reports_uncertain_membership_as_empty(
+    query_failed: bool,
+) -> None:
+    class FakeScope:
+        @staticmethod
+        def snapshot() -> ProcessScopeSnapshot:
+            if query_failed:
+                raise ProcessScopeQueryError("Job query denied")
+            return ProcessScopeSnapshot((ProcessScopeMember(99),))
+
+    result = runner._handle_fault_request({"action": "observe-processes"}, FakeScope())
+
+    assert result["status"] == "failed"
+    if query_failed:
+        assert result["code"] == "PROCESS_SCOPE_OBSERVATION_FAILED"
+        assert "Job query denied" in result["errors"][0]
+        assert "members" not in result
+    else:
+        assert result["code"] == "PROCESS_SCOPE_MEMBER_UNVERIFIED"
+        assert result["members"] == [
+            {"pid": 99, "processName": "unknown", "identityVerified": False}
+        ]
 
 
 def test_normal_exit_reports_residual_job_members_and_terminates_them(

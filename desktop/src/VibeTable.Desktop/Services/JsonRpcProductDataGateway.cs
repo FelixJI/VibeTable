@@ -37,8 +37,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
         _hostInvoker = hostInvoker ?? throw new ArgumentNullException(nameof(hostInvoker));
         _client = hostInvoker.Client;
         _hostInvoker.TaskOwner.TaskChanged += OnHostTaskChanged;
-        if (_client is not null)
-            _client.NotificationReceived += OnNotification;
+
     }
 
     internal HostSessionFileBroker EnableHostFiles()
@@ -268,12 +267,6 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     private void OnNotification(string method, JsonElement parameters)
     {
         if (_disposed) return;
-        if (_hostInvoker is not null && _client is not null
-            && string.Equals(method, "task.executionReport", StringComparison.Ordinal))
-        {
-            _hostInvoker.TaskOwner.ApplyReport(_client, parameters);
-            return;
-        }
         if (_hostInvoker is not null) return;
         if (string.Equals(method, "task.changed", StringComparison.Ordinal)
             && parameters.ValueKind == JsonValueKind.Object

@@ -214,8 +214,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.IsFalse(switching.IsCompleted);
 
         lease.Dispose();
-        WorkspaceSessionV2 result = await switching.WaitAsync(
-            TimeSpan.FromSeconds(2));
+        // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+        WorkspaceSessionV2 result = await switching;
         Assert.AreEqual(second.WorkspaceId, result.WorkspaceId);
     }
 
@@ -265,8 +265,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.IsFalse(closing.IsCompleted);
 
         inflight.Dispose();
-        WorkspaceSessionV2 closed = await closing.WaitAsync(
-            TimeSpan.FromSeconds(2));
+        // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+        WorkspaceSessionV2 closed = await closing;
         Assert.AreEqual(WorkspaceSessionState.Closed, closed.State);
     }
 
@@ -331,7 +331,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
                 {
                     contract = "vibetable.schema.v2", fields = Array.Empty<object>(),
                 })));
-            await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+            // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+            await dispatch;
         }
     }
 
@@ -612,7 +613,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         await fixture.Manager.SwitchAsync(second.WorkspaceId, WorkspaceOpenMode.Writable);
         controller.SetProductSidecarForwarder(replacement);
         response.SetException(new BackendUnavailableException("Old sidecar unavailable"));
-        await dispatch.WaitAsync(TimeSpan.FromSeconds(2));
+        // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+        await dispatch;
 
         Assert.AreEqual(1, oldForwarder.CallCount);
         Assert.IsTrue(JsonElement.DeepEquals(request.Wire, oldForwarder.Calls.Single().Wire));
@@ -825,7 +827,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             fixture.Controller.SetGateway(replacementGateway);
             fixture.Controller.SetProductSidecarForwarder(replacementForwarder);
             fixture.ReleasePlan();
-            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+            // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+            await latePlan;
             await fixture.Controller.DispatchAsync(FieldRequest(
                 "field.change.apply",
                 "late-gateway-apply",
@@ -842,7 +845,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         finally
         {
             fixture.ReleasePlan();
-            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+            // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+            await latePlan;
         }
     }
 
@@ -894,7 +898,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             int protectionCallsAfterSwitch = fixture.Protection.CallCount;
 
             fixture.ReleasePlan();
-            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+            // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+            await latePlan;
             await fixture.Controller.DispatchAsync(FieldRequest(
                 "field.change.apply",
                 "late-workspace-apply",
@@ -910,7 +915,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         finally
         {
             fixture.ReleasePlan();
-            await latePlan.WaitAsync(TimeSpan.FromSeconds(2));
+            // As in SwitchDrainsInflightRequestBeforeProtectionSnapshot, QA bounds completion.
+            await latePlan;
         }
     }
 

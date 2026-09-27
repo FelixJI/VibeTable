@@ -113,7 +113,6 @@ def _working_sets() -> ProcessWorkingSetSnapshot:
     return ProcessWorkingSetSnapshot(
         (
             ProcessWorkingSetMember(10, "VibeTable.Next.exe", True, 100),
-            ProcessWorkingSetMember(11, "vibetable-backend.exe", True, 200),
             ProcessWorkingSetMember(12, "vibetable-pb.exe", True, 300),
         )
     )
@@ -286,6 +285,13 @@ def test_packaged_baseline_binds_real_candidate_and_measures_owned_lifecycle(
         "launchToHostReady": 10,
         "workspaceOpenRequestToOpened": 10,
         "workspaceOpenRequestToFirstTableStable": 20,
+    }
+    assert measurements["runtimeProcessCounts"] == {"host": 1, "backend": 0, "sidecar": 1}
+    assert measurements["workingSetBytes"] == {
+        "host": 100,
+        "backend": 0,
+        "sidecar": 300,
+        "total": 400,
     }
     assert report["sampling"] == {
         "processLifecycle": "fresh",

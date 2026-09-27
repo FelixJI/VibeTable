@@ -30,6 +30,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly Func<PluginProjectContext?> _projectContext;
     private readonly Func<string, JsonElement, CancellationToken, Task<JsonElement>>? _sharedRpc;
     private readonly Func<string, string?>? _packageCacheRoot;
+    private readonly Func<CancellationToken, Task>? _ensureGateway;
     private readonly object _gatewayGate = new();
     private readonly HostInstallPlanLeaseRegistry _installLeases;
     private readonly HostPluginTaskRegistry _taskRegistry;
@@ -53,7 +54,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         TimeSpan? cleanupTimeout = null,
         TimeProvider? cleanupTimeProvider = null,
         Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
-        Func<string, string?>? packageCacheRoot = null)
+        Func<string, string?>? packageCacheRoot = null,
+        Func<CancellationToken, Task>? ensureGateway = null)
         : this(
             reply,
             surfaces,
@@ -67,7 +69,8 @@ public sealed class PluginRequestDispatcher : IDisposable
             cleanupTimeout,
             cleanupTimeProvider,
             sharedRpc,
-            packageCacheRoot)
+            packageCacheRoot,
+            ensureGateway)
     {
     }
 
@@ -84,7 +87,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         TimeSpan? cleanupTimeout = null,
         TimeProvider? cleanupTimeProvider = null,
         Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
-        Func<string, string?>? packageCacheRoot = null)
+        Func<string, string?>? packageCacheRoot = null,
+        Func<CancellationToken, Task>? ensureGateway = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
@@ -96,6 +100,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         _projectContext = projectContext ?? (() => null);
         _sharedRpc = sharedRpc;
         _packageCacheRoot = packageCacheRoot;
+        _ensureGateway = ensureGateway;
         _authority = authority ?? new ProductAuthorityEpoch();
         _ownsAuthority = authority is null;
         _installLeases = new HostInstallPlanLeaseRegistry(
@@ -242,6 +247,18 @@ public sealed class PluginRequestDispatcher : IDisposable
                 };
                 _reply.PostResponse(request.Type, request.RequestId, ownedResult);
                 return;
+            }
+            if (request.Type is not ("plugin.install.inspect" or "plugin.install.github.inspect"
+                or "plugin.install.commit" or "plugin.install.cancel" or "plugin.lifecycle.upgrade"
+                or "plugin.lifecycle.rollback" or "plugin.lifecycle.uninstall"
+                or "plugin.action.describe" or "plugin.action.start"))
+                throw new PluginDispatchException("UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'.");
+            if (_ensureGateway is not null && request.Type != "plugin.install.cancel")
+            {
+                PluginProjectContext? context = _projectContext();
+                if (context is null) throw new PluginDispatchException("PLUGIN_NOT_READY", "Plugin project context is unavailable.");
+                await _ensureGateway(token).ConfigureAwait(false);
+                if (context != _projectContext()) throw StaleTask();
             }
             IPluginRpcGateway? gateway = CaptureGatewayOrNull();
             if (gateway is null)

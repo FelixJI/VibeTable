@@ -47,6 +47,12 @@ class WorkingSetMeasurements(TypedDict):
     total: int
 
 
+class RuntimeProcessCounts(TypedDict):
+    host: int
+    backend: int
+    sidecar: int
+
+
 class PackageSizeMeasurements(TypedDict):
     host: int
     backend: int
@@ -72,6 +78,7 @@ class BaselineCoverage(TypedDict):
 
 class FoundationMeasurements(TypedDict):
     elapsedNs: ElapsedMeasurements
+    runtimeProcessCounts: RuntimeProcessCounts
     workingSetBytes: WorkingSetMeasurements
     packageBytes: PackageSizeMeasurements
 
@@ -448,7 +455,13 @@ def _package_sizes(
 def _working_sets(
     snapshot: ProcessWorkingSetSnapshot,
     runtime_images: RuntimeImageNames,
-) -> WorkingSetMeasurements:
+) -> tuple[WorkingSetMeasurements, RuntimeProcessCounts]:
+    for member in snapshot.members:
+        if not member.identity_verified:
+            raise BaselineMeasurementError(
+                "RUNTIME_PROCESS_UNVERIFIED",
+                f"Job member identity is unverified: {member.pid}",
+            )
     values: dict[str, int] = {}
     for role, image in (
         ("host", runtime_images["host"]),
@@ -459,6 +472,9 @@ def _working_sets(
             member for member in snapshot.members if member.executable_name.casefold() == image
         ]
         if not matches:
+            if role == "backend":
+                values[role] = 0
+                continue
             raise BaselineMeasurementError(
                 "RUNTIME_PROCESS_MISSING",
                 f"required runtime process is missing: {image}",
@@ -469,23 +485,21 @@ def _working_sets(
                 f"required runtime process is not unique: {image}",
             )
         member = matches[0]
-        if not member.identity_verified:
-            raise BaselineMeasurementError(
-                "RUNTIME_PROCESS_UNVERIFIED",
-                f"required runtime process identity is unverified: {image}",
-            )
         if member.working_set_bytes is None or member.working_set_bytes <= 0:
             raise BaselineMeasurementError(
                 "WORKING_SET_UNAVAILABLE",
                 f"required runtime Working Set is unavailable: {image}",
             )
         values[role] = member.working_set_bytes
-    return {
-        "host": values["host"],
-        "backend": values["backend"],
-        "sidecar": values["sidecar"],
-        "total": sum(values.values()),
-    }
+    return (
+        {
+            "host": values["host"],
+            "backend": values["backend"],
+            "sidecar": values["sidecar"],
+            "total": sum(values.values()),
+        },
+        {"host": 1, "backend": int(values["backend"] > 0), "sidecar": 1},
+    )
 
 
 def build_runtime_measurement_foundation_report(
@@ -504,7 +518,7 @@ def build_runtime_measurement_foundation_report(
         )
     release = _release_identity(package_root)
     layout_protocol, package_sizes, runtime_images = _package_sizes(package_root)
-    point_in_time_working_sets = _working_sets(working_sets, runtime_images)
+    point_in_time_working_sets, runtime_process_counts = _working_sets(working_sets, runtime_images)
     return {
         "contractVersion": "1.0",
         "evidenceKind": "runtime-measurement-foundation",
@@ -528,6 +542,7 @@ def build_runtime_measurement_foundation_report(
                 "workspaceOpenRequestToFirstTableStable": phases.first_table_ns,
             },
             "workingSetBytes": point_in_time_working_sets,
+            "runtimeProcessCounts": runtime_process_counts,
             "packageBytes": package_sizes,
         },
         "errors": [],

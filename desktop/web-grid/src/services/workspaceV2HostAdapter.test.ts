@@ -366,6 +366,67 @@ describe("workspace v2 production host adapter", () => {
     expect(fake.request).toHaveBeenCalledTimes(6);
   });
 
+  it("retains hydrated snapshots across an empty health bootstrap but accepts an empty list reply", async () => {
+    let snapshots = [bootstrap().snapshots[0], { ...bootstrap().snapshots[0], snapshotId: NEW_SNAPSHOT_ID }];
+    const fake = fakeBridge((payload) => {
+      expect(payload.method).toBe("snapshot.list");
+      return { snapshots, nextCursor: null };
+    });
+    const adapter = createWorkspaceV2HostAdapter(fake.bridge);
+    const ready = { ...bootstrap(), snapshots: [], capabilities: [
+      "workspace.session.v2", "snapshot.timeline.v2", "repository.settings.v2",
+    ] };
+    const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+    const protection = useWorkspaceProtectionStore();
+    publish(ready);
+    await vi.waitFor(() => expect(protection.snapshots).toHaveLength(2));
+    protection.selectSnapshot(SNAPSHOT_ID);
+
+    publish({ ...ready, workspaces: ready.workspaces.map((workspace) => ({
+      ...workspace, pendingSync: true, lastKnownHealth: "degraded",
+    })) });
+    await nextTick();
+    expect(useWorkspaceSessionStore().workspaces[0]?.lastKnownHealth).toBe("degraded");
+    expect(protection.snapshots.map((snapshot) => snapshot.snapshotId)).toEqual([SNAPSHOT_ID, NEW_SNAPSHOT_ID]);
+    expect(protection.selectedSnapshotId).toBe(SNAPSHOT_ID);
+    expect(fake.request).toHaveBeenCalledTimes(1);
+
+    snapshots = [];
+    await adapter.port.request({ method: "snapshot.list", params: { cursor: null, limit: 50 } });
+    expect(protection.snapshots).toEqual([]);
+    expect(protection.selectedSnapshotId).toBeNull();
+    adapter.dispose();
+  });
+
+  it.each([WORKSPACE_ID, "99999999-9999-4999-8999-999999999999"])(
+    "resets and rehydrates snapshots for a new session in %s", async (workspaceId) => {
+      let snapshots = [bootstrap().snapshots[0], { ...bootstrap().snapshots[0], snapshotId: NEW_SNAPSHOT_ID }];
+      const fake = fakeBridge((payload) => {
+        expect(payload.method).toBe("snapshot.list");
+        return { snapshots, nextCursor: null };
+      });
+      const adapter = createWorkspaceV2HostAdapter(fake.bridge);
+      const ready = { ...bootstrap(), snapshots: [], capabilities: ["workspace.session.v2", "snapshot.timeline.v2"] };
+      const publish = fake.handlers.get("workspace.v2.bootstrap")!;
+      const protection = useWorkspaceProtectionStore();
+      publish(ready);
+      await vi.waitFor(() => expect(protection.snapshots).toHaveLength(2));
+      protection.selectSnapshot(SNAPSHOT_ID);
+
+      snapshots = [{ ...bootstrap().snapshots[0], snapshotId: NEW_SNAPSHOT_ID }];
+      publish({ ...ready,
+        workspaces: ready.workspaces.map((workspace) => ({ ...workspace, workspaceId })),
+        session: { ...ready.session, workspaceId, sessionEpoch: 8 },
+      });
+      expect(protection.snapshots).toEqual([]);
+      expect(protection.selectedSnapshotId).toBeNull();
+      await vi.waitFor(() => expect(protection.snapshots.map((snapshot) => snapshot.snapshotId)).toEqual([NEW_SNAPSHOT_ID]));
+      expect(fake.request).toHaveBeenCalledTimes(2);
+      expect(fake.request.mock.calls.at(-1)?.[1].wire).toMatchObject({ workspaceId, sessionEpoch: 8 });
+      adapter.dispose();
+    },
+  );
+
   it("retains the inspected conflict apply action across same-session host bootstrap", async () => {
     const conflict = {
       conflictId: "conflict-1", itemId: "item-1", path: "orders", kind: "table",
