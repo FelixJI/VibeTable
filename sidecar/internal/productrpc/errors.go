@@ -43,6 +43,10 @@ func (productError *PublicError) Error() string {
 // Keep this exact allowlist; arbitrary unclassified errors remain private.
 func validPublicErrorCode(code string) bool {
 	switch code {
+	// Frozen plugin shared-state public codes from the Python catalog
+	// oracle predate dotted Product codes, like the historical restore set.
+	case "plugin_already_installed", "plugin_not_found", "plugin_blocked":
+		return true
 	case "archive_not_supported", "restore_conflict", "restore_no_fields", "restore_scope_mismatch", "restore_token_expired", "restore_token_unknown", "revision_not_created", "schema_drift", "target_revision_invalid", "restore_attachment_missing", "restore_attachment_corrupt", "restore_validation_failed":
 		return true
 	default:

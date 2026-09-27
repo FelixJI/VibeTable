@@ -75,7 +75,7 @@ Host 回复的 future；`plugin.getTask` 已从 Python 退役，`plugin.cancelTa
 `plugin.resolveFile` 只是封闭 host-only 执行入口。Python client 失效（transport 终止、重绑或项目上下文切换）时，
 非终态任务立即结算为 `aborted`，错误码 `plugin_task_aborted` 并明确 `commitOutcome: unknown`，不宣称零写入也不自动重放；
 待确认交互与原生文件选择晚返回按代际拒绝，Host 文件 grant 撤销仍由 `HostSessionFileBroker` 的 Retire/DrainCompletion 观察。
-安装计划继续复用 `HostInstallPlanLeaseRegistry`（旧 plan 仍要求重新 inspect）；插件 catalog/audit/私有设置持久化路径不变。
+安装计划继续复用 `HostInstallPlanLeaseRegistry`（旧 plan 仍要求重新 inspect）；共享插件状态由下述 Go catalog 持久化。
 确认登记同时核对 run/project/plugin/action/interactionId 和期限，并在 Host 原子消费；文件选择回包核对完整请求及 run 取消令牌。
 任务终态撤销该 run 的文件授权，transport dispose 等待已退休 broker 的 DrainCompletion，首个终止观察者异常不阻断其他 owner。
 Web 终态不可被迟到交互或任务回包复活，终态面板不再显示仍在等待的提示。
@@ -88,6 +88,28 @@ aborted/unknown、旧 resolve 的 expired、既有成功不变和 Go query 可�
 [终态截图](../assets/screenshots/vibetable-plugin-task-aborted.png)来自该真实 WPF/WebView2 运行。
 最终 PR CI、独立审阅及合并后门禁另由 Issue/PR 记录，不据此宣称 L7/L9 全部完成。
 
+
+## 插件共享 catalog 与本机包
+
+`plugin.listCatalog` / `plugin.listAudit` / `plugin.listPendingCleanup` / `plugin.setEnabled`
+由 Host Product binding 直达 Go，不要求 Python gateway 就绪。PocketBase 的
+`vibetable_plugin_records` 保存 installation、revision、audit、setting 四类记录，projectKey
+固定为当前 workspace UUID 的 `local:<32 位小写十六进制>`；路径不是身份。Python 包检查与 Node
+执行器仅通过 session 保护的固定 `/api/vibetable/v1/plugins/store` 闭集操作读写共享状态。
+写入复用业务 write coordinator/fence 和同事务持久收据；`commit_install` 一次提交安装 snapshot、
+当前包 revision、安装 audit 和 catalog outbox，不跨 HTTP 进行删除补偿。
+
+启动公开读取前，Go 从当前 runtime data root 的 `state/plugins.db` 只读承接旧四类记录。
+首次缺源按新 workspace 完成；无完成标记而目标已有记录时拒绝覆盖，任何读取或校验失败均不留完成标记。
+迁移版本与 workspace UUID 绑定的完成标记、四类共享记录均随整库 snapshot 恢复，后续启动不再打开旧源。
+共享记录参加 SettingsItem 冲突投影；完成标记属于内部迁移簿记。
+
+Go outbox 发布 `plugin.catalog.changed`，Host 在当前 epoch、gateway generation 和 renderer 门禁内
+复用 `PluginRequestDispatcher.ProjectSnapshot` 投影，Web 断线恢复后重新读取完整 catalog。
+包的 source/localPath 字段不授予执行或资源能力：Host 只按既有 packageHash/Base32 规则定位当前
+runtime data root 的 `state/plugin-packages/*.vtplugin`，缺本机保留包时不生成资源链接；重新定位后
+使用新 runtime root。Python 执行前复用既有包检查校验预期 packageHash。Host 保留确认、文件 grant
+与 surface token 能力；完整安装计划仍由 Python 配合 Host plan lease 持有，隐藏升级/回滚/卸载未开放为公开 RPC。
 
 ## 维护规则
 

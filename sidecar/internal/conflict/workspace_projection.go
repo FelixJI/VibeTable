@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/vibetable/vibetable/sidecar/internal/metadata"
+	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 )
 
 // Schema/attachment definitions use their normalized table reference columns.
@@ -73,7 +74,8 @@ func workspaceConflictCandidates(collections []sqliteCollectionProjection, table
 	}
 	for _, collection := range collections {
 		namespace, shared := metadata.NamespaceForCollection(collection.Name)
-		if !shared && !schemaNames[collection.Name] {
+		pluginItem, pluginShared := pluginstore.NamespaceForCollection(collection.Name)
+		if !shared && !pluginShared && !schemaNames[collection.Name] {
 			continue
 		}
 		if candidates[collection.ID].TableID != "" {
@@ -83,6 +85,9 @@ func workspaceConflictCandidates(collections []sqliteCollectionProjection, table
 		if shared {
 			table.ItemID = "metadata:" + string(namespace)
 			table.DisplayName = string(namespace)
+		} else if pluginShared {
+			table.ItemID = pluginItem
+			table.DisplayName = "plugin_shared_state"
 		} else {
 			table.ItemID = "schema:" + strings.TrimPrefix(collection.Name, "vibetable_")
 			table.DisplayName = strings.TrimPrefix(collection.Name, "vibetable_")

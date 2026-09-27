@@ -248,6 +248,28 @@ async def test_history_restore_has_no_python_transport_fallback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("plugin.listCatalog", {"projectKey": "local:1"}),
+        (
+            "plugin.listAudit",
+            {"projectKey": "local:1", "pluginId": "com.example.reader"},
+        ),
+        (
+            "plugin.setEnabled",
+            {"projectKey": "local:1", "pluginId": "com.example.reader", "enabled": True},
+        ),
+        ("plugin.listPendingCleanup", {"projectKey": "local:1"}),
+    ],
+)
+async def test_go_owned_plugin_catalog_surface_has_no_python_fallback(
+    method: str, params: dict[str, object], product_backend: ProductBackend
+) -> None:
+    await product_backend.assert_retired(method, params)
+
+
+@pytest.mark.asyncio
 async def test_snapshot_has_no_python_route_or_transport_fallback(
     product_backend: ProductBackend,
 ) -> None:

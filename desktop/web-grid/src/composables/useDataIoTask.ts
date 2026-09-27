@@ -173,8 +173,11 @@ export function useDataIoTask(options: DataIoTaskOptions) {
   }
 
   function resolveExportCollection(): string | null {
-    const { collection, available } = options.resolveContext();
-    return available !== false && collection && !taskLocked.value ? collection : null;
+    // Some refresh paths reset the table and leave schemaRevision null until
+    // the reloaded schema lands; admitting export in that gap opens a panel
+    // the schema watcher retires immediately, so wait for a live schema.
+    const { collection, schemaRevision, available } = options.resolveContext();
+    return available !== false && collection && schemaRevision && !taskLocked.value ? collection : null;
   }
 
   const canPreviewImport = computed(() => resolveImportContext() !== null);

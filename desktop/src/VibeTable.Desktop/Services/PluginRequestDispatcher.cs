@@ -28,6 +28,8 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly IGitHubPluginPackageSource? _githubSource;
     private readonly Action<string>? _diagnosticTrace;
     private readonly Func<PluginProjectContext?> _projectContext;
+    private readonly Func<string, JsonElement, CancellationToken, Task<JsonElement>>? _sharedRpc;
+    private readonly Func<string, string?>? _packageCacheRoot;
     private readonly object _gatewayGate = new();
     private readonly HostInstallPlanLeaseRegistry _installLeases;
     private readonly HostPluginTaskRegistry _taskRegistry;
@@ -49,7 +51,9 @@ public sealed class PluginRequestDispatcher : IDisposable
         Func<PluginProjectContext?>? projectContext = null,
         ProductAuthorityEpoch? authority = null,
         TimeSpan? cleanupTimeout = null,
-        TimeProvider? cleanupTimeProvider = null)
+        TimeProvider? cleanupTimeProvider = null,
+        Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
+        Func<string, string?>? packageCacheRoot = null)
         : this(
             reply,
             surfaces,
@@ -61,7 +65,9 @@ public sealed class PluginRequestDispatcher : IDisposable
             projectContext,
             authority,
             cleanupTimeout,
-            cleanupTimeProvider)
+            cleanupTimeProvider,
+            sharedRpc,
+            packageCacheRoot)
     {
     }
 
@@ -76,7 +82,9 @@ public sealed class PluginRequestDispatcher : IDisposable
         Func<PluginProjectContext?>? projectContext = null,
         ProductAuthorityEpoch? authority = null,
         TimeSpan? cleanupTimeout = null,
-        TimeProvider? cleanupTimeProvider = null)
+        TimeProvider? cleanupTimeProvider = null,
+        Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
+        Func<string, string?>? packageCacheRoot = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
@@ -86,6 +94,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         _githubSource = githubSource;
         _diagnosticTrace = diagnosticTrace;
         _projectContext = projectContext ?? (() => null);
+        _sharedRpc = sharedRpc;
+        _packageCacheRoot = packageCacheRoot;
         _authority = authority ?? new ProductAuthorityEpoch();
         _ownsAuthority = authority is null;
         _installLeases = new HostInstallPlanLeaseRegistry(
@@ -123,7 +133,6 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             _gateway = gateway;
-            gateway.CatalogChanged += OnCatalogChanged;
             _taskChangedHandler = envelope => OnTaskChanged(gateway, envelope);
             gateway.TaskChanged += _taskChangedHandler;
             _interactionRequestedHandler = envelope => OnInteractionRequested(gateway, envelope);
@@ -184,6 +193,33 @@ public sealed class PluginRequestDispatcher : IDisposable
         ArgumentNullException.ThrowIfNull(request);
         try
         {
+            string? sharedMethod = request.Type switch
+            {
+                "plugin.catalog.list" => "plugin.listCatalog",
+                "plugin.audit.list" => "plugin.listAudit",
+                "plugin.cleanup.listPending" => "plugin.listPendingCleanup",
+                "plugin.lifecycle.setEnabled" => "plugin.setEnabled",
+                _ => null,
+            };
+            if (sharedMethod is not null)
+            {
+                PluginProjectContext? context = _projectContext();
+                if (context is null) throw new PluginDispatchException("PLUGIN_NOT_READY", "Plugin project context is unavailable.");
+                JsonElement shared = await (_sharedRpc ?? throw new PluginDispatchException(
+                    "PLUGIN_NOT_READY", "Plugin catalog is not available for the current project."))
+                    (sharedMethod, request.Payload, token).ConfigureAwait(false);
+                if (context != _projectContext()) throw StaleTask();
+                object projected = sharedMethod switch
+                {
+                    "plugin.listCatalog" => (shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
+                        ?? throw new JsonException("Invalid plugin catalog.")).Select(ProjectSnapshot).ToArray(),
+                    "plugin.setEnabled" => ProjectSnapshot(shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions)
+                        ?? throw new JsonException("Invalid plugin snapshot.")),
+                    _ => shared,
+                };
+                _reply.PostResponse(request.Type, request.RequestId, projected);
+                return;
+            }
             if (string.Equals(request.Type, "plugin.surface.event", StringComparison.Ordinal))
             {
                 DispatchSurfaceEvent(request);
@@ -235,20 +271,12 @@ public sealed class PluginRequestDispatcher : IDisposable
 
             object result = request.Type switch
             {
-                "plugin.catalog.list" => await ListCatalogAsync(
-                    Read<PluginCatalogListParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.audit.list" => await gateway.ListAuditAsync(
-                    Read<PluginAuditListParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.cleanup.listPending" => await gateway.ListPendingCleanupAsync(
-                    Read<PluginCatalogListParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.inspect" => await InspectInstallAsync(
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
                     Read<PluginGitHubInspectParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.cancel" => await CancelInstallAsync(
                     Read<PluginInstallCancelParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.lifecycle.setEnabled" => ProjectSnapshot(await gateway.SetEnabledAsync(
-                    Read<PluginSetEnabledParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.rollback" => ProjectSnapshot(await gateway.RollbackAsync(
                     Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
@@ -343,14 +371,6 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
         return payload.Deserialize<T>(JsonOptions)
             ?? throw new JsonException("Payload did not deserialize.");
-    }
-
-    private async Task<PluginRuntimeSnapshot[]> ListCatalogAsync(
-        PluginCatalogListParams request,
-        CancellationToken token)
-    {
-        var snapshots = await _gateway!.ListCatalogAsync(request, token).ConfigureAwait(false);
-        return snapshots.Select(ProjectSnapshot).ToArray();
     }
 
     private async Task<PluginRuntimeInstallPlan> InspectInstallAsync(
@@ -681,14 +701,15 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
     {
-        bool registered = _resourceHost.TryRegisterInstalled(
+        string? localPackage = PluginRetainedPackage.PathFor(
+            _packageCacheRoot?.Invoke(snapshot.ProjectKey), snapshot.PackageHash);
+        bool registered = localPackage is not null && _resourceHost.TryRegisterInstalled(
             snapshot.ProjectKey,
             snapshot.PluginId,
-            snapshot.SourceLocation,
+            localPackage,
             snapshot.PackageHash);
-        PluginRuntimeManifest manifest = registered
-            ? snapshot.Manifest with { Ui = ProjectCustomViews(snapshot) }
-            : snapshot.Manifest;
+        if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
+        PluginRuntimeManifest manifest = snapshot.Manifest with { Ui = ProjectCustomViews(snapshot, registered) };
         return snapshot with
         {
             SourceLocation = HostManagedSource,
@@ -696,7 +717,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         };
     }
 
-    private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot)
+    private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot, bool registered)
     {
         JsonObject? ui;
         try
@@ -715,6 +736,9 @@ public sealed class PluginRequestDispatcher : IDisposable
         var candidates = views.OfType<JsonObject>().ToArray();
         foreach (JsonObject view in candidates)
         {
+            view.Remove("src");
+            view.Remove("surfaceToken");
+            if (!registered) continue;
             string? entry = ReadNodeString(view["entry"]);
             if (string.IsNullOrWhiteSpace(entry))
             {
@@ -764,24 +788,18 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
     }
 
-    private void OnCatalogChanged(PluginEventEnvelope envelope)
+    internal PluginEventEnvelope ProjectCatalogEvent(JsonElement payload)
     {
-        try
-        {
-            var snapshot = envelope.Snapshot.Deserialize<PluginRuntimeSnapshot>(JsonOptions);
-            if (snapshot is null)
-            {
-                return;
-            }
-            var projected = ProjectSnapshot(snapshot);
-            _reply.PostNotification(
-                "plugin.catalog.changed",
-                envelope with { Snapshot = JsonSerializer.SerializeToElement(projected, JsonOptions) });
-        }
-        catch (Exception ex)
-        {
-            SafeTrace(() => Trace.TraceError($"Plugin catalog event was dropped: {ex}"));
-        }
+        PluginEventEnvelope envelope = payload.Deserialize<PluginEventEnvelope>(JsonOptions)
+            ?? throw new JsonException("Invalid plugin catalog event.");
+        PluginRuntimeSnapshot snapshot = envelope.Snapshot.Deserialize<PluginRuntimeSnapshot>(JsonOptions)
+            ?? throw new JsonException("Invalid plugin catalog snapshot.");
+        if (envelope.Contract != PluginContractVersions.Event || envelope.EventType != "plugin.catalog.changed"
+            || envelope.ProjectKey != snapshot.ProjectKey || envelope.EntityId != snapshot.PluginId
+            || envelope.Revision != snapshot.Revision || envelope.Revision < 1
+            || _projectContext()?.ProjectKey != envelope.ProjectKey)
+            throw new JsonException("Plugin catalog event identity is invalid.");
+        return envelope with { Snapshot = JsonSerializer.SerializeToElement(ProjectSnapshot(snapshot), JsonOptions) };
     }
 
     private void OnTaskChanged(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
@@ -908,7 +926,6 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             return;
         }
-        gateway.CatalogChanged -= OnCatalogChanged;
         if (_taskChangedHandler is not null) gateway.TaskChanged -= _taskChangedHandler;
         if (_interactionRequestedHandler is not null)
             gateway.InteractionRequested -= _interactionRequestedHandler;

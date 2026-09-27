@@ -1,12 +1,12 @@
-"""Product-neutral plugin store persistence and concurrency tests."""
+"""Product-neutral async plugin store semantics tests."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
+from backend.application.plugin_registry import PluginRegistryError
 from backend.contracts.plugin import (
+    InstallPlan,
     PluginAuditEvent,
     PluginManifest,
     PluginPackageRevision,
@@ -15,22 +15,45 @@ from backend.contracts.plugin import (
 )
 from backend.infrastructure.plugin_store import (
     InMemoryPluginStore,
-    PluginProjectStore,
     PluginStoreConflictError,
 )
 
 
-def _manifest() -> PluginManifest:
-    return PluginManifest(
-        plugin_id="com.example.summary",
-        version="1.0.0",
-        display_name={"en": "Summary"},
-        compatibility={"minHostVersion": "1.0.0", "pluginApi": "1.x"},
-        permissions={
-            "data": [],
-            "files": [],
-            "privateStorage": True,
-        },
+def _manifest(*, version: str = "1.0.0") -> PluginManifest:
+    return PluginManifest.model_validate(
+        {
+            "$schema": "vibetable.plugin-manifest.v1",
+            "pluginId": "com.example.summary",
+            "version": version,
+            "displayName": {"en": "Summary"},
+            "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+            "permissions": {
+                "data": [],
+                "files": [],
+                "privateStorage": True,
+            },
+            "actions": [
+                {
+                    "actionId": "summarize",
+                    "displayName": {"en": "Summarize"},
+                    "mode": "local",
+                    "risk": "read",
+                    "workerEntry": "dist/worker.js",
+                }
+            ],
+        }
+    )
+
+
+def _plan(*, version: str = "1.0.0") -> InstallPlan:
+    return InstallPlan(
+        plan_id=f"plan-{version}",
+        project_key="local:default",
+        project_revision="project-1",
+        source_type="package",
+        source_location=f"summary-{version}.vtplugin",
+        package_hash=f"sha256:{version}",
+        manifest=_manifest(version=version),
     )
 
 
@@ -86,134 +109,126 @@ def _audit(*, event_id: str = "audit-1") -> PluginAuditEvent:
     )
 
 
-def test_project_store_persists_installation_and_revision_guard(tmp_path: Path) -> None:
-    path = tmp_path / "plugin-state.db"
-    store = PluginProjectStore(path)
-    store.save_installation(_snapshot(), expected_revision=None)
-    store.close()
+@pytest.mark.asyncio
+async def test_installation_guard_and_delete_operations_are_exact() -> None:
+    store = InMemoryPluginStore()
+    await store.save_installation(_snapshot(), expected_revision=None)
+    assert await store.get_installation("local:default", "com.example.summary") == _snapshot()
+    assert await store.list_installations("local:default") == [_snapshot()]
 
-    reopened = PluginProjectStore(path)
-    assert (
-        reopened.get_installation(
-            "local:default",
-            "com.example.summary",
-        )
-        == _snapshot()
-    )
     with pytest.raises(PluginStoreConflictError):
-        reopened.save_installation(
+        await store.save_installation(
             _snapshot(revision=2, status="disabled"),
             expected_revision=0,
         )
     updated = _snapshot(revision=2, status="disabled")
-    assert reopened.save_installation(updated, expected_revision=1) == updated
-    reopened.close()
+    assert await store.save_installation(updated, expected_revision=1) == updated
+
+    assert await store.delete_installation("local:default", "com.example.summary")
+    assert not await store.delete_installation("local:default", "com.example.summary")
+    assert await store.list_installations("local:default") == []
 
 
-def test_project_store_persists_revisions_settings_and_audit(tmp_path: Path) -> None:
-    path = tmp_path / "plugin-state.db"
-    store = PluginProjectStore(path)
+@pytest.mark.asyncio
+async def test_revisions_settings_and_audit_round_trip() -> None:
+    store = InMemoryPluginStore()
     package = _package_revision()
     setting = _setting()
     event = _audit()
-    store.save_package_revision(package)
-    store.save_private_setting(setting, expected_revision=None)
-    store.record_audit(event)
-    store.close()
 
-    reopened = PluginProjectStore(path)
-    assert reopened.list_package_revisions(
-        "local:default",
-        "com.example.summary",
-    ) == [package]
+    assert await store.save_package_revision(package) == package
+    await store.save_private_setting(setting, expected_revision=None)
+    await store.record_audit(event)
+
+    assert await store.list_package_revisions("local:default", "com.example.summary") == [package]
     assert (
-        reopened.get_private_setting(
+        await store.get_private_setting(
             "local:default",
             "com.example.summary",
             "columns",
         )
         == setting
     )
-    assert reopened.list_project_audit("local:default") == [event]
-    reopened.close()
+    assert await store.list_audit("local:default", "com.example.summary") == [event]
+    assert await store.list_project_audit("local:default") == [event]
 
 
-def test_project_store_delete_operations_are_exact_and_idempotent(
-    tmp_path: Path,
-) -> None:
-    store = PluginProjectStore(tmp_path / "plugin-state.db")
-    store.save_installation(_snapshot(), expected_revision=None)
+@pytest.mark.asyncio
+async def test_revision_delete_operations_are_exact_and_idempotent() -> None:
+    store = InMemoryPluginStore()
     for revision in (
         _package_revision(),
         _package_revision(version="2.0.0", state="rollback"),
     ):
-        store.save_package_revision(revision)
+        await store.save_package_revision(revision)
 
-    assert store.is_package_path_referenced("packages/1.0.0.vtplugin")
-    assert not store.is_package_path_referenced("packages/missing.vtplugin")
-    assert store.delete_package_revision(
+    assert await store.is_package_path_referenced("packages/1.0.0.vtplugin")
+    assert not await store.is_package_path_referenced("packages/missing.vtplugin")
+    assert await store.delete_package_revision(
         "local:default",
         "com.example.summary",
         "sha256:1.0.0",
     )
-    assert not store.delete_package_revision(
+    assert not await store.delete_package_revision(
         "local:default",
         "com.example.summary",
         "sha256:1.0.0",
     )
     assert (
-        store.delete_package_revisions(
+        await store.delete_package_revisions(
             "local:default",
             "com.example.summary",
         )
         == 1
     )
-    assert store.delete_installation("local:default", "com.example.summary")
-    assert not store.delete_installation("local:default", "com.example.summary")
-    store.close()
+    assert await store.list_package_revisions("local:default", "com.example.summary") == []
 
 
-def test_private_settings_use_optimistic_revision_guard(tmp_path: Path) -> None:
-    store = PluginProjectStore(tmp_path / "plugin-state.db")
+@pytest.mark.asyncio
+async def test_private_settings_use_optimistic_revision_guard() -> None:
+    store = InMemoryPluginStore()
     initial = _setting()
     with pytest.raises(PluginStoreConflictError):
-        store.save_private_setting(initial, expected_revision=1)
-    store.save_private_setting(initial, expected_revision=None)
+        await store.save_private_setting(initial, expected_revision=1)
+    await store.save_private_setting(initial, expected_revision=None)
     updated = initial.model_copy(
         update={
             "value": {"visible": ["number"]},
             "revision": 2,
         }
     )
-    assert store.save_private_setting(updated, expected_revision=1) == updated
+    assert await store.save_private_setting(updated, expected_revision=1) == updated
     with pytest.raises(PluginStoreConflictError):
-        store.save_private_setting(
+        await store.save_private_setting(
             updated.model_copy(update={"revision": 3}),
             expected_revision=1,
         )
     assert (
-        store.delete_private_settings(
+        await store.delete_private_settings(
             "local:default",
             "com.example.summary",
         )
         == 1
     )
-    store.close()
 
 
-def test_in_memory_store_matches_durable_conflict_and_audit_semantics() -> None:
+@pytest.mark.asyncio
+async def test_commit_install_is_atomic_and_fails_closed_on_duplicate() -> None:
     store = InMemoryPluginStore()
-    store.save_installation(_snapshot(), expected_revision=None)
-    with pytest.raises(PluginStoreConflictError):
-        store.save_installation(_snapshot(revision=2), expected_revision=0)
+    plan = _plan()
+    revision = _package_revision()
 
-    store.save_private_setting(_setting(), expected_revision=None)
-    with pytest.raises(PluginStoreConflictError):
-        store.save_private_setting(_setting(revision=2), expected_revision=0)
+    installed = await store.commit_install(plan, package_revision=revision)
 
-    event = _audit(event_id="audit-memory")
-    store.record_audit(event)
-    assert store.list_audit(
-        "local:default",
-        "com.example.summary",
-    ) == [event]
+    assert installed.status == "disabled"
+    assert installed.disabled_reason == "disabled_by_user"
+    assert installed.revision == 1
+    assert await store.get_installation("local:default", "com.example.summary") == installed
+    assert await store.list_package_revisions("local:default", "com.example.summary") == [revision]
+    assert [
+        event.event_type for event in await store.list_audit("local:default", "com.example.summary")
+    ] == ["install"]
+
+    with pytest.raises(PluginRegistryError) as duplicate:
+        await store.commit_install(_plan(), package_revision=revision)
+    assert duplicate.value.code == "plugin_already_installed"

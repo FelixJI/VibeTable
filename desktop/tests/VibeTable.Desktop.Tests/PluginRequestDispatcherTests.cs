@@ -17,8 +17,13 @@ public sealed class PluginRequestDispatcherTests
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
         var picker = new FakePluginPackageSourcePicker(null);
         using var gateway = new FakePluginGateway();
-        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, picker, resources);
-        dispatcher.SetGateway(gateway);
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, picker, resources,
+            projectContext: ReadyContext,
+            sharedRpc: (method, _, _) =>
+            {
+                Assert.AreEqual("plugin.listCatalog", method);
+                return Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot }));
+            });
 
         await dispatcher.DispatchAsync(Request(
             "plugin.catalog.list",
@@ -28,7 +33,8 @@ public sealed class PluginRequestDispatcherTests
         Assert.AreEqual("plugin.catalog.list", reply.ResponseType);
         Assert.AreEqual("request-1", reply.RequestId);
         Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload);
-        Assert.AreEqual(1, gateway.ListCalls);
+        Assert.AreEqual(0, gateway.ListCalls);
+        Assert.IsFalse(dispatcher.HasGateway);
         Assert.IsNull(reply.FailureCode);
     }
 
@@ -1086,13 +1092,17 @@ public sealed class PluginRequestDispatcherTests
             reply,
             surfaces,
             new FakePluginPackageSourcePicker(null),
-            resources);
+            resources,
+            projectContext: ReadyContext);
         dispatcher.SetGateway(gateway);
 
         gateway.RaiseCatalogChanged();
-
-        Assert.AreEqual("plugin.catalog.changed", reply.NotificationType);
-        string serialized = JsonSerializer.Serialize(reply.NotificationPayload);
+        Assert.IsNull(reply.NotificationType, "Python catalog notifications are retired.");
+        PluginEventEnvelope projected = dispatcher.ProjectCatalogEvent(JsonSerializer.SerializeToElement(
+            new PluginEventEnvelope(PluginContractVersions.Event, "plugin.catalog.changed", "project-1",
+                gateway.CatalogSnapshot.PluginId, gateway.CatalogSnapshot.Revision,
+                JsonSerializer.SerializeToElement(gateway.CatalogSnapshot))));
+        string serialized = JsonSerializer.Serialize(projected);
         Assert.IsFalse(serialized.Contains("package.vtplugin", StringComparison.OrdinalIgnoreCase));
         Assert.IsTrue(serialized.Contains(PluginRequestDispatcher.HostManagedSource, StringComparison.Ordinal));
     }
@@ -1176,11 +1186,18 @@ public sealed class PluginRequestDispatcherTests
                     Manifest = manifest,
                 },
             };
+            string currentCacheRoot = packageRoot;
             using var dispatcher = new PluginRequestDispatcher(
                 reply,
                 surfaces,
                 new FakePluginPackageSourcePicker(null),
-                resources);
+                resources,
+                projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot })),
+                packageCacheRoot: _ => currentCacheRoot);
+            string retained = PluginRetainedPackage.PathFor(packageRoot, gateway.CatalogSnapshot.PackageHash)!;
+            using (var package = System.IO.Compression.ZipFile.Open(retained, System.IO.Compression.ZipArchiveMode.Create))
+                package.CreateEntry("ui/index.html");
             dispatcher.SetGateway(gateway);
 
             await dispatcher.DispatchAsync(Request(
@@ -1194,6 +1211,24 @@ public sealed class PluginRequestDispatcherTests
             Assert.IsTrue(serialized.Contains(
                 ".plugins.vibetable.local/ui/index.html",
                 StringComparison.Ordinal));
+
+            // A relocated workspace must not reuse the original source path or
+            // the old runtime's retained resource when its local cache is absent.
+            currentCacheRoot = Path.Combine(packageRoot, "relocated", "state", "plugin-packages");
+            await dispatcher.DispatchAsync(Request(
+                "plugin.catalog.list", "catalog-relocated-empty",
+                """{"projectKey":"project-1"}"""));
+            serialized = JsonSerializer.Serialize(reply.Payload);
+            Assert.IsFalse(serialized.Contains("surfaceToken", StringComparison.Ordinal));
+            Assert.IsFalse(serialized.Contains("plugins.vibetable.local", StringComparison.Ordinal));
+            Assert.IsFalse(serialized.Contains(packageRoot, StringComparison.OrdinalIgnoreCase));
+
+            Directory.CreateDirectory(currentCacheRoot);
+            File.Copy(retained, PluginRetainedPackage.PathFor(currentCacheRoot, gateway.CatalogSnapshot.PackageHash)!);
+            await dispatcher.DispatchAsync(Request(
+                "plugin.catalog.list", "catalog-relocated-retained",
+                """{"projectKey":"project-1"}"""));
+            Assert.IsTrue(JsonSerializer.Serialize(reply.Payload).Contains("surfaceToken", StringComparison.Ordinal));
         }
         finally
         {
@@ -1690,7 +1725,7 @@ public sealed class PluginRequestDispatcherTests
             JsonDocument.Parse("{}").RootElement.Clone(),
             [], JsonDocument.Parse("{}").RootElement.Clone());
         public static readonly PluginRuntimeSnapshot DefaultSnapshot = new(
-            "project-1", "com.acme.clean", "1.0.0", new string('a', 64),
+            "project-1", "com.acme.clean", "1.0.0", "sha256:" + new string('a', 64),
             "package", "package.vtplugin", Manifest,
             new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>(),
             "enabled", null, 1);

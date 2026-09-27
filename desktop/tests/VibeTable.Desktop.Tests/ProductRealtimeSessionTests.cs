@@ -242,6 +242,44 @@ public sealed class ProductRealtimeSessionTests
         Assert.AreEqual("rt:7", await fixture.NextConnection());
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PluginCatalogUsesHostProjectionOnlyInsideCurrentRendererDelivery(bool retired)
+    {
+        int projections = 0;
+        await using var fixture = await Fixture.OpenAsync(projectPluginCatalog: payload =>
+        {
+            projections++;
+            return new PluginEventEnvelope(PluginContractVersions.Event, "plugin.catalog.changed",
+                "local:workspace", "plugin", 2,
+                JsonSerializer.SerializeToElement(new { sourceLocation = "host-managed" }));
+        });
+        fixture.Http.StreamReplies.Enqueue(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("id: rt:9\nevent: plugin.catalog.changed\ndata: "
+                + "{\"contractVersion\":\"2.0\",\"topic\":\"plugin.catalog.changed\",\"snapshot\":{\"sourceLocation\":\"private-source\"}}\n\n",
+                Encoding.UTF8, "text/event-stream"),
+        });
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        Action post = await fixture.NextPost();
+        Assert.AreEqual(0, projections);
+        if (retired) fixture.Delivery.Retire();
+        post();
+        Assert.AreEqual(retired ? 0 : 1, projections);
+        if (retired) Assert.HasCount(0, fixture.Posted);
+        else
+        {
+            Assert.HasCount(1, fixture.Posted);
+            Assert.AreEqual("plugin.catalog.changed", fixture.Posted[0].Topic);
+            Assert.DoesNotContain("private-source", fixture.Posted[0].Payload.ToString());
+            await fixture.Delayed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            fixture.ResumeDelay.TrySetResult();
+            Assert.AreEqual("rt:9", await fixture.NextConnection());
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Directory.GetCurrentDirectory(),
@@ -260,7 +298,8 @@ public sealed class ProductRealtimeSessionTests
         internal ProductSidecarGenerationSnapshot? Snapshot { get; set; }
         internal bool PostFailure { get; set; }
 
-        internal static async Task<Fixture> OpenAsync(bool initiallyClosed = false)
+        internal static async Task<Fixture> OpenAsync(bool initiallyClosed = false,
+            Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null)
         {
             var fixture = new Fixture();
             var registry = new WorkspaceRegistry(fixture._root);
@@ -308,7 +347,7 @@ public sealed class ProductRealtimeSessionTests
                 {
                     fixture.Delayed.TrySetResult();
                     await fixture.ResumeDelay.Task.WaitAsync(token);
-                });
+                }, projectPluginCatalog);
             return fixture;
         }
 

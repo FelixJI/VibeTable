@@ -208,6 +208,31 @@ async def test_aggregate_uses_frozen_query_port_operation() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_plugin_store_posts_operation_and_request_fields() -> None:
+    transport = FakeTransport([{"value": {"revision": 1}}])
+    client = PocketBaseClient(transport=transport, session_secret="a" * 64)
+    request = {
+        "projectKey": "local:1",
+        "pluginId": "com.example.reader",
+        "payload": {"revision": 1},
+        "expectedRevision": None,
+    }
+
+    result = await client.plugin_store("save_installation", request)
+
+    assert result == {"value": {"revision": 1}}
+    assert transport.requests == [
+        {
+            "method": "POST",
+            "path": "/api/vibetable/v1/plugins/store",
+            "json_body": {"operation": "save_installation", **request},
+            "headers": {"X-VibeTable-Session": "a" * 64},
+            "expected_status": (200,),
+        }
+    ]
+
+
 def test_product_error_keeps_safe_structured_details() -> None:
     error = PocketBaseProductError(
         status=409,

@@ -13,6 +13,7 @@ from backend.contracts.plugin import (
     InstallPlan,
     PluginAction,
     PluginManifest,
+    PluginPackageRevision,
 )
 from backend.infrastructure.plugin_store import InMemoryPluginStore
 from backend.infrastructure.plugin_worker import (
@@ -50,7 +51,18 @@ async def _enabled_registry(
             actions=[action],
         ),
     )
-    await registry.install(plan)
+    await store.commit_install(
+        plan,
+        package_revision=PluginPackageRevision(
+            project_key=plan.project_key,
+            plugin_id=plugin_id,
+            version=plan.manifest.version,
+            package_hash=package_hash,
+            local_path=f"packages/{package_hash}.vtplugin",
+            manifest=plan.manifest,
+            state="current",
+        ),
+    )
     await registry.set_enabled(plan.project_key, plugin_id, True)
     return registry, plan, action
 

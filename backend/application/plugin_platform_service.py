@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.application.plugin_package_lifecycle import PluginPackageLifecycle
-from backend.application.plugin_registry import PluginRegistry
+from backend.application.plugin_registry import PluginRegistry, validate_install_plan
 from backend.contracts.plugin import (
     ActionAvailability,
     CommandContext,
     InstallPlan,
     InteractionDecision,
     InteractionResolveResult,
-    PluginAuditEvent,
     PluginEventEnvelope,
     PluginPackageRevision,
     PluginSnapshot,
@@ -27,15 +27,61 @@ from backend.contracts.task import SessionPathGrant
 NotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 
 
+class PluginStorePort(Protocol):
+    """The shared-state operations the platform orchestration needs."""
+
+    async def commit_install(
+        self,
+        plan: InstallPlan,
+        *,
+        package_revision: PluginPackageRevision,
+    ) -> PluginSnapshot: ...
+
+    async def save_installation(
+        self,
+        snapshot: PluginSnapshot,
+        *,
+        expected_revision: int | None,
+    ) -> PluginSnapshot: ...
+
+    async def list_package_revisions(
+        self,
+        project_key: str,
+        plugin_id: str,
+    ) -> list[PluginPackageRevision]: ...
+
+    async def save_package_revision(
+        self,
+        revision: PluginPackageRevision,
+    ) -> PluginPackageRevision: ...
+
+    async def delete_package_revision(
+        self,
+        project_key: str,
+        plugin_id: str,
+        package_hash: str,
+    ) -> bool: ...
+
+    async def delete_package_revisions(self, project_key: str, plugin_id: str) -> int: ...
+
+    async def is_package_path_referenced(self, local_path: str) -> bool: ...
+
+
 class PluginPlatformService:
-    """Coordinates package validation, registry state and local execution."""
+    """Coordinates package validation, registry state and local execution.
+
+    The Go-owned shared catalog answers the public catalog, audit and
+    enable/disable surface; install commits are fixed atomic store
+    operations, so this service never compensates with unconditional
+    save/delete sequences.
+    """
 
     def __init__(
         self,
         *,
         registry: PluginRegistry,
         runtime: PluginExecutionRuntime,
-        store: Any,
+        store: PluginStorePort,
         package_lifecycle: PluginPackageLifecycle,
         confirmation_adapter: Any | None = None,
         file_adapter: Any | None = None,
@@ -59,9 +105,9 @@ class PluginPlatformService:
                 configure(self._emit)
 
     async def close(self) -> None:
-        close = getattr(self._store, "close", None)
-        if callable(close):
-            close()
+        """No local resources: the Go-owned shared store owns its lifecycle."""
+
+        return None
 
     async def inspect_install(
         self,
@@ -90,16 +136,20 @@ class PluginPlatformService:
         project_revision: str,
     ) -> PluginSnapshot:
         plan = self._consume_plan(plan_id, project_revision)
+        validate_install_plan(plan)
         self._recheck_plan_source(plan)
         retained_path = self._package_lifecycle.retain(
             source_location=plan.source_location,
             expected_hash=plan.package_hash,
         )
-        installed: PluginSnapshot | None = None
         try:
-            installed = await self._registry.install(plan)
-            self._store.save_package_revision(
-                PluginPackageRevision(
+            # One fixed atomic store operation: installation identity,
+            # the current package revision and the install audit event are
+            # committed together and the durable catalog change is emitted by
+            # the Go catalog, never duplicated here.
+            installed = await self._store.commit_install(
+                plan,
+                package_revision=PluginPackageRevision(
                     project_key=plan.project_key,
                     plugin_id=plan.manifest.plugin_id,
                     version=plan.manifest.version,
@@ -107,47 +157,20 @@ class PluginPlatformService:
                     local_path=retained_path,
                     manifest=plan.manifest,
                     state="current",
-                )
+                ),
             )
-        except Exception:
-            if installed is not None:
-                self._store.delete_installation(
-                    installed.project_key,
-                    installed.plugin_id,
-                )
-            self._delete_package_if_unreferenced(retained_path)
-            raise
-        await self._emit_catalog(installed)
+        except Exception as commit_error:
+            # Cleanup must never mask the original commit failure: if the
+            # shared catalog cannot answer the reference query, the cached
+            # package is kept (the safest outcome) and the original error is
+            # re-raised unchanged.
+            with contextlib.suppress(Exception):
+                await self._delete_package_if_unreferenced(retained_path)
+            raise commit_error
         return installed
 
     def cancel_install(self, *, plan_id: str) -> bool:
         return self._plans.pop(plan_id, None) is not None
-
-    async def list_catalog(self, *, project_key: str) -> list[PluginSnapshot]:
-        return self._registry.list(project_key)
-
-    def list_audit(
-        self,
-        *,
-        project_key: str,
-        plugin_id: str,
-    ) -> list[PluginAuditEvent]:
-        return self._store.list_audit(project_key, plugin_id)
-
-    def list_pending_cleanup(self, *, project_key: str) -> list[PluginAuditEvent]:
-        del project_key
-        return []
-
-    async def set_enabled(
-        self,
-        *,
-        project_key: str,
-        plugin_id: str,
-        enabled: bool,
-    ) -> PluginSnapshot:
-        snapshot = await self._registry.set_enabled(project_key, plugin_id, enabled)
-        await self._emit_catalog(snapshot)
-        return snapshot
 
     async def upgrade(
         self,
@@ -165,17 +188,17 @@ class PluginPlatformService:
             source_location=plan.source_location,
             expected_hash=plan.package_hash,
         )
-        previous = list(self._store.list_package_revisions(project_key, plugin_id))
-        previous_installation = self._registry.get(project_key, plugin_id)
+        previous = list(await self._store.list_package_revisions(project_key, plugin_id))
+        previous_installation = await self._registry.get(project_key, plugin_id)
         snapshot: PluginSnapshot | None = None
         try:
             snapshot = await self._registry.commit_upgrade(plan)
             for revision in previous:
                 if revision.state == "current":
-                    self._store.save_package_revision(
+                    await self._store.save_package_revision(
                         revision.model_copy(update={"state": "rollback"})
                     )
-            self._store.save_package_revision(
+            await self._store.save_package_revision(
                 PluginPackageRevision(
                     project_key=project_key,
                     plugin_id=plugin_id,
@@ -186,27 +209,26 @@ class PluginPlatformService:
                     state="current",
                 )
             )
-            self._prune_package_revisions(project_key, plugin_id)
+            await self._prune_package_revisions(project_key, plugin_id)
         except Exception:
             if snapshot is not None and previous_installation is not None:
-                self._store.save_installation(
+                await self._store.save_installation(
                     previous_installation,
                     expected_revision=snapshot.revision,
                 )
-            self._store.delete_package_revision(
+            await self._store.delete_package_revision(
                 project_key,
                 plugin_id,
                 plan.package_hash,
             )
             for revision in previous:
-                self._store.save_package_revision(revision)
-            self._delete_package_if_unreferenced(retained_path)
+                await self._store.save_package_revision(revision)
+            await self._delete_package_if_unreferenced(retained_path)
             raise
-        await self._emit_catalog(snapshot)
         return snapshot
 
     async def rollback(self, *, project_key: str, plugin_id: str) -> PluginSnapshot:
-        revisions = list(self._store.list_package_revisions(project_key, plugin_id))
+        revisions = list(await self._store.list_package_revisions(project_key, plugin_id))
         current_revision = next(
             (item for item in revisions if item.state == "current"),
             None,
@@ -226,7 +248,7 @@ class PluginPlatformService:
             or inspected.manifest != rollback_revision.manifest
         ):
             raise ValueError("plugin rollback package failed integrity verification")
-        previous_installation = self._registry.get(project_key, plugin_id)
+        previous_installation = await self._registry.get(project_key, plugin_id)
         if previous_installation is None:
             raise ValueError("plugin is not installed")
         plan = InstallPlan(
@@ -242,22 +264,21 @@ class PluginPlatformService:
         snapshot: PluginSnapshot | None = None
         try:
             snapshot = await self._registry.commit_rollback(plan)
-            self._store.save_package_revision(
+            await self._store.save_package_revision(
                 current_revision.model_copy(update={"state": "rollback"})
             )
-            self._store.save_package_revision(
+            await self._store.save_package_revision(
                 rollback_revision.model_copy(update={"state": "current"})
             )
         except Exception:
             if snapshot is not None:
-                self._store.save_installation(
+                await self._store.save_installation(
                     previous_installation,
                     expected_revision=snapshot.revision,
                 )
             for revision in revisions:
-                self._store.save_package_revision(revision)
+                await self._store.save_package_revision(revision)
             raise
-        await self._emit_catalog(snapshot)
         return snapshot
 
     async def uninstall(
@@ -270,16 +291,16 @@ class PluginPlatformService:
         await self._runtime.cancel_plugin_tasks(project_key, plugin_id)
         retained_paths = [
             revision.local_path
-            for revision in self._store.list_package_revisions(project_key, plugin_id)
+            for revision in await self._store.list_package_revisions(project_key, plugin_id)
         ]
         result = await self._registry.uninstall(
             project_key,
             plugin_id,
             cleanup_private_settings=cleanup_private_settings,
         )
-        self._store.delete_package_revisions(project_key, plugin_id)
+        await self._store.delete_package_revisions(project_key, plugin_id)
         for retained_path in retained_paths:
-            self._delete_package_if_unreferenced(retained_path)
+            await self._delete_package_if_unreferenced(retained_path)
         return result
 
     async def describe_action(
@@ -292,7 +313,7 @@ class PluginPlatformService:
     ) -> ActionAvailability:
         if context.project_key != project_key:
             raise ValueError("plugin context project does not match request")
-        return self._runtime.describe(plugin_id, action_id, context)
+        return await self._runtime.describe(plugin_id, action_id, context)
 
     async def start_action(
         self,
@@ -369,32 +390,21 @@ class PluginPlatformService:
         if checked.package_hash != plan.package_hash:
             raise ValueError("plugin source changed after inspection")
 
-    def _prune_package_revisions(self, project_key: str, plugin_id: str) -> None:
-        revisions = self._store.list_package_revisions(project_key, plugin_id)
+    async def _prune_package_revisions(self, project_key: str, plugin_id: str) -> None:
+        revisions = await self._store.list_package_revisions(project_key, plugin_id)
         rollback = [revision for revision in revisions if revision.state == "rollback"]
         for retired in rollback[:-1]:
-            self._store.delete_package_revision(
+            await self._store.delete_package_revision(
                 project_key,
                 plugin_id,
                 retired.package_hash,
             )
-            self._delete_package_if_unreferenced(retired.local_path)
+            await self._delete_package_if_unreferenced(retired.local_path)
 
-    def _delete_package_if_unreferenced(self, path: str) -> None:
-        if self._store.is_package_path_referenced(path):
+    async def _delete_package_if_unreferenced(self, path: str) -> None:
+        if await self._store.is_package_path_referenced(path):
             return
         self._package_lifecycle.discard(path)
-
-    async def _emit_catalog(self, snapshot: PluginSnapshot) -> None:
-        await self._emit(
-            PluginEventEnvelope(
-                event_type="plugin.catalog.changed",
-                project_key=snapshot.project_key,
-                entity_id=snapshot.plugin_id,
-                revision=snapshot.revision,
-                snapshot=snapshot.model_dump(mode="json", by_alias=True),
-            )
-        )
 
     async def _emit(self, event: PluginEventEnvelope) -> None:
         if self._notification_sink is not None:

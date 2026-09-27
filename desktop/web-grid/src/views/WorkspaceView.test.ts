@@ -1788,8 +1788,14 @@ describe("WorkspaceView", () => {
     const { bridge, posted, emit } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
+    const table = useTableStore();
     workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
     workspace.selectTable("orders");
+    table.revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    };
     const wrapper = mountView();
     await flushPromises();
     posted.length = 0;
@@ -1903,7 +1909,7 @@ describe("WorkspaceView", () => {
     expect(posted.filter((item) => item.type === "data.importSourceRequested")).toHaveLength(1);
   });
 
-  it("disables only import after a table switch clears the schema context", async () => {
+  it("disables import and export after a table switch clears the schema context", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -1916,7 +1922,7 @@ describe("WorkspaceView", () => {
 
     const toolbar = wrapper.findComponent(AppToolbar);
     expect(toolbar.props("dataIoImportDisabled")).toBe(true);
-    expect(toolbar.props("dataIoExportDisabled")).toBe(false);
+    expect(toolbar.props("dataIoExportDisabled")).toBe(true);
   });
 
   it("runs a validated import and refreshes the active table", async () => {

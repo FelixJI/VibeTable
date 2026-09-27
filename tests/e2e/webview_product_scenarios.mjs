@@ -7114,7 +7114,8 @@ async function scenario16(page, recorder, _network, runtime) {
 }
 
 async function scenario17(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const projectKey = databaseOpened.payload.projectKey.trim();
   await page.getByTestId("nav-plugins").click();
   await page.getByTestId("plugin-install-folder").click();
   const pluginInstallPlan = page.getByTestId("plugin-install-plan");
@@ -7292,6 +7293,15 @@ async function scenario17(page, recorder, _network, runtime) {
   recorder.check("Interface authoring and approved runtime actions persist three records",
     beforeRestart.type === "query.page" && beforeRestart.payload?.rows?.length === 3,
     { beforeRestart });
+  const pluginCatalogBefore = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey });
+  const pluginAuditParams = { projectKey, pluginId: "com.vibetable.e2e.mutation-boundary" };
+  const pluginAuditBefore = await rawBridgeRequest(page, "plugin.audit.list", pluginAuditParams);
+  recorder.check("plugin restart baseline includes the installed identity and lifecycle audit",
+    pluginCatalogBefore.type === "plugin.catalog.list"
+      && pluginCatalogBefore.payload?.some(item => item.pluginId === pluginAuditParams.pluginId)
+      && pluginAuditBefore.type === "plugin.audit.list"
+      && pluginAuditBefore.payload?.some(event => event.eventType === "install"),
+    { pluginCatalogBefore, pluginAuditBefore });
   const quiet = await waitForBridgeDiagnosticsToSettle(page);
   recorder.check("Interface restart begins from a quiescent bridge",
     quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
@@ -7329,6 +7339,14 @@ async function scenario17(page, recorder, _network, runtime) {
   const freshLoad = await waitForCapturedBridgeMessage(page, 30_000);
   recorder.check("fresh public Interface load preserves the complete pages, bindings and actions after restart",
     isDeepStrictEqual(freshLoad.payload, committed.payload), { committed, freshLoad });
+  const pluginCatalogAfter = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey });
+  const pluginAuditAfter = await rawBridgeRequest(page, "plugin.audit.list", pluginAuditParams);
+  recorder.check("Go plugin installation and complete audit survive the real sidecar restart",
+    pluginCatalogAfter.type === "plugin.catalog.list"
+      && pluginAuditAfter.type === "plugin.audit.list"
+      && isDeepStrictEqual(pluginCatalogAfter.payload, pluginCatalogBefore.payload)
+      && isDeepStrictEqual(pluginAuditAfter.payload, pluginAuditBefore.payload),
+    { pluginCatalogBefore, pluginCatalogAfter, pluginAuditBefore, pluginAuditAfter });
   await page.getByTestId("interface-run").click();
   await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "17-interface-restarted.png"), fullPage: true });
@@ -8726,9 +8744,9 @@ async function scenario23(page, recorder, _network, runtime) {
   { insertReceipt, editTerminal });
   await cell.filter({ hasText: value }).waitFor({ state: "visible", timeout: 30_000 });
 
-  await page.getByTestId("nav-settings").click();
-  await page.getByTestId("settings-nav-storage").click();
-  await page.getByTestId("storage-settings").waitFor({ state: "visible", timeout: 30_000 });
+  // Publish the committed edit before release; the initial replicated UI state
+  // can remain stale until the next replica.changed observation.
+  await publishReplicaProtectionThroughUi(page, recorder, { workspaceId, workspaceName }, initialSession);
   await page.getByTestId("workspace-storage-release-cache-preview").click({ timeout: 90_000 });
   await page.getByTestId("workspace-storage-confirmation").locator("input").fill(workspaceName);
   await beginWorkspaceV2MethodCapture(page, "workspace.storage.apply");
@@ -8952,6 +8970,21 @@ async function replicaEditRow(page, recorder, state, value, session) {
       && checkpoint.query.payload.snapshot.schemaRevision === receipt.payload.revision?.schemaRevision
       && checkpoint.query.payload.snapshot.dataRevision === receipt.payload.revision?.dataRevision,
   { checkpoint });
+  const protection = await publishReplicaProtectionThroughUi(page, recorder, state, session);
+  const protectedRow = await rawBridgeRequest(page, "query.page", {
+    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
+  });
+  recorder.check("the published protection belongs to the unchanged branch row and revisions",
+    protectedRow.type === "query.page" && protectedRow.payload?.rows?.length === 1
+      && protectedRow.payload.rows[0].id === state.rowId
+      && protectedRow.payload.rows[0][state.column] === value
+      && protectedRow.payload.snapshot?.table === state.tableId
+      && protectedRow.payload.snapshot.schemaRevision === receipt.payload.revision.schemaRevision
+      && protectedRow.payload.snapshot.dataRevision === receipt.payload.revision.dataRevision,
+  { protectedRow, protection });
+}
+
+async function publishReplicaProtectionThroughUi(page, recorder, state, session) {
   // Workspace close awaits a foreground protection snapshot, unlike window exit.
   // Reopen retains local authority and lets its worker finish publishing that snapshot.
   const beforeClose = await rawWorkspaceV2Request(page, "snapshot.list", { cursor: null, limit: 50 });
@@ -8985,17 +9018,7 @@ async function replicaEditRow(page, recorder, state, value, session) {
       && protections.length === 1 && protections[0].state === "ready"
       && protections[0].integrity === "verified" && protections[0].syncState === "replicated",
   { beforeClose, afterClose, protections });
-  const protectedRow = await rawBridgeRequest(page, "query.page", {
-    tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 },
-  });
-  recorder.check("the published protection belongs to the unchanged branch row and revisions",
-    protectedRow.type === "query.page" && protectedRow.payload?.rows?.length === 1
-      && protectedRow.payload.rows[0].id === state.rowId
-      && protectedRow.payload.rows[0][state.column] === value
-      && protectedRow.payload.snapshot?.table === state.tableId
-      && protectedRow.payload.snapshot.schemaRevision === receipt.payload.revision.schemaRevision
-      && protectedRow.payload.snapshot.dataRevision === receipt.payload.revision.dataRevision,
-  { protectedRow, protection: protections[0] });
+  return protections[0];
 }
 
 async function verifyReplicaRecoveryPreviews(page, recorder, recoverySnapshotIds, runtime) {

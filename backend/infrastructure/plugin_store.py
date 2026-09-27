@@ -1,12 +1,14 @@
-"""Durable project-local storage for local-worker plugins."""
+"""Async plugin shared-state fake with the frozen atomic commit semantics."""
 
 from __future__ import annotations
 
-import json
-import sqlite3
-from pathlib import Path
-
+from backend.application.plugin_registry import (
+    PluginRegistryError,
+    build_installation_snapshot,
+    lifecycle_audit_event,
+)
 from backend.contracts.plugin import (
+    InstallPlan,
     PluginAuditEvent,
     PluginPackageRevision,
     PluginPrivateSetting,
@@ -19,16 +21,23 @@ class PluginStoreConflictError(Exception):
 
 
 class InMemoryPluginStore:
+    """In-memory test fake for the Go-owned plugin shared catalog.
+
+    ``commit_install`` mirrors the fixed atomic operation: installation
+    identity, the current package revision and the install audit event are
+    applied together, and a duplicate installation fails closed.
+    """
+
     def __init__(self) -> None:
         self._installations: dict[tuple[str, str], PluginSnapshot] = {}
         self._revisions: dict[tuple[str, str, str], PluginPackageRevision] = {}
         self._settings: dict[tuple[str, str, str], PluginPrivateSetting] = {}
         self._audit: list[PluginAuditEvent] = []
 
-    def get_installation(self, project_key: str, plugin_id: str) -> PluginSnapshot | None:
+    async def get_installation(self, project_key: str, plugin_id: str) -> PluginSnapshot | None:
         return self._installations.get((project_key, plugin_id))
 
-    def save_installation(
+    async def save_installation(
         self,
         snapshot: PluginSnapshot,
         *,
@@ -44,7 +53,7 @@ class InMemoryPluginStore:
         self._installations[key] = snapshot
         return snapshot
 
-    def list_installations(self, project_key: str) -> list[PluginSnapshot]:
+    async def list_installations(self, project_key: str) -> list[PluginSnapshot]:
         return sorted(
             (
                 snapshot
@@ -54,10 +63,10 @@ class InMemoryPluginStore:
             key=lambda snapshot: snapshot.plugin_id,
         )
 
-    def delete_installation(self, project_key: str, plugin_id: str) -> bool:
+    async def delete_installation(self, project_key: str, plugin_id: str) -> bool:
         return self._installations.pop((project_key, plugin_id), None) is not None
 
-    def save_package_revision(
+    async def save_package_revision(
         self,
         revision: PluginPackageRevision,
     ) -> PluginPackageRevision:
@@ -66,7 +75,7 @@ class InMemoryPluginStore:
         )
         return revision
 
-    def list_package_revisions(
+    async def list_package_revisions(
         self,
         project_key: str,
         plugin_id: str,
@@ -77,7 +86,7 @@ class InMemoryPluginStore:
             if project == project_key and plugin == plugin_id
         ]
 
-    def delete_package_revision(
+    async def delete_package_revision(
         self,
         project_key: str,
         plugin_id: str,
@@ -85,16 +94,16 @@ class InMemoryPluginStore:
     ) -> bool:
         return self._revisions.pop((project_key, plugin_id, package_hash), None) is not None
 
-    def delete_package_revisions(self, project_key: str, plugin_id: str) -> int:
+    async def delete_package_revisions(self, project_key: str, plugin_id: str) -> int:
         keys = [key for key in self._revisions if key[:2] == (project_key, plugin_id)]
         for key in keys:
             del self._revisions[key]
         return len(keys)
 
-    def is_package_path_referenced(self, local_path: str) -> bool:
+    async def is_package_path_referenced(self, local_path: str) -> bool:
         return any(item.local_path == local_path for item in self._revisions.values())
 
-    def save_private_setting(
+    async def save_private_setting(
         self,
         setting: PluginPrivateSetting,
         *,
@@ -110,7 +119,7 @@ class InMemoryPluginStore:
         self._settings[key] = setting
         return setting
 
-    def get_private_setting(
+    async def get_private_setting(
         self,
         project_key: str,
         plugin_id: str,
@@ -118,201 +127,51 @@ class InMemoryPluginStore:
     ) -> PluginPrivateSetting | None:
         return self._settings.get((project_key, plugin_id, setting_key))
 
-    def delete_private_settings(self, project_key: str, plugin_id: str) -> int:
+    async def delete_private_settings(self, project_key: str, plugin_id: str) -> int:
         keys = [key for key in self._settings if key[:2] == (project_key, plugin_id)]
         for key in keys:
             del self._settings[key]
         return len(keys)
 
-    def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
+    async def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
         self._audit.append(event)
         return event
 
-    def list_audit(self, project_key: str, plugin_id: str) -> list[PluginAuditEvent]:
+    async def list_audit(self, project_key: str, plugin_id: str) -> list[PluginAuditEvent]:
         return [
             event
             for event in self._audit
             if event.project_key == project_key and event.plugin_id == plugin_id
         ]
 
-    def list_project_audit(self, project_key: str) -> list[PluginAuditEvent]:
+    async def list_project_audit(self, project_key: str) -> list[PluginAuditEvent]:
         return [event for event in self._audit if event.project_key == project_key]
 
-
-class PluginProjectStore(InMemoryPluginStore):
-    """SQLite-backed store using product-neutral JSON snapshots."""
-
-    def __init__(self, db_path: Path) -> None:
-        super().__init__()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.package_cache = db_path.parent / "plugin-packages"
-        self._connection = sqlite3.connect(db_path)
-        self._connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS plugin_records (
-                kind TEXT NOT NULL,
-                project_key TEXT NOT NULL,
-                plugin_id TEXT NOT NULL,
-                item_key TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                PRIMARY KEY (kind, project_key, plugin_id, item_key)
-            )
-            """
-        )
-        self._connection.commit()
-        self._load()
-
-    def _load(self) -> None:
-        for kind, project_key, plugin_id, item_key, payload in self._connection.execute(
-            "SELECT kind, project_key, plugin_id, item_key, payload FROM plugin_records"
-        ):
-            value = json.loads(payload)
-            if kind == "installation":
-                self._installations[(project_key, plugin_id)] = PluginSnapshot.model_validate(value)
-            elif kind == "revision":
-                self._revisions[(project_key, plugin_id, item_key)] = (
-                    PluginPackageRevision.model_validate(value)
-                )
-            elif kind == "setting":
-                self._settings[(project_key, plugin_id, item_key)] = (
-                    PluginPrivateSetting.model_validate(value)
-                )
-            elif kind == "audit":
-                self._audit.append(PluginAuditEvent.model_validate(value))
-
-    def _upsert(
+    async def commit_install(
         self,
-        kind: str,
-        project_key: str,
-        plugin_id: str,
-        item_key: str,
-        value: object,
-    ) -> None:
-        payload = value.model_dump(mode="json", by_alias=True)  # type: ignore[attr-defined]
-        self._connection.execute(
-            """
-            INSERT INTO plugin_records(kind, project_key, plugin_id, item_key, payload)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(kind, project_key, plugin_id, item_key)
-            DO UPDATE SET payload = excluded.payload
-            """,
-            (
-                kind,
-                project_key,
-                plugin_id,
-                item_key,
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            ),
-        )
-        self._connection.commit()
-
-    def save_installation(
-        self,
-        snapshot: PluginSnapshot,
+        plan: InstallPlan,
         *,
-        expected_revision: int | None,
+        package_revision: PluginPackageRevision,
     ) -> PluginSnapshot:
-        saved = super().save_installation(snapshot, expected_revision=expected_revision)
-        self._upsert(
-            "installation",
-            saved.project_key,
-            saved.plugin_id,
-            "current",
-            saved,
+        key = (plan.project_key, plan.manifest.plugin_id)
+        if self._installations.get(key) is not None:
+            raise PluginRegistryError(
+                "plugin is already installed",
+                code="plugin_already_installed",
+            )
+        snapshot = build_installation_snapshot(plan)
+        revision_key = (
+            package_revision.project_key,
+            package_revision.plugin_id,
+            package_revision.package_hash,
         )
-        return saved
-
-    def delete_installation(self, project_key: str, plugin_id: str) -> bool:
-        removed = super().delete_installation(project_key, plugin_id)
-        self._connection.execute(
-            "DELETE FROM plugin_records WHERE kind='installation' AND project_key=? AND plugin_id=?",
-            (project_key, plugin_id),
-        )
-        self._connection.commit()
-        return removed
-
-    def save_package_revision(
-        self,
-        revision: PluginPackageRevision,
-    ) -> PluginPackageRevision:
-        saved = super().save_package_revision(revision)
-        self._upsert(
-            "revision",
-            saved.project_key,
-            saved.plugin_id,
-            saved.package_hash,
-            saved,
-        )
-        return saved
-
-    def delete_package_revision(
-        self,
-        project_key: str,
-        plugin_id: str,
-        package_hash: str,
-    ) -> bool:
-        removed = super().delete_package_revision(project_key, plugin_id, package_hash)
-        self._connection.execute(
-            """
-            DELETE FROM plugin_records
-            WHERE kind='revision' AND project_key=? AND plugin_id=? AND item_key=?
-            """,
-            (project_key, plugin_id, package_hash),
-        )
-        self._connection.commit()
-        return removed
-
-    def delete_package_revisions(self, project_key: str, plugin_id: str) -> int:
-        removed = super().delete_package_revisions(project_key, plugin_id)
-        self._connection.execute(
-            "DELETE FROM plugin_records WHERE kind='revision' AND project_key=? AND plugin_id=?",
-            (project_key, plugin_id),
-        )
-        self._connection.commit()
-        return removed
-
-    def save_private_setting(
-        self,
-        setting: PluginPrivateSetting,
-        *,
-        expected_revision: int | None,
-    ) -> PluginPrivateSetting:
-        saved = super().save_private_setting(setting, expected_revision=expected_revision)
-        self._upsert(
-            "setting",
-            saved.project_key,
-            saved.plugin_id,
-            saved.setting_key,
-            saved,
-        )
-        return saved
-
-    def delete_private_settings(self, project_key: str, plugin_id: str) -> int:
-        removed = super().delete_private_settings(project_key, plugin_id)
-        self._connection.execute(
-            "DELETE FROM plugin_records WHERE kind='setting' AND project_key=? AND plugin_id=?",
-            (project_key, plugin_id),
-        )
-        self._connection.commit()
-        return removed
-
-    def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
-        recorded = super().record_audit(event)
-        self._upsert(
-            "audit",
-            event.project_key,
-            event.plugin_id,
-            event.event_id,
-            event,
-        )
-        return recorded
-
-    def close(self) -> None:
-        self._connection.close()
+        self._installations[key] = snapshot
+        self._revisions[revision_key] = package_revision
+        self._audit.append(lifecycle_audit_event(snapshot, "install"))
+        return snapshot
 
 
 __all__ = [
     "InMemoryPluginStore",
-    "PluginProjectStore",
     "PluginStoreConflictError",
 ]

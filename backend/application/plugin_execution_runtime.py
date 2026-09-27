@@ -36,9 +36,9 @@ PluginNotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 
 
 class RegistryPort(Protocol):
-    def get(self, project_key: str, plugin_id: str) -> PluginSnapshot | None: ...
+    async def get(self, project_key: str, plugin_id: str) -> PluginSnapshot | None: ...
 
-    def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent: ...
+    async def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent: ...
 
 
 class WorkerPort(Protocol):
@@ -110,13 +110,13 @@ class PluginExecutionRuntime:
     def set_notification_sink(self, sink: PluginNotificationSink) -> None:
         self._notification_sink = sink
 
-    def describe(
+    async def describe(
         self,
         plugin_id: str,
         action_id: str,
         context: CommandContext,
     ) -> ActionAvailability:
-        installation = self._registry.get(context.project_key, plugin_id)
+        installation = await self._registry.get(context.project_key, plugin_id)
         if installation is None:
             return ActionAvailability(available=False, reasons=["plugin_not_installed"])
         reasons = list(installation.blocking_reasons)
@@ -150,10 +150,10 @@ class PluginExecutionRuntime:
             raise ValueError("host execution identity is required")
         if task_id in self._executions:
             raise ValueError("plugin task identity is already executing")
-        availability = self.describe(plugin_id, action_id, context)
+        availability = await self.describe(plugin_id, action_id, context)
         if not availability.available:
             raise ValueError(",".join(availability.reasons))
-        installation = self._registry.get(context.project_key, plugin_id)
+        installation = await self._registry.get(context.project_key, plugin_id)
         if installation is None:
             raise ValueError("plugin_not_installed")
         action = _find_action(installation, action_id)
@@ -249,7 +249,7 @@ class PluginExecutionRuntime:
                 }
             )
         finished_at = datetime.now(UTC).replace(microsecond=0)
-        self._registry.record_audit(
+        await self._registry.record_audit(
             PluginAuditEvent(
                 event_id=str(uuid.uuid4()),
                 project_key=initial.project_key,

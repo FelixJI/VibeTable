@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ from backend.contracts.plugin import (
     ConfirmationPreview,
     PluginPrivateSetting,
 )
+from backend.infrastructure.plugin_package import inspect_plugin_package
+from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_worker import (
     InMemoryPluginWorkerAdapter,
     NodePluginWorkerAdapter,
@@ -25,9 +28,13 @@ from backend.infrastructure.plugin_worker import (
 )
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
+_UNRETAINED_PACKAGE_HASH = f"sha256:{'c' * 64}"
+
 
 class FakePluginStore:
-    def __init__(self, package: Path, *, permissions: dict[str, Any]) -> None:
+    """Async in-memory shared-state fake for the Worker boundary."""
+
+    def __init__(self, *, permissions: dict[str, Any], package_hash: str) -> None:
         manifest = SimpleNamespace(
             plugin_id="com.example.safe-worker",
             permissions=permissions,
@@ -39,20 +46,14 @@ class FakePluginStore:
             ],
         )
         self.installation = SimpleNamespace(
-            plugin_id=manifest.plugin_id,
+            plugin_id="com.example.safe-worker",
             version="1.0.0",
-            package_hash="sha256:test",
+            package_hash=package_hash,
             manifest=manifest,
-        )
-        self.revision = SimpleNamespace(
-            version="1.0.0",
-            package_hash="sha256:test",
-            local_path=str(package),
-            state="current",
         )
         self.settings: dict[tuple[str, str, str], PluginPrivateSetting] = {}
 
-    def get_installation(self, project_key: str, plugin_id: str) -> Any | None:
+    async def get_installation(self, project_key: str, plugin_id: str) -> SimpleNamespace | None:
         if (project_key, plugin_id) == (
             "project-a",
             "com.example.safe-worker",
@@ -60,18 +61,7 @@ class FakePluginStore:
             return self.installation
         return None
 
-    def list_package_revisions(
-        self,
-        project_key: str,
-        plugin_id: str,
-    ) -> list[Any]:
-        assert (project_key, plugin_id) == (
-            "project-a",
-            "com.example.safe-worker",
-        )
-        return [self.revision]
-
-    def get_private_setting(
+    async def get_private_setting(
         self,
         project_key: str,
         plugin_id: str,
@@ -79,7 +69,7 @@ class FakePluginStore:
     ) -> PluginPrivateSetting | None:
         return self.settings.get((project_key, plugin_id, setting_key))
 
-    def save_private_setting(
+    async def save_private_setting(
         self,
         setting: PluginPrivateSetting,
         *,
@@ -190,11 +180,64 @@ class FakeReporter:
 
 
 def _package(tmp_path: Path, source: str) -> Path:
+    """Create one complete local plugin folder with the given Worker source."""
+
     package = tmp_path / "plugin"
     worker = package / "dist" / "worker.js"
     worker.parent.mkdir(parents=True)
     worker.write_text(source, encoding="utf-8")
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "$schema": "vibetable.plugin-manifest.v1",
+                "pluginId": "com.example.safe-worker",
+                "version": "1.0.0",
+                "displayName": {"en": "Safe Worker"},
+                "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+                "permissions": {"data": [], "files": [], "privateStorage": False},
+                "actions": [
+                    {
+                        "actionId": "safe-action",
+                        "displayName": {"en": "Safe"},
+                        "mode": "local",
+                        "risk": "read",
+                        "workerEntry": "dist/worker.js",
+                    }
+                ],
+                "ui": {"customViews": []},
+            }
+        ),
+        encoding="utf-8",
+    )
     return package
+
+
+def _retained_worker(
+    tmp_path: Path,
+    source: str,
+    *,
+    permissions: dict[str, Any],
+    **adapter_kwargs: Any,
+) -> tuple[NodePluginWorkerAdapter, FakePluginStore]:
+    """Retain one real package in the local cache and build the adapter."""
+
+    folder = _package(tmp_path, source)
+    lifecycle = LocalPluginPackageLifecycle(tmp_path / "cache")
+    inspected = inspect_plugin_package(folder)
+    lifecycle.retain(
+        source_location=str(folder),
+        expected_hash=inspected.package_hash,
+    )
+    store = FakePluginStore(permissions=permissions, package_hash=inspected.package_hash)
+    defaults: dict[str, Any] = {
+        "store": store,
+        "profiles": {},
+        "client": FakeProductReadClient(),
+        "package_lifecycle": lifecycle,
+        "timeout_seconds": 3,
+    }
+    defaults.update(adapter_kwargs)
+    return NodePluginWorkerAdapter(**defaults), store
 
 
 def _context() -> dict[str, Any]:
@@ -212,12 +255,12 @@ def _context() -> dict[str, Any]:
     }
 
 
-def _execution() -> dict[str, Any]:
+def _execution(*, package_hash: str = _UNRETAINED_PACKAGE_HASH) -> dict[str, Any]:
     return {
         "projectKey": "project-a",
         "pluginId": "com.example.safe-worker",
         "pluginVersion": "1.0.0",
-        "packageHash": "sha256:test",
+        "packageHash": package_hash,
         "actionId": "safe-action",
         "context": _context(),
     }
@@ -235,6 +278,7 @@ async def test_dynamic_worker_profile_refreshes_after_schema_change() -> None:
         store=SimpleNamespace(),
         profiles={},
         client=client,
+        package_lifecycle=SimpleNamespace(),
     )
 
     first = await adapter._profile("articles")
@@ -253,6 +297,7 @@ async def test_dynamic_worker_profile_reuses_matching_context_revision() -> None
         store=SimpleNamespace(),
         profiles={},
         client=client,
+        package_lifecycle=SimpleNamespace(),
     )
 
     first = await adapter._profile(
@@ -274,6 +319,7 @@ async def test_dynamic_worker_profile_refresh_is_time_bounded() -> None:
         store=SimpleNamespace(),
         profiles={},
         client=HangingSchemaClient(),
+        package_lifecycle=SimpleNamespace(),
         timeout_seconds=0.01,
     )
 
@@ -286,7 +332,7 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
     tmp_path: Path,
 ) -> None:
     _require_node()
-    package = _package(
+    adapter, store = _retained_worker(
         tmp_path,
         """
         export async function run(input, capabilities, signal) {
@@ -308,9 +354,6 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
           };
         }
         """,
-    )
-    store = FakePluginStore(
-        package,
         permissions={
             "data": [
                 {
@@ -321,10 +364,6 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
             ],
             "privateStorage": True,
         },
-    )
-    client = FakeProductReadClient()
-    adapter = NodePluginWorkerAdapter(
-        store=store,
         profiles={
             "articles": CollectionProfile(
                 collection="articles",
@@ -333,20 +372,18 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
                 date_updated_field=None,
             )
         },
-        client=client,
-        timeout_seconds=3,
     )
 
     result = await adapter.run(
         "dist/worker.js",
         _context(),
         {"preference": "compact"},
-        execution=_execution(),
+        execution=_execution(package_hash=store.installation.package_hash),
     )
 
     assert result["summary"] == "compact"
     assert result["metrics"] == [{"label": "rows", "value": 1}]
-    assert client.calls == [
+    assert adapter._client.calls == [
         (
             "articles",
             {
@@ -358,7 +395,7 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
             },
         )
     ]
-    setting = store.get_private_setting(
+    setting = await store.get_private_setting(
         "project-a",
         "com.example.safe-worker",
         "preference",
@@ -372,7 +409,7 @@ async def test_worker_rejects_node_globals_and_undeclared_product_data(
     tmp_path: Path,
 ) -> None:
     _require_node()
-    package = _package(
+    adapter, store = _retained_worker(
         tmp_path,
         """
         export async function run(_input, capabilities) {
@@ -386,21 +423,16 @@ async def test_worker_rejects_node_globals_and_undeclared_product_data(
           });
         }
         """,
-    )
-    adapter = NodePluginWorkerAdapter(
-        store=FakePluginStore(
-            package,
-            permissions={
-                "data": [
-                    {
-                        "collection": "$active",
-                        "operations": ["read"],
-                        "fields": ["$configured"],
-                    }
-                ],
-                "privateStorage": False,
-            },
-        ),
+        permissions={
+            "data": [
+                {
+                    "collection": "$active",
+                    "operations": ["read"],
+                    "fields": ["$configured"],
+                }
+            ],
+            "privateStorage": False,
+        },
         profiles={
             "articles": CollectionProfile(
                 collection="articles",
@@ -415,8 +447,6 @@ async def test_worker_rejects_node_globals_and_undeclared_product_data(
                 date_updated_field=None,
             ),
         },
-        client=FakeProductReadClient(),
-        timeout_seconds=3,
     )
 
     with pytest.raises(PluginWorkerError, match="not declared"):
@@ -424,7 +454,7 @@ async def test_worker_rejects_node_globals_and_undeclared_product_data(
             "dist/worker.js",
             _context(),
             {},
-            execution=_execution(),
+            execution=_execution(package_hash=store.installation.package_hash),
         )
 
 
@@ -433,7 +463,7 @@ async def test_worker_supports_declared_file_and_structured_ui_capabilities(
     tmp_path: Path,
 ) -> None:
     _require_node()
-    package = _package(
+    adapter, store = _retained_worker(
         tmp_path,
         """
         export async function run(_input, capabilities) {
@@ -458,29 +488,20 @@ async def test_worker_supports_declared_file_and_structured_ui_capabilities(
           return result;
         }
         """,
+        permissions={
+            "data": [],
+            "files": ["pickRead", "pickWrite"],
+            "privateStorage": False,
+        },
+        file_adapter=FakeFileAdapter(),
     )
-    file_adapter = FakeFileAdapter()
     reporter = FakeReporter()
     execution = {
-        **_execution(),
+        **_execution(package_hash=store.installation.package_hash),
         "runId": "run-1",
         "_hostReporter": reporter,
         "_hostCancel": SimpleNamespace(cancelled=True),
     }
-    adapter = NodePluginWorkerAdapter(
-        store=FakePluginStore(
-            package,
-            permissions={
-                "data": [],
-                "files": ["pickRead", "pickWrite"],
-                "privateStorage": False,
-            },
-        ),
-        profiles={},
-        client=FakeProductReadClient(),
-        file_adapter=file_adapter,
-        timeout_seconds=3,
-    )
 
     result = await adapter.run(
         "dist/worker.js",
@@ -490,14 +511,14 @@ async def test_worker_supports_declared_file_and_structured_ui_capabilities(
     )
 
     assert result["summary"] == "copied 5"
-    assert file_adapter.written == b"hello"
+    assert adapter._file_adapter.written == b"hello"
     assert reporter.updates == [{"done": 1, "total": 1, "message": "saved"}]
 
 
 @pytest.mark.asyncio
 async def test_worker_blocks_function_constructor_escape(tmp_path: Path) -> None:
     _require_node()
-    package = _package(
+    adapter, store = _retained_worker(
         tmp_path,
         """
         export async function run(_input, capabilities) {
@@ -514,22 +535,14 @@ async def test_worker_blocks_function_constructor_escape(tmp_path: Path) -> None
           };
         }
         """,
-    )
-    adapter = NodePluginWorkerAdapter(
-        store=FakePluginStore(
-            package,
-            permissions={"data": [], "privateStorage": False},
-        ),
-        profiles={},
-        client=FakeProductReadClient(),
-        timeout_seconds=3,
+        permissions={"data": [], "privateStorage": False},
     )
 
     result = await adapter.run(
         "dist/worker.js",
         _context(),
         {},
-        execution=_execution(),
+        execution=_execution(package_hash=store.installation.package_hash),
     )
 
     assert result["status"] == "success"
@@ -539,17 +552,10 @@ async def test_worker_blocks_function_constructor_escape(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_worker_times_out_and_terminates_infinite_code(tmp_path: Path) -> None:
     _require_node()
-    package = _package(
+    adapter, store = _retained_worker(
         tmp_path,
         "export async function run() { while (true) {} }",
-    )
-    adapter = NodePluginWorkerAdapter(
-        store=FakePluginStore(
-            package,
-            permissions={"data": [], "privateStorage": False},
-        ),
-        profiles={},
-        client=FakeProductReadClient(),
+        permissions={"data": [], "privateStorage": False},
         timeout_seconds=0.2,
     )
 
@@ -558,7 +564,7 @@ async def test_worker_times_out_and_terminates_infinite_code(tmp_path: Path) -> 
             "dist/worker.js",
             _context(),
             {},
-            execution=_execution(),
+            execution=_execution(package_hash=store.installation.package_hash),
         )
 
 
@@ -587,6 +593,7 @@ def _make_adapter(**kwargs: Any) -> NodePluginWorkerAdapter:
         "store": SimpleNamespace(),
         "profiles": {},
         "client": SimpleNamespace(),
+        "package_lifecycle": SimpleNamespace(),
         "node_executable": "node",
     }
     defaults.update(kwargs)
@@ -854,24 +861,27 @@ async def test_data_read_rejects_invalid_cursor_type() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_storage_rejects_undeclared_private_storage() -> None:
-    adapter = _make_adapter()
+@pytest.mark.asyncio
+async def test_storage_rejects_undeclared_private_storage(tmp_path: Path) -> None:
+    adapter = _make_adapter(store=FakePluginStore(permissions={}, package_hash="sha256:x"))
     with pytest.raises(PluginWorkerError, match="did not declare privateStorage"):
-        adapter._storage(_resolved(), "storage.private.get", {"key": "k"})
+        await adapter._storage(_resolved(), "storage.private.get", {"key": "k"})
 
 
-def test_storage_rejects_non_dict_args() -> None:
-    adapter = _make_adapter()
+@pytest.mark.asyncio
+async def test_storage_rejects_non_dict_args() -> None:
+    adapter = _make_adapter(store=FakePluginStore(permissions={}, package_hash="sha256:x"))
     resolved = _resolved({"privateStorage": True})
     with pytest.raises(PluginWorkerError, match="key is required"):
-        adapter._storage(resolved, "storage.private.get", "not-a-dict")
+        await adapter._storage(resolved, "storage.private.get", "not-a-dict")
 
 
-def test_storage_rejects_invalid_key_format() -> None:
-    adapter = _make_adapter()
+@pytest.mark.asyncio
+async def test_storage_rejects_invalid_key_format() -> None:
+    adapter = _make_adapter(store=FakePluginStore(permissions={}, package_hash="sha256:x"))
     resolved = _resolved({"privateStorage": True})
     with pytest.raises(PluginWorkerError, match="key is invalid"):
-        adapter._storage(resolved, "storage.private.get", {"key": "bad key!"})
+        await adapter._storage(resolved, "storage.private.get", {"key": "bad key!"})
 
 
 # ---------------------------------------------------------------------------
@@ -956,76 +966,161 @@ async def test_validate_mutation_plan_rejects_undeclared_fields() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_rejects_missing_project_key() -> None:
+@pytest.mark.asyncio
+async def test_resolve_rejects_missing_project_key() -> None:
     adapter = _make_adapter()
     with pytest.raises(PluginWorkerError, match="no projectKey"):
-        adapter._resolve("worker.js", {"projectKey": ""}, _execution())
+        await adapter._resolve("worker.js", {"projectKey": ""}, _execution())
 
 
-def test_resolve_rejects_non_dict_execution() -> None:
+@pytest.mark.asyncio
+async def test_resolve_rejects_non_dict_execution() -> None:
     adapter = _make_adapter()
     with pytest.raises(PluginWorkerError, match="execution identity is unavailable"):
-        adapter._resolve("worker.js", {"projectKey": "p"}, None)  # type: ignore[arg-type]
+        await adapter._resolve("worker.js", {"projectKey": "p"}, None)  # type: ignore[arg-type]
 
 
-def test_resolve_rejects_incomplete_execution_fields(tmp_path: Path) -> None:
-    adapter = _make_adapter(store=FakePluginStore(tmp_path, permissions={}))
+@pytest.mark.asyncio
+async def test_resolve_rejects_incomplete_execution_fields() -> None:
+    adapter = _make_adapter(
+        store=FakePluginStore(permissions={}, package_hash=_UNRETAINED_PACKAGE_HASH)
+    )
     ctx = {"projectKey": "project-a"}
     with pytest.raises(PluginWorkerError, match="identity is invalid"):
-        adapter._resolve("worker.js", ctx, {**_execution(), "pluginId": ""})
+        await adapter._resolve("dist/worker.js", ctx, {**_execution(), "pluginId": ""})
 
 
-def test_resolve_rejects_project_key_mismatch(tmp_path: Path) -> None:
-    adapter = _make_adapter(store=FakePluginStore(tmp_path, permissions={}))
+@pytest.mark.asyncio
+async def test_resolve_rejects_project_key_mismatch() -> None:
+    adapter = _make_adapter(
+        store=FakePluginStore(permissions={}, package_hash=_UNRETAINED_PACKAGE_HASH)
+    )
     ctx = {"projectKey": "project-a"}
     with pytest.raises(PluginWorkerError, match="project identity does not match"):
-        adapter._resolve("worker.js", ctx, {**_execution(), "projectKey": "other"})
+        await adapter._resolve("dist/worker.js", ctx, {**_execution(), "projectKey": "other"})
 
 
-def test_resolve_rejects_missing_installation(tmp_path: Path) -> None:
-    adapter = _make_adapter(store=FakePluginStore(tmp_path, permissions={}))
+@pytest.mark.asyncio
+async def test_resolve_rejects_missing_installation() -> None:
+    adapter = _make_adapter(
+        store=FakePluginStore(permissions={}, package_hash=_UNRETAINED_PACKAGE_HASH)
+    )
     ctx = {"projectKey": "project-x"}
     exec_bad = {**_execution(), "projectKey": "project-x"}
     with pytest.raises(PluginWorkerError, match="installation is unavailable"):
-        adapter._resolve("worker.js", ctx, exec_bad)
+        await adapter._resolve("dist/worker.js", ctx, exec_bad)
 
 
-def test_resolve_rejects_stale_package_identity(tmp_path: Path) -> None:
-    store = FakePluginStore(tmp_path, permissions={})
-    adapter = _make_adapter(store=store)
+@pytest.mark.asyncio
+async def test_resolve_rejects_stale_package_identity(tmp_path: Path) -> None:
+    adapter, store = _retained_worker(
+        tmp_path,
+        "export async function run() { return {}; }",
+        permissions={},
+    )
     ctx = {"projectKey": "project-a"}
-    exec_stale = {**_execution(), "packageHash": "sha256:different"}
+    exec_stale = {**_execution(), "packageHash": "sha256:" + "b" * 64}
+    assert exec_stale["packageHash"] != store.installation.package_hash
     with pytest.raises(PluginWorkerError, match="package identity is stale"):
-        adapter._resolve("worker.js", ctx, exec_stale)
+        await adapter._resolve("dist/worker.js", ctx, exec_stale)
 
 
-def test_resolve_rejects_unowned_worker_entry(tmp_path: Path) -> None:
-    store = FakePluginStore(tmp_path, permissions={})
-    adapter = _make_adapter(store=store)
+@pytest.mark.asyncio
+async def test_resolve_rejects_unowned_worker_entry(tmp_path: Path) -> None:
+    adapter, _store = _retained_worker(
+        tmp_path,
+        "export async function run() { return {}; }",
+        permissions={},
+    )
     ctx = {"projectKey": "project-a"}
     with pytest.raises(PluginWorkerError, match="does not own"):
-        adapter._resolve("dist/other.js", ctx, _execution())
+        await adapter._resolve(
+            "dist/other.js", ctx, _execution(package_hash=_store.installation.package_hash)
+        )
 
 
-def test_resolve_rejects_unloadable_worker_entry(tmp_path: Path) -> None:
-    store = FakePluginStore(tmp_path, permissions={})
-    # Point local_path at a non-existent directory.
-    store.revision.local_path = str(tmp_path / "missing")
-    adapter = _make_adapter(store=store)
+@pytest.mark.asyncio
+async def test_resolve_rejects_unloadable_worker_entry(tmp_path: Path) -> None:
+    # No package was retained for this hash, so the derived cache file is missing.
+    adapter = _make_adapter(
+        store=FakePluginStore(permissions={}, package_hash=_UNRETAINED_PACKAGE_HASH),
+        package_lifecycle=LocalPluginPackageLifecycle(tmp_path / "cache"),
+    )
     ctx = {"projectKey": "project-a"}
     with pytest.raises(PluginWorkerError, match="could not be loaded"):
-        adapter._resolve("dist/worker.js", ctx, _execution())
+        await adapter._resolve("dist/worker.js", ctx, _execution())
 
 
-def test_resolve_rejects_oversized_worker_entry(tmp_path: Path) -> None:
-    # Create a real package whose worker entry exceeds the minimum byte limit.
+@pytest.mark.asyncio
+async def test_resolve_rejects_oversized_worker_entry(tmp_path: Path) -> None:
+    # Retain a real package whose worker entry exceeds the configured limit.
     big_source = "export async function run() { return {}; }\n" + "// " + ("x" * 1200)
-    package = _package(tmp_path / "big", big_source)
-    store = FakePluginStore(package, permissions={})
-    adapter = _make_adapter(store=store, max_message_bytes=1024)
+    adapter, store = _retained_worker(
+        tmp_path,
+        big_source,
+        permissions={},
+        max_message_bytes=1024,
+    )
     ctx = {"projectKey": "project-a"}
     with pytest.raises(PluginWorkerError, match="exceeds the size limit"):
-        adapter._resolve("dist/worker.js", ctx, _execution())
+        await adapter._resolve(
+            "dist/worker.js", ctx, _execution(package_hash=store.installation.package_hash)
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_ignores_shared_revision_state_and_local_path(tmp_path: Path) -> None:
+    # The retained cache alone resolves the Worker entry; no package revision
+    # rows and no trusted shared local path exist in this store.
+    adapter, store = _retained_worker(
+        tmp_path,
+        "export async function run() { return {}; }",
+        permissions={},
+    )
+    ctx = {"projectKey": "project-a"}
+
+    resolved = await adapter._resolve(
+        "dist/worker.js", ctx, _execution(package_hash=store.installation.package_hash)
+    )
+
+    assert resolved.plugin_id == "com.example.safe-worker"
+    assert resolved.source.startswith("export async function run")
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_retained_package_hash_drift(tmp_path: Path) -> None:
+    adapter, store = _retained_worker(
+        tmp_path,
+        "export async function run() { return {}; }",
+        permissions={},
+    )
+    # Corrupt the retained cache entry with a different valid package.
+    other = _package(tmp_path / "other", "export async function run() { return 1; }")
+    other_hash = inspect_plugin_package(other).package_hash
+    other_retained = adapter._package_lifecycle.retain(
+        source_location=str(other),
+        expected_hash=other_hash,
+    )
+    retained = Path(adapter._package_lifecycle.retained_location(store.installation.package_hash))
+    retained.write_bytes(Path(other_retained).read_bytes())
+    ctx = {"projectKey": "project-a"}
+
+    assert other_hash != store.installation.package_hash
+    with pytest.raises(PluginWorkerError, match="integrity verification"):
+        await adapter._resolve(
+            "dist/worker.js", ctx, _execution(package_hash=store.installation.package_hash)
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_malformed_package_hash(tmp_path: Path) -> None:
+    adapter = _make_adapter(
+        store=FakePluginStore(permissions={}, package_hash="not-a-digest"),
+        package_lifecycle=LocalPluginPackageLifecycle(tmp_path / "cache"),
+    )
+    ctx = {"projectKey": "project-a"}
+    with pytest.raises(PluginWorkerError, match="could not be loaded"):
+        await adapter._resolve("dist/worker.js", ctx, _execution(package_hash="not-a-digest"))
 
 
 # ---------------------------------------------------------------------------
@@ -1096,16 +1191,6 @@ async def test_profile_rejects_collection_outside_schema() -> None:
     adapter = _make_adapter(profiles={}, client=BadClient())
     with pytest.raises(PluginWorkerError, match="outside the product schema"):
         await adapter._profile("unknown-collection")
-
-
-def test_resolve_rejects_missing_current_revision(tmp_path: Path) -> None:
-    store = FakePluginStore(tmp_path, permissions={})
-    # Revision exists but state is not "current".
-    store.revision.state = "stale"
-    adapter = _make_adapter(store=store)
-    ctx = {"projectKey": "project-a"}
-    with pytest.raises(PluginWorkerError, match="revision is unavailable"):
-        adapter._resolve("dist/worker.js", ctx, _execution())
 
 
 def test_read_grant_skips_grant_without_read_operation() -> None:

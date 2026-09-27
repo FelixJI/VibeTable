@@ -11,7 +11,6 @@ namespace VibeTable.Desktop.Services;
 /// </summary>
 public interface IPluginRpcGateway : IDisposable
 {
-    event Action<PluginEventEnvelope>? CatalogChanged;
     event Action<PluginEventEnvelope>? TaskChanged;
     event Action<PluginEventEnvelope>? InteractionRequested;
     event Action<PluginEventEnvelope>? FileRequested;
@@ -19,20 +18,12 @@ public interface IPluginRpcGateway : IDisposable
     /// <summary>Raised once when the backing client transport terminates.</summary>
     event Action? Terminated;
 
-    Task<PluginRuntimeSnapshot[]> ListCatalogAsync(
-        PluginCatalogListParams request, CancellationToken token);
-    Task<PluginRuntimeAuditEvent[]> ListAuditAsync(
-        PluginAuditListParams request, CancellationToken token);
-    Task<PluginRuntimeAuditEvent[]> ListPendingCleanupAsync(
-        PluginCatalogListParams request, CancellationToken token);
     Task<PluginRuntimeInstallPlan> InspectInstallAsync(
         PluginInspectInstallParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> CommitInstallAsync(
         PluginCommitInstallParams request, CancellationToken token);
     Task<bool> CancelInstallAsync(
         PluginInstallCancelParams request, CancellationToken token);
-    Task<PluginRuntimeSnapshot> SetEnabledAsync(
-        PluginSetEnabledParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> UpgradeAsync(
         PluginUpgradeParams request, CancellationToken token);
     Task<PluginRuntimeSnapshot> RollbackAsync(

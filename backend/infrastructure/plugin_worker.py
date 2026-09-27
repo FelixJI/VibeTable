@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 from pydantic import JsonValue
 
+from backend.application.plugin_package_lifecycle import PluginPackageLifecycle
 from backend.contracts.data_profile import collection_profile_from_definition
 from backend.contracts.plugin import (
     ConfirmationPreview,
@@ -27,9 +28,13 @@ from backend.contracts.plugin import (
     PluginProgress,
     PluginResult,
     PluginRisk,
+    PluginSnapshot,
 )
 from backend.contracts.query import TableQuery
-from backend.infrastructure.plugin_package import read_plugin_package_member
+from backend.infrastructure.plugin_package import (
+    inspect_plugin_package,
+    read_plugin_package_member,
+)
 from backend.infrastructure.plugin_worker_runner import RUNNER_SOURCE
 
 _STORAGE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -55,6 +60,30 @@ class _PluginDataClient(Protocol):
     async def describe_table(self, table_id: str) -> dict[str, JsonValue]: ...
 
 
+class _PluginInstallationStore(Protocol):
+    """The closed shared-state reads/writes the Worker boundary needs."""
+
+    async def get_installation(
+        self,
+        project_key: str,
+        plugin_id: str,
+    ) -> PluginSnapshot | None: ...
+
+    async def get_private_setting(
+        self,
+        project_key: str,
+        plugin_id: str,
+        setting_key: str,
+    ) -> PluginPrivateSetting | None: ...
+
+    async def save_private_setting(
+        self,
+        setting: PluginPrivateSetting,
+        *,
+        expected_revision: int | None,
+    ) -> PluginPrivateSetting: ...
+
+
 @dataclass(frozen=True)
 class _ResolvedWorker:
     project_key: str
@@ -66,18 +95,20 @@ class _ResolvedWorker:
 class NodePluginWorkerAdapter:
     """Execute a pre-built ESM Worker behind closed host capabilities.
 
-    A package is resolved from the installed project snapshot, not from a path
-    supplied by JavaScript.  Every invocation gets a fresh process.  This is
-    slower than a pool but gives deterministic termination and prevents state
-    or authority from leaking between plugins.
+    A package is derived from this host's content-addressed cache for the
+    installed snapshot's package hash, never from a path supplied by
+    JavaScript or trusted from the shared revision record.  Every invocation
+    gets a fresh process.  This is slower than a pool but gives deterministic
+    termination and prevents state or authority from leaking between plugins.
     """
 
     def __init__(
         self,
         *,
-        store: Any,
+        store: _PluginInstallationStore,
         profiles: dict[str, Any],
         client: _PluginDataClient,
+        package_lifecycle: PluginPackageLifecycle,
         node_executable: str | None = None,
         timeout_seconds: float = 15.0,
         max_concurrency: int = 2,
@@ -89,6 +120,7 @@ class NodePluginWorkerAdapter:
         self._profiles = profiles
         self._dynamic_profiles = not profiles
         self._client = client
+        self._package_lifecycle = package_lifecycle
         if timeout_seconds <= 0:
             raise ValueError("Worker timeout must be positive")
         if max_concurrency < 1:
@@ -145,7 +177,7 @@ class NodePluginWorkerAdapter:
         node = self._node
         if node is None:
             raise PluginWorkerError("local plugin execution is unavailable: Node.js was not found")
-        resolved = self._resolve(worker_entry, context, execution)
+        resolved = await self._resolve(worker_entry, context, execution)
         invocation = {
             "type": "invoke",
             "method": method,
@@ -280,7 +312,7 @@ class NodePluginWorkerAdapter:
             "storage.private.set",
             "storage.private.delete",
         }:
-            return self._storage(resolved, name, args)
+            return await self._storage(resolved, name, args)
         if name == "ui.emitResult":
             PluginResult.model_validate(args)
             return None
@@ -395,7 +427,7 @@ class NodePluginWorkerAdapter:
         self._bounded_json(value, "data.read response")
         return value
 
-    def _storage(self, resolved: _ResolvedWorker, name: str, args: Any) -> Any:
+    async def _storage(self, resolved: _ResolvedWorker, name: str, args: Any) -> Any:
         if resolved.permissions.get("privateStorage") is not True:
             raise PluginWorkerError("plugin did not declare privateStorage")
         if not isinstance(args, dict) or not isinstance(args.get("key"), str):
@@ -403,13 +435,17 @@ class NodePluginWorkerAdapter:
         key = args["key"]
         if not _STORAGE_KEY.fullmatch(key):
             raise PluginWorkerError("private storage key is invalid")
-        current = self._store.get_private_setting(resolved.project_key, resolved.plugin_id, key)
+        current = await self._store.get_private_setting(
+            resolved.project_key,
+            resolved.plugin_id,
+            key,
+        )
         if name == "storage.private.get":
             return None if current is None else current.value
         value = None if name == "storage.private.delete" else args.get("value")
         self._bounded_json(value, "private storage value", limit=65_536)
         revision = 1 if current is None else current.revision + 1
-        self._store.save_private_setting(
+        await self._store.save_private_setting(
             PluginPrivateSetting(
                 project_key=resolved.project_key,
                 plugin_id=resolved.plugin_id,
@@ -489,7 +525,7 @@ class NodePluginWorkerAdapter:
         self._profiles[collection] = profile
         return profile
 
-    def _resolve(
+    async def _resolve(
         self,
         worker_entry: str,
         context: dict[str, Any],
@@ -504,14 +540,14 @@ class NodePluginWorkerAdapter:
         plugin_version = execution.get("pluginVersion")
         package_hash = execution.get("packageHash")
         action_id = execution.get("actionId")
-        if not all(
+        if not isinstance(plugin_id, str) or not all(
             isinstance(value, str) and value
             for value in (plugin_id, plugin_version, package_hash, action_id)
         ):
             raise PluginWorkerError("plugin Worker execution identity is invalid")
         if execution.get("projectKey") != project_key:
             raise PluginWorkerError("plugin Worker project identity does not match context")
-        installation = self._store.get_installation(project_key, plugin_id)
+        installation = await self._store.get_installation(project_key, plugin_id)
         if installation is None:
             raise PluginWorkerError("plugin installation is unavailable")
         if installation.version != plugin_version or installation.package_hash != package_hash:
@@ -522,21 +558,17 @@ class NodePluginWorkerAdapter:
         )
         if action is None or action.worker_entry != worker_entry:
             raise PluginWorkerError("plugin action does not own the requested Worker entry")
-        revisions = self._store.list_package_revisions(project_key, installation.plugin_id)
-        revision = next(
-            (
-                item
-                for item in revisions
-                if item.state == "current"
-                and item.version == installation.version
-                and item.package_hash == installation.package_hash
-            ),
-            None,
-        )
-        if revision is None:
-            raise PluginWorkerError("installed plugin package revision is unavailable")
+        # The retained package is derived only from this host's content-addressed
+        # cache; the shared revision's local path is never trusted here.
         try:
-            source_bytes = read_plugin_package_member(revision.local_path, worker_entry)
+            retained_location = self._package_lifecycle.retained_location(installation.package_hash)
+            inspected = inspect_plugin_package(retained_location)
+        except (OSError, ValueError) as exc:
+            raise PluginWorkerError("plugin Worker entry could not be loaded") from exc
+        if inspected.package_hash != installation.package_hash:
+            raise PluginWorkerError("retained plugin package failed integrity verification")
+        try:
+            source_bytes = read_plugin_package_member(retained_location, worker_entry)
             source = source_bytes.decode("utf-8")
         except (OSError, UnicodeError, ValueError) as exc:
             raise PluginWorkerError("plugin Worker entry could not be loaded") from exc
