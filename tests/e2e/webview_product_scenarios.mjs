@@ -3890,7 +3890,6 @@ async function scenario26(page, recorder, _network, runtime) {
     { distinct: afterCancelDef?.condition?.distinct });
 
   const amount = await createV2Field(page, sourceTableId, "amount", "number");
-  await closeFieldSettingsDrawer(page);
   const sourceBeforeAggregation = (await readRows(sourceTableId)).find(row => row.id === "condsrc00000003");
   const aggregationSeed = await applyProductMutation(page, sourceTableId, [
     { kind: "update", recordId: "condsrc00000003", values: { [amount.physicalName]: 10 },
@@ -3939,10 +3938,9 @@ async function scenario26(page, recorder, _network, runtime) {
   await closeFieldSettingsDrawer(page);
 
   const downstream = await createV2Field(page, currentTableId, "汇总翻倍", "formula", draft => {
-    draft.formula.source = "{条件标题} * 2.0";
+    draft.formula = { language: "cel-v1", source: `${lookupFieldKey} * 2.0` };
     return draft;
   });
-  await closeFieldSettingsDrawer(page);
   const deadline = Date.now() + 30_000;
   let aggregateRows;
   do {

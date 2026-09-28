@@ -34,4 +34,8 @@ Go QueryCompiler 复用类型化过滤和归档策略，将同值操作数组合
 - Web 字段设置测试覆盖草稿取消、类型化输入、250ms 防抖和迟到结果失效。
 - `uv run python qa/product_acceptance.py --package-root dist/VibeTable.Next --evidence-root build/q --scenario 26-lookup-definition-read`：同包 WPF/WebView2 的离线编辑、预览、保存、去重、重算、同 UUID 重开和取消。局部证据由本次 PR 绑定 source/head，不替代完整 CI 门禁。
 
-实现与冻结检查点：[Task #391](https://github.com/FelixJI/VibeTable/issues/391)。
+实现与冻结检查点：[Task #391](https://github.com/FelixJI/VibeTable/issues/391)、[Task #393](https://github.com/FelixJI/VibeTable/issues/393)。
+
+汇总回归入口：`go test ./tests/integration -run TestLookupAggregation -count=1`。S26 同包场景继续覆盖七种计数/数值预览、SUM 保存重开、下游公式、数字筛选排序及 CSV，证据绑定见 [PR #400](https://github.com/FelixJI/VibeTable/pull/400)。
+
+![完整匹配集合的 SUM 预览](../assets/screenshots/lookup-aggregation-preview.png)
