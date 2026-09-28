@@ -1,8 +1,10 @@
+import { watch } from "vue";
 import { BridgeOperationError } from "@/bridge/hostBridge";
 import type {
   FieldApplyReceiptV2,
   FieldChangeActionV2,
   FormulaDraftValidationResult,
+  FormulaFunctionInfo,
   FieldDefinitionV2,
   CapabilityV2,
   JsonValueV2,
@@ -10,6 +12,8 @@ import type {
   SchemaDescribeResult,
   SchemaSnapshot,
 } from "@/contracts";
+import type { FormulaAuthorDocument } from "@/contracts/generated/workbench";
+import { ProductRpcError } from "@/services/productRpcResult";
 import {
   parseFieldApplyReceiptV2,
   parseFieldChangePlanV2,
@@ -19,6 +23,8 @@ import {
 } from "@/contracts";
 import { useHostBridge } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
+import type { FormulaDraftDiagnostic, FormulaDraftValidateRequest } from "./formula/formulaDraftRequest";
+import { isFormulaAuthorDocument, isFormulaTextRange } from "./formula/tokenDocument";
 import { buildFieldChangeIntent, relationPairPatchFromDrafts } from "./model";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
@@ -101,7 +107,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   loadLookupCatalog: () => Promise<void>;
   resolveLookupPath: (path: readonly { readonly relationFieldId: string }[]) => Promise<void>;
   loadFormulaCatalog: () => Promise<void>;
-  validateFormulaDraft: (displaySource: string) => Promise<void>;
+  validateFormulaDraft: (request: FormulaDraftValidateRequest) => Promise<void>;
   dispose: () => void;
 } {
   const bridge = useHostBridge();
@@ -116,6 +122,34 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   let generation = 0;
   let frozenOperationId: string | null = null;
   let formulaValidationGeneration = 0;
+  let formulaValidationAbort: AbortController | null = null;
+
+  /** Workspace switches must retire every in-flight formula editor request. */
+  const stopWorkspaceWatch = watch(
+    () => [workspace.phase, workspace.collections] as const,
+    () => {
+      if (!store.open) return;
+      abortFormulaValidation();
+    },
+    { flush: "sync" },
+  );
+  /** Field-schema changes must not let stale validations enable saving. */
+  const stopSchemaWatch = watch(
+    () => store.result?.schemaRevision ?? null,
+    (next, previous) => {
+      if (!store.open || previous === null || next === previous) return;
+      abortFormulaValidation();
+    },
+    { flush: "sync" },
+  );
+
+  function abortFormulaValidation(): void {
+    formulaValidationGeneration += 1;
+    formulaValidationAbort?.abort();
+    formulaValidationAbort = null;
+    formulaPreview.cancel();
+    store.invalidateFormulaDraft();
+  }
 
   async function describe(
     tableId: string,
@@ -123,6 +157,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     preferredType?: LogicalTypeV2,
   ): Promise<void> {
     const current = ++generation;
+    formulaValidationGeneration += 1;
+    formulaValidationAbort?.abort();
+    formulaValidationAbort = null;
     formulaPreview.cancel();
     store.beginOpen(fieldId ? { tableId, fieldId } : null);
     try {
@@ -154,6 +191,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       return false;
     }
     generation += 1;
+    abortFormulaValidation();
     stopPolling();
     store.close();
     return true;
@@ -442,9 +480,18 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   async function loadFormulaCatalog(): Promise<void> {
     if (!store.result || store.draft?.logicalType !== "formula") return;
+    const current = generation;
+    const requestGeneration = formulaValidationGeneration;
+    const collections = workspace.collections;
+    const phase = workspace.phase;
+    const schemaRevision = store.result.schemaRevision;
+    const catalogIsLive = () => current === generation && store.open
+      && collections === workspace.collections && phase === workspace.phase
+      && schemaRevision === store.result?.schemaRevision;
+    store.beginFormulaCatalog();
     try {
-      store.beginFormulaCatalog();
       const source = await describeRelationTable(store.result.tableId);
+      if (!catalogIsLive()) return;
       const relations = source.columns.flatMap(column => {
         if (!column.fieldId || column.kind !== "relation" || !column.relationId) return [];
         const descriptor = source.normalizedRelations.find(
@@ -459,37 +506,124 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
         fieldId: relation.fieldId,
         schema: await describeRelationTable(relation.tableId),
       })));
+      if (!catalogIsLive()) return;
       store.setFormulaCatalog(source, Object.fromEntries(
         resolved.map(item => [item.fieldId, item.schema]),
       ));
+      if (requestGeneration !== formulaValidationGeneration) return;
+      const persisted = store.draft?.formula?.source ?? "";
+      if (persisted) {
+        // Restore the persisted canonical text into a stable-token document.
+        void validateFormulaDraft({
+          kind: "restore",
+          displaySource: persisted,
+          adoptDocument: true,
+        });
+      } else {
+        // Bootstrap the catalog for an empty formula without adopting "0".
+        void validateFormulaDraft({
+          kind: "restore",
+          displaySource: "0",
+          adoptDocument: false,
+        });
+      }
     } catch (error) {
-      store.failFormulaCatalog(error);
+      if (catalogIsLive()) store.failFormulaCatalog(error);
     }
   }
 
-  async function validateFormulaDraft(displaySource: string): Promise<void> {
+  async function validateFormulaDraft(request: FormulaDraftValidateRequest): Promise<void> {
+    if (request.kind === "invalidate") {
+      formulaValidationGeneration += 1;
+      formulaValidationAbort?.abort();
+      formulaValidationAbort = null;
+      formulaPreview.cancel();
+      store.invalidateFormulaDraft(request.discardDocument);
+      return;
+    }
     const tableId = store.result?.tableId;
     if (!tableId || store.draft?.logicalType !== "formula") return;
     const current = ++formulaValidationGeneration;
+    const controller = new AbortController();
+    formulaValidationAbort?.abort();
+    formulaValidationAbort = controller;
     formulaPreview.cancel();
-    store.resetFormulaPreview();
-    store.beginFormulaValidation(displaySource);
+    const schemaRevision = store.result?.schemaRevision ?? "";
+    const workspaceStamp = `${workspace.phase}:${workspace.collections.length}`;
+    if (request.kind === "restore") {
+      store.beginFormulaRestore();
+    } else {
+      store.beginFormulaValidation(
+        request.displaySource,
+        request.authorDocument.documentRevision,
+      );
+    }
     try {
-      const result = unwrapFieldResult(await bridge.request("formula.draft.validate", {
-        tableId,
-        displaySource,
-      }));
-      if (!isFormulaDraftValidation(result)) {
-        throw new Error("公式校验返回了无效结果");
+      const raw = await Promise.race([
+        bridge.request("formula.draft.validate", {
+          tableId,
+          displaySource: request.displaySource,
+          ...(request.kind === "restore"
+            ? { restoreSource: true }
+            : { authorDocument: request.authorDocument }),
+        }),
+        abortedRequest(controller.signal),
+      ]);
+      if (!currentRequestIsLive(current, controller, schemaRevision, workspaceStamp)) return;
+      const failure = productFailure(raw);
+      if (failure) {
+        failFormulaRequest(request, failure.message, failure.diagnostic, failure.restoredDocument);
+        return;
       }
-      if (current === formulaValidationGeneration) {
-        store.setFormulaValidation(displaySource, result);
+      const result = raw as FormulaDraftValidationResult;
+      if (!isFormulaDraftValidation(result)
+        || (request.kind === "restore" && !isFormulaAuthorDocument(result.authorDocument))) {
+        failFormulaRequest(request, "公式校验返回了无效结果");
+        return;
+      }
+      if (request.kind === "restore") {
+        store.setFormulaRestored(result, request.adoptDocument);
+      } else {
+        store.setFormulaValidation(request.displaySource, result);
         scheduleFormulaPreview(result);
       }
     } catch (error) {
-      if (current === formulaValidationGeneration) {
-        store.failFormulaValidation(displaySource, error);
-      }
+      if (isAbortError(error)) return;
+      if (!currentRequestIsLive(current, controller, schemaRevision, workspaceStamp)) return;
+      failFormulaRequest(request, errorMessage(error), diagnosticFromError(error));
+    } finally {
+      if (formulaValidationAbort === controller) formulaValidationAbort = null;
+    }
+  }
+
+  function currentRequestIsLive(
+    current: number,
+    controller: AbortController,
+    schemaRevision: string,
+    workspaceStamp: string,
+  ): boolean {
+    if (current !== formulaValidationGeneration || controller.signal.aborted) return false;
+    if (!store.open || store.draft?.logicalType !== "formula") return false;
+    // Only results matching the current schema and workspace may be committed.
+    if (store.result?.schemaRevision !== schemaRevision) return false;
+    if (`${workspace.phase}:${workspace.collections.length}` !== workspaceStamp) return false;
+    return true;
+  }
+
+  function failFormulaRequest(
+    request: FormulaDraftValidateRequest,
+    message: string,
+    diagnostic?: FormulaDraftDiagnostic | null,
+    restoredDocument?: FormulaAuthorDocument | null,
+  ): void {
+    if (request.kind === "restore") {
+      store.failFormulaRestore(
+        new Error(message),
+        diagnostic ?? null,
+        restoredDocument ?? null,
+      );
+    } else if (request.kind === "document") {
+      store.failFormulaValidation(request.displaySource, new Error(message), diagnostic ?? null);
     }
   }
 
@@ -553,9 +687,13 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   function dispose(): void {
     generation += 1;
     formulaValidationGeneration += 1;
+    formulaValidationAbort?.abort();
+    formulaValidationAbort = null;
     formulaPreview.dispose();
     stopPolling();
     frozenOperationId = null;
+    stopWorkspaceWatch();
+    stopSchemaWatch();
   }
 
   return {
@@ -572,5 +710,83 @@ function isFormulaDraftValidation(value: unknown): value is FormulaDraftValidati
   return typeof candidate.canonicalSource === "string"
     && typeof candidate.resultType === "string"
     && Array.isArray(candidate.dependencies)
-    && Array.isArray(candidate.relationAggregatePaths);
+    && Array.isArray(candidate.relationAggregatePaths)
+    && (candidate.authorDocument === undefined
+      || isFormulaAuthorDocument(candidate.authorDocument))
+    && (candidate.functions === undefined
+      || Array.isArray(candidate.functions) && candidate.functions.every(isFormulaFunctionInfo));
+}
+
+function isFormulaFunctionInfo(value: unknown): value is FormulaFunctionInfo {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return ["name", "category", "signature", "description", "example"]
+    .every(key => typeof candidate[key] === "string");
+}
+
+interface FormulaRpcFailure {
+  readonly message: string;
+  readonly diagnostic: FormulaDraftDiagnostic | null;
+  /** Optional document carried by failed restores (#REF!/token retention). */
+  readonly restoredDocument: FormulaAuthorDocument | null;
+}
+
+/** Keeps the structured UTF-16 diagnostic that unwrapFieldResult would drop. */
+function productFailure(value: unknown): FormulaRpcFailure | null {
+  if (!value || typeof value !== "object" || !("error" in value)) return null;
+  const error = (value as { readonly error?: unknown }).error;
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as Readonly<Record<string, unknown>>;
+  if (typeof candidate.message !== "string") return null;
+  const code = typeof candidate.code === "string" ? candidate.code : null;
+  const details = candidate.details;
+  const range = details && typeof details === "object" && "range" in details
+    ? details.range
+    : undefined;
+  const restored = details && typeof details === "object" && "authorDocument" in details
+    ? (details as { readonly authorDocument?: unknown }).authorDocument
+    : undefined;
+  return {
+    message: candidate.message,
+    diagnostic: {
+      message: candidate.message,
+      code,
+      range: isFormulaTextRange(range) ? range : null,
+    },
+    restoredDocument: isFormulaAuthorDocument(restored) ? restored : null,
+  };
+}
+
+function diagnosticFromError(error: unknown): FormulaDraftDiagnostic {
+  if (error instanceof ProductRpcError) {
+    return {
+      message: error.message,
+      code: error.code,
+      range: isFormulaTextRange(error.details?.range) ? error.details.range : null,
+    };
+  }
+  const candidate = error as { readonly code?: unknown };
+  return {
+    message: errorMessage(error),
+    code: typeof candidate?.code === "string" ? candidate.code : null,
+    range: null,
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function abortedRequest(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    signal.addEventListener(
+      "abort",
+      () => reject(new DOMException("cancelled", "AbortError")),
+      { once: true },
+    );
+  });
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }

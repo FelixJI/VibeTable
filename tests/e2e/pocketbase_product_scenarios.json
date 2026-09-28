@@ -25,8 +25,8 @@
   },
   {
     "id": "05-formula-lifecycle",
-    "title": "空表转换与非空迁移故障回滚",
-    "requirement": "空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。",
+    "title": "常用公式界面、重算重开与迁移回滚",
+    "requirement": "通过正式公式编辑器创建金额、条件分类、Unicode 文本和错误提示列，预览、保存、修改基础值与关闭重开结果一致；空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。",
     "capabilities": ["schema.v2", "formula.recalculation"]
   },
   {

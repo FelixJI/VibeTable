@@ -25,10 +25,12 @@ type Catalog struct {
 }
 
 type FormulaDraftInspection struct {
-	CanonicalSource        string         `json:"canonicalSource"`
-	ResultType             v2.LogicalType `json:"resultType"`
-	Dependencies           []string       `json:"dependencies"`
-	RelationAggregatePaths []string       `json:"relationAggregatePaths"`
+	CanonicalSource        string                           `json:"canonicalSource"`
+	ResultType             v2.LogicalType                   `json:"resultType"`
+	Dependencies           []string                         `json:"dependencies"`
+	RelationAggregatePaths []string                         `json:"relationAggregatePaths"`
+	AuthorDocument         *workbench.FormulaAuthorDocument `json:"authorDocument,omitempty"`
+	Functions              []formula.FunctionInfo           `json:"functions,omitempty"`
 }
 
 func NewCatalog(app core.App) *Catalog {

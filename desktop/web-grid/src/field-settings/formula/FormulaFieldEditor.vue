@@ -1,24 +1,38 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { NAlert, NButton, NInput, NSelect, NSpin, NTag } from "naive-ui";
 import type { SelectOption } from "naive-ui";
-import { Braces, ChevronLeft, FunctionSquare, PencilLine, Plus } from "@lucide/vue";
+import { Braces, ChevronLeft, FunctionSquare, PencilLine, Plus, Search } from "@lucide/vue";
+import type { FormulaDraftValidationResult, FormulaFunctionInfo } from "@/contracts";
 import type {
-  FieldDraftV2,
-  FormulaDraftValidationResult,
-} from "@/contracts";
+  FormulaAuthorDocument,
+  FormulaAuthorToken,
+  FormulaTextRange,
+} from "@/contracts/generated/workbench";
+import type { FormulaDraftDiagnostic, FormulaDraftValidateRequest } from "./formulaDraftRequest";
+import {
+  applySourceEdit,
+  emptyFormulaAuthorDocument,
+  formatTextRange,
+  insertPlainText,
+  insertReference,
+  textRangeToSelection,
+} from "./tokenDocument";
 
-type FormulaDefinition = NonNullable<FieldDraftV2["formula"]>;
+type FormulaDefinition = NonNullable<
+  import("@/contracts/schemaV2").FieldDraftV2["formula"]
+>;
 
 interface FormulaFieldOption extends SelectOption {
   readonly label: string;
-  readonly canonicalName: string;
+  /** Stable Schema V2 field identity; the only name the editor persists. */
+  readonly fieldId: string;
   readonly dataType: string;
 }
 
 interface FormulaRelationOption extends SelectOption {
   readonly label: string;
-  readonly canonicalName: string;
+  readonly fieldId: string;
   readonly many: boolean;
   readonly targetFields: readonly FormulaFieldOption[];
 }
@@ -28,10 +42,14 @@ const props = defineProps<{
   localFields: readonly FormulaFieldOption[];
   relations: readonly FormulaRelationOption[];
   resultType?: string | null;
+  authorDocument?: FormulaAuthorDocument | null;
+  functions?: readonly FormulaFunctionInfo[];
   validation?: FormulaDraftValidationResult | null;
   validatedSource?: string;
+  validatedDocumentRevision?: number | null;
   validating?: boolean;
   error?: string | null;
+  diagnostic?: FormulaDraftDiagnostic | null;
   previewValue?: unknown;
   previewReady?: boolean;
   previewing?: boolean;
@@ -40,17 +58,23 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   commit: [value: FormulaDefinition];
-  validate: [displaySource: string];
+  validate: [request: FormulaDraftValidateRequest];
 }>();
 
+const rootRef = ref<HTMLElement | null>(null);
 const editing = ref(false);
+const waitingRestore = ref(false);
 const workingSource = ref("");
+const workingDocument = ref<FormulaAuthorDocument>(emptyFormulaAuthorDocument());
 const selectedField = ref<string | null>(null);
 const selectedRelation = ref<string | null>(null);
 const selectedTarget = ref<string | null>(null);
 const selectedDirectRelation = ref<string | null>(null);
 const selectedDirectTarget = ref<string | null>(null);
 const selectedAggregate = ref("SUM");
+const functionSearch = ref("");
+const functionCategory = ref<string | null>(null);
+const selectedFunction = ref<FormulaFunctionInfo | null>(null);
 let validationTimer: ReturnType<typeof setTimeout> | null = null;
 
 const aggregateOptions = [
@@ -63,58 +87,83 @@ const aggregateOptions = [
 ];
 const localFieldOptions = computed(() => props.localFields.map(field => ({
   label: field.label,
-  value: field.canonicalName,
+  value: field.fieldId,
 })));
 const relationOptions = computed(() => props.relations.map(relation => ({
   label: `${relation.label}${relation.many ? " · 多条" : " · 单条"}`,
-  value: relation.canonicalName,
+  value: relation.fieldId,
 })));
 const directRelationOptions = computed(() => props.relations
   .filter(relation => !relation.many)
-  .map(relation => ({ label: relation.label, value: relation.canonicalName })));
+  .map(relation => ({ label: relation.label, value: relation.fieldId })));
 const activeDirectRelation = computed(() => props.relations.find(
-  relation => !relation.many && relation.canonicalName === selectedDirectRelation.value,
+  relation => !relation.many && relation.fieldId === selectedDirectRelation.value,
 ));
 const directTargetOptions = computed(() => (activeDirectRelation.value?.targetFields ?? [])
-  .map(field => ({ label: field.label, value: field.canonicalName })));
+  .map(field => ({ label: field.label, value: field.fieldId })));
 const activeRelation = computed(() => props.relations.find(
-  relation => relation.canonicalName === selectedRelation.value,
+  relation => relation.fieldId === selectedRelation.value,
 ));
 const targetOptions = computed(() => (activeRelation.value?.targetFields ?? [])
   .filter(field => selectedAggregate.value === "COUNTA" || isNumericType(field.dataType))
-  .map(field => ({ label: field.label, value: field.canonicalName })));
+  .map(field => ({ label: field.label, value: field.fieldId })));
 const targetRequired = computed(() => selectedAggregate.value !== "COUNT");
 const canInsertAggregate = computed(() => !!activeRelation.value
   && (!targetRequired.value || !!selectedTarget.value));
-const canCommit = computed(() => workingSource.value.trim().length > 0
+const functionCategories = computed(() => {
+  const categories = new Set((props.functions ?? [])
+    .map(item => item.category)
+    .filter(category => category.length > 0));
+  return [...categories].sort((a, b) => a.localeCompare(b, "zh-Hans"));
+});
+const functionCategoryOptions = computed(() => [
+  { label: "全部分类", value: "" },
+  ...functionCategories.value.map(category => ({ label: category, value: category })),
+]);
+const filteredFunctions = computed(() => {
+  const keyword = functionSearch.value.trim().toLowerCase();
+  const category = functionCategory.value;
+  return (props.functions ?? []).filter(item =>
+    (!category || item.category === category)
+    && (!keyword
+      || item.name.toLowerCase().includes(keyword)
+      || item.category.toLowerCase().includes(keyword)
+      || item.description.toLowerCase().includes(keyword)
+      || item.signature.toLowerCase().includes(keyword)));
+});
+const summarySource = computed(() => props.authorDocument?.displaySource ?? "");
+const inferredType = computed(() => props.validation?.resultType ?? props.resultType ?? "待推断");
+const sourceIsCurrent = computed(() => props.validatedSource === workingSource.value);
+const canCommit = computed(() => editing.value
+  && workingSource.value.trim().length > 0
+  && !waitingRestore.value
   && !props.validating
   && !props.error
-  && props.validatedSource === workingSource.value.trim()
-  && !!props.validation);
-const summarySource = computed(() => projectCanonicalSource(
-  props.value.source,
-  props.localFields,
-  props.relations,
-));
-const inferredType = computed(() => props.validation?.resultType ?? props.resultType ?? "待推断");
+  && !!props.validation
+  && sourceIsCurrent.value
+  && (props.validatedDocumentRevision == null
+    || props.validatedDocumentRevision === workingDocument.value.documentRevision));
 
 watch(
   () => props.value,
-  value => {
-    if (!editing.value) {
-      workingSource.value = projectCanonicalSource(
-        value.source, props.localFields, props.relations,
-      );
-    }
+  () => {
+    if (editing.value) return;
+    if (props.authorDocument) adoptDocument(props.authorDocument);
   },
   { deep: true },
 );
-watch(workingSource, source => {
-  if (!editing.value) return;
-  if (validationTimer !== null) clearTimeout(validationTimer);
-  validationTimer = null;
-  if (!source.trim()) return;
-  validationTimer = setTimeout(() => emit("validate", source.trim()), 250);
+watch(() => props.authorDocument, document => {
+  if (!editing.value || !document) return;
+  if (waitingRestore.value) {
+    waitingRestore.value = false;
+    adoptDocument(document);
+    return;
+  }
+  // Adopt backend token refreshes (renamed labels) only for the exact text.
+  if (props.validatedSource === document.displaySource
+    && document.displaySource === workingSource.value) {
+    adoptDocument(document);
+  }
 });
 watch(selectedAggregate, () => {
   selectedTarget.value = null;
@@ -126,145 +175,272 @@ watch(selectedDirectRelation, () => {
   selectedDirectTarget.value = null;
 });
 onBeforeUnmount(() => {
-  if (validationTimer !== null) clearTimeout(validationTimer);
+  clearValidationTimer();
+  emit("validate", { kind: "invalidate" });
 });
 
+function adoptDocument(document: FormulaAuthorDocument): void {
+  workingSource.value = document.displaySource;
+  workingDocument.value = document;
+}
+
 function beginEditing(): void {
-  workingSource.value = summarySource.value;
   editing.value = true;
-  if (workingSource.value.trim()) emit("validate", workingSource.value.trim());
+  selectedFunction.value = null;
+  functionSearch.value = "";
+  functionCategory.value = null;
+  if (props.authorDocument) {
+    adoptDocument(props.authorDocument);
+    return;
+  }
+  if (props.value.source) {
+    waitingRestore.value = true;
+    workingSource.value = "";
+    workingDocument.value = emptyFormulaAuthorDocument();
+    emit("validate", {
+      kind: "restore",
+      displaySource: props.value.source,
+      adoptDocument: true,
+    });
+    return;
+  }
+  workingSource.value = "";
+  workingDocument.value = emptyFormulaAuthorDocument();
 }
 
 function cancel(): void {
-  workingSource.value = summarySource.value;
+  clearValidationTimer();
+  emit("validate", { kind: "invalidate", discardDocument: true });
   editing.value = false;
+  waitingRestore.value = false;
+  if (props.authorDocument) adoptDocument(props.authorDocument);
+  else {
+    workingSource.value = "";
+    workingDocument.value = emptyFormulaAuthorDocument();
+  }
+  if (props.value.source) {
+    emit("validate", { kind: "restore", displaySource: props.value.source, adoptDocument: true });
+  }
 }
 
 function commit(): void {
   if (!canCommit.value || !props.validation) return;
+  // Persist the sidecar-validated canonical source; display names never
+  // reach storage, so renames cannot re-resolve a saved formula.
   emit("commit", {
     language: "cel-v1",
-    source: workingSource.value.trim(),
+    source: props.validation.canonicalSource,
   });
   editing.value = false;
 }
 
-function insertLocalField(canonicalName: string): void {
-  const field = props.localFields.find(item => item.canonicalName === canonicalName);
+function onSourceInput(value: string): void {
+  const previous = workingSource.value;
+  workingSource.value = value;
+  workingDocument.value = applySourceEdit(workingDocument.value, previous, value);
+  // Stale validation and previews die with the first keystroke, not later.
+  emit("validate", { kind: "invalidate" });
+  scheduleValidate();
+}
+
+function scheduleValidate(): void {
+  clearValidationTimer();
+  if (!workingSource.value.trim()) return;
+  validationTimer = setTimeout(() => {
+    validationTimer = null;
+    emit("validate", {
+      kind: "document",
+      displaySource: workingSource.value,
+      authorDocument: workingDocument.value,
+    });
+  }, 250);
+}
+
+function clearValidationTimer(): void {
+  if (validationTimer !== null) clearTimeout(validationTimer);
+  validationTimer = null;
+}
+
+function activeTextarea(): HTMLTextAreaElement | null {
+  return rootRef.value?.querySelector<HTMLTextAreaElement>(
+    '[data-testid="formula-source"] textarea',
+  ) ?? null;
+}
+
+function currentSelection(): { start: number; end: number } {
+  const textarea = activeTextarea();
+  const fallback = workingSource.value.length;
+  if (!textarea) return { start: fallback, end: fallback };
+  return {
+    start: textarea.selectionStart ?? fallback,
+    end: textarea.selectionEnd ?? fallback,
+  };
+}
+
+function applyInsertion(
+  insertion: ReturnType<typeof insertReference>,
+): void {
+  workingSource.value = insertion.source;
+  workingDocument.value = insertion.document;
+  const caret = insertion.caret;
+  void nextTick(() => {
+    const textarea = activeTextarea();
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+  });
+  emit("validate", { kind: "invalidate" });
+  scheduleValidate();
+}
+
+function fieldToken(fieldId: string): FormulaAuthorToken {
+  return { range: zeroRange(), kind: "field", fieldId, relationFieldId: null, targetFieldId: null };
+}
+
+function relationToken(fieldId: string): FormulaAuthorToken {
+  return {
+    range: zeroRange(),
+    kind: "relation",
+    fieldId,
+    relationFieldId: fieldId,
+    targetFieldId: null,
+  };
+}
+
+function relationTargetToken(relationFieldId: string, targetFieldId: string): FormulaAuthorToken {
+  return {
+    range: zeroRange(),
+    kind: "relationTarget",
+    fieldId: targetFieldId,
+    relationFieldId,
+    targetFieldId,
+  };
+}
+
+function zeroRange() {
+  return { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+}
+
+function onLocalFieldSelect(value: string | null): void {
+  selectedField.value = value;
+  if (value) insertLocalField(value);
+}
+
+function insertLocalField(fieldId: string): void {
+  const field = props.localFields.find(item => item.fieldId === fieldId);
   if (!field) return;
-  appendExpression(`{${field.label}}`);
+  const label = `{${field.label}}`;
+  const selection = currentSelection();
+  applyInsertion(insertReference(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    {
+      text: label,
+      token: fieldToken(field.fieldId),
+      labelStart: 0,
+      labelLength: label.length,
+    },
+  ));
   selectedField.value = null;
 }
 
 function insertAggregate(): void {
   const relation = activeRelation.value;
   if (!relation || !canInsertAggregate.value) return;
+  const selection = currentSelection();
   if (selectedAggregate.value === "COUNT") {
-    appendExpression(`COUNT({${relation.label}})`);
-  } else {
-    const target = relation.targetFields.find(
-      field => field.canonicalName === selectedTarget.value,
-    );
-    if (!target) return;
-    appendExpression(`${selectedAggregate.value}({${relation.label}}.{${target.label}})`);
+    const label = `{${relation.label}}`;
+    const text = `COUNT(${label})`;
+    applyInsertion(insertReference(
+      workingDocument.value,
+      workingSource.value,
+      selection.start,
+      selection.end,
+      {
+        text,
+        token: relationToken(relation.fieldId),
+        labelStart: "COUNT(".length,
+        labelLength: label.length,
+      },
+    ));
+    return;
   }
+  const target = relation.targetFields.find(field => field.fieldId === selectedTarget.value);
+  if (!target) return;
+  const path = `{${relation.label}}.{${target.label}}`;
+  const prefix = `${selectedAggregate.value}(`;
+  applyInsertion(insertReference(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    {
+      text: `${prefix}${path})`,
+      token: relationTargetToken(relation.fieldId, target.fieldId),
+      labelStart: prefix.length,
+      labelLength: path.length,
+    },
+  ));
 }
 
 function insertDirectRelationField(): void {
   const relation = activeDirectRelation.value;
   const target = relation?.targetFields.find(
-    field => field.canonicalName === selectedDirectTarget.value,
+    field => field.fieldId === selectedDirectTarget.value,
   );
   if (!relation || !target) return;
-  appendExpression(`{${relation.label}}.{${target.label}}`);
-}
-
-function appendExpression(expression: string): void {
-  const current = workingSource.value;
-  workingSource.value = current && !/\s$/u.test(current)
-    ? `${current} ${expression}`
-    : `${current}${expression}`;
-}
-
-function projectCanonicalSource(
-  source: string,
-  fields: readonly FormulaFieldOption[],
-  relations: readonly FormulaRelationOption[],
-): string {
-  let projected = source;
-  const aggregateNames: Record<string, string> = {
-    relationSum: "SUM",
-    relationAverage: "AVERAGE",
-    relationMin: "MIN",
-    relationMax: "MAX",
-    relationCountValues: "COUNTA",
-  };
-  projected = projected.replace(
-    /\b(relationSum|relationAverage|relationMin|relationMax|relationCountValues)\(\s*([a-z][a-z0-9_]*)\s*,\s*"([a-z][a-z0-9_]*)"\s*\)/gu,
-    (match, fn: string, relationName: string, targetName: string) => {
-      const relation = relations.find(item => item.canonicalName === relationName);
-      const target = relation?.targetFields.find(item => item.canonicalName === targetName);
-      return relation && target ? `${aggregateNames[fn]}({${relation.label}}.{${target.label}})` : match;
+  const path = `{${relation.label}}.{${target.label}}`;
+  const selection = currentSelection();
+  applyInsertion(insertReference(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    {
+      text: path,
+      token: relationTargetToken(relation.fieldId, target.fieldId),
+      labelStart: 0,
+      labelLength: path.length,
     },
-  );
-  projected = projected.replace(
-    /\brelationCount\(\s*([a-z][a-z0-9_]*)\s*\)/gu,
-    (match, relationName: string) => {
-      const relation = relations.find(item => item.canonicalName === relationName);
-      return relation ? `COUNT({${relation.label}})` : match;
-    },
-  );
-  for (const relation of relations) {
-    for (const target of relation.targetFields) {
-      projected = projected.replace(
-        new RegExp(`\\b${escapeRegExp(relation.canonicalName)}\\.${escapeRegExp(target.canonicalName)}\\b`, "gu"),
-        `{${relation.label}}.{${target.label}}`,
-      );
-    }
-  }
-  const names = new Map<string, string>();
-  for (const field of fields) names.set(field.canonicalName, `{${field.label}}`);
-  for (const relation of relations) names.set(relation.canonicalName, `{${relation.label}}`);
-  return replaceIdentifiersOutsideStrings(projected, names);
+  ));
 }
 
-function replaceIdentifiersOutsideStrings(source: string, names: ReadonlyMap<string, string>): string {
-  let result = "";
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < source.length;) {
-    const character = source[index]!;
-    if (character === "\\" && inString) {
-      result += character;
-      escaped = !escaped;
-      index += 1;
-      continue;
-    }
-    if (character === '"') {
-      if (!escaped) inString = !inString;
-      escaped = false;
-      result += character;
-      index += 1;
-      continue;
-    }
-    escaped = false;
-    if (!inString && /[a-z_]/u.test(character)) {
-      let end = index + 1;
-      while (end < source.length && /[a-z0-9_]/u.test(source[end]!)) end += 1;
-      const identifier = source.slice(index, end);
-      result += names.get(identifier)
-        ?? (/^f_[a-z0-9_]{8,}$/u.test(identifier) ? "#REF!" : identifier);
-      index = end;
-      continue;
-    }
-    result += character;
-    index += 1;
-  }
-  return result;
+function insertFunctionCall(info: FormulaFunctionInfo): void {
+  selectedFunction.value = info;
+  const selection = currentSelection();
+  const text = `${info.name}(`;
+  applyInsertion(insertPlainText(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    text,
+  ));
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+function insertFunctionExample(info: FormulaFunctionInfo): void {
+  selectedFunction.value = info;
+  const selection = currentSelection();
+  applyInsertion(insertPlainText(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    info.example,
+  ));
+}
+
+function locateDiagnostic(range: FormulaTextRange): void {
+  const selection = textRangeToSelection(workingSource.value, range);
+  if (!selection) return;
+  void nextTick(() => {
+    const textarea = activeTextarea();
+    if (!textarea) return;
+    textarea.focus();
+    textarea.setSelectionRange(selection.start, selection.end);
+  });
 }
 
 function isNumericType(value: string): boolean {
@@ -284,14 +460,16 @@ function formatPreviewValue(value: unknown): string {
 </script>
 
 <template>
-  <article class="specialized-editor" data-testid="formula-field-editor">
+  <article ref="rootRef" class="specialized-editor" data-testid="formula-field-editor">
     <template v-if="!editing">
       <div class="editor-summary">
         <span class="editor-mark"><Braces :size="18" /></span>
         <div>
           <span class="eyebrow">FORMULA WORKBENCH</span>
           <strong>可视化公式</strong>
-          <small>{{ summarySource || "尚未配置公式" }}</small>
+          <small data-testid="formula-summary-source">
+            {{ summarySource || (value.source ? "正在恢复公式文本…" : "尚未配置公式") }}
+          </small>
         </div>
         <NTag size="small" :bordered="false">{{ inferredType }} · 自动</NTag>
       </div>
@@ -311,24 +489,31 @@ function formatPreviewValue(value: unknown): string {
       <label>
         <span>公式</span>
         <NInput
-          v-model:value="workingSource"
+          :value="workingSource"
           type="textarea"
           :autosize="{ minRows: 5, maxRows: 12 }"
           placeholder="例如：SUM({明细}.{金额}) + {运费}"
           data-testid="formula-source"
+          :disabled="waitingRestore"
+          @update:value="onSourceInput(String($event ?? ''))"
         />
-        <small>字段引用使用展示名；保存后由系统转换为永久字段名称。</small>
+        <small>字段引用使用展示名并由系统按稳定 ID 绑定；保存后持久化为永久字段名称。</small>
       </label>
+
+      <div v-if="waitingRestore" class="validating" data-testid="formula-restore-loading">
+        <NSpin size="small" />正在恢复公式文本…
+      </div>
 
       <div class="insert-grid">
         <section class="insert-card">
           <div><Plus :size="15" /><strong>插入当前表字段</strong></div>
           <NSelect
-            v-model:value="selectedField"
+            :value="selectedField"
             :options="localFieldOptions"
+            filterable
             placeholder="选择字段"
             data-testid="formula-local-field"
-            @update:value="$event && insertLocalField(String($event))"
+            @update:value="onLocalFieldSelect"
           />
         </section>
         <section class="insert-card aggregate-card">
@@ -376,34 +561,91 @@ function formatPreviewValue(value: unknown): string {
             @click="insertDirectRelationField"
           >插入引用</NButton>
         </section>
+        <section class="insert-card function-card">
+          <div><Search :size="15" /><strong>函数目录</strong></div>
+          <NInput
+            v-model:value="functionSearch"
+            clearable
+            placeholder="离线检索函数名、分类或说明"
+            data-testid="formula-function-search"
+          />
+          <NSelect
+            v-model:value="functionCategory"
+            :options="functionCategoryOptions"
+            placeholder="全部分类"
+            data-testid="formula-function-category"
+          />
+          <div class="function-list" data-testid="formula-function-list">
+            <button
+              v-for="item in filteredFunctions"
+              :key="item.name"
+              type="button"
+              class="function-item"
+              :class="{ active: selectedFunction?.name === item.name }"
+              data-testid="formula-function-option"
+              @click="insertFunctionCall(item)"
+            >
+              <strong>{{ item.name }}</strong>
+              <small>{{ item.signature }}</small>
+            </button>
+            <p v-if="!filteredFunctions.length" class="function-empty">没有匹配的函数</p>
+          </div>
+          <div v-if="selectedFunction" class="function-detail" data-testid="formula-function-detail">
+            <strong>{{ selectedFunction.signature }}</strong>
+            <p>{{ selectedFunction.description }}</p>
+            <code data-testid="formula-function-example">{{ selectedFunction.example }}</code>
+            <NButton
+              size="tiny"
+              secondary
+              data-testid="formula-function-insert-example"
+              @click="insertFunctionExample(selectedFunction)"
+            >在光标处插入示例</NButton>
+          </div>
+        </section>
       </div>
 
-      <NAlert v-if="error" type="error" :show-icon="false">{{ error }}</NAlert>
-      <NAlert v-else-if="validation && validatedSource === workingSource.trim()" type="success" :show-icon="false">
+      <NAlert
+        v-if="error"
+        type="error"
+        :show-icon="false"
+        data-testid="formula-validation-error"
+      >
+        <div class="error-body">
+          <span>{{ error }}</span>
+          <button
+            v-if="diagnostic?.range"
+            type="button"
+            class="range-link"
+            data-testid="formula-error-range"
+            @click="locateDiagnostic(diagnostic.range)"
+          >定位 {{ formatTextRange(diagnostic.range) }}</button>
+        </div>
+      </NAlert>
+      <NAlert v-else-if="validation && sourceIsCurrent" type="success" :show-icon="false">
         公式有效 · {{ validation.resultType }} · {{ validation.dependencies.length }} 个直接依赖
       </NAlert>
-      <div v-else-if="validating" class="validating"><NSpin size="small" />正在由 sidecar 校验…</div>
+      <div v-else-if="validating" class="validating"><NSpin size="small" />正在校验公式…</div>
 
       <NAlert
-        v-if="previewing"
+        v-if="previewing && sourceIsCurrent"
         type="info"
         :show-icon="false"
         data-testid="formula-preview-loading"
       ><NSpin size="small" /> 正在计算当前表第一条记录的样例结果…</NAlert>
       <NAlert
-        v-else-if="previewError"
+        v-else-if="previewError && sourceIsCurrent"
         type="warning"
         :show-icon="false"
         data-testid="formula-preview-error"
       >样例计算失败：{{ previewError }}</NAlert>
       <NAlert
-        v-else-if="previewReady"
+        v-else-if="previewReady && sourceIsCurrent"
         type="info"
         :show-icon="false"
         data-testid="formula-preview-value"
       >样例结果：<code>{{ formatPreviewValue(previewValue) }}</code></NAlert>
       <NAlert
-        v-else-if="previewNote"
+        v-else-if="previewNote && !previewing"
         type="default"
         :show-icon="false"
         data-testid="formula-preview-note"
@@ -457,6 +699,34 @@ function formatPreviewValue(value: unknown): string {
 .aggregate-card>div { grid-column: 1 / -1; }
 .direct-card { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .direct-card>div { grid-column: 1 / -1; }
+.function-card { grid-column: 1 / -1; }
+.function-card>div:first-child { grid-column: 1 / -1; }
+.function-list {
+  display: grid; max-height: 168px; gap: 6px; overflow-y: auto;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+.function-item {
+  display: grid; gap: 2px; padding: 7px 9px; text-align: left; cursor: pointer;
+  border: 1px solid var(--vt-border); border-radius: 8px;
+  background: var(--vt-bg-elevated); color: inherit;
+}
+.function-item.active { border-color: #8b5cf6; }
+.function-item small { color: var(--vt-fg-muted); overflow: hidden; text-overflow: ellipsis; }
+.function-empty, .function-detail p { color: var(--vt-fg-muted); margin: 0; }
+.function-detail {
+  display: grid; gap: 6px; padding: 9px; border-radius: 8px;
+  border: 1px dashed var(--vt-border); justify-items: start;
+}
+.function-detail code {
+  padding: 4px 7px; border-radius: 6px; font-size: 11px;
+  background: color-mix(in srgb, #8b5cf6 10%, var(--vt-bg-subtle));
+}
+.error-body { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.range-link {
+  border: none; border-radius: 6px; padding: 2px 8px; cursor: pointer;
+  color: inherit; text-decoration: underline;
+  background: color-mix(in srgb, #8b5cf6 12%, transparent);
+}
 label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 650; }
 .eyebrow { color: #7c3aed; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
 small,.validating { color: var(--vt-fg-muted); }

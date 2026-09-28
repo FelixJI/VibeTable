@@ -124,6 +124,105 @@ describe("field settings store", () => {
     expect(store.lookupCatalogLoading).toBe(false);
     expect(store.formulaPreviewReady).toBe(false);
   });
+
+  it("keeps structured formula diagnostics, tokens and catalog through invalidations", () => {
+    const store = useFieldSettingsStore();
+    const document = {
+      displaySource: "{单价} * 2",
+      documentRevision: 5,
+      tokens: [{
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+        kind: "field" as const,
+        fieldId: "fld_price",
+        relationFieldId: null,
+        targetFieldId: null,
+      }],
+    };
+    const functions = [{
+      name: "IF",
+      category: "逻辑",
+      signature: "IF(bool, T, T)",
+      description: "分支",
+      example: "IF(true, 1, 2)",
+    }];
+
+    store.setFormulaPreview("preview value");
+    store.beginFormulaValidation("{单价} * 2", 5);
+    expect(store.formulaValidating).toBe(true);
+    expect(store.formulaPreviewReady).toBe(false);
+    expect(store.formulaValidatedDocumentRevision).toBe(5);
+
+    store.setFormulaValidation("{单价} * 2", {
+      canonicalSource: "f_price * 2",
+      resultType: "number",
+      dependencies: ["f_price"],
+      relationAggregatePaths: [],
+      authorDocument: document,
+      functions,
+    });
+    expect(store.formulaValidating).toBe(false);
+    expect(store.formulaAuthorDocument).toEqual(document);
+    expect(store.formulaFunctions).toEqual(functions);
+
+    const diagnostic = {
+      message: "公式语法错误",
+      code: "formula.syntax",
+      range: {
+        start: { line: 0, character: 7 },
+        end: { line: 0, character: 8 },
+      },
+    };
+    store.failFormulaValidation("{单价} * 3", new Error("公式语法错误"), diagnostic);
+    expect(store.formulaValidationError).toBe("公式语法错误");
+    expect(store.formulaDiagnostic?.range).toEqual(diagnostic.range);
+    expect(store.formulaValidation).toBeNull();
+
+    store.invalidateFormulaDraft();
+    expect(store.formulaValidation).toBeNull();
+    expect(store.formulaValidatedSource).toBe("");
+    expect(store.formulaValidatedDocumentRevision).toBeNull();
+    expect(store.formulaDiagnostic).toBeNull();
+    // The catalog and last backend document stay for the next request.
+    expect(store.formulaFunctions).toEqual(functions);
+    expect(store.formulaAuthorDocument).toEqual(document);
+    store.beginFormulaValidation("pending", 4);
+    store.invalidateFormulaDraft(true);
+    expect(store.formulaAuthorDocument).toBeNull();
+    expect(store.formulaValidating).toBe(false);
+
+    // Empty-formula bootstrap keeps functions but never adopts "0".
+    store.setFormulaRestored({
+      canonicalSource: "0",
+      resultType: "number",
+      dependencies: [],
+      relationAggregatePaths: [],
+      authorDocument: { displaySource: "0", documentRevision: 1, tokens: [] },
+      functions,
+    }, false);
+    expect(store.formulaFunctions).toEqual(functions);
+    expect(store.formulaAuthorDocument).toBeNull();
+    expect(store.formulaValidation).toBeNull();
+
+    // A failed restore may still carry #REF! tokens via details.authorDocument.
+    const brokenDocument = {
+      displaySource: "#REF! + 1",
+      documentRevision: 2,
+      tokens: [],
+    };
+    store.failFormulaRestore(new Error("引用失效"), {
+      message: "引用失效",
+      code: "formula.reference",
+      range: null,
+    }, brokenDocument);
+    expect(store.formulaValidationError).toBe("引用失效");
+    expect(store.formulaAuthorDocument).toEqual(brokenDocument);
+
+    store.beginOpen();
+    expect(store.formulaFunctions).toEqual([]);
+    expect(store.formulaAuthorDocument).toBeNull();
+    expect(store.formulaDiagnostic).toBeNull();
+    expect(store.formulaValidatedDocumentRevision).toBeNull();
+  });
   it("moves through open, edit, plan and confirmation-gated apply states", () => {
     const store = useFieldSettingsStore();
     store.beginOpen();

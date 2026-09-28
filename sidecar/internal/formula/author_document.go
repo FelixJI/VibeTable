@@ -140,9 +140,10 @@ func authorSyntaxLexemes(source string) []authorLexeme {
 }
 
 func displayFunctionName(name string, singleRelationTarget bool) string {
-	// Lowercase min/max are also native binary CEL functions. Their display
-	// aggregate shorthand is unambiguous only with one relation-target argument.
-	if (name == "min" || name == "max") && !singleRelationTarget {
+	// Both the native lowercase min/max functions and the uppercase numeric
+	// MIN/MAX functions exist now. Their display aggregate shorthand stays
+	// unambiguous only with one relation-target argument.
+	if (strings.EqualFold(name, "min") || strings.EqualFold(name, "max")) && !singleRelationTarget {
 		return ""
 	}
 	return displayAggregateFunctions[strings.ToUpper(name)]

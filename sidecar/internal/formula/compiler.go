@@ -192,6 +192,10 @@ func (compiler *Compiler) Compile(
 		ast,
 		cel.CostLimit(compiler.limits.Cost),
 		cel.InterruptCheckFrequency(32),
+		// The common control-flow replacement must stay inside the finite-call
+		// wrapper so numeric results keep their overflow guard and the cost
+		// observer remains the outermost layer of every node.
+		cel.CustomDecoratorV2(commonFunctionDecorator(checked.GetTypeMap())),
 		cel.CustomDecoratorV2(func(node interpreter.InterpretableV2) (interpreter.InterpretableV2, error) {
 			if call, ok := node.(interpreter.InterpretableCall); ok {
 				return finiteFormulaCall{call}, nil
@@ -282,6 +286,7 @@ func (compiler *Compiler) environment(
 		options = append(options, cel.Variable(candidate.Identity.PhysicalName, fieldType))
 	}
 	options = append(options, functionOptions()...)
+	options = append(options, commonFunctionOptions()...)
 	options = append([]cel.EnvOption{
 		cel.StdLib(cel.StdLibSubset(&celenv.LibrarySubset{
 			ExcludeFunctions: []*celenv.Function{{Name: "_*_"}, {Name: "_/_"}},
@@ -525,6 +530,10 @@ var allowedFunctions = map[string]struct{}{
 	"dateAdd": {}, "dateSubtract": {}, "formatDate": {},
 	"relationSum": {}, "relationAverage": {}, "relationMin": {}, "relationMax": {},
 	"relationCount": {}, "relationCountValues": {},
+	"IF": {}, "IFS": {}, "AND": {}, "OR": {}, "NOT": {}, "ISBLANK": {},
+	"IFERROR": {}, "ISERROR": {}, "CONCATENATE": {}, "LEN": {},
+	"LEFT": {}, "RIGHT": {}, "MID": {}, "TRIM": {}, "UPPER": {}, "LOWER": {},
+	"ABS": {}, "ROUND": {}, "MIN": {}, "MAX": {},
 }
 
 func celTypeForField(field v2.FieldDefinition) (*cel.Type, error) {
@@ -641,24 +650,16 @@ func functionOptions() []cel.EnvOption {
 		),
 		cel.Function("upper",
 			cel.Overload("vibetable_upper_string", []*cel.Type{cel.StringType}, cel.StringType,
-				cel.UnaryBinding(func(value ref.Val) ref.Val {
-					return types.String(strings.ToUpper(string(value.(types.String))))
-				}))),
+				cel.UnaryBinding(upperTextValue))),
 		cel.Function("lower",
 			cel.Overload("vibetable_lower_string", []*cel.Type{cel.StringType}, cel.StringType,
-				cel.UnaryBinding(func(value ref.Val) ref.Val {
-					return types.String(strings.ToLower(string(value.(types.String))))
-				}))),
+				cel.UnaryBinding(lowerTextValue))),
 		cel.Function("trim",
 			cel.Overload("vibetable_trim_string", []*cel.Type{cel.StringType}, cel.StringType,
-				cel.UnaryBinding(func(value ref.Val) ref.Val {
-					return types.String(strings.TrimSpace(string(value.(types.String))))
-				}))),
+				cel.UnaryBinding(trimTextValue))),
 		cel.Function("length",
 			cel.Overload("vibetable_length_string", []*cel.Type{cel.StringType}, cel.IntType,
-				cel.UnaryBinding(func(value ref.Val) ref.Val {
-					return types.Int(len([]rune(string(value.(types.String)))))
-				})),
+				cel.UnaryBinding(textLengthValue)),
 			cel.Overload("vibetable_length_list", []*cel.Type{cel.ListType(cel.DynType)}, cel.IntType,
 				cel.UnaryBinding(func(value ref.Val) ref.Val {
 					return value.(traits.Sizer).Size()
@@ -666,58 +667,39 @@ func functionOptions() []cel.EnvOption {
 		cel.Function("abs",
 			cel.Overload("vibetable_abs_int", []*cel.Type{cel.IntType}, cel.IntType,
 				cel.UnaryBinding(func(value ref.Val) ref.Val {
-					number := int64(value.(types.Int))
-					if number == math.MinInt64 {
-						return types.NewErr("integer overflow")
-					}
-					if number < 0 {
-						number = -number
-					}
-					return types.Int(number)
+					return absIntValue(value.(types.Int))
 				})),
 			cel.Overload("vibetable_abs_double", []*cel.Type{cel.DoubleType}, cel.DoubleType,
 				cel.UnaryBinding(func(value ref.Val) ref.Val {
-					return types.Double(math.Abs(float64(value.(types.Double))))
+					return absDoubleValue(value.(types.Double))
 				}))),
 		cel.Function("round",
 			cel.Overload("vibetable_round_double_int", []*cel.Type{cel.DoubleType, cel.IntType}, cel.DoubleType,
 				cel.BinaryBinding(func(left, right ref.Val) ref.Val {
-					digits := int64(right.(types.Int))
-					if digits < -15 || digits > 15 {
-						return types.NewErr("round precision out of range")
+					value, valueOK := left.(types.Double)
+					precision, precisionOK := right.(types.Int)
+					if !valueOK || !precisionOK {
+						return types.NewErr("no such overload: round")
 					}
-					factor := math.Pow10(int(digits))
-					return types.Double(math.Round(float64(left.(types.Double))*factor) / factor)
+					return roundDoubleValue(value, precision)
 				}))),
 		cel.Function("min",
 			cel.Overload("vibetable_min_int", []*cel.Type{cel.IntType, cel.IntType}, cel.IntType,
 				cel.BinaryBinding(func(left, right ref.Val) ref.Val {
-					if left.(types.Int) < right.(types.Int) {
-						return left
-					}
-					return right
+					return minIntValues(left.(types.Int), right.(types.Int))
 				})),
 			cel.Overload("vibetable_min_double", []*cel.Type{cel.DoubleType, cel.DoubleType}, cel.DoubleType,
 				cel.BinaryBinding(func(left, right ref.Val) ref.Val {
-					if left.(types.Double) < right.(types.Double) {
-						return left
-					}
-					return right
+					return minDoubleValues(left.(types.Double), right.(types.Double))
 				}))),
 		cel.Function("max",
 			cel.Overload("vibetable_max_int", []*cel.Type{cel.IntType, cel.IntType}, cel.IntType,
 				cel.BinaryBinding(func(left, right ref.Val) ref.Val {
-					if left.(types.Int) > right.(types.Int) {
-						return left
-					}
-					return right
+					return maxIntValues(left.(types.Int), right.(types.Int))
 				})),
 			cel.Overload("vibetable_max_double", []*cel.Type{cel.DoubleType, cel.DoubleType}, cel.DoubleType,
 				cel.BinaryBinding(func(left, right ref.Val) ref.Val {
-					if left.(types.Double) > right.(types.Double) {
-						return left
-					}
-					return right
+					return maxDoubleValues(left.(types.Double), right.(types.Double))
 				}))),
 		cel.Function("dateAdd",
 			cel.Overload(
@@ -830,16 +812,7 @@ func functionOptions() []cel.EnvOption {
 		options = append(options,
 			cel.Function("concat",
 				cel.Overload(fmt.Sprintf("vibetable_concat_%d", arity), arguments, cel.StringType,
-					cel.FunctionBinding(func(values ...ref.Val) ref.Val {
-						var builder strings.Builder
-						for _, value := range values {
-							if value == types.NullValue {
-								continue
-							}
-							builder.WriteString(fmt.Sprint(value.Value()))
-						}
-						return types.String(builder.String())
-					}))),
+					cel.FunctionBinding(concatenateTextValues))),
 			cel.Function("coalesce",
 				cel.Overload(fmt.Sprintf("vibetable_coalesce_%d", arity), arguments, cel.DynType,
 					cel.FunctionBinding(func(values ...ref.Val) ref.Val {

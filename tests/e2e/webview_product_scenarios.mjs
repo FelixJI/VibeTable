@@ -2532,9 +2532,81 @@ async function scenario04(page, recorder, _network, runtime) {
   { values, expectedFinalValues });
 }
 
+async function commonFormulaUiJourney(page, recorder, runtime) {
+  const tableName = "E2E 常用公式";
+  const tableId = await createEmptyTable(page, tableName);
+  const price = await createV2Field(page, tableId, "单价", "number");
+  const quantity = await createV2Field(page, tableId, "数量", "number");
+  const material = await createV2Field(page, tableId, "物料😀", "text");
+  await closeFieldSettingsDrawer(page);
+  await applyProductMutation(page, tableId, [{
+    kind: "insert", recordId: "formulaorder001",
+    values: { [price.physicalName]: 12.5, [quantity.physicalName]: 2, [material.physicalName]: " abC-01 " },
+  }], "common-formula-ui-seed");
+  await selectTable(page, tableName);
+  await chooseToolbarMore(page, "refresh");
+  await waitForVisibleRowCount(page, 1);
+  const cases = [
+    { name: "金额", source: "{单价} * {数量}", before: 25, after: 50 },
+    { name: "分类", source: 'IF({数量} >= 2.0, "批量", "零售")', before: "批量", after: "批量" },
+    { name: "编码", source: "UPPER(LEFT(TRIM({物料😀}), 3))", before: "ABC", after: "ABC" },
+    { name: "错误提示", source: 'IFERROR(string(1.0 / ({数量} - 2.0)), "计算错误")', before: "计算错误", after: "0.5" },
+  ];
+  for (const item of cases) {
+    await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-display-name").locator("input").fill(item.name);
+    await selectVisibleNOption(page, "field-logical-type", "公式");
+    await page.getByTestId("formula-editor-entry").click();
+    await fillNInput(page, "formula-source", item.source);
+    await page.getByTestId("formula-field-editor").getByRole("alert")
+      .filter({ hasText: "公式有效" }).waitFor({ timeout: 30_000 });
+    await page.getByTestId("formula-preview-value").filter({ hasText: String(item.before) })
+      .waitFor({ timeout: 30_000 });
+    await page.screenshot({ path: path.join(runtime.evidenceDir, `05-formula-${item.name}.png`), fullPage: true });
+    await page.getByTestId("formula-editor-commit").click();
+    await page.getByTestId("field-plan-button").click();
+    const planCard = page.getByTestId("field-change-plan");
+    await planCard.waitFor({ state: "visible", timeout: 30_000 });
+    for (const checkbox of await planCard.getByRole("checkbox").all()) {
+      if (!await checkbox.isChecked()) await checkbox.check();
+    }
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+    await page.getByTestId("field-apply-button").click();
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`formula UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    if (applied.payload?.migrationJobId) {
+      const migration = await waitForFieldMigration(page, applied.payload.migrationJobId);
+      if (migration.payload?.phase !== "completed") throw new Error(JSON.stringify(migration));
+    }
+    await closeFieldSettingsDrawer(page);
+    const described = await rawBridgeRequest(page, "field.settings.describe", {
+      tableId, fieldId: applied.payload.fieldId,
+    });
+    item.fieldId = described.payload.definition.identity.fieldId;
+    item.physicalName = described.payload.definition.identity.physicalName;
+    await waitForQueryPage(page, { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+      result => result?.rows?.[0]?.[item.physicalName] === item.before);
+    recorder.check(`${item.name} is saved through the real formula editor`,
+      described.payload.definition.logicalType === "formula", { source: described.payload.definition.formula.source });
+  }
+  await chooseToolbarMore(page, "refresh");
+  const cell = page.locator(`.tabulator-cell[tabulator-field="${quantity.physicalName}"]`).first();
+  const editor = await beginCellEdit(cell);
+  await editor.fill("4");
+  await editor.press("Enter");
+  const expected = await waitForQueryPage(page,
+    { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    result => cases.every(item => result?.rows?.[0]?.[item.physicalName] === item.after));
+  recorder.check("editing quantity recomputes all common formula columns", !!expected.payload?.rows?.length);
+  return { tableId, tableName, cases };
+}
+
 async function scenario05(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
+  const commonFormulas = await commonFormulaUiJourney(page, recorder, runtime);
   const conversionTable = await createSingleFieldTable(
     page,
     "E2E Empty Conversion",
@@ -2729,6 +2801,20 @@ async function scenario05(page, recorder, _network, runtime) {
       && persistedDefinition.payload?.definition?.identity?.fieldId === rollbackTable.field.fieldId
       && persistedRows.payload?.rows?.[0]?.[rollbackTable.field.physicalName] === "42",
     { originalSession, reopened, persistedStatus, persistedDefinition, persistedRows });
+  await selectTable(page, commonFormulas.tableName);
+  const formulaRows = await waitForQueryPage(page, {
+    tableId: commonFormulas.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, result => commonFormulas.cases.every(item => result?.rows?.[0]?.[item.physicalName] === item.after));
+  recorder.check("common formulas survive actual workspace close and reopen", formulaRows.payload.rows.length === 1);
+  const formulaHeader = page.locator(`.tabulator-col[tabulator-field="${commonFormulas.cases[0].physicalName}"]`);
+  await formulaHeader.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  await page.getByTestId("formula-editor-entry").click();
+  await page.getByTestId("formula-field-editor").getByRole("alert")
+    .filter({ hasText: "公式有效" }).waitFor({ timeout: 30_000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "05-formula-reopened.png"), fullPage: true });
+  await page.getByTestId("formula-editor-cancel").click();
+  await closeFieldSettingsDrawer(page);
   return;
 }
 

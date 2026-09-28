@@ -102,6 +102,16 @@ public sealed class ProductDataRpcRegistryTests
             """{"tableId":"tbl_orders","displaySource":"SUM({明细}.{金额})","fieldId":"raw"}""").RootElement));
         Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
             """{"tableId":"tbl_orders","displaySource":7}""").RootElement));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"f_amount","restoreSource":true}""").RootElement));
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"{金额}","authorDocument":{"displaySource":"{金额}","tokens":[],"documentRevision":1}}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"1","authorDocument":7}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"1","restoreSource":"true"}""").RootElement));
+        Assert.IsFalse(endpoint.IsValidPayload(JsonDocument.Parse(
+            """{"tableId":"tbl_orders","displaySource":"1","restoreSource":true,"authorDocument":{}}""").RootElement));
     }
 
     [TestMethod]

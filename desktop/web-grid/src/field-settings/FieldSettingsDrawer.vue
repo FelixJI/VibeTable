@@ -43,7 +43,7 @@ const emit = defineEmits<{
   loadLookupCatalog: [];
   resolveLookupPath: [path: readonly { readonly relationFieldId: string }[]];
   loadFormulaCatalog: [];
-  validateFormula: [displaySource: string];
+  validateFormula: [request: import("./formula/formulaDraftRequest").FormulaDraftValidateRequest];
 }>();
 
 const store = useFieldSettingsStore();
@@ -162,6 +162,7 @@ const formulaLocalFields = computed(() => (store.formulaSourceSchema?.columns ??
     && column.kind !== "relation")
   .map(column => ({
     label: column.title,
+    fieldId: column.fieldId!,
     canonicalName: column.name,
     dataType: column.dataType,
   })));
@@ -175,12 +176,14 @@ const formulaRelations = computed(() => (store.formulaSourceSchema?.columns ?? [
     if (!descriptor?.relatedCollection || !target) return [];
     return [{
       label: column.title,
+      fieldId: column.fieldId!,
       canonicalName: column.name,
       many: descriptor.kind !== "m2o",
       targetFields: target.columns
         .filter(item => item.fieldId && item.kind !== "system" && item.kind !== "relation")
         .map(item => ({
           label: item.title,
+          fieldId: item.fieldId!,
           canonicalName: item.name,
           dataType: item.dataType,
         })),
@@ -826,10 +829,14 @@ function isTextual(type: LogicalTypeV2): boolean {
                     :local-fields="formulaLocalFields"
                     :relations="formulaRelations"
                     :result-type="store.result?.definition?.formula?.resultType"
+                    :author-document="store.formulaAuthorDocument"
+                    :functions="store.formulaFunctions"
                     :validation="store.formulaValidation"
                     :validated-source="store.formulaValidatedSource"
+                    :validated-document-revision="store.formulaValidatedDocumentRevision"
                     :validating="store.formulaValidating || store.formulaCatalogLoading"
                     :error="store.formulaValidationError || store.formulaCatalogError"
+                    :diagnostic="store.formulaDiagnostic"
                     :preview-value="store.formulaPreviewValue"
                     :preview-ready="store.formulaPreviewReady"
                     :previewing="store.formulaPreviewing"

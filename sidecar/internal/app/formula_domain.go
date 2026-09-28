@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/schemav2wire"
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 )
@@ -21,17 +23,61 @@ type formulaDomain struct {
 
 func (domain formulaDomain) validateDraft(
 	ctx context.Context,
-	tableID string,
-	displaySource string,
+	input formulaDraftValidateRequest,
 ) (fieldchange.FormulaDraftInspection, error) {
+	tableID, displaySource := input.TableID, input.DisplaySource
 	if tableID == "" || displaySource == "" {
 		return fieldchange.FormulaDraftInspection{}, formulaRequestError(
 			"tableId and displaySource are required",
 		)
 	}
-	inspection, err := fieldchange.NewCatalog(domain.app).InspectFormulaDraft(ctx, tableID, displaySource)
+	catalog := fieldchange.NewCatalog(domain.app)
+	var authored *formula.AuthorResult
+	var err error
+	if input.RestoreSource {
+		if input.AuthorDocument != nil {
+			return fieldchange.FormulaDraftInspection{}, formulaRequestError("restoreSource and authorDocument are mutually exclusive")
+		}
+		authored, err = catalog.RestoreFormulaDocument(ctx, tableID, displaySource, 1)
+	} else if input.AuthorDocument != nil {
+		if input.AuthorDocument.DisplaySource != displaySource {
+			return fieldchange.FormulaDraftInspection{}, formulaRequestError("authorDocument displaySource differs")
+		}
+		authored, err = catalog.AuthorFormulaDocument(ctx, tableID, *input.AuthorDocument)
+	}
 	if err != nil {
+		var formulaErr *formula.Error
+		if authored != nil && errors.As(err, &formulaErr) {
+			if formulaErr.Details == nil {
+				formulaErr.Details = map[string]any{}
+			}
+			formulaErr.Details["authorDocument"] = authored.Document
+		}
 		return fieldchange.FormulaDraftInspection{}, err
+	}
+	if authored != nil {
+		displaySource = authored.CanonicalSource
+	}
+	inspection, err := catalog.InspectFormulaDraft(ctx, tableID, displaySource)
+	if err != nil {
+		var formulaErr *formula.Error
+		if authored != nil && errors.As(err, &formulaErr) && formulaErr.SourceSpan != nil {
+			if span, ok := authored.SourceMap.DisplayRange(*formulaErr.SourceSpan); ok {
+				if formulaErr.Details == nil {
+					formulaErr.Details = map[string]any{}
+				}
+				formulaErr.Details["range"] = span
+			}
+		}
+		return fieldchange.FormulaDraftInspection{}, err
+	}
+	if authored != nil {
+		document := authored.Document
+		if document.Tokens == nil {
+			document.Tokens = []workbench.FormulaAuthorToken{}
+		}
+		inspection.AuthorDocument = &document
+		inspection.Functions = formula.FunctionCatalog()
 	}
 	// REST renders through PocketBase's JSON writer, which emits empty arrays
 	// for nil slices; keep the Product dispatcher's stdlib rendering identical.
