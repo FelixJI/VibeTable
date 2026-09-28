@@ -48,6 +48,7 @@ type DataPublisher interface {
 
 type fanoutCursor struct {
 	ClockInstant      *time.Time            `json:"clockInstant,omitempty"`
+	AllRecords        bool                  `json:"allRecords,omitempty"`
 	TableID           string                `json:"tableId"`
 	LastRecordID      string                `json:"lastRecordId"`
 	RelationFieldID   string                `json:"relationFieldId"`
@@ -334,15 +335,7 @@ func (service *Service) createFanoutJob(
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	existing, err := app.FindFirstRecordByFilter(
-		"vibetable_jobs",
-		"job_type={:type} && source_event_id={:event} && "+
-			"source_table_id={:table} && relation_field_id={:field}",
-		dbx.Params{
-			"type": formulaFanoutType, "event": event.EventID,
-			"table": sourceTableID, "field": relationFieldID,
-		},
-	)
+	existing, err := findFanoutJob(app, event.EventID, sourceTableID, relationFieldID)
 	if err == nil {
 		return existing.Id, nil
 	}
@@ -365,7 +358,7 @@ func (service *Service) createFanoutJob(
 			break
 		}
 	}
-	if relationField == nil {
+	if relationField == nil && relationFieldID != "" {
 		return "", jobError(
 			"job.formula_dependency_invalid",
 			"formula relation dependency is unavailable",
@@ -394,6 +387,16 @@ func (service *Service) createFanoutJob(
 		seenFormulaFields[fieldID] = struct{}{}
 		formulaFields = append(formulaFields, fieldID)
 		pathRaw, marshalErr := json.Marshal(dependency.GetRaw("path_json"))
+		if relationFieldID == "" {
+			var spec v2.LookupSpec
+			field, found := definition.Field(fieldID)
+			if marshalErr != nil || v2.StrictDecode(pathRaw, &spec) != nil ||
+				spec.Condition == nil || !found || field.Lookup == nil ||
+				!reflect.DeepEqual(*field.Lookup, spec) {
+				return "", jobError("job.formula_dependency_invalid", "conditional lookup dependency is unavailable", false)
+			}
+			continue
+		}
 		var path []v2.LookupPathStep
 		if marshalErr != nil || json.Unmarshal(pathRaw, &path) != nil || len(path) == 0 {
 			return "", jobError(
@@ -419,7 +422,8 @@ func (service *Service) createFanoutJob(
 		)
 	}
 	cursor := fanoutCursor{
-		TableID: sourceTableID, RelationFieldID: relationFieldID,
+		AllRecords: relationFieldID == "",
+		TableID:    sourceTableID, RelationFieldID: relationFieldID,
 		ChangedTableID:  event.TableID,
 		TargetRecordIDs: append([]string(nil), event.RecordIDs...),
 		FormulaFieldIDs: formulaFields, Paths: paths,
@@ -447,15 +451,7 @@ func (service *Service) createFanoutJob(
 	record.Set("relation_field_id", relationFieldID)
 	if err := app.Save(record); err != nil {
 		// A concurrent duplicate resolves to the already-created durable job.
-		existing, findErr := app.FindFirstRecordByFilter(
-			"vibetable_jobs",
-			"job_type={:type} && source_event_id={:event} && "+
-				"source_table_id={:table} && relation_field_id={:field}",
-			dbx.Params{
-				"type": formulaFanoutType, "event": event.EventID,
-				"table": sourceTableID, "field": relationFieldID,
-			},
-		)
+		existing, findErr := findFanoutJob(app, event.EventID, sourceTableID, relationFieldID)
 		if findErr == nil {
 			return existing.Id, nil
 		}
@@ -510,6 +506,18 @@ func (service *Service) matchingFanoutBatch(
 	cursor fanoutCursor,
 	rows []*core.Record,
 ) ([]string, error) {
+	if cursor.AllRecords {
+		// ponytail: arbitrary predicates require a bounded table scan; add a reverse
+		// condition index only when measured fan-out cost warrants it.
+		ids := make([]string, 0, len(rows))
+		for _, row := range rows {
+			if err := checkFanoutInterrupted(ctx, cancelRequested); err != nil {
+				return nil, err
+			}
+			ids = append(ids, row.Id)
+		}
+		return ids, nil
+	}
 	targets := make(map[string]struct{}, len(cursor.TargetRecordIDs))
 	for _, recordID := range cursor.TargetRecordIDs {
 		targets[recordID] = struct{}{}
@@ -890,4 +898,17 @@ func relationIDs(value any) []string {
 	default:
 		return []string{}
 	}
+}
+
+func findFanoutJob(app core.App, eventID, tableID, relationFieldID string) (*core.Record, error) {
+	collection, err := app.FindCollectionByNameOrId("vibetable_jobs")
+	if err != nil {
+		return nil, err
+	}
+	record := core.NewRecord(collection)
+	err = app.RecordQuery(collection).AndWhere(dbx.HashExp{
+		"job_type": formulaFanoutType, "source_event_id": eventID,
+		"source_table_id": tableID, "relation_field_id": relationFieldID,
+	}).One(record)
+	return record, err
 }

@@ -48,7 +48,7 @@ ViewDefinition
 
 ### 3. Lookup 只负责读取，不负责聚合
 
-Lookup 由 Relation path 和目标 fieldId 定义，不再包含用户可选 aggregate。
+Lookup 保留 Relation path 和目标 fieldId 路径模式，不包含用户可选 aggregate。#391 新增与路径互斥的[条件来源模式](../quality/conditional-lookup.md)，下列单值和按需遍历规则仅适用于路径模式。
 
 - 最多 8 个 Relation step，限制由 sidecar capability 声明并校验。
 - 单 Relation 返回目标字段标量；多 Relation 返回保留元素类型与来源 record ID 的值集合。

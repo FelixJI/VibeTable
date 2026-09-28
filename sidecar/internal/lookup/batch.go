@@ -27,7 +27,11 @@ func (calculator *Calculator) CalculateCellsBatch(
 			(selected != nil && !selected[field.Identity.FieldID]) {
 			continue
 		}
-		raw, err := json.Marshal(field.Lookup.Path)
+		var groupKey any = field.Lookup.Path
+		if field.Lookup.Condition != nil {
+			groupKey = field.Lookup
+		}
+		raw, err := json.Marshal(groupKey)
 		if err != nil {
 			return nil, err
 		}
@@ -62,8 +66,13 @@ func calculateLookupGroups(
 	}
 	readBudget := materializationBudget{remainingBytes: lookupMaterializationBytes}
 	valueBudget := materializationBudget{remainingBytes: lookupMaterializationBytes}
+	var conditionFields []v2.FieldDefinition
 	var cursors []*lookupBatchCursor
 	for _, fields := range groups {
+		if fields[0].Lookup.Condition != nil {
+			conditionFields = append(conditionFields, fields...)
+			continue
+		}
 		if len(fields[0].Lookup.Path) == 0 {
 			return nil, lookupError("mutation.lookup.schema_invalid", "lookup path metadata is unavailable")
 		}
@@ -74,6 +83,17 @@ func calculateLookupGroups(
 				collector: lookupPageCollector{offset: offset, limit: limit},
 				values:    make([][]lookupPathValue, len(fields)),
 			})
+		}
+	}
+	if len(conditionFields) > 0 {
+		cells, err := calculateConditionCells(ctx, app, definition, records, conditionFields, offset, limit, &readBudget, &valueBudget)
+		if err != nil {
+			return nil, err
+		}
+		for recordID, fields := range cells {
+			for name, cell := range fields {
+				result[recordID][name] = cell
+			}
 		}
 	}
 	for len(cursors) > 0 {

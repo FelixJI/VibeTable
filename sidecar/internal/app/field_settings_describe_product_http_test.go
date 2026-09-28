@@ -43,7 +43,7 @@ func fieldSettingsDescribeHTTPMux(t *testing.T, pb *pocketbase.PocketBase, regis
 			unrelatedContentRegistration(t, "recordDocumentLink.list"),
 			unrelatedContentRegistration(t, "recordDocumentLink.repair"),
 			registration, relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
-			unrelatedRelationInspectRegistration(t), productrpc.ReconcileRegistration(catalog), lookupListRegistration(relation.New(pb, nil, nil)),
+			unrelatedRelationInspectRegistration(t), productrpc.ReconcileRegistration(catalog), lookupDraftPreviewRegistration(pb), lookupListRegistration(relation.New(pb, nil, nil)),
 			unrelatedPluginCatalogRegistration(t, "plugin.listCatalog"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listAudit"),
 			unrelatedPluginCatalogRegistration(t, "plugin.listPendingCleanup"),

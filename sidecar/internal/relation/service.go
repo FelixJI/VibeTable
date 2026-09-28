@@ -95,11 +95,16 @@ func (service *Service) Describe(
 			if revision < 1 {
 				revision = 1
 			}
+			relationFieldID := ""
+			if len(field.Lookup.Path) > 0 {
+				relationFieldID = field.Lookup.Path[0].RelationFieldID
+			}
 			result.Lookups = append(result.Lookups, LookupDescriptor{
-				LookupID: lookupID,
-				TableID:  tableID, FieldID: field.Identity.FieldID,
+				Condition: field.Lookup.Condition,
+				LookupID:  lookupID,
+				TableID:   tableID, FieldID: field.Identity.FieldID,
 				PhysicalName: field.Identity.PhysicalName, DisplayName: field.DisplayName,
-				RelationFieldID:   field.Lookup.Path[0].RelationFieldID,
+				RelationFieldID:   relationFieldID,
 				Path:              path,
 				TargetFieldID:     field.Lookup.TargetFieldID,
 				ResultCardinality: map[bool]string{true: "many", false: "one"}[resultMany],
@@ -115,6 +120,17 @@ func (service *Service) describeLookupPath(
 	source schemaexecution.Table,
 	spec v2.LookupSpec,
 ) ([]LookupPathDescriptor, bool, lookupOutputType, error) {
+	if spec.Condition != nil {
+		target, err := schemaexecution.Describe(ctx, service.app, spec.Condition.SourceTableID)
+		if err != nil {
+			return nil, false, lookupOutputType{}, err
+		}
+		field, found := target.Field(spec.TargetFieldID)
+		if !found {
+			return nil, false, lookupOutputType{}, relationError("lookup.value.source_missing", "lookup result field is unavailable")
+		}
+		return []LookupPathDescriptor{}, true, outputTypeFor(field), nil
+	}
 	current := source
 	result := make([]LookupPathDescriptor, 0, len(spec.Path))
 	resultMany := false

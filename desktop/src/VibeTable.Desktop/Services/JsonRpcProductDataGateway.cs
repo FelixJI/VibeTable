@@ -148,6 +148,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     public Task<JsonElement> UpdateSingleRelationAsync(JsonElement p, CancellationToken t) => Invoke("relation.updateSingle", p, t);
     public Task<JsonElement> PreviewRelationDeltaAsync(JsonElement p, CancellationToken t) => Invoke("relation.previewDelta", p, t);
     public Task<JsonElement> ApplyRelationDeltaAsync(JsonElement p, CancellationToken t) => Invoke("relation.applyDelta", p, t);
+    public Task<JsonElement> PreviewLookupDraftAsync(JsonElement p, CancellationToken t) => Invoke("lookup.draft.preview", p, t);
     public Task<JsonElement> ListLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.list", p, t);
     public Task<JsonElement> QueryLookupsAsync(JsonElement p, CancellationToken t) => Invoke("lookup.query", p, t);
     public Task<JsonElement> ReadLookupValuePageAsync(JsonElement p, CancellationToken t) => Invoke("lookup.valuePage", p, t);

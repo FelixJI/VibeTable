@@ -78,7 +78,7 @@ func TestClockRevisionMigrationAddsOptionalCounterIdempotently(t *testing.T) {
 	}()
 	baseline := core.MigrationsList{}
 	for _, migration := range core.AppMigrations.Items() {
-		if !strings.HasPrefix(migration.File, "2026092801_") {
+		if !strings.HasPrefix(migration.File, "2026092802_") {
 			baseline.Register(migration.Up, migration.Down, migration.File)
 		}
 	}
@@ -95,7 +95,7 @@ func TestClockRevisionMigrationAddsOptionalCounterIdempotently(t *testing.T) {
 	}
 	clockOnly := core.MigrationsList{}
 	for _, migration := range core.AppMigrations.Items() {
-		if strings.HasPrefix(migration.File, "2026092801_") {
+		if strings.HasPrefix(migration.File, "2026092802_") {
 			clockOnly.Register(migration.Up, migration.Down, migration.File)
 		}
 	}

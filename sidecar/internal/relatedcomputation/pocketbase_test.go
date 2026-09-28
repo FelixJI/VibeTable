@@ -1,4 +1,4 @@
-package relatedcomputation
+package relatedcomputation_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/migrations"
 )
@@ -37,25 +38,25 @@ func TestFormulaExpectationAndWrapValuesReadTransactionBoundDependencyRevision(t
 	}
 	fields := []v2.FieldDefinition{field}
 
-	expectation, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	expectation, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantWatermark := Watermark(map[string]int64{"tbl_customers": 7})
-	if expectation != (Expectation{3, 11, wantWatermark}) {
+	wantWatermark := relatedcomputation.Watermark(map[string]int64{"tbl_customers": 7})
+	if expectation != (relatedcomputation.Expectation{3, 11, wantWatermark}) {
 		t.Fatalf("expectation = %#v", expectation)
 	}
-	wrapped, err := WrapValues(
+	wrapped, err := relatedcomputation.WrapValues(
 		context.Background(), app, "tbl_orders", fields, 11, map[string]any{"fld_total": 42.5},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope, ok := Decode(wrapped["total"])
-	if !ok || !envelope.Fresh(expectation) || ProjectStored(wrapped["total"]) != 42.5 {
+	envelope, ok := relatedcomputation.Decode(wrapped["total"])
+	if !ok || !envelope.Fresh(expectation) || relatedcomputation.ProjectStored(wrapped["total"]) != 42.5 {
 		t.Fatalf("wrapped value = %#v", wrapped)
 	}
-	if ProjectStored("plain") != "plain" {
+	if relatedcomputation.ProjectStored("plain") != "plain" {
 		t.Fatal("plain stored value should project unchanged")
 	}
 }
@@ -65,7 +66,7 @@ func TestExpectationRejectsCancelledInvalidAndUnavailableComputedDefinitions(t *
 	fields := []v2.FieldDefinition{}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ExpectationFor(cancelled, app, "tbl_orders", fields, "missing", 1); !errors.Is(err, context.Canceled) {
+	if _, err := relatedcomputation.ExpectationFor(cancelled, app, "tbl_orders", fields, "missing", 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled error = %v", err)
 	}
 	formula := v2.FieldDefinition{
@@ -73,13 +74,13 @@ func TestExpectationRejectsCancelledInvalidAndUnavailableComputedDefinitions(t *
 		LogicalType: v2.LogicalFormula, Formula: &v2.FormulaSpec{},
 	}
 	fields = append(fields, formula)
-	if _, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_formula", 1); err == nil {
+	if _, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_formula", 1); err == nil {
 		t.Fatal("formula without authoritative metadata was accepted")
 	}
-	if _, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "missing", 1); err == nil {
+	if _, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "missing", 1); err == nil {
 		t.Fatal("non-computed field was accepted")
 	}
-	if _, err := WrapValues(context.Background(), app, "tbl_orders", fields, 1, map[string]any{"missing": 1}); err == nil {
+	if _, err := relatedcomputation.WrapValues(context.Background(), app, "tbl_orders", fields, 1, map[string]any{"missing": 1}); err == nil {
 		t.Fatal("unavailable computed field was accepted")
 	}
 }
@@ -101,7 +102,7 @@ func TestFormulaExpectationRejectsMissingDependencyMetadata(t *testing.T) {
 		"relation_field_id": "fld_customer", "target_table_id": "tbl_missing",
 		"target_field_id": "fld_balance", "dependency_kind": "relation",
 	})
-	if _, err := ExpectationFor(
+	if _, err := relatedcomputation.ExpectationFor(
 		context.Background(), app, "tbl_orders", []v2.FieldDefinition{field}, "fld_formula", 1,
 	); err == nil {
 		t.Fatal("formula with missing authoritative dependency metadata was accepted")
@@ -115,7 +116,7 @@ func TestWrapValuesRejectsNonJSONComputedOutput(t *testing.T) {
 		LogicalType: v2.LogicalLookup,
 		Lookup:      &v2.LookupSpec{},
 	}
-	if _, err := WrapValues(
+	if _, err := relatedcomputation.WrapValues(
 		context.Background(), app, "tbl_orders", []v2.FieldDefinition{field}, 1,
 		map[string]any{"fld_lookup": math.Inf(1)},
 	); err == nil {
@@ -130,12 +131,12 @@ func TestLookupDefinitionVersionDefaultsAndRejectsCorruptStoredRevision(t *testi
 		LogicalType: v2.LogicalLookup, Lookup: &v2.LookupSpec{},
 	}
 	fields := []v2.FieldDefinition{field}
-	expectation, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 4)
+	expectation, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if expectation.DefinitionVersion != 1 || expectation.SourceDataRevision != 4 ||
-		expectation.DependencyWatermark != Watermark(map[string]int64{}) {
+		expectation.DependencyWatermark != relatedcomputation.Watermark(map[string]int64{}) {
 		t.Fatalf("default lookup expectation = %#v", expectation)
 	}
 
@@ -146,7 +147,7 @@ func TestLookupDefinitionVersionDefaultsAndRejectsCorruptStoredRevision(t *testi
 		"table_id": "tbl_orders", "field_id": "fld_lookup", "relation_field_id": "fld_customer",
 		"target_field_id": "fld_name", "output_type": "text", "revision": -1,
 	})
-	if _, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 4); err == nil {
+	if _, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 4); err == nil {
 		t.Fatal("corrupt lookup revision was accepted")
 	}
 }
@@ -162,7 +163,7 @@ func TestDefinitionVersionsAndFormulaDependenciesFailClosed(t *testing.T) {
 		"source": "1", "language": "cel-v1", "result_type": "number",
 		"version": -1, "status": "ready",
 	})
-	if _, err := definitionVersion(app, "tbl_orders", formulaField); err == nil ||
+	if _, err := relatedcomputation.DefinitionVersionForTest(app, "tbl_orders", formulaField); err == nil ||
 		!strings.Contains(err.Error(), "formula version is invalid") {
 		t.Fatalf("invalid formula version error = %v", err)
 	}
@@ -170,11 +171,11 @@ func TestDefinitionVersionsAndFormulaDependenciesFailClosed(t *testing.T) {
 		Identity:    v2.FieldIdentity{FieldID: "fld_plain", PhysicalName: "plain"},
 		LogicalType: v2.LogicalText,
 	}
-	if _, err := definitionVersion(app, "tbl_orders", plainField); err == nil ||
+	if _, err := relatedcomputation.DefinitionVersionForTest(app, "tbl_orders", plainField); err == nil ||
 		!strings.Contains(err.Error(), "field is not computed") {
 		t.Fatalf("plain field definition version error = %v", err)
 	}
-	if tables, err := dependencyTables(
+	if tables, err := relatedcomputation.DependencyTablesForTest(
 		context.Background(), app, "tbl_orders", nil, plainField,
 	); err != nil || len(tables) != 0 {
 		t.Fatalf("plain field dependencies = %#v, %v", tables, err)
@@ -191,7 +192,7 @@ func TestDefinitionVersionsAndFormulaDependenciesFailClosed(t *testing.T) {
 		"relation_field_id": "fld_customer", "target_field_id": "fld_name",
 		"output_type": "text", "revision": 3,
 	})
-	if version, err := definitionVersion(app, "tbl_orders", lookupField); err != nil || version != 3 {
+	if version, err := relatedcomputation.DefinitionVersionForTest(app, "tbl_orders", lookupField); err != nil || version != 3 {
 		t.Fatalf("lookup definition version = %d, %v", version, err)
 	}
 
@@ -203,7 +204,7 @@ func TestDefinitionVersionsAndFormulaDependenciesFailClosed(t *testing.T) {
 			"dependency_kind": "relation",
 		})
 	}
-	tables, err := dependencyTables(
+	tables, err := relatedcomputation.DependencyTablesForTest(
 		context.Background(), app, "tbl_orders", nil, formulaField,
 	)
 	if err != nil || len(tables) != 1 || tables[0] != "tbl_customers" {
@@ -212,8 +213,8 @@ func TestDefinitionVersionsAndFormulaDependenciesFailClosed(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := describeTableFields(cancelled, app, "tbl_customers"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled describeTableFields() error = %v", err)
+	if _, err := relatedcomputation.DescribeTableFieldsForTest(cancelled, app, "tbl_customers"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled relatedcomputation.DescribeTableFieldsForTest() error = %v", err)
 	}
 }
 
@@ -240,7 +241,7 @@ func TestLookupDependencyPathRejectsNonStrictNestedV2Definition(t *testing.T) {
 			{RelationFieldID: "fld_region"},
 		}},
 	}
-	if _, err := dependencyTables(
+	if _, err := relatedcomputation.DependencyTablesForTest(
 		context.Background(), app, "tbl_orders", []v2.FieldDefinition{relation, lookup}, lookup,
 	); err == nil {
 		t.Fatal("lookup accepted a nested definition with unknown Schema V2 members")
@@ -256,7 +257,7 @@ func TestLookupDependencyPathFailsClosedWhenRelationIsMissing(t *testing.T) {
 	}
 	fields := []v2.FieldDefinition{field}
 
-	if _, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 1); err == nil {
+	if _, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 1); err == nil {
 		t.Fatal("lookup path with a missing relation was accepted")
 	}
 }
@@ -307,16 +308,51 @@ func TestLookupDependencyPathDescribesEachAuthoritativeTarget(t *testing.T) {
 	}
 	fields := []v2.FieldDefinition{relation, lookup}
 
-	expectation, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 5)
+	expectation, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_lookup", 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if expectation.DefinitionVersion != 1 ||
-		expectation.DependencyWatermark != Watermark(map[string]int64{
+		expectation.DependencyWatermark != relatedcomputation.Watermark(map[string]int64{
 			"tbl_customers": 9,
 			"tbl_regions":   4,
 		}) {
 		t.Fatalf("lookup expectation = %#v", expectation)
+	}
+}
+
+func TestConditionalLookupExpectationTracksSourceDataRevision(t *testing.T) {
+	app := computationTestApp(t)
+	saveInternalRecord(t, app, "vibetable_tables", map[string]any{
+		"table_id": "tbl_source", "collection_id": "source", "physical_name": "source",
+		"display_name": "Source", "kind": "base", "schema_revision": 1,
+		"data_revision": 9, "archive_policy": `{"mode":"none"}`,
+	})
+	field := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "fld_lookup", PhysicalName: "lookup"},
+		LogicalType: v2.LogicalLookup,
+		Lookup: &v2.LookupSpec{Path: []v2.LookupPathStep{}, TargetFieldID: "fld_name",
+			Condition: &v2.LookupCondition{SourceTableID: "tbl_source", Match: "all",
+				Rules: []v2.LookupConditionRule{{SourceFieldID: "fld_name", Operator: "is_not_null"}}}},
+	}
+	record, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id='tbl_source'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []int64{9, 10} {
+		record.Set("data_revision", revision)
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+		got, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_current",
+			[]v2.FieldDefinition{field}, "fld_lookup", 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.SourceDataRevision != 5 || got.DefinitionVersion != 1 ||
+			got.DependencyWatermark != relatedcomputation.Watermark(map[string]int64{"tbl_source": revision}) {
+			t.Fatalf("source revision %d: expectation = %#v", revision, got)
+		}
 	}
 }
 

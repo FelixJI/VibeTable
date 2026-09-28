@@ -3622,8 +3622,24 @@ async function scenario31(page, recorder) {
   await finish();
   recorder.check("inspection restarts against the updated revisions without a stale error", await panel.getByRole("alert").count() === 0);
 }
-async function scenario26(page, recorder) {
+async function openFieldSettingsFromHeader(page, physicalName) {
+  const header = page.locator(`.tabulator-col[tabulator-field="${physicalName}"]`);
+  await header.waitFor({ state: "visible", timeout: 30_000 });
+  await header.locator(".tabulator-col-title").click({ button: "right" });
+  await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+  await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
+}
+
+async function waitForLookupCellText(page, physicalName, expected, timeoutMs = 30_000) {
+  await page.waitForFunction(({ field, text }) => (
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-lookup-text`)?.textContent === text
+  ), { field: physicalName, text: expected }, { timeout: timeoutMs });
+}
+
+async function scenario26(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
+  await page.context().setOffline(true);
+  recorder.check("conditional lookup UI is exercised offline", await page.evaluate(() => !navigator.onLine));
   await page.getByTestId("nav-tables").click();
   const authors = await createSimpleTable(page, "Lookup Authors", "Name");
   const articleTableId = await createEmptyTable(page, "Lookup Articles");
@@ -3680,6 +3696,237 @@ async function scenario26(page, recorder) {
       && listed.payload.lookupRevision === described.payload?.schema?.lookupRevision,
     { listed, described },
   );
+
+  // ---- #391 conditional lookup closed loop (relation-free) ----
+  const sourceTableId = await createEmptyTable(page, "Lookup 条件源");
+  await closeFieldSettingsDrawer(page);
+  const sourceCode = await createV2Field(page, sourceTableId, "code", "text");
+  const sourceTitle = await createV2Field(page, sourceTableId, "title", "text");
+  const sourceEnabled = await createV2Field(page, sourceTableId, "enabled", "bool");
+  const currentTableId = await createEmptyTable(page, "Lookup 条件当前");
+  await closeFieldSettingsDrawer(page);
+  const currentCode = await createV2Field(page, currentTableId, "code", "text");
+  const seededCurrent = await applyProductMutation(page, currentTableId, [{
+    kind: "insert", recordId: "condrow00000001",
+    values: { [currentCode.physicalName]: "SKU-9" },
+  }], "condition-current-seed");
+  if (seededCurrent.payload?.status !== "applied") {
+    throw new Error(`condition current seed did not commit: ${JSON.stringify(seededCurrent)}`);
+  }
+  const readRows = async (tableId) => {
+    const response = await rawBridgeRequest(page, "query.page", {
+      tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    });
+    return response.payload?.rows ?? [];
+  };
+  await selectTable(page, "Lookup 条件当前");
+  await waitForVisibleRowCount(page, 1);
+
+  const configureConditionEditor = async () => {
+    await page.getByTestId("lookup-editor-entry").click();
+    await selectVisibleNOption(page, "lookup-mode", "条件筛选（按条件查询来源表）");
+    await selectVisibleNOption(page, "lookup-condition-source-table", "Lookup 条件源");
+    await selectVisibleNOption(page, "lookup-target-field", "title");
+    await selectVisibleNOption(page, "lookup-rule-source-field-0", "code");
+    await selectVisibleNOption(page, "lookup-rule-operand-field-0", "code");
+    await page.getByTestId("lookup-condition-add-rule").click();
+    await selectVisibleNOption(page, "lookup-rule-source-field-1", "enabled");
+    await selectVisibleNOption(page, "lookup-rule-operand-kind-1", "类型化常量");
+    await selectVisibleNOption(page, "lookup-rule-constant-bool-1", "真（true）");
+    await selectVisibleNOption(page, "lookup-condition-match", "满足全部（ALL）");
+    await page.getByTestId("lookup-condition-distinct").click();
+  };
+
+  // 取消必须回到保存的定义：创建中途取消后摘要回到路径模式。
+  await page.getByTestId("toolbar-field-manager").click();
+  await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
+  await page.getByTestId("field-display-name").locator("input").fill("条件标题");
+  const typeSelect = page.getByTestId("field-logical-type");
+  await typeSelect.locator(".n-base-selection").click();
+  await typeSelect.locator("input").fill("查找引用");
+  await page.locator(".n-base-select-option:visible").filter({ hasText: "查找引用" }).first().click();
+  await page.getByTestId("lookup-editor-entry").click();
+  await selectVisibleNOption(page, "lookup-mode", "条件筛选（按条件查询来源表）");
+  await selectVisibleNOption(page, "lookup-condition-source-table", "Lookup 条件源");
+  await page.getByTestId("lookup-editor-cancel").click();
+  const cancelledSummary = await page.getByTestId("lookup-field-editor").innerText();
+  recorder.check("取消条件编辑返回路径模式摘要且不改变草稿定义",
+    cancelledSummary.includes("引用路径") && !cancelledSummary.includes("条件筛选"),
+    { cancelledSummary });
+
+  await configureConditionEditor();
+  const preview = page.getByTestId("lookup-preview-value");
+  await preview.waitFor({ state: "visible", timeout: 30_000 });
+  const zeroMatchPreview = (await preview.innerText()).trim();
+  recorder.check("条件草稿预览显示权威 0 匹配空列表",
+    zeroMatchPreview.includes("[]"), { zeroMatchPreview });
+
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="lookup-editor-commit"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  }, undefined, { timeout: 30_000 });
+  await page.getByTestId("lookup-editor-commit").click();
+  await page.getByTestId("field-plan-button").click();
+  await page.getByTestId("field-change-plan").waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="field-apply-button"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  }, undefined, { timeout: 30_000 });
+  await page.getByTestId("field-apply-button").click();
+  await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
+  await closeFieldSettingsDrawer(page);
+
+  const listedCondition = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
+  const conditionDef = listedCondition.payload?.definitions?.find(
+    (item) => item.displayName === "条件标题",
+  );
+  const describedCondition = await rawBridgeRequest(page, "schema.describe", {
+    collection: currentTableId,
+    requestGeneration: 7026,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  recorder.check("条件 Lookup 经真实 drawer UI 保存为互斥契约且双 schema revision 一致",
+    listedCondition.type === "lookup.list"
+      && conditionDef?.path?.length === 0
+      && conditionDef?.source?.fieldRef === sourceTitle.fieldId
+      && conditionDef?.condition?.sourceTableId === sourceTableId
+      && conditionDef?.condition?.match === "all"
+      && conditionDef?.condition?.distinct === true
+      && conditionDef?.condition?.rules?.length === 2
+      && conditionDef.condition.rules[0]?.sourceFieldId === sourceCode.fieldId
+      && conditionDef.condition.rules[0]?.operator === "eq"
+      && conditionDef.condition.rules[0]?.operand?.kind === "field"
+      && conditionDef.condition.rules[0]?.operand?.fieldId === currentCode.fieldId
+      && conditionDef.condition.rules[1]?.sourceFieldId === sourceEnabled.fieldId
+      && conditionDef.condition.rules[1]?.operand?.kind === "constant"
+      && conditionDef.condition.rules[1]?.operand?.value === true
+      && conditionDef?.state === "valid"
+      && conditionDef?.outputType === "text"
+      && listedCondition.payload?.lookupRevision
+        === describedCondition.payload?.schema?.lookupRevision,
+    { conditionDef });
+  if (!conditionDef?.fieldKey) throw new Error("conditional lookup fieldKey is unavailable");
+  const lookupFieldKey = conditionDef.fieldKey;
+  const lookupCell = () => page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${lookupFieldKey}"]`,
+  ).first();
+
+  const diagnosticsBefore = await readBridgeDiagnostics(page);
+  const priorRequestIds = new Set([
+    ...diagnosticsBefore.requests,
+    ...diagnosticsBefore.roundTrips,
+    ...diagnosticsBefore.pending,
+  ].map((item) => item.requestId));
+  await chooseToolbarMore(page, "refresh");
+  await page.waitForFunction((field) => (
+    !!document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-cell-empty`)
+  ), lookupFieldKey, { timeout: 30_000 });
+  const lookupQueryRoundTrip = (await readBridgeDiagnostics(page)).roundTrips
+    .find((item) => !priorRequestIds.has(item.requestId)
+      && item.requestType === "lookup.query"
+      && item.responseType === "lookup.query" && item.code === null);
+  recorder.check("0 匹配时网格经 lookup.query 权威渲染空列表",
+    lookupQueryRoundTrip !== undefined, { lookupQueryRoundTrip });
+
+  const matchedSources = await applyProductMutation(page, sourceTableId, [
+    { kind: "insert", recordId: "condsrc00000001",
+      values: { [sourceCode.physicalName]: "SKU-9", [sourceTitle.physicalName]: "重值 甲", [sourceEnabled.physicalName]: true } },
+    { kind: "insert", recordId: "condsrc00000002",
+      values: { [sourceCode.physicalName]: "SKU-9", [sourceTitle.physicalName]: "重值 甲", [sourceEnabled.physicalName]: true } },
+    { kind: "insert", recordId: "condsrc00000003",
+      values: { [sourceCode.physicalName]: "SKU-8", [sourceTitle.physicalName]: "唯一 乙", [sourceEnabled.physicalName]: true } },
+  ], "condition-source-rows");
+  if (matchedSources.payload?.status !== "applied") {
+    throw new Error(`condition source rows did not commit: ${JSON.stringify(matchedSources)}`);
+  }
+  await waitForLookupCellText(page, lookupFieldKey, "重值 甲");
+  recorder.check("按值保序去重后单一值与双来源计数并存",
+    (await lookupCell().locator(".vt-lookup-text").innerText()) === "重值 甲"
+      && await lookupCell().locator(".vt-lookup-text").count() === 1
+      && await lookupCell().locator(".vt-lookup-source").count() === 2,
+    {});
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "26-conditional-lookup-dedup.png"),
+    fullPage: true,
+  });
+
+  const currentRow = (await readRows(currentTableId)).find((row) => row.id === "condrow00000001");
+  const currentShifted = await applyProductMutation(page, currentTableId, [{
+    kind: "update", recordId: "condrow00000001",
+    values: { [currentCode.physicalName]: "SKU-8" },
+    expectedDigest: currentRow?.__vibetableDigest,
+  }], "condition-current-update");
+  if (currentShifted.payload?.status !== "applied") {
+    throw new Error(`condition current update did not commit: ${JSON.stringify(currentShifted)}`);
+  }
+  await waitForLookupCellText(page, lookupFieldKey, "唯一 乙");
+  recorder.check("当前行字段变更触发条件重算",
+    (await lookupCell().locator(".vt-lookup-text").innerText()) === "唯一 乙"
+      && await lookupCell().locator(".vt-lookup-source").count() === 1,
+    {});
+
+  const sourceRow = (await readRows(sourceTableId)).find((row) => row.id === "condsrc00000003");
+  const sourceShifted = await applyProductMutation(page, sourceTableId, [{
+    kind: "update", recordId: "condsrc00000003",
+    values: { [sourceTitle.physicalName]: "唯一 乙改" },
+    expectedDigest: sourceRow?.__vibetableDigest,
+  }], "condition-source-update");
+  if (sourceShifted.payload?.status !== "applied") {
+    throw new Error(`condition source update did not commit: ${JSON.stringify(sourceShifted)}`);
+  }
+  await waitForLookupCellText(page, lookupFieldKey, "唯一 乙改");
+  recorder.check("来源值变更触发条件重算",
+    (await lookupCell().locator(".vt-lookup-text").innerText()) === "唯一 乙改",
+    {});
+
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
+  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
+  if (closed.result?.state !== "closed") {
+    throw new Error(`condition workspace close failed: ${JSON.stringify(closed)}`);
+  }
+  await openWorkspaceCenterFromSwitcher(page);
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  const persistedList = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
+  const persistedDef = persistedList.payload?.definitions?.find(
+    (item) => item.displayName === "条件标题",
+  );
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "Lookup 条件当前");
+  await waitForVisibleRowCount(page, 1);
+  await waitForLookupCellText(page, lookupFieldKey, "唯一 乙改");
+  recorder.check("同一 workspace UUID 重开后条件定义与计算值持久",
+    reopened.payload.session.workspaceId === session.workspaceId
+      && reopened.payload.session.sessionEpoch > session.sessionEpoch
+      && canonicalJsonText(persistedDef) === canonicalJsonText(conditionDef)
+      && (await lookupCell().locator(".vt-lookup-text").innerText()) === "唯一 乙改",
+    { reopened });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "26-conditional-lookup-reopened.png"),
+    fullPage: true,
+  });
+
+  await openFieldSettingsFromHeader(page, lookupFieldKey);
+  await page.getByTestId("lookup-editor-entry").click();
+  const savedPreview = page.getByTestId("lookup-preview-value");
+  await savedPreview.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("重新打开的预览直接使用当前保存定义的真实值",
+    (await savedPreview.innerText()).includes("唯一 乙改"),
+    { savedPreview: (await savedPreview.innerText()).trim() });
+  await page.getByTestId("lookup-field-editor").screenshot({
+    path: path.join(runtime.evidenceDir, "26-conditional-lookup-editor.png"),
+  });
+  await page.getByTestId("lookup-condition-distinct").click();
+  await page.getByTestId("lookup-editor-cancel").click();
+  await closeFieldSettingsDrawer(page);
+  const afterCancelList = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
+  const afterCancelDef = afterCancelList.payload?.definitions?.find(
+    (item) => item.displayName === "条件标题",
+  );
+  recorder.check("取消编辑不改变已保存条件定义",
+    canonicalJsonText(afterCancelDef) === canonicalJsonText(conditionDef),
+    { distinct: afterCancelDef?.condition?.distinct });
 }
 
 async function selectTable(page, displayName) {

@@ -6,6 +6,7 @@ import type {
   FormulaDraftValidationResult,
   FormulaFunctionInfo,
   FieldDefinitionV2,
+  FieldDraftV2,
   CapabilityV2,
   JsonValueV2,
   LogicalTypeV2,
@@ -16,6 +17,7 @@ import type { FormulaAuthorDocument } from "@/contracts/generated/workbench";
 import { ProductRpcError } from "@/services/productRpcResult";
 import {
   parseFieldApplyReceiptV2,
+  parseSchemaSnapshotV2,
   parseFieldChangePlanV2,
   parseFieldMigrationStatusV2,
   parseFieldRecycleBinResultV2,
@@ -106,6 +108,8 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   selectRelationTarget: (tableId: string) => Promise<void>;
   loadLookupCatalog: () => Promise<void>;
   resolveLookupPath: (path: readonly { readonly relationFieldId: string }[]) => Promise<void>;
+  selectLookupSource: (tableId: string) => Promise<void>;
+  previewLookupDraft: (draft: NonNullable<FieldDraftV2["lookup"]> | null) => void;
   loadFormulaCatalog: () => Promise<void>;
   validateFormulaDraft: (request: FormulaDraftValidateRequest) => Promise<void>;
   dispose: () => void;
@@ -122,6 +126,80 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   let generation = 0;
   let frozenOperationId: string | null = null;
   let formulaValidationGeneration = 0;
+  let lookupCatalogGeneration = 0;
+  let lookupPreviewGeneration = 0;
+  let lookupPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+  let lookupDraft: NonNullable<FieldDraftV2["lookup"]> | null = null;
+  function invalidateLookupPreview(): void {
+    lookupPreviewGeneration += 1;
+    if (lookupPreviewTimer !== null) clearTimeout(lookupPreviewTimer);
+    lookupPreviewTimer = null;
+    store.lookupPreview = { loading: false, ready: false, value: undefined, error: null };
+  }
+  const stopLookupWatch = watch(
+    () => [workspace.phase, workspace.collections, store.result, tableStore.schemaRevision,
+      store.open, store.draft?.logicalType] as const,
+    () => { lookupCatalogGeneration += 1; lookupDraft = null; invalidateLookupPreview(); },
+    { flush: "sync" },
+  );
+
+  function previewLookupDraft(draft: NonNullable<FieldDraftV2["lookup"]> | null): void {
+    invalidateLookupPreview();
+    lookupDraft = draft;
+    const described = store.result;
+    const source = store.lookupConditionSchema;
+    if (!draft?.condition || !described || !source || source.collection !== draft.condition.sourceTableId) return;
+    const current = lookupPreviewGeneration;
+    store.lookupPreview = { loading: true, ready: false, value: undefined, error: null };
+    lookupPreviewTimer = setTimeout(async () => {
+      lookupPreviewTimer = null;
+      try {
+        const result = await bridge.request("lookup.draft.preview", {
+          tableId: described.tableId, schemaRevision: described.schemaRevision,
+          sourceSchemaRevision: source.schemaRevision, lookup: draft,
+        });
+        if (current !== lookupPreviewGeneration || !store.open) return;
+        unwrapFieldResult(result);
+        store.lookupPreview = {
+          loading: false, ready: result.cell !== null, value: result.cell?.value,
+          error: result.cell === null ? "当前表没有可用于预览的记录" : null,
+        };
+      } catch (error) {
+        if (current !== lookupPreviewGeneration || !store.open) return;
+        store.lookupPreview = { loading: false, ready: false, value: undefined,
+          error: error instanceof Error ? error.message : String(error) };
+      }
+    }, 250);
+  }
+
+  async function selectLookupSource(tableId: string): Promise<void> {
+    invalidateLookupPreview();
+    const current = ++lookupCatalogGeneration;
+    store.lookupConditionSchema = null;
+    store.lookupConditionFields = [];
+    store.lookupCatalogLoading = false;
+    store.lookupCatalogError = null;
+    if (!tableId || !store.result) return;
+    store.beginLookupCatalog();
+    try {
+      const [schema, raw] = await Promise.all([
+        describeRelationTable(tableId), bridge.request("schema.getTable", { tableId }),
+      ]);
+      const definition = parseSchemaSnapshotV2(unwrapFieldResult(raw));
+      if (current !== lookupCatalogGeneration || !store.open) return;
+      if (definition.tableId !== tableId || definition.schemaRevision !== schema.schemaRevision) {
+        throw new Error("来源字段目录已变化，请重新选择来源表");
+      }
+      store.lookupConditionSchema = schema;
+      store.lookupConditionFields = definition.fields;
+      store.lookupCatalogLoading = false;
+      store.lookupCatalogError = null;
+      if (lookupDraft?.condition?.sourceTableId === tableId) previewLookupDraft(lookupDraft);
+    } catch (error) {
+      if (current === lookupCatalogGeneration) store.failLookupCatalog(error);
+    }
+  }
+
   let formulaValidationAbort: AbortController | null = null;
 
   /** Workspace switches must retire every in-flight formula editor request. */
@@ -444,13 +522,37 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
 
   async function loadLookupCatalog(): Promise<void> {
     if (!store.result || store.draft?.logicalType !== "lookup" || !store.draft.lookup) return;
-    await loadLookupSchemas(store.draft.lookup.path);
+    const tableId = store.result.tableId;
+    const current = generation;
+    const collections = workspace.collections;
+    store.setRelationTables(workspace.collections.map(item => ({
+      tableId: item.collection, displayName: collectionLabel(item, workspace.displayNames),
+    })));
+    try {
+      const raw = await bridge.request("schema.getTable", { tableId });
+      if (current !== generation || collections !== workspace.collections || !store.open) return;
+      const schema = parseSchemaSnapshotV2(unwrapFieldResult(raw));
+      if (schema.tableId !== tableId || schema.schemaRevision !== store.result.schemaRevision) {
+        throw new Error("当前字段目录已变化，请重新打开字段设置");
+      }
+      store.lookupCurrentFields = schema.fields;
+      await loadLookupSchemas(store.draft.lookup.path);
+      if (current !== generation || collections !== workspace.collections || !store.open) return;
+      if (store.draft.lookup.condition) await selectLookupSource(store.draft.lookup.condition.sourceTableId);
+    } catch (error) {
+      if (current === generation && collections === workspace.collections && store.open) {
+        store.failLookupCatalog(error);
+      }
+    }
   }
 
   async function resolveLookupPath(
     path: readonly { readonly relationFieldId: string }[],
   ): Promise<void> {
     if (!store.result || store.draft?.logicalType !== "lookup" || !store.draft.lookup) return;
+    invalidateLookupPreview();
+    store.lookupConditionSchema = null;
+    store.lookupConditionFields = [];
     await loadLookupSchemas(path);
   }
 
@@ -458,6 +560,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     path: readonly { readonly relationFieldId: string }[],
   ): Promise<void> {
     if (!store.result) return;
+    const current = ++lookupCatalogGeneration;
     try {
       store.beginLookupCatalog();
       const schemas: SchemaSnapshot[] = [await describeRelationTable(store.result.tableId)];
@@ -472,9 +575,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
         }
         schemas.push(await describeRelationTable(relation.relatedCollection));
       }
-      store.setLookupSchemas(schemas);
+      if (current === lookupCatalogGeneration && store.open) store.setLookupSchemas(schemas);
     } catch (error) {
-      store.failLookupCatalog(error);
+      if (current === lookupCatalogGeneration) store.failLookupCatalog(error);
     }
   }
 
@@ -685,6 +788,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   }
 
   function dispose(): void {
+    stopLookupWatch();
+    lookupCatalogGeneration += 1;
+    invalidateLookupPreview();
     generation += 1;
     formulaValidationGeneration += 1;
     formulaValidationAbort?.abort();
@@ -699,7 +805,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   return {
     openCreate, openEdit, requestClose, plan, apply, refreshMigration,
     cancelMigration, loadRecycleBin, restore, loadRelationCatalog,
-    selectRelationTarget, loadLookupCatalog, resolveLookupPath,
+    selectRelationTarget, loadLookupCatalog, resolveLookupPath, selectLookupSource, previewLookupDraft,
     loadFormulaCatalog, validateFormulaDraft, dispose,
   };
 }

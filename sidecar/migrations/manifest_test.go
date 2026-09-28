@@ -9,22 +9,22 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-const expectedMigrationManifestHash = "f6d762db9f1b3d79a6453103c639685d60b91b6126ce5177e29d5d4a3d8304cd"
+const expectedMigrationManifestHash = "2ba083ae767d0d72ef5022f649394d27255975f9bc98f7e4b448cdeec14e6c34"
 
 func TestManifestIsValidAndHashIsStableShape(t *testing.T) {
 	manifest, err := LoadManifest()
 	if err != nil {
 		t.Fatalf("LoadManifest(): %v", err)
 	}
-	if manifest.SchemaVersion != 13 || len(manifest.Migrations) != 12 {
+	if manifest.SchemaVersion != 14 || len(manifest.Migrations) != 13 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
 	}
 	if hash := Hash(); hash != expectedMigrationManifestHash {
 		t.Fatalf("manifest hash = %q, want %q", hash, expectedMigrationManifestHash)
 	}
 	last := manifest.Migrations[len(manifest.Migrations)-1]
-	if last.ID != 2026092801 ||
-		last.Source != "2026092801_clock_revision.go" ||
+	if last.ID != 2026092802 ||
+		last.Source != "2026092802_clock_revision.go" ||
 		last.SHA256 != "4423a5155abbf66881df80ed5d0c7cb6e5317e9cf94ad2ff73f3399005b47a3c" {
 		t.Fatalf("unexpected pinned latest migration entry: %#v", last)
 	}

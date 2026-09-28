@@ -174,6 +174,26 @@ export interface FormulaDraftSpec {
 export interface LookupSpec {
   readonly path: ReadonlyArray<LookupPathStep>;
   readonly targetFieldId: string;
+  readonly condition?: LookupCondition;
+}
+
+export interface LookupCondition {
+  readonly sourceTableId: string;
+  readonly match: "all" | "any";
+  readonly rules: ReadonlyArray<LookupConditionRule>;
+  readonly distinct: boolean;
+}
+
+export interface LookupConditionRule {
+  readonly sourceFieldId: string;
+  readonly operator: "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "contains" | "is_null" | "is_not_null";
+  readonly operand?: LookupOperand;
+}
+
+export interface LookupOperand {
+  readonly kind: "field" | "constant";
+  readonly fieldId?: string;
+  readonly value?: string | number | boolean;
 }
 
 export interface LookupPathStep {

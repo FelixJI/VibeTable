@@ -236,8 +236,28 @@ class FormulaDraftSpec(SchemaV2WireModel):
 
 
 class LookupSpec(SchemaV2WireModel):
-    path: Annotated[list[LookupPathStep], Field(min_length=1, max_length=8)]
+    path: Annotated[list[LookupPathStep], Field(max_length=8)]
     target_field_id: Annotated[str, Field(min_length=1)]
+    condition: LookupCondition | None = None
+
+
+class LookupCondition(SchemaV2WireModel):
+    source_table_id: Annotated[str, Field(min_length=1)]
+    match: Literal["all", "any"]
+    rules: Annotated[list[LookupConditionRule], Field(min_length=1, max_length=50)]
+    distinct: bool
+
+
+class LookupConditionRule(SchemaV2WireModel):
+    source_field_id: Annotated[str, Field(min_length=1)]
+    operator: Literal["eq", "ne", "gt", "gte", "lt", "lte", "contains", "is_null", "is_not_null"]
+    operand: LookupOperand | None = None
+
+
+class LookupOperand(SchemaV2WireModel):
+    kind: Literal["field", "constant"]
+    field_id: Annotated[str, Field(min_length=1)] | None = None
+    value: str | float | bool | None = None
 
 
 class LookupPathStep(SchemaV2WireModel):

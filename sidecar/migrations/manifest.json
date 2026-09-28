@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 13,
+  "schemaVersion": 14,
   "migrations": [
     {
       "id": 2026072401,
@@ -70,8 +70,14 @@
     },
     {
       "id": 2026092801,
+      "name": "conditional_lookup",
+      "source": "2026092801_conditional_lookup.go",
+      "sha256": "823c300c85a6e92b4adf94cc9728e1cc4e4f4ccc9a3819dc55440412ae3a867d"
+    },
+    {
+      "id": 2026092802,
       "name": "clock_revision",
-      "source": "2026092801_clock_revision.go",
+      "source": "2026092802_clock_revision.go",
       "sha256": "4423a5155abbf66881df80ed5d0c7cb6e5317e9cf94ad2ff73f3399005b47a3c"
     }
   ]

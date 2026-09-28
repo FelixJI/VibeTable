@@ -21,7 +21,7 @@
 capability：
 
 - `schema.formula`：`formula.draft.validate`、`formula.preview`、`formula.validate`；
-- `relation.lookup`：`lookup.list`、`lookup.query`、`lookup.valuePage`、`relation.applyDelta`、
+- `relation.lookup`：`lookup.draft.preview`、`lookup.list`、`lookup.query`、`lookup.valuePage`、`relation.applyDelta`、
   `relation.createTarget`、`relation.previewDelta`、`relation.searchTargets`、`relation.updateSingle`。
 
 后续新增或迁移方法必须同时更新权威 `contracts/v2/product-rpc-capability-policy.json`、生成物、inventory、
@@ -59,7 +59,7 @@ profile 使用确定性数据生成器；测试只断言可观察契约，不读
 | Relation | 四种基数、自关联、pair 对称、delta、重复/孤儿、setNull/restrict、revision 冲突 |
 | Computation | Formula→Formula、Lookup→Formula、跨表依赖、循环、freshness 与原子依赖提交 |
 | Go integration | 真实 PocketBase transaction、reciprocal 双写、audit/outbox、故障回滚 |
-| Lookup | 1/8/9 跳、来源分页、取消、批量 frontier、查询数门禁 |
+| Lookup | 1/8/9 跳、来源分页、取消、批量 frontier、查询数门禁；[条件模式](conditional-lookup.md) 的类型化谓词、完整值与依赖重算 |
 | Calculation state | `ready/updating/failed/cancelled/invalid/too_expensive` 六态闭集在 query page、Formula/Lookup 单元格、字段设置、任务中心和 Realtime 使用同一 freshness 与错误语义 |
 | Jobs | backfill/fan-out、取消/恢复、进程中断、幂等重放和六态投影 |
 | Web | Formula Workbench、Relation Picker、键盘、迟到响应、冲突重载 |

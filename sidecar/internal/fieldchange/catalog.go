@@ -16,6 +16,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -422,6 +423,21 @@ func (catalog *Catalog) Check(
 			intent.Action == v2.ActionPurge) {
 		return catalog.checkLifecycleDependencies(ctx, intent, *before, impact)
 	}
+	if before != nil && after != nil && before.LogicalType != after.LogicalType {
+		dependencies, err := catalog.app.FindAllRecords("vibetable_computation_dependencies", dbx.HashExp{
+			"target_table_id": intent.TableID, "target_field_id": before.Identity.FieldID,
+			"computed_kind": "lookup", "relation_field_id": "",
+		})
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		if len(dependencies) > 0 {
+			return impact, []v2.Diagnostic{}, []v2.Diagnostic{{
+				Code: "lookup.condition.type_change_blocked", Path: "draft.logicalType",
+				Message: "remove or reconfigure dependent conditional lookups before changing the field type",
+			}}, nil
+		}
+	}
 	if before != nil && after != nil && relationCascadeIntroduced(before, after) {
 		return catalog.checkCascadeImpact(ctx, intent, *before, *after, impact)
 	}
@@ -536,6 +552,16 @@ func (catalog *Catalog) checkLookupTargets(
 	tableID string,
 	definition v2.FieldDefinition,
 ) ([]v2.Diagnostic, error) {
+	if definition.Lookup.Condition != nil {
+		source, err := schemaexecution.Describe(ctx, catalog.app, tableID)
+		if err != nil {
+			return nil, err
+		}
+		if err := queryschema.ValidateLookupCondition(ctx, catalog.app, source, *definition.Lookup); err != nil {
+			return []v2.Diagnostic{{Code: "field.lookup.condition_invalid", Path: "draft.lookup.condition", Message: err.Error(), Details: map[string]any{}}}, nil
+		}
+		return []v2.Diagnostic{}, nil
+	}
 	currentTableID := tableID
 	for index, step := range definition.Lookup.Path {
 		fields, err := catalog.Fields(ctx, currentTableID, false)
@@ -779,14 +805,22 @@ func (catalog *Catalog) checkLifecycleDependencies(
 
 func lookupMetadataDependsOnField(pathJSON string, fieldID string) (bool, error) {
 	var metadata struct {
-		RelationFieldID string `json:"relationFieldId"`
-		TargetFieldID   string `json:"targetFieldId"`
+		RelationFieldID string              `json:"relationFieldId"`
+		TargetFieldID   string              `json:"targetFieldId"`
+		Condition       *v2.LookupCondition `json:"condition"`
 		Path            []struct {
 			RelationFieldID string `json:"relationFieldId"`
 		} `json:"path"`
 	}
 	if err := json.Unmarshal([]byte(pathJSON), &metadata); err != nil {
 		return false, err
+	}
+	if metadata.Condition != nil {
+		for _, rule := range metadata.Condition.Rules {
+			if rule.SourceFieldID == fieldID || (rule.Operand != nil && rule.Operand.Kind == "field" && rule.Operand.FieldID == fieldID) {
+				return true, nil
+			}
+		}
 	}
 	if metadata.RelationFieldID == fieldID || metadata.TargetFieldID == fieldID {
 		return true, nil

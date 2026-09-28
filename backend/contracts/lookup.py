@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
+from backend.contracts.generated_schema_v2 import LookupCondition
 from backend.contracts.query import FilterCondition, FilterExpression, SortCondition
 from backend.contracts.selection import QuerySnapshot
 from backend.contracts.table import CamelModel
@@ -56,7 +57,8 @@ class LookupDefinition(CamelModel):
     display_name: str = Field(min_length=1, max_length=128)
     # Logical depth is intentionally unbounded. Execution budgets, not an
     # arbitrary saved hop count, protect the runtime.
-    path: list[LookupPathStep] = Field(min_length=1)
+    path: list[LookupPathStep]
+    condition: LookupCondition | None = None
     source: LookupSource
     output_type: LookupOutputType
     output_scale: int | None = Field(default=None, ge=0, le=30)
@@ -67,6 +69,8 @@ class LookupDefinition(CamelModel):
 
     @model_validator(mode="after")
     def validate_definition(self) -> LookupDefinition:
+        if (self.condition is None and not self.path) or (self.condition is not None and self.path):
+            raise ValueError("Lookup requires either a relation path or a condition")
         if self.output_type != "decimal" and self.output_scale is not None:
             raise ValueError("outputScale is only valid for decimal Lookups")
         if isinstance(self.source, LookupReferenceSource):
@@ -110,6 +114,10 @@ class LookupCellValue(CamelModel):
     provenance_limit: int = Field(default=100, ge=1)
     provenance_has_more: bool = False
     diagnostic: LookupDiagnostic | None = None
+
+
+class LookupDraftPreviewResult(CamelModel):
+    cell: LookupCellValue | None
 
 
 class LookupGroup(CamelModel):

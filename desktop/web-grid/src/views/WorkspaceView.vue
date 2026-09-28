@@ -1533,6 +1533,8 @@ useKeyboard({
       @load-relation-catalog="fieldSettingsService.loadRelationCatalog"
       @select-relation-target="fieldSettingsService.selectRelationTarget"
       @load-lookup-catalog="fieldSettingsService.loadLookupCatalog"
+      @select-lookup-source="fieldSettingsService.selectLookupSource"
+      @preview-lookup-draft="fieldSettingsService.previewLookupDraft"
       @resolve-lookup-path="fieldSettingsService.resolveLookupPath"
       @load-formula-catalog="fieldSettingsService.loadFormulaCatalog"
       @validate-formula="fieldSettingsService.validateFormulaDraft"
