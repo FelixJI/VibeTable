@@ -239,13 +239,12 @@ func TestBusinessAuditEpochRotatesAcrossSnapshotRestoreAndHistoryContinues(
 		App: app, DataDir: dataDir,
 		WorkspaceID: testWorkspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
-		Audit: auditService,
+		Audit: auditService, DeferBackgroundWorkers: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.Close(ctx)
-	stopBackgroundWorkers(runtime)
 	if err := runtime.CompletePendingSnapshotRestore(ctx); err != nil {
 		t.Fatal(err)
 	}
