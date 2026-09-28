@@ -6,7 +6,7 @@
 
 `data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本与 S34/S35 数据互操作；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。两 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复覆盖。
 
-调整依据为 [PR400 CI 36406032046](https://github.com/FelixJI/VibeTable/actions/runs/36406032046)：原标准分片完成 32 场已用约 1779 秒，在 S36 完成前触及总预算；S23/S24 合计约 356 秒。以下已发布样本的分片数量与路径保留其原时点事实。
+调整依据为 [PR400 的 CI 诊断记录](https://github.com/FelixJI/VibeTable/pull/400)：原标准分片完成 32 场已用约 1779 秒，在 S36 完成前触及总预算；S23/S24 合计约 356 秒。以下已发布样本的分片数量与路径保留其原时点事实。
 
 ## 当前产品 E2E 证据
 
