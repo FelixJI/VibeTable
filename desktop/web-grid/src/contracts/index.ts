@@ -1412,6 +1412,7 @@ export type WebMessageType =
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
+  | "lookup.draft.preview"
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
@@ -1563,6 +1564,7 @@ export type HostMessageType =
   | "relation.updateSingle"
   | "relation.previewDelta"
   | "relation.applyDelta"
+  | "lookup.draft.preview"
   | "lookup.list"
   | "lookup.query"
 	| "lookup.valuePage"
@@ -1894,6 +1896,7 @@ export interface HostPayloadMap {
   "relation.updateSingle": RelationSingleUpdateResult;
   "relation.previewDelta": RelationDeltaPreview;
   "relation.applyDelta": RelationDeltaResult;
+  "lookup.draft.preview": { readonly cell: LookupCellValue | null };
   "lookup.list": LookupListResult;
   "lookup.query": LookupQueryResult;
 	"lookup.valuePage": LookupCellValue;
@@ -2026,6 +2029,12 @@ export interface WebPayloadMap {
   "relation.updateSingle": RelationUpdateSingleParams;
   "relation.previewDelta": RelationDelta;
   "relation.applyDelta": RelationDelta;
+  "lookup.draft.preview": {
+    readonly tableId: string;
+    readonly schemaRevision: string;
+    readonly sourceSchemaRevision: string;
+    readonly lookup: NonNullable<import("./schemaV2").FieldDraftV2["lookup"]>;
+  };
   "lookup.list": { readonly collection: string };
   "lookup.query": LookupQueryParams;
 	"lookup.valuePage": LookupValuePageParams;

@@ -495,6 +495,17 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
         allowed=_RELATION_DELTA_FIELDS,
         required=tuple(name for name in _RELATION_DELTA_FIELDS if name != "expectedDateUpdated"),
     ),
+    "lookup.draft.preview": _closed_params(
+        "LookupDraftPreviewParams",
+        allowed=("tableId", "schemaRevision", "sourceSchemaRevision", "lookup"),
+        required=("tableId", "schemaRevision", "sourceSchemaRevision", "lookup"),
+        field_types={
+            "tableId": (str,),
+            "schemaRevision": (str,),
+            "sourceSchemaRevision": (str,),
+            "lookup": (dict,),
+        },
+    ),
     "lookup.list": _closed_params(
         "LookupListParams",
         allowed=("collection",),

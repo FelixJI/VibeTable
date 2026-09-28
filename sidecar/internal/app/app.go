@@ -470,6 +470,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				fieldSettingsDescribeRegistration(fieldSettings),
 				productrpc.ReconcileRegistration(schemaCatalog),
 				lookupListRegistration(relationService),
+				lookupDraftPreviewRegistration(pb),
 				lookupQueryRegistration(relationService),
 				lookupValuePageRegistration(relationService),
 				relationSearchTargetsRegistration(relationService),

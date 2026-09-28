@@ -96,8 +96,26 @@ func (calculator *Calculator) calculateCells(
 		return nil, err
 	}
 	result := map[string]CellValue{}
+	var conditionFields []v2.FieldDefinition
+	for _, field := range definition.Snapshot.Fields {
+		if field.Lookup != nil && field.Lookup.Condition != nil {
+			conditionFields = append(conditionFields, field)
+		}
+	}
+	if len(conditionFields) > 0 {
+		readBudget := materializationBudget{remainingBytes: lookupMaterializationBytes}
+		valueBudget := materializationBudget{remainingBytes: lookupMaterializationBytes}
+		cells, err := calculateConditionCells(ctx, app, definition, []*core.Record{record}, conditionFields, 0, cellProvenancePageSize, &readBudget, &valueBudget)
+		if err != nil {
+			return nil, err
+		}
+		result = cells[record.Id]
+	}
 	for _, field := range definition.Snapshot.Fields {
 		if field.LogicalType != v2.LogicalLookup || field.Lookup == nil {
+			continue
+		}
+		if field.Lookup.Condition != nil {
 			continue
 		}
 		resolved, err := lookupPathValues(ctx, app, definition, record, field)

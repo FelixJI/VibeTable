@@ -67,7 +67,7 @@ func lookupQueryHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration pr
 			lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),
 			registration, relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 			unrelatedRelationInspectRegistration(t), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
-			lookupListRegistration(relation.New(pb, nil, nil)),
+			lookupDraftPreviewRegistration(pb), lookupListRegistration(relation.New(pb, nil, nil)),
 			queryPageRegistration(relationSearchUnrelatedPage{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 			queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 			fieldSettingsDescribeRegistration(unrelatedFieldSettingsDescribeMustNotRun{t: t}),

@@ -330,12 +330,60 @@
       "properties": {
         "path": {
           "type": "array",
-          "minItems": 1,
           "maxItems": 8,
           "items": {"$ref": "#/$defs/LookupPathStep"}
         },
-        "targetFieldId": {"type": "string", "minLength": 1}
+        "targetFieldId": {"type": "string", "minLength": 1},
+        "condition": {"$ref": "#/$defs/LookupCondition"}
+      },
+      "allOf": [{
+        "if": {"required": ["condition"]},
+        "then": {"properties": {"path": {"maxItems": 0}}},
+        "else": {"properties": {"path": {"minItems": 1}}}
+      }]
+    },
+    "LookupCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceTableId", "match", "rules", "distinct"],
+      "properties": {
+        "sourceTableId": {"type": "string", "minLength": 1},
+        "match": {"enum": ["all", "any"]},
+        "rules": {
+          "type": "array", "minItems": 1, "maxItems": 50,
+          "items": {"$ref": "#/$defs/LookupConditionRule"}
+        },
+        "distinct": {"type": "boolean"}
       }
+    },
+    "LookupConditionRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceFieldId", "operator"],
+      "properties": {
+        "sourceFieldId": {"type": "string", "minLength": 1},
+        "operator": {"enum": ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "is_null", "is_not_null"]},
+        "operand": {"$ref": "#/$defs/LookupOperand"}
+      },
+      "allOf": [{
+        "if": {"properties": {"operator": {"enum": ["is_null", "is_not_null"]}}},
+        "then": {"not": {"required": ["operand"]}},
+        "else": {"required": ["operand"]}
+      }]
+    },
+    "LookupOperand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["field", "constant"]},
+        "fieldId": {"type": "string", "minLength": 1},
+        "value": {"type": ["string", "number", "boolean"]}
+      },
+      "oneOf": [
+        {"properties": {"kind": {"const": "field"}}, "required": ["fieldId"], "not": {"required": ["value"]}},
+        {"properties": {"kind": {"const": "constant"}}, "required": ["value"], "not": {"required": ["fieldId"]}}
+      ]
     },
     "LookupPathStep": {
       "type": "object",

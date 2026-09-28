@@ -37,12 +37,9 @@ AutoDateSpecV2 = wire.AutoDateSpec
 FormulaSpecV2 = wire.FormulaSpec
 FormulaDraftSpecV2 = wire.FormulaDraftSpec
 LookupPathStepV2 = wire.LookupPathStep
-LookupSpecV2 = wire.LookupSpec
 RecommendedValuesV2 = wire.RecommendedValues
 CapabilityV2 = wire.Capability
 SchemaSnapshotV2 = wire.SchemaSnapshot
-FormulaValidateRequestV2 = wire.FormulaValidateRequest
-FormulaPreviewRequestV2 = wire.FormulaPreviewRequest
 TableCreateIntentV2 = wire.TableCreateIntent
 TableCreateReceiptV2 = wire.TableCreateReceipt
 ArchivePolicyV2 = wire.ArchivePolicy
@@ -60,7 +57,58 @@ ApplyRequestV2 = wire.ApplyRequest
 MigrationStatusV2 = wire.MigrationStatus
 
 
+def _validate_lookup(spec: wire.LookupSpec | None) -> None:
+    if spec is None:
+        return
+    if spec.condition is None:
+        if not spec.path or "condition" in spec.model_fields_set:
+            raise ValueError("path Lookup requires a nonempty path and no condition")
+        return
+    if spec.path:
+        raise ValueError("conditional Lookup requires an empty path")
+    for rule in spec.condition.rules:
+        if rule.operator in {"is_null", "is_not_null"}:
+            if "operand" in rule.model_fields_set:
+                raise ValueError("empty comparison takes no operand")
+            continue
+        operand = rule.operand
+        if operand is None:
+            raise ValueError("comparison requires an operand")
+        expected = {"kind", "field_id"} if operand.kind == "field" else {"kind", "value"}
+        if operand.model_fields_set != expected:
+            raise ValueError("operand properties do not match its kind")
+        if (operand.kind == "field" and not operand.field_id) or (
+            operand.kind == "constant" and operand.value is None
+        ):
+            raise ValueError("operand cannot be null")
+
+
+class LookupSpecV2(wire.LookupSpec):
+    @model_validator(mode="after")
+    def validate_semantics(self) -> Self:
+        _validate_lookup(self)
+        return self
+
+
+LookupSpecV2.model_rebuild(_types_namespace=vars(wire))
+
+
+class FormulaValidateRequestV2(wire.FormulaValidateRequest):
+    @model_validator(mode="after")
+    def validate_lookup(self) -> Self:
+        _validate_lookup(self.field.lookup)
+        return self
+
+
+class FormulaPreviewRequestV2(wire.FormulaPreviewRequest):
+    @model_validator(mode="after")
+    def validate_lookup(self) -> Self:
+        _validate_lookup(self.field.lookup)
+        return self
+
+
 def _validate_field_settings(value: wire.FieldDefinition | wire.FieldDraft) -> None:
+    _validate_lookup(value.lookup)
     expected = {
         "select": "select",
         "multiSelect": "select",

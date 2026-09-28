@@ -118,16 +118,19 @@ func projectLookupList(catalog relation.CatalogResult) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		for _, value := range []string{lookup.TableID, lookup.RelationFieldID, lookup.LookupID, lookup.PhysicalName, lookup.DisplayName, lookup.TargetFieldID} {
+		for _, value := range []string{lookup.TableID, lookup.LookupID, lookup.PhysicalName, lookup.DisplayName, lookup.TargetFieldID} {
 			if value == "" {
 				return nil, errors.New("PocketBase returned an incomplete Lookup definition")
 			}
 		}
+		if lookup.Condition == nil && lookup.RelationFieldID == "" {
+			return nil, errors.New("PocketBase returned an incomplete Lookup relation")
+		}
 		path := lookup.Path
-		if path == nil {
+		if path == nil && lookup.Condition == nil {
 			path = []relation.LookupPathDescriptor{{RelationID: lookup.TableID + "." + lookup.RelationFieldID}}
 		}
-		if len(path) == 0 {
+		if len(path) == 0 && lookup.Condition == nil {
 			return nil, errors.New("PocketBase returned an invalid Lookup path")
 		}
 		dependencies := make([]string, 0, len(path))
@@ -137,13 +140,26 @@ func projectLookupList(catalog relation.CatalogResult) (map[string]any, error) {
 			}
 			dependencies = append(dependencies, step.RelationID)
 		}
-		definitions = append(definitions, map[string]any{
+		if lookup.Condition != nil {
+			dependencies = append(dependencies, lookup.Condition.SourceTableID+"."+lookup.TargetFieldID)
+			for _, rule := range lookup.Condition.Rules {
+				dependencies = append(dependencies, lookup.Condition.SourceTableID+"."+rule.SourceFieldID)
+				if rule.Operand != nil && rule.Operand.Kind == "field" {
+					dependencies = append(dependencies, lookup.TableID+"."+rule.Operand.FieldID)
+				}
+			}
+		}
+		projected := map[string]any{
 			"lookupId": lookup.LookupID, "collection": lookup.TableID,
 			"fieldKey": lookup.PhysicalName, "displayName": lookup.DisplayName,
 			"path": path, "source": map[string]any{"kind": "target_field", "fieldRef": lookup.TargetFieldID},
 			"outputType": outputType, "outputScale": nil, "revision": lookup.Revision,
 			"state": "valid", "diagnostics": []any{}, "dependencies": dependencies,
-		})
+		}
+		if lookup.Condition != nil {
+			projected["condition"] = lookup.Condition
+		}
+		definitions = append(definitions, projected)
 	}
 	return map[string]any{"collection": catalog.TableID, "definitions": definitions, "lookupRevision": revision}, nil
 }

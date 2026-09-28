@@ -352,7 +352,7 @@ func fileListProductMux(t *testing.T, app core.App, manager *attachments.Manager
 			mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			productrpc.ReconcileRegistration(schemaapi.New(app)),
 			queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
-			lookupListRegistration(relation.New(app, nil, nil)),
+			lookupDraftPreviewRegistration(app), lookupListRegistration(relation.New(app, nil, nil)),
 			relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 			unrelatedRelationInspectRegistration(t),
 			queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),

@@ -15,7 +15,7 @@ func TestCurrentContainsPinnedDependencies(t *testing.T) {
 	if info.CELVersion != "0.31.0" {
 		t.Fatalf("CEL version = %q", info.CELVersion)
 	}
-	if info.SchemaVersion != "12" {
+	if info.SchemaVersion != "13" {
 		t.Fatalf("schema version = %q", info.SchemaVersion)
 	}
 	if info.MigrationHash != "abc123" {

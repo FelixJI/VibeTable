@@ -179,6 +179,30 @@ func (builder *graphBuilder) formulaDependencies(key node, table schemaexecution
 }
 
 func (builder *graphBuilder) lookupDependencies(key node, table schemaexecution.Table, field v2.FieldDefinition) ([]node, error) {
+	if field.Lookup != nil && field.Lookup.Condition != nil {
+		condition := field.Lookup.Condition
+		target, err := builder.table(condition.SourceTableID)
+		if err != nil {
+			return nil, err
+		}
+		dependencies := []node{{target.Snapshot.TableID, field.Lookup.TargetFieldID}}
+		for _, rule := range condition.Rules {
+			dependencies = append(dependencies, node{target.Snapshot.TableID, rule.SourceFieldID})
+			if rule.Operand != nil && rule.Operand.Kind == "field" {
+				dependencies = append(dependencies, node{table.Snapshot.TableID, rule.Operand.FieldID})
+			}
+		}
+		for _, dependency := range dependencies {
+			owner, err := builder.table(dependency.tableID)
+			if err != nil {
+				return nil, err
+			}
+			if _, found := owner.Field(dependency.fieldID); !found {
+				return nil, graphError("schema.lookup.target_field_not_found", "conditional lookup dependency is unavailable", nil)
+			}
+		}
+		return dependencies, nil
+	}
 	if field.Lookup == nil || len(field.Lookup.Path) == 0 {
 		return nil, graphError("schema.lookup.path_invalid", "lookup dependency path is unavailable", nil)
 	}

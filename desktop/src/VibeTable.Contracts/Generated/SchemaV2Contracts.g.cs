@@ -310,6 +310,43 @@ public sealed record FieldLookupV2
     [JsonRequired] public required IReadOnlyList<FieldLookupPathStepV2> Path { get; init; }
     [JsonPropertyName("targetFieldId")]
     [JsonRequired] public required string TargetFieldId { get; init; }
+    [JsonPropertyName("condition")]
+    public LookupConditionV2? Condition { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record LookupConditionV2
+{
+    [JsonPropertyName("sourceTableId")]
+    [JsonRequired] public required string SourceTableId { get; init; }
+    [JsonPropertyName("match")]
+    [JsonRequired] public required string Match { get; init; }
+    [JsonPropertyName("rules")]
+    [JsonRequired] public required IReadOnlyList<LookupConditionRuleV2> Rules { get; init; }
+    [JsonPropertyName("distinct")]
+    [JsonRequired] public required bool Distinct { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record LookupConditionRuleV2
+{
+    [JsonPropertyName("sourceFieldId")]
+    [JsonRequired] public required string SourceFieldId { get; init; }
+    [JsonPropertyName("operator")]
+    [JsonRequired] public required string Operator { get; init; }
+    [JsonPropertyName("operand")]
+    public LookupOperandV2? Operand { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record LookupOperandV2
+{
+    [JsonPropertyName("kind")]
+    [JsonRequired] public required string Kind { get; init; }
+    [JsonPropertyName("fieldId")]
+    public string? FieldId { get; init; }
+    [JsonPropertyName("value")]
+    public JsonElement? Value { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

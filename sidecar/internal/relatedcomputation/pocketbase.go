@@ -178,6 +178,9 @@ func dependencyTables(
 	if field.Lookup == nil {
 		return nil, nil
 	}
+	if field.Lookup.Condition != nil {
+		return []string{field.Lookup.Condition.SourceTableID}, nil
+	}
 	currentFields := fields
 	result := make([]string, 0, len(field.Lookup.Path))
 	for index, step := range field.Lookup.Path {

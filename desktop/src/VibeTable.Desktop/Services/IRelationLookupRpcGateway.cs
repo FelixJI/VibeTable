@@ -13,6 +13,7 @@ public interface IRelationLookupRpcGateway
     Task<JsonElement> UpdateSingleRelationAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewRelationDeltaAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ApplyRelationDeltaAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> PreviewLookupDraftAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ListLookupsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> QueryLookupsAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ReadLookupValuePageAsync(JsonElement parameters, CancellationToken token);

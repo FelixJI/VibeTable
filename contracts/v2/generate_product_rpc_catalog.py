@@ -66,6 +66,7 @@ from backend.contracts.history import (
 )
 from backend.contracts.lookup import (
     LookupCellValue,
+    LookupDraftPreviewResult,
     LookupListResult,
     LookupQueryResult,
 )
@@ -712,6 +713,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "contentProfile.commit": _typed(ContentProfileSnapshot),
         "contentProfile.delete": _typed(ContentProfileDeleteResult),
         "contentProfile.load": _typed(ContentProfileSnapshot),
+        "lookup.draft.preview": _typed(LookupDraftPreviewResult),
         "lookup.list": _typed(LookupListResult),
         "lookup.query": _typed(LookupQueryResult),
         "lookup.valuePage": _typed(LookupCellValue),

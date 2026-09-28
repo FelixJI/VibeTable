@@ -40,6 +40,7 @@
     {"method":"interface.delete","scope":"workspace","audience":"rendererPublic","capabilityId":"content.model"},
     {"method":"interface.list","scope":"workspace","audience":"rendererPublic","capabilityId":"content.model"},
     {"method":"interface.load","scope":"workspace","audience":"rendererPublic","capabilityId":"content.model"},
+    {"method":"lookup.draft.preview","scope":"workspace","audience":"rendererPublic","capabilityId":"relation.lookup"},
     {"method":"lookup.list","scope":"workspace","audience":"rendererPublic","capabilityId":"relation.lookup"},
     {"method":"lookup.query","scope":"workspace","audience":"rendererPublic","capabilityId":"relation.lookup"},
     {"method":"lookup.valuePage","scope":"workspace","audience":"rendererPublic","capabilityId":"relation.lookup"},

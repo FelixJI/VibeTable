@@ -1153,6 +1153,47 @@
       ]
     },
     {
+      "id": "rpc.lookup-draft-preview",
+      "kind": "rpc",
+      "names": [
+        "lookup.draft.preview"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "lookup.draft.preview"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [
+        "26-lookup-definition-read"
+      ],
+      "targetSlice": "conditional-lookup",
+      "targetPr": null,
+      "deleteWhen": "Retain the Go-owned, revision-bound read-only conditional Lookup draft preview.",
+      "evidence": [
+        "sidecar/internal/app/lookup_draft_preview_product_rpc.go",
+        "sidecar/tests/integration/conditional_lookup_test.go"
+      ]
+    },
+    {
       "id": "rpc.lookup-list",
       "kind": "rpc",
       "names": [

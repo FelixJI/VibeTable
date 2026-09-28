@@ -314,6 +314,14 @@
       "effect": "read"
     },
     {
+      "method": "lookup.draft.preview",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "relation.lookup",
+      "owner": "goSidecar",
+      "effect": "read"
+    },
+    {
       "method": "lookup.list",
       "scope": "workspace",
       "audience": "rendererPublic",

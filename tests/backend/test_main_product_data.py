@@ -101,6 +101,7 @@ async def test_product_rpc_registration_is_closed_and_provider_neutral(
         "formula.draft.validate",
         "formula.validate",
         "lookup.list",
+        "lookup.draft.preview",
         "lookup.query",
         "lookup.valuePage",
         "mutation.apply",

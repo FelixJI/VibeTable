@@ -70,7 +70,7 @@ func relationSearchHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration
 			mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			registration, unrelatedRelationInspectRegistration(t), productrpc.ReconcileRegistration(catalog), queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
-			lookupListRegistration(relation.New(pb, nil, nil)),
+			lookupDraftPreviewRegistration(pb), lookupListRegistration(relation.New(pb, nil, nil)),
 			queryPageRegistration(relationSearchUnrelatedPage{t: t}), schemaDescribeRegistration(pb, relation.New(pb, nil, nil)), schemaGetTableRegistration(pb), schemaListRegistration(catalog),
 			queryViewRegistration(unrelatedViewMustNotRun{t: t}),
 			lookupValuePageRegistration(unrelatedLookupValuePageMustNotRun{t: t}),

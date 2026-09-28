@@ -15,6 +15,7 @@ from backend.contracts.schema_v2 import (
     FieldDefinitionV2,
     FieldRecycleBinResultV2,
     FieldSettingsDescribeResultV2,
+    LookupSpecV2,
     MigrationStatusV2,
 )
 
@@ -106,3 +107,47 @@ def test_schema_v2_models_reject_every_shared_negative_case() -> None:
             target[key] = case["value"]
         with pytest.raises(ValidationError):
             FieldDefinitionV2.model_validate(payload)
+
+
+@pytest.mark.parametrize("value", ["", False, 0])
+def test_conditional_lookup_keeps_typed_falsy_operands(value: object) -> None:
+    spec = {
+        "path": [],
+        "targetFieldId": "result",
+        "condition": {
+            "sourceTableId": "source",
+            "match": "all",
+            "distinct": False,
+            "rules": [
+                {
+                    "sourceFieldId": "key",
+                    "operator": "eq",
+                    "operand": {"kind": "constant", "value": value},
+                }
+            ],
+        },
+    }
+    parsed = LookupSpecV2.model_validate(spec)
+    assert parsed.condition is not None
+    assert parsed.condition.rules[0].operand is not None
+    assert parsed.condition.rules[0].operand.value == value
+    for invalid in (
+        {**spec, "path": [{"relationFieldId": "relation"}]},
+        {"path": [], "targetFieldId": "result"},
+        {**spec, "condition": None},
+    ):
+        with pytest.raises(ValidationError):
+            LookupSpecV2.model_validate(invalid)
+    condition = spec["condition"]
+    assert isinstance(condition, dict)
+    for rule in (
+        {"sourceFieldId": "key", "operator": "is_null", "operand": None},
+        {
+            "sourceFieldId": "key",
+            "operator": "eq",
+            "operand": {"kind": "field", "fieldId": "key", "value": None},
+        },
+        {"sourceFieldId": "key", "operator": "eq", "operand": {"kind": "constant", "value": None}},
+    ):
+        with pytest.raises(ValidationError):
+            LookupSpecV2.model_validate({**spec, "condition": {**condition, "rules": [rule]}})

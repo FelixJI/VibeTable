@@ -46,6 +46,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "interface.delete",
         "interface.list",
         "interface.load",
+        "lookup.draft.preview",
         "lookup.list",
         "lookup.query",
         "lookup.valuePage",

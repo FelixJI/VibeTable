@@ -401,7 +401,7 @@ func historyRestoreProductFixture(
 			historyApplyRestoreRegistration(runtime),
 			queryReadRowsRegistration(unrelatedQueryReadRowsMustNotRun{t: t}),
 			queryValidateSnapshotRegistration(unrelatedQueryValidateSnapshotMustNotRun{t: t}),
-			lookupListRegistration(relation.New(pb, nil, nil)),
+			lookupDraftPreviewRegistration(pb), lookupListRegistration(relation.New(pb, nil, nil)),
 			relationSearchTargetsRegistration(unrelatedRelationSearchMustNotRun{t: t}),
 			unrelatedRelationInspectRegistration(t),
 			queryPageRegistration(unrelatedQueryPageMustNotRun{t: t}),

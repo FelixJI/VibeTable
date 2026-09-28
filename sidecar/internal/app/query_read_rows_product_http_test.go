@@ -54,7 +54,7 @@ func queryReadRowsHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registration 
 			unrelatedContentVersionRegistration(t, "version.delete"),
 			mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
-			lookupListRegistration(relation.New(pb, nil, nil)),
+			lookupDraftPreviewRegistration(pb), lookupListRegistration(relation.New(pb, nil, nil)),
 			registration, queryCursorOpenRegistration(unrelatedQueryCursorMustNotRun{t: t}),
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 			queryViewRegistration(unrelatedViewMustNotRun{t: t}),

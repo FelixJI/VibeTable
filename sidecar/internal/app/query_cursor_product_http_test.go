@@ -115,7 +115,7 @@ func cursorProductHTTPMux(t *testing.T, pb *pocketbase.PocketBase, port interfac
 			unrelatedContentVersionRegistration(t, "version.delete"),
 			mutationPreviewRegistration(unrelatedMutationProductMustNotRun{t: t}),
 			mutationApplyRegistration(unrelatedMutationProductMustNotRun{t: t}),
-			lookupListRegistration(relation.New(pb, nil, nil)),
+			lookupDraftPreviewRegistration(pb), lookupListRegistration(relation.New(pb, nil, nil)),
 			queryCursorOpenRegistration(port), queryCursorFetchRegistration(port),
 			querySelectionOpenRegistration(unrelatedSelectionMustNotRun{t: t}),
 			queryViewRegistration(unrelatedViewMustNotRun{t: t}),

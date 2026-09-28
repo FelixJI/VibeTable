@@ -362,6 +362,26 @@ type FormulaDraftSpec struct {
 type LookupSpec struct {
 	Path          []LookupPathStep `json:"path"`
 	TargetFieldID string           `json:"targetFieldId"`
+	Condition     *LookupCondition `json:"condition,omitempty"`
+}
+
+type LookupCondition struct {
+	SourceTableID string                `json:"sourceTableId"`
+	Match         string                `json:"match"`
+	Rules         []LookupConditionRule `json:"rules"`
+	Distinct      bool                  `json:"distinct"`
+}
+
+type LookupConditionRule struct {
+	SourceFieldID string         `json:"sourceFieldId"`
+	Operator      string         `json:"operator"`
+	Operand       *LookupOperand `json:"operand,omitempty"`
+}
+
+type LookupOperand struct {
+	Kind    string `json:"kind"`
+	FieldID string `json:"fieldId,omitempty"`
+	Value   any    `json:"value,omitempty"`
 }
 
 type LookupPathStep struct {
@@ -636,4 +656,35 @@ func StrictDecode(raw []byte, target any) error {
 func validRFC3339(value string) bool {
 	_, err := time.Parse(time.RFC3339Nano, value)
 	return err == nil
+}
+
+func (spec *LookupSpec) UnmarshalJSON(raw []byte) error {
+	type wire LookupSpec
+	var decoded wire
+	if err := StrictDecode(raw, &decoded); err != nil {
+		return err
+	}
+	var properties map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &properties); err != nil {
+		return err
+	}
+	if value, ok := properties["path"]; !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("lookup path must be an array")
+	}
+	if value, exists := properties["condition"]; exists && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("lookup condition cannot be null")
+	}
+	if decoded.Condition != nil {
+		var condition map[string]json.RawMessage
+		if err := json.Unmarshal(properties["condition"], &condition); err != nil {
+			return err
+		}
+		for _, key := range []string{"sourceTableId", "match", "rules", "distinct"} {
+			if value, ok := condition[key]; !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return fmt.Errorf("lookup condition requires %s", key)
+			}
+		}
+	}
+	*spec = LookupSpec(decoded)
+	return ValidateLookupConditionShape(*spec)
 }

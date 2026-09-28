@@ -38,6 +38,7 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "interface.delete",
   "interface.list",
   "interface.load",
+  "lookup.draft.preview",
   "lookup.list",
   "lookup.query",
   "lookup.valuePage",
