@@ -13,6 +13,7 @@ import (
 
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -146,17 +147,13 @@ func (calculator *Calculator) calculateCells(
 			}
 			return nil, err
 		}
-		values := make([]any, 0, len(resolved))
-		provenance := make([]ValueProvenance, 0, len(resolved))
-		for _, item := range resolved {
-			values = append(values, item.value)
-			provenance = append(provenance, ValueProvenance{
-				Collection: item.collection, CollectionLabel: item.collectionLabel,
-				ItemID: item.itemID, RecordLabel: item.recordLabel,
-				FieldID: item.fieldID, FieldLabel: item.fieldLabel, Value: item.value,
-			})
+		values, provenance := resolvedValues(resolved)
+		value, aggregateErr := aggregateLookupValues(
+			v2.ResolvedLookupAggregation(*field.Lookup), values,
+		)
+		if aggregateErr != nil {
+			return nil, aggregateErr
 		}
-		value := canonicalLookupValue(values)
 		visibleProvenance := provenance
 		if len(visibleProvenance) > cellProvenancePageSize {
 			visibleProvenance = visibleProvenance[:cellProvenancePageSize]
@@ -441,6 +438,11 @@ func projectLookupNodes(
 	lookupField v2.FieldDefinition,
 ) ([]lookupPathValue, error) {
 	values := make([]lookupPathValue, 0, len(nodes))
+	// Aggregations reduce product values: a presence-gated number reads as
+	// null (not zero) and computed sources participate only through a fresh
+	// envelope verified against the existing expectation contract. The
+	// default values shape keeps the historical raw read.
+	aggregated := lookupAggregationTraversesFullSet(v2.ResolvedLookupAggregation(*lookupField.Lookup))
 	for _, node := range nodes {
 		targetField, found := fieldByID(node.definition, lookupField.Lookup.TargetFieldID)
 		if !found {
@@ -451,6 +453,9 @@ func projectLookupNodes(
 		value, readErr := lookupTargetValue(ctx, app, node.definition, targetField, node.record)
 		if readErr != nil {
 			return nil, readErr
+		}
+		if aggregated && !formula.IsComputedSource(targetField) {
+			value = productrow.Project([]v2.FieldDefinition{targetField}, node.record)[targetField.Identity.PhysicalName]
 		}
 		values = append(values, describedLookupValue(
 			node.definition, node.record, targetField, value,

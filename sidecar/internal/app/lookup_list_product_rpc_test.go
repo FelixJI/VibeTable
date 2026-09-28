@@ -351,3 +351,41 @@ func TestLookupListProductHTTPReadsPersistedRelationDefinitions(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupListProjectionKeepsNumericAggregationDecimal verifies the public
+// list projection end of the numeric aggregation typing: decimal storage and
+// one cardinality survive the wire projection together with the aggregation.
+func TestLookupListProjectionKeepsNumericAggregationDecimal(t *testing.T) {
+	catalog := relation.CatalogResult{
+		TableID: "tbl_types000001", SchemaRevision: "schema_1",
+		Lookups: []relation.LookupDescriptor{{
+			Aggregation:       v2.LookupAggregationCountRecords,
+			LookupID:          "tbl_types000001.fld_count00001",
+			TableID:           "tbl_types000001",
+			FieldID:           "fld_count00001",
+			PhysicalName:      "f_count0000001",
+			DisplayName:       "备注计数",
+			RelationFieldID:   "fld_link000001",
+			TargetFieldID:     "fld_notes000001",
+			Path:              []relation.LookupPathDescriptor{{RelationID: "tbl_types000001.fld_link000001"}},
+			ResultCardinality: "one",
+			OutputStorage:     "decimal",
+			Revision:          1,
+		}},
+	}
+	result, err := projectLookupList(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions, ok := result["definitions"].([]any)
+	if !ok || len(definitions) != 1 {
+		t.Fatalf("projected definitions = %#v", result)
+	}
+	projected, ok := definitions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("projected definition = %#v", definitions[0])
+	}
+	if projected["outputType"] != "decimal" || projected["aggregation"] != v2.LookupAggregationCountRecords {
+		t.Fatalf("numeric aggregation projection = %#v", projected)
+	}
+}

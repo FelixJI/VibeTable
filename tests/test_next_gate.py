@@ -306,7 +306,12 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
     assert all(len(ids) == len(set(ids)) for ids in selected)
     assert set(selected[0]).isdisjoint(selected[1])
     assert set(selected[0]) | set(selected[1]) == manifest_ids
-    assert set(selected[1]) == {"34-relation-lookup-data-io", "35-data-io-interoperability"}
+    assert set(selected[1]) == {
+        "23-directory-replica-recovery",
+        "24-directory-replica-conflict",
+        "34-relation-lookup-data-io",
+        "35-data-io-interoperability",
+    }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
 
@@ -2449,5 +2454,5 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         "--evidence-root",
         str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
-    assert product_command.count("--scenario") == len(next_gate.load_scenarios()) - 2
+    assert product_command.count("--scenario") == len(next_gate.load_scenarios()) - 4
     assert Path(product_cwd) == next_gate.REPO_ROOT

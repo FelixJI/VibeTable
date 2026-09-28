@@ -16,6 +16,7 @@ import type {
   FieldSettingsDescribeResultV2,
   JsonValueV2,
   LogicalTypeV2,
+  SchemaSnapshot,
 } from "@/contracts";
 
 const mounted: VueWrapper[] = [];
@@ -109,6 +110,21 @@ function migration(): FieldMigrationStatusV2 {
     contract: "vibetable.schema.v2", jobId: "job_1", planId: "plan_1", phase: "copying",
     processed: 4, total: 8, canCancel: true, error: null, updatedAt: "2026-07-28T12:00:00Z",
   };
+}
+
+function lookupSchemaSnapshot(
+  collection: string,
+  columns: ReadonlyArray<Record<string, unknown>>,
+): SchemaSnapshot {
+  return {
+    collection,
+    primaryKey: "id",
+    columns: columns.map(column => ({
+      editable: true, nullable: true, ...column,
+    })),
+    normalizedRelations: [], schemaRevision: "schema_7", permissionRevision: "schema_7",
+    capabilityHash: "cap", lookupRevision: "lk_1",
+  } as unknown as SchemaSnapshot;
 }
 
 function mountDrawer(): VueWrapper {
@@ -449,5 +465,41 @@ describe("FieldSettingsDrawer", () => {
     await buttonWithText(wrapper, "永久清除").trigger("click");
     expect(store.action).toBe("purge");
     expect(wrapper.emitted("plan")).toHaveLength(2);
+  });
+
+  it("lookup 目标选项从真实 schema 派生精确类型（路径列 dataType / 条件 FieldDefinitionV2）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("lookup"));
+    store.setLookupSchemas([lookupSchemaSnapshot("tbl_customers", [
+      { name: "f_name", fieldId: "fld_name", title: "名称", kind: "scalar", dataType: "text" },
+      // 数值公式列复用 schema dataType：呈现为 number，可被数值聚合使用。
+      { name: "f_balance", fieldId: "fld_balance", title: "余额", kind: "formula", dataType: "decimal" },
+    ])]);
+    let wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.findComponent(LookupFieldEditor).props("targetFieldOptions")).toEqual([
+      { label: "名称", value: "fld_name", logicalType: "text" },
+      { label: "余额", value: "fld_balance", logicalType: "number" },
+    ]);
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+
+    // 条件模式：类型取来源表 FieldDefinitionV2 的 logicalType。
+    store.lookupConditionSchema = lookupSchemaSnapshot("tbl_orders", [
+      { name: "f_amount", fieldId: "fld_amount", title: "金额", kind: "scalar", dataType: "decimal" },
+      { name: "f_note", fieldId: "fld_note", title: "备注", kind: "scalar", dataType: "text" },
+    ]);
+    store.lookupConditionFields = [
+      definition("number"),
+      { ...definition("text"), displayName: "备注", identity: { ...definition("text").identity, fieldId: "fld_note" } },
+    ];
+    wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.findComponent(LookupFieldEditor).props("targetFieldOptions")).toEqual([
+      { label: "金额", value: "fld_amount", logicalType: "number" },
+      { label: "备注", value: "fld_note", logicalType: "text" },
+    ]);
   });
 });

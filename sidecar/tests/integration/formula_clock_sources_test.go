@@ -121,6 +121,12 @@ func TestFormulaClockSourcesThroughRelationLookupAndAggregates(t *testing.T) {
 	sumDay := createV2IntegrationFormula(
 		t, ctx, app, aggTable.TableID, sumDayDraft, "clock_aggregate_day",
 	)
+	lookupDayDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "Lookup day sum")
+	lookupDayDraft.Lookup = &v2.LookupSpec{
+		Path:          []v2.LookupPathStep{{RelationFieldID: lines.FieldID}},
+		TargetFieldID: day.FieldID, Aggregation: v2.LookupAggregationSum,
+	}
+	lookupDay := createV2IntegrationField(t, ctx, app, aggTable.TableID, lookupDayDraft, "clock_lookup_day_sum")
 	sumAmountDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "Amount sum")
 	sumAmountDraft.Formula = &v2.FormulaDraftSpec{Language: "cel-v1", Source: `SUM({Lines}.{Amount})`}
 	sumAmount := createV2IntegrationFormula(
@@ -134,7 +140,7 @@ func TestFormulaClockSourcesThroughRelationLookupAndAggregates(t *testing.T) {
 	for _, receipt := range []v2.ApplyReceipt{
 		label, amount, payload, minute, day, relNote, src, minuteLabel, plainLabel,
 		payloadSize, lkpNote, lkpSrc, clockLookup, lkpLabel, aggNote, lines,
-		sumDay, sumAmount, lineCount,
+		sumDay, lookupDay, sumAmount, lineCount,
 	} {
 		if receipt.Definition == nil {
 			t.Fatalf("V2 clock source fixture omitted a field definition: %#v", receipt)
@@ -244,6 +250,9 @@ func TestFormulaClockSourcesThroughRelationLookupAndAggregates(t *testing.T) {
 	}
 	if got := stored(aggTable, "clockagg0000001", sumDay.Definition.Identity.PhysicalName); got != 20.0 {
 		t.Fatalf("computed day aggregate = %#v", got)
+	}
+	if got := stored(aggTable, "clockagg0000001", lookupDay.Definition.Identity.PhysicalName); got != 20.0 {
+		t.Fatalf("computed day Lookup SUM = %#v", got)
 	}
 	if got := stored(aggTable, "clockagg0000001", sumAmount.Definition.Identity.PhysicalName); got != 20.0 {
 		t.Fatalf("plain SQL aggregate = %#v", got)
@@ -371,6 +380,17 @@ func TestFormulaClockSourcesThroughRelationLookupAndAggregates(t *testing.T) {
 
 	// Next day: the TODAY-driven aggregate source must refresh before use.
 	t2 := time.Date(2024, 3, 11, 7, 0, 0, 0, time.UTC)
+	dayContext := formula.WithEvaluationTime(context.Background(), t2)
+	dayDefinition, err := schemaapi.New(app).Describe(dayContext, aggTable.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dayRecord, err := app.FindRecordById(aggTable.PhysicalName, "clockagg0000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = lookup.NewCalculator().CalculateFieldPage(dayContext, app, dayDefinition, dayRecord, *lookupDay.Definition, 0, 100)
+	rejection("day Lookup SUM reader", err)
 	_, err = applyAt(t2, aggTable, "clockagg0000001", "next day")
 	rejection("day aggregate reader", err)
 	ids, refreshErr = service.RefreshClock(context.Background(), t2)
@@ -388,6 +408,9 @@ func TestFormulaClockSourcesThroughRelationLookupAndAggregates(t *testing.T) {
 	}
 	if got := refreshedAggregates.ComputedFields["clockagg0000001"][sumDay.Definition.Identity.PhysicalName]; got != 22.0 {
 		t.Fatalf("day aggregate after refresh = %#v", got)
+	}
+	if got := refreshedAggregates.ComputedFields["clockagg0000001"][lookupDay.Definition.Identity.PhysicalName]; got != 22.0 {
+		t.Fatalf("day Lookup SUM after refresh = %#v", got)
 	}
 	if got := refreshedAggregates.ComputedFields["clockagg0000001"][lineCount.Definition.Identity.PhysicalName]; got != int64(2) && got != float64(2) {
 		t.Fatalf("relation count after refresh = %#v", got)

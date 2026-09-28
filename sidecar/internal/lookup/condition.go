@@ -26,6 +26,11 @@ func calculateConditionCells(
 		if err != nil {
 			return nil, err
 		}
+		// Aggregations reduce the complete matched set. The legacy distinct flag
+		// resolves to the same mode, so first-occurrence dedupe during the scan
+		// stays byte-budget compatible and explicit modes never combine with it.
+		aggregation := v2.ResolvedLookupAggregation(plan.Spec)
+		dedupe := aggregation == v2.LookupAggregationDistinct
 		// Equal operands share one match group. Each bounded batch reads the source
 		// once, with QueryCompiler producing all typed predicates and match flags.
 		groups := [][]query.FilterExpression{}
@@ -111,7 +116,7 @@ func calculateConditionCells(
 							continue
 						}
 						cell := &cells[i]
-						if !plan.Spec.Condition.Distinct || !seen[i][string(encoded)] {
+						if !dedupe || !seen[i][string(encoded)] {
 							if err := valueBudget.consume(value); err != nil {
 								return nil, err
 							}
@@ -134,6 +139,13 @@ func calculateConditionCells(
 			}
 			for i, cell := range cells {
 				cell.ProvenanceHasMore = cell.ProvenanceTotal > offset+len(cell.Provenance)
+				if aggregation != v2.LookupAggregationValues {
+					aggregated, aggregateErr := aggregateLookupValues(aggregation, cell.Value.([]any))
+					if aggregateErr != nil {
+						return nil, aggregateErr
+					}
+					cell.Value = aggregated
+				}
 				for copyIndex, id := range rows[start+i] {
 					if copyIndex > 0 {
 						if err := valueBudget.consume(cell.Value); err != nil {

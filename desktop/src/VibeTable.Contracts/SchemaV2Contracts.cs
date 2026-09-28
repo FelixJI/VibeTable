@@ -189,13 +189,25 @@ public static class SchemaV2Contract
                 return false;
             }
         }
-        if (field.Lookup is not null
-            && (field.Lookup.Path.Count is < 1 or > 8
-                || field.Lookup.Path.Any(step => string.IsNullOrWhiteSpace(step.RelationFieldId))
-                || string.IsNullOrWhiteSpace(field.Lookup.TargetFieldId)))
+        if (field.Lookup is { } lookup)
         {
-            reason = "Lookup requires one to eight relation path steps and a target field";
-            return false;
+            bool validSource = lookup.Condition is { } condition
+                ? lookup.Path.Count == 0 && !string.IsNullOrWhiteSpace(condition.SourceTableId)
+                    && condition.Match is "all" or "any" && condition.Rules.Count is >= 1 and <= 50
+                : lookup.Path.Count is >= 1 and <= 8;
+            if (!validSource || string.IsNullOrWhiteSpace(lookup.TargetFieldId)
+                || lookup.Path.Any(step => string.IsNullOrWhiteSpace(step.RelationFieldId)))
+            {
+                reason = "Lookup requires either a relation path or a condition and a target field";
+                return false;
+            }
+            if (lookup.Aggregation is not (null or "values" or "distinct" or "countRecords"
+                or "countNonEmpty" or "countDistinct" or "sum" or "average" or "min" or "max")
+                || (lookup.Aggregation is not null && lookup.Condition?.Distinct == true))
+            {
+                reason = "unsupported Lookup aggregation or legacy distinct conflict";
+                return false;
+            }
         }
         return true;
     }

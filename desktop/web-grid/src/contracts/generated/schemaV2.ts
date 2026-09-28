@@ -171,10 +171,13 @@ export interface FormulaDraftSpec {
   readonly source: string;
 }
 
+export type LookupAggregation = "values" | "distinct" | "countRecords" | "countNonEmpty" | "countDistinct" | "sum" | "average" | "min" | "max";
+
 export interface LookupSpec {
   readonly path: ReadonlyArray<LookupPathStep>;
   readonly targetFieldId: string;
   readonly condition?: LookupCondition;
+  readonly aggregation?: LookupAggregation;
 }
 
 export interface LookupCondition {

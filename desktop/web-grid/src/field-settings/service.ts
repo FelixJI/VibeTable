@@ -153,8 +153,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     invalidateLookupPreview();
     lookupDraft = draft;
     const described = store.result;
-    const source = store.lookupConditionSchema;
-    if (!draft?.condition || !described || !source || source.collection !== draft.condition.sourceTableId) return;
+    const source = draft?.condition ? store.lookupConditionSchema : store.lookupSchemas.at(-1);
+    if (!draft || !described || !source) return;
+    if (draft.condition && source.collection !== draft.condition.sourceTableId) return;
     const current = lookupPreviewGeneration;
     store.lookupPreview = { loading: true, ready: false, value: undefined, error: null };
     lookupPreviewTimer = setTimeout(async () => {

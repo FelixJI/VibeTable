@@ -363,6 +363,10 @@ type LookupSpec struct {
 	Path          []LookupPathStep `json:"path"`
 	TargetFieldID string           `json:"targetFieldId"`
 	Condition     *LookupCondition `json:"condition,omitempty"`
+	// Aggregation selects how the full matched set is reduced. Empty keeps the
+	// historical path/condition shapes; the legacy condition.distinct flag maps
+	// to "distinct" and must not be combined with an explicit aggregation.
+	Aggregation string `json:"aggregation,omitempty"`
 }
 
 type LookupCondition struct {

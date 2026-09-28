@@ -9,6 +9,9 @@ import (
 // ValidateLookupConditionShape checks direct Go callers as well as decoded wire
 // requests. Cross-table field types and IDs are resolved by the catalog.
 func ValidateLookupConditionShape(spec LookupSpec) error {
+	if err := ValidateLookupAggregationShape(spec); err != nil {
+		return err
+	}
 	fail := func(path, message string) error {
 		return &ProductError{Code: "lookup.condition.invalid", Path: path, Message: message}
 	}

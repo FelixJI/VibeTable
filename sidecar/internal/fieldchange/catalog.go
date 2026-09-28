@@ -595,6 +595,15 @@ func (catalog *Catalog) checkLookupTargets(
 	for _, target := range targetFields {
 		if target.Identity.FieldID == definition.Lookup.TargetFieldID &&
 			target.LogicalType != v2.LogicalRelation {
+			if v2.LookupAggregationRequiresNumericSource(
+				v2.ResolvedLookupAggregation(*definition.Lookup),
+			) && !v2.LookupFieldTargetNumeric(target) {
+				return []v2.Diagnostic{{
+					Code:    "field.lookup.aggregation_target_not_numeric",
+					Path:    "draft.lookup.targetFieldId",
+					Message: "numeric lookup aggregation requires a number target field",
+				}}, nil
+			}
 			return []v2.Diagnostic{}, nil
 		}
 	}

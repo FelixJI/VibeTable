@@ -194,6 +194,55 @@ describe("Schema v2 contracts", () => {
     }
   });
 
+  it("accepts optional lookup aggregation and rejects legacy distinct conflicts", () => {
+    const field = mutableObject(fixture());
+    field.logicalType = "lookup";
+    field.lookup = {
+      path: [{ relationFieldId: "fld_customer" }],
+      targetFieldId: "fld_amount",
+      aggregation: "sum",
+    };
+    expect(parseFieldDefinitionV2(field).lookup?.aggregation).toBe("sum");
+
+    field.lookup = {
+      path: [],
+      targetFieldId: "fld_amount",
+      aggregation: "countDistinct",
+      condition: {
+        sourceTableId: "tbl_orders", match: "any", distinct: false,
+        rules: [{ sourceFieldId: "fld_amount", operator: "gte", operand: { kind: "constant", value: 1 } }],
+      },
+    };
+    expect(parseFieldDefinitionV2(field).lookup?.aggregation).toBe("countDistinct");
+
+    // legacy：condition.distinct=true 无显式聚合时仍可读回（等价 distinct）。
+    field.lookup = {
+      path: [],
+      targetFieldId: "fld_amount",
+      condition: {
+        sourceTableId: "tbl_orders", match: "all", distinct: true,
+        rules: [{ sourceFieldId: "fld_amount", operator: "is_not_null" }],
+      },
+    };
+    expect(parseFieldDefinitionV2(field).lookup?.condition?.distinct).toBe(true);
+
+    const invalid: MutableJsonObject[] = [
+      { path: [{ relationFieldId: "fld_1" }], targetFieldId: "fld_1", aggregation: "median" },
+      { path: [{ relationFieldId: "fld_1" }], targetFieldId: "fld_1", aggregate: "sum" },
+      {
+        path: [], targetFieldId: "fld_1", aggregation: "distinct",
+        condition: {
+          sourceTableId: "tbl_1", match: "all", distinct: true,
+          rules: [{ sourceFieldId: "fld_1", operator: "is_null" }],
+        },
+      },
+    ];
+    for (const lookup of invalid) {
+      field.lookup = lookup;
+      expect(() => parseFieldDefinitionV2(field)).toThrow("field.contract.invalid");
+    }
+  });
+
   it("parses rich plans, receipts, migration diagnostics, and recycle-bin definitions", () => {
     const definition = mutableObject(fixture());
     const plan = mutableObject(structuredClone(fixture("field-change-plan.json")));

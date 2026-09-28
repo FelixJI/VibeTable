@@ -8,8 +8,16 @@
 - 基础比较支持 text、number、bool、date、dateTime、select。等于、不等于、空判断适用全部基础类型；大小比较适用数值和日期；包含适用文本。字段操作数必须同类型；date 与 dateTime 不混用。
 - 文本比较区分大小写；空字符串不等于 null，0 和 false 是有效值。空当前字段的普通比较不匹配；ANY 可以由其余规则命中。单选字段跨表按精确的有效选项标签比较，保存的字段引用仍为稳定 ID。
 - date 按日比较，dateTime 按表示的时刻比较；时区偏移会归一化。配置或字段重命名不改变 stable table/field ID；被引用字段改类型或删除须先处理依赖。
-- 条件结果始终为完整列表：无匹配 `[]`，单匹配也是列表。顺序按来源记录 ID 升序；去重按类型和值保留首次结果。来源计数仍包含重复值对应的所有实际匹配记录；来源详情分页不截断值集合。
+- 选择“原值”时，条件结果为完整列表：无匹配 `[]`，单匹配也是列表。顺序按来源记录 ID 升序；去重按类型和值保留首次结果。来源计数仍包含重复值对应的所有实际匹配记录；来源详情分页不截断值集合。
 - 来源插入、删除、条件字段或返回值变化，以及当前行条件变化，都通过既有依赖、新鲜度及持久重算任务更新结果。条件模式仍是只读计算字段。
+
+## 结果汇总
+
+路径和条件模式都可在“结果汇总”中选择原值、去重、命中记录数、非空值数、去重非空值数、SUM、AVERAGE、MIN、MAX。汇总读取完整命中集合，来源详情页只影响追溯显示。数值汇总仅适用于数字来源；路径模式也支持已有数值公式来源，其他类型明确禁用。
+
+对 `[10,20,0,null,10]`，命中记录数为 5、非空值数为 4、去重非空值数为 3，SUM 为 40、AVERAGE 为 10、MIN 为 0、MAX 为 20。计数中的非空排除 null 和空字符串，0 与 false 仍为有效值；数值汇总忽略 null，拒绝空字符串、布尔、非法文本及非有限数。空集合的计数和 SUM 为 0，AVERAGE/MIN/MAX 为 null。去重按首次出现顺序保留值，包括 null。
+
+计数和数值汇总输出数字，可参与公式、数字筛选排序和现有导出。顶层可选 `aggregation` 保存汇总方式；缺省保持旧行为，旧 `condition.distinct=true` 仍可读取，编辑保存后规范为 `aggregation="distinct"` 与 `condition.distinct=false`。显式汇总不能与旧 distinct=true 混用。
 
 ## 执行与兼容边界
 
@@ -26,4 +34,8 @@ Go QueryCompiler 复用类型化过滤和归档策略，将同值操作数组合
 - Web 字段设置测试覆盖草稿取消、类型化输入、250ms 防抖和迟到结果失效。
 - `uv run python qa/product_acceptance.py --package-root dist/VibeTable.Next --evidence-root build/q --scenario 26-lookup-definition-read`：同包 WPF/WebView2 的离线编辑、预览、保存、去重、重算、同 UUID 重开和取消。局部证据由本次 PR 绑定 source/head，不替代完整 CI 门禁。
 
-实现与冻结检查点：[Task #391](https://github.com/FelixJI/VibeTable/issues/391)。
+实现与冻结检查点：[Task #391](https://github.com/FelixJI/VibeTable/issues/391)、[Task #393](https://github.com/FelixJI/VibeTable/issues/393)。
+
+汇总回归入口：`go test ./tests/integration -run TestLookupAggregation -count=1`。S26 同包场景继续覆盖七种计数/数值预览、SUM 保存重开、下游公式、数字筛选排序及 CSV，证据绑定见 [PR #400](https://github.com/FelixJI/VibeTable/pull/400)。
+
+![完整匹配集合的 SUM 预览](../assets/screenshots/lookup-aggregation-preview.png)

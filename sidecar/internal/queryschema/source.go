@@ -294,6 +294,16 @@ func (source *Source) lookupResultFieldType(
 	table schemaexecution.Table,
 	spec v2.LookupSpec,
 ) (query.FieldType, error) {
+	aggregation := v2.ResolvedLookupAggregation(spec)
+	if v2.LookupAggregationNumeric(aggregation) {
+		// Counts and numeric summaries materialize number/one values, so
+		// numeric filters, sorts and downstream formulas treat them as numbers.
+		return query.FieldTypeNumber, nil
+	}
+	if aggregation == v2.LookupAggregationDistinct {
+		// distinct keeps the first-occurrence collection, including null.
+		return query.FieldTypeJSON, nil
+	}
 	if spec.Condition != nil {
 		return query.FieldTypeJSON, nil
 	}

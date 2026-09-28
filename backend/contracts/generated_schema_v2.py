@@ -235,10 +235,24 @@ class FormulaDraftSpec(SchemaV2WireModel):
     source: Annotated[str, Field(min_length=1)]
 
 
+type LookupAggregation = Literal[
+    "values",
+    "distinct",
+    "countRecords",
+    "countNonEmpty",
+    "countDistinct",
+    "sum",
+    "average",
+    "min",
+    "max",
+]
+
+
 class LookupSpec(SchemaV2WireModel):
     path: Annotated[list[LookupPathStep], Field(max_length=8)]
     target_field_id: Annotated[str, Field(min_length=1)]
     condition: LookupCondition | None = None
+    aggregation: LookupAggregation | None = None
 
 
 class LookupCondition(SchemaV2WireModel):

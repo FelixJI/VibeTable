@@ -312,6 +312,8 @@ public sealed record FieldLookupV2
     [JsonRequired] public required string TargetFieldId { get; init; }
     [JsonPropertyName("condition")]
     public LookupConditionV2? Condition { get; init; }
+    [JsonPropertyName("aggregation")]
+    public string? Aggregation { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

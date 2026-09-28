@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { nextTick } from "vue";
 import { mount, type VueWrapper } from "@vue/test-utils";
-import { NInput, NInputNumber, NSelect, NSwitch } from "naive-ui";
+import { NInput, NInputNumber, NSelect } from "naive-ui";
 import LookupFieldEditor from "./LookupFieldEditor.vue";
 import type { LookupConditionFieldOption } from "./lookupCondition";
-import type { FieldDraftV2 } from "@/contracts";
+import type { LookupSpecV2 } from "@/contracts";
 
-type LookupValue = NonNullable<FieldDraftV2["lookup"]>;
+type LookupValue = LookupSpecV2;
 
 interface EditorExtraProps {
   previewLoading?: boolean;
@@ -26,9 +26,9 @@ const relationOptions = [[
   { label: "账户", value: "fld_account", many: true },
 ]];
 const targetFieldOptions = [
-  { label: "名称", value: "fld_name" },
-  { label: "余额", value: "fld_balance" },
-  { label: "单价", value: "fld_price" },
+  { label: "名称", value: "fld_name", logicalType: "text" },
+  { label: "余额", value: "fld_balance", logicalType: "number" },
+  { label: "单价", value: "fld_price", logicalType: "number" },
 ];
 const sourceTableOptions = [
   { label: "订单表", value: "tbl_orders" },
@@ -100,7 +100,7 @@ function findSelect(wrapper: VueWrapper, testid: string): VueWrapper {
   return match;
 }
 
-function findComponentByTestId(wrapper: VueWrapper, component: typeof NInput | typeof NInputNumber | typeof NSwitch, testid: string): VueWrapper {
+function findComponentByTestId(wrapper: VueWrapper, component: typeof NInput | typeof NInputNumber, testid: string): VueWrapper {
   const match = wrapper.findAllComponents(component)
     .find(item => item.attributes("data-testid") === testid);
   if (!match) throw new Error(`component not found: ${testid}`);
@@ -124,11 +124,6 @@ async function setSelect(wrapper: VueWrapper, testid: string, value: string | nu
 
 async function setInputNumber(wrapper: VueWrapper, testid: string, value: number | null): Promise<void> {
   findComponentByTestId(wrapper, NInputNumber, testid).vm.$emit("update:value", value);
-  await nextTick();
-}
-
-async function setSwitch(wrapper: VueWrapper, testid: string, value: boolean): Promise<void> {
-  findComponentByTestId(wrapper, NSwitch, testid).vm.$emit("update:value", value);
   await nextTick();
 }
 
@@ -186,10 +181,7 @@ describe("LookupFieldEditor", () => {
     expect(wrapper.emitted("commit")).toEqual([[
       { path: [{ relationFieldId: "fld_account" }], targetFieldId: "fld_balance" },
     ]]);
-    expect(lastDraft(wrapper)).toEqual({
-      path: [{ relationFieldId: "fld_account" }],
-      targetFieldId: "fld_balance",
-    });
+    expect(lastDraft(wrapper)).toBeNull();
   });
 
   it("路径不完整时禁止确认，取消恢复原路径并清空草稿", async () => {
@@ -261,15 +253,17 @@ describe("LookupFieldEditor", () => {
 
     await setSelect(wrapper, "lookup-target-field", "fld_price");
     await setSelect(wrapper, "lookup-condition-match", "any");
-    await setSwitch(wrapper, "lookup-condition-distinct", true);
+    await setSelect(wrapper, "lookup-aggregation", "distinct");
 
     const payload: LookupValue = {
       path: [],
       targetFieldId: "fld_price",
+      // canonical：顶层 aggregation 携带去重，旧 condition.distinct 固定为 false。
+      aggregation: "distinct",
       condition: {
         sourceTableId: "tbl_orders",
         match: "any",
-        distinct: true,
+        distinct: false,
         rules: [
           { sourceFieldId: "fld_amount", operator: "gte", operand: { kind: "constant", value: 0 } },
           { sourceFieldId: "fld_paid", operator: "eq", operand: { kind: "constant", value: false } },
@@ -386,6 +380,18 @@ describe("LookupFieldEditor", () => {
     expect(componentProp(findSelect(wrapper, "lookup-rule-source-field-0"), "value")).toBeNull();
     expect(commitDisabled(wrapper)).toBe(true);
     expect(lastDraft(wrapper)).toBeNull();
+  });
+
+  it("提交后终止草稿预览，重新编辑才恢复预览", async () => {
+    const wrapper = mountEditor(conditionValue);
+    await openEditor(wrapper);
+    expect(lastDraft(wrapper)).toEqual(conditionValue);
+    await commit(wrapper);
+    expect(wrapper.emitted("commit")).toEqual([[conditionValue]]);
+    expect(lastDraft(wrapper)).toBeNull();
+    expect(wrapper.find('[data-testid="lookup-editor-commit"]').exists()).toBe(false);
+    await openEditor(wrapper);
+    expect(lastDraft(wrapper)).toEqual(conditionValue);
   });
 
   it("取消恢复原值并向父层恢复原来源表", async () => {
@@ -536,5 +542,118 @@ describe("LookupFieldEditor", () => {
     mounted.push(unwired);
     await openEditor(unwired);
     expect(lastDraft(unwired)).toBeNull();
+  });
+
+  it("汇总选项按目标类型禁用；改目标类型不静默保留错误聚合", async () => {
+    const wrapper = mountEditor(pathValue);
+    await openEditor(wrapper);
+    const aggregationOptions = () => componentProp(
+      findSelect(wrapper, "lookup-aggregation"),
+      "options",
+    ) as Array<{ value: string; disabled?: boolean }>;
+
+    // 文本目标：计数全类型可用，数值汇总明确禁用。
+    expect(aggregationOptions().find(option => option.value === "countRecords")?.disabled)
+      .toBeFalsy();
+    expect(aggregationOptions().find(option => option.value === "sum")?.disabled).toBe(true);
+
+    // 数字目标：SUM 可选，草稿携带顶层 aggregation。
+    await setSelect(wrapper, "lookup-target-field", "fld_balance");
+    expect(aggregationOptions().find(option => option.value === "sum")?.disabled).toBe(false);
+    await setSelect(wrapper, "lookup-aggregation", "sum");
+    expect(lastDraft(wrapper)).toEqual({
+      path: [{ relationFieldId: "fld_customer" }],
+      targetFieldId: "fld_balance",
+      aggregation: "sum",
+    });
+
+    // 切回文本目标：sum 复位为原值，草稿回到旧形状（不带 aggregation）。
+    await setSelect(wrapper, "lookup-target-field", "fld_name");
+    expect(componentProp(findSelect(wrapper, "lookup-aggregation"), "value")).toBe("values");
+    expect(lastDraft(wrapper)).toEqual({
+      path: [{ relationFieldId: "fld_customer" }],
+      targetFieldId: "fld_name",
+    });
+
+    // 禁用选项即便被触发也不被接受。
+    findSelect(wrapper, "lookup-aggregation").vm.$emit("update:value", "average");
+    await nextTick();
+    expect(componentProp(findSelect(wrapper, "lookup-aggregation"), "value")).toBe("values");
+  });
+
+  it("旧 condition.distinct=true 读回为去重，保存迁移顶层 aggregation 并清旧 distinct", async () => {
+    const legacy: LookupValue = {
+      path: [],
+      targetFieldId: "fld_price",
+      condition: {
+        sourceTableId: "tbl_orders",
+        match: "all",
+        distinct: true,
+        rules: conditionValue.condition!.rules,
+      },
+    };
+    const wrapper = mountEditor(legacy);
+    await openEditor(wrapper);
+    expect(componentProp(findSelect(wrapper, "lookup-aggregation"), "value")).toBe("distinct");
+    const canonical = {
+      path: [],
+      targetFieldId: "fld_price",
+      aggregation: "distinct",
+      condition: { ...legacy.condition!, distinct: false },
+    };
+    // 进入编辑即发出的预览草稿与提交都保存 canonical 形状。
+    expect(wrapper.emitted("draftChange")![0]).toEqual([canonical]);
+    await commit(wrapper);
+    expect(wrapper.emitted("commit")).toEqual([[canonical]]);
+  });
+
+  it("计数适用于全部类型；路径模式渲染权威样例预览与空值规则提示", async () => {
+    const wrapper = mountEditor(pathValue, { previewReady: true, previewValue: 40 });
+    await openEditor(wrapper);
+    await setSelect(wrapper, "lookup-aggregation", "countNonEmpty");
+    expect(lastDraft(wrapper)).toEqual({
+      path: [{ relationFieldId: "fld_customer" }],
+      targetFieldId: "fld_name",
+      aggregation: "countNonEmpty",
+    });
+    expect(wrapper.get('[data-testid="lookup-aggregation-hint"]').text())
+      .toContain("空值与空串不计入");
+    // 路径模式同样渲染样例区：汇总结果是数字，来自权威 preview props。
+    expect(wrapper.get('[data-testid="lookup-preview-value"]').text()).toContain("40");
+    expect(wrapper.get('[data-testid="lookup-preview-value"]').text()).toContain("样例汇总结果");
+  });
+
+  it("保存的聚合在重新打开编辑器时保持并可再次提交", async () => {
+    const saved: LookupValue = {
+      path: [{ relationFieldId: "fld_customer" }],
+      targetFieldId: "fld_balance",
+      aggregation: "average",
+    };
+    const wrapper = mountEditor(saved);
+    expect(wrapper.text()).toContain("AVERAGE");
+    await openEditor(wrapper);
+    expect(componentProp(findSelect(wrapper, "lookup-aggregation"), "value")).toBe("average");
+    await commit(wrapper);
+    expect(wrapper.emitted("commit")).toEqual([[saved]]);
+  });
+
+  it("已保存的数值聚合与当前目标类型不匹配时阻止确认", async () => {
+    const drift: LookupValue = {
+      path: [{ relationFieldId: "fld_customer" }],
+      // 目标已变为文本，保存的 sum 不再适用；不得静默接受或提交。
+      targetFieldId: "fld_name",
+      aggregation: "sum",
+    };
+    const wrapper = mountEditor(drift);
+    await openEditor(wrapper);
+    expect(commitDisabled(wrapper)).toBe(true);
+    await setSelect(wrapper, "lookup-target-field", "fld_balance");
+    expect(commitDisabled(wrapper)).toBe(false);
+    await commit(wrapper);
+    expect(wrapper.emitted("commit")![0]).toEqual([{
+      path: [{ relationFieldId: "fld_customer" }],
+      targetFieldId: "fld_balance",
+      aggregation: "sum",
+    }]);
   });
 });

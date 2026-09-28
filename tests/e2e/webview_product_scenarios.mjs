@@ -3734,7 +3734,7 @@ async function scenario26(page, recorder, _network, runtime) {
     await selectVisibleNOption(page, "lookup-rule-operand-kind-1", "类型化常量");
     await selectVisibleNOption(page, "lookup-rule-constant-bool-1", "真（true）");
     await selectVisibleNOption(page, "lookup-condition-match", "满足全部（ALL）");
-    await page.getByTestId("lookup-condition-distinct").click();
+    await selectVisibleNOption(page, "lookup-aggregation", "去重");
   };
 
   // 取消必须回到保存的定义：创建中途取消后摘要回到路径模式。
@@ -3791,7 +3791,8 @@ async function scenario26(page, recorder, _network, runtime) {
       && conditionDef?.source?.fieldRef === sourceTitle.fieldId
       && conditionDef?.condition?.sourceTableId === sourceTableId
       && conditionDef?.condition?.match === "all"
-      && conditionDef?.condition?.distinct === true
+      && conditionDef?.condition?.distinct === false
+      && conditionDef?.aggregation === "distinct"
       && conditionDef?.condition?.rules?.length === 2
       && conditionDef.condition.rules[0]?.sourceFieldId === sourceCode.fieldId
       && conditionDef.condition.rules[0]?.operator === "eq"
@@ -3917,7 +3918,7 @@ async function scenario26(page, recorder, _network, runtime) {
   await page.getByTestId("lookup-field-editor").screenshot({
     path: path.join(runtime.evidenceDir, "26-conditional-lookup-editor.png"),
   });
-  await page.getByTestId("lookup-condition-distinct").click();
+  await selectVisibleNOption(page, "lookup-aggregation", "原值");
   await page.getByTestId("lookup-editor-cancel").click();
   await closeFieldSettingsDrawer(page);
   const afterCancelList = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
@@ -3927,6 +3928,87 @@ async function scenario26(page, recorder, _network, runtime) {
   recorder.check("取消编辑不改变已保存条件定义",
     canonicalJsonText(afterCancelDef) === canonicalJsonText(conditionDef),
     { distinct: afterCancelDef?.condition?.distinct });
+
+  const amount = await createV2Field(page, sourceTableId, "amount", "number");
+  const sourceBeforeAggregation = (await readRows(sourceTableId)).find(row => row.id === "condsrc00000003");
+  const aggregationSeed = await applyProductMutation(page, sourceTableId, [
+    { kind: "update", recordId: "condsrc00000003", values: { [amount.physicalName]: 10 },
+      expectedDigest: sourceBeforeAggregation.__vibetableDigest },
+    ...[20, 0, null, 10].map((value, index) => ({
+      kind: "insert", recordId: `aggrsrc0000000${index}`,
+      values: { [sourceCode.physicalName]: "SKU-8", [sourceEnabled.physicalName]: true,
+        [amount.physicalName]: value },
+    })),
+  ], "aggregation-source-seed");
+  if (aggregationSeed.payload?.status !== "applied") throw new Error(JSON.stringify(aggregationSeed));
+  await selectTable(page, "Lookup 条件当前");
+  await openFieldSettingsFromHeader(page, lookupFieldKey);
+  await page.getByTestId("lookup-editor-entry").click();
+  await selectVisibleNOption(page, "lookup-target-field", "amount");
+  for (const [label, expected] of [
+    ["命中记录数", "5"], ["非空值数", "4"], ["去重非空值数", "3"],
+    ["AVERAGE 平均值", "10"], ["MIN 最小值", "0"], ["MAX 最大值", "20"], ["SUM 求和", "40"],
+  ]) {
+    await selectVisibleNOption(page, "lookup-aggregation", label);
+    await page.getByTestId("lookup-preview-value").locator("code").filter({ hasText: new RegExp(`^${expected}$`) })
+      .waitFor({ timeout: 30_000 });
+    recorder.check(`完整集合 ${label} 预览为 ${expected}`, true);
+  }
+  await page.getByTestId("lookup-field-editor").screenshot({
+    path: path.join(runtime.evidenceDir, "26-lookup-aggregation-editor.png"),
+  });
+  await page.getByTestId("lookup-editor-commit").click();
+  await page.getByTestId("field-plan-button").click();
+  await page.getByTestId("field-change-plan").waitFor({ timeout: 30_000 });
+  await page.getByTestId("field-apply-button").click();
+  await page.getByTestId("field-change-plan").waitFor({ state: "hidden", timeout: 30_000 });
+  await closeFieldSettingsDrawer(page);
+  await chooseToolbarMore(page, "refresh");
+  await waitForLookupCellText(page, lookupFieldKey, "40");
+  const savedAggregation = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
+  const sumDefinition = savedAggregation.payload.definitions.find(item => item.fieldKey === lookupFieldKey);
+  recorder.check("保存汇总保持数字类型与规范 aggregation", sumDefinition.aggregation === "sum"
+    && sumDefinition.outputType === "decimal" && sumDefinition.condition.distinct === false, { sumDefinition });
+  await openFieldSettingsFromHeader(page, lookupFieldKey);
+  await page.getByTestId("lookup-editor-entry").click();
+  await page.getByTestId("lookup-preview-value").locator("code").filter({ hasText: /^40$/ })
+    .waitFor({ timeout: 30_000 });
+  recorder.check("重开编辑器保留 SUM 与权威预览", (await page.getByTestId("lookup-aggregation").innerText()).includes("SUM"));
+  await page.getByTestId("lookup-editor-cancel").click();
+  await closeFieldSettingsDrawer(page);
+
+  const downstream = await createV2Field(page, currentTableId, "汇总翻倍", "formula", draft => {
+    draft.formula = { language: "cel-v1", source: `${lookupFieldKey} * 2.0` };
+    return draft;
+  });
+  const deadline = Date.now() + 30_000;
+  let aggregateRows;
+  do {
+    aggregateRows = await rawBridgeRequest(page, "query.page", { tableId: currentTableId,
+      query: { filters: [{ field: lookupFieldKey, operator: "gte", value: 40 }],
+        sorts: [{ field: lookupFieldKey, direction: "desc" }], offset: 0, limit: 10 } });
+    if (aggregateRows.payload?.rows?.[0]?.[downstream.physicalName] === 80) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  recorder.check("数值汇总可参与数字筛选排序与下游公式", aggregateRows.payload?.rows?.length === 1
+    && aggregateRows.payload.rows[0][lookupFieldKey] === 40
+    && aggregateRows.payload.rows[0][downstream.physicalName] === 80, { aggregateRows });
+  await chooseToolbarMore(page, "refresh");
+  await waitForLookupCellText(page, lookupFieldKey, "40");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "26-lookup-aggregation-grid.png"), fullPage: true });
+  await chooseToolbarMore(page, "export-csv");
+  await page.getByTestId("export-lookup-panel").waitFor({ timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  let exportedRows = [];
+  const exportDeadline = Date.now() + 60_000;
+  do {
+    try { exportedRows = parseCsv(await fs.readFile(path.join(runtime.controlsDir, "export-result.csv"), "utf8")); }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    if (exportedRows[0]?.includes(lookupFieldKey) && exportedRows.length > 1) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (Date.now() < exportDeadline);
+  recorder.check("导出与网格及下游公式使用相同聚合值", exportedRows[1]?.[exportedRows[0]?.indexOf(lookupFieldKey)] === "40"
+    && exportedRows[1]?.[exportedRows[0]?.indexOf(downstream.physicalName)] === "80", { exportedRows });
 }
 
 async function selectTable(page, displayName) {

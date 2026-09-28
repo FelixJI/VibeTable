@@ -20,6 +20,7 @@ import {
 } from "naive-ui";
 import { ArchiveRestore, Plus, RefreshCw, Trash2 } from "@lucide/vue";
 import type {
+  ColumnSchema,
   FieldDefinitionV2,
   FieldDraftV2,
   JsonValueV2,
@@ -154,12 +155,34 @@ const lookupRelationOptions = computed(() => store.lookupSchemas.map(schema => s
   })));
 const lookupTargetFieldOptions = computed(() => {
   const schema = store.lookupConditionSchema ?? store.lookupSchemas.at(-1);
+  const conditionTypes = new Map(store.lookupConditionFields.map(
+    field => [field.identity.fieldId, field.logicalType] as const,
+  ));
   return (schema?.columns ?? [])
     .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation"
       && (!store.lookupConditionSchema || store.lookupConditionFields.some(field =>
         field.identity.fieldId === column.fieldId && !["formula", "lookup", "relation"].includes(field.logicalType))))
-    .map(column => ({ label: column.title, value: column.fieldId! }));
+    .map(column => ({
+      label: column.title,
+      value: column.fieldId!,
+      // 汇总适用性需要精确类型：条件模式取来源表 FieldDefinitionV2 的 logicalType，
+      // 路径模式由真实 schema 列 dataType 派生（数值公式列已呈现为 number）。
+      logicalType: store.lookupConditionSchema
+        ? conditionTypes.get(column.fieldId!) ?? ""
+        : columnLogicalType(column.dataType),
+    }));
 });
+
+/** 真实 schema 列 dataType → 精确逻辑类型；仅 number 驱动数值聚合可用性。 */
+function columnLogicalType(dataType: ColumnSchema["dataType"]): string {
+  if (dataType === "integer" || dataType === "decimal") return "number";
+  if (dataType === "boolean") return "bool";
+  if (dataType === "date") return "date";
+  if (dataType === "datetime") return "dateTime";
+  if (dataType === "time") return "time";
+  if (dataType === "json") return "json";
+  return "text";
+}
 const lookupSourceTables = computed(() => store.relationTables.map(item => ({ label: item.displayName, value: item.tableId })));
 function lookupConditionOptions(fields: readonly FieldDefinitionV2[], schema: typeof store.lookupConditionSchema): LookupConditionFieldOption[] {
   return fields.filter(field => field.lifecycle.state === "active").map(field => ({
@@ -866,7 +889,7 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="section-title">
                     <div>
                       <strong>查找引用</strong>
-                      <small>按条件筛选来源表，或沿最多 {{ store.lookupMaxDepth }} 跳关系取值</small>
+                      <small>按条件筛选来源表或沿最多 {{ store.lookupMaxDepth }} 跳关系取值，可选原值/去重/计数/数值汇总</small>
                     </div>
                   </div>
                   <LookupFieldEditor

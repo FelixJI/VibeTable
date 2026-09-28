@@ -2,6 +2,12 @@
 
 本页记录真实发布包在 Windows WPF/WebView2 + 按需 Python Worker + PocketBase 进程栈上的可比较基线。它不是浏览器 mock，也不把 20–30 秒的测试等待上限当作性能目标。
 
+## 当前 CI 分片
+
+`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本与 S34/S35 数据互操作；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。两 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复覆盖。
+
+调整依据为 [PR400 的 CI 诊断记录](https://github.com/FelixJI/VibeTable/pull/400)：原标准分片完成 32 场已用约 1779 秒，在 S36 完成前触及总预算；S23/S24 合计约 356 秒。以下已发布样本的分片数量与路径保留其原时点事实。
+
 ## 当前产品 E2E 证据
 
 - source SHA：`GitHub/main@0bdbc1b29ba237dd17f5d6f85be90bd99a2d1268`

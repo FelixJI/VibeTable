@@ -22,6 +22,7 @@ type Descriptor struct {
 
 type LookupDescriptor struct {
 	Condition         *v2.LookupCondition    `json:"condition,omitempty"`
+	Aggregation       string                 `json:"aggregation,omitempty"`
 	LookupID          string                 `json:"lookupId"`
 	TableID           string                 `json:"tableId"`
 	FieldID           string                 `json:"fieldId"`

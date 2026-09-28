@@ -447,6 +447,14 @@ func (catalog *Catalog) validateLookupReferences(
 				Message: "lookup target field was not found",
 			}
 		}
+		if v2.LookupAggregationRequiresNumericSource(v2.ResolvedLookupAggregation(*field.Lookup)) &&
+			!v2.LookupFieldTargetNumeric(*targetField) {
+			return &schemaerror.ProductError{
+				Code:    "schema.lookup.aggregation_target_not_numeric",
+				Path:    prefix + ".targetFieldId",
+				Message: "numeric lookup aggregation requires a number target field",
+			}
+		}
 	}
 	return nil
 }
@@ -993,6 +1001,14 @@ func (catalog *Catalog) replaceLookupMetadata(
 			"displayName":     field.DisplayName,
 			"outputType":      v2.LogicalJSON,
 		}
+		if field.Lookup.Aggregation != "" {
+			// Aggregation participates in the stored lookup identity so changing
+			// it bumps the revision and re-materializes dependent cells.
+			metadata["aggregation"] = field.Lookup.Aggregation
+			if v2.LookupAggregationNumeric(field.Lookup.Aggregation) {
+				metadata["outputType"] = v2.LogicalNumber
+			}
+		}
 		if field.Lookup.Condition != nil {
 			metadata["condition"] = field.Lookup.Condition
 		}
@@ -1018,7 +1034,11 @@ func (catalog *Catalog) replaceLookupMetadata(
 		record.Set("relation_field_id", relationFieldID)
 		record.Set("target_field_id", field.Lookup.TargetFieldID)
 		record.Set("path_json", types.JSONRaw(pathRaw))
-		record.Set("output_type", string(v2.LogicalJSON))
+		outputType := v2.LogicalJSON
+		if field.Lookup.Aggregation != "" && v2.LookupAggregationNumeric(field.Lookup.Aggregation) {
+			outputType = v2.LogicalNumber
+		}
+		record.Set("output_type", string(outputType))
 		record.Set("revision", revision)
 		if err := app.Save(record); err != nil {
 			return storageError(err)

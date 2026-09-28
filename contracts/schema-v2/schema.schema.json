@@ -323,6 +323,9 @@
         "source": {"type": "string", "minLength": 1}
       }
     },
+    "LookupAggregation": {
+      "enum": ["values", "distinct", "countRecords", "countNonEmpty", "countDistinct", "sum", "average", "min", "max"]
+    },
     "LookupSpec": {
       "type": "object",
       "additionalProperties": false,
@@ -334,12 +337,16 @@
           "items": {"$ref": "#/$defs/LookupPathStep"}
         },
         "targetFieldId": {"type": "string", "minLength": 1},
-        "condition": {"$ref": "#/$defs/LookupCondition"}
+        "condition": {"$ref": "#/$defs/LookupCondition"},
+        "aggregation": {"$ref": "#/$defs/LookupAggregation"}
       },
       "allOf": [{
         "if": {"required": ["condition"]},
         "then": {"properties": {"path": {"maxItems": 0}}},
         "else": {"properties": {"path": {"minItems": 1}}}
+      }, {
+        "if": {"required": ["aggregation", "condition"]},
+        "then": {"properties": {"condition": {"properties": {"distinct": {"const": false}}}}}
       }]
     },
     "LookupCondition": {

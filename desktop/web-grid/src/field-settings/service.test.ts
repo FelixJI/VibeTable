@@ -623,6 +623,32 @@ describe("field settings service", () => {
     expect(JSON.stringify(store.lookupSchemas)).not.toContain("tbl_regions.fld_region_name");
   });
 
+  it("previews path aggregations with the terminal source revision and cancels stale results", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    const lookup = { path: [{ relationFieldId: "fld_customer" }], targetFieldId: "fld_balance", aggregation: "sum" as const };
+    store.patchDraft({ logicalType: "lookup", lookup });
+    store.lookupSchemas = [relationSchema("tbl_opaque").schema, { ...relationSchema("tbl_customers").schema, schemaRevision: "schema_9" }];
+    request.mockResolvedValueOnce({ cell: { value: 40 } });
+    service.previewLookupDraft(lookup);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(request).toHaveBeenLastCalledWith("lookup.draft.preview", {
+      tableId: "tbl_opaque", schemaRevision: "schema_7", sourceSchemaRevision: "schema_9", lookup,
+    });
+    expect(store.lookupPreview.value).toBe(40);
+    let finish!: (value: unknown) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    service.previewLookupDraft({ ...lookup, aggregation: "average" });
+    await vi.advanceTimersByTimeAsync(250);
+    service.previewLookupDraft(null);
+    finish({ cell: { value: 10 } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.lookupPreview.ready).toBe(false);
+    service.dispose();
+  });
+
   it("debounces condition previews and invalidates them on edits, cancellation, and workspace changes", async () => {
     request.mockResolvedValueOnce(describeResult(true));
     const service = useFieldSettingsService();
@@ -651,7 +677,11 @@ describe("field settings service", () => {
     resolveFirst({ cell: { value: ["stale"] } });
     await vi.advanceTimersByTimeAsync(250);
     expect(store.lookupPreview.value).toEqual([false, 0, ""]);
+    service.previewLookupDraft(lookup);
+    const requestsBeforeCancellation = request.mock.calls.length;
     service.previewLookupDraft(null);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(request).toHaveBeenCalledTimes(requestsBeforeCancellation);
     expect(store.lookupPreview.ready).toBe(false);
     let resolveLate!: (value: unknown) => void;
     request.mockImplementationOnce(() => new Promise(resolve => { resolveLate = resolve; }));
