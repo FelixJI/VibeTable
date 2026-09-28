@@ -334,7 +334,8 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
         candidate.querySelector(`.tabulator-cell[tabulator-field="${probe.markerField}"]`)
           ?.textContent === probe.marker);
       const cell = row?.querySelector(`.tabulator-cell[tabulator-field="${probe.field}"]`);
-      return (cell?.textContent ?? "").trim() === probe.expected;
+      const value = cell?.querySelector(".vt-lookup-text") ?? cell;
+      return (value?.textContent ?? "").trim() === probe.expected;
     }, {
       markerField: ledger.field.physicalName, marker, field, expected,
     }, { timeout: 30_000 });
