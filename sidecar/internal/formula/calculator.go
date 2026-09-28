@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -17,6 +18,15 @@ import (
 )
 
 const relationMaterializationBytes = 32 << 20
+
+// relationRowRevisionColumn mirrors relatedcomputation.RowRevisionField; the
+// formula package cannot import it because relatedcomputation already
+// imports this package.
+const relationRowRevisionColumn = "__vt_row_revision"
+
+// relationAggregateBatchSize caps the resident page of target records while
+// streaming one computed aggregate; it matches the SQL aggregate chunking.
+const relationAggregateBatchSize = 400
 
 // Calculator implements mutation.FormulaCalculator without creating a package
 // dependency from the formula runtime back to the mutation kernel.
@@ -43,6 +53,7 @@ func (calculator *Calculator) Calculate(
 	}
 	row := make(map[string]any, len(definition.Snapshot.Fields))
 	aggregateTargets, countRelations := relationAggregateRequirements(plan)
+	referenceTargets := relationFieldReferences(plan)
 	for _, field := range definition.Snapshot.Fields {
 		value := record.GetRaw(field.Identity.PhysicalName)
 		if field.LogicalType == v2.LogicalRelation && field.Relation != nil {
@@ -55,7 +66,9 @@ func (calculator *Calculator) Calculate(
 					ctx, app, field, recordIDs, targets,
 				)
 			} else {
-				value, err = calculator.resolveRelation(ctx, app, field, recordIDs)
+				value, err = calculator.resolveRelation(
+					ctx, app, field, recordIDs, referenceTargets[field.Identity.PhysicalName],
+				)
 			}
 			if err != nil {
 				return nil, err
@@ -75,6 +88,7 @@ func (calculator *Calculator) resolveRelation(
 	app core.App,
 	field v2.FieldDefinition,
 	recordIDs []string,
+	referenced map[string]bool,
 ) (any, error) {
 	target, collection, targetErr := relationTarget(ctx, app, field)
 	if targetErr != nil {
@@ -99,7 +113,13 @@ func (calculator *Calculator) resolveRelation(
 		}
 		value := map[string]any{"id": targetRecord.Id}
 		for _, targetField := range target.Snapshot.Fields {
-			targetValue := targetRecord.GetRaw(targetField.Identity.PhysicalName)
+			targetValue, readErr := computedSourceValue(
+				ctx, app, target, targetField, targetRecord,
+				referenced[targetField.Identity.PhysicalName],
+			)
+			if readErr != nil {
+				return nil, readErr
+			}
 			value[targetField.Identity.PhysicalName] = targetValue
 		}
 		encoded, encodeErr := json.Marshal(value)
@@ -188,9 +208,20 @@ func (calculator *Calculator) resolveRelationAggregates(
 				map[string]any{"fieldId": field.Identity.FieldID, "target": targetName},
 			)
 		}
-		stats, aggregateErr := aggregateRelationField(
-			ctx, app, collection.Name, targetField, recordIDs,
-		)
+		var stats map[string]any
+		var aggregateErr error
+		if IsComputedSource(targetField) {
+			// Stored computed cells are version envelopes; a fresh scalar must
+			// not be derived by SQL-casting the envelope JSON. Without the batch
+			// reader this fails closed inside computedSourceValue.
+			stats, aggregateErr = aggregateComputedRelationField(
+				ctx, app, target, collection, targetField, recordIDs,
+			)
+		} else {
+			stats, aggregateErr = aggregateRelationField(
+				ctx, app, collection.Name, targetField, recordIDs,
+			)
+		}
 		if aggregateErr != nil {
 			return nil, aggregateErr
 		}
@@ -275,6 +306,142 @@ func aggregateRelationField(
 	}, nil
 }
 
+func aggregateComputedRelationField(
+	ctx context.Context,
+	app core.App,
+	target schemaexecution.Table,
+	collection *core.Collection,
+	field v2.FieldDefinition,
+	recordIDs []string,
+) (map[string]any, error) {
+	numeric := valueTypeForField(field).LogicalType == v2.LogicalNumber
+	matched := 0
+	count := int64(0)
+	var sum float64
+	var minimum, maximum any
+	remainingBytes := relationMaterializationBytes
+	for start := 0; start < len(recordIDs); start += relationAggregateBatchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		end := min(start+relationAggregateBatchSize, len(recordIDs))
+		ids := make([]any, 0, end-start)
+		for _, recordID := range recordIDs[start:end] {
+			ids = append(ids, recordID)
+		}
+		var records []*core.Record
+		// Only the columns the freshness reader needs are hydrated per page.
+		queryErr := app.RecordQuery(collection).
+			Select(
+				quoteSQLiteIdentifier("id"),
+				quoteSQLiteIdentifier(relationRowRevisionColumn),
+				quoteSQLiteIdentifier(field.Identity.PhysicalName),
+			).
+			WithContext(ctx).
+			AndWhere(dbx.In("id", ids...)).All(&records)
+		if queryErr != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, queryErr
+		}
+		// Only one bounded page of target records is resident at a time; each
+		// page is dropped before the next query, so aggregation memory does
+		// not grow with the relation size.
+		loaded := make(map[string]*core.Record, len(records))
+		for _, record := range records {
+			loaded[record.Id] = record
+		}
+		for _, recordID := range recordIDs[start:end] {
+			targetRecord := loaded[recordID]
+			if targetRecord == nil {
+				continue
+			}
+			matched++
+			value, readErr := computedSourceValue(ctx, app, target, field, targetRecord, true)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if value == nil {
+				continue
+			}
+			encoded, encodeErr := json.Marshal(value)
+			if encodeErr != nil {
+				return nil, formulaError(
+					"formula.type", "relation aggregate value cannot be encoded",
+					map[string]any{"fieldId": field.Identity.FieldID},
+				)
+			}
+			remainingBytes -= max(len(encoded), 1)
+			if remainingBytes < 0 {
+				return nil, formulaError(
+					"formula.resource_limit", "relation exceeds the formula byte budget",
+					map[string]any{
+						"fieldId":    field.Identity.FieldID,
+						"limitBytes": relationMaterializationBytes,
+					},
+				)
+			}
+			count++
+			if !numeric {
+				continue
+			}
+			real, realErr := computedAggregateReal(field, value)
+			if realErr != nil {
+				return nil, realErr
+			}
+			sum += real
+			if minimum == nil || real < minimum.(float64) {
+				minimum = real
+			}
+			if maximum == nil || real > maximum.(float64) {
+				maximum = real
+			}
+		}
+	}
+	if matched != len(recordIDs) {
+		return nil, formulaError(
+			"formula.dependency", "relation references missing target records",
+			map[string]any{"expected": len(recordIDs), "matched": matched},
+		)
+	}
+	return map[string]any{
+		"numeric": numeric,
+		"count":   count,
+		"sum":     sum,
+		"min":     minimum,
+		"max":     maximum,
+	}, nil
+}
+
+// computedAggregateReal accepts only the finite numeric scalars a stored
+// computed number cell can carry; anything else fails the aggregate loudly.
+// Lookalike text or JSON shapes never silently aggregate as zero.
+func computedAggregateReal(field v2.FieldDefinition, value any) (float64, *Error) {
+	failure := func(code, message string) *Error {
+		return formulaError(code, message, map[string]any{"fieldId": field.Identity.FieldID})
+	}
+	switch typed := value.(type) {
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0, failure("formula.overflow", "computed aggregate source is not finite")
+		}
+		return typed, nil
+	case int:
+		return float64(typed), nil
+	case int64:
+		return float64(typed), nil
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+			return 0, failure("formula.overflow", "computed aggregate source is not finite")
+		}
+		return number, nil
+	default:
+		return 0, failure("formula.type", "computed aggregate source is not a number")
+	}
+}
+
 func countRelationRecords(
 	ctx context.Context,
 	app core.App,
@@ -307,6 +474,23 @@ func relationIDParams(ids []string) ([]string, dbx.Params) {
 		placeholders[index] = "{:" + name + "}"
 	}
 	return placeholders, params
+}
+
+func relationFieldReferences(plan *Plan) map[string]map[string]bool {
+	references := map[string]map[string]bool{}
+	for _, compiled := range plan.Formulas {
+		for _, path := range compiled.ReferencePaths {
+			parts := strings.Split(path, ".")
+			if len(parts) != 2 {
+				continue
+			}
+			if references[parts[0]] == nil {
+				references[parts[0]] = map[string]bool{}
+			}
+			references[parts[0]][parts[1]] = true
+		}
+	}
+	return references
 }
 
 func relationAggregateRequirements(plan *Plan) (map[string][]string, map[string]struct{}) {

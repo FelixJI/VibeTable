@@ -136,7 +136,12 @@ func (plan *Plan) Evaluate(
 	row map[string]any,
 	changedFieldIDs []string,
 ) (map[string]any, *Error) {
-	activation := make(map[string]any, len(row))
+	if ctx.Err() != nil {
+		return nil, formulaError("formula.resource_limit", "formula evaluation was cancelled", nil)
+	}
+	ctx = EnsureEvaluationTime(ctx)
+	activation := make(map[string]any, len(row)+1)
+	activation[clockActivationName] = EvaluationTime(ctx)
 	for key, value := range row {
 		field, declared := plan.fields[key]
 		if !declared {
@@ -160,6 +165,9 @@ func (plan *Plan) Evaluate(
 	impacted := plan.impacted(changedFieldIDs)
 	outputs := make(map[string]any)
 	for _, formula := range plan.Formulas {
+		if !EvaluationIncludes(ctx, formula.FieldID) {
+			continue
+		}
 		if impacted != nil {
 			if _, ok := impacted[formula.FieldID]; !ok {
 				continue
@@ -169,7 +177,13 @@ func (plan *Plan) Evaluate(
 		if err != nil {
 			return nil, err
 		}
-		activation[formula.PhysicalName] = value
+		// Outputs are wire values (timestamps are RFC3339 strings); subsequent
+		// formulas need the declared CEL value type again.
+		input, inputErr := normalizeInput(plan.fields[formula.PhysicalName], value, plan.limits)
+		if inputErr != nil {
+			return nil, inputErr
+		}
+		activation[formula.PhysicalName] = input
 		outputs[formula.PhysicalName] = value
 	}
 	return outputs, nil

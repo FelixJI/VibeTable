@@ -1206,7 +1206,33 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             table,
             schemaRevision,
             dataRevision,
-            ToDictionary(query));
+            ToDictionary(query),
+            ReadOptionalClockPeriod(value));
+    }
+
+    /// <summary>
+    /// Volatile (formula-clock) views carry a readable <c>clockPeriod</c> that
+    /// fixes every row of the page to one instant. Ordinary snapshots omit the
+    /// key; absent/null/empty values stay <c>null</c> so the closed wire form
+    /// never regresses for older snapshots.
+    /// </summary>
+    private static string? ReadOptionalClockPeriod(JsonElement value)
+    {
+        if (!value.TryGetProperty("clockPeriod", out JsonElement clock))
+        {
+            return null;
+        }
+        if (clock.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+        if (clock.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException(
+                "PocketBase returned an invalid query snapshot.");
+        }
+        string? period = clock.GetString();
+        return string.IsNullOrEmpty(period) ? null : period;
     }
 
     private static SnapshotValidation ReadSnapshotValidation(JsonElement value)

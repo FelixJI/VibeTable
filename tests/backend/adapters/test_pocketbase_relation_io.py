@@ -19,14 +19,25 @@ from backend.contracts.data_profile import CollectionProfile
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
-def _page(rows: list[dict[str, Any]]) -> QueryPageResult:
+def _page(rows: list[dict[str, Any]], *, clock_period: str | None = None) -> QueryPageResult:
+    snapshot: dict[str, Any] = {
+        "snapshotId": "0" * 32,
+        "digest": "a" * 64,
+        "databaseId": "local",
+        "table": "orders",
+        "schemaRevision": "schema-1",
+        "dataRevision": 7,
+        "normalizedQuery": {"offset": 0, "limit": 100},
+    }
+    if clock_period is not None:
+        snapshot["clockPeriod"] = clock_period
     return QueryPageResult(
         rows=rows,
         offset=0,
         limit=2,
         filtered_rows=len(rows),
         total_rows=len(rows),
-        snapshot={},
+        snapshot=snapshot,
     )
 
 
@@ -241,6 +252,7 @@ async def test_lookup_export_uses_stable_id_and_product_physical_field() -> None
     ]
     assert page.rows[0]["contract_price"] == "12.50"
     assert page.lookup_revision == "schema-1"
+    assert page.snapshot == _page([]).snapshot
     assert client.lookup_calls[0] == {
         "table_id": "orders",
         "schema_revision": "schema-1",

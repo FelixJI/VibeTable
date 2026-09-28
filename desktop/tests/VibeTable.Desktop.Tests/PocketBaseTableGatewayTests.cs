@@ -755,6 +755,60 @@ public sealed class PocketBaseTableGatewayTests
         Assert.AreEqual("cursor changed", mapped.Message);
     }
 
+    [TestMethod]
+    public async Task VolatileCursorSnapshotCarriesClockPeriodThroughValidation()
+    {
+        var transport = new ProductTransport();
+        transport.Respond("query.cursorFetch", CursorWindow("row-1", null, false)
+            .Replace(
+                "\"normalizedQuery\":",
+                "\"clockPeriod\":\"2026-12-01T00:00:00Z\",\"normalizedQuery\":",
+                StringComparison.Ordinal));
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond("query.validateSnapshot", """
+            {"valid":true,"currentDataRevision":1,"currentSchemaRevision":"schema_0001"}
+            """);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client));
+
+        TablePage page = await gateway.FetchTableCursorAsync(
+            "opaque", CancellationToken.None);
+
+        Assert.AreEqual("2026-12-01T00:00:00Z", page.QuerySnapshot!.OptionalClockPeriod);
+        SnapshotValidation validation = await gateway.ValidateSnapshotAsync(
+            page.QuerySnapshot, null, CancellationToken.None);
+
+        Assert.IsTrue(validation.Valid);
+        StringAssert.Contains(
+            transport.Serialized,
+            "\"clockPeriod\":\"2026-12-01T00:00:00Z\"");
+    }
+
+    [TestMethod]
+    public async Task OrdinaryCursorSnapshotOmitsClockPeriodOnTheWire()
+    {
+        var transport = new ProductTransport();
+        transport.Respond("query.cursorFetch", CursorWindow("row-1", null, false));
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond("query.validateSnapshot", """
+            {"valid":true,"currentDataRevision":1,"currentSchemaRevision":"schema_0001"}
+            """);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client));
+
+        TablePage page = await gateway.FetchTableCursorAsync(
+            "opaque", CancellationToken.None);
+
+        Assert.IsNull(page.QuerySnapshot!.OptionalClockPeriod);
+        await gateway.ValidateSnapshotAsync(page.QuerySnapshot, null, CancellationToken.None);
+
+        Assert.IsFalse(transport.Serialized.Contains(
+            "clockPeriod",
+            StringComparison.Ordinal));
+    }
+
     private static string CursorWindow(string rowId, string? nextCursor, bool hasMore)
         => JsonSerializer.Serialize(new
         {

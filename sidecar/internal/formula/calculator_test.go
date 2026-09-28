@@ -2,6 +2,7 @@ package formula
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -100,5 +101,53 @@ func TestCalculatorEvaluatesSchemaV2IntegerFormula(t *testing.T) {
 	}
 	if got["f_doubled"] != int64(42) {
 		t.Fatalf("calculated values = %#v", got)
+	}
+}
+
+func TestComputedSourceValueFailsClosedWithoutBatchReader(t *testing.T) {
+	target := schemaexecution.Table{Snapshot: v2.SchemaSnapshot{TableID: "tbl_target"}}
+	computed := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "fld_clock", PhysicalName: "f_clock"},
+		LogicalType: v2.LogicalFormula,
+		Formula:     &v2.FormulaSpec{Source: "NOW()", Language: "cel-v1"},
+	}
+	plain := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "fld_name", PhysicalName: "f_name"},
+		LogicalType: v2.LogicalText,
+	}
+	record := core.NewRecord(core.NewBaseCollection("target"))
+	record.Set("f_clock", map[string]any{"state": "ready"})
+	record.Set("f_name", "Ada")
+
+	// Ordinary sources keep their stored value with or without a reader.
+	for _, referenced := range []bool{true, false} {
+		value, err := computedSourceValue(context.Background(), nil, target, plain, record, referenced)
+		if err != nil || value != "Ada" {
+			t.Fatalf("plain source (%t) = %#v, %v", referenced, value, err)
+		}
+	}
+	// An unreferenced computed source stays in its stored form: it cannot
+	// block a relation the plan never reads.
+	stored, err := computedSourceValue(context.Background(), nil, target, computed, record, false)
+	if err != nil || stored == nil {
+		t.Fatalf("unreferenced computed source = %#v, %v", stored, err)
+	}
+	// A referenced computed source without the batch reader is an explicit
+	// rejection, never a silent envelope fallback.
+	_, err = computedSourceValue(context.Background(), nil, target, computed, record, true)
+	var formulaErr *Error
+	if !errors.As(err, &formulaErr) || formulaErr.Code != "formula.dependency" {
+		t.Fatalf("readerless computed source error = %#v", err)
+	}
+	// With the reader injected the value resolves through it.
+	ctx := WithComputedSourceReader(
+		context.Background(),
+		func(context.Context, core.App, string, []v2.FieldDefinition, v2.FieldDefinition, *core.Record) (any, error) {
+			return "06:59", nil
+		},
+	)
+	value, err := computedSourceValue(ctx, nil, target, computed, record, true)
+	if err != nil || value != "06:59" {
+		t.Fatalf("reader-served computed source = %#v, %v", value, err)
 	}
 }

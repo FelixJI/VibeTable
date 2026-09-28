@@ -26,7 +26,7 @@
   {
     "id": "05-formula-lifecycle",
     "title": "常用公式界面、重算重开与迁移回滚",
-    "requirement": "通过正式公式编辑器创建金额、条件分类、Unicode 文本和错误提示列，预览、保存、修改基础值与关闭重开结果一致；空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。",
+    "requirement": "通过正式公式编辑器创建金额、条件分类、Unicode 文本、错误提示及日期增减→到期天数/状态→TEXT 链，TODAY/NOW 可预览保存；预览、网格、排序筛选、CSV 与关闭重开结果一致，断网可用；空表字段按冻结计划直接完成类型转换，不启动 shadow migration，并保持 fieldId 与公开 physicalName 不变；非空表启动真实 shadow migration，copying 阶段故障后回滚并保留旧字段身份、类型和值。",
     "capabilities": ["schema.v2", "formula.recalculation"]
   },
   {

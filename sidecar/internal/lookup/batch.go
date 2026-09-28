@@ -19,6 +19,7 @@ func (calculator *Calculator) CalculateCellsBatch(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	ctx = withComputedSourceReads(ctx)
 	groups := [][]v2.FieldDefinition{}
 	paths := map[string]int{}
 	for _, field := range definition.Snapshot.Fields {
@@ -286,7 +287,7 @@ func (cursor *lookupBatchCursor) advance(
 		}
 		node := traversalNode{definition: leaf.target, record: record}
 		for index, field := range cursor.fields {
-			projected, err := projectLookupNodes([]traversalNode{node}, field)
+			projected, err := projectLookupNodes(ctx, app, []traversalNode{node}, field)
 			if err != nil {
 				return schemaexecution.Table{}, nil, err
 			}

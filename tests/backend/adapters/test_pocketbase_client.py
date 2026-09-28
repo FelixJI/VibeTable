@@ -94,12 +94,14 @@ async def test_mutation_apply_sends_frozen_product_request_with_session_header()
 
 
 @pytest.mark.asyncio
-async def test_query_page_uses_query_port_and_preserves_json_values() -> None:
+@pytest.mark.parametrize("pending", [False, True])
+async def test_query_page_uses_query_port_and_preserves_json_values(pending: bool) -> None:
     rows = [{"id": "1", "payload": {"tags": ["a", "b"], "enabled": True}}]
     transport = FakeTransport(
         [
             {
                 "rows": rows,
+                "computedPending": pending,
                 "offset": 0,
                 "limit": 100,
                 "filteredRows": 1,
@@ -130,6 +132,7 @@ async def test_query_page_uses_query_port_and_preserves_json_values() -> None:
 
     assert page.rows == rows
     assert page.filtered_rows == 1
+    assert page.computed_pending is pending
     assert transport.requests[0]["path"] == "/api/vibetable/v1/query"
     assert transport.requests[0]["json_body"] == {
         "operation": "page",

@@ -1026,6 +1026,96 @@ describe("field settings service", () => {
     expect(store.formulaPreviewValue).toBeUndefined();
   });
 
+  it("declares the preview field integer-only when the draft validation infers onlyInt", async () => {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    const previewFields: FieldDefinitionV2[] = [];
+    let onlyInt: boolean | undefined = true;
+    request.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "formula.draft.validate") {
+        return Promise.resolve({
+          canonicalSource: "YEAR(f_due)",
+          resultType: "number",
+          onlyInt,
+          dependencies: ["fld_due"],
+          relationAggregatePaths: [],
+          authorDocument: { displaySource: "YEAR({到期})", documentRevision: 1, tokens: [] },
+        });
+      }
+      if (method === "formula.preview") {
+        previewFields.push((params as { field: FieldDefinitionV2 }).field);
+        return Promise.resolve({ values: { f_formula_preview: 2024 } });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque",
+      columns: [{
+        name: "f_due", title: "到期", fieldId: "fld_due", kind: "scalar",
+        dataType: "date", editable: true, nullable: false,
+      }],
+      rows: [{ rowKey: "r1", id: "r1", f_due: "2024-05-06T00:00:00Z" }],
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    await service.openCreate("tbl_opaque", "formula");
+
+    await service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "YEAR({到期})",
+      authorDocument: { displaySource: "YEAR({到期})", documentRevision: 1, tokens: [] },
+    });
+    await vi.waitFor(() => expect(store.formulaPreviewReady).toBe(true));
+    expect(store.formulaPreviewValue).toBe(2024);
+    expect(previewFields[0].storage.kind).toBe("computed");
+    // The fresh draft inference must override the recommended decimal storage.
+    expect(previewFields[0].storage.options.onlyInt).toBe(true);
+    expect(previewFields[0].formula?.source).toBe("YEAR(f_due)");
+
+    // An older host without onlyInt falls back to explicit decimal previews.
+    onlyInt = undefined;
+    await service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "MAX(YEAR({到期}), 2024.5)",
+      authorDocument: { displaySource: "MAX(YEAR({到期}), 2024.5)", documentRevision: 2, tokens: [] },
+    });
+    await vi.waitFor(() => expect(previewFields.length).toBe(2));
+    expect(previewFields[1].storage.options.onlyInt).toBe(false);
+  });
+
+  it("rejects formula draft validations with a non-boolean onlyInt flag", async () => {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    request.mockImplementation((method: string) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "formula.draft.validate") {
+        return Promise.resolve({
+          canonicalSource: "YEAR(f_due)",
+          resultType: "number",
+          onlyInt: "yes",
+          dependencies: ["fld_due"],
+          relationAggregatePaths: [],
+        });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openCreate("tbl_opaque", "formula");
+
+    await service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "YEAR({到期})",
+      authorDocument: { displaySource: "YEAR({到期})", documentRevision: 1, tokens: [] },
+    });
+
+    await vi.waitFor(() => expect(store.formulaValidationError).not.toBeNull());
+    expect(store.formulaValidation).toBeNull();
+    expect(store.formulaPreviewReady).toBe(false);
+  });
+
   it("drops validation results that no longer match the current schema or workspace", async () => {
     const described = { ...describeResult(false), capabilities: [formulaCapability()] };
     let resolveValidation!: (value: unknown) => void;

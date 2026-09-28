@@ -232,6 +232,7 @@ type ComputedDiagnostic struct {
 }
 
 type TableDescriptor struct {
+	ClockPeriod    string                     `json:"clockPeriod,omitempty"`
 	DatabaseID     string                     `json:"databaseId"`
 	TableID        string                     `json:"tableId"`
 	PhysicalName   string                     `json:"physicalName"`
@@ -256,14 +257,16 @@ type TableDescriptor struct {
 }
 
 type CompiledQuery struct {
-	SQL      string         `json:"sql"`
-	CountSQL string         `json:"countSql"`
-	TotalSQL string         `json:"totalSql"`
-	Params   map[string]any `json:"params"`
-	Fields   []string       `json:"fields"`
+	PendingSQL string         `json:"-"`
+	SQL        string         `json:"sql"`
+	CountSQL   string         `json:"countSql"`
+	TotalSQL   string         `json:"totalSql"`
+	Params     map[string]any `json:"params"`
+	Fields     []string       `json:"fields"`
 }
 
 type QuerySnapshot struct {
+	ClockPeriod     string     `json:"clockPeriod,omitempty"`
 	SnapshotID      string     `json:"snapshotId"`
 	Digest          string     `json:"digest"`
 	DatabaseID      string     `json:"databaseId"`
@@ -281,12 +284,13 @@ type SnapshotValidation struct {
 }
 
 type Page struct {
-	Rows         []map[string]any `json:"rows"`
-	Offset       int              `json:"offset"`
-	Limit        int              `json:"limit"`
-	FilteredRows int64            `json:"filteredRows"`
-	TotalRows    int64            `json:"totalRows"`
-	Snapshot     QuerySnapshot    `json:"querySnapshot"`
+	ComputedPending bool             `json:"computedPending,omitempty"`
+	Rows            []map[string]any `json:"rows"`
+	Offset          int              `json:"offset"`
+	Limit           int              `json:"limit"`
+	FilteredRows    int64            `json:"filteredRows"`
+	TotalRows       int64            `json:"totalRows"`
+	Snapshot        QuerySnapshot    `json:"querySnapshot"`
 }
 
 type CursorWindow struct {
