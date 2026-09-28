@@ -1,4 +1,4 @@
-package relatedcomputation
+package relatedcomputation_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
@@ -27,19 +28,19 @@ func TestSourceReaderUnwrapsFreshAndRejectsStaleCells(t *testing.T) {
 	})
 	t0 := time.Date(2024, 3, 10, 6, 59, 0, 0, time.UTC)
 	ctxAt := func(at time.Time) context.Context {
-		return WithClockCache(formula.WithEvaluationTime(context.Background(), at))
+		return relatedcomputation.WithClockCache(formula.WithEvaluationTime(context.Background(), at))
 	}
-	expectationAt := func(at time.Time) Expectation {
-		expectation, err := ExpectationFor(ctxAt(at), app, "tbl_clock", fields, "fld_minute", 5)
+	expectationAt := func(at time.Time) relatedcomputation.Expectation {
+		expectation, err := relatedcomputation.ExpectationFor(ctxAt(at), app, "tbl_clock", fields, "fld_minute", 5)
 		if err != nil {
 			t.Fatalf("expectation at %v: %v", at, err)
 		}
 		return expectation
 	}
 	record := core.NewRecord(core.NewBaseCollection("rows"))
-	record.Set(RowRevisionField, 5)
-	storeEnvelope := func(value string, expectation Expectation) {
-		raw, err := json.Marshal(Ready(value, CellVersion{
+	record.Set(relatedcomputation.RowRevisionField, 5)
+	storeEnvelope := func(value string, expectation relatedcomputation.Expectation) {
+		raw, err := json.Marshal(relatedcomputation.Ready(value, relatedcomputation.CellVersion{
 			DefinitionVersion:   expectation.DefinitionVersion,
 			SourceDataRevision:  expectation.SourceDataRevision,
 			DependencyWatermark: expectation.DependencyWatermark,
@@ -60,7 +61,7 @@ func TestSourceReaderUnwrapsFreshAndRejectsStaleCells(t *testing.T) {
 			t.Fatalf("%s error = %#v, want formula.dependency", name, err)
 		}
 	}
-	reader := NewSourceReader()
+	reader := relatedcomputation.NewSourceReader()
 
 	storeEnvelope("06:59", expectationAt(t0))
 	if value, err := reader.Read(ctxAt(t0), app, "tbl_clock", fields, minute, record); err != nil || value != "06:59" {
@@ -68,8 +69,8 @@ func TestSourceReaderUnwrapsFreshAndRejectsStaleCells(t *testing.T) {
 	}
 	// One batch reuses its graph and source expectation; cancellation still
 	// wins over the cached value.
-	batch := EnsureClockCache(formula.WithEvaluationTime(context.Background(), t0))
-	if EnsureClockCache(batch) != batch {
+	batch := relatedcomputation.EnsureClockCache(formula.WithEvaluationTime(context.Background(), t0))
+	if relatedcomputation.EnsureClockCache(batch) != batch {
 		t.Fatal("existing batch cache was replaced")
 	}
 	if value, err := reader.Read(batch, app, "tbl_clock", fields, minute, record); err != nil || value != "06:59" {
@@ -88,17 +89,17 @@ func TestSourceReaderUnwrapsFreshAndRejectsStaleCells(t *testing.T) {
 	_, err := reader.Read(ctxAt(t0.Add(time.Minute)), app, "tbl_clock", fields, minute, record)
 	staleRejection("next period", err)
 	// A newer downstream row revision must not bless an older envelope.
-	record.Set(RowRevisionField, 6)
+	record.Set(relatedcomputation.RowRevisionField, 6)
 	_, err = reader.Read(ctxAt(t0), app, "tbl_clock", fields, minute, record)
 	staleRejection("row revision drift", err)
-	record.Set(RowRevisionField, 5)
+	record.Set(relatedcomputation.RowRevisionField, 5)
 	// A cell without a readable envelope fails closed instead of yielding null.
 	record.Set("minute", "plain stored text")
 	_, err = reader.Read(ctxAt(t0), app, "tbl_clock", fields, minute, record)
 	staleRejection("missing envelope", err)
 	// Once the source is refreshed for the new period, its scalar is served.
 	next := expectationAt(t0.Add(time.Minute))
-	storeEnvelope("07:00", Expectation{
+	storeEnvelope("07:00", relatedcomputation.Expectation{
 		DefinitionVersion:   next.DefinitionVersion,
 		SourceDataRevision:  5,
 		DependencyWatermark: next.DependencyWatermark,
@@ -121,7 +122,7 @@ func TestSourceReaderUnwrapsFreshAndRejectsStaleCells(t *testing.T) {
 			"dependencyWatermark": "sha256:00",
 		},
 	}
-	if _, ok := Decode(lookalike); !ok {
+	if _, ok := relatedcomputation.Decode(lookalike); !ok {
 		t.Fatal("fixture must decode as an envelope lookalike")
 	}
 	record.Set("payload", lookalike)

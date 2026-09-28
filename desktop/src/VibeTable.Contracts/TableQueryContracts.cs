@@ -110,7 +110,7 @@ public sealed record TableQuery(
 /// <c>backend.contracts.selection.QuerySnapshot</c>:
 /// <c>{"snapshotId","digest","databaseId","table","schemaRevision","dataRevision","normalizedQuery"}</c>.
 /// Volatile (formula-clock) views additionally carry
-/// <c>"clockPeriod"</c>; ordinary snapshots omit the key entirely.
+/// <c>"clockPeriod"</c>; ordinary snapshots may omit the key or carry null.
 /// </summary>
 public sealed record QuerySnapshot(
     string SnapshotId,

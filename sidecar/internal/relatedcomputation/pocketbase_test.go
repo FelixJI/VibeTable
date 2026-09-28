@@ -460,19 +460,19 @@ func TestDependencyWatermarkUsesBusinessRevisionBehindClockCounter(t *testing.T)
 
 	// Business revision 7 with no counter keeps the historical watermark.
 	seedCustomer(7, nil)
-	baseline, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	baseline, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if baseline.DependencyWatermark != Watermark(map[string]int64{"tbl_customers": 7}) {
+	if baseline.DependencyWatermark != relatedcomputation.Watermark(map[string]int64{"tbl_customers": 7}) {
 		t.Fatalf("baseline watermark = %q", baseline.DependencyWatermark)
 	}
-	fresh := Ready(4.0, CellVersion{1, 11, baseline.DependencyWatermark})
+	fresh := relatedcomputation.Ready(4.0, relatedcomputation.CellVersion{1, 11, baseline.DependencyWatermark})
 
 	// Two clock-only transactions (data 9, clock 2) leave business inputs at
 	// 7: the ordinary non-volatile cell stays fresh instead of going pending.
 	seedCustomer(9, 2)
-	afterClock, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	afterClock, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,11 +485,11 @@ func TestDependencyWatermarkUsesBusinessRevisionBehindClockCounter(t *testing.T)
 
 	// A real business edit (data 10, clock unchanged) moves the watermark.
 	seedCustomer(10, 2)
-	afterEdit, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	afterEdit, err := relatedcomputation.ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterEdit.DependencyWatermark != Watermark(map[string]int64{"tbl_customers": 8}) {
+	if afterEdit.DependencyWatermark != relatedcomputation.Watermark(map[string]int64{"tbl_customers": 8}) {
 		t.Fatalf("business edit watermark = %q", afterEdit.DependencyWatermark)
 	}
 	if fresh.Fresh(afterEdit) {
@@ -507,7 +507,7 @@ func TestDependencyWatermarkUsesBusinessRevisionBehindClockCounter(t *testing.T)
 		{"fractional clock", 5, 1.5},
 	} {
 		seedCustomer(invalid.data, invalid.clock)
-		if _, err := ExpectationFor(
+		if _, err := relatedcomputation.ExpectationFor(
 			context.Background(), app, "tbl_orders", fields, "fld_total", 11,
 		); err == nil {
 			t.Fatalf("%s was accepted", invalid.name)

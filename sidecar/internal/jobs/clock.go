@@ -167,11 +167,14 @@ func (service *Service) RefreshClock(ctx context.Context, instant time.Time) ([]
 				if err := txApp.Save(record); err != nil {
 					return err
 				}
-				// Keep two completed clock backfills for status inspection. Ordinary,
-				// failed, cancelled and in-flight jobs are never removed here.
+				// Keep the two newest terminal clock backfills — complete, failed or
+				// cancelled — for status inspection, plus this in-flight job. Ordinary
+				// backfills and queued/running jobs are never removed here; a failed
+				// period is retried as a fresh job next minute, so it cannot pile up.
 				_, err = txApp.DB().NewQuery(`DELETE FROM vibetable_jobs WHERE id IN (
                     SELECT id FROM vibetable_jobs WHERE job_type={:type} AND source_table_id={:table}
-                    AND state='complete' AND json_extract(cursor_json,'$.clockInstant') IS NOT NULL
+                    AND state IN ('complete','failed','cancelled')
+                    AND json_extract(cursor_json,'$.clockInstant') IS NOT NULL
                     ORDER BY rowid DESC LIMIT -1 OFFSET 2
                 )`).WithContext(writeCtx).Bind(dbx.Params{"type": formulaBackfillType, "table": tableID}).Execute()
 				if err != nil {

@@ -776,6 +776,8 @@ export interface FormulaDraftValidationResult {
   readonly functions?: readonly FormulaFunctionInfo[];
   readonly canonicalSource: string;
   readonly resultType: LogicalTypeV2;
+  /** Integer-only inference for number results; omitted by older hosts. */
+  readonly onlyInt?: boolean;
   readonly dependencies: readonly string[];
   readonly relationAggregatePaths: readonly string[];
 }
