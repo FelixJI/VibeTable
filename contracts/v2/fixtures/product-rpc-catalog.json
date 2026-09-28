@@ -8093,6 +8093,9 @@
               "type": "string"
             }
           },
+          "onlyInt": {
+            "type": "boolean"
+          },
           "authorDocument": {
             "additionalProperties": false,
             "properties": {
@@ -13445,6 +13448,17 @@
               "normalizedQuery": {
                 "additionalProperties": true,
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -13589,7 +13603,8 @@
             "table": "sample-value",
             "schemaRevision": "schema_0001",
             "dataRevision": 1,
-            "normalizedQuery": {}
+            "normalizedQuery": {},
+            "clockPeriod": null
           }
         }
       },
@@ -18797,7 +18812,7 @@
           "JsonValue": {},
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots either omit the key (Go authority serializes it with\n``omitempty``) or carry it as an explicit ``null`` (the Python contract\necho dumps it unconditionally).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is optional and nullable: it carries the readable\n  clock period all rows of a page were fixed to, and exists only for\n  volatile (formula-clock) query views. Ordinary snapshots may omit the\n  key entirely (Go ``omitempty``) or serialize it as ``null`` (Python\n  ``model_dump`` without ``exclude_none``), so consumers must treat a\n  missing key and an explicit ``null`` identically.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -18830,6 +18845,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -18959,7 +18986,7 @@
           "JsonValue": {},
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots either omit the key (Go authority serializes it with\n``omitempty``) or carry it as an explicit ``null`` (the Python contract\necho dumps it unconditionally).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is optional and nullable: it carries the readable\n  clock period all rows of a page were fixed to, and exists only for\n  volatile (formula-clock) query views. Ordinary snapshots may omit the\n  key entirely (Go ``omitempty``) or serialize it as ``null`` (Python\n  ``model_dump`` without ``exclude_none``), so consumers must treat a\n  missing key and an explicit ``null`` identically.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -18992,6 +19019,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -19122,7 +19161,7 @@
           "JsonValue": {},
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots either omit the key (Go authority serializes it with\n``omitempty``) or carry it as an explicit ``null`` (the Python contract\necho dumps it unconditionally).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is optional and nullable: it carries the readable\n  clock period all rows of a page were fixed to, and exists only for\n  volatile (formula-clock) query views. Ordinary snapshots may omit the\n  key entirely (Go ``omitempty``) or serialize it as ``null`` (Python\n  ``model_dump`` without ``exclude_none``), so consumers must treat a\n  missing key and an explicit ``null`` identically.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -19155,6 +19194,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -20469,7 +20520,7 @@
           },
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots either omit the key (Go authority serializes it with\n``omitempty``) or carry it as an explicit ``null`` (the Python contract\necho dumps it unconditionally).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is optional and nullable: it carries the readable\n  clock period all rows of a page were fixed to, and exists only for\n  volatile (formula-clock) query views. Ordinary snapshots may omit the\n  key entirely (Go ``omitempty``) or serialize it as ``null`` (Python\n  ``model_dump`` without ``exclude_none``), so consumers must treat a\n  missing key and an explicit ``null`` identically.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -20502,6 +20553,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -21354,7 +21417,7 @@
           },
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots either omit the key (Go authority serializes it with\n``omitempty``) or carry it as an explicit ``null`` (the Python contract\necho dumps it unconditionally).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is optional and nullable: it carries the readable\n  clock period all rows of a page were fixed to, and exists only for\n  volatile (formula-clock) query views. Ordinary snapshots may omit the\n  key entirely (Go ``omitempty``) or serialize it as ``null`` (Python\n  ``model_dump`` without ``exclude_none``), so consumers must treat a\n  missing key and an explicit ``null`` identically.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -21387,6 +21450,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [

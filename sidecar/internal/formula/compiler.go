@@ -81,6 +81,7 @@ func NewCompiler(limits Limits) *Compiler {
 }
 
 type CompiledFormula struct {
+	ClockReferences        []ClockReference
 	FieldID                string
 	PhysicalName           string
 	ResultType             ValueType
@@ -196,6 +197,7 @@ func (compiler *Compiler) Compile(
 		// wrapper so numeric results keep their overflow guard and the cost
 		// observer remains the outermost layer of every node.
 		cel.CustomDecoratorV2(commonFunctionDecorator(checked.GetTypeMap())),
+		cel.CustomDecoratorV2(clockFunctionDecorator),
 		cel.CustomDecoratorV2(func(node interpreter.InterpretableV2) (interpreter.InterpretableV2, error) {
 			if call, ok := node.(interpreter.InterpretableCall); ok {
 				return finiteFormulaCall{call}, nil
@@ -207,6 +209,7 @@ func (compiler *Compiler) Compile(
 		return nil, formulaError("formula.runtime", "formula program could not be created", nil)
 	}
 	return &CompiledFormula{
+		ClockReferences:        expressionClockReferences(checked.GetExpr()),
 		FieldID:                field.Identity.FieldID,
 		PhysicalName:           field.Identity.PhysicalName,
 		ResultType:             resultType,
@@ -287,6 +290,8 @@ func (compiler *Compiler) environment(
 	}
 	options = append(options, functionOptions()...)
 	options = append(options, commonFunctionOptions()...)
+	options = append(options, clockFunctionOptions()...)
+	options = append(options, calendarFunctionOptions()...)
 	options = append([]cel.EnvOption{
 		cel.StdLib(cel.StdLibSubset(&celenv.LibrarySubset{
 			ExcludeFunctions: []*celenv.Function{{Name: "_*_"}, {Name: "_/_"}},
@@ -357,6 +362,9 @@ func inspectExpression(
 				return formulaError("formula.dependency", "formula function is not allowed", map[string]any{
 					"function": kind.CallExpr.Function,
 				})
+			}
+			if err := validateClockCall(kind.CallExpr); err != nil {
+				return err
 			}
 			if isRelationFieldAggregate(kind.CallExpr.Function) {
 				path, aggregateErr := relationAggregatePath(kind.CallExpr, fields)
@@ -534,6 +542,8 @@ var allowedFunctions = map[string]struct{}{
 	"IFERROR": {}, "ISERROR": {}, "CONCATENATE": {}, "LEN": {},
 	"LEFT": {}, "RIGHT": {}, "MID": {}, "TRIM": {}, "UPPER": {}, "LOWER": {},
 	"ABS": {}, "ROUND": {}, "MIN": {}, "MAX": {},
+	"TODAY": {}, "NOW": {},
+	"DATE": {}, "YEAR": {}, "MONTH": {}, "DAY": {}, "DATEADD": {}, "DATEDIFF": {}, "TEXT": {},
 }
 
 func celTypeForField(field v2.FieldDefinition) (*cel.Type, error) {

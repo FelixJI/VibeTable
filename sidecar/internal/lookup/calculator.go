@@ -11,6 +11,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
@@ -64,7 +65,25 @@ func (calculator *Calculator) Calculate(
 	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]any, error) {
-	cells, err := calculator.calculateCells(ctx, app, definition, record)
+	ctx = withComputedSourceReads(ctx)
+	var cells map[string]CellValue
+	var err error
+	if selected := formula.EvaluationFields(ctx); selected != nil {
+		ids := map[string]bool{}
+		for _, field := range definition.Snapshot.Fields {
+			if field.Lookup != nil && selected[field.Identity.FieldID] {
+				ids[field.Identity.FieldID] = true
+			}
+		}
+		if len(ids) == 0 {
+			return map[string]any{}, nil
+		}
+		batch, batchErr := calculator.CalculateCellsBatch(ctx, app, definition, []*core.Record{record}, ids)
+		err = batchErr
+		cells = batch[record.Id]
+	} else {
+		cells, err = calculator.calculateCells(ctx, app, definition, record)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +183,7 @@ func (calculator *Calculator) CalculateFieldPage(
 			"lookup.request.invalid", "lookup value page request is invalid",
 		)
 	}
+	ctx = withComputedSourceReads(ctx)
 	result, err := calculateLookupGroups(
 		ctx, app, definition, []*core.Record{record}, [][]v2.FieldDefinition{{field}}, offset, limit,
 	)
@@ -423,11 +443,6 @@ func projectLookupNodes(
 	// envelope verified against the existing expectation contract. The
 	// default values shape keeps the historical raw read.
 	aggregated := lookupAggregationTraversesFullSet(v2.ResolvedLookupAggregation(*lookupField.Lookup))
-	// DefinitionVersion and DependencyWatermark are row-independent; only the
-	// row revision varies per record, so one ExpectationFor call per batch is
-	// enough without building a second reader cache.
-	var expectation relatedcomputation.Expectation
-	expectationLoaded := false
 	for _, node := range nodes {
 		targetField, found := fieldByID(node.definition, lookupField.Lookup.TargetFieldID)
 		if !found {
@@ -435,36 +450,12 @@ func projectLookupNodes(
 				"mutation.lookup.schema_invalid", "lookup target field is unavailable",
 			)
 		}
-		value := decodeLookupFieldValue(targetField, node.record)
-		if aggregated {
-			if targetField.LogicalType == v2.LogicalFormula || targetField.LogicalType == v2.LogicalLookup {
-				if !expectationLoaded {
-					loaded, err := relatedcomputation.ExpectationFor(
-						ctx, app, node.definition.Snapshot.TableID,
-						node.definition.Snapshot.Fields, targetField.Identity.FieldID,
-						int64(node.record.GetInt(relatedcomputation.RowRevisionField)),
-					)
-					if err != nil {
-						return nil, lookupError(
-							"lookup.aggregation.source_unavailable",
-							"computed lookup source version could not be resolved",
-						)
-					}
-					expectation = loaded
-					expectationLoaded = true
-				}
-				rowExpectation := expectation
-				rowExpectation.SourceDataRevision = int64(node.record.GetInt(relatedcomputation.RowRevisionField))
-				value, found = freshComputedSourceValue(targetField, node.record, rowExpectation)
-				if !found {
-					return nil, lookupError(
-						"lookup.aggregation.source_stale",
-						"computed lookup source is pending, failed or stale",
-					)
-				}
-			} else {
-				value = productrow.Project([]v2.FieldDefinition{targetField}, node.record)[targetField.Identity.PhysicalName]
-			}
+		value, readErr := lookupTargetValue(ctx, app, node.definition, targetField, node.record)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if aggregated && !formula.IsComputedSource(targetField) {
+			value = productrow.Project([]v2.FieldDefinition{targetField}, node.record)[targetField.Identity.PhysicalName]
 		}
 		values = append(values, describedLookupValue(
 			node.definition, node.record, targetField, value,
@@ -473,28 +464,57 @@ func projectLookupNodes(
 	return values, nil
 }
 
+// withComputedSourceReads equips the standalone Lookup entry points (grid
+// batches, single cells and paged source details that bypass the mutation
+// composite) with one pinned evaluation instant, one dependency-graph cache
+// and the shared freshness reader. A context that already carries a reader
+// (the composite's transaction reader) is returned untouched.
+func withComputedSourceReads(ctx context.Context) context.Context {
+	if formula.ComputedSourceReaderFor(ctx) != nil {
+		return ctx
+	}
+	return formula.WithComputedSourceReader(
+		relatedcomputation.EnsureClockCache(formula.EnsureEvaluationTime(ctx)),
+		relatedcomputation.NewSourceReader().Read,
+	)
+}
+
+// lookupTargetValue keeps the stored provider value for ordinary target
+// fields. A schema-declared computed target must resolve through the batch
+// freshness reader: a stale or unreadable source fails closed, and a missing
+// reader never falls back to leaking the stored envelope as a value.
+func lookupTargetValue(
+	ctx context.Context,
+	app core.App,
+	definition schemaexecution.Table,
+	field v2.FieldDefinition,
+	record *core.Record,
+) (any, error) {
+	if !formula.IsComputedSource(field) {
+		return record.GetRaw(field.Identity.PhysicalName), nil
+	}
+	reader := formula.ComputedSourceReaderFor(ctx)
+	if reader == nil {
+		return nil, &formula.Error{
+			ContractVersion: formula.ContractVersion,
+			Code:            "formula.dependency",
+			Message:         "computed lookup source has no batch freshness reader",
+			Details: map[string]any{
+				"sourceTableId": definition.Snapshot.TableID,
+				"sourceFieldId": field.Identity.FieldID,
+			},
+		}
+	}
+	return reader(
+		ctx, app, definition.Snapshot.TableID, definition.Snapshot.Fields, field, record,
+	)
+}
+
 func decodeLookupFieldValue(field v2.FieldDefinition, record *core.Record) any {
 	// Lookup targets are existing provider rows. V2 select storage is the
 	// stable optionId, so the physical value is already the product value and
 	// preserves the historical behavior for rows created before companions.
 	return record.GetRaw(field.Identity.PhysicalName)
-}
-
-// freshComputedSourceValue decodes a computed target's stored envelope and
-// accepts it only when it satisfies the existing freshness contract. Missing,
-// corrupt, pending, failed and stale sources report found=false so callers
-// surface an explicit dependency error — never the old cached value and
-// never a silent null.
-func freshComputedSourceValue(
-	field v2.FieldDefinition,
-	record *core.Record,
-	expectation relatedcomputation.Expectation,
-) (any, bool) {
-	envelope, ok := relatedcomputation.Decode(record.GetRaw(field.Identity.PhysicalName))
-	if !ok || !envelope.Fresh(expectation) {
-		return nil, false
-	}
-	return envelope.Value, true
 }
 
 func canonicalLookupValue(values []any) any {

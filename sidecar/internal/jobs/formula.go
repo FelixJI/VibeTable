@@ -15,6 +15,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/pocketbase/pocketbase/tools/types"
 
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -44,6 +45,10 @@ type BusinessWriteGate func(
 ) error
 
 type Service struct {
+	clockStarted   bool
+	clockMu        sync.Mutex
+	clockPeriods   map[string]string
+	clockNow       func() time.Time
 	app            core.App
 	kernel         MutationKernel
 	businessGate   BusinessWriteGate
@@ -88,14 +93,15 @@ func WithRunContext(ctx context.Context) Option {
 }
 
 type Snapshot struct {
-	JobID          string    `json:"jobId"`
-	Type           string    `json:"type"`
-	State          string    `json:"state"`
-	TableID        string    `json:"tableId"`
-	SchemaRevision string    `json:"schemaRevision"`
-	Cursor         Cursor    `json:"cursor"`
-	Progress       Progress  `json:"progress"`
-	Error          *JobError `json:"error,omitempty"`
+	ClockInstant   *time.Time `json:"-"`
+	JobID          string     `json:"jobId"`
+	Type           string     `json:"type"`
+	State          string     `json:"state"`
+	TableID        string     `json:"tableId"`
+	SchemaRevision string     `json:"schemaRevision"`
+	Cursor         Cursor     `json:"cursor"`
+	Progress       Progress   `json:"progress"`
+	Error          *JobError  `json:"error,omitempty"`
 }
 
 type Cursor struct {
@@ -124,6 +130,7 @@ func New(
 ) *Service {
 	service := &Service{
 		app: app, kernel: kernel,
+		clockPeriods: map[string]string{}, clockNow: time.Now,
 		running:    map[string]struct{}{},
 		scheduled:  map[string]struct{}{},
 		cancelled:  map[string]struct{}{},
@@ -182,7 +189,17 @@ func (service *Service) applyKernelBatch(
 	var receipt mutation.Receipt
 	apply := func(writeCtx context.Context) error {
 		var err error
-		receipt, err = kernel.Apply(writeCtx, request)
+		if formula.EvaluationFields(writeCtx) != nil {
+			materializer, ok := kernel.(interface {
+				RecalculateClock(context.Context, mutation.Request) (mutation.Receipt, error)
+			})
+			if !ok {
+				return jobError("job.clock_unavailable", "clock materialization is unavailable", false)
+			}
+			receipt, err = materializer.RecalculateClock(writeCtx, request)
+		} else {
+			receipt, err = kernel.Apply(writeCtx, request)
+		}
 		return err
 	}
 	if gate == nil {
@@ -444,6 +461,11 @@ func (service *Service) Run(
 	if service.cancelRequested(jobID) {
 		return service.finishCancellation(ctx, record)
 	}
+	ctx = formula.EnsureEvaluationTime(ctx)
+	if snapshot.ClockInstant != nil {
+		ctx = formula.WithEvaluationTime(ctx, *snapshot.ClockInstant)
+		ctx = formula.WithEvaluationFields(ctx, map[string]bool{})
+	}
 	if snapshot.Type == formulaFanoutType {
 		return service.runFanout(ctx, record, snapshot)
 	}
@@ -473,6 +495,11 @@ func (service *Service) Run(
 					false,
 				),
 			)
+		}
+		if snapshot.ClockInstant != nil {
+			// Composite selects only cells stale at this period. Fresh ordinary
+			// formulas and TODAY values within the same date are retained.
+			ctx = formula.WithEvaluationFields(ctx, map[string]bool{})
 		}
 		tableMeta, err := service.app.FindFirstRecordByFilter(
 			"vibetable_tables",
@@ -671,7 +698,10 @@ func (service *Service) ResumePending(ctx context.Context) error {
 	if err := service.dispatchPending(ctx); err != nil {
 		return err
 	}
-	return service.ensureMissingFormulaBackfills(ctx)
+	if err := service.ensureMissingFormulaBackfills(ctx); err != nil {
+		return err
+	}
+	return service.StartClockUpdates(ctx)
 }
 
 // preparePendingRecovery is the one startup-wide scan. It both rejects a
@@ -926,8 +956,9 @@ func snapshotFromRecord(record *core.Record) (Snapshot, error) {
 
 func snapshotFromJSON(snapshot Snapshot, cursorRaw, progressRaw, errorRaw []byte) (Snapshot, error) {
 	var cursorEnvelope struct {
-		TableID      string `json:"tableId"`
-		LastRecordID string `json:"lastRecordId"`
+		TableID      string     `json:"tableId"`
+		LastRecordID string     `json:"lastRecordId"`
+		ClockInstant *time.Time `json:"clockInstant,omitempty"`
 	}
 	var progress Progress
 	if json.Unmarshal(cursorRaw, &cursorEnvelope) != nil ||
@@ -944,6 +975,7 @@ func snapshotFromJSON(snapshot Snapshot, cursorRaw, progressRaw, errorRaw []byte
 			storedError = &decoded
 		}
 	}
+	snapshot.ClockInstant = cursorEnvelope.ClockInstant
 	snapshot.TableID = cursorEnvelope.TableID
 	snapshot.Cursor = Cursor{LastRecordID: cursorEnvelope.LastRecordID}
 	snapshot.Progress = progress
@@ -1117,7 +1149,7 @@ func (service *Service) persistTerminalWithFormulaStatus(
 		if err := txApp.Save(record); err != nil {
 			return err
 		}
-		if formulaStatus != "" {
+		if formulaStatus != "" && snapshot.ClockInstant == nil {
 			if err := markFormulaStatusInApp(txApp, snapshot.TableID, formulaStatus); err != nil {
 				return err
 			}
@@ -1249,6 +1281,7 @@ func saveProgress(record *core.Record, snapshot Snapshot) error {
 	cursorRaw, err := json.Marshal(map[string]any{
 		"tableId":      snapshot.TableID,
 		"lastRecordId": snapshot.Cursor.LastRecordID,
+		"clockInstant": snapshot.ClockInstant,
 	})
 	if err != nil {
 		return err

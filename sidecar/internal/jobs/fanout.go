@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -45,6 +47,7 @@ type DataPublisher interface {
 }
 
 type fanoutCursor struct {
+	ClockInstant      *time.Time            `json:"clockInstant,omitempty"`
 	AllRecords        bool                  `json:"allRecords,omitempty"`
 	TableID           string                `json:"tableId"`
 	LastRecordID      string                `json:"lastRecordId"`
@@ -181,7 +184,8 @@ func (service *Service) enqueueFormulaFanout(
 	app core.App,
 	event mutation.DataChangedEvent,
 ) ([]string, error) {
-	if event.ChangeSetID == nil || *event.ChangeSetID == "" ||
+	clockRefresh := event.ChangeSetID == nil && event.Operation == mutation.DataChangeUpdate
+	if (!clockRefresh && (event.ChangeSetID == nil || *event.ChangeSetID == "")) ||
 		len(event.RecordIDs) == 0 {
 		return []string{}, nil
 	}
@@ -203,12 +207,32 @@ func (service *Service) enqueueFormulaFanout(
 	if len(dependencies) == 0 {
 		return []string{}, nil
 	}
-	changed, err := service.changedTargetFields(
-		app,
-		event.TableID, *event.ChangeSetID,
-	)
-	if err != nil {
-		return nil, err
+	changed := map[string]struct{}{}
+	if clockRefresh {
+		// Clock refreshes have no user-edit history; their dependency edges
+		// identify affected computed sources without inventing audit rows.
+		definition, describeErr := schemaexecution.Describe(ctx, app, event.TableID)
+		if describeErr != nil {
+			return nil, describeErr
+		}
+		ctx = relatedcomputation.WithClockCache(ctx)
+		for _, field := range definition.Snapshot.Fields {
+			if field.Formula == nil && field.Lookup == nil {
+				continue
+			}
+			references, err := relatedcomputation.ClockReferencesFor(ctx, app, event.TableID, definition.Snapshot.Fields, field.Identity.FieldID)
+			if err != nil {
+				return nil, err
+			}
+			if len(references) > 0 {
+				changed[field.Identity.FieldID] = struct{}{}
+			}
+		}
+	} else {
+		changed, err = service.changedTargetFields(app, event.TableID, *event.ChangeSetID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	type dependencyKey struct {
 		tableID         string
@@ -217,6 +241,9 @@ func (service *Service) enqueueFormulaFanout(
 	dependenciesByKey := map[dependencyKey][]*core.Record{}
 	for _, dependency := range dependencies {
 		targetFieldID := dependency.GetString("target_field_id")
+		if clockRefresh && targetFieldID == "__path__" {
+			continue // Derived caches never change relation membership.
+		}
 		if _, relevant := changed[targetFieldID]; !relevant && targetFieldID != "__path__" {
 			continue
 		}
@@ -400,6 +427,13 @@ func (service *Service) createFanoutJob(
 		ChangedTableID:  event.TableID,
 		TargetRecordIDs: append([]string(nil), event.RecordIDs...),
 		FormulaFieldIDs: formulaFields, Paths: paths,
+	}
+	if event.ChangeSetID == nil && event.Operation == mutation.DataChangeUpdate {
+		instant, err := time.Parse(time.RFC3339Nano, event.OccurredAt)
+		if err != nil {
+			return "", jobError("job.clock_invalid", "clock event instant is invalid", false)
+		}
+		cursor.ClockInstant = &instant
 	}
 	cursorRaw, _ := json.Marshal(cursor)
 	progressRaw, _ := json.Marshal(Progress{

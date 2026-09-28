@@ -220,7 +220,8 @@ func (port *Port) cursorWindowInTransaction(
 	if expected != nil {
 		if descriptor.DatabaseID != expected.DatabaseID ||
 			descriptor.SchemaRevision != expected.SchemaRevision ||
-			descriptor.DataRevision != expected.DataRevision {
+			descriptor.DataRevision != expected.DataRevision ||
+			descriptor.ClockPeriod != expected.ClockPeriod {
 			return CursorWindow{}, productError(
 				"query.cursor_stale", "cursor",
 				"cursor revisions no longer match the authoritative table", nil,
@@ -344,33 +345,8 @@ func (port *Port) QueryPage(
 		if err != nil {
 			return err
 		}
-		plan, err := Compile(descriptor, normalized)
-		if err != nil {
-			return err
-		}
-		rows, err := port.queryRows(ctx, txApp, plan.SQL, plan.Params, descriptor)
-		if err != nil {
-			return operationError(err)
-		}
-		var filteredRows, totalRows int64
-		if err := txApp.DB().NewQuery(plan.CountSQL).
-			WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&filteredRows); err != nil {
-			return operationError(err)
-		}
-		if err := txApp.DB().NewQuery(plan.TotalSQL).
-			WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&totalRows); err != nil {
-			return operationError(err)
-		}
-		snapshot, err := port.buildSnapshot(descriptor, normalized)
-		if err != nil {
-			return err
-		}
-		result = Page{
-			Rows: rows, Offset: normalized.Offset, Limit: normalized.Limit,
-			FilteredRows: filteredRows, TotalRows: totalRows,
-			Snapshot: snapshot,
-		}
-		return nil
+		result, err = port.executePage(ctx, txApp, descriptor, normalized)
+		return err
 	})
 	if err != nil {
 		return Page{}, operationError(err)
@@ -484,12 +460,18 @@ func (port *Port) executePage(
 		WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&totalRows); err != nil {
 		return Page{}, operationError(err)
 	}
+	var pending bool
+	if plan.PendingSQL != "" {
+		if err := app.DB().NewQuery(plan.PendingSQL).WithContext(ctx).Bind(dbx.Params(plan.Params)).Row(&pending); err != nil {
+			return Page{}, operationError(err)
+		}
+	}
 	snapshot, err := port.buildSnapshot(descriptor, normalized)
 	if err != nil {
 		return Page{}, err
 	}
 	return Page{
-		Rows: rows, Offset: normalized.Offset, Limit: normalized.Limit,
+		Rows: rows, Offset: normalized.Offset, Limit: normalized.Limit, ComputedPending: pending,
 		FilteredRows: filteredRows, TotalRows: totalRows,
 		Snapshot: snapshot,
 	}, nil
@@ -676,7 +658,7 @@ func (port *Port) ValidateSnapshot(
 		Valid: true, CurrentDataRevision: descriptor.DataRevision,
 		CurrentSchemaRevision: descriptor.SchemaRevision,
 	}
-	if descriptor.DatabaseID != snapshot.DatabaseID {
+	if descriptor.DatabaseID != snapshot.DatabaseID || descriptor.ClockPeriod != snapshot.ClockPeriod {
 		result.Valid, result.Reason = false, "query_changed"
 		return result, nil
 	}
@@ -945,7 +927,7 @@ func (port *Port) buildSnapshot(
 			"query.snapshot.failed", "", "query snapshot could not be issued", nil)
 	}
 	snapshot := QuerySnapshot{
-		SnapshotID:      hex.EncodeToString(nonce),
+		ClockPeriod: descriptor.ClockPeriod, SnapshotID: hex.EncodeToString(nonce),
 		DatabaseID:      descriptor.DatabaseID,
 		Table:           descriptor.TableID,
 		SchemaRevision:  descriptor.SchemaRevision,
@@ -968,6 +950,7 @@ func snapshotDigest(snapshot QuerySnapshot) (string, error) {
 		SchemaRevision string     `json:"schemaRevision"`
 		DataRevision   int64      `json:"dataRevision"`
 		Query          TableQuery `json:"query"`
+		ClockPeriod    string     `json:"clockPeriod,omitempty"`
 	}{
 		snapshot.SnapshotID,
 		snapshot.DatabaseID,
@@ -975,6 +958,7 @@ func snapshotDigest(snapshot QuerySnapshot) (string, error) {
 		snapshot.SchemaRevision,
 		snapshot.DataRevision,
 		snapshot.NormalizedQuery,
+		snapshot.ClockPeriod,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

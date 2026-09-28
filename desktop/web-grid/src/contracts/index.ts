@@ -493,6 +493,8 @@ export interface QuerySnapshot {
   readonly schemaRevision: string;
   readonly dataRevision: number;
   readonly normalizedQuery: Record<string, unknown>;
+  /** Volatile (formula-clock) views only: the readable clock period every row of a page is fixed to. Ordinary snapshots omit the key. */
+  readonly clockPeriod?: string | null;
 }
 
 /** A selection bound to a query snapshot. Mirrors `SelectionSnapshot`. */
@@ -774,6 +776,8 @@ export interface FormulaDraftValidationResult {
   readonly functions?: readonly FormulaFunctionInfo[];
   readonly canonicalSource: string;
   readonly resultType: LogicalTypeV2;
+  /** Integer-only inference for number results; omitted by older hosts. */
+  readonly onlyInt?: boolean;
   readonly dependencies: readonly string[];
   readonly relationAggregatePaths: readonly string[];
 }

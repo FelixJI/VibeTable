@@ -574,6 +574,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "$defs": author_definitions,
         "properties": {
             **{key: _schema_from_example(value) for key, value in formula_draft.items()},
+            "onlyInt": {"type": "boolean"},
             "authorDocument": author_schema,
             "functions": {
                 "type": "array",

@@ -109,6 +109,8 @@ public sealed record TableQuery(
 /// A stable reference to a query view of a table. Mirrors
 /// <c>backend.contracts.selection.QuerySnapshot</c>:
 /// <c>{"snapshotId","digest","databaseId","table","schemaRevision","dataRevision","normalizedQuery"}</c>.
+/// Volatile (formula-clock) views additionally carry
+/// <c>"clockPeriod"</c>; ordinary snapshots may omit the key or carry null.
 /// </summary>
 public sealed record QuerySnapshot(
     string SnapshotId,
@@ -117,7 +119,10 @@ public sealed record QuerySnapshot(
     string Table,
     string SchemaRevision,
     int DataRevision,
-    IReadOnlyDictionary<string, object?> NormalizedQuery);
+    IReadOnlyDictionary<string, object?> NormalizedQuery,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("clockPeriod")]
+    string? OptionalClockPeriod = null);
 
 /// <summary>
 /// A selection bound to a query snapshot. Mirrors

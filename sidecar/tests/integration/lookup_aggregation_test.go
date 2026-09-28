@@ -820,8 +820,8 @@ func TestLookupAggregationRejectsStaleComputedSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = calculator.CalculateFieldPage(ctx, app, definition, order, sumField, 0, 100)
-	var productErr *mutation.ProductError
-	if !errors.As(err, &productErr) || productErr.Code != "lookup.aggregation.source_stale" {
+	var formulaErr *formula.Error
+	if !errors.As(err, &formulaErr) || formulaErr.Code != "formula.dependency" {
 		t.Fatalf("stale formula source error = %v", err)
 	}
 }

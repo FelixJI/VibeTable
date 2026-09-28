@@ -10,9 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldprojection"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
@@ -63,6 +66,8 @@ func (source *Source) describeSelectionTable(
 	app core.App,
 	tableID string,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	ctx = formula.EnsureEvaluationTime(ctx)
+	ctx = relatedcomputation.WithClockCache(ctx)
 	if err := ctx.Err(); err != nil {
 		return query.TableDescriptor{}, v2.SchemaSnapshot{}, err
 	}
@@ -90,6 +95,18 @@ func (source *Source) describeSelectionTable(
 		RowRevisionName: relatedcomputation.RowRevisionField,
 		ArchiveValue:    table.ArchivePolicy.ArchivedValue,
 	}
+	periods := map[string]bool{}
+	for _, field := range fields {
+		if _, period, ok := strings.Cut(field.ComputedDependencyWatermark, "|"); ok {
+			periods[period] = true
+		}
+	}
+	keys := make([]string, 0, len(periods))
+	for period := range periods {
+		keys = append(keys, period)
+	}
+	sort.Strings(keys)
+	descriptor.ClockPeriod = strings.Join(keys, ";")
 	descriptor.DigestFields = make([]string, 0, len(table.Snapshot.Fields))
 	descriptor.PresenceFields = make(map[string]string)
 	for _, field := range table.Snapshot.Fields {

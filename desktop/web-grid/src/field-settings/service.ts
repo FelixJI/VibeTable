@@ -84,6 +84,12 @@ function buildFormulaPreviewField(
     storage: {
       ...(existing?.storage ?? recommended.storage),
       kind: "computed",
+      options: {
+        ...(existing?.storage ?? recommended.storage).options,
+        // The fresh draft inference is authoritative for the preview field;
+        // recommended defaults would force every number result to decimal.
+        onlyInt: validation.onlyInt ?? false,
+      },
     },
     display: existing?.display ?? recommended.display,
     formula: {
@@ -816,6 +822,7 @@ function isFormulaDraftValidation(value: unknown): value is FormulaDraftValidati
   const candidate = value as Partial<FormulaDraftValidationResult>;
   return typeof candidate.canonicalSource === "string"
     && typeof candidate.resultType === "string"
+    && (candidate.onlyInt === undefined || typeof candidate.onlyInt === "boolean")
     && Array.isArray(candidate.dependencies)
     && Array.isArray(candidate.relationAggregatePaths)
     && (candidate.authorDocument === undefined

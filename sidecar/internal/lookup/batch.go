@@ -19,6 +19,7 @@ func (calculator *Calculator) CalculateCellsBatch(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	ctx = withComputedSourceReads(ctx)
 	groups := [][]v2.FieldDefinition{}
 	paths := map[string]int{}
 	for _, field := range definition.Snapshot.Fields {

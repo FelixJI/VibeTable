@@ -613,3 +613,119 @@ func TestFormulaProductAuthoringKeepsDiagnosticsAndMissingReferences(t *testing.
 		t.Fatalf("unknown call range: %#v", publicErr.Details)
 	}
 }
+
+// Integer date-function drafts must carry their OnlyInt inference on the wire
+// so the web preview builder declares the same storage shape as a saved field;
+// a decimal-only preview field keeps failing the frozen compile type check.
+func TestFormulaProductIntegerDraftInspectionFeedsPreviewStorage(t *testing.T) {
+	pb := schemaProductStore(t)
+	domain := formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)}
+	invoke := formulaTestInvoker(t, domain)
+	table, _, _ := createFormulaProductTable(t, pb)
+	due := createSchemaProductField(
+		t, pb, table.TableID, v2.LogicalDate, "Due", "formula-year-due",
+	).Definition
+
+	integer, err := invoke("formula.draft.validate", map[string]any{
+		"tableId":       table.TableID,
+		"displaySource": "YEAR(" + due.Identity.PhysicalName + ")",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	integerInspection := integer.(fieldchange.FormulaDraftInspection)
+	if integerInspection.ResultType != v2.LogicalNumber || !integerInspection.OnlyInt {
+		t.Fatalf("integer draft inspection = %#v", integerInspection)
+	}
+	// The public wire must spell the flag exactly as the TS contract expects.
+	encoded, err := json.Marshal(integerInspection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"onlyInt":true`) {
+		t.Fatalf("integer inspection wire = %s", encoded)
+	}
+
+	decimal, err := invoke("formula.draft.validate", map[string]any{
+		"tableId":       table.TableID,
+		"displaySource": "MAX(YEAR(" + due.Identity.PhysicalName + "), 2024.5)",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decimalInspection := decimal.(fieldchange.FormulaDraftInspection)
+	if decimalInspection.ResultType != v2.LogicalNumber || decimalInspection.OnlyInt {
+		t.Fatalf("decimal draft inspection = %#v", decimalInspection)
+	}
+
+	// Mirror the web buildFormulaPreviewField: recommended defaults with the
+	// storage integer flag overridden by the fresh draft inference.
+	previewField := func(inspection fieldchange.FormulaDraftInspection) map[string]any {
+		recommended, err := v2.RecommendedDefaults(v2.LogicalFormula)
+		if err != nil {
+			t.Fatal(err)
+		}
+		field := v2.FieldDefinition{
+			Contract: v2.Contract,
+			Identity: v2.FieldIdentity{
+				FieldID: "fld_formula_preview", PhysicalName: "f_formula_preview",
+				ProviderFieldID: "pb_formula_preview",
+			},
+			DisplayName: "Formula preview", LogicalType: v2.LogicalFormula,
+			Lifecycle: v2.Lifecycle{State: v2.LifecycleActive},
+			Value:     recommended.Value, Constraints: recommended.Constraints,
+			Storage: recommended.Storage, Display: recommended.Display,
+			Formula: &v2.FormulaSpec{
+				Language: "cel-v1", Source: inspection.CanonicalSource,
+				ResultType: inspection.ResultType,
+			},
+		}
+		field.Storage.Options.OnlyInt = inspection.OnlyInt
+		return formulaTestWireField(t, field)
+	}
+	row := map[string]any{due.Identity.PhysicalName: "2024-05-06T00:00:00Z"}
+
+	previewed, err := invoke("formula.preview", map[string]any{
+		"tableId": table.TableID, "field": previewField(integerInspection),
+		"row": row, "changedFieldIds": []any{due.Identity.FieldID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := previewed.(map[string]any)["values"].(map[string]any)
+	encoded, err = json.Marshal(values["f_formula_preview"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "2024" {
+		t.Fatalf("integer preview value = %s (%#v)", encoded, values)
+	}
+
+	// The shape the pre-fix web preview sent (recommended decimal storage)
+	// stays a public type failure; onlyInt must not be silently dropped.
+	decimalField := previewField(integerInspection)
+	options := decimalField["storage"].(map[string]any)["options"].(map[string]any)
+	options["onlyInt"] = false
+	_, err = invoke("formula.preview", map[string]any{
+		"tableId": table.TableID, "field": decimalField,
+		"row": row, "changedFieldIds": []any{due.Identity.FieldID},
+	})
+	assertFormulaPublicError(t, err, "formula.type")
+
+	// A genuinely decimal draft still previews through decimal storage.
+	decimalPreview, err := invoke("formula.preview", map[string]any{
+		"tableId": table.TableID, "field": previewField(decimalInspection),
+		"row": row, "changedFieldIds": []any{due.Identity.FieldID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decimalValues := decimalPreview.(map[string]any)["values"].(map[string]any)
+	encoded, err = json.Marshal(decimalValues["f_formula_preview"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "2024.5" {
+		t.Fatalf("decimal preview value = %s (%#v)", encoded, decimalValues)
+	}
+}

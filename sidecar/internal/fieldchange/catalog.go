@@ -28,6 +28,7 @@ type Catalog struct {
 type FormulaDraftInspection struct {
 	CanonicalSource        string                           `json:"canonicalSource"`
 	ResultType             v2.LogicalType                   `json:"resultType"`
+	OnlyInt                bool                             `json:"onlyInt"`
 	Dependencies           []string                         `json:"dependencies"`
 	RelationAggregatePaths []string                         `json:"relationAggregatePaths"`
 	AuthorDocument         *workbench.FormulaAuthorDocument `json:"authorDocument,omitempty"`
@@ -107,6 +108,7 @@ func (catalog *Catalog) InspectFormulaDraft(
 			return FormulaDraftInspection{
 				CanonicalSource: compiled.CanonicalSource,
 				ResultType:      draft.Formula.ResultType,
+				OnlyInt:         draft.Storage.Options.OnlyInt,
 				Dependencies:    append([]string(nil), compiled.Dependencies...),
 				RelationAggregatePaths: append(
 					[]string(nil), compiled.RelationAggregatePaths...,

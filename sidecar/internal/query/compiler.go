@@ -128,8 +128,27 @@ func Compile(descriptor TableDescriptor, input TableQuery) (CompiledQuery, error
 		whereSQL,
 		orderBy,
 	)
+	// Filtering a stale computed value may produce zero rows. Report pending
+	// independently of the filter so export cannot mistake that for a complete
+	// empty result. The same freshness predicate drives both checks.
+	ready := []string{}
+	for _, name := range fields {
+		field := descriptor.Fields[name]
+		if field.ComputedEnvelope {
+			ready = append(ready, "("+c.computedFreshSQL(quote(field.PhysicalName), quote(descriptor.RowRevisionName), field)+")")
+		}
+	}
+	pendingSQL := ""
+	if len(ready) > 0 {
+		where := "NOT COALESCE((" + strings.Join(ready, " AND ") + "),0)"
+		if archiveWhere != "" {
+			where = "(" + archiveWhere + ") AND (" + where + ")"
+		}
+		pendingSQL = "SELECT EXISTS(SELECT 1 FROM " + quote(descriptor.PhysicalName) + " WHERE " + where + ")"
+	}
 	return CompiledQuery{
-		SQL: sql, CountSQL: "SELECT COUNT(*) FROM " + quote(descriptor.PhysicalName) + whereSQL,
+		PendingSQL: pendingSQL,
+		SQL:        sql, CountSQL: "SELECT COUNT(*) FROM " + quote(descriptor.PhysicalName) + whereSQL,
 		TotalSQL: "SELECT COUNT(*) FROM " + quote(descriptor.PhysicalName) +
 			optionalWhere(archiveWhere),
 		Params: c.params, Fields: fields,

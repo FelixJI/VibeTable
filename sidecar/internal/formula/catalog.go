@@ -18,6 +18,8 @@ type FunctionInfo struct {
 // get a stable list.
 func FunctionCatalog() []FunctionInfo {
 	catalog := []FunctionInfo{
+		{Name: "TODAY", Category: "日期与时间", Signature: "TODAY([timezone: string]): timestamp", Description: "按 Windows 本地时区返回今天（UTC 零点日期）；可用字符串常量 UTC、system 或 IANA 时区覆盖，按当地日界更新。", Example: `TODAY("UTC")`},
+		{Name: "NOW", Category: "日期与时间", Signature: "NOW(): timestamp", Description: "返回当前分钟起点（UTC）；同批次固定时间，每分钟刷新。", Example: `NOW()`},
 		{Name: "AND", Category: "逻辑与错误", Signature: "AND(condition1: bool, ..., condition8: bool): bool",
 			Description: "从左到右短路求值全部布尔参数，全部为真返回 true；2 到 8 个参数。",
 			Example:     `AND(1 < 2, 2 < 3)`},
@@ -78,6 +80,27 @@ func FunctionCatalog() []FunctionInfo {
 		{Name: "UPPER", Category: "文本", Signature: "UPPER(text: string): string",
 			Description: "按 Unicode 规则转换为大写，沿用既有语义。",
 			Example:     `UPPER("VibeTable")`},
+		{Name: "TEXT", Category: "文本", Signature: "TEXT(value: number | timestamp, format: string [, timezone: string]): string",
+			Description: "数值格式支持 0、0.0 至多 15 位小数及同形百分号，中点远离零舍入；时间戳格式支持 YYYY-MM-DD、YYYY/MM/DD、YYYY-MM、YYYY、MM、DD、YYYY-MM-DD HH:mm、YYYY-MM-DD HH:mm:ss、HH:mm、HH:mm:ss（MM 为月、mm 为分钟）。分组、货币与其他 Excel 代码及未知格式报错。",
+			Example:     `TEXT(3.14159, "0.00")`},
+		{Name: "DATE", Category: "日期", Signature: "DATE(year: int, month: int, day: int): timestamp",
+			Description: "按严格合法公历（1–9999 年）构造 UTC 零点时间戳；月、日超出当月范围不自动进位，直接报错。",
+			Example:     `DATE(2024, 2, 29)`},
+		{Name: "DATEADD", Category: "日期", Signature: "DATEADD(timestamp: timestamp, amount: int, unit: string [, timezone: string]): timestamp",
+			Description: "按 year/month/day 日历单位加减时间戳，默认 UTC，可显式传 \"UTC\"、\"system\" 或 IANA 时区。月/年加法钳制到目标月末，日加法保留本地墙钟时间；结果落入 DST 缺失时间段报错，DST 重叠墙钟取较早一次出现（0 量同样适用）；与旧 dateAdd 的固定时长语义不混用。",
+			Example:     `DATEADD(DATE(2024, 1, 31), 1, "month")`},
+		{Name: "DATEDIFF", Category: "日期", Signature: "DATEDIFF(start: timestamp, end: timestamp, unit: string [, timezone: string]): int",
+			Description: "计算两个时间戳的日历差，默认 UTC，可显式传 \"UTC\"、\"system\" 或 IANA 时区。day 为当地日历日界差；month/year 为带方向的完整日历单位，与 DATEADD 同一月末钳制规则判定，交换参数结果恰为相反数。",
+			Example:     `DATEDIFF(DATE(2024, 1, 1), DATE(2024, 3, 1), "day")`},
+		{Name: "DAY", Category: "日期", Signature: "DAY(timestamp: timestamp [, timezone: string]): int",
+			Description: "返回时间戳在指定时区的当地日（1–31），默认 UTC，可显式传 \"UTC\"、\"system\" 或 IANA 时区。",
+			Example:     `DAY(DATE(2024, 5, 6))`},
+		{Name: "MONTH", Category: "日期", Signature: "MONTH(timestamp: timestamp [, timezone: string]): int",
+			Description: "返回时间戳在指定时区的当地月（1–12），默认 UTC，可显式传 \"UTC\"、\"system\" 或 IANA 时区。",
+			Example:     `MONTH(DATE(2024, 5, 6))`},
+		{Name: "YEAR", Category: "日期", Signature: "YEAR(timestamp: timestamp [, timezone: string]): int",
+			Description: "返回时间戳在指定时区的当地年，默认 UTC，可显式传 \"UTC\"、\"system\" 或 IANA 时区。",
+			Example:     `YEAR(DATE(2024, 5, 6))`},
 	}
 	sort.Slice(catalog, func(i, j int) bool {
 		if catalog[i].Category != catalog[j].Category {
