@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -356,5 +357,124 @@ func saveInternalRecord(
 	}
 	if err := app.Save(record); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDependencyWatermarkUsesBusinessRevisionBehindClockCounter(t *testing.T) {
+	app := computationTestApp(t)
+	saveInternalRecord(t, app, "vibetable_formula_dependencies", map[string]any{
+		"source_table_id": "tbl_orders", "formula_field_id": "fld_total",
+		"relation_field_id": "fld_customer", "target_table_id": "tbl_customers",
+		"target_field_id": "fld_balance", "dependency_kind": "relation",
+	})
+	saveInternalRecord(t, app, "vibetable_formulas", map[string]any{
+		"table_id": "tbl_orders", "field_id": "fld_total",
+		"source": "1 + 1", "language": "cel-v1", "result_type": "number",
+		"version": 1, "status": "ready",
+	})
+	field := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "fld_total", PhysicalName: "total"},
+		LogicalType: v2.LogicalFormula, Formula: &v2.FormulaSpec{},
+	}
+	fields := []v2.FieldDefinition{field}
+	seedCustomer := func(data, clock any) {
+		t.Helper()
+		values := map[string]any{
+			"table_id": "tbl_customers", "collection_id": "customers",
+			"physical_name": "customers", "display_name": "Customers",
+			"kind": "base", "schema_revision": 2, "data_revision": data,
+			"archive_policy": `{"mode":"none"}`,
+		}
+		records, err := app.FindRecordsByFilter(
+			"vibetable_tables", "table_id={:table}", "", 1, 0,
+			dbx.Params{"table": "tbl_customers"},
+		)
+		if err != nil {
+			t.Fatalf("seed customers metadata: %v", err)
+		}
+		var record *core.Record
+		if len(records) == 0 {
+			collection, findErr := app.FindCollectionByNameOrId("vibetable_tables")
+			if findErr != nil {
+				t.Fatal(findErr)
+			}
+			record = core.NewRecord(collection)
+		} else {
+			record = records[0]
+		}
+		for name, value := range values {
+			record.Set(name, value)
+		}
+		// Reset the stored counter before saving: a previously planted corrupt
+		// value would otherwise fail collection validation on this save.
+		record.Set("clock_revision", 0)
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+		if clock != nil {
+			// Bypass PocketBase field validation so corrupt counter shapes can
+			// be planted for the fail-closed assertions.
+			if _, err := app.DB().NewQuery(
+				"UPDATE vibetable_tables SET clock_revision = {:clock} WHERE table_id = 'tbl_customers'",
+			).Bind(dbx.Params{"clock": clock}).Execute(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// Business revision 7 with no counter keeps the historical watermark.
+	seedCustomer(7, nil)
+	baseline, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.DependencyWatermark != Watermark(map[string]int64{"tbl_customers": 7}) {
+		t.Fatalf("baseline watermark = %q", baseline.DependencyWatermark)
+	}
+	fresh := Ready(4.0, CellVersion{1, 11, baseline.DependencyWatermark})
+
+	// Two clock-only transactions (data 9, clock 2) leave business inputs at
+	// 7: the ordinary non-volatile cell stays fresh instead of going pending.
+	seedCustomer(9, 2)
+	afterClock, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterClock.DependencyWatermark != baseline.DependencyWatermark {
+		t.Fatalf("clock-only watermark = %q, want unchanged", afterClock.DependencyWatermark)
+	}
+	if !fresh.Fresh(afterClock) {
+		t.Fatal("ordinary cell became stale after a clock-only refresh")
+	}
+
+	// A real business edit (data 10, clock unchanged) moves the watermark.
+	seedCustomer(10, 2)
+	afterEdit, err := ExpectationFor(context.Background(), app, "tbl_orders", fields, "fld_total", 11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterEdit.DependencyWatermark != Watermark(map[string]int64{"tbl_customers": 8}) {
+		t.Fatalf("business edit watermark = %q", afterEdit.DependencyWatermark)
+	}
+	if fresh.Fresh(afterEdit) {
+		t.Fatal("business edit kept the cell fresh")
+	}
+
+	// Corrupt counters fail closed instead of reading as any business revision.
+	for _, invalid := range []struct {
+		name  string
+		data  any
+		clock any
+	}{
+		{"clock above data", 2, 3},
+		{"negative clock", 5, -1},
+		{"fractional clock", 5, 1.5},
+	} {
+		seedCustomer(invalid.data, invalid.clock)
+		if _, err := ExpectationFor(
+			context.Background(), app, "tbl_orders", fields, "fld_total", 11,
+		); err == nil {
+			t.Fatalf("%s was accepted", invalid.name)
+		}
 	}
 }

@@ -61,6 +61,8 @@ func (kernel *Kernel) Apply(ctx context.Context, request Request) (Receipt, erro
 // ApplyWithCommit lets an authoritative caller persist its result in the same
 // business transaction. The callback never runs for a replayed mutation.
 func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, commit func(core.App, Receipt) error) (Receipt, error) {
+	ctx = formula.EnsureEvaluationTimeAt(ctx, kernel.now())
+	ctx = relatedcomputation.WithClockCache(ctx)
 	if err := validateRequestShape(request); err != nil {
 		return Receipt{}, err
 	}

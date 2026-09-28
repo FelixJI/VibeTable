@@ -70,6 +70,9 @@ class QuerySnapshot(CamelModel):
          "schemaRevision": "a1b2...", "dataRevision": 42,
          "normalizedQuery": {...}}
 
+    Volatile views additionally carry ``"clockPeriod": "..."``; ordinary
+    snapshots omit the key completely (never ``null``).
+
     * ``snapshot_id`` is a short opaque handle the host carries in
       query results and passes back to preview/apply.
     * ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;
@@ -80,6 +83,12 @@ class QuerySnapshot(CamelModel):
     * ``data_revision`` is the gateway's source revision marker.
     * ``normalized_query`` is the canonical form of the query AST (sorted keys)
       so semantically-identical queries share a digest.
+    * ``clock_period`` is present only for volatile (formula-clock) query
+      views: the readable clock period all rows of a page were fixed to.
+      Ordinary queries omit it entirely — both on this wire and when the
+      snapshot is echoed back — so old digests never observe a ``null``.
+      Serialize with ``model_dump(..., exclude_none=True)`` to keep the field
+      off the wire for ordinary snapshots.
     """
 
     snapshot_id: str
@@ -89,6 +98,7 @@ class QuerySnapshot(CamelModel):
     schema_revision: str = Field(min_length=1)
     data_revision: int
     normalized_query: dict[str, Any]
+    clock_period: str | None = None
 
 
 class SelectionSnapshot(CamelModel):

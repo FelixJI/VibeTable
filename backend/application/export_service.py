@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +65,11 @@ class AuthoritativeLookupExportPage:
     columns: list[AuthoritativeLookupColumn]
     filtered_rows: int
     lookup_revision: str
+    #: QueryPort snapshot of the page's logical view. Providers that predate
+    #: snapshot binding may leave it unset; once a page carries one, every
+    #: following page must carry an identical revision identity.
+    snapshot: dict[str, Any] | None = None
+    computed_pending: bool = False
 
 
 class AuthoritativeLookupExportProvider(Protocol):
@@ -92,6 +97,9 @@ class QueryPage(Protocol):
     rows: list[dict[str, Any]]
     filtered_rows: int
     total_rows: int
+    #: The QueryPort ``querySnapshot`` dict every production page carries.
+    snapshot: dict[str, Any]
+    computed_pending: bool
 
 
 class QueryPagePort(Protocol):
@@ -240,6 +248,7 @@ class ExportService:
         assert params.lookup_revision is not None
         offset = 0
         written = 0
+        binding: SnapshotIdentity | None = None
         first = await self._lookup_provider.query_page(
             collection=profile.collection,
             fields=base_columns,
@@ -261,6 +270,9 @@ class ExportService:
                 "Lookup definitions changed before export",
                 code="lookup_revision_mismatch",
             )
+        binding = _bind_snapshot(
+            binding, first.snapshot, plane="Lookup", computed_pending=first.computed_pending
+        )
         lookup_columns = [column.field_key for column in first.columns]
         if len(lookup_columns) != len(set(lookup_columns)):
             raise ExportError(
@@ -310,6 +322,9 @@ class ExportService:
                         "Lookup definitions changed during export",
                         code="lookup_revision_mismatch",
                     )
+                binding = _bind_snapshot(
+                    binding, page.snapshot, plane="Lookup", computed_pending=page.computed_pending
+                )
             if workbook is not None:
                 workbook.save(stream)
         return written
@@ -325,6 +340,7 @@ class ExportService:
     ) -> int:
         total_estimate = 0
         written = 0
+        binding: SnapshotIdentity | None = None
         with text_stream(stream) as fh:
             writer = csv.writer(fh)
             writer.writerow(columns)
@@ -336,6 +352,9 @@ class ExportService:
                 page = await self._query_port.query_page(
                     table_id=profile.collection,
                     query=page_query.model_dump(mode="json", by_alias=True, exclude_none=True),
+                )
+                binding = _bind_snapshot(
+                    binding, page.snapshot, plane="record", computed_pending=page.computed_pending
                 )
                 if offset == 0:
                     total_estimate = page.filtered_rows
@@ -367,6 +386,7 @@ class ExportService:
             ws.append(columns)
             written = 0
             total_estimate = 0
+            binding: SnapshotIdentity | None = None
             offset = 0
             while True:
                 if cancelled and cancelled():
@@ -375,6 +395,9 @@ class ExportService:
                 page = await self._query_port.query_page(
                     table_id=profile.collection,
                     query=page_query.model_dump(mode="json", by_alias=True, exclude_none=True),
+                )
+                binding = _bind_snapshot(
+                    binding, page.snapshot, plane="record", computed_pending=page.computed_pending
                 )
                 if offset == 0:
                     total_estimate = page.filtered_rows
@@ -457,6 +480,67 @@ def _xlsx_row[T](worksheet: WriteOnlyWorksheet, values: list[T]) -> list[T | Cel
 
 def _safe_int(value: Any) -> int | None:
     return value if isinstance(value, int) else None
+
+
+SnapshotIdentity = tuple[str, int, str | None]
+
+
+def _snapshot_identity(snapshot: Mapping[str, Any]) -> SnapshotIdentity:
+    """Extract the logical-view identity a paging export must stay bound to.
+
+    Covers ordinary snapshots (no ``clockPeriod``) and volatile ones alike;
+    presence is part of the identity so a page can never silently cross a
+    schema/data revision or drop in and out of a fixed clock period.
+    """
+
+    schema_revision = snapshot.get("schemaRevision")
+    data_revision = snapshot.get("dataRevision")
+    clock_period = snapshot.get("clockPeriod")
+    if (
+        not isinstance(schema_revision, str)
+        or isinstance(data_revision, bool)
+        or not isinstance(data_revision, int)
+        or (clock_period is not None and not isinstance(clock_period, str))
+    ):
+        raise ExportError(
+            "query page snapshot does not carry a revision identity",
+            code="export_snapshot_invalid",
+        )
+    return schema_revision, data_revision, clock_period
+
+
+def _bind_snapshot(
+    binding: SnapshotIdentity | None,
+    snapshot: Mapping[str, Any] | None,
+    *,
+    plane: str,
+    computed_pending: bool,
+) -> SnapshotIdentity | None:
+    """Keep a paging export bound to one logical view.
+
+    ``snapshot`` is ``None`` only on Lookup planes that predate snapshot
+    binding; once a plane has reported a snapshot, later pages may not drop it.
+    """
+
+    if computed_pending:
+        raise ExportError(
+            "query includes computed cells waiting for recalculation",
+            code="export_computed_cell_not_ready",
+        )
+    if snapshot is None:
+        if binding is not None:
+            raise ExportError(
+                f"the {plane} query snapshot disappeared during export",
+                code="export_snapshot_changed",
+            )
+        return None
+    identity = _snapshot_identity(snapshot)
+    if binding is not None and identity != binding:
+        raise ExportError(
+            f"the {plane} query snapshot changed during export",
+            code="export_snapshot_changed",
+        )
+    return identity
 
 
 __all__ = [

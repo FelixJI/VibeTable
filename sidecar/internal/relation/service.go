@@ -11,6 +11,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	lookupcalc "github.com/vibetable/vibetable/sidecar/internal/lookup"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
@@ -386,6 +387,7 @@ func (service *Service) QueryLookups(
 	ctx context.Context,
 	request LookupQueryRequest,
 ) (LookupQueryResult, error) {
+	ctx = formula.EnsureEvaluationTime(ctx)
 	definition, err := schemaexecution.Describe(ctx, service.app, request.TableID)
 	if err != nil {
 		return LookupQueryResult{}, err

@@ -6,11 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
+
+// ClockRevisionField counts only clock-derived cache transactions on the
+// vibetable_tables metadata; the freshness contract subtracts it from
+// data_revision to track business inputs. Absent (older metadata) means zero.
+const ClockRevisionField = "clock_revision"
 
 // ExpectationFor derives the version that a computed cell must carry at the
 // instant it is read or written. Dependency revisions are deliberately read
@@ -48,12 +55,61 @@ func ExpectationFor(
 		if findErr != nil {
 			return Expectation{}, fmt.Errorf("load computed dependency %s: %w", tableID, findErr)
 		}
-		revisions[tableID] = int64(record.GetInt("data_revision"))
+		// The dependency watermark tracks business inputs only: clock-derived
+		// cache transactions advance clock_revision alongside data_revision,
+		// and a missing counter on older metadata reads as zero.
+		business, revisionErr := businessInputRevision(tableID, record)
+		if revisionErr != nil {
+			return Expectation{}, revisionErr
+		}
+		revisions[tableID] = business
+	}
+	references, err := ClockReferencesFor(ctx, app, tableID, fields, fieldID)
+	if err != nil {
+		return Expectation{}, err
+	}
+	watermark := Watermark(revisions)
+	if period := formula.ClockSignature(ctx, references); period != "" {
+		watermark += "|" + period
 	}
 	return Expectation{
 		DefinitionVersion: version, SourceDataRevision: sourceRevision,
-		DependencyWatermark: Watermark(revisions),
+		DependencyWatermark: watermark,
 	}, nil
+}
+
+// businessInputRevision derives the business-input revision of one table:
+// data_revision minus its clock-derived clock_revision. Validation fails
+// closed on malformed counters instead of blessing a stale-looking watermark.
+func businessInputRevision(tableID string, record *core.Record) (int64, error) {
+	data, dataOK := storedTableCounter(record.GetRaw("data_revision"))
+	if !dataOK || data < 0 {
+		return 0, fmt.Errorf("dependency table %s has an invalid data revision", tableID)
+	}
+	clock := int64(0)
+	if raw := record.GetRaw(ClockRevisionField); raw != nil {
+		counter, clockOK := storedTableCounter(raw)
+		// A non-zero counter can only come from the migrated optional field;
+		// anything else indicates corrupt metadata and must not read as zero.
+		if !clockOK || counter < 0 || counter > data {
+			return 0, fmt.Errorf("dependency table %s has an invalid clock revision", tableID)
+		}
+		if counter != 0 && record.Collection().Fields.GetByName(ClockRevisionField) == nil {
+			return 0, fmt.Errorf("dependency table %s counts clock revisions without the field", tableID)
+		}
+		clock = counter
+	}
+	return data - clock, nil
+}
+
+// PocketBase NumberField normalizes stored values to float64. Accept only
+// exact non-negative counters within the existing safe-integer contract.
+func storedTableCounter(value any) (int64, bool) {
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < 0 || number >= 1<<53 {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 func WrapValues(

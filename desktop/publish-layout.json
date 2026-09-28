@@ -15,8 +15,8 @@
       "pocketBaseVersion": "0.40.1",
       "celVersion": "0.31.0",
       "contractVersion": "2.0",
-      "schemaVersion": "12",
-      "migrationHash": "656d20eda6d453d5ec9c618a6160ea85e740d854eed00bfc94b95524d6e32e41",
+      "schemaVersion": "13",
+      "migrationHash": "f6d762db9f1b3d79a6453103c639685d60b91b6126ce5177e29d5d4a3d8304cd",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },

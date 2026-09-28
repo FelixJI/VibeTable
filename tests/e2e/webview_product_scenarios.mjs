@@ -2551,6 +2551,16 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
     { name: "分类", source: 'IF({数量} >= 2.0, "批量", "零售")', before: "批量", after: "批量" },
     { name: "编码", source: "UPPER(LEFT(TRIM({物料😀}), 3))", before: "ABC", after: "ABC" },
     { name: "错误提示", source: 'IFERROR(string(1.0 / ({数量} - 2.0)), "计算错误")', before: "计算错误", after: "0.5" },
+    { name: "到期日期", source: 'DATEADD(DATE(2024, 1, 31), 1, "month")', before: "2024-02-29T00:00:00Z", after: "2024-02-29T00:00:00Z" },
+    { name: "距到期天数", source: 'DATEDIFF(DATE(2024, 2, 1), {到期日期}, "day")', before: 28, after: 28 },
+    { name: "到期状态", source: 'IF({距到期天数} > 0, "未到期", "已到期")', before: "未到期", after: "未到期" },
+    { name: "日期文本", source: 'TEXT({到期日期}, "YYYY/MM/DD")', before: "2024/02/29", after: "2024/02/29" },
+    { name: "今天", source: 'TODAY("UTC")', preview: /\d{4}-\d{2}-\d{2}T00:00:00Z/u,
+      matches: value => typeof value === "string" && [Date.now(), Date.now() - 120_000]
+        .some(instant => value === `${new Date(instant).toISOString().slice(0, 10)}T00:00:00Z`) },
+    { name: "当前分钟", source: "NOW()", preview: /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00Z/u,
+      matches: value => typeof value === "string" && /:00Z$/u.test(value)
+        && Date.parse(value) <= Date.now() && Date.now() - Date.parse(value) < 120_000 },
   ];
   for (const item of cases) {
     await page.getByTestId("toolbar-field-manager").click();
@@ -2567,7 +2577,7 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
     await fillNInput(page, "formula-source", item.source);
     await page.getByTestId("formula-field-editor").getByRole("alert")
       .filter({ hasText: "公式有效" }).waitFor({ timeout: 30_000 });
-    await page.getByTestId("formula-preview-value").filter({ hasText: String(item.before) })
+    await page.getByTestId("formula-preview-value").filter({ hasText: item.preview ?? String(item.before) })
       .waitFor({ timeout: 30_000 });
     await page.getByTestId("formula-preview-value").scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(runtime.evidenceDir, `05-formula-${item.name}.png`), fullPage: true });
@@ -2595,7 +2605,8 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
     item.fieldId = described.payload.definition.identity.fieldId;
     item.physicalName = described.payload.definition.identity.physicalName;
     await waitForQueryPage(page, { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
-      result => result?.rows?.[0]?.[item.physicalName] === item.before);
+      result => item.matches ? item.matches(result?.rows?.[0]?.[item.physicalName])
+        : result?.rows?.[0]?.[item.physicalName] === item.before);
     recorder.check(`${item.name} is saved through the real formula editor`,
       described.payload.definition.logicalType === "formula", { source: described.payload.definition.formula.source });
   }
@@ -2606,8 +2617,36 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
   await editor.press("Enter");
   const expected = await waitForQueryPage(page,
     { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
-    result => cases.every(item => result?.rows?.[0]?.[item.physicalName] === item.after));
+    result => cases.every(item => item.matches ? item.matches(result?.rows?.[0]?.[item.physicalName])
+      : result?.rows?.[0]?.[item.physicalName] === item.after));
   recorder.check("editing quantity recomputes all common formula columns", !!expected.payload?.rows?.length);
+  const deadlineField = cases.find(item => item.name === "到期日期");
+  const textField = cases.find(item => item.name === "日期文本");
+  const filtered = await rawBridgeRequest(page, "query.page", {
+    tableId, query: { filters: [{ field: textField.physicalName, operator: "eq", value: "2024/02/29" }],
+      sorts: [{ field: deadlineField.physicalName, direction: "asc" }], offset: 0, limit: 100 },
+  });
+  recorder.check("date-chain sorting and filtering share the grid clock snapshot",
+    filtered.payload.rows.length === 1 && typeof filtered.payload.querySnapshot.clockPeriod === "string"
+      && filtered.payload.rows[0][deadlineField.physicalName] === "2024-02-29T00:00:00Z");
+  await chooseToolbarMore(page, "refresh");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "05-formula-date-grid.png"), fullPage: true });
+  await chooseToolbarMore(page, "export-csv");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const exportTarget = path.join(runtime.controlsDir, "export-result.csv");
+  let exported = "";
+  const exportDeadline = Date.now() + 60_000;
+  while (Date.now() < exportDeadline) {
+    try { exported = await fs.readFile(exportTarget, "utf8"); if (exported.includes("2024/02/29")) break; }
+    catch (error) { if (error?.code !== "ENOENT") throw error; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const csv = parseCsv(exported);
+  recorder.check("date-chain CSV matches preview and authoritative grid values", cases.filter(item => !item.matches).every(item => {
+    const index = csv[0]?.indexOf(item.physicalName) ?? -1;
+    return index >= 0 && csv[1]?.[index] === String(item.after);
+  }), { exported });
   return { tableId, tableName, cases };
 }
 
@@ -2814,7 +2853,8 @@ async function scenario05(page, recorder, _network, runtime) {
   await selectTable(page, commonFormulas.tableName);
   const formulaRows = await waitForQueryPage(page, {
     tableId: commonFormulas.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  }, result => commonFormulas.cases.every(item => result?.rows?.[0]?.[item.physicalName] === item.after));
+  }, result => commonFormulas.cases.every(item => item.matches ? item.matches(result?.rows?.[0]?.[item.physicalName])
+      : result?.rows?.[0]?.[item.physicalName] === item.after));
   recorder.check("common formulas survive actual workspace close and reopen", formulaRows.payload.rows.length === 1);
   const formulaHeader = page.locator(`.tabulator-col[tabulator-field="${commonFormulas.cases[0].physicalName}"]`);
   await formulaHeader.locator(".tabulator-col-title").click({ button: "right" });

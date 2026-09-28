@@ -12471,6 +12471,17 @@
               "normalizedQuery": {
                 "additionalProperties": true,
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -12615,7 +12626,8 @@
             "table": "sample-value",
             "schemaRevision": "schema_0001",
             "dataRevision": 1,
-            "normalizedQuery": {}
+            "normalizedQuery": {},
+            "clockPeriod": null
           }
         }
       },
@@ -17823,7 +17835,7 @@
           "JsonValue": {},
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots omit the key completely (never ``null``).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is present only for volatile (formula-clock) query\n  views: the readable clock period all rows of a page were fixed to.\n  Ordinary queries omit it entirely — both on this wire and when the\n  snapshot is echoed back — so old digests never observe a ``null``.\n  Serialize with ``model_dump(..., exclude_none=True)`` to keep the field\n  off the wire for ordinary snapshots.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -17856,6 +17868,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -17985,7 +18009,7 @@
           "JsonValue": {},
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots omit the key completely (never ``null``).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is present only for volatile (formula-clock) query\n  views: the readable clock period all rows of a page were fixed to.\n  Ordinary queries omit it entirely — both on this wire and when the\n  snapshot is echoed back — so old digests never observe a ``null``.\n  Serialize with ``model_dump(..., exclude_none=True)`` to keep the field\n  off the wire for ordinary snapshots.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -18018,6 +18042,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -18148,7 +18184,7 @@
           "JsonValue": {},
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots omit the key completely (never ``null``).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is present only for volatile (formula-clock) query\n  views: the readable clock period all rows of a page were fixed to.\n  Ordinary queries omit it entirely — both on this wire and when the\n  snapshot is echoed back — so old digests never observe a ``null``.\n  Serialize with ``model_dump(..., exclude_none=True)`` to keep the field\n  off the wire for ordinary snapshots.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -18181,6 +18217,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -19330,7 +19378,7 @@
           },
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots omit the key completely (never ``null``).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is present only for volatile (formula-clock) query\n  views: the readable clock period all rows of a page were fixed to.\n  Ordinary queries omit it entirely — both on this wire and when the\n  snapshot is echoed back — so old digests never observe a ``null``.\n  Serialize with ``model_dump(..., exclude_none=True)`` to keep the field\n  off the wire for ordinary snapshots.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -19363,6 +19411,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [
@@ -20215,7 +20275,7 @@
           },
           "QuerySnapshot": {
             "additionalProperties": false,
-            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.",
+            "description": "A stable reference to a query view of a table.\n\nWire form::\n\n    {\"snapshotId\": \"ab12...\", \"digest\": \"cd34...\",\n     \"databaseId\": \"c:/.../file.db\", \"table\": \"contracts\",\n     \"schemaRevision\": \"a1b2...\", \"dataRevision\": 42,\n     \"normalizedQuery\": {...}}\n\nVolatile views additionally carry ``\"clockPeriod\": \"...\"``; ordinary\nsnapshots omit the key completely (never ``null``).\n\n* ``snapshot_id`` is a short opaque handle the host carries in\n  query results and passes back to preview/apply.\n* ``digest`` is the canonical SHA-256 (first 16 hex) of the snapshot inputs;\n  the host MAY compare digests to detect change cheaply.\n* ``database_id`` identifies the configured logical product source; the\n  field name remains stable on the wire.\n* ``schema_revision`` mirrors :attr:`EditSchemaResult.schema_revision`.\n* ``data_revision`` is the gateway's source revision marker.\n* ``normalized_query`` is the canonical form of the query AST (sorted keys)\n  so semantically-identical queries share a digest.\n* ``clock_period`` is present only for volatile (formula-clock) query\n  views: the readable clock period all rows of a page were fixed to.\n  Ordinary queries omit it entirely — both on this wire and when the\n  snapshot is echoed back — so old digests never observe a ``null``.\n  Serialize with ``model_dump(..., exclude_none=True)`` to keep the field\n  off the wire for ordinary snapshots.",
             "properties": {
               "snapshotId": {
                 "title": "Snapshotid",
@@ -20248,6 +20308,18 @@
                 "additionalProperties": true,
                 "title": "Normalizedquery",
                 "type": "object"
+              },
+              "clockPeriod": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Clockperiod"
               }
             },
             "required": [

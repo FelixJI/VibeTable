@@ -338,6 +338,8 @@ class PocketBaseLookupExportProvider:
             columns=columns,
             filtered_rows=page.filtered_rows,
             lookup_revision=str(schema_revision),
+            snapshot=page.snapshot,
+            computed_pending=page.computed_pending,
         )
 
 

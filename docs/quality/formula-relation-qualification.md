@@ -135,3 +135,5 @@ audit 与 outbox 不重复。snapshot 恢复后重建依赖并得到相同结果
 - 三条产品场景、能力矩阵、E2E 索引、用户文档和截图与同一 fresh main 证据一致。
 
 任一条缺少证据时维持 Open/Partial，不用相邻测试或实现存在性推断 Closed。
+
+日期/日历与易变时钟函数的约定及固定时钟验证入口见 [日期公式与时钟](formula-date-clock.md)。

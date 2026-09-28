@@ -106,6 +106,7 @@ class QueryPageResult:
     filtered_rows: int
     total_rows: int
     snapshot: dict[str, JsonValue]
+    computed_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -523,10 +524,12 @@ def _object(value: object, label: str) -> JsonObject:
 
 
 def _query_page(payload: Mapping[str, JsonValue]) -> QueryPageResult:
+    pending = payload.get("computedPending", False)
     rows = payload.get("rows")
     snapshot = payload.get("querySnapshot")
     if (
-        not isinstance(rows, list)
+        not isinstance(pending, bool)
+        or not isinstance(rows, list)
         or not all(isinstance(row, dict) for row in rows)
         or not isinstance(snapshot, dict)
     ):
@@ -538,6 +541,7 @@ def _query_page(payload: Mapping[str, JsonValue]) -> QueryPageResult:
         filtered_rows=_integer(payload.get("filteredRows"), "filteredRows"),
         total_rows=_integer(payload.get("totalRows"), "totalRows"),
         snapshot=_object(snapshot, "query snapshot"),
+        computed_pending=pending,
     )
 
 

@@ -5,11 +5,16 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
 func TestCanonicalLookupValuePreservesOneOrManyCardinality(t *testing.T) {
@@ -164,5 +169,238 @@ func TestCalculateCellsBatchHonorsCancellationBeforeStorage(t *testing.T) {
 	_, err := NewCalculator().CalculateCellsBatch(ctx, nil, schemaexecution.Table{}, nil, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled page error = %#v", err)
+	}
+}
+
+func TestLookupProjectionReadsComputedTargetsThroughBatchReader(t *testing.T) {
+	definition := schemaexecution.Table{
+		PhysicalName: "rows",
+		Snapshot: v2.SchemaSnapshot{TableID: "rows", Fields: []v2.FieldDefinition{
+			{Identity: v2.FieldIdentity{FieldID: "links", PhysicalName: "links"}, Relation: &v2.RelationSpec{TargetTableID: "rows"}},
+			{
+				Identity:    v2.FieldIdentity{FieldID: "fld_minute", PhysicalName: "f_minute"},
+				LogicalType: v2.LogicalFormula,
+				Formula:     &v2.FormulaSpec{Source: "NOW()", Language: "cel-v1"},
+			},
+		}},
+	}
+	field := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "lookup", PhysicalName: "f_lookup"},
+		LogicalType: v2.LogicalLookup,
+		Lookup: &v2.LookupSpec{
+			Path:          []v2.LookupPathStep{{RelationFieldID: "links"}},
+			TargetFieldID: "fld_minute",
+		},
+	}
+	definition.Snapshot.Fields = append(definition.Snapshot.Fields, field)
+	source := core.NewRecord(core.NewBaseCollection("rows"))
+	source.Id = "root"
+	source.Set("links", []string{"leaf"})
+	leaf := core.NewRecord(source.Collection())
+	leaf.Id = "leaf"
+	storedEnvelope := map[string]any{
+		"state": "ready", "value": "06:59",
+		"version": map[string]any{
+			"definitionVersion": 1, "sourceDataRevision": 1,
+			"dependencyWatermark": "sha256:00",
+		},
+	}
+	leaf.Set("f_minute", storedEnvelope)
+	definitions := map[string]schemaexecution.Table{"rows": definition}
+	cache := map[string]map[string]*core.Record{"rows": {"leaf": leaf}}
+	project := func(ctx context.Context) ([]lookupPathValue, error) {
+		cursor := lookupBatchCursor{
+			fields:    []v2.FieldDefinition{field},
+			source:    traversalNode{definition: definition, record: source},
+			collector: lookupPageCollector{limit: 100}, values: make([][]lookupPathValue, 1),
+		}
+		_, _, err := cursor.advance(
+			ctx, nil, definitions, cache,
+			&materializationBudget{remainingBytes: lookupMaterializationBytes},
+		)
+		if err != nil {
+			return nil, err
+		}
+		return cursor.values[0], nil
+	}
+
+	// Without a reader a computed target fails closed: the stored envelope
+	// must never leak through a projection as a value.
+	_, err := project(context.Background())
+	var guardErr *formula.Error
+	if !errors.As(err, &guardErr) || guardErr.Code != "formula.dependency" {
+		t.Fatalf("readerless projection error = %#v", err)
+	}
+
+	// The batch reader serves only fresh computed scalars.
+	fresh := formula.WithComputedSourceReader(
+		context.Background(),
+		func(context.Context, core.App, string, []v2.FieldDefinition, v2.FieldDefinition, *core.Record) (any, error) {
+			return "07:00", nil
+		},
+	)
+	served, err := project(fresh)
+	if err != nil || len(served) != 1 || served[0].value != "07:00" {
+		t.Fatalf("reader projection = %#v, %v", served, err)
+	}
+
+	// A stale computed source fails closed instead of leaking an old value.
+	stale := formula.WithComputedSourceReader(
+		context.Background(),
+		func(context.Context, core.App, string, []v2.FieldDefinition, v2.FieldDefinition, *core.Record) (any, error) {
+			return nil, &formula.Error{
+				ContractVersion: formula.ContractVersion,
+				Code:            "formula.dependency",
+				Message:         "computed source cell is stale for this evaluation",
+			}
+		},
+	)
+	_, err = project(stale)
+	var formulaErr *formula.Error
+	if !errors.As(err, &formulaErr) || formulaErr.Code != "formula.dependency" {
+		t.Fatalf("stale projection error = %#v", err)
+	}
+}
+
+// Standalone Lookup entry points (grid batches, paged source details) run
+// without the mutation composite, so they must install the shared freshness
+// reader themselves: a stale stored computed source is an explicit rejection,
+// a fresh one serves its scalar.
+func TestStandaloneLookupEntriesRejectStaleComputedSources(t *testing.T) {
+	app := pocketbase.NewWithConfig(pocketbase.Config{
+		DefaultDataDir: t.TempDir(), HideStartBanner: true,
+	})
+	migrations.Register(app)
+	if err := app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := app.ResetBootstrapState(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	formulas, err := app.FindCollectionByNameOrId("vibetable_formulas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := core.NewRecord(formulas)
+	metadata.Set("table_id", "tbl_rows")
+	metadata.Set("field_id", "fld_minute")
+	metadata.Set("source", "NOW()")
+	metadata.Set("language", "cel-v1")
+	metadata.Set("result_type", "text")
+	metadata.Set("version", 1)
+	metadata.Set("status", "ready")
+	if err := app.Save(metadata); err != nil {
+		t.Fatal(err)
+	}
+	collection := core.NewBaseCollection("rows")
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	collection.Fields.Add(&core.RelationField{Name: "links", CollectionId: collection.Id, MaxSelect: 1000})
+	collection.Fields.Add(&core.NumberField{Name: relatedcomputation.RowRevisionField, OnlyInt: true})
+	collection.Fields.Add(&core.JSONField{Name: "f_minute"})
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	definition := schemaexecution.Table{
+		PhysicalName: "rows",
+		Snapshot: v2.SchemaSnapshot{TableID: "tbl_rows", Fields: []v2.FieldDefinition{
+			{
+				Identity: v2.FieldIdentity{FieldID: "links", PhysicalName: "links"},
+				Relation: &v2.RelationSpec{TargetTableID: "tbl_rows"},
+			},
+			{
+				Identity:    v2.FieldIdentity{FieldID: "fld_minute", PhysicalName: "f_minute"},
+				LogicalType: v2.LogicalFormula,
+				Formula:     &v2.FormulaSpec{Source: "NOW()", Language: "cel-v1"},
+			},
+		}},
+	}
+	field := v2.FieldDefinition{
+		Identity:    v2.FieldIdentity{FieldID: "lookup", PhysicalName: "f_lookup"},
+		LogicalType: v2.LogicalLookup,
+		Lookup: &v2.LookupSpec{
+			Path:          []v2.LookupPathStep{{RelationFieldID: "links"}},
+			TargetFieldID: "fld_minute",
+		},
+	}
+	definition.Snapshot.Fields = append(definition.Snapshot.Fields, field)
+	source := core.NewRecord(collection)
+	source.Id = "standalone00001"
+	leaf := core.NewRecord(collection)
+	leaf.Set(relatedcomputation.RowRevisionField, 3)
+	leaf.Set("links", []string{})
+	if err := app.Save(leaf); err != nil {
+		t.Fatal(err)
+	}
+	source.Set("links", []string{leaf.Id})
+	if err := app.Save(source); err != nil {
+		t.Fatal(err)
+	}
+	instant := time.Date(2024, 3, 10, 6, 59, 0, 0, time.UTC)
+	ctx := formula.WithEvaluationTime(context.Background(), instant)
+	store := func(envelope map[string]any) {
+		stored, loadErr := app.FindRecordById(collection, leaf.Id)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		stored.Set("f_minute", envelope)
+		if err := app.Save(stored); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleEnvelope := map[string]any{
+		"state": "ready", "value": "06:59",
+		"version": map[string]any{
+			"definitionVersion": 1, "sourceDataRevision": 3,
+			"dependencyWatermark": "sha256:stale",
+		},
+	}
+	expectation, err := relatedcomputation.ExpectationFor(
+		ctx, app, "tbl_rows", definition.Snapshot.Fields, "fld_minute", 3,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshEnvelope := map[string]any{
+		"state": "ready", "value": "06:59",
+		"version": map[string]any{
+			"definitionVersion":   expectation.DefinitionVersion,
+			"sourceDataRevision":  expectation.SourceDataRevision,
+			"dependencyWatermark": expectation.DependencyWatermark,
+		},
+	}
+
+	store(staleEnvelope)
+	_, err = NewCalculator().CalculateCellsBatch(
+		ctx, app, definition, []*core.Record{source}, nil,
+	)
+	var staleErr *formula.Error
+	if !errors.As(err, &staleErr) || staleErr.Code != "formula.dependency" {
+		t.Fatalf("stale standalone batch error = %#v", err)
+	}
+	_, err = NewCalculator().CalculateFieldPage(ctx, app, definition, source, field, 0, 10)
+	if !errors.As(err, &staleErr) || staleErr.Code != "formula.dependency" {
+		t.Fatalf("stale standalone page error = %#v", err)
+	}
+
+	store(freshEnvelope)
+	cells, err := NewCalculator().CalculateCellsBatch(
+		ctx, app, definition, []*core.Record{source}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cell := cells[source.Id][field.Identity.PhysicalName]; cell.State != "ok" || cell.Value != "06:59" {
+		t.Fatalf("fresh standalone batch cell = %#v", cell)
+	}
+	page, err := NewCalculator().CalculateFieldPage(ctx, app, definition, source, field, 0, 10)
+	if err != nil || page.State != "ok" || page.Value != "06:59" {
+		t.Fatalf("fresh standalone page = %#v, %v", page, err)
 	}
 }

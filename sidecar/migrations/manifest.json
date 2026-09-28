@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 12,
+  "schemaVersion": 13,
   "migrations": [
     {
       "id": 2026072401,
@@ -67,6 +67,12 @@
       "name": "plugin_shared_state",
       "source": "2026092601_plugin_shared_state.go",
       "sha256": "2c462a55d8688d7ed2294eb0c9c11d8c14e482224dc43943dd0c3d240d50f969"
+    },
+    {
+      "id": 2026092801,
+      "name": "clock_revision",
+      "source": "2026092801_clock_revision.go",
+      "sha256": "4423a5155abbf66881df80ed5d0c7cb6e5317e9cf94ad2ff73f3399005b47a3c"
     }
   ]
 }

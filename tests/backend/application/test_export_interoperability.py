@@ -26,6 +26,16 @@ class _OnePageQueryPort:
         self.rows = [dict(row)]
         self.filtered_rows = 1
         self.total_rows = 1
+        self.computed_pending = False
+        self.snapshot = {
+            "snapshotId": "0" * 32,
+            "digest": "a" * 64,
+            "databaseId": "local",
+            "table": "interoperability",
+            "schemaRevision": "schema_0001",
+            "dataRevision": 1,
+            "normalizedQuery": {"offset": 0, "limit": 100},
+        }
 
     async def query_page(self, *, table_id: str, query: dict[str, object]) -> _OnePageQueryPort:
         del table_id, query

@@ -234,6 +234,8 @@ export interface LookupQueryResult {
     readonly dataRevision: number;
     readonly schemaRevision: string;
     readonly normalizedQuery: Readonly<Record<string, unknown>>;
+    /** Volatile (formula-clock) views only; ordinary snapshots omit the key. */
+    readonly clockPeriod?: string | null;
   };
 }
 
