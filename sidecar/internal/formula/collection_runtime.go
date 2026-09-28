@@ -368,7 +368,7 @@ func collectionCanonicalElement(value any, elementType v2.LogicalType) (any, *Er
 		case pbtypes.DateTime:
 			return typed.Time().UTC(), nil
 		case string:
-			parsed, err := time.Parse(time.RFC3339Nano, typed)
+			parsed, err := parseFormulaTimestamp(typed, elementType)
 			if err != nil {
 				return nil, formulaError("formula.timezone", "collection timestamp element must be RFC3339 with an explicit timezone", nil)
 			}

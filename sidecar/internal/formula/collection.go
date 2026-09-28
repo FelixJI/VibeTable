@@ -292,6 +292,10 @@ func collectionElementType(field v2.FieldDefinition) (ValueType, *Error) {
 	if failure != nil || result.ElementType != "" {
 		return ValueType{}, formulaError("formula.type", "nested or untyped collection element", nil)
 	}
+	// Preserve the product calendar-date input shape until CEL normalization.
+	if valueTypeForField(field).LogicalType == v2.LogicalDate {
+		result.LogicalType = v2.LogicalDate
+	}
 	result.OnlyInt = false // One stable numeric list shape across JSON round trips.
 	return result, nil
 }

@@ -212,3 +212,30 @@ func TestCollectionExtremaDoNotAccumulateAnUnusedSum(t *testing.T) {
 		})
 	}
 }
+
+func TestCollectionCalendarDatesFromProductRowsAndLookup(t *testing.T) {
+	for _, source := range []string{
+		`ARRAYJOIN(PROJECT(FILTER(TABLE("shipments"), CurrentValue.day >= start), CurrentValue.day), ",")`,
+		`ARRAYJOIN(FILTER(days, CurrentValue >= start), ",")`,
+	} {
+		day := scalarField("day_id", "day", ValueType{LogicalType: v2.LogicalDate})
+		definition := collectionRuntimeDefinition(textType, source, day)
+		start := scalarField("start_id", "start", ValueType{LogicalType: v2.LogicalDate})
+		lookup := scalarField("days_id", "days", ValueType{LogicalType: v2.LogicalLookup})
+		lookup.Lookup = &v2.LookupSpec{Condition: &v2.LookupCondition{SourceTableID: "shipments"}, TargetFieldID: "day_id"}
+		definition.Snapshot.Fields = append(definition.Snapshot.Fields, start, lookup)
+		plan, failure := NewCompiler(DefaultLimits()).CompileExecutionTable(definition)
+		if failure != nil {
+			t.Fatal(failure)
+		}
+		ctx := WithCollectionSourceReader(context.Background(), collectionRowsReader([]map[string]any{
+			{"day": "2026-03-04"}, {"day": "2026-03-05"},
+		}, nil))
+		result, failure := plan.Evaluate(ctx, map[string]any{
+			"start": "2026-03-05", "days": []any{"2026-03-04", "2026-03-05"},
+		}, nil)
+		if failure != nil || result["runtime_value"] != "2026-03-05T00:00:00Z" {
+			t.Fatalf("%s = %#v, %v", source, result, failure)
+		}
+	}
+}

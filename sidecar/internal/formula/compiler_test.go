@@ -569,3 +569,14 @@ func assertFormulaCode(t *testing.T, err *Error, code string) {
 }
 
 var _ = time.RFC3339
+
+func TestFormulaDateInputUsesProductCalendarShape(t *testing.T) {
+	field := scalarField("due_id", "due", ValueType{LogicalType: v2.LogicalDate})
+	value, failure := normalizeInput(field, "2026-03-05", DefaultLimits())
+	if failure != nil || value != time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC) {
+		t.Fatalf("calendar date = %#v, %v", value, failure)
+	}
+	field.LogicalType = v2.LogicalDateTime
+	_, failure = normalizeInput(field, "2026-03-05", DefaultLimits())
+	assertFormulaCode(t, failure, "formula.timezone")
+}

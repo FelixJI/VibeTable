@@ -683,7 +683,7 @@ func TestFormulaProductIntegerDraftInspectionFeedsPreviewStorage(t *testing.T) {
 		field.Storage.Options.OnlyInt = inspection.OnlyInt
 		return formulaTestWireField(t, field)
 	}
-	row := map[string]any{due.Identity.PhysicalName: "2024-05-06T00:00:00Z"}
+	row := map[string]any{due.Identity.PhysicalName: "2024-05-06"}
 
 	previewed, err := invoke("formula.preview", map[string]any{
 		"tableId": table.TableID, "field": previewField(integerInspection),

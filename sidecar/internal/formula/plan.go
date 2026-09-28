@@ -403,7 +403,7 @@ func normalizeInput(
 		case pbtypes.DateTime:
 			return typed.Time().UTC(), nil
 		case string:
-			parsed, err := time.Parse(time.RFC3339Nano, typed)
+			parsed, err := parseFormulaTimestamp(typed, valueType.LogicalType)
 			if err != nil {
 				return nil, formulaError("formula.timezone", "timestamp input must be RFC3339 with an explicit timezone", map[string]any{
 					"fieldId": field.Identity.FieldID,
@@ -662,4 +662,13 @@ func (plan *Plan) String() string {
 		names = append(names, formula.PhysicalName)
 	}
 	return fmt.Sprintf("formula plan [%s]", strings.Join(names, ", "))
+}
+
+// Product date fields carry a calendar date; timestamp fields require a zone.
+func parseFormulaTimestamp(value string, logicalType v2.LogicalType) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil && logicalType == v2.LogicalDate {
+		return time.Parse("2006-01-02", value)
+	}
+	return parsed, err
 }
