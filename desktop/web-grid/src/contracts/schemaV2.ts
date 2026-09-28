@@ -357,6 +357,25 @@ export function parseFieldMigrationStatusV2(value: unknown): FieldMigrationStatu
   return status as unknown as FieldMigrationStatusV2;
 }
 
+export function parseSchemaSnapshotV2(value: unknown): SchemaSnapshotV2 {
+  const result = { ...exactObject(value, "$", [
+    "contract", "tableId", "displayName", "kind", "schemaRevision", "dataRevision",
+    "archivePolicy", "fields", "capabilities",
+  ]) };
+  expectContract(result.contract, "$.contract");
+  expectString(result.tableId, "$.tableId");
+  expectString(result.displayName, "$.displayName", true);
+  expectString(result.schemaRevision, "$.schemaRevision");
+  expectEnum(result.kind, "$.kind", ["base", "view"]);
+  expectSafeInteger(result.dataRevision, "$.dataRevision");
+  const archive = exactObject(result.archivePolicy, "$.archivePolicy", ["mode", "fieldId", "archivedValue"]);
+  expectEnum(archive.mode, "$.archivePolicy.mode", ["none", "status", "deletedAt"]);
+  if (archive.fieldId !== null) expectString(archive.fieldId, "$.archivePolicy.fieldId", true);
+  result.fields = expectArray(result.fields, "$.fields").map(parseFieldDefinitionV2);
+  expectArray(result.capabilities, "$.capabilities").forEach(parseCapabilityV2);
+  return result as unknown as SchemaSnapshotV2;
+}
+
 export function parseFieldRecycleBinResultV2(value: unknown): FieldRecycleBinResultV2 {
   const result = {
     ...exactObject(value, "$", ["contract", "fields"]),
@@ -448,9 +467,39 @@ function validateOptionalFieldSpecs(
     );
   }
   if (field.lookup !== undefined) {
-    const lookup = exactObject(field.lookup, "$.lookup", ["path", "targetFieldId"]);
+    const lookup = exactObject(field.lookup, "$.lookup", ["path", "targetFieldId", "condition"], ["path", "targetFieldId"]);
     const path = expectArray(lookup.path, "$.lookup.path");
-    if (path.length < 1 || path.length > 8) fail("$.lookup.path", "expected one to eight steps");
+    if (lookup.condition !== undefined) {
+      if (path.length !== 0) fail("$.lookup.path", "condition cannot also use a relation path");
+      const condition = exactObject(lookup.condition, "$.lookup.condition", ["sourceTableId", "match", "rules", "distinct"]);
+      expectString(condition.sourceTableId, "$.lookup.condition.sourceTableId");
+      expectEnum(condition.match, "$.lookup.condition.match", ["all", "any"]);
+      expectBoolean(condition.distinct, "$.lookup.condition.distinct");
+      const rules = expectArray(condition.rules, "$.lookup.condition.rules");
+      if (!rules.length || rules.length > 50) fail("$.lookup.condition.rules", "expected 1–50 rules");
+      rules.forEach((value, index) => {
+        const at = `$.lookup.condition.rules[${index}]`;
+        const rule = exactObject(value, at, ["sourceFieldId", "operator", "operand"], ["sourceFieldId", "operator"]);
+        expectString(rule.sourceFieldId, at + ".sourceFieldId");
+        expectEnum(rule.operator, at + ".operator", ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "is_null", "is_not_null"]);
+        if (rule.operator === "is_null" || rule.operator === "is_not_null") {
+          if (rule.operand !== undefined) fail(at + ".operand", "empty comparison takes no operand");
+        } else {
+          const operand = exactObject(rule.operand, at + ".operand", ["kind", "fieldId", "value"], ["kind"]);
+          expectEnum(operand.kind, at + ".operand.kind", ["field", "constant"]);
+          if (operand.kind === "field") {
+            expectString(operand.fieldId, at + ".operand.fieldId");
+            if (operand.value !== undefined) fail(at + ".operand.value", "field cannot contain a constant");
+          } else {
+            if (operand.fieldId !== undefined) fail(at + ".operand.fieldId", "constant cannot contain a field");
+            if (!(typeof operand.value === "string" || typeof operand.value === "boolean"
+              || (typeof operand.value === "number" && Number.isFinite(operand.value)))) {
+              fail(at + ".operand.value", "expected finite text, number, or boolean");
+            }
+          }
+        }
+      });
+    } else if (path.length < 1 || path.length > 8) fail("$.lookup.path", "expected one to eight steps");
     path.forEach((item, index) => {
       const step = exactObject(item, `$.lookup.path[${index}]`, ["relationFieldId"]);
       expectString(step.relationFieldId, `$.lookup.path[${index}].relationFieldId`);

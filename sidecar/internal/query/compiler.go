@@ -26,6 +26,7 @@ const (
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type compiler struct {
+	exactNull  bool
 	descriptor TableDescriptor
 	params     map[string]any
 	nextParam  int
@@ -921,12 +922,12 @@ func (c *compiler) compilePredicate(
 		if filter.Value != nil {
 			return "", invalidValue(path, "is_null takes no value")
 		}
-		return logicalNullPredicate(field), nil
+		return c.nullPredicate(field), nil
 	case OperatorIsNotNull:
 		if filter.Value != nil {
 			return "", invalidValue(path, "is_not_null takes no value")
 		}
-		return "NOT (" + logicalNullPredicate(field) + ")", nil
+		return "NOT (" + c.nullPredicate(field) + ")", nil
 	case OperatorRegex:
 		return "", productError("query.operator.unsupported", path+".operator", "regex is not portable in SQLite", nil)
 	}
@@ -1423,6 +1424,13 @@ func (c *compiler) compileMultiRelation(
 	default:
 		return "", productError("query.operator.unsupported", path+".operator", "operator is not supported for a multi relation", nil)
 	}
+}
+
+func (c *compiler) nullPredicate(field resolvedField) string {
+	if c.exactNull {
+		return field.sql + " IS NULL"
+	}
+	return logicalNullPredicate(field)
 }
 
 func logicalNullPredicate(field resolvedField) string {

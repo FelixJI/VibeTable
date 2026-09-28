@@ -121,6 +121,7 @@ export interface LookupDiagnostic {
 }
 
 export interface LookupDefinition {
+  readonly condition?: import("./generated/schemaV2").LookupCondition | null;
   readonly lookupId: string;
   readonly collection: string;
   readonly fieldKey: string;

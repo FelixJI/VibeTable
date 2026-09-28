@@ -277,6 +277,9 @@ func (source *Source) lookupResultFieldType(
 	table schemaexecution.Table,
 	spec v2.LookupSpec,
 ) (query.FieldType, error) {
+	if spec.Condition != nil {
+		return query.FieldTypeJSON, nil
+	}
 	current := table
 	resultMany := false
 	for index, step := range spec.Path {

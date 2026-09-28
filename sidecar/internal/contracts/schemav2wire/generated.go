@@ -211,6 +211,26 @@ type FormulaDraftSpec struct {
 type LookupSpec struct {
 	Path          []LookupPathStep `json:"path"`
 	TargetFieldId string           `json:"targetFieldId"`
+	Condition     *LookupCondition `json:"condition,omitempty"`
+}
+
+type LookupCondition struct {
+	SourceTableId string                `json:"sourceTableId"`
+	Match         string                `json:"match"`
+	Rules         []LookupConditionRule `json:"rules"`
+	Distinct      bool                  `json:"distinct"`
+}
+
+type LookupConditionRule struct {
+	SourceFieldId string         `json:"sourceFieldId"`
+	Operator      string         `json:"operator"`
+	Operand       *LookupOperand `json:"operand,omitempty"`
+}
+
+type LookupOperand struct {
+	Kind    string           `json:"kind"`
+	FieldId *string          `json:"fieldId,omitempty"`
+	Value   *json.RawMessage `json:"value,omitempty"`
 }
 
 type LookupPathStep struct {

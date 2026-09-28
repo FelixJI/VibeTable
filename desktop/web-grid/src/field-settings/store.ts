@@ -72,6 +72,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const lookupCatalogLoading = ref(false);
   const lookupCatalogError = ref<string | null>(null);
   const lookupMaxDepth = ref(8);
+  const lookupCurrentFields = shallowRef<readonly FieldDefinitionV2[]>([]);
+  const lookupConditionFields = shallowRef<readonly FieldDefinitionV2[]>([]);
+  const lookupConditionSchema = shallowRef<SchemaSnapshot | null>(null);
+  const lookupPreview = shallowRef<{ loading: boolean; ready: boolean; value: unknown; error: string | null }>({
+    loading: false, ready: false, value: undefined, error: null,
+  });
   const formulaSourceSchema = ref<SchemaSnapshot | null>(null);
   const formulaTargetSchemas = ref<Readonly<Record<string, SchemaSnapshot>>>({});
   const formulaCatalogLoading = ref(false);
@@ -117,9 +123,13 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     && (draft.value?.logicalType !== "relation" || !!draft.value.relation?.displayFieldId)
     && (draft.value?.logicalType !== "lookup" || !!draft.value.lookup?.targetFieldId)
     && (draft.value?.logicalType !== "lookup"
+      || (!!draft.value.lookup?.condition
+        && draft.value.lookup.path.length === 0
+        && !!draft.value.lookup.condition.sourceTableId
+        && draft.value.lookup.condition.rules.length > 0)
       || !!draft.value.lookup?.path.length
-      && draft.value.lookup.path.length <= lookupMaxDepth.value
-      && draft.value.lookup.path.every(step => !!step.relationFieldId))
+        && draft.value.lookup.path.length <= lookupMaxDepth.value
+        && draft.value.lookup.path.every(step => !!step.relationFieldId))
     && (draft.value?.logicalType !== "formula" || !!draft.value.formula?.source.trim())
     && (action.value !== "create" || draft.value?.logicalType !== "relation"
       || !!relationPair.value?.reciprocalDisplayName.trim()
@@ -137,6 +147,10 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   );
 
   function resetCatalogState(): void {
+    lookupCurrentFields.value = [];
+    lookupConditionFields.value = [];
+    lookupConditionSchema.value = null;
+    lookupPreview.value = { loading: false, ready: false, value: undefined, error: null };
     relationPair.value = null;
     originalRelationPair.value = null;
     relationTables.value = [];
@@ -552,6 +566,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     relationTables, relationSourceSchema, relationTargetSchema,
     relationCatalogLoading, relationCatalogError, lookupSchemas,
     lookupCatalogLoading, lookupCatalogError, lookupMaxDepth,
+    lookupCurrentFields, lookupConditionFields, lookupConditionSchema, lookupPreview,
     formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,
     formulaCatalogError, formulaFunctions, formulaAuthorDocument,
     formulaDiagnostic, formulaValidation, formulaValidatedSource,

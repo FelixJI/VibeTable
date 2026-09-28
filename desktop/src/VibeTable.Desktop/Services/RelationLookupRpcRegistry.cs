@@ -54,6 +54,11 @@ internal static class RelationLookupRpcRegistry
             IsValidRelationPreview,
             (gateway, payload, token) => gateway.ApplyRelationDeltaAsync(payload, token)),
         new(
+            "lookup.draft.preview",
+            payload => HasStrings(payload, "tableId", "schemaRevision", "sourceSchemaRevision")
+                && HasObject(payload, "lookup") && payload.EnumerateObject().Count() == 4,
+            (gateway, payload, token) => gateway.PreviewLookupDraftAsync(payload, token)),
+        new(
             "lookup.query",
             IsValidLookupQuery,
             (gateway, payload, token) => gateway.QueryLookupsAsync(payload, token)),

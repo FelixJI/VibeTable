@@ -80,6 +80,30 @@ func (catalog *Catalog) replaceComputationDependencies(
 		if findErr != nil {
 			return storageError(findErr)
 		}
+		if condition := field.Lookup.Condition; condition != nil {
+			pathRaw, err := json.Marshal(field.Lookup)
+			if err != nil {
+				return storageError(err)
+			}
+			dependencies := map[string]map[string]bool{condition.SourceTableID: {field.Lookup.TargetFieldID: true, "__path__": true}}
+			for _, rule := range condition.Rules {
+				dependencies[condition.SourceTableID][rule.SourceFieldID] = true
+				if rule.Operand != nil && rule.Operand.Kind == "field" {
+					if dependencies[definition.Snapshot.TableID] == nil {
+						dependencies[definition.Snapshot.TableID] = map[string]bool{}
+					}
+					dependencies[definition.Snapshot.TableID][rule.Operand.FieldID] = true
+				}
+			}
+			for tableID, fields := range dependencies {
+				for fieldID := range fields {
+					if err := saveComputationDependency(app, collection, definition.Snapshot.TableID, field.Identity.FieldID, "lookup", "", tableID, fieldID, pathRaw, max(lookupRecord.GetInt("revision"), 1)); err != nil {
+						return err
+					}
+				}
+			}
+			continue
+		}
 		path := field.Lookup.Path
 		pathRaw, marshalErr := json.Marshal(path)
 		if marshalErr != nil {

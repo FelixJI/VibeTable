@@ -29,6 +29,7 @@ import type {
 import RelationInspectionPanel from "@/relation-inspection/RelationInspectionPanel.vue";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
+import type { LookupConditionFieldOption } from "./lookup/lookupCondition";
 import { useFieldSettingsStore } from "./store";
 
 const emit = defineEmits<{
@@ -41,6 +42,8 @@ const emit = defineEmits<{
   loadRelationCatalog: [];
   selectRelationTarget: [tableId: string];
   loadLookupCatalog: [];
+  selectLookupSource: [tableId: string];
+  previewLookupDraft: [draft: NonNullable<FieldDraftV2["lookup"]> | null];
   resolveLookupPath: [path: readonly { readonly relationFieldId: string }[]];
   loadFormulaCatalog: [];
   validateFormula: [request: import("./formula/formulaDraftRequest").FormulaDraftValidateRequest];
@@ -150,11 +153,23 @@ const lookupRelationOptions = computed(() => store.lookupSchemas.map(schema => s
     }];
   })));
 const lookupTargetFieldOptions = computed(() => {
-  const schema = store.lookupSchemas.at(-1);
+  const schema = store.lookupConditionSchema ?? store.lookupSchemas.at(-1);
   return (schema?.columns ?? [])
-    .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
+    .filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation"
+      && (!store.lookupConditionSchema || store.lookupConditionFields.some(field =>
+        field.identity.fieldId === column.fieldId && !["formula", "lookup", "relation"].includes(field.logicalType))))
     .map(column => ({ label: column.title, value: column.fieldId! }));
 });
+const lookupSourceTables = computed(() => store.relationTables.map(item => ({ label: item.displayName, value: item.tableId })));
+function lookupConditionOptions(fields: readonly FieldDefinitionV2[], schema: typeof store.lookupConditionSchema): LookupConditionFieldOption[] {
+  return fields.filter(field => field.lifecycle.state === "active").map(field => ({
+    label: field.displayName, value: field.identity.fieldId, logicalType: field.logicalType,
+    filterOperators: schema?.columns.find(column => column.fieldId === field.identity.fieldId)?.filterOperators ?? [],
+    selectOptions: field.select?.options.filter(option => option.state === "active"),
+  }));
+}
+const lookupCurrentOptions = computed(() => lookupConditionOptions(store.lookupCurrentFields, store.lookupSchemas[0] ?? null));
+const lookupConditionFields = computed(() => lookupConditionOptions(store.lookupConditionFields, store.lookupConditionSchema));
 const formulaLocalFields = computed(() => (store.formulaSourceSchema?.columns ?? [])
   .filter(column => column.fieldId
     && column.fieldId !== store.result?.fieldId
@@ -851,10 +866,20 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="section-title">
                     <div>
                       <strong>查找引用</strong>
-                      <small>可视化选择最多 {{ store.lookupMaxDepth }} 跳关系；结果类型和单值/列表形状自动推导</small>
+                      <small>按条件筛选来源表，或沿最多 {{ store.lookupMaxDepth }} 跳关系取值</small>
                     </div>
                   </div>
                   <LookupFieldEditor
+                    :key="`${store.result?.tableId}:${store.result?.fieldId}:${store.result?.schemaRevision}`"
+                    :source-table-options="lookupSourceTables"
+                    :current-field-options="lookupCurrentOptions"
+                    :condition-field-options="lookupConditionFields"
+                    :preview-loading="store.lookupPreview.loading"
+                    :preview-value="store.lookupPreview.value"
+                    :preview-ready="store.lookupPreview.ready"
+                    :preview-error="store.lookupPreview.error"
+                    @source-table-change="emit('selectLookupSource', $event)"
+                    @draft-change="emit('previewLookupDraft', $event)"
                     :value="store.draft.lookup"
                     :relation-options="lookupRelationOptions"
                     :target-field-options="lookupTargetFieldOptions"

@@ -154,6 +154,16 @@ func describeLookupType(source v2.SchemaSnapshot, field v2.FieldDefinition, tabl
 	if field.Lookup == nil {
 		return "", errors.New("Lookup field omitted its lookup definition")
 	}
+	if field.Lookup.Condition != nil {
+		target, err := load(field.Lookup.Condition.SourceTableID)
+		if err != nil {
+			return "", err
+		}
+		if _, err := describeFieldByID(target, field.Lookup.TargetFieldID); err != nil {
+			return "", err
+		}
+		return v2.LogicalJSON, nil
+	}
 	if len(field.Lookup.Path) == 0 {
 		return "", errors.New("Lookup field omitted its relation path")
 	}

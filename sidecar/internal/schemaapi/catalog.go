@@ -16,6 +16,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/computationplan"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -396,6 +397,12 @@ func (catalog *Catalog) validateLookupReferences(
 		if field.LogicalType != v2.LogicalLookup || field.Lookup == nil {
 			continue
 		}
+		if field.Lookup.Condition != nil {
+			if err := queryschema.ValidateLookupCondition(ctx, catalog.app, definition, *field.Lookup); err != nil {
+				return err
+			}
+			continue
+		}
 		prefix := fmt.Sprintf("definition.fields[%d].lookup", index)
 		path := field.Lookup.Path
 		current := definition
@@ -565,11 +572,10 @@ func (catalog *Catalog) rejectReferencedDelete(app core.App, tableID string) err
 			}
 		}
 		for _, field := range definition.Snapshot.Fields {
-			if field.Relation == nil {
-				continue
+			references := field.Relation != nil && field.Relation.TargetTableID == tableID
+			if field.Lookup != nil && field.Lookup.Condition != nil {
+				references = references || field.Lookup.Condition.SourceTableID == tableID
 			}
-			relation := field.Relation
-			references := relation.TargetTableID == tableID
 			if references {
 				return &schemaerror.ProductError{
 					Code: "schema.table.referenced", Path: "tableId",
@@ -625,6 +631,9 @@ func (catalog *Catalog) replaceFormulaDependencyMetadata(
 			lookupField.Lookup == nil {
 			continue
 		}
+		if lookupField.Lookup.Condition != nil {
+			continue
+		} // Conditional dependencies use the computation graph, without a fabricated relation.
 		current := definition
 		path := lookupField.Lookup.Path
 		pathRelations := make([]v2.FieldDefinition, 0, len(path))
@@ -739,6 +748,9 @@ func (catalog *Catalog) SyncComputedMetadata(
 		return err
 	}
 	if err := catalog.validateLookupReferences(ctx, definition); err != nil {
+		return err
+	}
+	if err := catalog.validateIncomingLookupConditions(ctx, definition); err != nil {
 		return err
 	}
 	if err := computationplan.Validate(ctx, definition, catalog.Describe); err != nil {
@@ -969,14 +981,22 @@ func (catalog *Catalog) replaceLookupMetadata(
 		if field.LogicalType != v2.LogicalLookup || field.Lookup == nil {
 			continue
 		}
-		pathRaw, marshalErr := json.Marshal(map[string]any{
-			"relationFieldId": field.Lookup.Path[0].RelationFieldID,
+		relationFieldID := ""
+		if len(field.Lookup.Path) > 0 {
+			relationFieldID = field.Lookup.Path[0].RelationFieldID
+		}
+		metadata := map[string]any{
+			"relationFieldId": relationFieldID,
 			"path":            field.Lookup.Path,
 			"targetFieldId":   field.Lookup.TargetFieldID,
 			"physicalName":    field.Identity.PhysicalName,
 			"displayName":     field.DisplayName,
 			"outputType":      v2.LogicalJSON,
-		})
+		}
+		if field.Lookup.Condition != nil {
+			metadata["condition"] = field.Lookup.Condition
+		}
+		pathRaw, marshalErr := json.Marshal(metadata)
 		if marshalErr != nil {
 			return storageError(marshalErr)
 		}
@@ -995,7 +1015,7 @@ func (catalog *Catalog) replaceLookupMetadata(
 		record.Set("lookup_id", lookupID)
 		record.Set("table_id", definition.Snapshot.TableID)
 		record.Set("field_id", field.Identity.FieldID)
-		record.Set("relation_field_id", field.Lookup.Path[0].RelationFieldID)
+		record.Set("relation_field_id", relationFieldID)
 		record.Set("target_field_id", field.Lookup.TargetFieldID)
 		record.Set("path_json", types.JSONRaw(pathRaw))
 		record.Set("output_type", string(v2.LogicalJSON))
@@ -1114,4 +1134,36 @@ func invalidStoredRevision(code, path string) *schemaerror.ProductError {
 		Code: code, Path: path,
 		Message: "stored revision must be a present non-negative safe integer",
 	}
+}
+
+func (catalog *Catalog) validateIncomingLookupConditions(ctx context.Context, changed schemaexecution.Table) error {
+	dependencies, err := catalog.app.FindAllRecords("vibetable_computation_dependencies", dbx.HashExp{
+		"target_table_id": changed.Snapshot.TableID, "computed_kind": "lookup", "relation_field_id": "",
+	})
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, dependency := range dependencies {
+		tableID := dependency.GetString("source_table_id")
+		if seen[tableID] {
+			continue
+		}
+		seen[tableID] = true
+		source := changed
+		if tableID != changed.Snapshot.TableID {
+			source, err = catalog.Describe(ctx, tableID)
+			if err != nil {
+				return err
+			}
+		}
+		for _, field := range source.Snapshot.Fields {
+			if field.Lookup != nil && field.Lookup.Condition != nil {
+				if err := queryschema.ValidateLookupCondition(ctx, catalog.app, source, *field.Lookup); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }

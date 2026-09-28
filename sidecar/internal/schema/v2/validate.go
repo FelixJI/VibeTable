@@ -738,8 +738,11 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		}
 	case LogicalLookup:
 		if definition.Lookup == nil || definition.Lookup.TargetFieldID == "" ||
-			len(definition.Lookup.Path) == 0 {
+			(len(definition.Lookup.Path) == 0 && definition.Lookup.Condition == nil) {
 			return &ProductError{Code: "lookup.path.invalid", Path: "lookup", Message: "lookup requires a relation path and a target field"}
+		}
+		if err := ValidateLookupConditionShape(*definition.Lookup); err != nil {
+			return err
 		}
 		if len(definition.Lookup.Path) > MaxLookupPathDepth {
 			return &ProductError{Code: "lookup.path.depth_limit", Path: "lookup.path", Message: "lookup supports at most eight relation path steps"}

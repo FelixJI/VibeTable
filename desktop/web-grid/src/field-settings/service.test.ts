@@ -585,6 +585,12 @@ describe("field settings service", () => {
     });
     request
       .mockResolvedValueOnce(described)
+      .mockResolvedValueOnce({
+        contract: "vibetable.schema.v2", tableId: described.tableId, displayName: "订单",
+        kind: "base", schemaRevision: described.schemaRevision, dataRevision: 1,
+        archivePolicy: { mode: "none", fieldId: null, archivedValue: null },
+        fields: [], capabilities: [],
+      })
       .mockResolvedValueOnce(orders)
       .mockResolvedValueOnce(customers)
       .mockResolvedValueOnce(regions)
@@ -615,6 +621,76 @@ describe("field settings service", () => {
       "tbl_opaque", "tbl_customers",
     ]);
     expect(JSON.stringify(store.lookupSchemas)).not.toContain("tbl_regions.fld_region_name");
+  });
+
+  it("debounces condition previews and invalidates them on edits, cancellation, and workspace changes", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    const lookup = {
+      path: [], targetFieldId: "fld_name",
+      condition: { sourceTableId: "tbl_customers", match: "all" as const, distinct: false,
+        rules: [{ sourceFieldId: "fld_code", operator: "eq" as const,
+          operand: { kind: "constant" as const, value: "" } }] },
+    };
+    store.patchDraft({ logicalType: "lookup", lookup });
+    store.lookupConditionSchema = relationSchema("tbl_customers").schema;
+    let resolveFirst!: (value: unknown) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }));
+    service.previewLookupDraft(lookup);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenLastCalledWith("lookup.draft.preview", {
+      tableId: "tbl_opaque", schemaRevision: "schema_7", sourceSchemaRevision: "schema_7", lookup,
+    });
+    request.mockResolvedValueOnce({ cell: { value: [false, 0, ""] } });
+    service.previewLookupDraft({ ...lookup, condition: { ...lookup.condition, distinct: true } });
+    expect(store.lookupPreview.ready).toBe(false);
+    resolveFirst({ cell: { value: ["stale"] } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(store.lookupPreview.value).toEqual([false, 0, ""]);
+    service.previewLookupDraft(null);
+    expect(store.lookupPreview.ready).toBe(false);
+    let resolveLate!: (value: unknown) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { resolveLate = resolve; }));
+    service.previewLookupDraft(lookup);
+    await vi.advanceTimersByTimeAsync(250);
+    useWorkspaceStore().setOpened([{ collection: "different_workspace" }], {});
+    resolveLate({ cell: { value: ["wrong workspace"] } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.lookupPreview.ready).toBe(false);
+    expect(store.lookupPreview.value).toBeUndefined();
+    service.dispose();
+  });
+
+  it("discards a late source catalog and reports current catalog errors", async () => {
+    request.mockResolvedValueOnce(describeResult(true));
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", definition().identity.fieldId);
+    let finishSchema!: (value: unknown) => void;
+    let finishDefinition!: (value: unknown) => void;
+    request
+      .mockImplementationOnce(() => new Promise(resolve => { finishSchema = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishDefinition = resolve; }));
+    const pending = service.selectLookupSource("tbl_customers");
+    await service.selectLookupSource("");
+    expect(store.lookupCatalogLoading).toBe(false);
+    finishSchema(relationSchema("tbl_customers"));
+    finishDefinition({
+      contract: "vibetable.schema.v2", tableId: "tbl_customers", displayName: "客户", kind: "base",
+      schemaRevision: "schema_7", dataRevision: 0,
+      archivePolicy: { mode: "none", fieldId: null, archivedValue: null }, fields: [], capabilities: [],
+    });
+    await pending;
+    expect(store.lookupConditionSchema).toBeNull();
+    request.mockRejectedValueOnce(new Error("catalog unavailable")).mockResolvedValueOnce({});
+    await service.selectLookupSource("tbl_customers");
+    expect(store.lookupCatalogLoading).toBe(false);
+    expect(store.lookupCatalogError).toBe("catalog unavailable");
+    service.dispose();
   });
 
   it("loads the visual formula catalog from '0' and ignores stale sidecar validation results", async () => {

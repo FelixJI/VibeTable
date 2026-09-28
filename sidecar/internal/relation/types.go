@@ -3,6 +3,7 @@ package relation
 import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
 type Descriptor struct {
@@ -20,6 +21,7 @@ type Descriptor struct {
 }
 
 type LookupDescriptor struct {
+	Condition         *v2.LookupCondition    `json:"condition,omitempty"`
 	LookupID          string                 `json:"lookupId"`
 	TableID           string                 `json:"tableId"`
 	FieldID           string                 `json:"fieldId"`
