@@ -667,6 +667,10 @@ func (plan *Plan) String() string {
 // Product date fields carry a calendar date; timestamp fields require a zone.
 func parseFormulaTimestamp(value string, logicalType v2.LogicalType) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		// QueryPort exposes the provider timestamp spelling with an explicit Z.
+		parsed, err = time.Parse(pbtypes.DefaultDateLayout, value)
+	}
 	if err != nil && logicalType == v2.LogicalDate {
 		return time.Parse("2006-01-02", value)
 	}

@@ -577,6 +577,10 @@ func TestFormulaDateInputUsesProductCalendarShape(t *testing.T) {
 		t.Fatalf("calendar date = %#v, %v", value, failure)
 	}
 	field.LogicalType = v2.LogicalDateTime
+	value, failure = normalizeInput(field, "2026-03-05 00:00:00.000Z", DefaultLimits())
+	if failure != nil || value != time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC) {
+		t.Fatalf("query timestamp = %#v, %v", value, failure)
+	}
 	_, failure = normalizeInput(field, "2026-03-05", DefaultLimits())
 	assertFormulaCode(t, failure, "formula.timezone")
 }

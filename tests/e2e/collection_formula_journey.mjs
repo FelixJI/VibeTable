@@ -173,6 +173,15 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     await page.getByTestId("formula-editor-entry").click();
     await configureDraft();
     await waitForFormulaValid();
+    await page.waitForFunction(() => document.querySelector('[data-testid="formula-preview-value"]')
+      || document.querySelector('[data-testid="formula-preview-error"]'), undefined, { timeout: 30_000 });
+    const previewError = page.getByTestId("formula-preview-error");
+    if (await previewError.isVisible()) {
+      const rows = await rawBridgeRequest(page, "query.page", {
+        tableId: ledger.tableId, query: { filters: [], sorts: [], offset: 0, limit: 1 },
+      });
+      throw new Error(`${await previewError.innerText()}; sample=${JSON.stringify(rows.payload)}`);
+    }
     await page.getByTestId("formula-preview-value").filter({ hasText: previewText })
       .waitFor({ timeout: 30_000 });
     if (screenshot) {
