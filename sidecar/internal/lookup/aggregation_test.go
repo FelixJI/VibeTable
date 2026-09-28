@@ -150,7 +150,7 @@ func TestLookupPageWindowSlicesFullSetPages(t *testing.T) {
 	if got := lookupPageWindow(items, 3, 10); !reflect.DeepEqual(got, []int{3, 4}) {
 		t.Fatalf("last page = %#v", got)
 	}
-	if got := lookupPageWindow(items, 5, 10); got != nil {
+	if got := lookupPageWindow(items, 5, 10); !reflect.DeepEqual(got, []int{}) {
 		t.Fatalf("past end = %#v", got)
 	}
 }

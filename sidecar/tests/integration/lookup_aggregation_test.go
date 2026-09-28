@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -352,6 +353,31 @@ func TestLookupAggregationPathMatchesFullSetOracleWithCrossPageDuplicates(t *tes
 	}
 	if got := batch[order.Id][sumLookup.Definition.Identity.PhysicalName].Value; !reflect.DeepEqual(got, lookupAggregationOracle(t, v2.LookupAggregationSum, values)) {
 		t.Fatalf("shared sum cell = %#v", got)
+	}
+	// Empty and exhausted source pages must remain JSON arrays for the
+	// provenance panel, while the aggregate still covers the full source set.
+	for _, page := range []struct {
+		links  []string
+		offset int
+	}{
+		{links, 200}, {links, 240}, {nil, 0}, {nil, 100},
+	} {
+		order.SetRaw(link.Definition.Identity.PhysicalName, page.links)
+		cell, err := calculator.CalculateFieldPage(ctx, app, definition, order, *sumLookup.Definition, page.offset, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := lookupAggregationOracle(t, v2.LookupAggregationSum, values)
+		if len(page.links) == 0 {
+			want = 0.0
+		}
+		if cell.Value != want || cell.ProvenanceTotal != len(page.links) || cell.ProvenanceHasMore {
+			t.Fatalf("empty provenance window changed full-set result: %#v", cell)
+		}
+		wire, err := json.Marshal(cell)
+		if err != nil || !strings.Contains(string(wire), `"provenance":[]`) {
+			t.Fatalf("empty provenance must serialize as an array: %s, %v", wire, err)
+		}
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // kept every value and paging is a pure presentation concern.
 func lookupPageWindow[T any](items []T, offset, limit int) []T {
 	if len(items) <= offset {
-		return nil
+		return []T{}
 	}
 	return items[offset:min(offset+limit, len(items))]
 }
