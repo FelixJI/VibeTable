@@ -676,7 +676,7 @@ function formatPreviewValue(value: unknown): string {
     linear-gradient(145deg, color-mix(in srgb, #8b5cf6 7%, transparent), transparent 58%),
     var(--vt-bg-elevated);
 }
-.editor-summary,.editor-heading,.editor-actions,.insert-card>div,.validating {
+.editor-summary,.editor-heading,.editor-actions,.insert-card>div:first-child,.validating {
   display: flex;
   align-items: center;
   gap: 10px;

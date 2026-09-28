@@ -2560,6 +2560,10 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
     await typeSelect.locator("input").fill("公式");
     await page.locator(".n-base-select-option:visible").getByText("公式", { exact: true }).click();
     await page.getByTestId("formula-editor-entry").click();
+    recorder.check("function catalog keeps a readable grid layout",
+      await page.getByTestId("formula-function-list").evaluate(element =>
+        getComputedStyle(element).display === "grid"
+        && element.firstElementChild.getBoundingClientRect().width >= 200));
     await fillNInput(page, "formula-source", item.source);
     await page.getByTestId("formula-field-editor").getByRole("alert")
       .filter({ hasText: "公式有效" }).waitFor({ timeout: 30_000 });
