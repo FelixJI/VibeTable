@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 )
 
 // planConditionalLookupFieldChange plans an update or convert against an
@@ -270,6 +272,31 @@ func TestConditionalLookupFieldTypeChangesBlockedButRenameStaysComputable(t *tes
 	cell := cells[lookupField.Definition.Identity.PhysicalName]
 	if !reflect.DeepEqual(cell.Value, []any{"铝板"}) || cell.ProvenanceTotal != 1 {
 		t.Fatalf("renamed condition computed = %#v", cell)
+	}
+
+	catalog := schemaapi.New(app)
+	sourceRevision, err := catalog.GetRevision(ctx, materials.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = catalog.DeleteTable(ctx, materials.TableID, sourceRevision)
+	var referenced *schemaerror.ProductError
+	if !errors.As(err, &referenced) || referenced.Code != "schema.table.referenced" {
+		t.Fatalf("conditional source deletion was not blocked: %v", err)
+	}
+	cells, err = lookup.NewCalculator().CalculateCells(ctx, app, ordersDefinition, row)
+	if err != nil || !reflect.DeepEqual(cells[lookupField.Definition.Identity.PhysicalName].Value, []any{"铝板"}) {
+		t.Fatalf("rejected deletion changed source data: %#v, %v", cells, err)
+	}
+	currentRevision, err := catalog.GetRevision(ctx, orders.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.DeleteTable(ctx, orders.TableID, currentRevision); err != nil {
+		t.Fatalf("deleting the lookup owner was blocked: %v", err)
+	}
+	if _, err := catalog.DeleteTable(ctx, materials.TableID, sourceRevision); err != nil {
+		t.Fatalf("unreferenced source deletion was blocked: %v", err)
 	}
 }
 

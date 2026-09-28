@@ -766,7 +766,7 @@ function formatPreviewValue(value: unknown): string {
             </NButton>
           </div>
           <small class="rules-note">
-            基础条件仅支持 text / number / bool / date / dateTime / select；运算符取字段公开 filterOperators 与类型闭集的交集。结果恒为列表（无匹配 []；去重按值保序、来源 ID 升序保留首值），由后端权威计算。
+            支持文本、数字、是非、日期、日期时间和单选字段，比较方式随字段类型变化。查找结果显示为列表；没有匹配记录时为空。开启去重后，相同值只保留一次。
           </small>
         </div>
 

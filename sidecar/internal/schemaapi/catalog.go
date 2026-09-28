@@ -572,11 +572,10 @@ func (catalog *Catalog) rejectReferencedDelete(app core.App, tableID string) err
 			}
 		}
 		for _, field := range definition.Snapshot.Fields {
-			if field.Relation == nil {
-				continue
+			references := field.Relation != nil && field.Relation.TargetTableID == tableID
+			if field.Lookup != nil && field.Lookup.Condition != nil {
+				references = references || field.Lookup.Condition.SourceTableID == tableID
 			}
-			relation := field.Relation
-			references := relation.TargetTableID == tableID
 			if references {
 				return &schemaerror.ProductError{
 					Code: "schema.table.referenced", Path: "tableId",
