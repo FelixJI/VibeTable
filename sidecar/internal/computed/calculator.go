@@ -50,7 +50,17 @@ func (composite *Composite) Calculate(
 	// call (mutation and jobs invoke it per record); the instant pinned above
 	// keeps its memoized expectations coherent for every record and field
 	// this call touches.
-	ctx = formula.WithComputedSourceReader(ctx, relatedcomputation.NewSourceReader().Read)
+	if formula.SourceRecalculationEnabled(ctx) {
+		ctx = formula.EnsureSourceEvaluationBudget(ctx)
+	}
+	if formula.ComputedSourceReaderFor(ctx) == nil {
+		reader := relatedcomputation.NewSourceReader().Read
+		if formula.SourceRecalculationEnabled(ctx) {
+			reader = newSourceEvaluator(composite).read
+		}
+		ctx = formula.WithComputedSourceReader(ctx, reader)
+	}
+	ctx = WithCollectionSources(ctx, app)
 	result := map[string]any{}
 	if selected := formula.EvaluationFields(ctx); selected != nil {
 		selection := make(map[string]bool, len(selected))
@@ -66,7 +76,7 @@ func (composite *Composite) Calculate(
 			name := field.Identity.PhysicalName
 			original := record.GetRaw(name)
 			envelope, valid := relatedcomputation.Decode(original)
-			if !selection[field.Identity.FieldID] {
+			if !selection[field.Identity.FieldID] && !exactSelection(ctx) {
 				expectation, err := relatedcomputation.ExpectationFor(ctx, app, definition.Snapshot.TableID,
 					definition.Snapshot.Fields, field.Identity.FieldID, rowRevision)
 				if err != nil {

@@ -730,8 +730,18 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		if definition.Formula == nil || strings.TrimSpace(definition.Formula.Source) == "" {
 			return invalid("formula.source", "formula source is required")
 		}
-		if definition.Formula.Language != "cel-v1" {
-			return invalid("formula.language", "formula language must be cel-v1")
+		if definition.Formula.Language != "cel-v1" && definition.Formula.Language != "cel-v2" {
+			return invalid("formula.language", "formula language must be cel-v1 or cel-v2")
+		}
+		if element := definition.Formula.ResultElementType; element != "" {
+			if definition.Formula.Language != "cel-v2" || definition.Formula.ResultType != LogicalJSON {
+				return invalid("formula.resultElementType", "typed lists require cel-v2 JSON results")
+			}
+			if element != LogicalNumber && element != LogicalBool && element != LogicalText && element != LogicalDateTime {
+				return invalid("formula.resultElementType", "list element type is invalid")
+			}
+		} else if definition.Formula.Language == "cel-v2" && definition.Formula.ResultType == LogicalJSON {
+			return invalid("formula.resultElementType", "collection result element type is required")
 		}
 		if !validComputedResultType(definition.Formula.ResultType, true) {
 			return invalid("formula.resultType", "formula result type is invalid")

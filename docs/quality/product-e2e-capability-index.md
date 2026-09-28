@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：35
-- 唯一能力：56
-- 场景—能力关联：75
+- 场景：36
+- 唯一能力：59
+- 场景—能力关联：78
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -34,6 +34,8 @@
 | `data.json` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
 | `file-history.diff` | <code>14-document-diff</code>（真实文件历史版本比较） |
 | `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `formula.collections` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照） |
+| `formula.lifecycle` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（常用公式界面、重算重开与迁移回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
@@ -42,6 +44,7 @@
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
+| `lookup.aggregation` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
 | `lookup.export` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `lookup.source-pagination` | <code>29-lookup-source-pagination</code>（Lookup 来源分页读取） |
@@ -112,3 +115,4 @@
 | <code>34-relation-lookup-data-io</code> | Relation 导入与 Lookup 文本导出 | 复用固定 corpus，先通过真实 Host 文件选择授权与公开 Product bridge 按唯一 Code 导入稳定关系 ID，拒绝无匹配和非唯一匹配；CSV 导出 Lookup 的中文、公式样文本与空关系，排除计算列导入并拒绝直接写入，核对拒绝及导出前后两端权威记录和 revision 不变。再在同一真实 UI 内完成关系映射配置、重新预检、确认导入与 Lookup 选列导出，独立读取 CSV 与 XLSX 产物核对中文、公式样文本（字符串而非公式）与稳定关系 ID，确认 UI 导出不改变两端权威记录。 | `relation.import`、`lookup.export` |
 | <code>35-data-io-interoperability</code> | 数据互操作代表矩阵 | 从冻结语料出发，真实工具栏导入 UTF-8 BOM CSV 的 NFC/NFD、Emoji/ZWJ、CJK、RTL 与 locale-case 代表值及日期文本，一次真实取消保持权威与 revision 不变，重新选择后确认；XLSX 原生日期/毫秒与公式样文本经同一 UI 导入，CSV 与 XLSX 导出独立读文件核对码点、日期 wire 文本与字符串单元格；源与目标使用 CJK+NFD+Emoji 文件名，至少一条超过 260 字符的路径经真实 Host 授权导入；导出前后权威行与 schema/data revision 保持不变。 | `data-io.interop` |
 | <code>36-backend-import-exit</code> | 运行中导入遇 Python 退出仍保留 Host 状态 | 真实 1,000 行导入在 Go 首条未提交记录后精确终止 Python，Host 仍可查询 aborted/业务结果待核实快照，不伪报零写入或自动重放，UI 离开忙碌状态。 | `data-import.atomic` |
+| <code>37-collection-formula-journey</code> | 集合公式完整来源与独立值对照 | 真实公式工作台选择来源表与字段，创建 SUMIF、COUNTIF、去重拼接和日期区间公式；165 条合成来源覆盖 0/1/160 匹配，与独立 JavaScript oracle 及同条件 Lookup 对照，验证来源进入退出、删除、金额与日期窗口变化、稳定身份重命名、CSV 导出和工作区重开。 | `formula.collections`、`formula.lifecycle`、`lookup.aggregation` |

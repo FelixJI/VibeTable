@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -18,11 +19,25 @@ import (
 // public mutation endpoint always uses Apply. The existing workspace write gate
 // still binds every transaction to its recovery receipt and audit ledger.
 func (kernel *Kernel) RecalculateClock(ctx context.Context, request Request) (Receipt, error) {
+	if formula.EvaluationFields(ctx) == nil {
+		return Receipt{}, fmt.Errorf("clock materialization context is unavailable")
+	}
+	return kernel.RecalculateComputed(ctx, request)
+}
+
+// RecalculateComputed materializes fan-out results without creating business
+// edits. Stale computed inputs are evaluated from authoritative rows in this
+// same transaction; the ordinary mutation and query readers remain strict.
+func (kernel *Kernel) RecalculateComputed(ctx context.Context, request Request) (Receipt, error) {
+	return kernel.recalculateComputed(formula.WithSourceRecalculation(ctx), request)
+}
+
+func (kernel *Kernel) recalculateComputed(ctx context.Context, request Request) (Receipt, error) {
 	if err := validateRequestShape(request); err != nil {
 		return Receipt{}, err
 	}
-	if formula.EvaluationFields(ctx) == nil || kernel.formulas == nil {
-		return Receipt{}, fmt.Errorf("clock materialization context is unavailable")
+	if kernel.formulas == nil {
+		return Receipt{}, fmt.Errorf("computed materialization calculator is unavailable")
 	}
 	for _, operation := range request.Operations {
 		if operation.Kind != OperationUpdate || operation.RecordID == nil || len(operation.Values) != 0 || len(operation.RawValues) != 0 {
@@ -44,6 +59,15 @@ func (kernel *Kernel) RecalculateClock(ctx context.Context, request Request) (Re
 			return err
 		}
 		definition := preview.Definition
+		if formula.EvaluationFields(ctx) == nil {
+			selected := map[string]bool{}
+			for _, field := range definition.Snapshot.Fields {
+				if field.Formula != nil || field.Lookup != nil {
+					selected[field.Identity.FieldID] = true
+				}
+			}
+			ctx = formula.WithEvaluationFields(ctx, selected)
+		}
 
 		meta, collection, err := loadTableMetadata(app, request.TableID)
 		if err != nil {
@@ -72,6 +96,7 @@ func (kernel *Kernel) RecalculateClock(ctx context.Context, request Request) (Re
 			if err != nil {
 				return err
 			}
+			previous := record.FieldsData()
 			values, err := kernel.formulas.Calculate(ctx, app, definition, record)
 			if err != nil {
 				return err
@@ -92,11 +117,19 @@ func (kernel *Kernel) RecalculateClock(ctx context.Context, request Request) (Re
 			// record Save would also advance PocketBase auto-date inputs.
 			columns := dbx.Params{}
 			for name, value := range stored {
+				before, beforeOK := relatedcomputation.Decode(previous[name])
+				after, afterOK := relatedcomputation.Decode(value)
+				if beforeOK && afterOK && reflect.DeepEqual(before, after) {
+					continue
+				}
 				raw, err := json.Marshal(value)
 				if err != nil {
 					return err
 				}
 				columns[name] = string(raw)
+			}
+			if len(columns) == 0 {
+				continue
 			}
 			if _, err := app.DB().Update(collection.Name, columns, dbx.HashExp{"id": record.Id}).WithContext(ctx).Execute(); err != nil {
 				return err

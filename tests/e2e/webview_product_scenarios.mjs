@@ -42,6 +42,7 @@ import {
 } from "./bridge_capture_wait.mjs";
 import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
+import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -10264,6 +10265,17 @@ const scenarios = {
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
       parseCsv, canonicalJsonText, chooseToolbarMore,
+    },
+  ),
+  "37-collection-formula-journey": (page, recorder, _network, runtime) => runCollectionFormulaJourney(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+      applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
+      selectTable, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
+      chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
+      beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+      beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
+      rawLifecycleWorkspaceV2Request, waitForFieldMigration,
     },
   ),
   "36-backend-import-exit": scenario36,

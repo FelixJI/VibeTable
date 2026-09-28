@@ -225,13 +225,14 @@ class AutoDateSpec(SchemaV2WireModel):
 
 
 class FormulaSpec(SchemaV2WireModel):
-    language: Literal["cel-v1"]
+    language: Literal["cel-v1", "cel-v2"]
     source: Annotated[str, Field(min_length=1)]
     result_type: LogicalType
+    result_element_type: Literal["number", "bool", "text", "dateTime"] | None = None
 
 
 class FormulaDraftSpec(SchemaV2WireModel):
-    language: Literal["cel-v1"]
+    language: Literal["cel-v1", "cel-v2"]
     source: Annotated[str, Field(min_length=1)]
 
 

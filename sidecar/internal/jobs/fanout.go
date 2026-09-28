@@ -15,7 +15,6 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
-	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -184,8 +183,8 @@ func (service *Service) enqueueFormulaFanout(
 	app core.App,
 	event mutation.DataChangedEvent,
 ) ([]string, error) {
-	clockRefresh := event.ChangeSetID == nil && event.Operation == mutation.DataChangeUpdate
-	if (!clockRefresh && (event.ChangeSetID == nil || *event.ChangeSetID == "")) ||
+	derivedRefresh := event.ChangeSetID == nil && event.Operation == mutation.DataChangeUpdate
+	if (!derivedRefresh && (event.ChangeSetID == nil || *event.ChangeSetID == "")) ||
 		len(event.RecordIDs) == 0 {
 		return []string{}, nil
 	}
@@ -208,23 +207,15 @@ func (service *Service) enqueueFormulaFanout(
 		return []string{}, nil
 	}
 	changed := map[string]struct{}{}
-	if clockRefresh {
-		// Clock refreshes have no user-edit history; their dependency edges
+	if derivedRefresh {
+		// Derived refreshes have no user-edit history; their dependency edges
 		// identify affected computed sources without inventing audit rows.
 		definition, describeErr := schemaexecution.Describe(ctx, app, event.TableID)
 		if describeErr != nil {
 			return nil, describeErr
 		}
-		ctx = relatedcomputation.WithClockCache(ctx)
 		for _, field := range definition.Snapshot.Fields {
-			if field.Formula == nil && field.Lookup == nil {
-				continue
-			}
-			references, err := relatedcomputation.ClockReferencesFor(ctx, app, event.TableID, definition.Snapshot.Fields, field.Identity.FieldID)
-			if err != nil {
-				return nil, err
-			}
-			if len(references) > 0 {
+			if field.Formula != nil || field.Lookup != nil {
 				changed[field.Identity.FieldID] = struct{}{}
 			}
 		}
@@ -241,7 +232,7 @@ func (service *Service) enqueueFormulaFanout(
 	dependenciesByKey := map[dependencyKey][]*core.Record{}
 	for _, dependency := range dependencies {
 		targetFieldID := dependency.GetString("target_field_id")
-		if clockRefresh && targetFieldID == "__path__" {
+		if derivedRefresh && targetFieldID == "__path__" {
 			continue // Derived caches never change relation membership.
 		}
 		if _, relevant := changed[targetFieldID]; !relevant && targetFieldID != "__path__" {
@@ -388,8 +379,16 @@ func (service *Service) createFanoutJob(
 		formulaFields = append(formulaFields, fieldID)
 		pathRaw, marshalErr := json.Marshal(dependency.GetRaw("path_json"))
 		if relationFieldID == "" {
-			var spec v2.LookupSpec
 			field, found := definition.Field(fieldID)
+			if dependency.GetString("computed_kind") == "formula" {
+				var spec v2.FormulaSpec
+				if marshalErr != nil || v2.StrictDecode(pathRaw, &spec) != nil ||
+					!found || field.Formula == nil || field.Formula.Language != "cel-v2" || !reflect.DeepEqual(*field.Formula, spec) {
+					return "", jobError("job.formula_dependency_invalid", "collection formula dependency is unavailable", false)
+				}
+				continue
+			}
+			var spec v2.LookupSpec
 			if marshalErr != nil || v2.StrictDecode(pathRaw, &spec) != nil ||
 				spec.Condition == nil || !found || field.Lookup == nil ||
 				!reflect.DeepEqual(*field.Lookup, spec) {

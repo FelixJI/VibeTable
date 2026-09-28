@@ -96,6 +96,8 @@ type CompiledFormula struct {
 	dependencyNames        []string
 	program                cel.Program
 	limits                 Limits
+	collections            []collectionBinding
+	CollectionDependencies []CollectionDependency
 }
 
 // ValueType is the formula runtime's compact value contract. Schema V2 uses
@@ -104,6 +106,7 @@ type CompiledFormula struct {
 type ValueType struct {
 	LogicalType v2.LogicalType
 	OnlyInt     bool
+	ElementType v2.LogicalType
 }
 
 func (compiler *Compiler) Compile(
@@ -113,7 +116,7 @@ func (compiler *Compiler) Compile(
 	if field.LogicalType != v2.LogicalFormula || field.Formula == nil {
 		return nil, formulaError("formula.type", "field is not a formula field", nil)
 	}
-	if field.Formula.Language != "cel-v1" {
+	if field.Formula.Language != "cel-v1" && field.Formula.Language != "cel-v2" {
 		return nil, formulaError("formula.type", "unsupported formula language", map[string]any{
 			"language": field.Formula.Language,
 		})
@@ -135,6 +138,19 @@ func (compiler *Compiler) Compile(
 	parsed, issues := env.Parse(source)
 	if issues != nil && issues.Err() != nil {
 		return nil, formulaIssuesError("formula.syntax", "formula could not be parsed", source, issues)
+	}
+	originalParsed := parsed
+	clockReferences := expressionClockReferences(parsed.Expr())
+	env, parsed, collections, collectionErr := compiler.lowerCollections(definition, env, parsed, fieldsByName)
+	if collectionErr != nil {
+		return nil, collectionErr
+	}
+	canonicalSource, canonicalErr := cel.AstToString(originalParsed)
+	if canonicalErr != nil {
+		return nil, formulaError("formula.syntax", "formula source cannot be normalized", nil)
+	}
+	if len(collections) > 0 && field.Formula.Language != "cel-v2" {
+		return nil, formulaError("formula.type", "collection formulas require cel-v2", nil)
 	}
 	ast, issues := env.Check(parsed)
 	if issues != nil && issues.Err() != nil {
@@ -162,6 +178,10 @@ func (compiler *Compiler) Compile(
 		})
 	}
 
+	for _, binding := range collections {
+		dependencyNames = append(dependencyNames, binding.node.dependencies...)
+	}
+	dependencyNames = uniqueSortedStrings(dependencyNames)
 	resultType := valueTypeForField(field)
 	expected, err := celTypeForValueType(resultType)
 	if err != nil {
@@ -169,19 +189,19 @@ func (compiler *Compiler) Compile(
 			"resultType": field.Formula.ResultType,
 		})
 	}
-	if output := ast.OutputType(); output != cel.DynType && !expected.IsAssignableType(output) {
+	if output := ast.OutputType(); output != cel.DynType && !expected.IsAssignableType(output) && !(resultType.ElementType == v2.LogicalNumber && output.String() == "list(int)") {
 		return nil, formulaError("formula.type", "formula result type does not match the field declaration", map[string]any{
 			"expected": expected.String(),
 			"actual":   output.String(),
 		})
 	}
 
-	canonical, err := cel.AstToString(ast)
-	if err != nil {
-		return nil, formulaError("formula.runtime", "formula AST could not be normalized", nil)
-	}
-	hashInput := "cel-v1\x00" + canonical + "\x00" + string(resultType.LogicalType) +
+	canonical := canonicalSource
+	hashInput := field.Formula.Language + "\x00" + canonical + "\x00" + string(resultType.LogicalType) +
 		fmt.Sprintf("\x00%t", resultType.OnlyInt)
+	if resultType.ElementType != "" {
+		hashInput += "\x00" + string(resultType.ElementType)
+	}
 	sum := sha256.Sum256([]byte(hashInput))
 	dependencies := make([]string, 0, len(dependencyNames))
 	for _, name := range dependencyNames {
@@ -209,7 +229,9 @@ func (compiler *Compiler) Compile(
 		return nil, formulaError("formula.runtime", "formula program could not be created", nil)
 	}
 	return &CompiledFormula{
-		ClockReferences:        expressionClockReferences(checked.GetExpr()),
+		ClockReferences:        clockReferences,
+		collections:            collections,
+		CollectionDependencies: collectionDependencies(collections),
 		FieldID:                field.Identity.FieldID,
 		PhysicalName:           field.Identity.PhysicalName,
 		ResultType:             resultType,
@@ -227,9 +249,14 @@ func (compiler *Compiler) Compile(
 	}, nil
 }
 
-func (compiler *Compiler) InferExecutionSource(
+func (compiler *Compiler) InferExecutionSource(definition schemaexecution.Table, source string) (ValueType, *Error) {
+	return compiler.inferExecutionSource(definition, source, false)
+}
+
+func (compiler *Compiler) inferExecutionSource(
 	definition schemaexecution.Table,
 	source string,
+	allowList bool,
 ) (ValueType, *Error) {
 	if strings.TrimSpace(source) == "" {
 		return ValueType{}, formulaError("formula.syntax", "formula source is empty", nil)
@@ -247,6 +274,10 @@ func (compiler *Compiler) InferExecutionSource(
 	parsed, issues := env.Parse(source)
 	if issues != nil && issues.Err() != nil {
 		return ValueType{}, formulaIssuesError("formula.syntax", "formula could not be parsed", source, issues)
+	}
+	env, parsed, collections, collectionErr := compiler.lowerCollections(definition, env, parsed, fieldsByName)
+	if collectionErr != nil {
+		return ValueType{}, collectionErr
 	}
 	ast, issues := env.Check(parsed)
 	if issues != nil && issues.Err() != nil {
@@ -266,6 +297,9 @@ func (compiler *Compiler) InferExecutionSource(
 		checked.GetExpr(), fieldsByName, compiler.limits,
 	); validationErr != nil {
 		return ValueType{}, validationErr
+	}
+	if ast.OutputType().Kind() == types.ListKind && !allowList && len(collections) == 0 {
+		return ValueType{}, formulaError("formula.type", "bare collection results require an explicit collection expression", nil)
 	}
 	return valueTypeForCELType(ast.OutputType())
 }
@@ -307,6 +341,13 @@ func (compiler *Compiler) environment(
 }
 
 func valueTypeForCELType(output *cel.Type) (ValueType, *Error) {
+	if output.Kind() == types.ListKind && len(output.Parameters()) == 1 {
+		element, err := valueTypeForCELType(output.Parameters()[0])
+		if err != nil || element.ElementType != "" {
+			return ValueType{}, formulaError("formula.type", "collection elements must have one scalar type", nil)
+		}
+		return ValueType{LogicalType: v2.LogicalJSON, ElementType: element.LogicalType}, nil
+	}
 	switch output.String() {
 	case "bool":
 		return ValueType{LogicalType: v2.LogicalBool}, nil
@@ -526,6 +567,8 @@ func staticSelectPath(expression *exprpb.Expr) (string, bool) {
 }
 
 var allowedFunctions = map[string]struct{}{
+	"TABLE": {}, "FILTER": {}, "PROJECT": {}, "SUMIF": {}, "COUNTIF": {},
+	"SUM": {}, "AVERAGE": {}, "COUNT": {}, "COUNTA": {}, "UNIQUE": {}, "ARRAYJOIN": {},
 	"_+_": {}, "_-_": {}, "_*_": {}, "_/_": {}, "_%_": {},
 	"_==_": {}, "_!=_": {}, "_<_": {}, "_<=_": {}, "_>_": {}, "_>=_": {},
 	"_&&_": {}, "_||_": {}, "!_": {}, "-_": {}, "_?_:_": {},
@@ -568,10 +611,21 @@ func valueTypeForField(field v2.FieldDefinition) ValueType {
 	if field.LogicalType == v2.LogicalFormula && field.Formula != nil {
 		logicalType = field.Formula.ResultType
 	}
-	return ValueType{LogicalType: logicalType, OnlyInt: field.Storage.Options.OnlyInt}
+	result := ValueType{LogicalType: logicalType, OnlyInt: field.Storage.Options.OnlyInt}
+	if field.Formula != nil {
+		result.ElementType = field.Formula.ResultElementType
+	}
+	return result
 }
 
 func celTypeForValueType(valueType ValueType) (*cel.Type, error) {
+	if valueType.ElementType != "" {
+		element, err := celTypeForValueType(ValueType{LogicalType: valueType.ElementType})
+		if err != nil {
+			return nil, err
+		}
+		return cel.ListType(element), nil
+	}
 	switch valueType.LogicalType {
 	case v2.LogicalBool:
 		return cel.BoolType, nil

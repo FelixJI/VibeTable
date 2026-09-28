@@ -51,7 +51,72 @@ export function isFormulaAuthorDocument(value: unknown): value is FormulaAuthorD
   if (typeof candidate.documentRevision !== "number"
     || !Number.isInteger(candidate.documentRevision)
     || candidate.documentRevision <= 0) return false;
-  return Array.isArray(candidate.tokens);
+  if (!Array.isArray(candidate.tokens)) return false;
+  // Every token must carry a closed identity: known fields only, a known
+  // kind, a well-formed in-range span, and a kind/fieldId/tableId combination
+  // that never mixes the current-row, relation, and cross-table worlds.
+  const source = candidate.displaySource;
+  return candidate.tokens.every(token => isFormulaAuthorToken(token, source));
+}
+
+const TOKEN_PROPERTY_NAMES = new Set([
+  "range",
+  "kind",
+  "fieldId",
+  "relationFieldId",
+  "targetFieldId",
+  "tableId",
+]);
+
+function isFormulaAuthorToken(value: unknown, source: string): value is FormulaAuthorToken {
+  if (!value || typeof value !== "object") return false;
+  const token = value as Record<string, unknown>;
+  if (Object.keys(token).some(key => !TOKEN_PROPERTY_NAMES.has(key))) return false;
+  if (!isFormulaTextRange(token.range)) return false;
+  const start = positionToOffset(source, token.range.start);
+  const end = positionToOffset(source, token.range.end);
+  if (end <= start || end > source.length) return false;
+  for (const [offset, position] of [[start, token.range.start], [end, token.range.end]] as const) {
+    const actual = offsetToPosition(source, offset);
+    if (actual.line !== position.line || actual.character !== position.character
+      || isLowSurrogate(source[offset] ?? "")) return false;
+  }
+  if (token.relationFieldId !== null && !isNonEmptyString(token.relationFieldId)) return false;
+  if (token.targetFieldId !== null && !isNonEmptyString(token.targetFieldId)) return false;
+  const hasNoTableId = token.tableId === undefined || token.tableId === null;
+  switch (token.kind) {
+    case "field":
+      return isNonEmptyString(token.fieldId)
+        && token.relationFieldId === null
+        && token.targetFieldId === null
+        && hasNoTableId;
+    case "relation":
+      return isNonEmptyString(token.fieldId)
+        && token.relationFieldId === token.fieldId
+        && token.targetFieldId === null
+        && hasNoTableId;
+    case "relationTarget":
+      return isNonEmptyString(token.fieldId)
+        && isNonEmptyString(token.relationFieldId)
+        && token.targetFieldId === token.fieldId
+        && hasNoTableId;
+    case "table":
+      return token.fieldId === null
+        && isNonEmptyString(token.tableId)
+        && token.relationFieldId === null
+        && token.targetFieldId === null;
+    case "sourceField":
+      return isNonEmptyString(token.fieldId)
+        && isNonEmptyString(token.tableId)
+        && token.relationFieldId === null
+        && token.targetFieldId === null;
+    default:
+      return false;
+  }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }
 
 export function isFormulaTextRange(value: unknown): value is FormulaTextRange {

@@ -14,7 +14,7 @@
 - GitHub run：[main CI 36333755042](https://github.com/FelixJI/VibeTable/actions/runs/36333755042)
 - 报告契约：`contractVersion=2.0`
 - 结果：35/35 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`37-collection-formula-journey`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：1（`05-formula-lifecycle`）。
 

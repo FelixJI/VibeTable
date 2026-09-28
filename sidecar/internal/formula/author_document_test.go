@@ -127,7 +127,7 @@ func TestAuthorDocumentRestoresCompilerAcceptedJSONAccess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(restored.Document.Tokens) != 1 || restored.Document.Tokens[0].Kind != "field" || restored.Document.Tokens[0].FieldId != field.Identity.FieldID {
+			if len(restored.Document.Tokens) != 1 || restored.Document.Tokens[0].Kind != "field" || restored.Document.Tokens[0].FieldId == nil || *restored.Document.Tokens[0].FieldId != field.Identity.FieldID {
 				t.Fatalf("JSON access must bind only its root field: %#v", restored.Document)
 			}
 			authored, err := AuthorV2Document(definition, nil, restored.Document)
@@ -228,7 +228,7 @@ func TestAuthorDocumentStableIdentityRenameAndRoundTrip(t *testing.T) {
 		t.Fatalf("author = %#v", authored)
 	}
 	bound := authored.Document.Tokens[0]
-	if bound.Kind != "relationTarget" || bound.FieldId != "amount_id" || *bound.RelationFieldId != "lines_id" || *bound.TargetFieldId != "amount_id" || bound.Range.Start.Character != 4 || bound.Range.End.Character != 13 {
+	if bound.Kind != "relationTarget" || bound.FieldId == nil || *bound.FieldId != "amount_id" || bound.RelationFieldId == nil || *bound.RelationFieldId != "lines_id" || bound.TargetFieldId == nil || *bound.TargetFieldId != "amount_id" || bound.Range.Start.Character != 4 || bound.Range.End.Character != 13 {
 		t.Fatalf("target token = %#v", bound)
 	}
 	definition.Fields[0].DisplayName = "订单😀"
@@ -274,7 +274,7 @@ func TestAuthorRelationTokenMatchesContractAndCountRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := result.Document.Tokens[0]
-	if token.Kind != "relation" || token.FieldId != "lines_id" || token.RelationFieldId == nil || *token.RelationFieldId != token.FieldId || token.TargetFieldId != nil {
+	if token.Kind != "relation" || token.FieldId == nil || *token.FieldId != "lines_id" || token.RelationFieldId == nil || *token.RelationFieldId != *token.FieldId || token.TargetFieldId != nil {
 		t.Fatalf("relation contract = %#v", token)
 	}
 	restored, err := RestoreV2AuthorDocument(definition, targets, result.CanonicalSource, 1)
@@ -376,7 +376,7 @@ func TestAuthorDocumentDeletionRetainsIdentityAcrossEdits(t *testing.T) {
 			}
 			deleted, err := AuthorV2Document(definition, targets, original.Document)
 			assertFormulaCode(t, err, "formula.reference")
-			if deleted == nil || !strings.Contains(deleted.Document.DisplaySource, "#REF!") || len(deleted.Document.Tokens) != 1 || deleted.Document.Tokens[0].FieldId != original.Document.Tokens[0].FieldId || err.Message != "#REF!" {
+			if deleted == nil || !strings.Contains(deleted.Document.DisplaySource, "#REF!") || len(deleted.Document.Tokens) != 1 || deleted.Document.Tokens[0].FieldId == nil || original.Document.Tokens[0].FieldId == nil || *deleted.Document.Tokens[0].FieldId != *original.Document.Tokens[0].FieldId || err.Message != "#REF!" {
 				t.Fatalf("deleted = %#v; %v", deleted, err)
 			}
 			again, err := AuthorV2Document(definition, targets, deleted.Document)
@@ -420,7 +420,7 @@ func TestAuthorDocumentUnboundReferenceMarkerNeverBindsDisplayName(t *testing.T)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if explicit.CanonicalSource != "f_marker_field" || len(explicit.Document.Tokens) != 1 || explicit.Document.Tokens[0].FieldId != "marker_id" {
+				if explicit.CanonicalSource != "f_marker_field" || len(explicit.Document.Tokens) != 1 || explicit.Document.Tokens[0].FieldId == nil || *explicit.Document.Tokens[0].FieldId != "marker_id" {
 					t.Fatalf("explicit real field reference = %#v", explicit)
 				}
 			}
@@ -450,7 +450,8 @@ func TestAuthorDocumentRejectsForgedRangesAndIdentityCombinations(t *testing.T) 
 		}},
 		{"missing literal", func(d *workbench.FormulaAuthorDocument) {
 			d.DisplaySource = `"#REF!"`
-			d.Tokens[0].FieldId = "deleted"
+			deleted := "deleted"
+			d.Tokens[0].FieldId = &deleted
 			d.Tokens[0].Range.Start.Character = 1
 			d.Tokens[0].Range.End.Character = 6
 		}},

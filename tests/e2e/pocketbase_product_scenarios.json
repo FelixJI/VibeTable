@@ -215,5 +215,11 @@
     "title": "运行中导入遇 Python 退出仍保留 Host 状态",
     "requirement": "真实 1,000 行导入在 Go 首条未提交记录后精确终止 Python，Host 仍可查询 aborted/业务结果待核实快照，不伪报零写入或自动重放，UI 离开忙碌状态。",
     "capabilities": ["data-import.atomic"]
+  },
+  {
+    "id": "37-collection-formula-journey",
+    "title": "集合公式完整来源与独立值对照",
+    "requirement": "真实公式工作台选择来源表与字段，创建 SUMIF、COUNTIF、去重拼接和日期区间公式；165 条合成来源覆盖 0/1/160 匹配，与独立 JavaScript oracle 及同条件 Lookup 对照，验证来源进入退出、删除、金额与日期窗口变化、稳定身份重命名、CSV 导出和工作区重开。",
+    "capabilities": ["formula.collections", "formula.lifecycle", "lookup.aggregation"]
   }
 ]

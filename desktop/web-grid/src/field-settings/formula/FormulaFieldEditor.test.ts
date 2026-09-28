@@ -396,3 +396,153 @@ describe("FormulaFieldEditor cursor insertion", () => {
     expect(wrapper.find('[data-testid="formula-preview-value"]').exists()).toBe(false);
   });
 });
+
+describe("FormulaFieldEditor cross-table references", () => {
+  it("emits loadTable on select and inserts one table token over {出货}", async () => {
+    vi.useFakeTimers();
+    const wrapper = mountEditor({ tables: [{ tableId: "tbl_ship", label: "出货" }] });
+    const textarea = await enterEditing(wrapper);
+    textarea.setSelectionRange(8, 8);
+    await wrapper.vm.$nextTick();
+    wrapper.findAllComponents(NSelect)
+      .find(select => select.attributes("data-testid") === "formula-source-table")
+      ?.vm.$emit("update:value", "tbl_ship");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("loadTable")).toEqual([["tbl_ship"]]);
+    // Source fields unlock only after the matching table loads.
+    expect(wrapper.find('[data-testid="formula-source-field"]').exists()).toBe(false);
+
+    await wrapper.findAll("button")
+      .find(button => button.text().includes("插入 TABLE"))?.trigger("click");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(textarea.value).toBe("{单价} * 2TABLE({出货})");
+    const tokens = documentRequests(wrapper).at(-1)?.authorDocument.tokens;
+    expect(tokens?.at(-1)).toMatchObject({
+      kind: "table",
+      fieldId: null,
+      tableId: "tbl_ship",
+      relationFieldId: null,
+      targetFieldId: null,
+    });
+    // The token range covers only the {出货} label inside TABLE(...).
+    expect(tokens?.at(-1)?.range).toEqual({
+      start: { line: 0, character: 14 },
+      end: { line: 0, character: 18 },
+    });
+    vi.useRealTimers();
+  });
+
+  it("inserts a CurrentValue sourceField token after the matching table loads", async () => {
+    vi.useFakeTimers();
+    const wrapper = mountEditor({
+      tables: [
+        { tableId: "tbl_ship", label: "出货" },
+        { tableId: "tbl_other", label: "其它表" },
+      ],
+      sourceTableLoading: true,
+    });
+    const textarea = await enterEditing(wrapper);
+    textarea.setSelectionRange(8, 8);
+    await wrapper.vm.$nextTick();
+    wrapper.findAllComponents(NSelect)
+      .find(select => select.attributes("data-testid") === "formula-source-table")
+      ?.vm.$emit("update:value", "tbl_ship");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="formula-source-table-loading"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="formula-source-field"]').exists()).toBe(false);
+
+    // A loaded table with a different id must not unlock the field picker.
+    await wrapper.setProps({
+      sourceTableLoading: false,
+      sourceTable: {
+        tableId: "tbl_other",
+        fields: [{ label: "金额", fieldId: "fld_amount", dataType: "decimal" }],
+      },
+    });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-testid="formula-source-field"]').exists()).toBe(false);
+
+    await wrapper.setProps({
+      sourceTable: {
+        tableId: "tbl_ship",
+        fields: [
+          { label: "金额", fieldId: "fld_ship_amount", dataType: "decimal" },
+          { label: "出货日", fieldId: "fld_ship_date", dataType: "dateTime" },
+        ],
+      },
+    });
+    await wrapper.vm.$nextTick();
+    const fieldSelect = wrapper.findAllComponents(NSelect)
+      .find(select => select.attributes("data-testid") === "formula-source-field");
+    // Options surface the authoritative field data type.
+    expect(fieldSelect?.props("options")).toEqual([
+      { label: "金额 · decimal", value: "fld_ship_amount" },
+      { label: "出货日 · dateTime", value: "fld_ship_date" },
+    ]);
+    fieldSelect?.vm.$emit("update:value", "fld_ship_amount");
+    await wrapper.vm.$nextTick();
+    await wrapper.findAll("button")
+      .find(button => button.text().includes("CurrentValue"))?.trigger("click");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(textarea.value).toBe("{单价} * 2CurrentValue.{金额}");
+    const tokens = documentRequests(wrapper).at(-1)?.authorDocument.tokens;
+    expect(tokens?.at(-1)).toMatchObject({
+      kind: "sourceField",
+      fieldId: "fld_ship_amount",
+      tableId: "tbl_ship",
+      relationFieldId: null,
+      targetFieldId: null,
+    });
+    // The token range covers only the {金额} label after CurrentValue.
+    expect(tokens?.at(-1)?.range).toEqual({
+      start: { line: 0, character: 21 },
+      end: { line: 0, character: 25 },
+    });
+    vi.useRealTimers();
+  });
+
+  it("commits cel-v2 drafts with the sidecar-validated language", async () => {
+    vi.useFakeTimers();
+    const wrapper = mountEditor();
+    await enterEditing(wrapper);
+    await wrapper.get('[data-testid="formula-source"]').find("textarea")
+      .setValue("{单价} * 3");
+    await vi.advanceTimersByTimeAsync(250);
+    await wrapper.setProps({
+      validating: false,
+      validatedSource: "{单价} * 3",
+      validatedDocumentRevision: 7,
+      validation: {
+        canonicalSource: "f_price * 3",
+        language: "cel-v2",
+        resultType: "json",
+        resultElementType: "number",
+        dependencies: ["f_price"],
+        relationAggregatePaths: [],
+      },
+    });
+    await wrapper.vm.$nextTick();
+    // List results surface their element type, e.g. number[].
+    expect(wrapper.text()).toContain("number[]");
+    await wrapper.get('[data-testid="formula-editor-commit"]').trigger("click");
+    expect(wrapper.emitted("commit")).toEqual([[{ language: "cel-v2", source: "f_price * 3" }]]);
+    vi.useRealTimers();
+  });
+
+  it("previews falsy JSON values without collapsing them", async () => {
+    const wrapper = mountEditor();
+    await enterEditing(wrapper);
+    await wrapper.setProps({
+      validatedSource: "{单价} * 2",
+      previewReady: true,
+      previewValue: 0,
+    });
+    expect(wrapper.get('[data-testid="formula-preview-value"]').text()).toContain("样例结果：0");
+    await wrapper.setProps({ previewValue: false });
+    expect(wrapper.get('[data-testid="formula-preview-value"]').text()).toContain("false");
+    await wrapper.setProps({ previewValue: null });
+    expect(wrapper.get('[data-testid="formula-preview-value"]').text()).toContain("null");
+  });
+});

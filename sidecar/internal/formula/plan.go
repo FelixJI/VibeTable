@@ -140,6 +140,9 @@ func (plan *Plan) Evaluate(
 		return nil, formulaError("formula.resource_limit", "formula evaluation was cancelled", nil)
 	}
 	ctx = EnsureEvaluationTime(ctx)
+	ctx = context.WithValue(ctx, collectionReadCacheKey{}, &collectionReadCache{
+		remaining: plan.limits.CollectionBytes, entries: map[string]collectionReadEntry{},
+	})
 	activation := make(map[string]any, len(row)+1)
 	activation[clockActivationName] = EvaluationTime(ctx)
 	for key, value := range row {
@@ -219,7 +222,18 @@ func (formula *CompiledFormula) evaluate(
 ) (any, *Error) {
 	ctx, cancel := context.WithTimeout(parent, formula.limits.EvalTimeout)
 	defer cancel()
-	result, _, err := formula.program.ContextEval(ctx, activation)
+	ctx, activation, collectionFailure := formula.collectionActivation(ctx, activation)
+	result, details, err := formula.program.ContextEval(ctx, activation)
+	if *collectionFailure != nil {
+		return nil, *collectionFailure
+	}
+	if evaluation, ok := ctx.Value(collectionEvaluationKey{}).(*collectionEvaluation); ok {
+		if cost := details.ActualCost(); cost != nil {
+			if failure := evaluation.charge(ctx, *cost); failure != nil {
+				return nil, failure
+			}
+		}
+	}
 	if err != nil {
 		message := err.Error()
 		switch {
@@ -271,6 +285,18 @@ func (formula *CompiledFormula) hasNullDependency(activation map[string]any) boo
 }
 
 func (formula *CompiledFormula) validateRuntimeResult(value any) *Error {
+	if formula.ResultType.ElementType != "" {
+		values, err := collectionValues(value)
+		if err != nil {
+			return err
+		}
+		for _, item := range values {
+			if _, err := collectionCanonicalElement(item, formula.ResultType.ElementType); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	switch formula.ResultType.LogicalType {
 	case v2.LogicalNumber:
 		if formula.ResultType.OnlyInt {
@@ -402,7 +428,21 @@ func normalizeInput(
 		}
 		value = decoded
 	}
-	return normalizeDynamicInput(value, limits, 0, field.Identity.FieldID)
+	normalized, failure := normalizeDynamicInput(value, limits, 0, field.Identity.FieldID)
+	if failure != nil || valueType.ElementType == "" {
+		return normalized, failure
+	}
+	values, failure := collectionValues(normalized)
+	if failure != nil {
+		return nil, failure
+	}
+	for index, item := range values {
+		values[index], failure = collectionCanonicalElement(item, valueType.ElementType)
+		if failure != nil {
+			return nil, failure
+		}
+	}
+	return values, nil
 }
 
 func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) (any, *Error) {

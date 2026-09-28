@@ -46,6 +46,7 @@ type Table struct {
 	PrimaryDisplayFieldID string
 	ArchivePolicy         v2.ArchivePolicy
 	FormulaRuntime        map[string]FormulaRuntime
+	FormulaSources        map[string]v2.SchemaSnapshot `json:"-"`
 }
 
 // Field returns an active field by stable field ID or PocketBase physical name.

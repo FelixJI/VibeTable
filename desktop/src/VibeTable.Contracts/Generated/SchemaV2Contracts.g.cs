@@ -292,6 +292,8 @@ public sealed record FieldFormulaV2
     [JsonRequired] public required string Source { get; init; }
     [JsonPropertyName("resultType")]
     [JsonRequired] public required string ResultType { get; init; }
+    [JsonPropertyName("resultElementType")]
+    public string? ResultElementType { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

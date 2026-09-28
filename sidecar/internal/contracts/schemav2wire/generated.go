@@ -198,9 +198,10 @@ type AutoDateSpec struct {
 }
 
 type FormulaSpec struct {
-	Language   string      `json:"language"`
-	Source     string      `json:"source"`
-	ResultType LogicalType `json:"resultType"`
+	Language          string      `json:"language"`
+	Source            string      `json:"source"`
+	ResultType        LogicalType `json:"resultType"`
+	ResultElementType *string     `json:"resultElementType,omitempty"`
 }
 
 type FormulaDraftSpec struct {

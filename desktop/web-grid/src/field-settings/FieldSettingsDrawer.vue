@@ -47,6 +47,7 @@ const emit = defineEmits<{
   previewLookupDraft: [draft: NonNullable<FieldDraftV2["lookup"]> | null];
   resolveLookupPath: [path: readonly { readonly relationFieldId: string }[]];
   loadFormulaCatalog: [];
+  selectFormulaSource: [tableId: string];
   validateFormula: [request: import("./formula/formulaDraftRequest").FormulaDraftValidateRequest];
 }>();
 
@@ -193,6 +194,17 @@ function lookupConditionOptions(fields: readonly FieldDefinitionV2[], schema: ty
 }
 const lookupCurrentOptions = computed(() => lookupConditionOptions(store.lookupCurrentFields, store.lookupSchemas[0] ?? null));
 const lookupConditionFields = computed(() => lookupConditionOptions(store.lookupConditionFields, store.lookupConditionSchema));
+const formulaTables = computed(() => store.relationTables.map(table => ({
+  tableId: table.tableId, label: table.displayName,
+})));
+const formulaCollectionSource = computed(() => {
+  const schema = store.formulaCollectionSchema;
+  return schema ? {
+    tableId: schema.collection,
+    fields: schema.columns.filter(column => column.fieldId && column.kind !== "system" && column.kind !== "relation")
+      .map(column => ({ label: column.title, fieldId: column.fieldId!, dataType: column.dataType })),
+  } : null;
+});
 const formulaLocalFields = computed(() => (store.formulaSourceSchema?.columns ?? [])
   .filter(column => column.fieldId
     && column.fieldId !== store.result?.fieldId
@@ -866,6 +878,10 @@ function isTextual(type: LogicalTypeV2): boolean {
                     :value="store.draft.formula"
                     :local-fields="formulaLocalFields"
                     :relations="formulaRelations"
+                    :tables="formulaTables"
+                    :source-table="formulaCollectionSource"
+                    :source-table-loading="store.formulaCollectionLoading"
+                    @load-table="emit('selectFormulaSource', $event)"
                     :result-type="store.result?.definition?.formula?.resultType"
                     :author-document="store.formulaAuthorDocument"
                     :functions="store.formulaFunctions"

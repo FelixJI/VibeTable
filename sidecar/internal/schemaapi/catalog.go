@@ -292,6 +292,10 @@ func (catalog *Catalog) validateFormulaReferences(
 	ctx context.Context,
 	definition schemaexecution.Table,
 ) error {
+	definition, sourceErr := formula.LoadCollectionSchemas(ctx, catalog.app, definition)
+	if sourceErr != nil {
+		return sourceErr
+	}
 	plan, formulaErr := formula.CompilerFor(catalog.app).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		return formulaErr
@@ -528,6 +532,7 @@ func (catalog *Catalog) DeleteTable(
 			{fieldsCollection, "table_id"},
 			{formulasCollection, "table_id"},
 			{formulaDepsCollection, "source_table_id"},
+			{computationDependenciesCollection, "source_table_id"},
 			{relationsCollection, "source_table_id"},
 			{lookupsCollection, "table_id"},
 			{"vibetable_audit_events", "table_id"},
@@ -556,6 +561,19 @@ func (catalog *Catalog) DeleteTable(
 }
 
 func (catalog *Catalog) rejectReferencedDelete(app core.App, tableID string) error {
+	dependencies, err := app.FindRecordsByFilter(computationDependenciesCollection,
+		"target_table_id={:table} && source_table_id!={:table}", "id", 1, 0, dbx.Params{"table": tableID})
+	if err != nil {
+		return storageError(err)
+	}
+	if len(dependencies) > 0 {
+		return &schemaerror.ProductError{Code: "schema.table.referenced", Path: "tableId",
+			Message: "table is referenced by a computed field", Details: map[string]any{
+				"sourceTableId": dependencies[0].GetString("source_table_id"),
+				"sourceFieldId": dependencies[0].GetString("computed_field_id"),
+			}}
+	}
+
 	records, err := app.FindAllRecords(tablesCollection)
 	if err != nil {
 		return storageError(err)
@@ -758,13 +776,14 @@ func (catalog *Catalog) SyncComputedMetadata(
 	if err := catalog.validateLookupReferences(ctx, definition); err != nil {
 		return err
 	}
-	if err := catalog.validateIncomingLookupConditions(ctx, definition); err != nil {
+	if err := catalog.validateIncomingComputations(ctx, definition); err != nil {
 		return err
 	}
 	if err := computationplan.Validate(ctx, definition, catalog.Describe); err != nil {
 		return err
 	}
 	prepared, plan, formulaErr := catalog.prepareFormulaState(
+		ctx,
 		catalog.app,
 		definition,
 	)
@@ -835,9 +854,14 @@ func (catalog *Catalog) GetDataRevision(
 }
 
 func (catalog *Catalog) prepareFormulaState(
+	ctx context.Context,
 	app core.App,
 	definition schemaexecution.Table,
 ) (schemaexecution.Table, *formula.Plan, error) {
+	definition, sourceErr := formula.LoadCollectionSchemas(ctx, app, definition)
+	if sourceErr != nil {
+		return schemaexecution.Table{}, nil, sourceErr
+	}
 	plan, formulaErr := formula.CompilerFor(app).CompileExecutionTable(definition)
 	if formulaErr != nil {
 		return schemaexecution.Table{}, nil, formulaErr
@@ -1156,9 +1180,9 @@ func invalidStoredRevision(code, path string) *schemaerror.ProductError {
 	}
 }
 
-func (catalog *Catalog) validateIncomingLookupConditions(ctx context.Context, changed schemaexecution.Table) error {
+func (catalog *Catalog) validateIncomingComputations(ctx context.Context, changed schemaexecution.Table) error {
 	dependencies, err := catalog.app.FindAllRecords("vibetable_computation_dependencies", dbx.HashExp{
-		"target_table_id": changed.Snapshot.TableID, "computed_kind": "lookup", "relation_field_id": "",
+		"target_table_id": changed.Snapshot.TableID,
 	})
 	if err != nil {
 		return err
@@ -1176,6 +1200,14 @@ func (catalog *Catalog) validateIncomingLookupConditions(ctx context.Context, ch
 			if err != nil {
 				return err
 			}
+		}
+		if err := computationplan.Validate(ctx, source, func(ctx context.Context, id string) (schemaexecution.Table, error) {
+			if id == changed.Snapshot.TableID {
+				return changed, nil
+			}
+			return catalog.Describe(ctx, id)
+		}); err != nil {
+			return err
 		}
 		for _, field := range source.Snapshot.Fields {
 			if field.Lookup != nil && field.Lookup.Condition != nil {

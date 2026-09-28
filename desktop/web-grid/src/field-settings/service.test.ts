@@ -1256,4 +1256,34 @@ describe("field settings service", () => {
     expect(store.error).toBe("file limits must be positive");
   });
 
+  it("loads only the selected formula source and discards obsolete responses", async () => {
+    request.mockResolvedValueOnce({
+      ...describeResult(false), capabilities: [formulaCapability()],
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openCreate("tbl_opaque", "formula");
+    store.setRelationTables([
+      { tableId: "tbl_opaque", displayName: "订单" },
+      { tableId: "tbl_customers", displayName: "客户" },
+    ]);
+    let resolveOld!: (value: unknown) => void;
+    request.mockImplementation((_method: string, params: Record<string, unknown>) => {
+      if (params.collection === "tbl_opaque") return new Promise(resolve => { resolveOld = resolve; });
+      return Promise.resolve(relationSchema("tbl_customers"));
+    });
+    const old = service.selectFormulaSource("tbl_opaque");
+    expect(store.formulaCollectionLoading).toBe(true);
+    await service.selectFormulaSource("tbl_customers");
+    expect(store.formulaCollectionSchema?.collection).toBe("tbl_customers");
+    resolveOld(relationSchema("tbl_opaque"));
+    await old;
+    expect(store.formulaCollectionSchema?.collection).toBe("tbl_customers");
+    expect(store.formulaCollectionLoading).toBe(false);
+    expect(request.mock.calls.slice(1).map(call => call[0])).toEqual([
+      "schema.describe", "schema.describe",
+    ]);
+    service.dispose();
+  });
+
 });

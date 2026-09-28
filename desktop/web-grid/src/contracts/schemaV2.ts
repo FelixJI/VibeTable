@@ -471,9 +471,18 @@ function validateOptionalFieldSpecs(
     const formula = exactObject(
       field.formula,
       "$.formula",
+      ["language", "source", "resultType", "resultElementType"],
       ["language", "source", "resultType"],
     );
-    expectEnum(formula.language, "$.formula.language", ["cel-v1"]);
+    expectEnum(formula.language, "$.formula.language", ["cel-v1", "cel-v2"]);
+    if (formula.resultElementType !== undefined) {
+      expectEnum(formula.resultElementType, "$.formula.resultElementType", ["number", "bool", "text", "dateTime"]);
+      if (formula.language !== "cel-v2" || formula.resultType !== "json") {
+        throw new Error("列表元素类型要求 cel-v2 和 json 结果类型");
+      }
+    } else if (formula.language === "cel-v2" && formula.resultType === "json") {
+      throw new Error("cel-v2 列表结果缺少元素类型");
+    }
     expectString(formula.source, "$.formula.source");
     expectEnum(
       formula.resultType,

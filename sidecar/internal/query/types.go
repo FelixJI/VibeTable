@@ -6,33 +6,30 @@ import (
 	"fmt"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/queryfilter"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
-type Operator string
+type Operator = queryfilter.Operator
+type Logic = queryfilter.Logic
 
 const (
-	OperatorContains   Operator = "contains"
-	OperatorEqual      Operator = "eq"
-	OperatorNotEqual   Operator = "ne"
-	OperatorStartsWith Operator = "starts_with"
-	OperatorEndsWith   Operator = "ends_with"
-	OperatorGreater    Operator = "gt"
-	OperatorLess       Operator = "lt"
-	OperatorGreaterEq  Operator = "gte"
-	OperatorLessEq     Operator = "lte"
-	OperatorBetween    Operator = "between"
-	OperatorIn         Operator = "in"
-	OperatorIsNull     Operator = "is_null"
-	OperatorIsNotNull  Operator = "is_not_null"
-	OperatorRegex      Operator = "regex"
-)
-
-type Logic string
-
-const (
-	LogicAnd Logic = "AND"
-	LogicOr  Logic = "OR"
+	OperatorContains   = queryfilter.OperatorContains
+	OperatorEqual      = queryfilter.OperatorEqual
+	OperatorNotEqual   = queryfilter.OperatorNotEqual
+	OperatorStartsWith = queryfilter.OperatorStartsWith
+	OperatorEndsWith   = queryfilter.OperatorEndsWith
+	OperatorGreater    = queryfilter.OperatorGreater
+	OperatorLess       = queryfilter.OperatorLess
+	OperatorGreaterEq  = queryfilter.OperatorGreaterEq
+	OperatorLessEq     = queryfilter.OperatorLessEq
+	OperatorBetween    = queryfilter.OperatorBetween
+	OperatorIn         = queryfilter.OperatorIn
+	OperatorIsNull     = queryfilter.OperatorIsNull
+	OperatorIsNotNull  = queryfilter.OperatorIsNotNull
+	OperatorRegex      = queryfilter.OperatorRegex
+	LogicAnd           = queryfilter.LogicAnd
+	LogicOr            = queryfilter.LogicOr
 )
 
 type SortDirection string
@@ -67,14 +64,7 @@ const (
 	ArchiveModeDeletedAt ArchiveMode = "deletedAt"
 )
 
-type FilterExpression struct {
-	Field      string             `json:"field,omitempty"`
-	Operator   Operator           `json:"operator,omitempty"`
-	Value      any                `json:"value,omitempty"`
-	Logic      Logic              `json:"logic,omitempty"`
-	Filters    []FilterExpression `json:"filters,omitempty"`
-	GroupLogic Logic              `json:"groupLogic,omitempty"`
-}
+type FilterExpression = queryfilter.FilterExpression
 
 type SortCondition struct {
 	Field     string        `json:"field"`

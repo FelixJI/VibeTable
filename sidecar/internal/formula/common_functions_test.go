@@ -470,7 +470,20 @@ func TestFunctionCatalogMatchesCompilerEnvironment(t *testing.T) {
 				t.Fatalf("catalog entry %q lacks key %q", entry.Name, key)
 			}
 		}
-		if _, err := NewCompiler(DefaultLimits()).InferExecutionSource(formulaTable(), entry.Example); err != nil {
+		definition := collectionCatalogDefinition()
+		amount := definition.FormulaSources["tbl_example"].Fields[0]
+		amount.DisplayName = "金额"
+		author := V2Table{
+			TableID: definition.Snapshot.TableID, Fields: definition.Snapshot.Fields,
+			AuthorTables: map[string]V2Table{"tbl_example": {
+				TableID: "tbl_example", DisplayName: "出货", Fields: []v2.FieldDefinition{amount},
+			}},
+		}
+		canonical, authorErr := CanonicalizeV2DisplaySource(author, nil, entry.Example)
+		if authorErr != nil {
+			t.Fatalf("catalog example for %q cannot be authored: %v", entry.Name, authorErr)
+		}
+		if _, err := NewCompiler(DefaultLimits()).InferExecutionSource(definition, canonical); err != nil {
 			t.Fatalf("catalog example for %q does not type-check: %v", entry.Name, err)
 		}
 	}

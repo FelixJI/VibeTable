@@ -366,8 +366,11 @@ func computationTestApp(t *testing.T) *pocketbase.PocketBase {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := app.ResetBootstrapState(); err != nil {
-			t.Errorf("ResetBootstrapState(): %v", err)
+		event := &core.TerminateEvent{App: app}
+		if err := app.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
+			return event.App.ResetBootstrapState()
+		}); err != nil {
+			t.Errorf("terminate fixture: %v", err)
 		}
 	})
 	if err := app.RunAllMigrations(); err != nil {

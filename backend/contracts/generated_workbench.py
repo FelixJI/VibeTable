@@ -338,8 +338,11 @@ class FormulaTextRange(V2Model):
 
 class FormulaAuthorToken(V2Model):
     range: FormulaTextRange
-    kind: Literal["field", "relation", "relationTarget"]
-    field_id: Annotated[str, Field(min_length=1)]
+    kind: Literal["field", "relation", "relationTarget", "table", "sourceField"]
+    field_id: Annotated[str | None, Field(min_length=1)]
+    table_id: Annotated[str | None, Field(min_length=1)] = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     relation_field_id: Annotated[str | None, Field(min_length=1)]
     target_field_id: Annotated[str | None, Field(min_length=1)]
 
@@ -352,7 +355,7 @@ class FormulaAuthorDocument(V2Model):
 
 class ComputedCellEnvelope(V2Model):
     state: Literal["ready", "updating", "failed", "cancelled", "invalid", "too_expensive"]
-    value: str | float | bool | None
+    value: str | float | bool | list[str | float | bool | None] | None
     definition_version: Annotated[int, Field(ge=1)]
     source_data_revision: Annotated[int, Field(ge=0)]
     dependency_watermark: Annotated[int, Field(ge=0)]

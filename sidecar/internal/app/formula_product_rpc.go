@@ -383,9 +383,10 @@ func formulaDTOSpecs() map[string]map[string]formulaDTOField {
 			"role": {kind: "enum", values: []string{"createdAt", "updatedAt"}},
 		},
 		"formulaSpec": {
-			"language":   {kind: "enum", values: []string{"cel-v1"}},
-			"source":     {kind: "text", values: []string{"min"}},
-			"resultType": {kind: "enum", values: formulaDTOLogicalTypes},
+			"language":          {kind: "enum", values: []string{"cel-v1", "cel-v2"}},
+			"source":            {kind: "text", values: []string{"min"}},
+			"resultType":        {kind: "enum", values: formulaDTOLogicalTypes},
+			"resultElementType": {kind: "enum", values: []string{"number", "bool", "text", "dateTime"}, optional: true},
 		},
 		"lookupSpec": {
 			"path":          {listItem: "lookupPathStep", minItems: 1, maxItems: 8},
@@ -435,7 +436,7 @@ func formulaDTOAliases() map[string]map[string]string {
 			"allowed_mime_types": "allowedMimeTypes",
 		},
 		"jsonSpec":       {"root_type": "rootType", "max_size": "maxSize", "schema_": "schema"},
-		"formulaSpec":    {"result_type": "resultType"},
+		"formulaSpec":    {"result_type": "resultType", "result_element_type": "resultElementType"},
 		"lookupSpec":     {"target_field_id": "targetFieldId"},
 		"lookupPathStep": {"relation_field_id": "relationFieldId"},
 	}

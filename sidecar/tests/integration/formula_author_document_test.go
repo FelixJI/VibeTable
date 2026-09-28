@@ -31,7 +31,7 @@ func TestFormulaAuthorCatalogMissingReferenceCannotBindDisplayName(t *testing.T)
 	actual, err := catalog.AuthorFormulaDocument(ctx, table.TableID, workbench.FormulaAuthorDocument{
 		DisplaySource: "{#REF!}", DocumentRevision: 2,
 	})
-	if err != nil || len(actual.Document.Tokens) != 1 || actual.Document.Tokens[0].FieldId != field.FieldID {
+	if err != nil || len(actual.Document.Tokens) != 1 || actual.Document.Tokens[0].FieldId == nil || *actual.Document.Tokens[0].FieldId != field.FieldID {
 		t.Fatalf("explicit real field reference rejected: %v", err)
 	}
 }
@@ -60,7 +60,7 @@ func TestFormulaAuthorCatalogRoundTripAfterTargetRename(t *testing.T) {
 		t.Fatalf("author tokens = %#v", authored.Document.Tokens)
 	}
 	token := authored.Document.Tokens[0]
-	if token.Kind != "relationTarget" || token.FieldId != amount.FieldID ||
+	if token.Kind != "relationTarget" || token.FieldId == nil || *token.FieldId != amount.FieldID ||
 		token.RelationFieldId == nil || *token.RelationFieldId != relation.FieldID ||
 		token.TargetFieldId == nil || *token.TargetFieldId != amount.FieldID {
 		t.Fatalf("author token identities = %#v", token)

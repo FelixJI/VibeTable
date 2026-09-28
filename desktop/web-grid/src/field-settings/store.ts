@@ -79,6 +79,8 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     loading: false, ready: false, value: undefined, error: null,
   });
   const formulaSourceSchema = ref<SchemaSnapshot | null>(null);
+  const formulaCollectionSchema = ref<SchemaSnapshot | null>(null);
+  const formulaCollectionLoading = ref(false);
   const formulaTargetSchemas = ref<Readonly<Record<string, SchemaSnapshot>>>({});
   const formulaCatalogLoading = ref(false);
   const formulaCatalogError = ref<string | null>(null);
@@ -163,6 +165,8 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupCatalogError.value = null;
     lookupMaxDepth.value = 8;
     formulaSourceSchema.value = null;
+    formulaCollectionSchema.value = null;
+    formulaCollectionLoading.value = false;
     formulaTargetSchemas.value = {};
     formulaCatalogLoading.value = false;
     formulaCatalogError.value = null;
@@ -567,7 +571,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     relationCatalogLoading, relationCatalogError, lookupSchemas,
     lookupCatalogLoading, lookupCatalogError, lookupMaxDepth,
     lookupCurrentFields, lookupConditionFields, lookupConditionSchema, lookupPreview,
-    formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,
+    formulaSourceSchema, formulaCollectionSchema, formulaCollectionLoading, formulaTargetSchemas, formulaCatalogLoading,
     formulaCatalogError, formulaFunctions, formulaAuthorDocument,
     formulaDiagnostic, formulaValidation, formulaValidatedSource,
     formulaValidatedDocumentRevision, formulaValidating, formulaValidationError,

@@ -23,6 +23,16 @@ type FormulaDefinition = NonNullable<
   import("@/contracts/schemaV2").FieldDraftV2["formula"]
 >;
 
+interface FormulaTableOption {
+  readonly tableId: string;
+  readonly label: string;
+}
+
+interface FormulaSourceTable {
+  readonly tableId: string;
+  readonly fields: readonly FormulaFieldOption[];
+}
+
 interface FormulaFieldOption extends SelectOption {
   readonly label: string;
   /** Stable Schema V2 field identity; the only name the editor persists. */
@@ -41,6 +51,11 @@ const props = defineProps<{
   value: FormulaDefinition;
   localFields: readonly FormulaFieldOption[];
   relations: readonly FormulaRelationOption[];
+  /** Selectable source tables for TABLE(...) references; main owns loading. */
+  tables?: readonly FormulaTableOption[];
+  /** Field list for the currently loaded source table, matched by tableId. */
+  sourceTable?: FormulaSourceTable | null;
+  sourceTableLoading?: boolean;
   resultType?: string | null;
   authorDocument?: FormulaAuthorDocument | null;
   functions?: readonly FormulaFunctionInfo[];
@@ -59,6 +74,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   commit: [value: FormulaDefinition];
   validate: [request: FormulaDraftValidateRequest];
+  loadTable: [tableId: string];
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -71,6 +87,8 @@ const selectedRelation = ref<string | null>(null);
 const selectedTarget = ref<string | null>(null);
 const selectedDirectRelation = ref<string | null>(null);
 const selectedDirectTarget = ref<string | null>(null);
+const selectedTable = ref<string | null>(null);
+const selectedSourceField = ref<string | null>(null);
 const selectedAggregate = ref("SUM");
 const functionSearch = ref("");
 const functionCategory = ref<string | null>(null);
@@ -101,6 +119,19 @@ const activeDirectRelation = computed(() => props.relations.find(
 ));
 const directTargetOptions = computed(() => (activeDirectRelation.value?.targetFields ?? [])
   .map(field => ({ label: field.label, value: field.fieldId })));
+const tableOptions = computed(() => (props.tables ?? []).map(table => ({
+  label: table.label,
+  value: table.tableId,
+})));
+const selectedTableOption = computed(() => (props.tables ?? []).find(
+  table => table.tableId === selectedTable.value,
+) ?? null);
+const sourceTableReady = computed(() => !!selectedTable.value
+  && props.sourceTable?.tableId === selectedTable.value);
+const sourceFieldOptions = computed(() => (sourceTableReady.value
+  ? props.sourceTable?.fields ?? []
+  : []
+).map(field => ({ label: `${field.label} · ${field.dataType}`, value: field.fieldId })));
 const activeRelation = computed(() => props.relations.find(
   relation => relation.fieldId === selectedRelation.value,
 ));
@@ -132,7 +163,12 @@ const filteredFunctions = computed(() => {
       || item.signature.toLowerCase().includes(keyword)));
 });
 const summarySource = computed(() => props.authorDocument?.displaySource ?? "");
-const inferredType = computed(() => props.validation?.resultType ?? props.resultType ?? "待推断");
+const inferredType = computed(() => {
+  const resultType = props.validation?.resultType ?? props.resultType ?? "待推断";
+  const elementType = props.validation?.resultElementType;
+  // List results surface their element type, e.g. number[].
+  return elementType && resultType === "json" ? `${elementType}[]` : resultType;
+});
 const sourceIsCurrent = computed(() => props.validatedSource === workingSource.value);
 const canCommit = computed(() => editing.value
   && workingSource.value.trim().length > 0
@@ -226,9 +262,10 @@ function cancel(): void {
 function commit(): void {
   if (!canCommit.value || !props.validation) return;
   // Persist the sidecar-validated canonical source; display names never
-  // reach storage, so renames cannot re-resolve a saved formula.
+  // reach storage, so renames cannot re-resolve a saved formula. Hosts that
+  // predate the language field keep committing as cel-v1.
   emit("commit", {
-    language: "cel-v1",
+    language: props.validation.language ?? "cel-v1",
     source: props.validation.canonicalSource,
   });
   editing.value = false;
@@ -314,6 +351,28 @@ function relationTargetToken(relationFieldId: string, targetFieldId: string): Fo
     fieldId: targetFieldId,
     relationFieldId,
     targetFieldId,
+  };
+}
+
+function tableToken(tableId: string): FormulaAuthorToken {
+  return {
+    range: zeroRange(),
+    kind: "table",
+    fieldId: null,
+    tableId,
+    relationFieldId: null,
+    targetFieldId: null,
+  };
+}
+
+function sourceFieldToken(tableId: string, fieldId: string): FormulaAuthorToken {
+  return {
+    range: zeroRange(),
+    kind: "sourceField",
+    fieldId,
+    tableId,
+    relationFieldId: null,
+    targetFieldId: null,
   };
 }
 
@@ -405,6 +464,55 @@ function insertDirectRelationField(): void {
       labelLength: path.length,
     },
   ));
+}
+
+function onTableSelect(value: string | null): void {
+  selectedTable.value = value;
+  selectedSourceField.value = null;
+  if (value) emit("loadTable", value);
+}
+
+function insertTableReference(): void {
+  const table = selectedTableOption.value;
+  if (!table) return;
+  const label = `{${table.label}}`;
+  const selection = currentSelection();
+  applyInsertion(insertReference(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    {
+      text: `TABLE(${label})`,
+      token: tableToken(table.tableId),
+      labelStart: "TABLE(".length,
+      labelLength: label.length,
+    },
+  ));
+}
+
+function insertSourceFieldReference(): void {
+  const tableId = selectedTable.value;
+  if (!sourceTableReady.value || !tableId) return;
+  const field = props.sourceTable?.fields.find(
+    item => item.fieldId === selectedSourceField.value,
+  );
+  if (!field) return;
+  const label = `{${field.label}}`;
+  const selection = currentSelection();
+  applyInsertion(insertReference(
+    workingDocument.value,
+    workingSource.value,
+    selection.start,
+    selection.end,
+    {
+      text: `CurrentValue.${label}`,
+      token: sourceFieldToken(tableId, field.fieldId),
+      labelStart: "CurrentValue.".length,
+      labelLength: label.length,
+    },
+  ));
+  selectedSourceField.value = null;
 }
 
 function insertFunctionCall(info: FormulaFunctionInfo): void {
@@ -515,6 +623,7 @@ function formatPreviewValue(value: unknown): string {
             data-testid="formula-local-field"
             @update:value="onLocalFieldSelect"
           />
+          <small>当前行字段：取本表当前记录的字段值。</small>
         </section>
         <section class="insert-card aggregate-card">
           <div><FunctionSquare :size="15" /><strong>沿 Relation 聚合</strong></div>
@@ -560,6 +669,50 @@ function formatPreviewValue(value: unknown): string {
             :disabled="!selectedDirectRelation || !selectedDirectTarget"
             @click="insertDirectRelationField"
           >插入引用</NButton>
+        </section>
+        <section v-if="tables?.length" class="insert-card source-card">
+          <div><Braces :size="15" /><strong>跨表来源（TABLE + CurrentValue）</strong></div>
+          <NSelect
+            :value="selectedTable"
+            :options="tableOptions"
+            filterable
+            placeholder="选择来源表"
+            data-testid="formula-source-table"
+            @update:value="onTableSelect"
+          />
+          <NButton
+            size="small"
+            secondary
+            :disabled="!selectedTableOption"
+            data-testid="formula-insert-table"
+            @click="insertTableReference"
+          >插入 TABLE(来源表)</NButton>
+          <div
+            v-if="selectedTable && sourceTableLoading"
+            class="validating"
+            data-testid="formula-source-table-loading"
+          ><NSpin size="small" />正在加载来源表字段…</div>
+          <template v-else-if="selectedTable && sourceTableReady">
+            <NSelect
+              v-model:value="selectedSourceField"
+              :options="sourceFieldOptions"
+              filterable
+              placeholder="选择来源记录字段"
+              data-testid="formula-source-field"
+            />
+            <NButton
+              size="small"
+              secondary
+              :disabled="!selectedSourceField"
+              data-testid="formula-insert-source-field"
+              @click="insertSourceFieldReference"
+            >插入 CurrentValue.字段</NButton>
+          </template>
+          <small v-else-if="selectedTable">来源表字段尚未加载。</small>
+          <small>
+            来源记录字段来自所选表：先插入 TABLE(来源表)，再用 CurrentValue.字段 引用该表记录，
+            放置是否合法由公式引擎校验；“插入当前表字段”引用当前行字段。
+          </small>
         </section>
         <section class="insert-card function-card">
           <div><Search :size="15" /><strong>函数目录</strong></div>
@@ -652,7 +805,7 @@ function formatPreviewValue(value: unknown): string {
       >{{ previewNote }}</NAlert>
 
       <div class="editor-actions">
-        <small>多值跨表计算必须沿 Relation 使用聚合函数；不允许任意扫描其他表。</small>
+        <small>跨表引用使用 TABLE(来源表) 与 CurrentValue.字段；多值结果需沿 Relation 聚合或用 FILTER/PROJECT 等函数处理，合法性由公式引擎校验。</small>
         <NButton
           type="primary"
           :disabled="!canCommit"
@@ -699,6 +852,8 @@ function formatPreviewValue(value: unknown): string {
 .aggregate-card>div { grid-column: 1 / -1; }
 .direct-card { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .direct-card>div { grid-column: 1 / -1; }
+.source-card { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.source-card>div, .source-card>.validating, .source-card small { grid-column: 1 / -1; }
 .function-card { grid-column: 1 / -1; }
 .function-card>div:first-child { grid-column: 1 / -1; }
 .function-list {
@@ -731,7 +886,7 @@ label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-w
 .eyebrow { color: #7c3aed; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
 small,.validating { color: var(--vt-fg-muted); }
 @media(max-width:720px) {
-  .insert-grid,.aggregate-card,.direct-card { grid-template-columns: 1fr; }
+  .insert-grid,.aggregate-card,.direct-card,.source-card { grid-template-columns: 1fr; }
   .aggregate-card>div,.direct-card>div { grid-column: auto; }
 }
 </style>

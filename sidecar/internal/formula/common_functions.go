@@ -32,10 +32,10 @@ const (
 )
 
 // commonBranchTypes are the result types accepted for IF/IFS/IFERROR
-// branches. list(dyn) covers homogeneous multi-select style values.
+// branches. The list element parameter preserves typed collection results.
 var commonBranchTypes = []*cel.Type{
 	cel.IntType, cel.DoubleType, cel.StringType, cel.BoolType,
-	cel.TimestampType, cel.ListType(cel.DynType),
+	cel.TimestampType, cel.ListType(cel.TypeParamType("element")),
 }
 
 func commonBranchTypeName(valueType *cel.Type) string {

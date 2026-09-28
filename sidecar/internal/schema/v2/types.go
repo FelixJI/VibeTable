@@ -346,9 +346,10 @@ type AutoDateSpec struct {
 }
 
 type FormulaSpec struct {
-	Language   string      `json:"language"`
-	Source     string      `json:"source"`
-	ResultType LogicalType `json:"resultType"`
+	Language          string      `json:"language"`
+	Source            string      `json:"source"`
+	ResultType        LogicalType `json:"resultType"`
+	ResultElementType LogicalType `json:"resultElementType,omitempty"`
 }
 
 // FormulaDraftSpec deliberately omits resultType. The sidecar infers it from

@@ -188,14 +188,22 @@ def _validate_schema(schema: JsonObject) -> list[tuple[str, JsonObject]]:
         if not isinstance(name, str) or not isinstance(definition, dict):
             raise ValueError(f"missing generated definition: {name}")
         properties = definition.get("properties")
-        required = definition.get("required")
+        required = definition.get("required", [])
         if (
             definition.get("type") != "object"
             or definition.get("additionalProperties") is not False
             or not isinstance(properties, dict)
-            or set(required or []) != set(properties)
+            or not isinstance(required, list)
+            or not set(required).issubset(properties)
+            or any(
+                "null" not in _types(node) or node.get("default", False) is not None
+                for field, node in properties.items()
+                if field not in required
+            )
         ):
-            raise ValueError(f"generated definition must be a fully required closed object: {name}")
+            raise ValueError(
+                f"generated definition must be closed with required or nullable defaulted fields: {name}"
+            )
         selected.append((name, definition))
     return selected
 
@@ -220,6 +228,8 @@ def _generate_python(definitions: list[tuple[str, JsonObject]]) -> str:
             lines.append("    pass")
         for field, node in definition["properties"].items():
             annotation = _python_type(node)
+            if field not in definition.get("required", []):
+                annotation += " = Field(default=None, exclude_if=lambda value: value is None)"
             prefix = f"    {_snake(field)}: "
             if len(prefix) + len(annotation) <= 100:
                 lines.append(prefix + annotation)
@@ -257,7 +267,8 @@ def _generate_typescript(definitions: list[tuple[str, JsonObject]]) -> str:
     for name, definition in definitions:
         lines.append(f"export interface {name} {{")
         for field, node in definition["properties"].items():
-            lines.append(f"  readonly {field}: {_typescript_type(node)};")
+            optional = "" if field in definition.get("required", []) else "?"
+            lines.append(f"  readonly {field}{optional}: {_typescript_type(node)};")
         lines.extend(["}", ""])
     return "\n".join(lines).rstrip() + "\n"
 
@@ -281,10 +292,14 @@ def _generate_csharp(definitions: list[tuple[str, JsonObject]]) -> str:
             ]
         )
         for field, node in definition["properties"].items():
-            lines.append(
-                f'    [JsonRequired, JsonPropertyName("{field}")] public required '
-                f"{_csharp_type(node)} {_pascal(field)} {{ get; init; }}"
-            )
+            if field in definition.get("required", []):
+                declaration = f'[JsonRequired, JsonPropertyName("{field}")] public required '
+            else:
+                declaration = (
+                    f'[JsonPropertyName("{field}"), '
+                    "JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public "
+                )
+            lines.append(f"    {declaration}{_csharp_type(node)} {_pascal(field)} {{ get; init; }}")
         lines.extend(["}", ""])
     return "\n".join(lines).rstrip() + "\n"
 
@@ -298,7 +313,8 @@ def _generate_go(definitions: list[tuple[str, JsonObject]]) -> str:
     for name, definition in definitions:
         lines.append(f"type {name} struct {{")
         for field, node in definition["properties"].items():
-            lines.append(f'\t{_pascal(field)} {_go_type(node)} `json:"{field}"`')
+            omit = "" if field in definition.get("required", []) else ",omitempty"
+            lines.append(f'\t{_pascal(field)} {_go_type(node)} `json:"{field}{omit}"`')
         lines.extend(["}", ""])
     raw = "\n".join(lines).rstrip() + "\n"
     formatted = subprocess.run(

@@ -495,8 +495,9 @@
       "required": ["range", "kind", "fieldId", "relationFieldId", "targetFieldId"],
       "properties": {
         "range": {"$ref": "#/$defs/FormulaTextRange"},
-        "kind": {"enum": ["field", "relation", "relationTarget"]},
-        "fieldId": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["field", "relation", "relationTarget", "table", "sourceField"]},
+        "fieldId": {"type": ["string", "null"], "minLength": 1},
+        "tableId": {"type": ["string", "null"], "minLength": 1, "default": null},
         "relationFieldId": {"type": ["string", "null"], "minLength": 1},
         "targetFieldId": {"type": ["string", "null"], "minLength": 1}
       }
@@ -517,7 +518,7 @@
       "required": ["state", "value", "definitionVersion", "sourceDataRevision", "dependencyWatermark", "diagnostic"],
       "properties": {
         "state": {"enum": ["ready", "updating", "failed", "cancelled", "invalid", "too_expensive"]},
-        "value": {"type": ["string", "number", "boolean", "null"]},
+        "value": {"type": ["string", "number", "boolean", "array", "null"], "items": {"type": ["string", "number", "boolean", "null"]}},
         "definitionVersion": {"type": "integer", "minimum": 1},
         "sourceDataRevision": {"type": "integer", "minimum": 0},
         "dependencyWatermark": {"type": "integer", "minimum": 0},

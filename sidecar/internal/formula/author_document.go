@@ -139,11 +139,16 @@ func authorSyntaxLexemes(source string) []authorLexeme {
 	return result
 }
 
-func displayFunctionName(name string, singleRelationTarget bool) string {
-	// Both the native lowercase min/max functions and the uppercase numeric
-	// MIN/MAX functions exist now. Their display aggregate shorthand stays
-	// unambiguous only with one relation-target argument.
-	if (strings.EqualFold(name, "min") || strings.EqualFold(name, "max")) && !singleRelationTarget {
+// displayFunctionName maps an aggregate display name to its Relation
+// shorthand only when the call's single argument is one whole relation
+// reference. Collection calls over TABLE/PROJECT/FILTER ranges and scalar
+// literals keep their uppercase name; the native min/max shorthand still
+// requires one relation-target argument.
+func displayFunctionName(name string, relationShorthand string) string {
+	if relationShorthand != "relation" && relationShorthand != "relationTarget" {
+		return ""
+	}
+	if (strings.EqualFold(name, "min") || strings.EqualFold(name, "max")) && relationShorthand != "relationTarget" {
 		return ""
 	}
 	return displayAggregateFunctions[strings.ToUpper(name)]
@@ -241,8 +246,34 @@ func authorFieldByID(fields []v2.FieldDefinition, id string) (v2.FieldDefinition
 	return v2.FieldDefinition{}, false
 }
 
+// validateAuthorToken checks the identity combination of one author token
+// kind. Ordinary field tokens keep requiring a nonempty FieldId with no
+// TableId; a table token carries only TableId, and a source field token
+// carries both the field and its source table identity.
+func validateAuthorToken(token *workbench.FormulaAuthorToken) *Error {
+	switch token.Kind {
+	case "field", "relation", "relationTarget":
+		if token.FieldId == nil || *token.FieldId == "" || token.TableId != nil {
+			return formulaError("formula.author.token", "author token identity or kind is invalid", nil)
+		}
+	case "table":
+		if token.FieldId != nil || token.TableId == nil || *token.TableId == "" ||
+			token.RelationFieldId != nil || token.TargetFieldId != nil {
+			return formulaError("formula.author.token", "table token identity combination is invalid", nil)
+		}
+	case "sourceField":
+		if token.FieldId == nil || *token.FieldId == "" || token.TableId == nil || *token.TableId == "" ||
+			token.RelationFieldId != nil || token.TargetFieldId != nil {
+			return formulaError("formula.author.token", "source field token identity combination is invalid", nil)
+		}
+	default:
+		return formulaError("formula.author.token", "author token identity or kind is invalid", nil)
+	}
+	return nil
+}
+
 func authorToken(field v2.FieldDefinition, relation *v2.FieldDefinition) workbench.FormulaAuthorToken {
-	token := workbench.FormulaAuthorToken{Kind: "field", FieldId: field.Identity.FieldID}
+	token := workbench.FormulaAuthorToken{Kind: "field", FieldId: &field.Identity.FieldID}
 	if relation != nil {
 		token.Kind = "relationTarget"
 		root, target := relation.Identity.FieldID, field.Identity.FieldID
@@ -271,6 +302,9 @@ func authorTarget(definition V2Table, targets map[string]V2Table, relation v2.Fi
 
 // AuthorV2Document resolves supplied tokens by stable ID and unbound pasted
 // references by unique display name. Labels never override a supplied identity.
+// Collection references follow the same rule: TABLE({表}) binds a stable table
+// identity, and CurrentValue.{字段} binds a field of the range table resolved
+// from the enclosing FILTER/SUMIF/COUNTIF/PROJECT call, never a global guess.
 func AuthorV2Document(definition V2Table, targets map[string]V2Table, document workbench.FormulaAuthorDocument) (*AuthorResult, *Error) {
 	if document.DocumentRevision <= 0 {
 		return nil, formulaError("formula.author.revision", "documentRevision must be positive", nil)
@@ -298,18 +332,18 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 			return nil, formulaError("formula.author.range", "author token ranges overlap", nil)
 		}
 		previous = span
-		if token.FieldId == "" || (token.Kind != "field" && token.Kind != "relation" && token.Kind != "relationTarget") {
-			return nil, formulaError("formula.author.token", "author token identity or kind is invalid", nil)
+		if identityErr := validateAuthorToken(&token); identityErr != nil {
+			return nil, identityErr
 		}
 		if token.Kind == "relationTarget" {
-			if token.RelationFieldId == nil || *token.RelationFieldId == "" || token.TargetFieldId == nil || *token.TargetFieldId != token.FieldId {
+			if token.RelationFieldId == nil || *token.RelationFieldId == "" || token.TargetFieldId == nil || *token.TargetFieldId != *token.FieldId {
 				return nil, formulaError("formula.author.token", "relation target identity combination is invalid", nil)
 			}
 		} else if token.Kind == "relation" {
-			if token.RelationFieldId == nil || *token.RelationFieldId != token.FieldId || token.TargetFieldId != nil {
+			if token.RelationFieldId == nil || *token.RelationFieldId != *token.FieldId || token.TargetFieldId != nil {
 				return nil, formulaError("formula.author.token", "relation token must repeat its root identity", nil)
 			}
-		} else if token.RelationFieldId != nil || token.TargetFieldId != nil {
+		} else if token.Kind == "field" && (token.RelationFieldId != nil || token.TargetFieldId != nil) {
 			return nil, formulaError("formula.author.token", "local token has relation target identity", nil)
 		}
 		bindings[span] = token
@@ -318,6 +352,8 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 	// labels. Equal-byte placeholders preserve offsets while CEL's lexer checks
 	// that each atom is outside literals/comments. Only unbound text is scanned
 	// for display names; labels never get another chance to choose an identity.
+	// The placeholder must be an identifier: a numeric one after "CurrentValue."
+	// would lex as the float ".0" and swallow the dot and the atom start.
 	masked := []byte(document.DisplaySource)
 	for span, binding := range bindings {
 		label := document.DisplaySource[span.Start:span.End]
@@ -328,13 +364,13 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		for offset := span.Start; offset < span.End; offset++ {
 			masked[offset] = ' '
 		}
-		masked[span.Start] = '0'
+		masked[span.Start] = authorAtomPlaceholder[0]
 	}
 	maskedSource := string(masked)
 	lexemes := authorSyntaxLexemes(maskedSource)
 	atomStarts := make(map[int]bool, len(bindings))
 	for _, lexeme := range lexemes {
-		if lexeme.kind == gen.CELLexerNUM_INT && lexeme.text == "0" {
+		if lexeme.kind == gen.CELLexerIDENTIFIER && lexeme.text == authorAtomPlaceholder {
 			atomStarts[lexeme.start] = true
 		}
 	}
@@ -354,99 +390,191 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 			return nil, formulaError("formula.author.range", "author references overlap", nil)
 		}
 	}
+	items, byStart, err := authorItems(document.DisplaySource, scanned, bindings)
+	if err != nil {
+		return nil, err
+	}
+	structure := analyzeAuthorStructure(authorSyntaxLexemes(authorStructureSource(document.DisplaySource, items)))
+	if err := classifyAuthorItems(structure, items, byStart, definition, targets); err != nil {
+		return nil, err
+	}
 	var edits []authorEdit
 	relationCalls := map[int]string{}
-	for i := 0; i < len(scanned); i++ {
-		first := scanned[i]
-		span := SourceSpan{Start: first.start, End: first.end}
-		missingReference := document.DisplaySource[first.start:first.end] == "#REF!"
-		targetName := ""
-		if i+1 < len(scanned) && document.DisplaySource[first.end:scanned[i+1].start] == "." {
-			_, firstBound := bindings[span]
-			_, nextBound := bindings[SourceSpan{Start: scanned[i+1].start, End: scanned[i+1].end}]
-			if firstBound || nextBound {
-				return nil, formulaError("formula.author.range", "relation target token must cover the entire field path", nil)
-			}
-			i++
-			span.End = scanned[i].end
-			targetName = scanned[i].name
-			missingReference = missingReference || document.DisplaySource[scanned[i].start:scanned[i].end] == "#REF!"
-		}
-		binding, bound := bindings[span]
+	shorthands := map[int]string{}
+	for index := range items {
+		item := &items[index]
+		span := item.span
 		var field v2.FieldDefinition
 		var root *v2.FieldDefinition
 		var resolveErr *Error
-		if bound {
-			delete(bindings, span)
-			id := binding.FieldId
-			if binding.Kind == "relationTarget" {
-				id = *binding.RelationFieldId
-			}
-			local, ok := authorFieldByID(definition.Fields, id)
-			if !ok {
-				resolveErr = authorReferenceError(map[string]any{"fieldId": id})
-			} else if binding.Kind == "relationTarget" {
-				root = &local
-				target, targetErr := authorTarget(definition, targets, local)
-				resolveErr = targetErr
-				if targetErr == nil {
-					field, ok = authorFieldByID(target.Fields, binding.FieldId)
-					if !ok {
-						resolveErr = authorReferenceError(map[string]any{"fieldId": binding.FieldId, "relationFieldId": id})
-					}
+		var token *workbench.FormulaAuthorToken
+		var display, canonical string
+		switch item.context {
+		case "table":
+			var table V2Table
+			if item.binding != nil {
+				if item.binding.Kind != "table" {
+					return nil, formulaError("formula.author.token", "table reference requires a table token", nil)
+				}
+				tableID := *item.binding.TableId
+				var exists bool
+				table, exists = authorTableByID(definition, tableID)
+				if !exists || table.DisplayName == "" {
+					resolveErr = authorReferenceError(map[string]any{"tableId": tableID})
+					token = item.binding
+					break
 				}
 			} else {
-				field = local
-				if (local.LogicalType == v2.LogicalRelation) != (binding.Kind == "relation") {
-					return nil, formulaError("formula.author.token", "token kind differs from its stable field", nil)
+				if item.targetName != "" {
+					return nil, formulaError("formula.syntax", "table reference must be one complete table label", nil)
+				}
+				if item.missing {
+					resolveErr = authorReferenceError(nil)
+					break
+				}
+				table, resolveErr = uniqueDisplayTable(authorTablesByDisplayName(definition), item.name)
+				if resolveErr != nil {
+					break
 				}
 			}
-		} else if missingReference {
-			// A bare marker has no recoverable field identity. Only the explicit
-			// {#REF!} spelling may resolve a real field with that display name.
-			resolveErr = authorReferenceError(nil)
-		} else {
-			local, localErr := uniqueDisplayField(fieldsByDisplayName(definition.Fields), first.name, "local")
-			resolveErr = localErr
-			if localErr == nil {
+			tableID := table.TableID
+			display = "{" + table.DisplayName + "}"
+			canonical = strconv.Quote(tableID)
+			token = &workbench.FormulaAuthorToken{Kind: "table", TableId: &tableID}
+		case "sourceField":
+			if item.binding != nil {
+				if item.binding.Kind != "sourceField" {
+					return nil, formulaError("formula.author.token", "CurrentValue field requires a source field token", nil)
+				}
+				token = item.binding
+				tableID := *item.binding.TableId
+				if item.contextTable == nil {
+					if item.contextError != nil {
+						resolveErr = item.contextError
+					} else {
+						resolveErr = authorReferenceError(map[string]any{"tableId": tableID})
+					}
+					break
+				}
+				if item.contextTable.TableID != tableID {
+					resolveErr = authorReferenceError(map[string]any{"tableId": tableID, "rangeTableId": item.contextTable.TableID})
+					break
+				}
+				local, exists := authorFieldByID(item.contextTable.Fields, *item.binding.FieldId)
+				if !exists {
+					resolveErr = authorReferenceError(map[string]any{"fieldId": *item.binding.FieldId, "tableId": tableID})
+					break
+				}
 				field = local
-				if targetName != "" {
+			} else {
+				if item.contextTable == nil {
+					if item.contextError != nil {
+						resolveErr = item.contextError
+					} else {
+						resolveErr = authorReferenceError(nil)
+					}
+					break
+				}
+				if item.targetName != "" {
+					return nil, formulaError("formula.syntax", "CurrentValue field must be one complete source field label", nil)
+				}
+				if item.missing {
+					resolveErr = authorReferenceError(nil)
+					break
+				}
+				local, localErr := uniqueDisplayField(fieldsByDisplayName(item.contextTable.Fields), item.name, "source field")
+				resolveErr = localErr
+				if localErr != nil {
+					break
+				}
+				field = local
+			}
+			fieldID, tableID := field.Identity.FieldID, item.contextTable.TableID
+			display = authorLabel(field)
+			canonical = field.Identity.PhysicalName
+			token = &workbench.FormulaAuthorToken{Kind: "sourceField", FieldId: &fieldID, TableId: &tableID}
+		default:
+			if item.binding != nil && item.binding.Kind != "field" && item.binding.Kind != "relation" && item.binding.Kind != "relationTarget" {
+				return nil, formulaError("formula.author.token", "field reference requires a field, relation or relation target token", nil)
+			}
+			binding := item.binding
+			if binding != nil {
+				id := *binding.FieldId
+				if binding.Kind == "relationTarget" {
+					id = *binding.RelationFieldId
+				}
+				local, ok := authorFieldByID(definition.Fields, id)
+				if !ok {
+					resolveErr = authorReferenceError(map[string]any{"fieldId": id})
+				} else if binding.Kind == "relationTarget" {
 					root = &local
 					target, targetErr := authorTarget(definition, targets, local)
 					resolveErr = targetErr
 					if targetErr == nil {
-						field, resolveErr = uniqueDisplayField(fieldsByDisplayName(target.Fields), targetName, "relation target")
+						field, ok = authorFieldByID(target.Fields, *binding.FieldId)
+						if !ok {
+							resolveErr = authorReferenceError(map[string]any{"fieldId": *binding.FieldId, "relationFieldId": id})
+						}
+					}
+				} else {
+					field = local
+					if (local.LogicalType == v2.LogicalRelation) != (binding.Kind == "relation") {
+						return nil, formulaError("formula.author.token", "token kind differs from its stable field", nil)
+					}
+				}
+				if resolveErr != nil {
+					token = binding
+					break
+				}
+			} else if item.missing {
+				// A bare marker has no recoverable field identity. Only the explicit
+				// {#REF!} spelling may resolve a real field with that display name.
+				resolveErr = authorReferenceError(nil)
+			} else {
+				local, localErr := uniqueDisplayField(fieldsByDisplayName(definition.Fields), item.name, "local")
+				resolveErr = localErr
+				if localErr == nil {
+					field = local
+					if item.targetName != "" {
+						root = &local
+						target, targetErr := authorTarget(definition, targets, local)
+						resolveErr = targetErr
+						if targetErr == nil {
+							field, resolveErr = uniqueDisplayField(fieldsByDisplayName(target.Fields), item.targetName, "relation target")
+						}
 					}
 				}
 			}
+			if resolveErr != nil {
+				break
+			}
+			bound := authorToken(field, root)
+			token = &bound
+			display, canonical = authorLabel(field), field.Identity.PhysicalName
+			if root != nil {
+				display = authorLabel(*root) + "." + display
+				canonical = root.Identity.PhysicalName + "." + canonical
+				function, singleArgument := authorReferenceCall(lexemes, span)
+				shorthand := ""
+				if singleArgument {
+					shorthand = "relationTarget"
+				}
+				if name := displayFunctionName(function.text, shorthand); name != "" && name != "relationCount" {
+					canonical = root.Identity.PhysicalName + ", " + strconv.Quote(field.Identity.PhysicalName)
+					relationCalls[function.start] = name
+				}
+			}
+			shorthands[span.Start] = bound.Kind
 		}
 		if resolveErr != nil {
 			if resolveErr.Code != "formula.reference" {
 				resolveErr.Details["range"] = workbench.FormulaTextRange{Start: coordinates.positions[span.Start], End: coordinates.positions[span.End]}
 				return nil, resolveErr
 			}
-			var token *workbench.FormulaAuthorToken
-			if bound {
-				token = &binding
-			}
 			edits = append(edits, authorEdit{span: span, display: "#REF!", canonical: "#REF!", token: token, missing: resolveErr})
 			continue
 		}
-		token := authorToken(field, root)
-		display, canonical := authorLabel(field), field.Identity.PhysicalName
-		if root != nil {
-			display = authorLabel(*root) + "." + display
-			canonical = root.Identity.PhysicalName + "." + canonical
-			function, singleArgument := authorReferenceCall(lexemes, span)
-			if name := displayFunctionName(function.text, singleArgument); name != "" && name != "relationCount" {
-				canonical = root.Identity.PhysicalName + ", " + strconv.Quote(field.Identity.PhysicalName)
-				relationCalls[function.start] = name
-			}
-		}
-		edits = append(edits, authorEdit{span: span, display: display, canonical: canonical, token: &token})
-	}
-	if len(bindings) > 0 {
-		return nil, formulaError("formula.author.range", "token must cover one complete reference outside literals", nil)
+		edits = append(edits, authorEdit{span: span, display: display, canonical: canonical, token: token})
 	}
 	for index, lexeme := range lexemes {
 		if lexeme.kind != gen.CELLexerIDENTIFIER {
@@ -464,7 +592,15 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 		}
 		canonical := relationCalls[lexeme.start]
 		if canonical == "" {
-			canonical = displayFunctionName(lexeme.text, false)
+			// Only a real Relation shorthand rewrites the aggregate name; calls
+			// over TABLE/PROJECT/FILTER ranges, Lookup lists and scalar arguments
+			// keep their display name so the compiler owns the rejection and the
+			// diagnostic keeps pointing at this call.
+			shorthand := ""
+			if structureIndex, ok := structure.lexAt[lexeme.start]; ok {
+				shorthand = authorShorthandKind(structure, structureIndex, shorthands)
+			}
+			canonical = displayFunctionName(lexeme.text, shorthand)
 		}
 		if canonical != "" && index+1 < len(lexemes) && lexemes[index+1].kind == gen.CELLexerLPAREN {
 			edits = append(edits, authorEdit{span: SourceSpan{Start: lexeme.start, End: lexeme.end}, display: lexeme.text, canonical: canonical})
@@ -480,6 +616,9 @@ func AuthorV2Document(definition V2Table, targets map[string]V2Table, document w
 }
 
 // RestoreV2AuthorDocument projects persisted CEL without rewriting its bytes.
+// Collection references restore the same way: TABLE("id") finds its table by
+// stable identity in the authoring schemas, and CurrentValue.f_x inside a
+// collection predicate or projection binds back to the range table's field.
 func RestoreV2AuthorDocument(definition V2Table, targets map[string]V2Table, canonicalSource string, documentRevision int64) (*AuthorResult, *Error) {
 	if documentRevision <= 0 {
 		return nil, formulaError("formula.author.revision", "documentRevision must be positive", nil)
@@ -495,10 +634,64 @@ func RestoreV2AuthorDocument(definition V2Table, targets map[string]V2Table, can
 		locals[field.Identity.PhysicalName] = field
 	}
 	tokens := authorSyntaxLexemes(canonicalSource)
+	structure := analyzeAuthorStructure(tokens)
 	var edits []authorEdit
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]
 		if token.kind != gen.CELLexerIDENTIFIER {
+			continue
+		}
+		if scope, ok := structure.sourceFieldScope(i); ok {
+			if table, rangeErr := resolveCanonicalRange(structure, scope.start, scope.end, locals, definition, targets); rangeErr == nil || rangeErr.Code == "formula.reference" {
+				span := SourceSpan{Start: token.start, End: token.end}
+				var display string
+				var binding *workbench.FormulaAuthorToken
+				var missing *Error
+				if rangeErr != nil {
+					display = "#REF!"
+					missing = rangeErr
+				} else {
+					var targetField v2.FieldDefinition
+					found := false
+					for _, candidate := range table.Fields {
+						if candidate.Identity.PhysicalName == token.text {
+							targetField = candidate
+							found = true
+							break
+						}
+					}
+					if found {
+						fieldID, tableID := targetField.Identity.FieldID, table.TableID
+						display = authorLabel(targetField)
+						binding = &workbench.FormulaAuthorToken{Kind: "sourceField", FieldId: &fieldID, TableId: &tableID}
+					} else {
+						display = "#REF!"
+						missing = authorReferenceError(map[string]any{"physicalName": token.text, "tableId": table.TableID})
+					}
+				}
+				edits = append(edits, authorEdit{span: span, display: display, token: binding, missing: missing})
+				continue
+			}
+			// A malformed range leaves the raw select untouched; the compiler
+			// owns the collection language limits.
+		}
+		if token.text == "TABLE" && i+3 < len(tokens) && tokens[i+1].kind == gen.CELLexerLPAREN &&
+			tokens[i+2].kind == gen.CELLexerSTRING && tokens[i+3].kind == gen.CELLexerRPAREN {
+			span := SourceSpan{Start: tokens[i+2].start, End: tokens[i+2].end}
+			tableID, parsed := authorStringLexeme(tokens[i+2].text)
+			table, exists := authorTableByID(definition, tableID)
+			if parsed && tableID != "" && exists && table.DisplayName != "" {
+				display := "{" + table.DisplayName + "}"
+				binding := &workbench.FormulaAuthorToken{Kind: "table", TableId: &tableID}
+				edits = append(edits, authorEdit{span: span, display: display, token: binding})
+			} else {
+				details := map[string]any{"tableId": tableID}
+				if !parsed {
+					details = nil
+				}
+				edits = append(edits, authorEdit{span: span, display: "#REF!", missing: authorReferenceError(details)})
+			}
+			i += 3
 			continue
 		}
 		for display, canonical := range displayAggregateFunctions {
