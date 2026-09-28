@@ -82,7 +82,14 @@ LANE_STAGES = {
 }
 PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
-DATA_IO_SCENARIO_IDS = ("34-relation-lookup-data-io", "35-data-io-interoperability")
+# Keep directory-replica transport with data IO so the standard product suite
+# stays within its unchanged 30-minute budget as scenarios gain assertions.
+DATA_IO_SCENARIO_IDS = (
+    "23-directory-replica-recovery",
+    "24-directory-replica-conflict",
+    "34-relation-lookup-data-io",
+    "35-data-io-interoperability",
+)
 
 
 class EligibilityError(RuntimeError):
