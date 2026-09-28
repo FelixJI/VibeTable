@@ -142,3 +142,29 @@ func TestValidatePropagatesReadErrorsAndCancellation(t *testing.T) {
 		t.Fatalf("wrong identity = %v", err)
 	}
 }
+
+func TestOrderedDependenciesUsesCurrentCandidateWithSharedCompiler(t *testing.T) {
+	compiler := formula.NewCompiler(formula.DefaultLimits())
+	root := graphTable("a", graphFormula("base", "1.0"), graphFormula("result", "f_base + 1.0"))
+	resolve := func(context.Context, string) (schemaexecution.Table, error) {
+		t.Fatal("runtime reread its authoritative candidate")
+		return schemaexecution.Table{}, nil
+	}
+	for i := 0; i < 2; i++ {
+		order, err := OrderedDependencies(context.Background(), root, "result", resolve, compiler)
+		if err != nil || !reflect.DeepEqual(order, []FieldReference{{"a", "base"}, {"a", "result"}}) {
+			t.Fatalf("shared plan dependency order=%v err=%v", order, err)
+		}
+	}
+	// An overlay with the same revision must replace the old dependency closure.
+	root.Snapshot.Fields[1] = graphFormula("result", "2.0")
+	order, err := OrderedDependencies(context.Background(), root, "result", resolve, compiler)
+	if err != nil || !reflect.DeepEqual(order, []FieldReference{{"a", "result"}}) {
+		t.Fatalf("candidate reused old dependency order=%v err=%v", order, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := OrderedDependencies(ctx, root, "result", resolve, compiler); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cached plan ignored cancellation: %v", err)
+	}
+}

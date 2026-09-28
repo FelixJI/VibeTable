@@ -146,7 +146,19 @@ func ResolveCollectionSchemas(ctx context.Context, definition schemaexecution.Ta
 	return definition, nil
 }
 
+type collectionSchemaResolverKey struct{}
+type collectionSchemaResolver func(context.Context, string) (schemaexecution.Table, error)
+
+// WithCollectionSchemaResolver shares the caller's transaction-local schema
+// snapshot between planning and recursive evaluation. It never caches row data.
+func WithCollectionSchemaResolver(ctx context.Context, resolve func(context.Context, string) (schemaexecution.Table, error)) context.Context {
+	return context.WithValue(ctx, collectionSchemaResolverKey{}, collectionSchemaResolver(resolve))
+}
+
 func LoadCollectionSchemas(ctx context.Context, app core.App, definition schemaexecution.Table, extraSources ...string) (schemaexecution.Table, error) {
+	if resolve, ok := ctx.Value(collectionSchemaResolverKey{}).(collectionSchemaResolver); ok {
+		return ResolveCollectionSchemas(ctx, definition, resolve, extraSources...)
+	}
 	return ResolveCollectionSchemas(ctx, definition, func(ctx context.Context, id string) (schemaexecution.Table, error) {
 		return schemaexecution.Describe(ctx, app, id)
 	}, extraSources...)

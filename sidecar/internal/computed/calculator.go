@@ -56,7 +56,12 @@ func (composite *Composite) Calculate(
 	if formula.ComputedSourceReaderFor(ctx) == nil {
 		reader := relatedcomputation.NewSourceReader().Read
 		if formula.SourceRecalculationEnabled(ctx) {
-			reader = newSourceEvaluator(composite).read
+			// Seed the complete authoritative snapshot before applying field selection.
+			evaluator := newSourceEvaluator(composite, definition)
+			reader = evaluator.read
+			ctx = formula.WithCollectionSchemaResolver(ctx, func(ctx context.Context, id string) (schemaexecution.Table, error) {
+				return evaluator.resolve(ctx, app, id)
+			})
 		}
 		ctx = formula.WithComputedSourceReader(ctx, reader)
 	}

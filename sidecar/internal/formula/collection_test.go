@@ -98,17 +98,36 @@ func TestCollectionLazyBranchAndResourceFailure(t *testing.T) {
 
 func TestCollectionSourceSchemaParticipatesInPlanCache(t *testing.T) {
 	compiler := NewCompiler(DefaultLimits())
+	compilations := 0
+	compiler.cache.compile = func(definition schemaexecution.Table) (*Plan, *Error) {
+		compilations++
+		return compiler.compileExecutionTable(definition)
+	}
 	definition := collectionTableTestDefinition("SUM(PROJECT(TABLE(\"shipments\"), CurrentValue.amount))")
 	if _, err := compiler.CompileExecutionTable(definition); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := compiler.CompileExecutionTable(definition); err != nil || compilations != 1 {
+		t.Fatalf("same snapshot recompiled: compilations=%d err=%v", compilations, err)
+	}
 	source := definition.FormulaSources["shipments"]
 	source.Fields = append([]v2.FieldDefinition(nil), source.Fields...)
 	source.Fields[1] = scalarField("amount_id", "amount", textType)
-	source.SchemaRevision = "schema_2"
+	// A transaction-local candidate can change source shape before a revision
+	// commits. Full source snapshots, not revision strings alone, own the key.
 	definition.FormulaSources["shipments"] = source
 	_, err := compiler.CompileExecutionTable(definition)
 	assertFormulaCode(t, err, "formula.type")
+	if compilations != 2 {
+		t.Fatalf("candidate source reused old plan: %d", compilations)
+	}
+	source.SchemaRevision = "schema_2"
+	definition.FormulaSources["shipments"] = source
+	_, err = compiler.CompileExecutionTable(definition)
+	assertFormulaCode(t, err, "formula.type")
+	if compilations != 3 {
+		t.Fatalf("committed source reused old plan: %d", compilations)
+	}
 }
 
 func TestCollectionSandboxStillRejectsUserLoopsAndNestedRanges(t *testing.T) {
@@ -260,5 +279,40 @@ func TestCollectionBranchInferencePreservesElementType(t *testing.T) {
 	result, err := plan.Evaluate(context.Background(), nil, nil)
 	if err != nil || !reflect.DeepEqual(result["result"], []any{1.0}) {
 		t.Fatalf("result=%v err=%v", result, err)
+	}
+}
+
+func TestCollectionSourceReuseIncludesRecursiveEvaluation(t *testing.T) {
+	compiler := NewCompiler(DefaultLimits())
+	innerDefinition := collectionTableTestDefinition(`SUM(PROJECT(TABLE("shipments"), CurrentValue.amount))`)
+	inner, err := compiler.CompileExecutionTable(innerDefinition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerDefinition := collectionTableTestDefinition(`SUM(PROJECT(TABLE("shipments"), CurrentValue.amount)) + SUM(PROJECT(TABLE("summaries"), CurrentValue.amount))`)
+	outerDefinition.FormulaSources["summaries"] = v2.SchemaSnapshot{TableID: "summaries", SchemaRevision: "schema_1", Fields: []v2.FieldDefinition{scalarField("amount_id", "amount", numberType)}}
+	outer, err := compiler.CompileExecutionTable(outerDefinition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	ctx := WithCollectionSourceReader(context.Background(), func(ctx context.Context, request CollectionReadRequest, yield func(map[string]any) error) error {
+		if request.TableID == "shipments" {
+			reads++
+			return yield(map[string]any{"amount": float64(reads)})
+		}
+		// A TABLE computed-source projection recursively evaluates a formula
+		// against the same read-only snapshot and therefore the same range.
+		result, err := inner.Evaluate(ctx, nil, nil)
+		if err != nil {
+			return err
+		}
+		return yield(map[string]any{"amount": result["total"]})
+	})
+	for batch := 1; batch <= 2; batch++ {
+		result, err := outer.Evaluate(ctx, nil, nil)
+		if err != nil || reads != batch || result["total"] != float64(2*batch) {
+			t.Fatalf("batch %d: reads=%d result=%v err=%v", batch, reads, result, err)
+		}
 	}
 }

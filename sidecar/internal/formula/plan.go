@@ -140,9 +140,13 @@ func (plan *Plan) Evaluate(
 		return nil, formulaError("formula.resource_limit", "formula evaluation was cancelled", nil)
 	}
 	ctx = EnsureEvaluationTime(ctx)
-	ctx = context.WithValue(ctx, collectionReadCacheKey{}, &collectionReadCache{
-		remaining: plan.limits.CollectionBytes, entries: map[string]collectionReadEntry{},
-	})
+	// Recursive computed sources share this read-only snapshot. A fresh root
+	// still owns a fresh cache; hits retain the normal cost and byte charges.
+	if _, exists := ctx.Value(collectionReadCacheKey{}).(*collectionReadCache); !exists {
+		ctx = context.WithValue(ctx, collectionReadCacheKey{}, &collectionReadCache{
+			remaining: plan.limits.CollectionBytes, entries: map[string]collectionReadEntry{},
+		})
+	}
 	activation := make(map[string]any, len(row)+1)
 	activation[clockActivationName] = EvaluationTime(ctx)
 	for key, value := range row {

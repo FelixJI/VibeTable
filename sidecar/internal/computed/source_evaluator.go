@@ -33,10 +33,10 @@ type sourceEvaluator struct {
 	orders    map[computationplan.FieldReference][]computationplan.FieldReference
 }
 
-func newSourceEvaluator(composite *Composite) *sourceEvaluator {
+func newSourceEvaluator(composite *Composite, definition schemaexecution.Table) *sourceEvaluator {
 	return &sourceEvaluator{composite: composite, reader: relatedcomputation.NewSourceReader(),
 		visiting: map[sourceCell]bool{}, values: map[sourceCell]any{},
-		tables: map[string]schemaexecution.Table{}, orders: map[computationplan.FieldReference][]computationplan.FieldReference{}}
+		tables: map[string]schemaexecution.Table{definition.Snapshot.TableID: definition}, orders: map[computationplan.FieldReference][]computationplan.FieldReference{}}
 }
 
 func (evaluator *sourceEvaluator) read(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, field v2.FieldDefinition, record *core.Record) (any, error) {
@@ -71,14 +71,7 @@ func (evaluator *sourceEvaluator) read(ctx context.Context, app core.App, tableI
 	evaluator.visiting[key] = true
 	defer delete(evaluator.visiting, key)
 	resolve := func(ctx context.Context, id string) (schemaexecution.Table, error) {
-		if table, found := evaluator.tables[id]; found {
-			return table, nil
-		}
-		table, err := schemaexecution.Describe(ctx, app, id)
-		if err == nil {
-			evaluator.tables[id] = table
-		}
-		return table, err
+		return evaluator.resolve(ctx, app, id)
 	}
 	table, err := resolve(ctx, tableID)
 	if err != nil {
@@ -87,7 +80,7 @@ func (evaluator *sourceEvaluator) read(ctx context.Context, app core.App, tableI
 	root := computationplan.FieldReference{TableID: tableID, FieldID: field.Identity.FieldID}
 	order, found := evaluator.orders[root]
 	if !found {
-		order, err = computationplan.OrderedDependencies(ctx, table, field.Identity.FieldID, resolve)
+		order, err = computationplan.OrderedDependencies(ctx, table, field.Identity.FieldID, resolve, formula.CompilerFor(app))
 		if err != nil {
 			return nil, err
 		}
@@ -134,4 +127,18 @@ func (evaluator *sourceEvaluator) read(ctx context.Context, app core.App, tableI
 	}
 	evaluator.values[key] = value
 	return value, nil
+}
+
+func (evaluator *sourceEvaluator) resolve(ctx context.Context, app core.App, id string) (schemaexecution.Table, error) {
+	if err := ctx.Err(); err != nil {
+		return schemaexecution.Table{}, err
+	}
+	if table, found := evaluator.tables[id]; found {
+		return table, nil
+	}
+	table, err := schemaexecution.Describe(ctx, app, id)
+	if err == nil {
+		evaluator.tables[id] = table
+	}
+	return table, err
 }
