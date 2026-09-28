@@ -185,8 +185,13 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     await page.getByTestId("formula-preview-value").filter({ hasText: previewText })
       .waitFor({ timeout: 30_000 });
     if (screenshot) {
-      await page.getByTestId("formula-preview-value").scrollIntoViewIfNeeded();
+      const editorPart = screenshot.includes("pickers") ? "formula-source-table" : "formula-source";
+      await page.getByTestId(editorPart).scrollIntoViewIfNeeded();
       await page.screenshot({ path: path.join(runtime.evidenceDir, screenshot), fullPage: true });
+      await page.getByTestId("formula-preview-value").scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: path.join(runtime.evidenceDir, screenshot.replace(".png", "-preview.png")), fullPage: true,
+      });
     }
     await page.getByTestId("formula-editor-commit").click();
     const applied = await planAndApplyThroughUi();

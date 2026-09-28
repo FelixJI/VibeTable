@@ -290,17 +290,17 @@ func (service *Service) StartFormulaBackfill(
 			false,
 		)
 	}
-	hasFormula := false
+	hasComputed := false
 	for _, field := range definition.Snapshot.Fields {
-		if field.LogicalType == v2.LogicalFormula {
-			hasFormula = true
+		if field.LogicalType == v2.LogicalFormula || field.LogicalType == v2.LogicalLookup {
+			hasComputed = true
 			break
 		}
 	}
-	if !hasFormula {
+	if !hasComputed {
 		return Snapshot{}, jobError(
 			"job.formula.none",
-			"table has no formula fields to recalculate",
+			"table has no computed fields to recalculate",
 			false,
 		)
 	}
@@ -395,17 +395,17 @@ func (service *Service) EnqueueFormulaBackfill(
 			false,
 		)
 	}
-	hasFormula := false
+	hasComputed := false
 	for _, field := range definition.Snapshot.Fields {
-		if field.LogicalType == v2.LogicalFormula {
-			hasFormula = true
+		if field.LogicalType == v2.LogicalFormula || field.LogicalType == v2.LogicalLookup {
+			hasComputed = true
 			break
 		}
 	}
-	if !hasFormula {
+	if !hasComputed {
 		return "", jobError(
 			"job.formula.none",
-			"table has no formula fields to recalculate",
+			"table has no computed fields to recalculate",
 			false,
 		)
 	}
