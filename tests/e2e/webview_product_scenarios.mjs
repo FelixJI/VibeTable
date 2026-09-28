@@ -2555,13 +2555,17 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
   for (const item of cases) {
     await page.getByTestId("toolbar-field-manager").click();
     await page.getByTestId("field-display-name").locator("input").fill(item.name);
-    await selectVisibleNOption(page, "field-logical-type", "公式");
+    const typeSelect = page.getByTestId("field-logical-type");
+    await typeSelect.locator(".n-base-selection").click();
+    await typeSelect.locator("input").fill("公式");
+    await page.locator(".n-base-select-option:visible").getByText("公式", { exact: true }).click();
     await page.getByTestId("formula-editor-entry").click();
     await fillNInput(page, "formula-source", item.source);
     await page.getByTestId("formula-field-editor").getByRole("alert")
       .filter({ hasText: "公式有效" }).waitFor({ timeout: 30_000 });
     await page.getByTestId("formula-preview-value").filter({ hasText: String(item.before) })
       .waitFor({ timeout: 30_000 });
+    await page.getByTestId("formula-preview-value").scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(runtime.evidenceDir, `05-formula-${item.name}.png`), fullPage: true });
     await page.getByTestId("formula-editor-commit").click();
     await page.getByTestId("field-plan-button").click();
@@ -2605,6 +2609,8 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
 
 async function scenario05(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
+  await page.context().setOffline(true);
+  recorder.check("common formula UI is exercised offline", await page.evaluate(() => !navigator.onLine));
   await page.getByTestId("nav-tables").click();
   const commonFormulas = await commonFormulaUiJourney(page, recorder, runtime);
   const conversionTable = await createSingleFieldTable(
