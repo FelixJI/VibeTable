@@ -10267,6 +10267,7 @@ const scenarios = {
       parseCsv, canonicalJsonText, chooseToolbarMore,
     },
   ),
+  "36-backend-import-exit": scenario36,
   "37-collection-formula-journey": (page, recorder, _network, runtime) => runCollectionFormulaJourney(
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
@@ -10278,7 +10279,6 @@ const scenarios = {
       rawLifecycleWorkspaceV2Request, waitForFieldMigration,
     },
   ),
-  "36-backend-import-exit": scenario36,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {
