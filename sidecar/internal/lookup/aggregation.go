@@ -168,7 +168,7 @@ func lookupValueNonEmpty(value any) bool {
 
 // lookupNumericValue coerces one matched value for numeric summaries.
 // Computed envelopes are unwrapped only at the schema-declared read boundary
-// (decodeLookupAggregationValue), so a plain JSON value that merely looks
+// (projectLookupNodes), so a plain JSON value that merely looks
 // like an envelope is never mis-unpacked here; it is what it is — a number,
 // or an explicit type error. Null is ignored, text/booleans and non-finite
 // numbers are errors.
