@@ -1,3 +1,4 @@
+import type { FormulaAuthorDocument } from "./generated/workbench";
 import type { WorkCalendarOverride } from "@/calendar/workCalendar";
 
 export interface SharedWorkCalendarResult { readonly overrides: WorkCalendarOverride[]; readonly revision: string }
@@ -756,9 +757,21 @@ export type FormulaPreviewRpcPayload = FormulaPreviewRequestV2;
 export interface FormulaDraftValidateParams {
   readonly tableId: string;
   readonly displaySource: string;
+  readonly authorDocument?: FormulaAuthorDocument;
+  readonly restoreSource?: boolean;
+}
+
+export interface FormulaFunctionInfo {
+  readonly name: string;
+  readonly category: string;
+  readonly signature: string;
+  readonly description: string;
+  readonly example: string;
 }
 
 export interface FormulaDraftValidationResult {
+  readonly authorDocument?: FormulaAuthorDocument;
+  readonly functions?: readonly FormulaFunctionInfo[];
   readonly canonicalSource: string;
   readonly resultType: LogicalTypeV2;
   readonly dependencies: readonly string[];

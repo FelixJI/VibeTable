@@ -7978,6 +7978,9 @@
           "canonicalSource": {
             "type": "string"
           },
+          "resultType": {
+            "type": "string"
+          },
           "dependencies": {
             "type": "array",
             "items": {
@@ -7990,8 +7993,159 @@
               "type": "string"
             }
           },
-          "resultType": {
-            "type": "string"
+          "authorDocument": {
+            "additionalProperties": false,
+            "properties": {
+              "displaySource": {
+                "title": "Displaysource",
+                "type": "string"
+              },
+              "tokens": {
+                "items": {
+                  "$ref": "#/$defs/FormulaAuthorToken"
+                },
+                "title": "Tokens",
+                "type": "array"
+              },
+              "documentRevision": {
+                "minimum": 1,
+                "title": "Documentrevision",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "displaySource",
+              "tokens",
+              "documentRevision"
+            ],
+            "title": "FormulaAuthorDocument",
+            "type": "object"
+          },
+          "functions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "category",
+                "description",
+                "example",
+                "name",
+                "signature"
+              ],
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "example": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "signature": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "$defs": {
+          "FormulaAuthorToken": {
+            "additionalProperties": false,
+            "properties": {
+              "range": {
+                "$ref": "#/$defs/FormulaTextRange"
+              },
+              "kind": {
+                "enum": [
+                  "field",
+                  "relation",
+                  "relationTarget"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "fieldId": {
+                "minLength": 1,
+                "title": "Fieldid",
+                "type": "string"
+              },
+              "relationFieldId": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Relationfieldid"
+              },
+              "targetFieldId": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Targetfieldid"
+              }
+            },
+            "required": [
+              "range",
+              "kind",
+              "fieldId",
+              "relationFieldId",
+              "targetFieldId"
+            ],
+            "title": "FormulaAuthorToken",
+            "type": "object"
+          },
+          "FormulaTextPosition": {
+            "additionalProperties": false,
+            "properties": {
+              "line": {
+                "minimum": 0,
+                "title": "Line",
+                "type": "integer"
+              },
+              "character": {
+                "minimum": 0,
+                "title": "Character",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "line",
+              "character"
+            ],
+            "title": "FormulaTextPosition",
+            "type": "object"
+          },
+          "FormulaTextRange": {
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "$ref": "#/$defs/FormulaTextPosition"
+              },
+              "end": {
+                "$ref": "#/$defs/FormulaTextPosition"
+              }
+            },
+            "required": [
+              "start",
+              "end"
+            ],
+            "title": "FormulaTextRange",
+            "type": "object"
           }
         }
       },

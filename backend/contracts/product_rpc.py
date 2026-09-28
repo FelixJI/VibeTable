@@ -331,9 +331,14 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
     ),
     "formula.draft.validate": _closed_params(
         "FormulaDraftValidateParams",
-        allowed=("tableId", "displaySource"),
+        allowed=("tableId", "displaySource", "authorDocument", "restoreSource"),
         required=("tableId", "displaySource"),
-        field_types={"tableId": (str,), "displaySource": (str,)},
+        field_types={
+            "tableId": (str,),
+            "displaySource": (str,),
+            "authorDocument": (dict,),
+            "restoreSource": (bool,),
+        },
     ),
     "formula.preview": _closed_params(
         "FormulaPreviewParams",

@@ -33,6 +33,15 @@ function describeResult(existing = true): FieldSettingsDescribeResultV2 {
   };
 }
 
+function formulaCapability(): CapabilityV2 {
+  return {
+    ...fixture<CapabilityV2>("capability.json"),
+    logicalType: "formula",
+    userCreatable: true,
+    advancedSettings: ["source", "autoType"],
+  };
+}
+
 function plan(confirmations: readonly string[] = []): Record<string, unknown> {
   return { ...fixture<Record<string, unknown>>("field-change-plan.json"), confirmations };
 }
@@ -684,7 +693,7 @@ describe("field settings service", () => {
     service.dispose();
   });
 
-  it("loads the visual formula catalog and ignores stale sidecar validation results", async () => {
+  it("loads the visual formula catalog from '0' and ignores stale sidecar validation results", async () => {
     const base = fixture<CapabilityV2>("capability.json");
     const formulaCapability: CapabilityV2 = {
       ...base,
@@ -751,12 +760,34 @@ describe("field settings service", () => {
     let resolveSecond!: (value: unknown) => void;
     const first = new Promise(resolve => { resolveFirst = resolve; });
     const second = new Promise(resolve => { resolveSecond = resolve; });
+    const functionInfo = {
+      name: "IF",
+      category: "逻辑",
+      signature: "IF(bool, T, T)",
+      description: "按条件返回分支",
+      example: "IF({单价} > 0, {数量}, 0)",
+    };
+    const workingDocument = (displaySource: string) => ({
+      displaySource,
+      documentRevision: 1,
+      tokens: [],
+    });
     request.mockImplementation((method: string, params: Record<string, unknown>) => {
       if (method === "field.settings.describe") return Promise.resolve(described);
       if (method === "schema.describe") {
         return Promise.resolve(params.collection === "tbl_opaque" ? sourceSchema : targetSchema);
       }
       if (method === "formula.draft.validate") {
+        if (params.restoreSource === true) {
+          return Promise.resolve({
+            canonicalSource: "0",
+            resultType: "number",
+            dependencies: [],
+            relationAggregatePaths: [],
+            authorDocument: workingDocument("0"),
+            functions: [functionInfo],
+          });
+        }
         return params.displaySource === "{单价} * 2" ? first : second;
       }
       if (method === "formula.preview") {
@@ -785,13 +816,35 @@ describe("field settings service", () => {
       .toEqual(["ID", "Created", "单价", "明细"]);
     expect(store.formulaTargetSchemas.fld_lines?.columns[0]?.title).toBe("金额");
 
-    const older = service.validateFormulaDraft("{单价} * 2");
-    const newer = service.validateFormulaDraft("SUM({明细}.{金额})");
+    // The empty-draft bootstrap fetched the catalog via "0" but adopted nothing.
+    await vi.waitFor(() => {
+      expect(store.formulaFunctions.map(item => item.name)).toEqual(["IF"]);
+    });
+    expect(request).toHaveBeenCalledWith("formula.draft.validate", {
+      tableId: "tbl_opaque",
+      displaySource: "0",
+      restoreSource: true,
+    });
+    expect(store.formulaAuthorDocument).toBeNull();
+    expect(store.draft?.formula?.source).toBe("");
+
+    const older = service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "{单价} * 2",
+      authorDocument: workingDocument("{单价} * 2"),
+    });
+    const newer = service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "SUM({明细}.{金额})",
+      authorDocument: workingDocument("SUM({明细}.{金额})"),
+    });
     resolveSecond({
       canonicalSource: 'relationSum(f_lines, "f_amount")',
       resultType: "number",
       dependencies: [],
       relationAggregatePaths: ["f_lines.f_amount"],
+      authorDocument: workingDocument("SUM({明细}.{金额})"),
+      functions: [functionInfo],
     });
     await newer;
     await vi.waitFor(() => {
@@ -805,12 +858,258 @@ describe("field settings service", () => {
     resolveFirst({
       canonicalSource: "f_price * 2", resultType: "number",
       dependencies: ["f_price"], relationAggregatePaths: [],
+      authorDocument: workingDocument("{单价} * 2"),
     });
     await older;
 
     expect(store.formulaValidatedSource).toBe("SUM({明细}.{金额})");
     expect(store.formulaValidation?.canonicalSource)
       .toBe('relationSum(f_lines, "f_amount")');
+  });
+
+  it("restores a persisted canonical source into a stable-token author document", async () => {
+    const base = fixture<CapabilityV2>("capability.json");
+    const formulaCapability: CapabilityV2 = {
+      ...base,
+      logicalType: "formula",
+      userCreatable: true,
+      advancedSettings: ["source", "autoType"],
+    };
+    const formulaDefinition = {
+      ...definition(),
+      logicalType: "formula" as const,
+      displayName: "总价",
+      identity: {
+        fieldId: "fld_total",
+        physicalName: "f_total",
+        providerFieldId: "pb_total",
+      },
+      formula: {
+        language: "cel-v1" as const,
+        source: "f_price * 2",
+        resultType: "number" as const,
+      },
+    };
+    const described = {
+      ...describeResult(true),
+      fieldId: "fld_total",
+      definition: formulaDefinition,
+      capabilities: [formulaCapability],
+    };
+    const restoredDocument = {
+      displaySource: "{单价} * 2",
+      documentRevision: 3,
+      tokens: [{
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } },
+        kind: "field" as const,
+        fieldId: "fld_price",
+        relationFieldId: null,
+        targetFieldId: null,
+      }],
+    };
+    const relationSchema = {
+      contract: "vibetable.schema-describe.v1",
+      collection: "tbl_opaque",
+      requestGeneration: 0,
+      schema: {
+        collection: "tbl_opaque", primaryKey: "id", primaryDisplayFieldId: "fld_price",
+        columns: [{
+          name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar" as const,
+          dataType: "number" as const, editable: true, nullable: false,
+        }],
+        normalizedRelations: [],
+        schemaRevision: "schema_7", permissionRevision: "schema_7",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    };
+    request.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "schema.describe") return Promise.resolve(relationSchema);
+      if (method === "formula.draft.validate" && params.restoreSource === true) {
+        return Promise.resolve({
+          canonicalSource: "f_price * 2",
+          resultType: "number",
+          dependencies: ["f_price"],
+          relationAggregatePaths: [],
+          authorDocument: restoredDocument,
+          functions: [],
+        });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+
+    await service.openEdit("tbl_opaque", "fld_total");
+    await service.loadFormulaCatalog();
+
+    await vi.waitFor(() => {
+      expect(store.formulaValidationError).toBeNull();
+      expect(store.formulaAuthorDocument?.displaySource).toBe("{单价} * 2");
+    });
+    expect(request).toHaveBeenCalledWith("formula.draft.validate", {
+      tableId: "tbl_opaque",
+      displaySource: "f_price * 2",
+      restoreSource: true,
+    });
+    expect(store.formulaAuthorDocument?.tokens[0]?.fieldId).toBe("fld_price");
+    expect(store.formulaValidatedSource).toBe("{单价} * 2");
+    expect(store.formulaValidatedDocumentRevision).toBe(3);
+
+    // An old workspace catalog must not bootstrap a restore in the next workspace.
+    let resolveSchema!: (value: unknown) => void;
+    request.mockImplementation((method: string) => {
+      if (method === "schema.describe") return new Promise(resolve => { resolveSchema = resolve; });
+      throw new Error(`unexpected late method ${method}`);
+    });
+    const pendingCatalog = service.loadFormulaCatalog();
+    const workspace = useWorkspaceStore();
+    workspace.setCollections([{ collection: "tbl_new" }], { tbl_new: "新工作区" });
+    request.mockClear();
+    resolveSchema(relationSchema);
+    await pendingCatalog;
+    expect(request).not.toHaveBeenCalledWith("formula.draft.validate", expect.anything());
+    expect(store.formulaValidation).toBeNull();
+  });
+
+  it("invalidates the previous validation and preview as soon as the input changes", async () => {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    request.mockImplementation((method: string) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "formula.draft.validate") {
+        return Promise.resolve({
+          canonicalSource: "f_price * 2",
+          resultType: "number",
+          dependencies: ["f_price"],
+          relationAggregatePaths: [],
+          authorDocument: { displaySource: "{单价} * 2", documentRevision: 1, tokens: [] },
+        });
+      }
+      if (method === "formula.preview") {
+        return Promise.resolve({ values: { f_formula_preview: 2 } });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque",
+      columns: [{
+        name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar",
+        dataType: "decimal", editable: true, nullable: false,
+      }],
+      rows: [{ rowKey: "r1", id: "r1", f_price: 1 }],
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    await service.openCreate("tbl_opaque", "formula");
+
+    await service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "{单价} * 2",
+      authorDocument: { displaySource: "{单价} * 2", documentRevision: 1, tokens: [] },
+    });
+    await vi.waitFor(() => expect(store.formulaPreviewReady).toBe(true));
+    expect(store.formulaValidation).not.toBeNull();
+
+    await service.validateFormulaDraft({ kind: "invalidate" });
+
+    expect(store.formulaValidation).toBeNull();
+    expect(store.formulaValidatedSource).toBe("");
+    expect(store.formulaValidatedDocumentRevision).toBeNull();
+    expect(store.formulaPreviewReady).toBe(false);
+    expect(store.formulaPreviewValue).toBeUndefined();
+  });
+
+  it("drops validation results that no longer match the current schema or workspace", async () => {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    let resolveValidation!: (value: unknown) => void;
+    request.mockImplementation((method: string) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "formula.draft.validate") {
+        return new Promise(resolve => { resolveValidation = resolve; });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const workspace = useWorkspaceStore();
+    await service.openCreate("tbl_opaque", "formula");
+
+    const first = service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "{单价} * 2",
+      authorDocument: { displaySource: "{单价} * 2", documentRevision: 1, tokens: [] },
+    });
+    store.result = { ...store.result!, schemaRevision: "schema_9" };
+    resolveValidation({
+      canonicalSource: "f_price * 2",
+      resultType: "number",
+      dependencies: ["f_price"],
+      relationAggregatePaths: [],
+      authorDocument: { displaySource: "{单价} * 2", documentRevision: 1, tokens: [] },
+    });
+    await first;
+    expect(store.formulaValidation).toBeNull();
+
+    workspace.setCollections([{ collection: "tbl_before" }], { tbl_before: "之前" });
+    const second = service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "{单价} * 3",
+      authorDocument: { displaySource: "{单价} * 3", documentRevision: 2, tokens: [] },
+    });
+    workspace.setCollections([{ collection: "tbl_other" }], { tbl_other: "其他" });
+    resolveValidation({
+      canonicalSource: "f_price * 3",
+      resultType: "number",
+      dependencies: ["f_price"],
+      relationAggregatePaths: [],
+      authorDocument: { displaySource: "{单价} * 3", documentRevision: 2, tokens: [] },
+    });
+    await second;
+    expect(store.formulaValidation).toBeNull();
+    expect(store.formulaValidatedSource).toBe("");
+  });
+
+  it("aborts in-flight validation when the drawer closes or the service is disposed", async () => {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    let resolveValidation!: (value: unknown) => void;
+    request.mockImplementation((method: string) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "formula.draft.validate") {
+        return new Promise(resolve => { resolveValidation = resolve; });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    vi.stubGlobal("confirm", () => true);
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    await service.openCreate("tbl_opaque", "formula");
+
+    const pending = service.validateFormulaDraft({
+      kind: "document",
+      displaySource: "{单价} * 2",
+      authorDocument: { displaySource: "{单价} * 2", documentRevision: 1, tokens: [] },
+    });
+    expect(store.formulaValidating).toBe(true);
+    service.requestClose();
+    resolveValidation({
+      canonicalSource: "f_price * 2",
+      resultType: "number",
+      dependencies: ["f_price"],
+      relationAggregatePaths: [],
+      authorDocument: { displaySource: "{单价} * 2", documentRevision: 1, tokens: [] },
+    });
+    await pending;
+
+    expect(store.open).toBe(false);
+    expect(store.formulaValidation).toBeNull();
+    expect(store.formulaValidating).toBe(false);
   });
 
   it("surfaces typed same-operation field errors without mis-parsing them as results", async () => {

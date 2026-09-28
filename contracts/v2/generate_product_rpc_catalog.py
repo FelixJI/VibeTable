@@ -39,6 +39,7 @@ from backend.contracts.work_calendar import (
     WorkCalendarReceipt,
 )
 from backend.contracts.generated_workbench import (
+    FormulaAuthorDocument,
     RecordDocumentLinkDeleteRequest,
     RecordDocumentLinkRepairRequest,
     RecordDocumentLinkCommitRequest,
@@ -560,6 +561,34 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
     table = json.loads((fixtures / "table-definition.json").read_text(encoding="utf-8"))
     mutation_receipt = json.loads((fixtures / "mutation-receipt.json").read_text(encoding="utf-8"))
     restore_result = _model_payload(RestoreResult)
+    formula_draft = {
+        "canonicalSource": 'relationSum(f_lines, "f_amount")',
+        "resultType": "number",
+        "dependencies": ["fld_lines"],
+        "relationAggregatePaths": ["f_lines.f_amount"],
+    }
+    author_schema = FormulaAuthorDocument.model_json_schema()
+    author_definitions = author_schema.pop("$defs", {})
+    formula_draft_schema = {
+        **_schema_from_example(formula_draft),
+        "$defs": author_definitions,
+        "properties": {
+            **{key: _schema_from_example(value) for key, value in formula_draft.items()},
+            "authorDocument": author_schema,
+            "functions": {
+                "type": "array",
+                "items": _schema_from_example(
+                    {
+                        "name": "IF",
+                        "category": "逻辑",
+                        "signature": "IF(bool,T,T)",
+                        "description": "只求值选中的分支",
+                        "example": "IF(false, 1 / 0, 7)",
+                    }
+                ),
+            },
+        },
+    }
     table_schema = {"$ref": "#/$defs/TableDefinition"}
     receipt_schema = {"$ref": "#/$defs/MutationReceipt"}
     delete_trace = {
@@ -671,12 +700,8 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         ),
         "formula.draft.validate": _manual(
             "FormulaDraftValidationResult",
-            {
-                "canonicalSource": 'relationSum(f_lines, "f_amount")',
-                "resultType": "number",
-                "dependencies": ["fld_lines"],
-                "relationAggregatePaths": ["f_lines.f_amount"],
-            },
+            formula_draft,
+            formula_draft_schema,
         ),
         "formula.validate": _manual(
             "FormulaValidationResult",

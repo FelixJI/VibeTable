@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pocketbase/pocketbase"
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
@@ -526,5 +527,89 @@ func TestFormulaProductCompactsFormerRESTBodyBeforeDecode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFormulaProductAuthorDocumentAndCatalog(t *testing.T) {
+	pb := schemaProductStore(t)
+	domain := formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)}
+	invoke := formulaTestInvoker(t, domain)
+	table, amount, _ := createFormulaProductTable(t, pb)
+	before := formulaTestRevisions(t, pb, table.TableID)
+	response, err := invoke("formula.draft.validate", map[string]any{
+		"tableId": table.TableID, "displaySource": amount.Identity.PhysicalName + " * 2", "restoreSource": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := response.(fieldchange.FormulaDraftInspection)
+	if restored.AuthorDocument == nil || len(restored.AuthorDocument.Tokens) != 1 || len(restored.Functions) == 0 {
+		t.Fatalf("missing authoring contract: %#v", restored)
+	}
+	document := *restored.AuthorDocument
+	if document.Tokens[0].FieldId != amount.Identity.FieldID {
+		t.Fatal("lost stable field identity")
+	}
+	// Equal-width stale label proves bindings, rather than names, choose the field.
+	document.DisplaySource = strings.Replace(document.DisplaySource, "Amount", "旧名甲乙丙丁", 1)
+	document.DocumentRevision++
+	response, err = invoke("formula.draft.validate", map[string]any{
+		"tableId": table.TableID, "displaySource": document.DisplaySource, "authorDocument": document,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authored := response.(fieldchange.FormulaDraftInspection)
+	if authored.CanonicalSource != restored.CanonicalSource || authored.AuthorDocument.DocumentRevision != document.DocumentRevision {
+		t.Fatalf("authoring changed stable source: %#v", authored)
+	}
+	_, err = invoke("formula.draft.validate", map[string]any{
+		"tableId": table.TableID, "displaySource": "1", "authorDocument": document,
+	})
+	assertFormulaPublicError(t, err, "formula.syntax")
+	if after := formulaTestRevisions(t, pb, table.TableID); before != after {
+		t.Fatal("authoring wrote data")
+	}
+}
+
+func TestFormulaProductAuthoringRejectsUnknownNestedKeys(t *testing.T) {
+	pb := schemaProductStore(t)
+	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)})
+	table, _, _ := createFormulaProductTable(t, pb)
+	_, err := invoke("formula.draft.validate", map[string]any{
+		"tableId": table.TableID, "displaySource": "1",
+		"authorDocument": map[string]any{"displaySource": "1", "tokens": []any{}, "documentRevision": 1, "unexpected": true},
+	})
+	assertFormulaPublicError(t, err, "formula.syntax")
+}
+
+func TestFormulaProductAuthoringKeepsDiagnosticsAndMissingReferences(t *testing.T) {
+	pb := schemaProductStore(t)
+	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)})
+	table, _, _ := createFormulaProductTable(t, pb)
+	_, err := invoke("formula.draft.validate", map[string]any{
+		"tableId": table.TableID, "displaySource": "f_missing + 1", "restoreSource": true,
+	})
+	assertFormulaPublicError(t, err, "formula.reference")
+	var publicErr *productrpc.PublicError
+	if !errors.As(err, &publicErr) {
+		t.Fatal(err)
+	}
+	document, ok := publicErr.Details["authorDocument"].(workbench.FormulaAuthorDocument)
+	if !ok || !strings.Contains(document.DisplaySource, "#REF!") {
+		t.Fatalf("missing reference projection: %#v", publicErr.Details)
+	}
+	source := "'😀' == '😀' ? {Amount} : UNKNOWN(1)"
+	_, err = invoke("formula.draft.validate", map[string]any{
+		"tableId": table.TableID, "displaySource": source,
+		"authorDocument": workbench.FormulaAuthorDocument{DisplaySource: source, DocumentRevision: 1},
+	})
+	if !errors.As(err, &publicErr) {
+		t.Fatal(err)
+	}
+	span, ok := publicErr.Details["range"].(workbench.FormulaTextRange)
+	// UTF-16 includes two surrogate pairs before UNKNOWN, while Amount is projected.
+	if !ok || span.Start.Line != 0 || span.Start.Character != 26 || span.End.Character <= span.Start.Character {
+		t.Fatalf("unknown call range: %#v", publicErr.Details)
 	}
 }

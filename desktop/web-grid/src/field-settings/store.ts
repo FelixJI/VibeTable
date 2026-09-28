@@ -9,10 +9,13 @@ import type {
   FieldDraftV2,
   FieldMigrationStatusV2,
   FieldSettingsDescribeResultV2,
-  LogicalTypeV2,
   FormulaDraftValidationResult,
+  FormulaFunctionInfo,
+  LogicalTypeV2,
   SchemaSnapshot,
 } from "@/contracts";
+import type { FormulaAuthorDocument } from "@/contracts/generated/workbench";
+import type { FormulaDraftDiagnostic } from "./formula/formulaDraftRequest";
 import {
   draftFromCapability,
   draftFromDefinition,
@@ -79,8 +82,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
   const formulaTargetSchemas = ref<Readonly<Record<string, SchemaSnapshot>>>({});
   const formulaCatalogLoading = ref(false);
   const formulaCatalogError = ref<string | null>(null);
+  const formulaFunctions = ref<readonly FormulaFunctionInfo[]>([]);
+  const formulaAuthorDocument = shallowRef<FormulaAuthorDocument | null>(null);
+  const formulaDiagnostic = shallowRef<FormulaDraftDiagnostic | null>(null);
   const formulaValidation = ref<FormulaDraftValidationResult | null>(null);
   const formulaValidatedSource = ref("");
+  const formulaValidatedDocumentRevision = ref<number | null>(null);
   const formulaValidating = ref(false);
   const formulaValidationError = ref<string | null>(null);
   const formulaPreviewValue = ref<unknown>(undefined);
@@ -159,8 +166,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaTargetSchemas.value = {};
     formulaCatalogLoading.value = false;
     formulaCatalogError.value = null;
+    formulaFunctions.value = [];
+    formulaAuthorDocument.value = null;
+    formulaDiagnostic.value = null;
     formulaValidation.value = null;
     formulaValidatedSource.value = "";
+    formulaValidatedDocumentRevision.value = null;
     formulaValidating.value = false;
     formulaValidationError.value = null;
     resetFormulaPreview();
@@ -305,11 +316,14 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaCatalogError.value = reason instanceof Error ? reason.message : String(reason);
   }
 
-  function beginFormulaValidation(source: string): void {
+  function beginFormulaValidation(source: string, documentRevision: number): void {
     formulaValidatedSource.value = source;
+    formulaValidatedDocumentRevision.value = documentRevision;
     formulaValidation.value = null;
     formulaValidating.value = true;
     formulaValidationError.value = null;
+    formulaDiagnostic.value = null;
+    resetFormulaPreview();
   }
 
   function setFormulaValidation(source: string, value: FormulaDraftValidationResult): void {
@@ -317,13 +331,71 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     formulaValidation.value = value;
     formulaValidating.value = false;
     formulaValidationError.value = null;
+    formulaDiagnostic.value = null;
+    if (value.authorDocument) {
+      formulaAuthorDocument.value = value.authorDocument;
+      formulaValidatedDocumentRevision.value = value.authorDocument.documentRevision;
+    } else {
+      formulaValidatedDocumentRevision.value = null;
+    }
+    if (value.functions) formulaFunctions.value = value.functions;
   }
 
-  function failFormulaValidation(source: string, reason: unknown): void {
+  function failFormulaValidation(
+    source: string,
+    reason: unknown,
+    diagnostic?: FormulaDraftDiagnostic | null,
+  ): void {
     formulaValidatedSource.value = source;
     formulaValidation.value = null;
     formulaValidating.value = false;
     formulaValidationError.value = reason instanceof Error ? reason.message : String(reason);
+    formulaDiagnostic.value = diagnostic ?? null;
+  }
+
+  /** Input changed: the previous validation/preview must die at once. */
+  function invalidateFormulaDraft(discardDocument = false): void {
+    formulaValidating.value = false;
+    if (discardDocument) formulaAuthorDocument.value = null;
+    formulaValidation.value = null;
+    formulaValidatedSource.value = "";
+    formulaValidatedDocumentRevision.value = null;
+    formulaValidationError.value = null;
+    formulaDiagnostic.value = null;
+    resetFormulaPreview();
+  }
+
+  function beginFormulaRestore(): void {
+    formulaValidating.value = true;
+    formulaValidationError.value = null;
+    formulaDiagnostic.value = null;
+  }
+
+  function setFormulaRestored(
+    value: FormulaDraftValidationResult,
+    adoptDocument: boolean,
+  ): void {
+    formulaValidating.value = false;
+    formulaValidationError.value = null;
+    formulaDiagnostic.value = null;
+    if (value.functions) formulaFunctions.value = value.functions;
+    if (!adoptDocument || !value.authorDocument) return;
+    formulaAuthorDocument.value = value.authorDocument;
+    formulaValidatedSource.value = value.authorDocument.displaySource;
+    formulaValidatedDocumentRevision.value = value.authorDocument.documentRevision;
+    formulaValidation.value = value;
+  }
+
+  function failFormulaRestore(
+    reason: unknown,
+    diagnostic?: FormulaDraftDiagnostic | null,
+    restoredDocument?: FormulaAuthorDocument | null,
+  ): void {
+    formulaValidating.value = false;
+    formulaValidationError.value = reason instanceof Error ? reason.message : String(reason);
+    formulaDiagnostic.value = diagnostic ?? null;
+    // A restore that returns #REF! keeps its document so identities survive.
+    if (restoredDocument) formulaAuthorDocument.value = restoredDocument;
   }
 
   function resetFormulaPreview(): void {
@@ -496,8 +568,9 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     lookupCatalogLoading, lookupCatalogError, lookupMaxDepth,
     lookupCurrentFields, lookupConditionFields, lookupConditionSchema, lookupPreview,
     formulaSourceSchema, formulaTargetSchemas, formulaCatalogLoading,
-    formulaCatalogError, formulaValidation, formulaValidatedSource,
-    formulaValidating, formulaValidationError,
+    formulaCatalogError, formulaFunctions, formulaAuthorDocument,
+    formulaDiagnostic, formulaValidation, formulaValidatedSource,
+    formulaValidatedDocumentRevision, formulaValidating, formulaValidationError,
     formulaPreviewValue, formulaPreviewReady, formulaPreviewing,
     formulaPreviewError, formulaPreviewNote,
     capabilities, capability, sourceCapability, dirty, isExisting, canPlan,
@@ -507,6 +580,8 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
     beginLookupCatalog, setLookupSchemas, setLookupMaxDepth, failLookupCatalog,
     beginFormulaCatalog, setFormulaCatalog, failFormulaCatalog,
     beginFormulaValidation, setFormulaValidation, failFormulaValidation,
+    invalidateFormulaDraft, beginFormulaRestore, setFormulaRestored,
+    failFormulaRestore,
     resetFormulaPreview, beginFormulaPreview, setFormulaPreview,
     setFormulaPreviewNote, failFormulaPreview,
     invalidatePlan, setConversionRule, setConfirmation, setBackupReceipt,
