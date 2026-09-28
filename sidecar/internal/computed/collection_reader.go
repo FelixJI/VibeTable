@@ -22,8 +22,8 @@ import (
 const collectionPageSize = 256
 
 // NewCollectionSourceReader returns the authoritative TABLE() source reader
-// for one app handle. Each read resolves the schema through
-// queryschema.DescribeSelectionTable, walks the complete collection in stable
+// for one app handle. Each read reuses the calculation's authoritative schema
+// resolver and queryschema descriptor, walks the complete collection in stable
 // primary-key order via query.CompileMatchBatch and streams one projected row
 // per matched record. The caller's context keeps owning the formula budget;
 // yield and cancellation errors propagate unchanged, and no state is cached
@@ -68,7 +68,11 @@ func readCollectionSource(
 	if err != nil {
 		return collectionDependencyError(request.TableID, "", "collection source database identity is unavailable", err)
 	}
-	descriptor, snapshot, err := source.DescribeSelectionTable(ctx, app, request.TableID)
+	definition, err := formula.LoadCollectionSchema(ctx, app, request.TableID)
+	if err != nil {
+		return collectionReadError(request.TableID, "collection source schema is unavailable", err)
+	}
+	descriptor, snapshot, err := source.DescribeResolvedSelectionTable(ctx, app, definition)
 	if err != nil {
 		return collectionReadError(request.TableID, "collection source schema is unavailable", err)
 	}

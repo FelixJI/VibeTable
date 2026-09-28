@@ -2,19 +2,26 @@ package integration_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/computed"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestCollectionFanoutConvergesAcrossSameTableComputedDAG(t *testing.T) {
@@ -335,5 +342,114 @@ func TestCollectionClockRefreshResolvesSameTableAndCrossTableSources(t *testing.
 	historyAfter, err := app.CountRecords("vibetable_audit_events")
 	if err != nil || historyAfter != historyBefore {
 		t.Fatalf("clock refresh changed row history: %d -> %d, %v", historyBefore, historyAfter, err)
+	}
+}
+
+// TABLE planning and scanning must share the same transaction-owned schema.
+// QueryPort and a new calculation root still read current metadata themselves.
+func TestCollectionReaderReusesTransactionSchema(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	table := createV2IntegrationTable(t, ctx, app, "来源", "schema_source")
+	amount := createV2IntegrationField(t, ctx, app, table.TableID, fieldDraftForIntegration(t, v2.LogicalNumber, "金额"), "schema_amount")
+	collection, err := app.FindCollectionByNameOrId(table.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := core.NewRecord(collection)
+	record.Set(amount.Definition.Identity.PhysicalName, 42.0)
+	if name := amount.Definition.Value.Presence.PhysicalName; name != "" {
+		record.Set(name, true)
+	}
+	if err := app.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := schemaexecution.Describe(ctx, app, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolverCalls := 0
+	root := formula.WithCollectionSchemaResolver(ctx, func(ctx context.Context, id string) (schemaexecution.Table, error) {
+		resolverCalls++
+		if id != table.TableID {
+			t.Fatalf("unexpected source %s", id)
+		}
+		return definition, nil
+	})
+	var schemaReads atomic.Int64
+	seen := map[*dbx.DB]bool{}
+	for _, database := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+		if seen[database] {
+			continue
+		}
+		seen[database] = true
+		previous := database.QueryLogFunc
+		database.QueryLogFunc = func(ctx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, err error) {
+			if strings.Contains(statement, "vibetable_fields") {
+				schemaReads.Add(1)
+			}
+			if previous != nil {
+				previous(ctx, elapsed, statement, rows, err)
+			}
+		}
+		defer func() { database.QueryLogFunc = previous }()
+	}
+	reader := computed.NewCollectionSourceReader(app)
+	request := formula.CollectionReadRequest{TableID: table.TableID, Fields: []v2.FieldDefinition{*amount.Definition}}
+	for range 2 {
+		rows := 0
+		if err := reader(root, request, func(row map[string]any) error {
+			rows++
+			if row[amount.Definition.Identity.PhysicalName] != 42.0 {
+				t.Fatalf("source value = %#v", row)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 {
+			t.Fatalf("source rows = %d", rows)
+		}
+	}
+	if resolverCalls != 2 || schemaReads.Load() != 0 {
+		t.Fatalf("TABLE reloaded prepared schema: resolver calls=%d metadata reads=%d", resolverCalls, schemaReads.Load())
+	}
+	// The optimized descriptor still validates the caller's projection contract.
+	request.Fields[0].Storage.Options.OnlyInt = !request.Fields[0].Storage.Options.OnlyInt
+	if err := reader(root, request, func(map[string]any) error { t.Fatal("invalid projection yielded a row"); return nil }); err == nil {
+		t.Fatal("changed source type was accepted")
+	}
+	source, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := schemaReads.Load()
+	callsBefore := resolverCalls
+	if _, _, err := source.DescribeSelectionTable(root, app, table.TableID); err != nil {
+		t.Fatal(err)
+	}
+	if schemaReads.Load() <= before || resolverCalls != callsBefore {
+		t.Fatal("ordinary QueryPort reused a collection resolver")
+	}
+	// A later root sees a newly published field, rather than the earlier snapshot.
+	added := createV2IntegrationField(t, ctx, app, table.TableID, fieldDraftForIntegration(t, v2.LogicalText, "新增"), "schema_added")
+	before = schemaReads.Load()
+	request.Fields = []v2.FieldDefinition{*added.Definition}
+	rows := 0
+	if err := reader(ctx, request, func(row map[string]any) error { rows++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || schemaReads.Load() <= before || resolverCalls != callsBefore {
+		t.Fatal("new root did not load current schema")
+	}
+	canceled, cancel := context.WithCancel(root)
+	cancel()
+	before = schemaReads.Load()
+	if err := reader(canceled, request, func(map[string]any) error { t.Fatal("canceled read yielded"); return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation = %v", err)
+	}
+	if schemaReads.Load() != before || resolverCalls != callsBefore {
+		t.Fatal("canceled read performed schema work")
 	}
 }

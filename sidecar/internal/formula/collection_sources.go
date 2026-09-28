@@ -155,12 +155,21 @@ func WithCollectionSchemaResolver(ctx context.Context, resolve func(context.Cont
 	return context.WithValue(ctx, collectionSchemaResolverKey{}, collectionSchemaResolver(resolve))
 }
 
-func LoadCollectionSchemas(ctx context.Context, app core.App, definition schemaexecution.Table, extraSources ...string) (schemaexecution.Table, error) {
-	if resolve, ok := ctx.Value(collectionSchemaResolverKey{}).(collectionSchemaResolver); ok {
-		return ResolveCollectionSchemas(ctx, definition, resolve, extraSources...)
+// LoadCollectionSchema resolves one complete table through the calculation's
+// transaction-owned resolver, or reads authoritative metadata for a new root.
+func LoadCollectionSchema(ctx context.Context, app core.App, tableID string) (schemaexecution.Table, error) {
+	if err := ctx.Err(); err != nil {
+		return schemaexecution.Table{}, err
 	}
+	if resolve, ok := ctx.Value(collectionSchemaResolverKey{}).(collectionSchemaResolver); ok {
+		return resolve(ctx, tableID)
+	}
+	return schemaexecution.Describe(ctx, app, tableID)
+}
+
+func LoadCollectionSchemas(ctx context.Context, app core.App, definition schemaexecution.Table, extraSources ...string) (schemaexecution.Table, error) {
 	return ResolveCollectionSchemas(ctx, definition, func(ctx context.Context, id string) (schemaexecution.Table, error) {
-		return schemaexecution.Describe(ctx, app, id)
+		return LoadCollectionSchema(ctx, app, id)
 	}, extraSources...)
 }
 
