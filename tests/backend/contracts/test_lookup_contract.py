@@ -41,7 +41,7 @@ def test_lookup_definition_uses_camel_case_wire_shape() -> None:
 
 
 def test_lookup_aggregation_rejects_the_removed_rollup_surface() -> None:
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+    with pytest.raises(ValidationError, match="Input should be"):
         LookupDefinition.model_validate(
             {
                 "lookupId": "contract_count",

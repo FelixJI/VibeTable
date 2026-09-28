@@ -28,10 +28,44 @@ func decodeLookupDraftPreview(raw json.RawMessage) (lookupDraftPreviewParams, er
 	if err := v2.StrictDecode(raw, &input); err != nil {
 		return input, err
 	}
-	if input.TableID == "" || input.SchemaRevision == "" || input.SourceSchemaRevision == "" || input.Lookup.Condition == nil {
-		return input, errors.New("lookup draft requires table revisions and a condition")
+	// Both established sources are previewable: an existing relation path or a
+	// condition against another table. One of them must be fully specified.
+	if input.TableID == "" || input.SchemaRevision == "" || input.SourceSchemaRevision == "" ||
+		(len(input.Lookup.Path) == 0 && input.Lookup.Condition == nil) {
+		return input, errors.New("lookup draft requires table revisions and a path or a condition")
 	}
 	return input, v2.ValidateLookupConditionShape(input.Lookup)
+}
+
+// preparePathDraftPreview resolves a path draft against the current schema and
+// returns the terminal target table so callers can reject stale revisions.
+func preparePathDraftPreview(
+	ctx context.Context,
+	tx core.App,
+	current schemaexecution.Table,
+	spec v2.LookupSpec,
+) (schemaexecution.Table, error) {
+	currentTable := current
+	for _, step := range spec.Path {
+		relation, found := currentTable.Field(step.RelationFieldID)
+		if !found || relation.LogicalType != v2.LogicalRelation || relation.Relation == nil {
+			return schemaexecution.Table{}, errors.New("lookup draft path relation is unavailable")
+		}
+		target, err := schemaexecution.Describe(ctx, tx, relation.Relation.TargetTableID)
+		if err != nil {
+			return schemaexecution.Table{}, err
+		}
+		currentTable = target
+	}
+	targetField, found := currentTable.Field(spec.TargetFieldID)
+	if !found || targetField.LogicalType == v2.LogicalRelation {
+		return schemaexecution.Table{}, errors.New("lookup draft target field is unavailable")
+	}
+	if v2.LookupAggregationRequiresNumericSource(v2.ResolvedLookupAggregation(spec)) &&
+		!v2.LookupFieldTargetNumeric(targetField) {
+		return schemaexecution.Table{}, errors.New("lookup draft numeric aggregation requires a number target field")
+	}
+	return currentTable, nil
 }
 
 func lookupDraftPreviewRegistration(app core.App) productrpc.Registration {
@@ -52,11 +86,21 @@ func lookupDraftPreviewRegistration(app core.App) productrpc.Registration {
 				if err != nil {
 					return err
 				}
-				plan, err := queryschema.PrepareLookupCondition(ctx, tx, current, input.Lookup)
-				if err != nil {
-					return err
+				var sourceRevision string
+				if input.Lookup.Condition != nil {
+					plan, err := queryschema.PrepareLookupCondition(ctx, tx, current, input.Lookup)
+					if err != nil {
+						return err
+					}
+					sourceRevision = plan.Target.Snapshot.SchemaRevision
+				} else {
+					target, err := preparePathDraftPreview(ctx, tx, current, input.Lookup)
+					if err != nil {
+						return err
+					}
+					sourceRevision = target.Snapshot.SchemaRevision
 				}
-				if current.Snapshot.SchemaRevision != input.SchemaRevision || plan.Target.Snapshot.SchemaRevision != input.SourceSchemaRevision {
+				if current.Snapshot.SchemaRevision != input.SchemaRevision || sourceRevision != input.SourceSchemaRevision {
 					return errors.New("lookup draft schema revisions are stale")
 				}
 				collection, err := tx.FindCollectionByNameOrId(current.PhysicalName)

@@ -151,3 +151,41 @@ def test_conditional_lookup_keeps_typed_falsy_operands(value: object) -> None:
     ):
         with pytest.raises(ValidationError):
             LookupSpecV2.model_validate({**spec, "condition": {**condition, "rules": [rule]}})
+
+
+@pytest.mark.parametrize(
+    "aggregation",
+    [
+        "values",
+        "distinct",
+        "countRecords",
+        "countNonEmpty",
+        "countDistinct",
+        "sum",
+        "average",
+        "min",
+        "max",
+    ],
+)
+def test_lookup_aggregation_preserves_mode_and_rejects_legacy_conflict(aggregation: str) -> None:
+    path = {
+        "path": [{"relationFieldId": "relation"}],
+        "targetFieldId": "result",
+        "aggregation": aggregation,
+    }
+    assert LookupSpecV2.model_validate(path).aggregation == aggregation
+    condition = {
+        "sourceTableId": "source",
+        "match": "all",
+        "distinct": False,
+        "rules": [{"sourceFieldId": "value", "operator": "is_not_null"}],
+    }
+    spec = {**path, "path": [], "condition": condition}
+    assert LookupSpecV2.model_validate(spec).aggregation == aggregation
+    for invalid in (
+        {**path, "aggregation": "median"},
+        {**path, "aggregate": "sum"},
+        {**spec, "condition": {**condition, "distinct": True}},
+    ):
+        with pytest.raises(ValidationError):
+            LookupSpecV2.model_validate(invalid)

@@ -99,9 +99,10 @@ func (service *Service) Describe(
 				relationFieldID = field.Lookup.Path[0].RelationFieldID
 			}
 			result.Lookups = append(result.Lookups, LookupDescriptor{
-				Condition: field.Lookup.Condition,
-				LookupID:  lookupID,
-				TableID:   tableID, FieldID: field.Identity.FieldID,
+				Condition:   field.Lookup.Condition,
+				Aggregation: field.Lookup.Aggregation,
+				LookupID:    lookupID,
+				TableID:     tableID, FieldID: field.Identity.FieldID,
 				PhysicalName: field.Identity.PhysicalName, DisplayName: field.DisplayName,
 				RelationFieldID:   relationFieldID,
 				Path:              path,
@@ -119,6 +120,13 @@ func (service *Service) describeLookupPath(
 	source schemaexecution.Table,
 	spec v2.LookupSpec,
 ) ([]LookupPathDescriptor, bool, lookupOutputType, error) {
+	// Numeric aggregations materialize number/one values; distinct keeps the
+	// collection shape regardless of the source path cardinality.
+	aggregationNumeric := v2.LookupAggregationNumeric(v2.ResolvedLookupAggregation(spec))
+	// Counts and numeric summaries are decimals regardless of the source
+	// field's own storage — countRecords over text and average over an
+	// integer both produce the CEL-double-compatible decimal output.
+	numericOutput := lookupOutputType{logicalType: v2.LogicalNumber}
 	if spec.Condition != nil {
 		target, err := schemaexecution.Describe(ctx, service.app, spec.Condition.SourceTableID)
 		if err != nil {
@@ -127,6 +135,9 @@ func (service *Service) describeLookupPath(
 		field, found := target.Field(spec.TargetFieldID)
 		if !found {
 			return nil, false, lookupOutputType{}, relationError("lookup.value.source_missing", "lookup result field is unavailable")
+		}
+		if aggregationNumeric {
+			return []LookupPathDescriptor{}, false, numericOutput, nil
 		}
 		return []LookupPathDescriptor{}, true, outputTypeFor(field), nil
 	}
@@ -159,6 +170,12 @@ func (service *Service) describeLookupPath(
 		return nil, false, lookupOutputType{}, relationError(
 			"lookup.schema_invalid", "lookup target field is unavailable",
 		)
+	}
+	if aggregationNumeric {
+		return result, false, numericOutput, nil
+	}
+	if v2.ResolvedLookupAggregation(spec) == v2.LookupAggregationDistinct {
+		return result, true, outputTypeFor(targetField), nil
 	}
 	return result, resultMany, outputTypeFor(targetField), nil
 }

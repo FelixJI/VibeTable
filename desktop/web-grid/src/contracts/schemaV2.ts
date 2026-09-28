@@ -35,6 +35,21 @@ export type StorageSpecV2 = Wire.StorageSpec;
 export type DisplaySpecV2 = Wire.DisplaySpec;
 export type SelectOptionV2 = Wire.SelectOption;
 
+export const LOOKUP_AGGREGATIONS = [
+  "values",
+  "distinct",
+  "countRecords",
+  "countNonEmpty",
+  "countDistinct",
+  "sum",
+  "average",
+  "min",
+  "max",
+] as const;
+export type LookupAggregationV2 = (typeof LOOKUP_AGGREGATIONS)[number];
+
+export type LookupSpecV2 = Wire.LookupSpec;
+
 export type FieldDefinitionV2 = Wire.FieldDefinition;
 export type RecommendedValuesV2 = Wire.RecommendedValues;
 export type FieldDraftV2 = Wire.FieldDraft;
@@ -467,14 +482,26 @@ function validateOptionalFieldSpecs(
     );
   }
   if (field.lookup !== undefined) {
-    const lookup = exactObject(field.lookup, "$.lookup", ["path", "targetFieldId", "condition"], ["path", "targetFieldId"]);
+    const lookup = exactObject(
+      field.lookup,
+      "$.lookup",
+      ["path", "targetFieldId", "condition", "aggregation"],
+      ["path", "targetFieldId"],
+    );
     const path = expectArray(lookup.path, "$.lookup.path");
+    if (lookup.aggregation !== undefined) {
+      expectEnum(lookup.aggregation, "$.lookup.aggregation", LOOKUP_AGGREGATIONS);
+    }
     if (lookup.condition !== undefined) {
       if (path.length !== 0) fail("$.lookup.path", "condition cannot also use a relation path");
       const condition = exactObject(lookup.condition, "$.lookup.condition", ["sourceTableId", "match", "rules", "distinct"]);
       expectString(condition.sourceTableId, "$.lookup.condition.sourceTableId");
       expectEnum(condition.match, "$.lookup.condition.match", ["all", "any"]);
       expectBoolean(condition.distinct, "$.lookup.condition.distinct");
+      // canonical 是顶层 aggregation；legacy distinct=true 只在无显式聚合时读回。
+      if (condition.distinct && lookup.aggregation !== undefined) {
+        fail("$.lookup.aggregation", "explicit aggregation cannot combine with legacy condition.distinct=true");
+      }
       const rules = expectArray(condition.rules, "$.lookup.condition.rules");
       if (!rules.length || rules.length > 50) fail("$.lookup.condition.rules", "expected 1–50 rules");
       rules.forEach((value, index) => {

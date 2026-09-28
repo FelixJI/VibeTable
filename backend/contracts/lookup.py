@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, model_validator
 
-from backend.contracts.generated_schema_v2 import LookupCondition
+from backend.contracts.generated_schema_v2 import LookupAggregation, LookupCondition
 from backend.contracts.query import FilterCondition, FilterExpression, SortCondition
 from backend.contracts.selection import QuerySnapshot
 from backend.contracts.table import CamelModel
@@ -59,6 +59,7 @@ class LookupDefinition(CamelModel):
     # arbitrary saved hop count, protect the runtime.
     path: list[LookupPathStep]
     condition: LookupCondition | None = None
+    aggregation: LookupAggregation | None = None
     source: LookupSource
     output_type: LookupOutputType
     output_scale: int | None = Field(default=None, ge=0, le=30)
@@ -71,6 +72,8 @@ class LookupDefinition(CamelModel):
     def validate_definition(self) -> LookupDefinition:
         if (self.condition is None and not self.path) or (self.condition is not None and self.path):
             raise ValueError("Lookup requires either a relation path or a condition")
+        if self.aggregation is not None and self.condition is not None and self.condition.distinct:
+            raise ValueError("explicit aggregation cannot combine with legacy distinct")
         if self.output_type != "decimal" and self.output_scale is not None:
             raise ValueError("outputScale is only valid for decimal Lookups")
         if isinstance(self.source, LookupReferenceSource):

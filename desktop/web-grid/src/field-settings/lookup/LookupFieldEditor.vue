@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { NAlert, NButton, NInput, NInputNumber, NSelect, NSpin, NSwitch, NTag } from "naive-ui";
+import { NAlert, NButton, NInput, NInputNumber, NSelect, NSpin, NTag } from "naive-ui";
 import type { SelectOption } from "naive-ui";
 import { ArrowRight, ChevronLeft, Funnel, GitBranch, Minus, PencilLine, Plus, X } from "@lucide/vue";
-import type { FieldDraftV2 } from "@/contracts";
+import { LOOKUP_AGGREGATIONS } from "@/contracts";
+import type { LookupAggregationV2, LookupSpecV2 } from "@/contracts";
+import {
+  LOOKUP_AGGREGATION_HINTS,
+  LOOKUP_AGGREGATION_LABELS,
+  isAggregationApplicable,
+} from "./lookupAggregation";
 import {
   CONDITION_OPERATOR_LABELS,
   LOOKUP_CONDITION_MAX_RULES,
@@ -17,7 +23,7 @@ import {
   type LookupConditionFieldOption,
 } from "./lookupCondition";
 
-type LookupDefinition = NonNullable<FieldDraftV2["lookup"]>;
+type LookupDefinition = LookupSpecV2;
 type LookupCondition = NonNullable<LookupDefinition["condition"]>;
 type ConditionOperator = LookupCondition["rules"][number]["operator"];
 
@@ -25,6 +31,8 @@ interface LookupOption extends SelectOption {
   readonly label: string;
   readonly value: string;
   readonly many?: boolean;
+  /** 目标字段的精确逻辑类型（由抽层从真实 schema 派生），驱动汇总适用性。 */
+  readonly logicalType?: string;
 }
 
 interface WorkingRule {
@@ -40,7 +48,6 @@ interface WorkingRule {
 interface WorkingCondition {
   sourceTableId: string;
   match: LookupCondition["match"];
-  distinct: boolean;
   rules: WorkingRule[];
 }
 
@@ -48,6 +55,8 @@ interface WorkingDraft {
   mode: "path" | "condition";
   path: { relationFieldId: string }[];
   targetFieldId: string;
+  /** 汇总状态；旧 condition.distinct=true 读回为 distinct。 */
+  aggregation: LookupAggregationV2;
   condition: WorkingCondition;
 }
 
@@ -114,8 +123,39 @@ const conditionComplete = computed(() => {
     && condition.rules.length <= LOOKUP_CONDITION_MAX_RULES
     && condition.rules.every(rule => isRuleComplete(rule));
 });
+/** 目标逻辑类型：null = 已选目标但目录中不存在（不可验证），"" = 未选目标。 */
+const targetLogicalType = computed<string | null>(() => {
+  if (!working.value.targetFieldId) return "";
+  const option = props.targetFieldOptions.find(
+    item => item.value === working.value.targetFieldId,
+  );
+  return option ? option.logicalType ?? "" : null;
+});
 const canCommit = computed(() =>
-  working.value.mode === "path" ? pathComplete.value : conditionComplete.value);
+  (working.value.mode === "path" ? pathComplete.value : conditionComplete.value)
+  && isAggregationApplicable(working.value.aggregation, targetLogicalType.value));
+const valueAggregation = computed<LookupAggregationV2>(() => aggregationOf(props.value));
+const aggregationOptions = computed(() => LOOKUP_AGGREGATIONS.map(aggregation => ({
+  label: LOOKUP_AGGREGATION_LABELS[aggregation],
+  value: aggregation,
+  disabled: !isAggregationApplicable(aggregation, targetLogicalType.value),
+})));
+const aggregationHint = computed(() => {
+  const base = LOOKUP_AGGREGATION_HINTS[working.value.aggregation];
+  return targetLogicalType.value === "number"
+    ? base
+    : `${base}SUM/AVERAGE/MIN/MAX 仅适用于数字来源字段。`;
+});
+/** 计数与数值汇总输出单值；values/distinct 仍是列表。 */
+const scalarAggregating = computed(() =>
+  working.value.aggregation !== "values" && working.value.aggregation !== "distinct");
+const summaryTag = computed(() => valueAggregation.value === "values"
+  ? "自动类型"
+  : `汇总 · ${LOOKUP_AGGREGATION_LABELS[valueAggregation.value]}`);
+const resultTag = computed(() =>
+  valueAggregation.value === "values" || valueAggregation.value === "distinct"
+    ? "结果列表"
+    : "汇总结果");
 const producesList = computed(() => working.value.path.some((step, index) =>
   props.relationOptions[index]?.find(option => option.value === step.relationFieldId)?.many));
 const targetFieldLabel = computed(() => props.targetFieldOptions.find(
@@ -132,7 +172,9 @@ const conditionSummary = computed(() => {
   return [
     condition.match === "any" ? "任一匹配" : "全部匹配",
     `${condition.rules.length} 条规则`,
-    condition.distinct ? "按值保序去重" : "保留原值",
+    valueAggregation.value === "values"
+      ? "保留原值"
+      : `汇总：${LOOKUP_AGGREGATION_LABELS[valueAggregation.value]}`,
   ].join(" · ");
 });
 
@@ -182,11 +224,17 @@ function emitDraft(): void {
 }
 
 function buildDraft(): LookupDefinition | null {
+  // canonical：values 省略顶层 aggregation，旧 path/condition 计划形状不变；
+  // 显式 aggregation 一律携带，且 condition.distinct 固定为 false（迁移旧 true）。
+  const aggregation = working.value.aggregation === "values"
+    ? undefined
+    : working.value.aggregation;
   if (working.value.mode === "path") {
     if (!pathComplete.value) return null;
     return {
       path: working.value.path.map(step => ({ relationFieldId: step.relationFieldId })),
       targetFieldId: working.value.targetFieldId.trim(),
+      ...(aggregation ? { aggregation } : {}),
     };
   }
   if (!conditionComplete.value) return null;
@@ -194,6 +242,7 @@ function buildDraft(): LookupDefinition | null {
   return {
     path: [],
     targetFieldId: working.value.targetFieldId.trim(),
+    ...(aggregation ? { aggregation } : {}),
     condition: {
       sourceTableId: condition.sourceTableId,
       match: condition.match,
@@ -216,7 +265,7 @@ function buildDraft(): LookupDefinition | null {
           operand: { kind: "constant", value: constantValueOf(rule) },
         };
       }),
-      distinct: condition.distinct,
+      distinct: false,
     },
   };
 }
@@ -231,16 +280,22 @@ function constantValueOf(rule: WorkingRule): string | number | boolean {
   }
 }
 
+/** 读回：显式 aggregation 优先；旧 condition.distinct=true 等同 distinct。 */
+function aggregationOf(value: LookupDefinition): LookupAggregationV2 {
+  if (value.aggregation) return value.aggregation;
+  return value.condition?.distinct ? "distinct" : "values";
+}
+
 function cloneValue(value: LookupDefinition): WorkingDraft {
   const condition = value.condition;
   return {
     mode: condition ? "condition" : "path",
     path: value.path.map(step => ({ relationFieldId: step.relationFieldId })),
     targetFieldId: value.targetFieldId,
+    aggregation: aggregationOf(value),
     condition: {
       sourceTableId: condition?.sourceTableId ?? "",
       match: condition?.match ?? "all",
-      distinct: condition?.distinct ?? false,
       rules: condition?.rules.length
         ? condition.rules.map(rule => {
           const value = rule.operand?.value;
@@ -348,6 +403,7 @@ function selectMode(mode: string): void {
   if (working.value.mode === mode) return;
   // 路径与条件互斥；返回字段目录随模式切换，两侧各自保留数据。
   working.value = { ...working.value, mode, targetFieldId: "" };
+  reconcileAggregation();
   if (mode === "condition") {
     emit("sourceTableChange", working.value.condition.sourceTableId);
   } else {
@@ -358,6 +414,7 @@ function selectMode(mode: string): void {
 
 function selectTarget(targetFieldId: string): void {
   working.value = { ...working.value, targetFieldId };
+  reconcileAggregation();
   emitDraft();
 }
 
@@ -368,6 +425,7 @@ function selectSourceTable(sourceTableId: string): void {
     targetFieldId: "",
     condition: { ...working.value.condition, sourceTableId, rules: [createRule()] },
   };
+  reconcileAggregation();
   emit("sourceTableChange", sourceTableId);
   emitDraft();
 }
@@ -381,12 +439,20 @@ function selectMatch(match: string): void {
   emitDraft();
 }
 
-function setDistinct(distinct: boolean): void {
-  working.value = {
-    ...working.value,
-    condition: { ...working.value.condition, distinct },
-  };
+function selectAggregation(value: string): void {
+  if (!(LOOKUP_AGGREGATIONS as readonly string[]).includes(value)) return;
+  const aggregation = value as LookupAggregationV2;
+  // 禁用选项即便被触发也不接受；类型未验证时数值聚合保持不可选。
+  if (!isAggregationApplicable(aggregation, targetLogicalType.value)) return;
+  working.value = { ...working.value, aggregation };
   emitDraft();
+}
+
+/** 目标/路径/模式变化后目标类型可能变化；不适用聚合复位为原值，不静默保留。 */
+function reconcileAggregation(): void {
+  if (!isAggregationApplicable(working.value.aggregation, targetLogicalType.value)) {
+    working.value = { ...working.value, aggregation: "values" };
+  }
 }
 
 function updateRule(index: number, patch: Partial<WorkingRule>): void {
@@ -446,6 +512,7 @@ function selectStep(index: number, relationFieldId: string): void {
   const path = working.value.path.slice(0, index + 1).map(step => ({ ...step }));
   path[index] = { relationFieldId };
   working.value = { ...working.value, path, targetFieldId: "" };
+  reconcileAggregation();
   emit("pathChange", path);
   emitDraft();
 }
@@ -454,6 +521,7 @@ function addStep(): void {
   if (working.value.path.length >= props.maxDepth) return;
   const path = [...working.value.path, { relationFieldId: "" }];
   working.value = { ...working.value, path, targetFieldId: "" };
+  reconcileAggregation();
   emitDraft();
 }
 
@@ -461,6 +529,7 @@ function removeStep(): void {
   if (working.value.path.length <= 1) return;
   const path = working.value.path.slice(0, -1);
   working.value = { ...working.value, path, targetFieldId: "" };
+  reconcileAggregation();
   emit("pathChange", path);
   emitDraft();
 }
@@ -502,7 +571,7 @@ function formatPreviewValue(value: unknown): string {
             <code>{{ targetFieldLabel }}</code>
           </small>
         </div>
-        <NTag size="small" :bordered="false">自动类型</NTag>
+        <NTag size="small" :bordered="false">{{ summaryTag }}</NTag>
       </div>
       <div v-else class="editor-summary">
         <span class="editor-mark"><Funnel :size="18" /></span>
@@ -516,7 +585,7 @@ function formatPreviewValue(value: unknown): string {
           </small>
           <small>{{ conditionSummary }}</small>
         </div>
-        <NTag size="small" :bordered="false">结果列表</NTag>
+        <NTag size="small" :bordered="false">{{ resultTag }}</NTag>
       </div>
       <NButton secondary :disabled="loading" data-testid="lookup-editor-entry" @click="beginEditing">
         <PencilLine :size="15" />
@@ -577,7 +646,7 @@ function formatPreviewValue(value: unknown): string {
           <Minus :size="14" />移除末跳
         </NButton>
         <NTag size="small" :bordered="false">
-          {{ producesList ? "多值 · 类型化列表" : "单值 · 自动类型" }}
+          {{ scalarAggregating ? "汇总 · 单值结果" : producesList ? "多值 · 类型化列表" : "单值 · 自动类型" }}
         </NTag>
       </div>
 
@@ -614,18 +683,6 @@ function formatPreviewValue(value: unknown): string {
               @update:value="selectMatch(String($event))"
             />
           </label>
-          <div class="switch-cell">
-            <span>结果去重</span>
-            <div class="switch-line">
-              <NSwitch
-                :value="working.condition.distinct"
-                size="small"
-                data-testid="lookup-condition-distinct"
-                @update:value="setDistinct"
-              />
-              <small>{{ working.condition.distinct ? "按值保序去重" : "保留原值" }}</small>
-            </div>
-          </div>
         </div>
 
         <div class="condition-rules" data-testid="lookup-condition-rules">
@@ -766,35 +823,48 @@ function formatPreviewValue(value: unknown): string {
             </NButton>
           </div>
           <small class="rules-note">
-            支持文本、数字、是非、日期、日期时间和单选字段，比较方式随字段类型变化。查找结果显示为列表；没有匹配记录时为空。开启去重后，相同值只保留一次。
+            支持文本、数字、是非、日期、日期时间和单选字段，比较方式随字段类型变化。查找结果默认为列表；没有匹配记录时为空；汇总方式见下方“结果汇总”。
           </small>
-        </div>
-
-        <div class="condition-preview">
-          <NAlert
-            v-if="previewLoading"
-            type="info"
-            :show-icon="false"
-            data-testid="lookup-preview-loading"
-          ><NSpin size="small" /> 正在计算当前表第一条记录的样例结果…</NAlert>
-          <NAlert
-            v-else-if="previewError"
-            type="warning"
-            :show-icon="false"
-            data-testid="lookup-preview-error"
-          >样例计算失败：{{ previewError }}</NAlert>
-          <NAlert
-            v-else-if="previewReady"
-            type="info"
-            :show-icon="false"
-            data-testid="lookup-preview-value"
-          >样例结果：<code>{{ formatPreviewValue(previewValue) }}</code></NAlert>
         </div>
       </template>
 
+      <div class="aggregation-block" data-testid="lookup-aggregation-block">
+        <label>
+          <span>结果汇总（对完整命中集合计算，不受来源详情分页影响）</span>
+          <NSelect
+            :value="working.aggregation"
+            :options="aggregationOptions"
+            data-testid="lookup-aggregation"
+            @update:value="selectAggregation(String($event))"
+          />
+        </label>
+        <small data-testid="lookup-aggregation-hint">{{ aggregationHint }}</small>
+      </div>
+
+      <div class="editor-preview">
+        <NAlert
+          v-if="previewLoading"
+          type="info"
+          :show-icon="false"
+          data-testid="lookup-preview-loading"
+        ><NSpin size="small" /> 正在计算当前表第一条记录的样例结果…</NAlert>
+        <NAlert
+          v-else-if="previewError"
+          type="warning"
+          :show-icon="false"
+          data-testid="lookup-preview-error"
+        >样例计算失败：{{ previewError }}</NAlert>
+        <NAlert
+          v-else-if="previewReady"
+          type="info"
+          :show-icon="false"
+          data-testid="lookup-preview-value"
+        >{{ scalarAggregating ? "样例汇总结果（按完整命中集合计算，非来源详情页）" : "样例结果" }}：<code>{{ formatPreviewValue(previewValue) }}</code></NAlert>
+      </div>
+
       <div class="editor-actions">
         <small v-if="working.mode === 'path'">
-          最多 {{ maxDepth }} 跳；类型和单值/列表形状由路径自动推导，不在 Lookup 内聚合。
+          最多 {{ maxDepth }} 跳；单值/列表形状由路径自动推导；选择汇总后按完整命中集合计算。
         </small>
         <small v-else>未填完不可确认；来源表或字段变更会清空依赖选择。</small>
         <NButton
@@ -866,9 +936,16 @@ label {
   letter-spacing: .14em;
 }
 small { color: var(--vt-fg-muted); }
-.switch-cell { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 650; }
-.switch-line { display: flex; align-items: center; gap: 8px; }
 .condition-rules { display: flex; flex-direction: column; gap: 10px; }
+.aggregation-block {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--vt-border);
+  border-radius: 10px;
+  background: var(--vt-bg-subtle);
+}
 .rules-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .rules-head strong { font-size: 12px; }
 .rule-row {
@@ -895,7 +972,7 @@ small { color: var(--vt-fg-muted); }
   font: inherit;
   font-weight: 500;
 }
-.condition-preview:empty { display: none; }
+.editor-preview:empty { display: none; }
 @media(max-width:720px) {
   .lookup-path { grid-template-columns: 1fr; }
   .rule-row { grid-template-columns: 1fr; }

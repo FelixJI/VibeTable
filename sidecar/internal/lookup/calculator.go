@@ -12,6 +12,8 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/productrow"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -126,17 +128,13 @@ func (calculator *Calculator) calculateCells(
 			}
 			return nil, err
 		}
-		values := make([]any, 0, len(resolved))
-		provenance := make([]ValueProvenance, 0, len(resolved))
-		for _, item := range resolved {
-			values = append(values, item.value)
-			provenance = append(provenance, ValueProvenance{
-				Collection: item.collection, CollectionLabel: item.collectionLabel,
-				ItemID: item.itemID, RecordLabel: item.recordLabel,
-				FieldID: item.fieldID, FieldLabel: item.fieldLabel, Value: item.value,
-			})
+		values, provenance := resolvedValues(resolved)
+		value, aggregateErr := aggregateLookupValues(
+			v2.ResolvedLookupAggregation(*field.Lookup), values,
+		)
+		if aggregateErr != nil {
+			return nil, aggregateErr
 		}
-		value := canonicalLookupValue(values)
 		visibleProvenance := provenance
 		if len(visibleProvenance) > cellProvenancePageSize {
 			visibleProvenance = visibleProvenance[:cellProvenancePageSize]
@@ -345,7 +343,7 @@ func walkLookupPage(
 			if loadErr != nil {
 				return loadErr
 			}
-			values, projectErr := projectLookupNodes(nodes, lookupField)
+			values, projectErr := projectLookupNodes(ctx, app, nodes, lookupField)
 			if projectErr != nil {
 				return projectErr
 			}
@@ -414,10 +412,22 @@ func lookupPathValues(
 }
 
 func projectLookupNodes(
+	ctx context.Context,
+	app core.App,
 	nodes []traversalNode,
 	lookupField v2.FieldDefinition,
 ) ([]lookupPathValue, error) {
 	values := make([]lookupPathValue, 0, len(nodes))
+	// Aggregations reduce product values: a presence-gated number reads as
+	// null (not zero) and computed sources participate only through a fresh
+	// envelope verified against the existing expectation contract. The
+	// default values shape keeps the historical raw read.
+	aggregated := lookupAggregationTraversesFullSet(v2.ResolvedLookupAggregation(*lookupField.Lookup))
+	// DefinitionVersion and DependencyWatermark are row-independent; only the
+	// row revision varies per record, so one ExpectationFor call per batch is
+	// enough without building a second reader cache.
+	var expectation relatedcomputation.Expectation
+	expectationLoaded := false
 	for _, node := range nodes {
 		targetField, found := fieldByID(node.definition, lookupField.Lookup.TargetFieldID)
 		if !found {
@@ -426,6 +436,36 @@ func projectLookupNodes(
 			)
 		}
 		value := decodeLookupFieldValue(targetField, node.record)
+		if aggregated {
+			if targetField.LogicalType == v2.LogicalFormula || targetField.LogicalType == v2.LogicalLookup {
+				if !expectationLoaded {
+					loaded, err := relatedcomputation.ExpectationFor(
+						ctx, app, node.definition.Snapshot.TableID,
+						node.definition.Snapshot.Fields, targetField.Identity.FieldID,
+						int64(node.record.GetInt(relatedcomputation.RowRevisionField)),
+					)
+					if err != nil {
+						return nil, lookupError(
+							"lookup.aggregation.source_unavailable",
+							"computed lookup source version could not be resolved",
+						)
+					}
+					expectation = loaded
+					expectationLoaded = true
+				}
+				rowExpectation := expectation
+				rowExpectation.SourceDataRevision = int64(node.record.GetInt(relatedcomputation.RowRevisionField))
+				value, found = freshComputedSourceValue(targetField, node.record, rowExpectation)
+				if !found {
+					return nil, lookupError(
+						"lookup.aggregation.source_stale",
+						"computed lookup source is pending, failed or stale",
+					)
+				}
+			} else {
+				value = productrow.Project([]v2.FieldDefinition{targetField}, node.record)[targetField.Identity.PhysicalName]
+			}
+		}
 		values = append(values, describedLookupValue(
 			node.definition, node.record, targetField, value,
 		))
@@ -438,6 +478,23 @@ func decodeLookupFieldValue(field v2.FieldDefinition, record *core.Record) any {
 	// stable optionId, so the physical value is already the product value and
 	// preserves the historical behavior for rows created before companions.
 	return record.GetRaw(field.Identity.PhysicalName)
+}
+
+// freshComputedSourceValue decodes a computed target's stored envelope and
+// accepts it only when it satisfies the existing freshness contract. Missing,
+// corrupt, pending, failed and stale sources report found=false so callers
+// surface an explicit dependency error — never the old cached value and
+// never a silent null.
+func freshComputedSourceValue(
+	field v2.FieldDefinition,
+	record *core.Record,
+	expectation relatedcomputation.Expectation,
+) (any, bool) {
+	envelope, ok := relatedcomputation.Decode(record.GetRaw(field.Identity.PhysicalName))
+	if !ok || !envelope.Fresh(expectation) {
+		return nil, false
+	}
+	return envelope.Value, true
 }
 
 func canonicalLookupValue(values []any) any {

@@ -159,6 +159,9 @@ func projectLookupList(catalog relation.CatalogResult) (map[string]any, error) {
 		if lookup.Condition != nil {
 			projected["condition"] = lookup.Condition
 		}
+		if lookup.Aggregation != "" {
+			projected["aggregation"] = lookup.Aggregation
+		}
 		definitions = append(definitions, projected)
 	}
 	return map[string]any{"collection": catalog.TableID, "definitions": definitions, "lookupRevision": revision}, nil

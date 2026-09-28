@@ -5,6 +5,7 @@
  * Only direct PocketBase relation fields are exposed on the product wire.
  */
 import type { ColumnSchema, FilterExpression, SortCondition } from "./index";
+import type { LookupAggregationV2 } from "./schemaV2";
 
 export type RelationKind = "m2o" | "o2m" | "m2m";
 export type RelationPreset = "standard" | "file" | "files" | "translations";
@@ -122,6 +123,7 @@ export interface LookupDiagnostic {
 
 export interface LookupDefinition {
   readonly condition?: import("./generated/schemaV2").LookupCondition | null;
+  readonly aggregation?: LookupAggregationV2 | null;
   readonly lookupId: string;
   readonly collection: string;
   readonly fieldKey: string;

@@ -75,12 +75,27 @@ func calculateLookupGroups(
 		if len(fields[0].Lookup.Path) == 0 {
 			return nil, lookupError("mutation.lookup.schema_invalid", "lookup path metadata is unavailable")
 		}
+		// Aggregations are computed over the complete matched set, so their
+		// cursors keep traversing past the provenance page; values-mode fields
+		// in the same group are windowed back to the requested page.
+		fullSet := false
+		for _, field := range fields {
+			if lookupAggregationTraversesFullSet(v2.ResolvedLookupAggregation(*field.Lookup)) {
+				fullSet = true
+			}
+		}
+		collectorOffset, collectorLimit := offset, limit
+		if fullSet {
+			collectorOffset, collectorLimit = 0, int(^uint(0)>>1)
+		}
 		for _, record := range records {
 			cursors = append(cursors, &lookupBatchCursor{
 				recordID: record.Id, fields: fields,
-				source:    traversalNode{definition: definition, record: record},
-				collector: lookupPageCollector{offset: offset, limit: limit},
-				values:    make([][]lookupPathValue, len(fields)),
+				source:     traversalNode{definition: definition, record: record},
+				collector:  lookupPageCollector{offset: collectorOffset, limit: collectorLimit},
+				values:     make([][]lookupPathValue, len(fields)),
+				fullSet:    fullSet,
+				pageOffset: offset, pageLimit: limit,
 			})
 		}
 	}
@@ -109,11 +124,27 @@ func calculateLookupGroups(
 					cell := missingLookupSourceCell()
 					if err == nil {
 						values, provenance := resolvedValues(cursor.values[index])
+						pageValues, visibleProvenance := values, provenance
+						if cursor.fullSet {
+							pageValues = lookupPageWindow(values, cursor.pageOffset, cursor.pageLimit)
+							visibleProvenance = lookupPageWindow(provenance, cursor.pageOffset, cursor.pageLimit)
+						}
+						mode := v2.ResolvedLookupAggregation(*field.Lookup)
+						aggregateInput := pageValues
+						if mode != v2.LookupAggregationValues {
+							// Aggregations reduce the complete matched set; only the
+							// values shape keeps its page window.
+							aggregateInput = values
+						}
+						value, aggregateErr := aggregateLookupValues(mode, aggregateInput)
+						if aggregateErr != nil {
+							return nil, aggregateErr
+						}
 						cell = CellValue{
-							State: "ok", Value: canonicalLookupValue(values), Provenance: provenance,
+							State: "ok", Value: value, Provenance: visibleProvenance,
 							ProvenanceTotal: cursor.collector.total, ProvenanceTotalKnown: !cursor.stopped,
 							ProvenanceOffset: offset, ProvenanceLimit: limit,
-							ProvenanceHasMore: cursor.stopped || cursor.collector.total > offset+len(provenance),
+							ProvenanceHasMore: cursor.stopped || cursor.collector.total > offset+len(visibleProvenance),
 						}
 					}
 					result[cursor.recordID][field.Identity.PhysicalName] = cell
@@ -173,13 +204,16 @@ func calculateLookupGroups(
 }
 
 type lookupBatchCursor struct {
-	recordID  string
-	fields    []v2.FieldDefinition
-	source    traversalNode
-	collector lookupPageCollector
-	values    [][]lookupPathValue
-	stopped   bool
-	complete  bool
+	recordID   string
+	fields     []v2.FieldDefinition
+	source     traversalNode
+	collector  lookupPageCollector
+	values     [][]lookupPathValue
+	stopped    bool
+	complete   bool
+	fullSet    bool
+	pageOffset int
+	pageLimit  int
 }
 
 // advance discovers a bounded frontier in the cached path prefix. Unknown
@@ -286,7 +320,7 @@ func (cursor *lookupBatchCursor) advance(
 		}
 		node := traversalNode{definition: leaf.target, record: record}
 		for index, field := range cursor.fields {
-			projected, err := projectLookupNodes([]traversalNode{node}, field)
+			projected, err := projectLookupNodes(ctx, app, []traversalNode{node}, field)
 			if err != nil {
 				return schemaexecution.Table{}, nil, err
 			}

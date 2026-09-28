@@ -208,10 +208,25 @@ type FormulaDraftSpec struct {
 	Source   string `json:"source"`
 }
 
+type LookupAggregation string
+
+const (
+	LookupAggregationValues        LookupAggregation = "values"
+	LookupAggregationDistinct      LookupAggregation = "distinct"
+	LookupAggregationCountRecords  LookupAggregation = "countRecords"
+	LookupAggregationCountNonEmpty LookupAggregation = "countNonEmpty"
+	LookupAggregationCountDistinct LookupAggregation = "countDistinct"
+	LookupAggregationSum           LookupAggregation = "sum"
+	LookupAggregationAverage       LookupAggregation = "average"
+	LookupAggregationMin           LookupAggregation = "min"
+	LookupAggregationMax           LookupAggregation = "max"
+)
+
 type LookupSpec struct {
-	Path          []LookupPathStep `json:"path"`
-	TargetFieldId string           `json:"targetFieldId"`
-	Condition     *LookupCondition `json:"condition,omitempty"`
+	Path          []LookupPathStep   `json:"path"`
+	TargetFieldId string             `json:"targetFieldId"`
+	Condition     *LookupCondition   `json:"condition,omitempty"`
+	Aggregation   *LookupAggregation `json:"aggregation,omitempty"`
 }
 
 type LookupCondition struct {

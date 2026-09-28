@@ -66,6 +66,8 @@ def _validate_lookup(spec: wire.LookupSpec | None) -> None:
         return
     if spec.path:
         raise ValueError("conditional Lookup requires an empty path")
+    if spec.aggregation is not None and spec.condition.distinct:
+        raise ValueError("explicit aggregation cannot combine with legacy distinct")
     for rule in spec.condition.rules:
         if rule.operator in {"is_null", "is_not_null"}:
             if "operand" in rule.model_fields_set:

@@ -248,7 +248,7 @@ def _csharp_type(node: JsonObject) -> str:
         return "JsonElement"
     if "$ref" in node:
         name = _ref_name(node["$ref"])
-        return "string" if name == "LogicalType" else _csharp_name(name)
+        return "string" if name in {"LogicalType", "LookupAggregation"} else _csharp_name(name)
     if "anyOf" in node or "oneOf" in node:
         branches = node.get("anyOf", node.get("oneOf"))
         if not isinstance(branches, list) or not branches:

@@ -450,6 +450,38 @@ public sealed class ProductContractV2RoundTripTests
         }
     }
 
+    [TestMethod]
+    public void LookupAggregationRoundTripsConditionAndRejectsConflictingDefinitions()
+    {
+        JsonObject field = ReadSchemaV2Node("field-definition.json").AsObject();
+        field["logicalType"] = "lookup";
+        JsonObject lookup = JsonNode.Parse("""
+            {"path": [], "targetFieldId": "fld_amount", "aggregation": "sum",
+             "condition": {"sourceTableId": "tbl_source", "match": "all", "distinct": false,
+                "rules": [{"sourceFieldId": "fld_code", "operator": "is_not_null"}]}}
+            """)!.AsObject();
+        field["lookup"] = lookup;
+        foreach (string mode in new[] { "values", "distinct", "countRecords", "countNonEmpty", "countDistinct", "sum", "average", "min", "max" })
+        {
+            lookup["aggregation"] = mode;
+            SchemaSnapshotV2 snapshot = CreateSchemaSnapshotWithField(field);
+            Assert.IsTrue(SchemaV2Contract.ValidateResult(snapshot, out string reason), reason);
+            Assert.AreEqual(mode, snapshot.Fields[0].Lookup!.Aggregation);
+        }
+        lookup["aggregation"] = "median";
+        Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        lookup["aggregation"] = "sum";
+        lookup["condition"]!["distinct"] = true;
+        Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        lookup.Remove("aggregation");
+        Assert.IsTrue(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        lookup["path"] = JsonNode.Parse("""[{"relationFieldId":"fld_link"}]""");
+        Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        lookup.Remove("condition");
+        lookup["aggregation"] = "sum";
+        Assert.IsTrue(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+    }
+
     private static void AssertSchemaSnapshotRejectsSharedInvalidFieldCase(string caseName)
     {
         JsonArray cases = ReadSchemaV2Node("invalid/field-definition-cases.json").AsArray();

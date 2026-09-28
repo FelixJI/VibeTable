@@ -43,6 +43,13 @@ func PrepareLookupCondition(ctx context.Context, app core.App, source schemaexec
 		return plan, conditionError("lookup.value.source_missing", "lookup result must reference an active local source field")
 	}
 	plan.Field = field
+	if v2.LookupAggregationRequiresNumericSource(v2.ResolvedLookupAggregation(spec)) &&
+		!v2.LookupFieldTargetNumeric(field) {
+		return plan, &query.ProductError{
+			Code: "lookup.aggregation.target_not_numeric", Path: "lookup.aggregation",
+			Message: "numeric lookup aggregation requires a number source field",
+		}
+	}
 	sourceAdapter, err := New(app.DataDir())
 	if err != nil {
 		return plan, err

@@ -1780,6 +1780,20 @@
             ],
             "type": "string"
           },
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -1929,6 +1943,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
@@ -3549,6 +3574,20 @@
             ],
             "type": "string"
           },
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -3698,6 +3737,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
@@ -5491,6 +5541,20 @@
             ],
             "type": "string"
           },
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -5640,6 +5704,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
@@ -6812,6 +6887,20 @@
             ],
             "type": "string"
           },
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -6961,6 +7050,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
@@ -12816,6 +12916,20 @@
       "resultModel": "LookupListResult",
       "resultSchema": {
         "$defs": {
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -12922,6 +13036,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
@@ -20021,6 +20146,20 @@
             ],
             "type": "string"
           },
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -20186,6 +20325,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
@@ -24071,6 +24221,20 @@
             ],
             "type": "string"
           },
+          "LookupAggregation": {
+            "enum": [
+              "values",
+              "distinct",
+              "countRecords",
+              "countNonEmpty",
+              "countDistinct",
+              "sum",
+              "average",
+              "min",
+              "max"
+            ],
+            "type": "string"
+          },
           "LookupCondition": {
             "additionalProperties": false,
             "properties": {
@@ -24220,6 +24384,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/LookupCondition"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "aggregation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LookupAggregation"
                   },
                   {
                     "type": "null"
