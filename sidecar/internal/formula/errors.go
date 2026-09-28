@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/parser/gen"
 )
 
 const ContractVersion = "2.0"
@@ -59,6 +60,17 @@ func formulaIssuesError(code, message, source string, issues *cel.Issues) *Error
 	if diagnostics := issues.Errors(); len(diagnostics) > 0 {
 		location := diagnostics[0].Location
 		if span, ok := celLocationSpan(source, location.Line(), location.Column()); ok {
+			// CEL points unknown function diagnostics at the opening parenthesis.
+			// Reuse its lexer to highlight the function name in author coordinates.
+			if code == "formula.dependency" {
+				tokens := authorSyntaxLexemes(source)
+				for index, token := range tokens {
+					if token.start == span.Start && token.kind == gen.CELLexerLPAREN && index > 0 && tokens[index-1].kind == gen.CELLexerIDENTIFIER {
+						span = SourceSpan{Start: tokens[index-1].start, End: tokens[index-1].end}
+						break
+					}
+				}
+			}
 			result.SourceSpan = &span
 		}
 	}

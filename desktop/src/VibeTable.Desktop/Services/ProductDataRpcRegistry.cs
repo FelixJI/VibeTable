@@ -163,7 +163,12 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.ValidateFormulaAsync(p, t)),
         new("formula.draft.validate", p => Safe(p)
             && HasStrings(p, "tableId", "displaySource")
-            && HasExactProperties(p, "tableId", "displaySource"),
+            && HasOnlyProperties(p, "tableId", "displaySource", "authorDocument", "restoreSource")
+            && (!p.TryGetProperty("authorDocument", out var authorDocument)
+                || authorDocument.ValueKind == JsonValueKind.Object)
+            && (!p.TryGetProperty("restoreSource", out var restoreSource)
+                || restoreSource.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            && !(HasTrue(p, "restoreSource") && p.TryGetProperty("authorDocument", out _)),
             (g, p, t) => g.ValidateFormulaDraftAsync(p, t)),
         new("formula.preview", p => Safe(p)
             && HasExactProperties(p, "tableId", "field", "row", "changedFieldIds")

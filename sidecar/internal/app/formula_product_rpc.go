@@ -37,8 +37,16 @@ func formulaProductRegistrations(domain formulaDomain) []productrpc.Registration
 				var result any
 				switch method {
 				case "formula.draft.validate":
+					var draftInput formulaDraftValidateRequest
+					compact, marshalErr := json.Marshal(object)
+					if marshalErr != nil {
+						return nil, marshalErr
+					}
+					if err = decodeFormulaRequest(bytes.NewReader(compact), &draftInput); err != nil {
+						return nil, publicFormulaError(err)
+					}
 					result, err = domain.validateDraft(
-						ctx, object["tableId"].(string), object["displaySource"].(string),
+						ctx, draftInput,
 					)
 				case "formula.validate", "formula.preview":
 					// The retired Python adapter ran its generated_schema_v2 DTO
@@ -150,6 +158,10 @@ func decodeFormulaProductParams(method string, raw json.RawMessage) (map[string]
 			return nil, invalid
 		}
 	}
+	if method == "formula.draft.validate" {
+		allowed["authorDocument"] = true
+		allowed["restoreSource"] = true
+	}
 	for key, item := range object {
 		if !allowed[key] {
 			return nil, invalid
@@ -158,6 +170,14 @@ func decodeFormulaProductParams(method string, raw json.RawMessage) (map[string]
 		case "tableId", "displaySource":
 			text, ok := item.(string)
 			if !ok || text == "" {
+				return nil, invalid
+			}
+		case "restoreSource":
+			if _, ok := item.(bool); !ok {
+				return nil, invalid
+			}
+		case "authorDocument":
+			if _, ok := item.(map[string]any); !ok {
 				return nil, invalid
 			}
 		case "field", "row":

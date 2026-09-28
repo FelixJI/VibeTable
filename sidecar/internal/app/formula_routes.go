@@ -13,6 +13,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/router"
 
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/schemav2wire"
+	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -20,8 +21,10 @@ import (
 )
 
 type formulaDraftValidateRequest struct {
-	TableID       string `json:"tableId"`
-	DisplaySource string `json:"displaySource"`
+	TableID        string                           `json:"tableId"`
+	DisplaySource  string                           `json:"displaySource"`
+	AuthorDocument *workbench.FormulaAuthorDocument `json:"authorDocument,omitempty"`
+	RestoreSource  bool                             `json:"restoreSource,omitempty"`
 }
 
 type formulaMetadata struct {
@@ -43,7 +46,7 @@ func registerFormulaRoutes(
 			return writeFormulaError(request, err)
 		}
 		result, err := domain.validateDraft(
-			request.Request.Context(), input.TableID, input.DisplaySource,
+			request.Request.Context(), input,
 		)
 		if err != nil {
 			return writeFormulaError(request, err)
