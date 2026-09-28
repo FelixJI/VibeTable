@@ -216,7 +216,7 @@ function commit(): void {
   if (!draft) return;
   emit("commit", draft);
   editing.value = false;
-  emit("draftChange", draft);
+  emit("draftChange", null);
 }
 
 function emitDraft(): void {

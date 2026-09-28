@@ -181,10 +181,7 @@ describe("LookupFieldEditor", () => {
     expect(wrapper.emitted("commit")).toEqual([[
       { path: [{ relationFieldId: "fld_account" }], targetFieldId: "fld_balance" },
     ]]);
-    expect(lastDraft(wrapper)).toEqual({
-      path: [{ relationFieldId: "fld_account" }],
-      targetFieldId: "fld_balance",
-    });
+    expect(lastDraft(wrapper)).toBeNull();
   });
 
   it("路径不完整时禁止确认，取消恢复原路径并清空草稿", async () => {
@@ -383,6 +380,18 @@ describe("LookupFieldEditor", () => {
     expect(componentProp(findSelect(wrapper, "lookup-rule-source-field-0"), "value")).toBeNull();
     expect(commitDisabled(wrapper)).toBe(true);
     expect(lastDraft(wrapper)).toBeNull();
+  });
+
+  it("提交后终止草稿预览，重新编辑才恢复预览", async () => {
+    const wrapper = mountEditor(conditionValue);
+    await openEditor(wrapper);
+    expect(lastDraft(wrapper)).toEqual(conditionValue);
+    await commit(wrapper);
+    expect(wrapper.emitted("commit")).toEqual([[conditionValue]]);
+    expect(lastDraft(wrapper)).toBeNull();
+    expect(wrapper.find('[data-testid="lookup-editor-commit"]').exists()).toBe(false);
+    await openEditor(wrapper);
+    expect(lastDraft(wrapper)).toEqual(conditionValue);
   });
 
   it("取消恢复原值并向父层恢复原来源表", async () => {

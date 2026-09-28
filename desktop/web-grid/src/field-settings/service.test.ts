@@ -677,7 +677,11 @@ describe("field settings service", () => {
     resolveFirst({ cell: { value: ["stale"] } });
     await vi.advanceTimersByTimeAsync(250);
     expect(store.lookupPreview.value).toEqual([false, 0, ""]);
+    service.previewLookupDraft(lookup);
+    const requestsBeforeCancellation = request.mock.calls.length;
     service.previewLookupDraft(null);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(request).toHaveBeenCalledTimes(requestsBeforeCancellation);
     expect(store.lookupPreview.ready).toBe(false);
     let resolveLate!: (value: unknown) => void;
     request.mockImplementationOnce(() => new Promise(resolve => { resolveLate = resolve; }));
