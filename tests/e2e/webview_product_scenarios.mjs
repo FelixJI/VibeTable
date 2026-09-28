@@ -2627,7 +2627,7 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
       sorts: [{ field: deadlineField.physicalName, direction: "asc" }], offset: 0, limit: 100 },
   });
   recorder.check("date-chain sorting and filtering share the grid clock snapshot",
-    filtered.payload.rows.length === 1 && typeof filtered.payload.querySnapshot.clockPeriod === "string"
+    filtered.payload.rows.length === 1 && typeof filtered.payload.snapshot.clockPeriod === "string"
       && filtered.payload.rows[0][deadlineField.physicalName] === "2024-02-29T00:00:00Z");
   await chooseToolbarMore(page, "refresh");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "05-formula-date-grid.png"), fullPage: true });

@@ -31,3 +31,11 @@
 打开/切换工作区时立即检查；运行中每秒只比较一次本机墙钟分钟，只有分钟变化才检查公式定义。睡眠恢复后的首个检查校准当前时间；TODAY 只在所选时区日期变化时过期。关闭工作区取消并等待其任务及定时器，不向其他工作区写回。
 
 验证入口：`go test ./internal/formula ./internal/relatedcomputation`，集成 `TestFormulaClock*`（101 行跨批次、跨分钟/日、时钟回拨、恢复与关闭），正式包 S05 `05-formula-lifecycle`（离线编辑/预览/保存、日期链、排序筛选、CSV 与真实关闭重开）。完整门禁仍以相应 PR 的 required 结果为准；本文件不代替提交绑定的验收证据。
+
+## 真实包界面证据
+
+S05 在离线 WPF/WebView2 中覆盖日期链的创建、预览、保存、重算、数字/日期筛选排序、CSV 导出和重开。完整报告与源提交绑定见 [PR #399](https://github.com/FelixJI/VibeTable/pull/399)。
+
+![DATEDIFF 整数预览](../assets/screenshots/formula-date-difference-preview.png)
+
+![TEXT 日期格式预览](../assets/screenshots/formula-date-text-preview.png)
