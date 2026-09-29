@@ -190,14 +190,48 @@ func TestCollectionRuntimeTableSourceBoundaries(t *testing.T) {
 	})
 }
 
+func TestCollectionResourceFailureReasons(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		limits Limits
+		cancel bool
+	}{
+		{"cost", Limits{Cost: 1}, false},
+		{"cancelled", DefaultLimits(), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan, err := NewCompiler(test.limits).CompileExecutionTable(collectionRuntimeDefinition(numberType,
+				`IFERROR(SUM(PROJECT(TABLE("shipments"), CurrentValue.amount)), 7.0)`, scalarField("amount_id", "amount", numberType)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := WithCollectionSourceReader(parent, func(ctx context.Context, _ CollectionReadRequest, yield func(map[string]any) error) error {
+				if test.cancel {
+					cancel()
+				}
+				return yield(map[string]any{"amount": 1.0})
+			})
+			_, failure := plan.Evaluate(ctx, map[string]any{"contract": "A"}, nil)
+			assertFormulaCode(t, failure, "formula.resource_limit")
+			if failure.Details["reason"] != test.name || failure.Details["evaluationFieldId"] != "runtime_id" {
+				t.Fatalf("failure details = %#v", failure.Details)
+			}
+		})
+	}
+}
 func TestCollectionDeadlineBoundsSourceReadAndCannotBeCaught(t *testing.T) {
 	for _, test := range []struct {
 		name                  string
 		timeout, parent, want time.Duration
+		ignoreCancellation    bool
 	}{
-		{"production default", 0, 0, 50 * time.Millisecond},
-		{"explicit budget", time.Second, 0, time.Second},
-		{"earlier parent", time.Second, 250 * time.Millisecond, 250 * time.Millisecond},
+		{"production default", 0, 0, 250 * time.Millisecond, false},
+		{"explicit budget", time.Second, 0, time.Second, false},
+		{"earlier parent", 0, 50 * time.Millisecond, 50 * time.Millisecond, false},
+		{"earlier custom parent", time.Second, 250 * time.Millisecond, 250 * time.Millisecond, false},
+		{"reader returns success after deadline", 0, 0, 250 * time.Millisecond, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -227,6 +261,9 @@ func TestCollectionDeadlineBoundsSourceReadAndCannotBeCaught(t *testing.T) {
 					if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 						t.Errorf("source cancellation = %v", ctx.Err())
 					}
+					if test.ignoreCancellation {
+						return nil
+					}
 					return ctx.Err()
 				})
 				_, evalErr := plan.Evaluate(ctx, map[string]any{"contract": "A"}, nil)
@@ -234,6 +271,9 @@ func TestCollectionDeadlineBoundsSourceReadAndCannotBeCaught(t *testing.T) {
 					t.Fatal("source reader was not reached")
 				}
 				assertFormulaCode(t, evalErr, "formula.resource_limit")
+				if evalErr.Details["reason"] != "deadline" {
+					t.Fatalf("deadline details = %#v", evalErr.Details)
+				}
 			})
 		})
 	}
@@ -286,5 +326,23 @@ func TestCollectionCalendarDatesFromProductRowsAndLookup(t *testing.T) {
 		if failure != nil || result["runtime_value"] != "2026-03-05T00:00:00Z" {
 			t.Fatalf("%s = %#v, %v", source, result, failure)
 		}
+	}
+}
+
+func TestCollectionResourceFailureKeepsSourceField(t *testing.T) {
+	plan, err := NewCompiler(DefaultLimits()).CompileExecutionTable(collectionRuntimeDefinition(numberType,
+		`IFERROR(SUM(PROJECT(TABLE("shipments"), CurrentValue.amount)), 7.0)`, scalarField("amount_id", "amount", numberType)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithCollectionSourceReader(context.Background(), func(context.Context, CollectionReadRequest, func(map[string]any) error) error {
+		return formulaError("formula.resource_limit", "nested source exhausted its cost", map[string]any{
+			"reason": "cost", "evaluationFieldId": "source_formula_id",
+		})
+	})
+	_, failure := plan.Evaluate(ctx, map[string]any{"contract": "A"}, nil)
+	assertFormulaCode(t, failure, "formula.resource_limit")
+	if failure.Details["evaluationFieldId"] != "source_formula_id" || failure.Details["reason"] != "cost" {
+		t.Fatalf("source details replaced: %#v", failure.Details)
 	}
 }

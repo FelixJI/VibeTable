@@ -137,7 +137,7 @@ func (plan *Plan) Evaluate(
 	changedFieldIDs []string,
 ) (map[string]any, *Error) {
 	if ctx.Err() != nil {
-		return nil, formulaError("formula.resource_limit", "formula evaluation was cancelled", nil)
+		return nil, formulaError("formula.resource_limit", "formula evaluation was cancelled", map[string]any{"reason": evaluationResourceReason(ctx.Err())})
 	}
 	ctx = EnsureEvaluationTime(ctx)
 	// Recursive computed sources share this read-only snapshot. A fresh root
@@ -182,6 +182,12 @@ func (plan *Plan) Evaluate(
 		}
 		value, err := formula.evaluate(ctx, activation)
 		if err != nil {
+			if err.Details == nil {
+				err.Details = map[string]any{}
+			}
+			if _, identified := err.Details["evaluationFieldId"]; !identified {
+				err.Details["evaluationFieldId"] = formula.FieldID
+			}
 			return nil, err
 		}
 		// Outputs are wire values (timestamps are RFC3339 strings); subsequent
@@ -220,6 +226,17 @@ func (plan *Plan) impacted(changedFieldIDs []string) map[string]struct{} {
 	return impacted
 }
 
+// A cost failure has no context error; deadline and caller cancellation remain
+// distinct without changing the public formula.resource_limit code.
+func evaluationResourceReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	return "cost"
+}
 func (formula *CompiledFormula) evaluate(
 	parent context.Context,
 	activation map[string]any,
@@ -242,7 +259,7 @@ func (formula *CompiledFormula) evaluate(
 		message := err.Error()
 		switch {
 		case ctx.Err() != nil || strings.Contains(message, "cost limit exceeded"):
-			return nil, formulaError("formula.resource_limit", "formula evaluation exceeded its resource limit", nil)
+			return nil, formulaError("formula.resource_limit", "formula evaluation exceeded its resource limit", map[string]any{"reason": evaluationResourceReason(ctx.Err())})
 		case strings.Contains(strings.ToLower(message), "divide by zero"):
 			return nil, formulaError("formula.divide_by_zero", "formula divided by zero", nil)
 		case strings.Contains(strings.ToLower(message), "overflow"):
