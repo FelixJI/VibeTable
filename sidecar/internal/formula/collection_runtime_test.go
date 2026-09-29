@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -189,6 +190,54 @@ func TestCollectionRuntimeTableSourceBoundaries(t *testing.T) {
 	})
 }
 
+func TestCollectionDeadlineBoundsSourceReadAndCannotBeCaught(t *testing.T) {
+	for _, test := range []struct {
+		name                  string
+		timeout, parent, want time.Duration
+	}{
+		{"production default", 0, 0, 50 * time.Millisecond},
+		{"explicit budget", time.Second, 0, time.Second},
+		{"earlier parent", time.Second, 250 * time.Millisecond, 250 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				plan, err := NewCompiler(Limits{EvalTimeout: test.timeout}).CompileExecutionTable(collectionRuntimeDefinition(numberType,
+					`IFERROR(SUM(PROJECT(TABLE("shipments"), CurrentValue.amount)), 7.0)`,
+					scalarField("amount_id", "amount", numberType)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				parent := context.Background()
+				if test.parent != 0 {
+					var cancel context.CancelFunc
+					parent, cancel = context.WithTimeout(parent, test.parent)
+					defer cancel()
+				}
+				started := time.Now()
+				read := false
+				ctx := WithCollectionSourceReader(parent, func(ctx context.Context, _ CollectionReadRequest, _ func(map[string]any) error) error {
+					read = true
+					deadline, bounded := ctx.Deadline()
+					if !bounded || !deadline.Equal(started.Add(test.want)) {
+						t.Fatalf("source deadline = %v, bounded = %v; want %v", deadline, bounded, started.Add(test.want))
+					}
+					// Virtual time advances only while this reader is blocked:
+					// race instrumentation and OS scheduling cannot spend the budget.
+					<-ctx.Done()
+					if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						t.Errorf("source cancellation = %v", ctx.Err())
+					}
+					return ctx.Err()
+				})
+				_, evalErr := plan.Evaluate(ctx, map[string]any{"contract": "A"}, nil)
+				if !read {
+					t.Fatal("source reader was not reached")
+				}
+				assertFormulaCode(t, evalErr, "formula.resource_limit")
+			})
+		})
+	}
+}
 func TestCollectionRuntimeChargesValueListBytesAgainstSharedBudget(t *testing.T) {
 	limits := DefaultLimits()
 	limits.CollectionBytes = 48

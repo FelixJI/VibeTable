@@ -51,7 +51,7 @@ func TestFormulaCollectionAuthoritativeSourceAndSchemaDependencies(t *testing.T)
 	}
 	row := core.NewRecord(collection)
 	row.Set(code.Definition.Identity.PhysicalName, "A")
-	calculator := computed.New(formula.NewCalculator(nil))
+	calculator := computed.New(formula.NewCalculator(formula.NewCompiler(formula.Limits{EvalTimeout: collectionTestEvalTimeout})))
 	check := func(want float64) {
 		t.Helper()
 		// Every Calculate is a new root: load source metadata once during

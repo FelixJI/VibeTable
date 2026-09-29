@@ -66,7 +66,7 @@ func (evaluator *sourceEvaluator) read(ctx context.Context, app core.App, tableI
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, formula.DefaultEvalTimeout)
+	ctx, cancel := context.WithTimeout(ctx, formula.CompilerFor(app).EvaluationTimeout())
 	defer cancel()
 	evaluator.visiting[key] = true
 	defer delete(evaluator.visiting, key)

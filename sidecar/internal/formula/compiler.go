@@ -80,6 +80,11 @@ func NewCompiler(limits Limits) *Compiler {
 	return compiler
 }
 
+// EvaluationTimeout is the normalized budget shared by recursive source reads.
+func (compiler *Compiler) EvaluationTimeout() time.Duration {
+	return compiler.limits.EvalTimeout
+}
+
 type CompiledFormula struct {
 	ClockReferences        []ClockReference
 	FieldID                string

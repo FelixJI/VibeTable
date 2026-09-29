@@ -36,9 +36,18 @@ func TestCollectionFanoutConvergesAcrossSameTableComputedDAG(t *testing.T) {
 	service := jobs.New(app, nil)
 	defer service.Shutdown()
 	kernel := mutation.New(app, mutation.MetadataSchemaSource{},
-		mutation.WithFormulaCalculator(computed.New(formula.NewCalculator(formula.NewAppCompiler(app)))),
+		mutation.WithFormulaCalculator(computed.New(formula.NewCalculator(formula.NewAppCompilerWithLimits(app, formula.Limits{EvalTimeout: collectionTestEvalTimeout})))),
 		mutation.WithComputationInvalidator(service))
 	service.SetKernel(kernel)
+	// Job errors are intentionally sanitized. Retain the kernel's original
+	// failure in this synthetic integration fixture for CI diagnosis.
+	service.SetBusinessWriteGate(func(ctx context.Context, kind, identity string, apply func(context.Context) error) error {
+		err := apply(ctx)
+		if err != nil {
+			t.Logf("fanout batch %s %s: %T: %v", kind, identity, err, err)
+		}
+		return err
+	})
 	apply := func(tableID, key string, operation mutation.Operation) mutation.Receipt {
 		t.Helper()
 		definition, err := schemaapi.New(app).Describe(ctx, tableID)

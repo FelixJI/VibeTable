@@ -18,7 +18,14 @@ const appCompilerKey = "vibetable.formula.compiler"
 // serving requests or opening transactions. The PocketBase store is shared by
 // transaction clones, while the authority reader stays bound to the root app.
 func NewAppCompiler(app core.App) *Compiler {
-	compiler := NewCompiler(DefaultLimits())
+	return NewAppCompilerWithLimits(app, DefaultLimits())
+}
+
+// NewAppCompilerWithLimits shares one explicit budget with app and transaction
+// callers. Production uses NewAppCompiler; instrumented tests can isolate
+// correctness from wall-clock throughput without changing the default budget.
+func NewAppCompilerWithLimits(app core.App, limits Limits) *Compiler {
+	compiler := NewCompiler(limits)
 	compiler.cache.currentRevision = func(tableID string) (string, error) {
 		record, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": tableID})
 		if errors.Is(err, sql.ErrNoRows) {

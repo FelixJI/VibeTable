@@ -77,7 +77,11 @@ empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第
 本次覆盖 46 个有测试包、575 个当前源码中的命名测试和 3 个无命名测试包；历史
 报告来自不同源码版本，测试数量不可直接做增减比较，该次变更本身未删除测试。
 
-当前默认每 lane 一个 worker。集合公式保留 50ms 求值预算；一次固定四逻辑 CPU 的同二进制对照中，301 行求值从串行约 31ms 增至三进程并发约 44–52ms。串行包调度隔离无关进程竞争，代价是 lane 可能变慢；该对照没有复现 CI 失败，最终仍须完整 CI 验收，不降低测试数量、断言、预算或超时。
+当前默认每 lane 一个 worker。一次固定四逻辑 CPU 的同二进制对照中，301 行求值从串行约 31ms 增至三进程并发约 44–52ms。串行包调度隔离无关进程竞争，代价是 lane 可能变慢；该对照没有复现 CI 失败，串行调度后的 CI 仍发生集合公式超时。
+
+产品默认求值预算保持 50ms，含 TABLE 来源读取和递归计算。301 行完整来源与同表 DAG fanout 测试在普通 Go CI 使用此默认预算；race 构建仅对这两个功能场景通过既有 `Limits` 注入有限 1s 预算。依据 [Go 官方 race 开销说明](https://go.dev/doc/articles/race_detector#Runtime_Overhead) 的典型 2–20 倍运行时开销，插桩正确性测试与普通构建的产品预算验证分别执行；数据规模、结果、依赖、freshness 和收敛断言不变，cost/内存预算不变。应用 compiler 和递归来源读取共享同一注入预算，更早的父 deadline 仍优先。
+
+formula 包在普通和 race CI 均验证真实默认 50ms deadline 会传给来源 reader、到期会取消且不能被 IFERROR 吞掉；使用 Go 标准库 `testing/synctest` 的虚拟时钟精确检查默认、自定义与更早父 deadline 和取消结果，避免插桩或调度消耗测试时间预算。其余取消、cost、内存契约和全部 race 测试继续运行，最终仍以完整 CI 为准。
 
 ## Fault injection
 
