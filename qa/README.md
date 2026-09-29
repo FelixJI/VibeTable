@@ -55,8 +55,8 @@ PocketBase 的每个集成测试 app 会启动文件系统 watcher。为避免�
 
 1. 动态枚举 `go list ./...` 返回的全部包及其源码目录；
 2. 对每个包动态枚举 `Test`、`Example` 与默认执行的 `Fuzz` seed；
-3. 每个包只用 `go test -c -race` 编译一次；最多三个包并行，不同包可以并行，
-   同一包内仍逐测试串行；
+3. 每个包只用 `go test -c -race` 编译一次；同一 lane 内只执行一个包，
+   避免其他包的编译/执行挤占公式墙钟预算；两条 race lane 仍在独立 runner 并行；
 4. Windows 上每个命名测试使用编译后 race 二进制的独立进程（仍为
    `-test.count=1 -test.parallel=1`），包括 migrations 与 integration，避免
    PocketBase 异步 watcher 与同一测试进程中的后续测试互相影响；包完成后立即
@@ -72,10 +72,12 @@ race 命令最多重试两次；识别条件严格限定为 `testing.go` 的 “
 empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第三次仍失败时
 一律失败。
 
-2026-08-04 的同机验证中，默认 Go cache 加三个 package worker 的完整 race 阶段
+历史基线：2026-08-04 的同机验证中，默认 Go cache 加三个 package worker 的完整 race 阶段
 耗时 815.219 秒（13.59 分钟），相对历史两个 worker 的 994.422 秒下降 18.02%。
 本次覆盖 46 个有测试包、575 个当前源码中的命名测试和 3 个无命名测试包；历史
-报告来自不同源码版本，测试数量不可直接做增减比较，本次变更本身未删除测试。
+报告来自不同源码版本，测试数量不可直接做增减比较，该次变更本身未删除测试。
+
+当前默认每 lane 一个 worker。集合公式保留 50ms 求值预算；一次固定四逻辑 CPU 的同二进制对照中，301 行求值从串行约 31ms 增至三进程并发约 44–52ms。串行包调度隔离无关进程竞争，代价是 lane 可能变慢；该对照没有复现 CI 失败，最终仍须完整 CI 验收，不降低测试数量、断言、预算或超时。
 
 ## Fault injection
 

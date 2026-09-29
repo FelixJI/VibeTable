@@ -65,7 +65,9 @@ RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
 RACE_LONG_COMMAND_TIMEOUT_SECONDS = 16 * 60
 RACE_LONG_TEST_TIMEOUT = "15m"
 RACE_BINARY_DIR = REPO_ROOT / "build" / "qa" / "race-tests"
-RACE_PACKAGE_WORKERS = 3
+# Formula wall-clock budgets must not compete with unrelated race processes.
+# Race lanes remain parallel on separate runners; each lane retains every test.
+RACE_PACKAGE_WORKERS = 1
 # Candidate-bound timings from successful PR run 31102199882. They only guide
 # scheduling; new packages safely fall back to discovered test counts.
 RACE_PACKAGE_SECONDS = {

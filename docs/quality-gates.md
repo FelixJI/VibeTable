@@ -42,8 +42,8 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   报告记录该固定提交；保留工作区及未跟踪 Go 文件的差异，不计入仅在后续 main 上出现的改动。
 - Web：现阶段以全量 Vitest + typecheck + production build 为主；建议后续在覆盖率稳定后按核心 service/store 设置增量阈值，不宜立即用全局高阈值阻断 UI 重构。
 - Go race：价值高且成本显著。当前 GitHub PR 的完整 release smoke 会执行 `race-a` 与
-  `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、以三个
-  package worker 执行，但每个包内仍逐测试独立进程串行；不减少测试、不关闭 race detector。
+  `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、每条 lane 以一个
+  package worker 串行执行，避免无关进程挤占公式墙钟预算；两条 lane 仍并行，包内逐测试独立进程，不减少测试或关闭 race detector。
 - 产品 E2E：必须作为发布证据，但依赖真实 Windows/WebView2 桌面会话，不伪装成 Ubuntu 单元门禁。
 
 2026-07-31 的同机全量基线中，优化后的 Go race 覆盖 46 个有测试包、582 个命名
@@ -51,7 +51,7 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 69.12 分钟。若同规格 runner 连续三次超过 25 分钟，应先检查 package worker、
 Go build cache 与临时二进制清理，不得通过跳过测试或放宽 race 门禁恢复速度。
 
-2026-08-04 在同机启用三个 package worker，并让 QA 继承 Go 默认 build cache 后，
+历史基线：2026-08-04 在同机启用三个 package worker，并让 QA 继承 Go 默认 build cache 后，
 完整 race 阶段为 815.219 秒（13.59 分钟），较两个 worker 报告的 994.422 秒下降
 18.02%。该次覆盖 46 个有测试包、575 个当前源码命名测试和 3 个无命名测试包；
 两个报告对应不同源码提交，数量只用于证明当次完整枚举，不能作为测试删减比较。
