@@ -683,7 +683,7 @@ export interface ProductErrorPayload {
 }
 
 export interface FormulaDefinition {
-  readonly language: "cel-v1";
+  readonly language: "cel-v1" | "cel-v2";
   readonly source: string;
   readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate">;
   readonly version: number;
@@ -772,6 +772,8 @@ export interface FormulaFunctionInfo {
 }
 
 export interface FormulaDraftValidationResult {
+  readonly language?: "cel-v1" | "cel-v2";
+  readonly resultElementType?: "number" | "bool" | "text" | "dateTime";
   readonly authorDocument?: FormulaAuthorDocument;
   readonly functions?: readonly FormulaFunctionInfo[];
   readonly canonicalSource: string;

@@ -216,3 +216,88 @@ describe("tokenDocument edits", () => {
     expect(tokenSpans(edited)[0]).toMatchObject({ start: 6, end: 10 });
   });
 });
+
+describe("tokenDocument token identity validation", () => {
+  const span = (start: number, end: number) => ({
+    start: { line: 0, character: start },
+    end: { line: 0, character: end },
+  });
+
+  it("accepts table and sourceField tokens with closed identities", () => {
+    expect(isFormulaAuthorDocument({
+      displaySource: "TABLE({出货}) + CurrentValue.{金额}",
+      documentRevision: 2,
+      tokens: [
+        {
+          range: span(6, 10),
+          kind: "table",
+          fieldId: null,
+          tableId: "tbl_ship",
+          relationFieldId: null,
+          targetFieldId: null,
+        },
+        {
+          range: span(27, 31),
+          kind: "sourceField",
+          fieldId: "fld_amount",
+          tableId: "tbl_ship",
+          relationFieldId: null,
+          targetFieldId: null,
+        },
+      ],
+    })).toBe(true);
+    // Old relation identities keep passing unchanged.
+    expect(isFormulaAuthorDocument({
+      displaySource: "SUM({明细}.{金额})",
+      documentRevision: 1,
+      tokens: [{
+        range: span(4, 13),
+        kind: "relationTarget",
+        fieldId: "fld_amount",
+        relationFieldId: "fld_lines",
+        targetFieldId: "fld_amount",
+      }],
+    })).toBe(true);
+  });
+
+  it("rejects mixed kind/fieldId/tableId combinations", () => {
+    const cases: unknown[] = [
+      // table tokens must not carry a fieldId and require tableId.
+      { range: span(6, 10), kind: "table", fieldId: "fld_x", tableId: "tbl_ship", relationFieldId: null, targetFieldId: null },
+      { range: span(6, 10), kind: "table", fieldId: null, relationFieldId: null, targetFieldId: null },
+      // sourceField tokens need both identities.
+      { range: span(6, 10), kind: "sourceField", fieldId: "fld_x", tableId: null, relationFieldId: null, targetFieldId: null },
+      { range: span(6, 10), kind: "sourceField", fieldId: "fld_x", relationFieldId: null, targetFieldId: null },
+      // Old kinds must not mix in a tableId or drop their field identity.
+      { range: span(6, 10), kind: "field", fieldId: "fld_x", tableId: "tbl_ship", relationFieldId: null, targetFieldId: null },
+      { range: span(6, 10), kind: "field", fieldId: null, relationFieldId: null, targetFieldId: null },
+      { range: span(6, 10), kind: "relationTarget", fieldId: "fld_x", relationFieldId: "fld_lines", targetFieldId: null },
+    ];
+    for (const token of cases) {
+      expect(isFormulaAuthorDocument({
+        displaySource: "TABLE({出货})",
+        documentRevision: 1,
+        tokens: [token],
+      })).toBe(false);
+    }
+  });
+
+  it("rejects unknown token fields, bad kinds, and malformed ranges", () => {
+    const cases: unknown[] = [
+      { range: span(0, 4), kind: "field", fieldId: "fld_price", relationFieldId: null, targetFieldId: null, physicalName: "f_price" },
+      { range: span(0, 4), kind: "cursor", fieldId: "fld_price", relationFieldId: null, targetFieldId: null },
+      { range: span(0, 99), kind: "field", fieldId: "fld_price", relationFieldId: null, targetFieldId: null },
+      { range: span(4, 0), kind: "field", fieldId: "fld_price", relationFieldId: null, targetFieldId: null },
+      { range: span(0, 0), kind: "field", fieldId: "fld_price", relationFieldId: null, targetFieldId: null },
+      { range: { start: { line: 3, character: 0 }, end: { line: 3, character: 1 } }, kind: "field", fieldId: "fld_price", relationFieldId: null, targetFieldId: null },
+      { range: { start: { line: 0, character: 0 } }, kind: "field", fieldId: "fld_price", relationFieldId: null, targetFieldId: null },
+    ];
+    for (const token of cases) {
+      expect(isFormulaAuthorDocument({
+        displaySource: "{单价} + 1",
+        documentRevision: 1,
+        tokens: [token],
+      })).toBe(false);
+    }
+  });
+});

@@ -371,7 +371,8 @@ public sealed record FormulaAuthorToken
 {
     [JsonRequired, JsonPropertyName("range")] public required FormulaTextRange Range { get; init; }
     [JsonRequired, JsonPropertyName("kind")] public required string Kind { get; init; }
-    [JsonRequired, JsonPropertyName("fieldId")] public required string FieldId { get; init; }
+    [JsonRequired, JsonPropertyName("fieldId")] public required string? FieldId { get; init; }
+    [JsonPropertyName("tableId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? TableId { get; init; }
     [JsonRequired, JsonPropertyName("relationFieldId")] public required string? RelationFieldId { get; init; }
     [JsonRequired, JsonPropertyName("targetFieldId")] public required string? TargetFieldId { get; init; }
 }

@@ -22,14 +22,20 @@ func Validate(ctx context.Context, candidate schemaexecution.Table, resolve func
 	}
 	candidate = activeTable(candidate)
 	compiler := formula.NewCompiler(formula.DefaultLimits())
-	formulas, err := compiler.CompileExecutionTable(candidate)
-	if err != nil {
-		return err
-	}
 	builder := graphBuilder{
 		ctx: ctx, resolve: resolve, compiler: compiler,
 		tables:   map[string]schemaexecution.Table{candidate.Snapshot.TableID: candidate},
 		compiled: map[node]*formula.CompiledFormula{}, state: map[node]uint8{},
+	}
+	var sourceErr error
+	candidate, sourceErr = formula.ResolveCollectionSchemas(ctx, candidate, func(_ context.Context, id string) (schemaexecution.Table, error) { return builder.table(id) })
+	if sourceErr != nil {
+		return sourceErr
+	}
+	builder.tables[candidate.Snapshot.TableID] = candidate
+	formulas, compileErr := compiler.CompileExecutionTable(candidate)
+	if compileErr != nil {
+		return compileErr
 	}
 	for _, compiled := range formulas.Formulas {
 		builder.compiled[node{candidate.Snapshot.TableID, compiled.FieldID}] = compiled
@@ -44,15 +50,34 @@ func Validate(ctx context.Context, candidate schemaexecution.Table, resolve func
 	return nil
 }
 
+// FieldReference identifies one schema-declared computed field.
+type FieldReference struct{ TableID, FieldID string }
+
+// OrderedDependencies reuses schema validation's graph and returns only the
+// requested computed closure, dependencies before consumers.
+func OrderedDependencies(ctx context.Context, candidate schemaexecution.Table, fieldID string, resolve func(context.Context, string) (schemaexecution.Table, error), compiler *formula.Compiler) ([]FieldReference, error) {
+	builder := graphBuilder{
+		ctx: ctx, resolve: resolve, compiler: compiler, reusePlans: true,
+		tables:   map[string]schemaexecution.Table{candidate.Snapshot.TableID: activeTable(candidate)},
+		compiled: map[node]*formula.CompiledFormula{}, state: map[node]uint8{},
+	}
+	if err := builder.visit(node{candidate.Snapshot.TableID, fieldID}); err != nil {
+		return nil, err
+	}
+	return builder.order, nil
+}
+
 type node struct{ tableID, fieldID string }
 type graphBuilder struct {
-	ctx      context.Context
-	resolve  func(context.Context, string) (schemaexecution.Table, error)
-	compiler *formula.Compiler
-	tables   map[string]schemaexecution.Table
-	compiled map[node]*formula.CompiledFormula
-	state    map[node]uint8
-	stack    []node
+	ctx        context.Context
+	resolve    func(context.Context, string) (schemaexecution.Table, error)
+	compiler   *formula.Compiler
+	reusePlans bool
+	tables     map[string]schemaexecution.Table
+	compiled   map[node]*formula.CompiledFormula
+	state      map[node]uint8
+	stack      []node
+	order      []FieldReference
 }
 
 func activeTable(table schemaexecution.Table) schemaexecution.Table {
@@ -132,22 +157,49 @@ func (builder *graphBuilder) visit(key node) error {
 	}
 	builder.stack = builder.stack[:len(builder.stack)-1]
 	builder.state[key] = 2
+	builder.order = append(builder.order, FieldReference{key.tableID, key.fieldID})
 	return nil
 }
 
 func (builder *graphBuilder) formulaDependencies(key node, table schemaexecution.Table, field v2.FieldDefinition) ([]node, error) {
 	compiled := builder.compiled[key]
 	if compiled == nil {
-		var err *formula.Error
-		compiled, err = builder.compiler.Compile(table, field)
-		if err != nil {
-			return nil, err
+		resolved, sourceErr := formula.ResolveCollectionSchemas(builder.ctx, table, func(_ context.Context, id string) (schemaexecution.Table, error) { return builder.table(id) })
+		if sourceErr != nil {
+			return nil, sourceErr
 		}
-		builder.compiled[key] = compiled
+		if builder.reusePlans {
+			// Runtime schemas already passed validation. Reuse evaluation's
+			// schema-keyed plan instead of recompiling recursive sources.
+			plan, err := builder.compiler.CompileExecutionTable(resolved)
+			if err != nil {
+				return nil, err
+			}
+			for _, formula := range plan.Formulas {
+				builder.compiled[node{key.tableID, formula.FieldID}] = formula
+			}
+			compiled = builder.compiled[key]
+			if compiled == nil {
+				return nil, graphError("schema.computation.target_not_found", "computed formula is unavailable", nil)
+			}
+		} else {
+			// Candidate validation visits only reachable target fields.
+			var err *formula.Error
+			compiled, err = builder.compiler.Compile(resolved, field)
+			if err != nil {
+				return nil, err
+			}
+			builder.compiled[key] = compiled
+		}
 	}
 	dependencies := make([]node, 0, len(compiled.Dependencies))
 	for _, id := range compiled.Dependencies {
 		dependencies = append(dependencies, node{key.tableID, id})
+	}
+	for _, dependency := range compiled.CollectionDependencies {
+		if dependency.FieldID != "__path__" {
+			dependencies = append(dependencies, node{dependency.TableID, dependency.FieldID})
+		}
 	}
 	// COUNT(relation) depends on relation membership only, not on any target value.
 	references := append(append([]string(nil), compiled.ReferencePaths...), compiled.RelationAggregatePaths...)

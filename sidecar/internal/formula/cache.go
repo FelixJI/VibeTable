@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -45,7 +46,19 @@ func (cache *planCache) get(definition schemaexecution.Table) (*Plan, error) {
 	// statuses. Data-only writes must not invalidate the compiled definition.
 	snapshot := definition.Snapshot
 	snapshot.DataRevision = 0
-	raw, err := json.Marshal(snapshot)
+	var cacheDefinition any = snapshot
+	if len(definition.FormulaSources) > 0 {
+		sources := make(map[string]v2.SchemaSnapshot, len(definition.FormulaSources))
+		for id, source := range definition.FormulaSources {
+			source.DataRevision = 0
+			sources[id] = source
+		}
+		cacheDefinition = struct {
+			Schema  v2.SchemaSnapshot
+			Sources map[string]v2.SchemaSnapshot
+		}{snapshot, sources}
+	}
+	raw, err := json.Marshal(cacheDefinition)
 	if err != nil {
 		return nil, fmt.Errorf("encode formula definition: %w", err)
 	}

@@ -140,6 +140,13 @@ func (plan *Plan) Evaluate(
 		return nil, formulaError("formula.resource_limit", "formula evaluation was cancelled", nil)
 	}
 	ctx = EnsureEvaluationTime(ctx)
+	// Recursive computed sources share this read-only snapshot. A fresh root
+	// still owns a fresh cache; hits retain the normal cost and byte charges.
+	if _, exists := ctx.Value(collectionReadCacheKey{}).(*collectionReadCache); !exists {
+		ctx = context.WithValue(ctx, collectionReadCacheKey{}, &collectionReadCache{
+			remaining: plan.limits.CollectionBytes, entries: map[string]collectionReadEntry{},
+		})
+	}
 	activation := make(map[string]any, len(row)+1)
 	activation[clockActivationName] = EvaluationTime(ctx)
 	for key, value := range row {
@@ -219,7 +226,18 @@ func (formula *CompiledFormula) evaluate(
 ) (any, *Error) {
 	ctx, cancel := context.WithTimeout(parent, formula.limits.EvalTimeout)
 	defer cancel()
-	result, _, err := formula.program.ContextEval(ctx, activation)
+	ctx, activation, collectionFailure := formula.collectionActivation(ctx, activation)
+	result, details, err := formula.program.ContextEval(ctx, activation)
+	if *collectionFailure != nil {
+		return nil, *collectionFailure
+	}
+	if evaluation, ok := ctx.Value(collectionEvaluationKey{}).(*collectionEvaluation); ok {
+		if cost := details.ActualCost(); cost != nil {
+			if failure := evaluation.charge(ctx, *cost); failure != nil {
+				return nil, failure
+			}
+		}
+	}
 	if err != nil {
 		message := err.Error()
 		switch {
@@ -271,6 +289,18 @@ func (formula *CompiledFormula) hasNullDependency(activation map[string]any) boo
 }
 
 func (formula *CompiledFormula) validateRuntimeResult(value any) *Error {
+	if formula.ResultType.ElementType != "" {
+		values, err := collectionValues(value)
+		if err != nil {
+			return err
+		}
+		for _, item := range values {
+			if _, err := collectionCanonicalElement(item, formula.ResultType.ElementType); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	switch formula.ResultType.LogicalType {
 	case v2.LogicalNumber:
 		if formula.ResultType.OnlyInt {
@@ -377,7 +407,7 @@ func normalizeInput(
 		case pbtypes.DateTime:
 			return typed.Time().UTC(), nil
 		case string:
-			parsed, err := time.Parse(time.RFC3339Nano, typed)
+			parsed, err := parseFormulaTimestamp(typed, valueType.LogicalType)
 			if err != nil {
 				return nil, formulaError("formula.timezone", "timestamp input must be RFC3339 with an explicit timezone", map[string]any{
 					"fieldId": field.Identity.FieldID,
@@ -402,7 +432,21 @@ func normalizeInput(
 		}
 		value = decoded
 	}
-	return normalizeDynamicInput(value, limits, 0, field.Identity.FieldID)
+	normalized, failure := normalizeDynamicInput(value, limits, 0, field.Identity.FieldID)
+	if failure != nil || valueType.ElementType == "" {
+		return normalized, failure
+	}
+	values, failure := collectionValues(normalized)
+	if failure != nil {
+		return nil, failure
+	}
+	for index, item := range values {
+		values[index], failure = collectionCanonicalElement(item, valueType.ElementType)
+		if failure != nil {
+			return nil, failure
+		}
+	}
+	return values, nil
 }
 
 func normalizeDynamicInput(value any, limits Limits, depth int, fieldID string) (any, *Error) {
@@ -622,4 +666,18 @@ func (plan *Plan) String() string {
 		names = append(names, formula.PhysicalName)
 	}
 	return fmt.Sprintf("formula plan [%s]", strings.Join(names, ", "))
+}
+
+// Product date fields carry a calendar date; timestamp fields require a zone.
+func parseFormulaTimestamp(value string, logicalType v2.LogicalType) (time.Time, error) {
+	// Explicit offsets need no system location (or its Windows cold initialization).
+	parsed, err := time.ParseInLocation(time.RFC3339Nano, value, time.UTC)
+	if err != nil {
+		// QueryPort exposes the provider timestamp spelling with an explicit Z.
+		parsed, err = time.Parse(pbtypes.DefaultDateLayout, value)
+	}
+	if err != nil && logicalType == v2.LogicalDate {
+		return time.Parse("2006-01-02", value)
+	}
+	return parsed, err
 }

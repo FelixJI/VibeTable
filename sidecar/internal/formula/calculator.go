@@ -47,13 +47,27 @@ func (calculator *Calculator) Calculate(
 	definition schemaexecution.Table,
 	record *core.Record,
 ) (map[string]any, error) {
+	definition, sourceErr := LoadCollectionSchemas(ctx, app, definition)
+	if sourceErr != nil {
+		return nil, sourceErr
+	}
 	plan, err := calculator.plan(definition)
 	if err != nil {
 		return nil, err
 	}
+	if selected := EvaluationFields(ctx); selected != nil {
+		filtered := *plan
+		filtered.Formulas = nil
+		for _, compiled := range plan.Formulas {
+			if selected[compiled.FieldID] {
+				filtered.Formulas = append(filtered.Formulas, compiled)
+			}
+		}
+		plan = &filtered
+	}
 	row := make(map[string]any, len(definition.Snapshot.Fields))
 	aggregateTargets, countRelations := relationAggregateRequirements(plan)
-	referenceTargets := relationFieldReferences(plan)
+	referenceTargets := relationFieldReferences(plan, definition)
 	for _, field := range definition.Snapshot.Fields {
 		value := record.GetRaw(field.Identity.PhysicalName)
 		if field.LogicalType == v2.LogicalRelation && field.Relation != nil {
@@ -61,7 +75,7 @@ func (calculator *Calculator) Calculate(
 			recordIDs := relationRecordIDs(value)
 			targets, aggregates := aggregateTargets[field.Identity.PhysicalName]
 			_, counts := countRelations[field.Identity.PhysicalName]
-			if field.Relation.Cardinality != "one" && (aggregates || counts) {
+			if field.Relation.Cardinality != "one" && (aggregates || counts) && len(referenceTargets[field.Identity.PhysicalName]) == 0 {
 				value, err = calculator.resolveRelationAggregates(
 					ctx, app, field, recordIDs, targets,
 				)
@@ -476,9 +490,28 @@ func relationIDParams(ids []string) ([]string, dbx.Params) {
 	return placeholders, params
 }
 
-func relationFieldReferences(plan *Plan) map[string]map[string]bool {
+func relationFieldReferences(plan *Plan, definition schemaexecution.Table) map[string]map[string]bool {
 	references := map[string]map[string]bool{}
 	for _, compiled := range plan.Formulas {
+		for _, dependency := range compiled.CollectionDependencies {
+			if dependency.RelationFieldID == "" {
+				continue
+			}
+			relation, ok := definition.Field(dependency.RelationFieldID)
+			if !ok {
+				continue
+			}
+			name := relation.Identity.PhysicalName
+			if references[name] == nil {
+				references[name] = map[string]bool{}
+			}
+			references[name][""] = true // Membership itself requires the record range.
+			if source, ok := definition.FormulaSources[dependency.TableID]; ok {
+				if field, ok := schemaSnapshotField(source, dependency.FieldID); ok {
+					references[name][field.Identity.PhysicalName] = true
+				}
+			}
+		}
 		for _, path := range compiled.ReferencePaths {
 			parts := strings.Split(path, ".")
 			if len(parts) != 2 {

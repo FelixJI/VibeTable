@@ -46,7 +46,7 @@ func (source *Source) DescribeQueryTable(
 	app core.App,
 	tableID string,
 ) (query.TableDescriptor, error) {
-	descriptor, _, err := source.describeSelectionTable(ctx, app, tableID)
+	descriptor, _, err := source.describeSelectionTable(ctx, app, tableID, nil)
 	return descriptor, err
 }
 
@@ -58,13 +58,21 @@ func (source *Source) DescribeSelectionTable(
 	app core.App,
 	tableID string,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
-	return source.describeSelectionTable(ctx, app, tableID)
+	return source.describeSelectionTable(ctx, app, tableID, nil)
+}
+
+// DescribeResolvedSelectionTable uses a complete schema already resolved in
+// the caller's transaction. Descriptor typing, archive policy and computed
+// freshness follow exactly the same path as ordinary QueryPort selection.
+func (source *Source) DescribeResolvedSelectionTable(ctx context.Context, app core.App, table schemaexecution.Table) (query.TableDescriptor, v2.SchemaSnapshot, error) {
+	return source.describeSelectionTable(ctx, app, table.Snapshot.TableID, &table)
 }
 
 func (source *Source) describeSelectionTable(
 	ctx context.Context,
 	app core.App,
 	tableID string,
+	resolved *schemaexecution.Table,
 ) (query.TableDescriptor, v2.SchemaSnapshot, error) {
 	ctx = formula.EnsureEvaluationTime(ctx)
 	ctx = relatedcomputation.WithClockCache(ctx)
@@ -77,9 +85,15 @@ func (source *Source) describeSelectionTable(
 			Message: "query schema source is not configured",
 		}
 	}
-	table, err := schemaexecution.Describe(ctx, app, tableID)
-	if err != nil {
-		return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
+	var table schemaexecution.Table
+	if resolved != nil {
+		table = *resolved
+	} else {
+		var err error
+		table, err = schemaexecution.Describe(ctx, app, tableID)
+		if err != nil {
+			return query.TableDescriptor{}, v2.SchemaSnapshot{}, mapSchemaError(err)
+		}
 	}
 	fields, err := source.describeFields(ctx, app, table)
 	if err != nil {

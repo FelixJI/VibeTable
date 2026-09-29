@@ -279,7 +279,8 @@ type FormulaTextRange struct {
 type FormulaAuthorToken struct {
 	Range           FormulaTextRange `json:"range"`
 	Kind            string           `json:"kind"`
-	FieldId         string           `json:"fieldId"`
+	FieldId         *string          `json:"fieldId"`
+	TableId         *string          `json:"tableId,omitempty"`
 	RelationFieldId *string          `json:"relationFieldId"`
 	TargetFieldId   *string          `json:"targetFieldId"`
 }

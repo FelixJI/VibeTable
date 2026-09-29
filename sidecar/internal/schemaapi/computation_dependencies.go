@@ -8,6 +8,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -50,7 +51,9 @@ func (catalog *Catalog) replaceComputationDependencies(
 	for _, field := range definition.Snapshot.Fields {
 		fields[field.Identity.FieldID] = field
 	}
+	seenEdges := map[string]bool{}
 	for _, dependency := range formulaDependencies {
+		seenEdges[dependency.GetString("formula_field_id")+"/"+dependency.GetString("relation_field_id")+"/"+dependency.GetString("target_table_id")+"/"+dependency.GetString("target_field_id")] = true
 		field := fields[dependency.GetString("formula_field_id")]
 		if field.Formula == nil {
 			continue
@@ -66,6 +69,39 @@ func (catalog *Catalog) replaceComputationDependencies(
 			pathRaw, definition.FormulaRuntime[field.Identity.FieldID].Version,
 		); err != nil {
 			return err
+		}
+	}
+	enriched, sourceErr := formula.LoadCollectionSchemas(ctx, app, definition)
+	if sourceErr != nil {
+		return sourceErr
+	}
+	plan, compileErr := formula.CompilerFor(app).CompileExecutionTable(enriched)
+	if compileErr != nil {
+		return compileErr
+	}
+	for _, compiled := range plan.Formulas {
+		field := fields[compiled.FieldID]
+		for _, dependency := range compiled.CollectionDependencies {
+			key := compiled.FieldID + "/" + dependency.RelationFieldID + "/" + dependency.TableID + "/" + dependency.FieldID
+			if seenEdges[key] {
+				continue
+			}
+			seenEdges[key] = true
+			var pathRaw []byte
+			var err error
+			if dependency.RelationFieldID == "" {
+				pathRaw, err = json.Marshal(field.Formula)
+			} else {
+				pathRaw, err = json.Marshal([]v2.LookupPathStep{{RelationFieldID: dependency.RelationFieldID}})
+			}
+			if err != nil {
+				return err
+			}
+			if err := saveComputationDependency(app, collection, definition.Snapshot.TableID,
+				compiled.FieldID, "formula", dependency.RelationFieldID, dependency.TableID, dependency.FieldID,
+				pathRaw, max(definition.FormulaRuntime[compiled.FieldID].Version, 1)); err != nil {
+				return err
+			}
 		}
 	}
 	for _, field := range definition.Snapshot.Fields {

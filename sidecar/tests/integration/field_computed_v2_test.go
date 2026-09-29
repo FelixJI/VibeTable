@@ -117,7 +117,7 @@ func TestLookupConfigurationUpdatePersistsAndChangesQuery(t *testing.T) {
 	catalog := fieldchange.NewCatalog(app)
 	store := fieldchange.NewPocketBasePlanStore(app)
 	planner := fieldchange.NewPlanner(catalog, catalog, store, nil)
-	executor := fieldchange.NewExecutor(app, store)
+	executor := fieldchange.NewExecutor(app, store, fieldchange.WithFormulaBackfillScheduler(&atomicFormulaScheduler{}))
 	actor := v2.Actor{ID: "local-user", Kind: "user"}
 	check := func(link v2.ApplyReceipt, valueField v2.ApplyReceipt, want string, revision int) {
 		t.Helper()

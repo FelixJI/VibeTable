@@ -431,8 +431,8 @@ def test_go_stages_leave_the_default_build_cache_unset(monkeypatch) -> None:
     assert "GOCACHE" not in environment
 
 
-def test_race_stage_uses_three_isolated_package_workers_by_default() -> None:
-    assert next_gate.RACE_PACKAGE_WORKERS == 3
+def test_race_stage_isolates_packages_for_wall_clock_budgets() -> None:
+    assert next_gate.RACE_PACKAGE_WORKERS == 1
 
 
 def test_release_gate_enables_required_windows_credential_manager_tests() -> None:

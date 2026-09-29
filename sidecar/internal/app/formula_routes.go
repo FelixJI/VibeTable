@@ -131,7 +131,7 @@ func formulaRequestTable(
 	if !replaced {
 		table.Snapshot.Fields = append(table.Snapshot.Fields, field)
 	}
-	return table, nil
+	return formula.LoadCollectionSchemas(ctx, app, table)
 }
 
 func formulaFieldError(err error) *formula.Error {

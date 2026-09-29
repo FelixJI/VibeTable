@@ -55,8 +55,8 @@ PocketBase 的每个集成测试 app 会启动文件系统 watcher。为避免�
 
 1. 动态枚举 `go list ./...` 返回的全部包及其源码目录；
 2. 对每个包动态枚举 `Test`、`Example` 与默认执行的 `Fuzz` seed；
-3. 每个包只用 `go test -c -race` 编译一次；最多三个包并行，不同包可以并行，
-   同一包内仍逐测试串行；
+3. 每个包只用 `go test -c -race` 编译一次；同一 lane 内只执行一个包，
+   避免其他包的编译/执行挤占公式墙钟预算；两条 race lane 仍在独立 runner 并行；
 4. Windows 上每个命名测试使用编译后 race 二进制的独立进程（仍为
    `-test.count=1 -test.parallel=1`），包括 migrations 与 integration，避免
    PocketBase 异步 watcher 与同一测试进程中的后续测试互相影响；包完成后立即
@@ -72,10 +72,16 @@ race 命令最多重试两次；识别条件严格限定为 `testing.go` 的 “
 empty” 清理诊断。出现 `WARNING: DATA RACE`、panic、业务断言或第三次仍失败时
 一律失败。
 
-2026-08-04 的同机验证中，默认 Go cache 加三个 package worker 的完整 race 阶段
+历史基线：2026-08-04 的同机验证中，默认 Go cache 加三个 package worker 的完整 race 阶段
 耗时 815.219 秒（13.59 分钟），相对历史两个 worker 的 994.422 秒下降 18.02%。
 本次覆盖 46 个有测试包、575 个当前源码中的命名测试和 3 个无命名测试包；历史
-报告来自不同源码版本，测试数量不可直接做增减比较，本次变更本身未删除测试。
+报告来自不同源码版本，测试数量不可直接做增减比较，该次变更本身未删除测试。
+
+当前默认每 lane 一个 worker。一次固定四逻辑 CPU 的同二进制对照中，301 行求值从串行约 31ms 增至三进程并发约 44–52ms。串行包调度隔离无关进程竞争，代价是 lane 可能变慢；该对照没有复现 CI 失败，串行调度后的 CI 仍发生集合公式超时。
+
+产品默认求值预算保持 50ms，含 TABLE 来源读取和递归计算。301 行完整来源与同表 DAG fanout 测试在普通 Go CI 使用此默认预算；race 构建仅对这两个功能场景通过既有 `Limits` 注入有限 1s 预算。依据 [Go 官方 race 开销说明](https://go.dev/doc/articles/race_detector#Runtime_Overhead) 的典型 2–20 倍运行时开销，插桩正确性测试与普通构建的产品预算验证分别执行；数据规模、结果、依赖、freshness 和收敛断言不变，cost/内存预算不变。应用 compiler 和递归来源读取共享同一注入预算，更早的父 deadline 仍优先。
+
+formula 包在普通和 race CI 均验证真实默认 50ms deadline 会传给来源 reader、到期会取消且不能被 IFERROR 吞掉；使用 Go 标准库 `testing/synctest` 的虚拟时钟精确检查默认、自定义与更早父 deadline 和取消结果，避免插桩或调度消耗测试时间预算。其余取消、cost、内存契约和全部 race 测试继续运行，最终仍以完整 CI 为准。
 
 ## Fault injection
 

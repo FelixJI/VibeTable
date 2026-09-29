@@ -93,9 +93,10 @@ function buildFormulaPreviewField(
     },
     display: existing?.display ?? recommended.display,
     formula: {
-      language: "cel-v1",
+      language: validation.language ?? "cel-v1",
       source: validation.canonicalSource,
       resultType: validation.resultType,
+      ...(validation.resultElementType ? { resultElementType: validation.resultElementType } : {}),
     },
   };
 }
@@ -117,6 +118,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   selectLookupSource: (tableId: string) => Promise<void>;
   previewLookupDraft: (draft: NonNullable<FieldDraftV2["lookup"]> | null) => void;
   loadFormulaCatalog: () => Promise<void>;
+  selectFormulaSource: (tableId: string) => Promise<void>;
   validateFormulaDraft: (request: FormulaDraftValidateRequest) => Promise<void>;
   dispose: () => void;
 } {
@@ -132,6 +134,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
   let generation = 0;
   let frozenOperationId: string | null = null;
   let formulaValidationGeneration = 0;
+  let formulaCollectionGeneration = 0;
   let lookupCatalogGeneration = 0;
   let lookupPreviewGeneration = 0;
   let lookupPreviewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -588,6 +591,27 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     }
   }
 
+  async function selectFormulaSource(tableId: string): Promise<void> {
+    if (!store.open || store.draft?.logicalType !== "formula"
+      || !store.relationTables.some(table => table.tableId === tableId)) return;
+    const request = ++formulaCollectionGeneration;
+    const current = generation;
+    const collections = workspace.collections;
+    const isLive = () => request === formulaCollectionGeneration && current === generation
+      && collections === workspace.collections && store.open && store.draft?.logicalType === "formula";
+    store.formulaCollectionSchema = null;
+    store.formulaCollectionLoading = true;
+    store.formulaCatalogError = null;
+    try {
+      const schema = await describeRelationTable(tableId);
+      if (isLive()) store.formulaCollectionSchema = schema;
+    } catch (error) {
+      if (isLive()) store.failFormulaCatalog(error);
+    } finally {
+      if (isLive()) store.formulaCollectionLoading = false;
+    }
+  }
+
   async function loadFormulaCatalog(): Promise<void> {
     if (!store.result || store.draft?.logicalType !== "formula") return;
     const current = generation;
@@ -598,6 +622,13 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     const catalogIsLive = () => current === generation && store.open
       && collections === workspace.collections && phase === workspace.phase
       && schemaRevision === store.result?.schemaRevision;
+    formulaCollectionGeneration += 1;
+    store.formulaCollectionSchema = null;
+    store.formulaCollectionLoading = false;
+    store.setRelationTables(workspace.collections.map(item => ({
+      tableId: item.collection,
+      displayName: collectionLabel(item, workspace.displayNames),
+    })));
     store.beginFormulaCatalog();
     try {
       const source = await describeRelationTable(store.result.tableId);
@@ -813,7 +844,7 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     openCreate, openEdit, requestClose, plan, apply, refreshMigration,
     cancelMigration, loadRecycleBin, restore, loadRelationCatalog,
     selectRelationTarget, loadLookupCatalog, resolveLookupPath, selectLookupSource, previewLookupDraft,
-    loadFormulaCatalog, validateFormulaDraft, dispose,
+    loadFormulaCatalog, selectFormulaSource, validateFormulaDraft, dispose,
   };
 }
 
@@ -822,6 +853,11 @@ function isFormulaDraftValidation(value: unknown): value is FormulaDraftValidati
   const candidate = value as Partial<FormulaDraftValidationResult>;
   return typeof candidate.canonicalSource === "string"
     && typeof candidate.resultType === "string"
+    && (candidate.language === undefined || candidate.language === "cel-v1" || candidate.language === "cel-v2")
+    && (candidate.resultElementType === undefined
+      ? !(candidate.language === "cel-v2" && candidate.resultType === "json")
+      : candidate.language === "cel-v2" && candidate.resultType === "json"
+        && ["number", "bool", "text", "dateTime"].includes(candidate.resultElementType))
     && (candidate.onlyInt === undefined || typeof candidate.onlyInt === "boolean")
     && Array.isArray(candidate.dependencies)
     && Array.isArray(candidate.relationAggregatePaths)

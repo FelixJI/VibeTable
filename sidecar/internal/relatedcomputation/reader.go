@@ -65,19 +65,35 @@ func (reader *SourceReader) Read(
 	if !valid {
 		return nil, staleSourceError(tableID, field, "computed source cell has no readable envelope")
 	}
-	version, versionErr := reader.fieldVersion(ctx, app, tableID, fields, field)
-	if versionErr != nil {
-		return nil, versionErr
-	}
-	expectation := Expectation{
-		DefinitionVersion:   version.definitionVersion,
-		SourceDataRevision:  int64(record.GetInt(RowRevisionField)),
-		DependencyWatermark: version.dependencyWatermark,
+	expectation, err := reader.Expectation(ctx, app, tableID, fields, field, record)
+	if err != nil {
+		return nil, err
 	}
 	if !envelope.Fresh(expectation) {
 		return nil, staleSourceError(tableID, field, "computed source cell is stale for this evaluation")
 	}
 	return envelope.Value, nil
+}
+
+// Expectation shares the transaction-stable field version between ordinary
+// freshness reads and recursive source evaluation. The row revision is always
+// taken from this record, including when the field version is already cached.
+func (reader *SourceReader) Expectation(
+	ctx context.Context, app core.App, tableID string,
+	fields []v2.FieldDefinition, field v2.FieldDefinition, record *core.Record,
+) (Expectation, error) {
+	if err := ctx.Err(); err != nil {
+		return Expectation{}, err
+	}
+	version, err := reader.fieldVersion(ctx, app, tableID, fields, field)
+	if err != nil {
+		return Expectation{}, err
+	}
+	return Expectation{
+		DefinitionVersion:   version.definitionVersion,
+		SourceDataRevision:  int64(record.GetInt(RowRevisionField)),
+		DependencyWatermark: version.dependencyWatermark,
+	}, nil
 }
 
 // fieldVersion memoizes the record-independent part of ExpectationFor for one

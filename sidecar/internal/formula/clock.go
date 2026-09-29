@@ -245,3 +245,50 @@ func EvaluationIncludes(ctx context.Context, fieldID string) bool {
 	fields := EvaluationFields(ctx)
 	return fields == nil || fields[fieldID]
 }
+
+type sourceRecalculationKey struct{}
+
+// WithSourceRecalculation is reserved for derived-cache materialization. Public
+// reads and business mutations keep rejecting stale stored computed sources.
+func WithSourceRecalculation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sourceRecalculationKey{}, true)
+}
+func SourceRecalculationEnabled(ctx context.Context) bool {
+	enabled, _ := ctx.Value(sourceRecalculationKey{}).(bool)
+	return enabled
+}
+
+// ChargeSourceEvaluation shares the collection evaluator's existing budget;
+// recursion never starts a fresh allowance for each computed source cell.
+func EnsureSourceEvaluationBudget(ctx context.Context) context.Context {
+	_, ok := ctx.Value(collectionEvaluationKey{}).(*collectionEvaluation)
+	if !ok {
+		limits := DefaultLimits()
+		evaluation := &collectionEvaluation{remaining: limits.Cost, limits: limits, bytes: collectionBudget{remaining: limits.CollectionBytes}}
+		ctx = context.WithValue(ctx, collectionEvaluationKey{}, evaluation)
+	}
+	return ctx
+}
+
+func ChargeSourceEvaluation(ctx context.Context) (context.Context, error) {
+	ctx = EnsureSourceEvaluationBudget(ctx)
+	evaluation := ctx.Value(collectionEvaluationKey{}).(*collectionEvaluation)
+	if err := evaluation.charge(ctx, 1); err != nil {
+		return ctx, err
+	}
+	return ctx, nil
+}
+
+// RetainSourceValue charges recursive memoization to the same 32 MiB allowance
+// as TABLE materialization, including every element of collection results.
+func RetainSourceValue(ctx context.Context, value any) (any, error) {
+	evaluation, ok := ctx.Value(collectionEvaluationKey{}).(*collectionEvaluation)
+	if !ok {
+		return nil, formulaError("formula.resource_limit", "computed source budget is unavailable", nil)
+	}
+	normalized, failure := normalizeDynamicInputBudget(value, evaluation.limits, 0, "", &evaluation.bytes)
+	if failure != nil {
+		return nil, failure
+	}
+	return normalized, nil
+}

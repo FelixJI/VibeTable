@@ -122,6 +122,10 @@ func (service *Service) RefreshClock(ctx context.Context, instant time.Time) ([]
 		if err != nil {
 			return nil, err
 		}
+		definition, err = formula.LoadCollectionSchemas(ctx, service.app, definition)
+		if err != nil {
+			return nil, err
+		}
 		plan, compileErr := formula.CompilerFor(service.app).CompileExecutionTable(definition)
 		if compileErr != nil {
 			return nil, compileErr

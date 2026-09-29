@@ -161,13 +161,14 @@ export interface AutoDateSpec {
 }
 
 export interface FormulaSpec {
-  readonly language: "cel-v1";
+  readonly language: "cel-v1" | "cel-v2";
   readonly source: string;
   readonly resultType: LogicalType;
+  readonly resultElementType?: "number" | "bool" | "text" | "dateTime";
 }
 
 export interface FormulaDraftSpec {
-  readonly language: "cel-v1";
+  readonly language: "cel-v1" | "cel-v2";
   readonly source: string;
 }
 

@@ -1646,7 +1646,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "type": "string"
               },
               "source": {
@@ -1655,6 +1658,23 @@
               },
               "resultType": {
                 "$ref": "#/$defs/LogicalType"
+              },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -3385,7 +3405,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "type": "string"
               },
               "source": {
@@ -3403,7 +3426,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "type": "string"
               },
               "source": {
@@ -3412,6 +3438,23 @@
               },
               "resultType": {
                 "$ref": "#/$defs/LogicalType"
+              },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -5407,7 +5450,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "type": "string"
               },
               "source": {
@@ -5416,6 +5462,23 @@
               },
               "resultType": {
                 "$ref": "#/$defs/LogicalType"
+              },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -6753,7 +6816,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "type": "string"
               },
               "source": {
@@ -6762,6 +6828,23 @@
               },
               "resultType": {
                 "$ref": "#/$defs/LogicalType"
+              },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -8167,15 +8250,37 @@
                 "enum": [
                   "field",
                   "relation",
-                  "relationTarget"
+                  "relationTarget",
+                  "table",
+                  "sourceField"
                 ],
                 "title": "Kind",
                 "type": "string"
               },
               "fieldId": {
-                "minLength": 1,
-                "title": "Fieldid",
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Fieldid"
+              },
+              "tableId": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tableid"
               },
               "relationFieldId": {
                 "anyOf": [
@@ -20050,7 +20155,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "title": "Language",
                 "type": "string"
               },
@@ -20061,6 +20169,24 @@
               },
               "resultType": {
                 "$ref": "#/$defs/LogicalType"
+              },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Resultelementtype"
               }
             },
             "required": [
@@ -24162,7 +24288,10 @@
             "additionalProperties": false,
             "properties": {
               "language": {
-                "const": "cel-v1",
+                "enum": [
+                  "cel-v1",
+                  "cel-v2"
+                ],
                 "type": "string"
               },
               "source": {
@@ -24171,6 +24300,23 @@
               },
               "resultType": {
                 "$ref": "#/$defs/LogicalType"
+              },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [

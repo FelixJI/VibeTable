@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"time"
 
@@ -361,12 +362,16 @@ func (executor *Executor) apply(
 		); saveErr != nil {
 			return saveErr
 		}
-		if formulaNeedsBackfill(plan.Before, plan.After) {
+		needsLookupBackfill, backfillErr := lookupNeedsBackfill(txApp, *plan)
+		if backfillErr != nil {
+			return backfillErr
+		}
+		if formulaNeedsBackfill(plan.Before, plan.After) || needsLookupBackfill {
 			if executor.formulaBackfill == nil {
 				return productError(
 					"formula.backfill.unavailable",
 					"planId",
-					"formula schema changes require a durable backfill scheduler",
+					"computed schema changes require a durable backfill scheduler",
 					nil,
 				)
 			}
@@ -881,6 +886,25 @@ func formulaNeedsBackfill(before, after *v2.FieldDefinition) bool {
 		return false
 	}
 	return before == nil || before.Formula == nil || formulaDefinitionChanged(before, after)
+}
+
+// Lookup has no formula status to recover from: enqueue its initial or changed
+// materialization in the schema transaction. Empty tables need no backfill.
+func lookupNeedsBackfill(app core.App, plan v2.FieldChangePlan) (bool, error) {
+	before, after := plan.Before, plan.After
+	if after == nil || after.Lookup == nil {
+		return false, nil
+	}
+	// DisplayName is part of the persisted lookup metadata and its revision.
+	if before != nil && reflect.DeepEqual(before.Lookup, after.Lookup) && before.DisplayName == after.DisplayName {
+		return false, nil
+	}
+	table, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": plan.Intent.TableID})
+	if err != nil {
+		return false, err
+	}
+	count, err := app.CountRecords(table.GetString("collection_id"))
+	return count > 0, err
 }
 
 func clearComputedPhysicalValue(

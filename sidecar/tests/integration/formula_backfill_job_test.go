@@ -188,6 +188,30 @@ func (kernel *firstBatchPauseKernel) Apply(
 	return receipt, nil
 }
 
+func (kernel *countingFanoutKernel) RecalculateComputed(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+	return kernel.Apply(ctx, request)
+}
+func (kernel businessDeadlineKernel) RecalculateComputed(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+	return kernel.Apply(ctx, request)
+}
+func (kernel *cancelDuringApplyKernel) RecalculateComputed(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+	return kernel.Apply(ctx, request)
+}
+func (kernel *firstBatchPauseKernel) RecalculateComputed(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+	materializer, ok := kernel.inner.(interface {
+		RecalculateComputed(context.Context, mutation.Request) (mutation.Receipt, error)
+	})
+	if !ok {
+		return mutation.Receipt{}, errors.New("fixture has no computed materializer")
+	}
+	receipt, err := materializer.RecalculateComputed(ctx, request)
+	if err != nil {
+		return receipt, err
+	}
+	kernel.once.Do(func() { close(kernel.paused); <-kernel.release })
+	return receipt, nil
+}
+
 func TestFormulaBackfillJobRecalculatesAndMarksMetadataReady(t *testing.T) {
 	app := bootstrapApp(t, queryTempDir(t))
 	defer resetApp(t, app)
@@ -726,6 +750,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	realKernel := mutation.New(
 		app,
 		mutation.MetadataSchemaSource{},
+		mutation.WithFormulaCalculator(formula.NewCalculator(nil)),
 	)
 	blockingKernel := &firstBatchPauseKernel{
 		inner: realKernel, paused: make(chan struct{}), release: make(chan struct{}),
@@ -751,7 +776,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 		preserved.Cursor.LastRecordID != "" || preserved.Progress.Completed != 0 {
 		t.Fatalf("cancelled fan-out = %#v, err=%v", preserved, err)
 	}
-	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount+1)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount)
 	restarted := jobs.New(app, realKernel)
 	fanoutGate := make(chan [2]string, 1)
 	restarted.SetBusinessWriteGate(func(
@@ -783,7 +808,7 @@ func TestFormulaFanoutLifecycleCancellationRemainsResumable(t *testing.T) {
 	if err != nil || updated.GetString(titleDefinition.Identity.PhysicalName) != "unchanged" {
 		t.Fatalf("resumed fan-out record = %#v, err=%v", updated, err)
 	}
-	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount+1)
+	assertRecordCount(t, app, "vibetable_idempotency_keys", initialIdempotencyCount)
 
 	deadlineJob := core.NewRecord(jobCollection)
 	deadlineJob.Set("job_type", "formula_fanout")

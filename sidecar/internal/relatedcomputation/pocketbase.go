@@ -14,7 +14,7 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
-// ClockRevisionField counts only clock-derived cache transactions on the
+// ClockRevisionField retains the storage name for derived-cache transactions on the
 // vibetable_tables metadata; the freshness contract subtracts it from
 // data_revision to track business inputs. Absent (older metadata) means zero.
 const ClockRevisionField = "clock_revision"
@@ -55,7 +55,7 @@ func ExpectationFor(
 		if findErr != nil {
 			return Expectation{}, fmt.Errorf("load computed dependency %s: %w", tableID, findErr)
 		}
-		// The dependency watermark tracks business inputs only: clock-derived
+		// The dependency watermark tracks business inputs only: derived
 		// cache transactions advance clock_revision alongside data_revision,
 		// and a missing counter on older metadata reads as zero.
 		business, revisionErr := businessInputRevision(tableID, record)
@@ -79,7 +79,7 @@ func ExpectationFor(
 }
 
 // businessInputRevision derives the business-input revision of one table:
-// data_revision minus its clock-derived clock_revision. Validation fails
+// data_revision minus its derived clock_revision. Validation fails
 // closed on malformed counters instead of blessing a stale-looking watermark.
 func businessInputRevision(tableID string, record *core.Record) (int64, error) {
 	data, dataOK := storedTableCounter(record.GetRaw("data_revision"))
@@ -198,7 +198,25 @@ func definitionVersion(
 	return version, nil
 }
 
-func dependencyTables(
+func dependencyTables(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, field v2.FieldDefinition) ([]string, error) {
+	cache, ok := ctx.Value(clockCacheKey{}).(*clockCache)
+	if !ok {
+		cache = newClockCache()
+	}
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if _, found := computedField(fields, field.Identity.FieldID); !found {
+		fields = append(append([]v2.FieldDefinition(nil), fields...), field)
+	}
+	cache.fields[tableID] = fields
+	key := clockFieldKey{tableID, field.Identity.FieldID}
+	if _, err := cache.visit(ctx, app, key, map[clockFieldKey]bool{}); err != nil {
+		return nil, err
+	}
+	return cache.tables[key], nil
+}
+
+func directDependencyTables(
 	ctx context.Context,
 	app core.App,
 	tableID string,
@@ -206,9 +224,13 @@ func dependencyTables(
 	field v2.FieldDefinition,
 ) ([]string, error) {
 	if field.Formula != nil {
+		collection, predicate := "vibetable_formula_dependencies", "source_table_id={:table} && formula_field_id={:field}"
+		if field.Formula.Language == "cel-v2" {
+			collection, predicate = "vibetable_computation_dependencies", "source_table_id={:table} && computed_field_id={:field} && computed_kind='formula'"
+		}
 		records, err := app.FindRecordsByFilter(
-			"vibetable_formula_dependencies",
-			"source_table_id={:table} && formula_field_id={:field}",
+			collection,
+			predicate,
 			"+target_table_id",
 			0,
 			0,
@@ -221,7 +243,7 @@ func dependencyTables(
 		seen := map[string]struct{}{}
 		for _, record := range records {
 			targetTableID := record.GetString("target_table_id")
-			if targetTableID == "" || targetTableID == tableID {
+			if targetTableID == "" || (targetTableID == tableID && field.Formula.Language != "cel-v2") {
 				continue
 			}
 			if _, exists := seen[targetTableID]; !exists {

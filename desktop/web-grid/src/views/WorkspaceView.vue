@@ -1537,6 +1537,7 @@ useKeyboard({
       @preview-lookup-draft="fieldSettingsService.previewLookupDraft"
       @resolve-lookup-path="fieldSettingsService.resolveLookupPath"
       @load-formula-catalog="fieldSettingsService.loadFormulaCatalog"
+      @select-formula-source="fieldSettingsService.selectFormulaSource"
       @validate-formula="fieldSettingsService.validateFormulaDraft"
     />
     <NDropdown

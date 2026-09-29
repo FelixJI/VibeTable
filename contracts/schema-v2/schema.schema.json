@@ -309,9 +309,10 @@
       "additionalProperties": false,
       "required": ["language", "source", "resultType"],
       "properties": {
-        "language": {"const": "cel-v1"},
+        "language": {"enum": ["cel-v1", "cel-v2"]},
         "source": {"type": "string", "minLength": 1},
-        "resultType": {"$ref": "#/$defs/LogicalType"}
+        "resultType": {"$ref": "#/$defs/LogicalType"},
+        "resultElementType": {"enum": ["number", "bool", "text", "dateTime"]}
       }
     },
     "FormulaDraftSpec": {
@@ -319,7 +320,7 @@
       "additionalProperties": false,
       "required": ["language", "source"],
       "properties": {
-        "language": {"const": "cel-v1"},
+        "language": {"enum": ["cel-v1", "cel-v2"]},
         "source": {"type": "string", "minLength": 1}
       }
     },

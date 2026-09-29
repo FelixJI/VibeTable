@@ -42,6 +42,7 @@ import {
 } from "./bridge_capture_wait.mjs";
 import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
+import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -2611,7 +2612,13 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
       described.payload.definition.logicalType === "formula", { source: described.payload.definition.formula.source });
   }
   await chooseToolbarMore(page, "refresh");
-  const cell = page.locator(`.tabulator-cell[tabulator-field="${quantity.physicalName}"]`).first();
+  const cell = page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${quantity.physicalName}"].tabulator-editable`,
+  ).first();
+  // Refresh and clock reconciliation can render consecutive grid snapshots.
+  await waitForStableGridState(page, {
+    expectedRows: 1, matchingCell: cell, expectedMatchingCells: 1,
+  });
   const editor = await beginCellEdit(cell);
   await editor.fill("4");
   await editor.press("Enter");
@@ -3819,6 +3826,12 @@ async function scenario26(page, recorder, _network, runtime) {
     ...diagnosticsBefore.pending,
   ].map((item) => item.requestId));
   await chooseToolbarMore(page, "refresh");
+  // The empty renderer can still belong to the snapshot before refresh.
+  await page.waitForFunction((priorIds) => (
+    window.__vibetableE2EBridgeDiagnostics?.roundTrips.some((item) =>
+      !priorIds.includes(item.requestId) && item.requestType === "lookup.query"
+      && item.responseType === "lookup.query" && item.code === null)
+  ), [...priorRequestIds], { timeout: 30_000 });
   await page.waitForFunction((field) => (
     !!document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-cell-empty`)
   ), lookupFieldKey, { timeout: 30_000 });
@@ -10267,6 +10280,17 @@ const scenarios = {
     },
   ),
   "36-backend-import-exit": scenario36,
+  "37-collection-formula-journey": (page, recorder, _network, runtime) => runCollectionFormulaJourney(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+      applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
+      selectTable, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
+      chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
+      beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+      beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
+      rawLifecycleWorkspaceV2Request, waitForFieldMigration,
+    },
+  ),
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

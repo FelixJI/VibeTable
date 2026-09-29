@@ -277,8 +277,9 @@ export interface FormulaTextRange {
 
 export interface FormulaAuthorToken {
   readonly range: FormulaTextRange;
-  readonly kind: "field" | "relation" | "relationTarget";
-  readonly fieldId: string;
+  readonly kind: "field" | "relation" | "relationTarget" | "table" | "sourceField";
+  readonly fieldId: string | null;
+  readonly tableId?: string | null;
   readonly relationFieldId: string | null;
   readonly targetFieldId: string | null;
 }
@@ -291,7 +292,7 @@ export interface FormulaAuthorDocument {
 
 export interface ComputedCellEnvelope {
   readonly state: "ready" | "updating" | "failed" | "cancelled" | "invalid" | "too_expensive";
-  readonly value: string | number | boolean | null;
+  readonly value: string | number | boolean | ReadonlyArray<string | number | boolean | null> | null;
   readonly definitionVersion: number;
   readonly sourceDataRevision: number;
   readonly dependencyWatermark: number;

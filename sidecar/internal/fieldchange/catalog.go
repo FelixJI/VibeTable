@@ -28,6 +28,8 @@ type Catalog struct {
 type FormulaDraftInspection struct {
 	CanonicalSource        string                           `json:"canonicalSource"`
 	ResultType             v2.LogicalType                   `json:"resultType"`
+	Language               string                           `json:"language"`
+	ResultElementType      v2.LogicalType                   `json:"resultElementType,omitempty"`
 	OnlyInt                bool                             `json:"onlyInt"`
 	Dependencies           []string                         `json:"dependencies"`
 	RelationAggregatePaths []string                         `json:"relationAggregatePaths"`
@@ -46,7 +48,7 @@ func (catalog *Catalog) AuthorFormulaDocument(
 	tableID string,
 	document workbench.FormulaAuthorDocument,
 ) (*formula.AuthorResult, error) {
-	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID)
+	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID, document.DisplaySource)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +67,7 @@ func (catalog *Catalog) RestoreFormulaDocument(
 	canonicalSource string,
 	documentRevision int64,
 ) (*formula.AuthorResult, error) {
-	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID)
+	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID, canonicalSource)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +101,10 @@ func (catalog *Catalog) InspectFormulaDraft(
 		return FormulaDraftInspection{}, err
 	}
 	upsertFormulaField(&definition, *draft)
+	definition, err = formula.LoadV2CollectionSchemas(ctx, catalog.app, definition)
+	if err != nil {
+		return FormulaDraftInspection{}, err
+	}
 	plan, formulaErr := formula.CompilerFor(catalog.app).CompileV2Table(definition)
 	if formulaErr != nil {
 		return FormulaDraftInspection{}, formulaErr
@@ -106,10 +112,12 @@ func (catalog *Catalog) InspectFormulaDraft(
 	for _, compiled := range plan.Formulas {
 		if compiled.FieldID == draft.Identity.FieldID {
 			return FormulaDraftInspection{
-				CanonicalSource: compiled.CanonicalSource,
-				ResultType:      draft.Formula.ResultType,
-				OnlyInt:         draft.Storage.Options.OnlyInt,
-				Dependencies:    append([]string(nil), compiled.Dependencies...),
+				CanonicalSource:   compiled.CanonicalSource,
+				ResultType:        draft.Formula.ResultType,
+				Language:          draft.Formula.Language,
+				ResultElementType: draft.Formula.ResultElementType,
+				OnlyInt:           draft.Storage.Options.OnlyInt,
+				Dependencies:      append([]string(nil), compiled.Dependencies...),
 				RelationAggregatePaths: append(
 					[]string(nil), compiled.RelationAggregatePaths...,
 				),
@@ -130,7 +138,7 @@ func (catalog *Catalog) NormalizeDefinition(
 		definition.Formula == nil {
 		return nil
 	}
-	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID)
+	current, targets, err := catalog.formulaAuthorSchemas(ctx, tableID, definition.Formula.Source)
 	if err != nil {
 		return err
 	}
@@ -143,15 +151,22 @@ func (catalog *Catalog) NormalizeDefinition(
 	withoutCurrent := current
 	withoutCurrent.Fields = append([]v2.FieldDefinition(nil), current.Fields...)
 	removeFormulaField(&withoutCurrent, definition.Identity.FieldID)
-	resultType, onlyInt, formulaErr := formula.CompilerFor(catalog.app).InferV2Source(
-		withoutCurrent, canonical,
-	)
+	withoutCurrent, err = formula.LoadV2CollectionSchemas(ctx, catalog.app, withoutCurrent, canonical)
+	if err != nil {
+		return err
+	}
+	resultType, formulaErr := formula.CompilerFor(catalog.app).InferV2Value(withoutCurrent, canonical)
 	if formulaErr != nil {
 		return formulaErr
 	}
 	definition.Formula.Source = canonical
-	definition.Formula.ResultType = resultType
-	definition.Storage.Options.OnlyInt = onlyInt
+	definition.Formula.ResultType = resultType.LogicalType
+	definition.Formula.ResultElementType = resultType.ElementType
+	definition.Formula.Language = "cel-v1"
+	if formula.HasCollectionSyntax(canonical) {
+		definition.Formula.Language = "cel-v2"
+	}
+	definition.Storage.Options.OnlyInt = resultType.OnlyInt
 	candidate := withoutCurrent
 	upsertFormulaField(&candidate, *definition)
 	plan, formulaErr := formula.CompilerFor(catalog.app).CompileV2Table(candidate)
@@ -186,6 +201,7 @@ func (catalog *Catalog) NormalizeDefinition(
 func (catalog *Catalog) formulaAuthorSchemas(
 	ctx context.Context,
 	tableID string,
+	source string,
 ) (formula.V2Table, map[string]formula.V2Table, error) {
 	current, err := catalog.formulaDefinition(ctx, tableID)
 	if err != nil {
@@ -208,6 +224,24 @@ func (catalog *Catalog) formulaAuthorSchemas(
 		}
 		targets[field.Identity.PhysicalName] = target
 	}
+	if strings.Contains(source, "TABLE") {
+		tables, err := catalog.app.FindAllRecords("vibetable_tables")
+		if err != nil {
+			return formula.V2Table{}, nil, err
+		}
+		for _, metadata := range tables {
+			id := metadata.GetString("table_id")
+			if _, exists := loaded[id]; exists {
+				continue
+			}
+			target, err := catalog.formulaDefinition(ctx, id)
+			if err != nil {
+				return formula.V2Table{}, nil, err
+			}
+			loaded[id] = target
+		}
+	}
+	current.AuthorTables = loaded
 	return current, targets, nil
 }
 
@@ -223,7 +257,11 @@ func (catalog *Catalog) formulaDefinition(
 	if err != nil {
 		return formula.V2Table{}, err
 	}
-	return formula.V2Table{TableID: tableID, SchemaRevision: revisions.Schema, Fields: fields}, nil
+	name, err := catalog.TableDisplayName(ctx, tableID)
+	if err != nil {
+		return formula.V2Table{}, err
+	}
+	return formula.V2Table{TableID: tableID, DisplayName: name, SchemaRevision: revisions.Schema, Fields: fields}, nil
 }
 
 func validateAuthoredRelationReference(
@@ -699,9 +737,9 @@ func (catalog *Catalog) checkLifecycleDependencies(
 	}
 
 	formulaDependencies, err := catalog.app.FindRecordsByFilter(
-		"vibetable_formula_dependencies",
-		"(target_table_id={:table} && target_field_id={:field}) || "+
-			"(source_table_id={:table} && relation_field_id={:field})",
+		"vibetable_computation_dependencies",
+		"computed_kind='formula' && ((target_table_id={:table} && target_field_id={:field}) || "+
+			"(source_table_id={:table} && relation_field_id={:field}))",
 		"id",
 		0,
 		0,
@@ -713,8 +751,8 @@ func (catalog *Catalog) checkLifecycleDependencies(
 	for _, dependency := range formulaDependencies {
 		impact.Dependencies = append(impact.Dependencies, v2.DependencyRef{
 			Kind: "formula",
-			ID:   dependency.GetString("formula_field_id"),
-			Name: dependency.GetString("formula_field_id"),
+			ID:   dependency.GetString("computed_field_id"),
+			Name: dependency.GetString("computed_field_id"),
 		})
 	}
 
@@ -966,9 +1004,35 @@ func (catalog *Catalog) checkComputationDependencies(ctx context.Context, tableI
 			fields = append(fields, after)
 		}
 		definition.Snapshot.Fields = fields
-		return computationplan.Validate(ctx, definition, func(ctx context.Context, targetID string) (schemaexecution.Table, error) {
+		resolve := func(ctx context.Context, targetID string) (schemaexecution.Table, error) {
+			if targetID == tableID {
+				return definition, nil
+			}
 			return schemaexecution.Describe(ctx, txApp, targetID)
-		})
+		}
+		if err := computationplan.Validate(ctx, definition, resolve); err != nil {
+			return err
+		}
+		incoming, err := txApp.FindAllRecords("vibetable_computation_dependencies", dbx.HashExp{"target_table_id": tableID, "computed_kind": "formula"})
+		if err != nil {
+			return err
+		}
+		seen := map[string]bool{tableID: true}
+		for _, dependency := range incoming {
+			sourceID := dependency.GetString("source_table_id")
+			if seen[sourceID] {
+				continue
+			}
+			seen[sourceID] = true
+			source, err := resolve(ctx, sourceID)
+			if err != nil {
+				return err
+			}
+			if err := computationplan.Validate(ctx, source, resolve); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

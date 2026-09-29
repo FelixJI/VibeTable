@@ -14,6 +14,28 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
+func TestAppCompilerSharesNormalizedEvaluationBudget(t *testing.T) {
+	for _, timeout := range []time.Duration{0, time.Second} {
+		app := core.NewBaseApp(core.BaseAppConfig{})
+		compiler := NewAppCompilerWithLimits(app, Limits{EvalTimeout: timeout})
+		want := timeout
+		if want == 0 {
+			want = DefaultEvalTimeout
+		}
+		if CompilerFor(app) != compiler || compiler.EvaluationTimeout() != want {
+			t.Fatalf("shared compiler budget = %v, want %v", CompilerFor(app).EvaluationTimeout(), want)
+		}
+		field := formulaField("value_id", "value", integerType, "1")
+		compiled, err := compiler.Compile(formulaTable(field), field)
+		if err != nil || compiled.limits.EvalTimeout != want {
+			t.Fatalf("compiled formula budget differs: compiled=%v err=%v", compiled, err)
+		}
+	}
+	app := core.NewBaseApp(core.BaseAppConfig{})
+	if NewAppCompiler(app).EvaluationTimeout() != 50*time.Millisecond {
+		t.Fatal("default app compiler changed production deadline")
+	}
+}
 func TestAppCompilerInvalidatesOnlyCommittedSchemaChanges(t *testing.T) {
 	app := core.NewBaseApp(core.BaseAppConfig{DataDir: t.TempDir()})
 	t.Cleanup(func() {

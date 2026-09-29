@@ -6,6 +6,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 
+	"github.com/vibetable/vibetable/sidecar/internal/computed"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/schemav2wire"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
@@ -136,6 +137,7 @@ func (domain formulaDomain) preview(
 	if err != nil {
 		return nil, err
 	}
+	ctx = computed.WithCollectionSources(ctx, domain.app)
 	values, formulaErr := plan.Evaluate(ctx, row, input.ChangedFieldIds)
 	if formulaErr != nil {
 		return nil, formulaErr

@@ -547,7 +547,7 @@ func TestFormulaProductAuthorDocumentAndCatalog(t *testing.T) {
 		t.Fatalf("missing authoring contract: %#v", restored)
 	}
 	document := *restored.AuthorDocument
-	if document.Tokens[0].FieldId != amount.Identity.FieldID {
+	if document.Tokens[0].FieldId == nil || *document.Tokens[0].FieldId != amount.Identity.FieldID {
 		t.Fatal("lost stable field identity")
 	}
 	// Equal-width stale label proves bindings, rather than names, choose the field.
@@ -683,7 +683,7 @@ func TestFormulaProductIntegerDraftInspectionFeedsPreviewStorage(t *testing.T) {
 		field.Storage.Options.OnlyInt = inspection.OnlyInt
 		return formulaTestWireField(t, field)
 	}
-	row := map[string]any{due.Identity.PhysicalName: "2024-05-06T00:00:00Z"}
+	row := map[string]any{due.Identity.PhysicalName: "2024-05-06 00:00:00.000Z"}
 
 	previewed, err := invoke("formula.preview", map[string]any{
 		"tableId": table.TableID, "field": previewField(integerInspection),
@@ -727,5 +727,36 @@ func TestFormulaProductIntegerDraftInspectionFeedsPreviewStorage(t *testing.T) {
 	}
 	if string(encoded) != "2024.5" {
 		t.Fatalf("decimal preview value = %s (%#v)", encoded, decimalValues)
+	}
+}
+
+func TestFormulaProductCollectionPreviewAcceptsVersionedScalarAndList(t *testing.T) {
+	pb := schemaProductStore(t)
+	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)})
+	table, amount, output := createFormulaProductTable(t, pb)
+	for _, item := range []struct {
+		name, source, want string
+		result, element    v2.LogicalType
+	}{
+		{"table scalar", fmt.Sprintf("SUM(PROJECT(TABLE(%q), CurrentValue.%s))", table.TableID, amount.Identity.PhysicalName), "0", v2.LogicalNumber, ""},
+		{"nullable typed list", "UNIQUE([1.0, 2.0, 1.0])", "[1,2]", v2.LogicalJSON, v2.LogicalNumber},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			field := output
+			field.Formula = &v2.FormulaSpec{Language: "cel-v2", Source: item.source, ResultType: item.result, ResultElementType: item.element}
+			field.Storage.Options.OnlyInt = false
+			result, err := invoke("formula.preview", map[string]any{
+				"tableId": table.TableID, "field": formulaTestWireField(t, field),
+				"row": map[string]any{amount.Identity.PhysicalName: 2.0}, "changedFieldIds": []any{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := result.(map[string]any)["values"].(map[string]any)[field.Identity.PhysicalName]
+			raw, err := json.Marshal(value)
+			if err != nil || string(raw) != item.want {
+				t.Fatalf("preview=%s want=%s err=%v", raw, item.want, err)
+			}
+		})
 	}
 }

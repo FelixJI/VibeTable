@@ -126,7 +126,7 @@ def test_computed_cell_envelope_accepts_only_public_states(state: str) -> None:
 def test_generator_rejects_open_or_partially_optional_models() -> None:
     schema = json.loads(generate_dtos.SCHEMA_PATH.read_text(encoding="utf-8"))
     schema["$defs"]["ViewQuery"]["additionalProperties"] = True
-    with pytest.raises(ValueError, match="fully required closed object"):
+    with pytest.raises(ValueError, match="closed with required or nullable defaulted fields"):
         generate_dtos._validate_schema(schema)
 
 
@@ -161,3 +161,36 @@ def test_generator_carries_schema_bounds_into_python_fields() -> None:
     assert annotation == (
         "Annotated[list[Annotated[str, Field(min_length=2)]], Field(min_length=1, max_length=5)]"
     )
+
+
+def test_table_token_optional_identity_round_trip() -> None:
+    payload = {
+        "range": {"start": {"line": 0, "character": 6}, "end": {"line": 0, "character": 10}},
+        "kind": "table",
+        "fieldId": None,
+        "tableId": "tbl_shipments",
+        "relationFieldId": None,
+        "targetFieldId": None,
+    }
+    parsed = generated_workbench.FormulaAuthorToken.model_validate(payload)
+    assert parsed.model_dump(mode="json", by_alias=True) == payload
+
+
+@pytest.mark.parametrize("value", [[0, None, 2.5], [False, None, True], ["", None, "A"]])
+def test_computed_cell_accepts_scalar_collections(value: list[object]) -> None:
+    payload = json.loads((FIXTURES / "positive.json").read_text(encoding="utf-8"))[
+        "ComputedCellEnvelope"
+    ]
+    payload["value"] = value
+    parsed = generated_workbench.ComputedCellEnvelope.model_validate(payload)
+    assert parsed.model_dump(mode="json", by_alias=True)["value"] == value
+    payload["value"] = [value]
+    with pytest.raises(ValidationError):
+        generated_workbench.ComputedCellEnvelope.model_validate(payload)
+
+
+def test_generator_rejects_optional_fields_without_nullable_default() -> None:
+    schema = json.loads(generate_dtos.SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema["$defs"]["FormulaAuthorToken"]["properties"]["tableId"].pop("default")
+    with pytest.raises(ValueError, match="nullable defaulted fields"):
+        generate_dtos._validate_schema(schema)

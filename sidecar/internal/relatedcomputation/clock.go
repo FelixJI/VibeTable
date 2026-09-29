@@ -17,6 +17,7 @@ type clockCache struct {
 	mu         sync.Mutex
 	fields     map[string][]v2.FieldDefinition
 	references map[clockFieldKey][]formula.ClockReference
+	tables     map[clockFieldKey][]string
 }
 
 // The cache belongs to one authoritative transaction/batch, never a process
@@ -25,7 +26,7 @@ func WithClockCache(ctx context.Context) context.Context {
 	return context.WithValue(ctx, clockCacheKey{}, newClockCache())
 }
 func newClockCache() *clockCache {
-	return &clockCache{fields: map[string][]v2.FieldDefinition{}, references: map[clockFieldKey][]formula.ClockReference{}}
+	return &clockCache{fields: map[string][]v2.FieldDefinition{}, references: map[clockFieldKey][]formula.ClockReference{}, tables: map[clockFieldKey][]string{}}
 }
 func ClockReferencesFor(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, fieldID string) ([]formula.ClockReference, error) {
 	cache, ok := ctx.Value(clockCacheKey{}).(*clockCache)
@@ -72,6 +73,22 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 		cache.references[key] = nil
 		return nil, nil
 	}
+	tables, err := directDependencyTables(ctx, app, key.table, fields, *current)
+	if err != nil {
+		return nil, err
+	}
+	seenTables := map[string]bool{}
+	for _, table := range tables {
+		seenTables[table] = true
+	}
+	addTables := func(nested clockFieldKey) {
+		for _, table := range cache.tables[nested] {
+			if !seenTables[table] {
+				seenTables[table] = true
+				tables = append(tables, table)
+			}
+		}
+	}
 	var result []formula.ClockReference
 	seen := map[formula.ClockReference]bool{}
 	add := func(references []formula.ClockReference) {
@@ -94,6 +111,7 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 				return nil, err
 			}
 			add(nested)
+			addTables(clockFieldKey{key.table, fieldID})
 		}
 	}
 	dependencies, err := app.FindRecordsByFilter("vibetable_computation_dependencies",
@@ -115,7 +133,9 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 			return nil, err
 		}
 		add(nested)
+		addTables(clockFieldKey{dependency.GetString("target_table_id"), target})
 	}
+	cache.tables[key] = tables
 	cache.references[key] = result
 	return result, nil
 }

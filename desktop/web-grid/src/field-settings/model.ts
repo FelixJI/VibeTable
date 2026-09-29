@@ -22,7 +22,7 @@ export function draftFromDefinition(definition: FieldDefinitionV2): FieldDraftV2
     ...draft
   } = definition;
   const normalized = clone(draft) as Omit<typeof draft, "formula"> & {
-    formula?: { language: "cel-v1"; source: string };
+    formula?: { language: "cel-v1" | "cel-v2"; source: string };
   };
   if (definition.formula) {
     normalized.formula = {
