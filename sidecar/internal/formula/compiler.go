@@ -27,7 +27,8 @@ const (
 	DefaultRecursionLimit  = 64
 	DefaultCollectionBytes = 32 << 20
 	DefaultCostLimit       = 10_000
-	DefaultEvalTimeout     = 50 * time.Millisecond
+	// Wall-clock protection includes source I/O and scheduling, not a latency SLO.
+	DefaultEvalTimeout = 250 * time.Millisecond
 )
 
 type Limits struct {

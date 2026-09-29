@@ -11,6 +11,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 // REST and the Product dispatcher share these formula authorities: one
@@ -125,6 +126,19 @@ func (domain formulaDomain) preview(
 	if input.Row == nil {
 		return nil, formulaRequestError("row is required")
 	}
+	// Reuse authoritative source schemas between compilation and TABLE reads.
+	// This cache belongs only to this request; the next preview reads new revisions.
+	sources := make(map[string]schemaexecution.Table)
+	ctx = formula.WithCollectionSchemaResolver(ctx, func(ctx context.Context, id string) (schemaexecution.Table, error) {
+		if table, found := sources[id]; found {
+			return table, nil
+		}
+		table, err := schemaexecution.Describe(ctx, domain.app, id)
+		if err == nil {
+			sources[id] = table
+		}
+		return table, err
+	})
 	definition, err := formulaRequestTable(ctx, domain.app, input.TableId, input.Field)
 	if err != nil {
 		return nil, err

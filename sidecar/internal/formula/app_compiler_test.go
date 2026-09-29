@@ -32,7 +32,7 @@ func TestAppCompilerSharesNormalizedEvaluationBudget(t *testing.T) {
 		}
 	}
 	app := core.NewBaseApp(core.BaseAppConfig{})
-	if NewAppCompiler(app).EvaluationTimeout() != 50*time.Millisecond {
+	if NewAppCompiler(app).EvaluationTimeout() != 250*time.Millisecond {
 		t.Fatal("default app compiler changed production deadline")
 	}
 }

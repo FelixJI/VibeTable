@@ -50,7 +50,7 @@ type collectionEvaluation struct {
 
 func (evaluation *collectionEvaluation) charge(ctx context.Context, cost uint64) *Error {
 	if ctx.Err() != nil || cost > evaluation.remaining {
-		return formulaError("formula.resource_limit", "collection evaluation exceeded its resource limit", nil)
+		return formulaError("formula.resource_limit", "collection evaluation exceeded its resource limit", map[string]any{"reason": evaluationResourceReason(ctx.Err()), "cost": cost, "remainingCost": evaluation.remaining})
 	}
 	evaluation.remaining -= cost
 	return nil
@@ -200,7 +200,10 @@ func (node *collectionNode) evaluate(ctx context.Context, row map[string]any, ev
 			// failures that IFERROR cannot absorb.
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) ||
 				errors.Is(err, context.DeadlineExceeded) || collectionResourceFailure(err) {
-				return nil, formulaError("formula.resource_limit", "table range read was cancelled or exceeded its resource limit", nil)
+				if ctx.Err() != nil {
+					err = ctx.Err()
+				}
+				return nil, formulaError("formula.resource_limit", "table range read was cancelled or exceeded its resource limit", map[string]any{"reason": evaluationResourceReason(err)})
 			}
 			return nil, formulaError("formula.dependency", "table range could not be read", map[string]any{"reason": err.Error()})
 		}

@@ -38,7 +38,7 @@ TABLE 按稳定记录 ID 顺序读取完整集合；Relation 保留成员顺序�
 
 基础字段的完整类型化比较可下推既有查询；日期、计算字段和不能等价下推的谓词在 Go 内有界执行。只读取引用列、固定大小来源页，同一次求值复用相同来源请求；不会把整张来源表传给前端。不同当前行的结果不使用跨修改缓存。
 
-仍使用原有上限：源码 4096 bytes、AST 512 节点、递归 64、物化 32 MiB、CEL cost 10000、单次求值 50 ms。取消和资源错误不会被 IFERROR 转成成功值。数值溢出和除零仍遵循[数值语义](formula-numeric-semantics.md)，日期与时钟遵循[日期公式](formula-date-clock.md)。
+资源上限为源码 4096 bytes、AST 512 节点、递归 64、物化 32 MiB、CEL cost 10000；单次求值的 wall-clock 保护期限校准为 250 ms，包含来源 I/O 与调度。保护期限不是性能 SLO，原标量预览 p95 ≤100ms 门禁保持；更早父 deadline 和主动取消仍优先，递归计算继承同一期限。资源错误保持 `formula.resource_limit`，details.reason 区分 deadline、cancelled、cost，evaluationFieldId 保留最内层失败字段；字节超限保留独立消息。取消和资源错误不会被 IFERROR 转成成功值。数值溢出和除零仍遵循[数值语义](formula-numeric-semantics.md)，日期与时钟遵循[日期公式](formula-date-clock.md)。
 
 ## 正式界面验证
 
