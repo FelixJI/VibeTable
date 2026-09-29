@@ -2,9 +2,13 @@ package integration_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
@@ -50,7 +54,40 @@ func TestFormulaCollectionAuthoritativeSourceAndSchemaDependencies(t *testing.T)
 	calculator := computed.New(formula.NewCalculator(nil))
 	check := func(want float64) {
 		t.Helper()
+		// Every Calculate is a new root: load source metadata once during
+		// planning, then reuse that snapshot for the authoritative TABLE scan.
+		var schemaReads, sourceReads atomic.Int64
+		seen := map[*dbx.DB]bool{}
+		for _, database := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+			if seen[database] {
+				continue
+			}
+			seen[database] = true
+			previous := database.QueryLogFunc
+			database.QueryLogFunc = func(ctx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, err error) {
+				if strings.Contains(statement, "vibetable_fields") {
+					schemaReads.Add(1)
+				}
+				if strings.Contains(statement, "FROM \""+shipments.PhysicalName+"\"") || strings.Contains(statement, "FROM `"+shipments.PhysicalName+"`") {
+					sourceReads.Add(1)
+				}
+				if previous != nil {
+					previous(ctx, elapsed, statement, rows, err)
+				}
+			}
+			defer func() { database.QueryLogFunc = previous }()
+		}
 		result, err := calculator.Calculate(ctx, app, definition, row)
+		if schemaReads.Load() != 1 {
+			t.Fatalf("ordinary calculation reloaded source schema: reads=%d, want 1", schemaReads.Load())
+		}
+		wantPages := int64(2)
+		if want == 0 {
+			wantPages = 1
+		}
+		if sourceReads.Load() != wantPages {
+			t.Fatalf("source scan used %d queries, want one per page (%d)", sourceReads.Load(), wantPages)
+		}
 		if err != nil || result[total.Definition.Identity.PhysicalName] != want {
 			t.Fatalf("sum = %v, %#v; want %v", result, err, want)
 		}

@@ -45,7 +45,7 @@ func (evaluator *sourceEvaluator) read(ctx context.Context, app core.App, tableI
 	}
 	// Validate the authoritative expectation before deciding whether a missing
 	// or stale cache can be recomputed. Metadata failures never become fallbacks.
-	expectation, err := relatedcomputation.ExpectationFor(ctx, app, tableID, fields, field.Identity.FieldID, int64(record.GetInt(relatedcomputation.RowRevisionField)))
+	expectation, err := evaluator.reader.Expectation(ctx, app, tableID, fields, field, record)
 	if err != nil {
 		return nil, err
 	}

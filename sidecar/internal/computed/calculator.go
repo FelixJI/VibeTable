@@ -54,14 +54,15 @@ func (composite *Composite) Calculate(
 		ctx = formula.EnsureSourceEvaluationBudget(ctx)
 	}
 	if formula.ComputedSourceReaderFor(ctx) == nil {
-		reader := relatedcomputation.NewSourceReader().Read
+		// Every calculation root shares its complete authoritative schema
+		// between planning and TABLE reads, before applying field selection.
+		evaluator := newSourceEvaluator(composite, definition)
+		ctx = formula.WithCollectionSchemaResolver(ctx, func(ctx context.Context, id string) (schemaexecution.Table, error) {
+			return evaluator.resolve(ctx, app, id)
+		})
+		reader := evaluator.reader.Read
 		if formula.SourceRecalculationEnabled(ctx) {
-			// Seed the complete authoritative snapshot before applying field selection.
-			evaluator := newSourceEvaluator(composite, definition)
 			reader = evaluator.read
-			ctx = formula.WithCollectionSchemaResolver(ctx, func(ctx context.Context, id string) (schemaexecution.Table, error) {
-				return evaluator.resolve(ctx, app, id)
-			})
 		}
 		ctx = formula.WithComputedSourceReader(ctx, reader)
 	}

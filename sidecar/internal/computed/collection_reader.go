@@ -110,24 +110,13 @@ func readCollectionSource(
 		if err != nil {
 			return collectionDependencyError(request.TableID, "", "collection source query could not be compiled", err)
 		}
-		ids, err := matchedPageIDs(ctx, app, request.TableID, compiled)
+		records, err := collectionPageRecords(ctx, app, request.TableID, collection, compiled, bindings)
 		if err != nil {
 			return err
 		}
-		if len(ids) == 0 {
-			return nil
-		}
-		records, err := collectionPageRecords(ctx, app, request.TableID, collection, ids, bindings)
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
+		for _, record := range records {
 			if err := ctx.Err(); err != nil {
 				return err
-			}
-			record := records[id]
-			if record == nil {
-				return collectionDependencyError(request.TableID, "", "matched collection source record disappeared", nil)
 			}
 			row, err := projectCollectionRow(ctx, app, request.TableID, snapshot, bindings, freshness, record)
 			if err != nil {
@@ -137,10 +126,10 @@ func readCollectionSource(
 				return err
 			}
 		}
-		if len(ids) < collectionPageSize {
+		if len(records) < collectionPageSize {
 			return nil
 		}
-		afterID = ids[len(ids)-1]
+		afterID = records[len(records)-1].Id
 	}
 }
 
@@ -197,28 +186,10 @@ func snapshotFieldByID(fields []v2.FieldDefinition, fieldID string) (v2.FieldDef
 	return v2.FieldDefinition{}, false
 }
 
-func matchedPageIDs(
-	ctx context.Context, app core.App, tableID string, compiled query.CompiledQuery,
-) ([]string, error) {
-	var page []struct {
-		ID      string `db:"id"`
-		Matches string `db:"matches"`
-	}
-	if err := app.DB().NewQuery(compiled.SQL).WithContext(ctx).
-		Bind(dbx.Params(compiled.Params)).All(&page); err != nil {
-		return nil, collectionReadError(tableID, "collection source page could not be read", err)
-	}
-	ids := make([]string, 0, len(page))
-	for _, row := range page {
-		ids = append(ids, row.ID)
-	}
-	return ids, nil
-}
-
 func collectionPageRecords(
 	ctx context.Context, app core.App, tableID string,
-	collection *core.Collection, ids []string, bindings []collectionFieldBinding,
-) (map[string]*core.Record, error) {
+	collection *core.Collection, compiled query.CompiledQuery, bindings []collectionFieldBinding,
+) ([]*core.Record, error) {
 	names := []string{"id", relatedcomputation.RowRevisionField}
 	for _, binding := range bindings {
 		names = append(names, binding.authoritative.Identity.PhysicalName)
@@ -226,20 +197,29 @@ func collectionPageRecords(
 			names = append(names, name)
 		}
 	}
-	values := make([]any, len(ids))
-	for index, id := range ids {
-		values[index] = id
+	// PocketBase prepares every collection field even with a narrow SELECT.
+	// These records are read-only projections: retain authoritative field
+	// objects in a private list without mutating the shared collection. Stale
+	// computed sources still reload a complete record in sourceEvaluator.
+	projection := *collection
+	projection.Fields = make(core.FieldsList, 0, len(names))
+	for _, name := range names {
+		field := collection.Fields.GetByName(name)
+		if field == nil {
+			return nil, collectionDependencyError(tableID, name, "collection source physical field is unavailable", nil)
+		}
+		projection.Fields = append(projection.Fields, field)
 	}
+	// Keep QueryCompiler's typed predicates, archive policy and keyset limit
+	// inside the same statement as PocketBase's authoritative value decoding.
+	// The outer ordering preserves the page's stable id traversal.
 	var records []*core.Record
-	if err := app.RecordQuery(collection).Select(names...).WithContext(ctx).
-		AndWhere(dbx.In("id", values...)).All(&records); err != nil {
+	if err := app.RecordQuery(&projection).Select(names...).WithContext(ctx).
+		AndWhere(dbx.NewExp("id IN (SELECT id FROM ("+compiled.SQL+"))", dbx.Params(compiled.Params))).
+		OrderBy("id").All(&records); err != nil {
 		return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
 	}
-	byID := make(map[string]*core.Record, len(records))
-	for _, record := range records {
-		byID[record.Id] = record
-	}
-	return byID, nil
+	return records, nil
 }
 
 func projectCollectionRow(
