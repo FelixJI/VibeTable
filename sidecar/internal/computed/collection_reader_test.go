@@ -2,10 +2,14 @@ package computed
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryfilter"
@@ -116,5 +120,121 @@ func TestCollectionPageHydratesOnlyAuthoritativeProjection(t *testing.T) {
 				t.Errorf("field %s lost authoritative preparation", name)
 			}
 		}
+	}
+}
+
+type collectionProjectionFixture struct {
+	app        *pocketbase.PocketBase
+	collection *core.Collection
+	bindings   []collectionFieldBinding
+	compiled   query.CompiledQuery
+	names      []string
+}
+
+func collectionProjectionFixtureSetup(t *testing.T, rows [][3]any) *collectionProjectionFixture {
+	t.Helper()
+	app := computedTestApp(t)
+	collection := core.NewBaseCollection("loaded_rows")
+	collection.Fields.Add(&core.NumberField{Name: relatedcomputation.RowRevisionField},
+		&core.DateField{Name: "occurred"}, &core.NumberField{Name: "amount"},
+		&core.BoolField{Name: "flag"}, &core.TextField{Name: "note"})
+	if err := app.Save(collection); err != nil {
+		t.Fatal(err)
+	}
+	for index, row := range rows {
+		record := core.NewRecord(collection)
+		record.Id = fmt.Sprintf("loadedrow%03d001", index)
+		record.Set(relatedcomputation.RowRevisionField, 3)
+		record.Set("occurred", row[0])
+		record.Set("amount", row[1])
+		record.Set("flag", row[2])
+		if err := app.Save(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bindings := []collectionFieldBinding{}
+	for _, item := range []struct {
+		name string
+		kind v2.LogicalType
+	}{{"occurred", v2.LogicalDateTime}, {"amount", v2.LogicalNumber}, {"flag", v2.LogicalBool}, {"note", v2.LogicalText}} {
+		field := v2.FieldDefinition{Identity: v2.FieldIdentity{FieldID: "fld_" + item.name, PhysicalName: item.name}, LogicalType: item.kind}
+		bindings = append(bindings, collectionFieldBinding{requested: field, authoritative: field})
+	}
+	descriptor := query.TableDescriptor{TableID: "tbl_loaded", PhysicalName: collection.Name, PrimaryKey: "id",
+		Fields: map[string]query.FieldDescriptor{"id": {PhysicalName: "id", Type: query.FieldTypeText}}}
+	compiled, err := query.CompileMatchBatch(descriptor, [][]queryfilter.FilterExpression{{{Field: "id", Operator: queryfilter.OperatorNotEqual, Value: ""}}}, "", collectionPageSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"id", relatedcomputation.RowRevisionField}
+	for _, binding := range bindings {
+		names = append(names, binding.authoritative.Identity.PhysicalName)
+	}
+	return &collectionProjectionFixture{app: app, collection: collection, bindings: bindings, compiled: compiled, names: names}
+}
+
+func TestCollectionPageRecordsMatchAuthoritativeLoadedRecords(t *testing.T) {
+	fixture := collectionProjectionFixtureSetup(t, [][3]any{
+		{"2026-09-29 04:05:06.000Z", 0, false},
+		{nil, nil, nil},
+		{"2026-01-02 03:04:05.000Z", 1.5, true},
+	})
+	app := fixture.app
+	rows, err := collectionPageRecords(context.Background(), app, "tbl_loaded", fixture.collection, fixture.compiled, fixture.bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(rows))
+	}
+	wantIDs := []string{"loadedrow000001", "loadedrow001001", "loadedrow002001"}
+	for index, row := range rows {
+		if row.Id != wantIDs[index] {
+			t.Fatalf("row %d id = %s, want %s (stable id order lost)", index, row.Id, wantIDs[index])
+		}
+		reference, err := app.FindRecordById(fixture.collection.Name, row.Id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.IsNew() || reference.IsNew() {
+			t.Fatalf("row %s not in loaded state", row.Id)
+		}
+		if row.LastSavedPK() != row.Id || reference.LastSavedPK() != reference.Id {
+			t.Fatalf("row %s lost its saved primary key", row.Id)
+		}
+		for _, name := range fixture.names {
+			if !reflect.DeepEqual(row.GetRaw(name), reference.GetRaw(name)) {
+				t.Fatalf("row %s field %s = %#v, want authoritative %#v", row.Id, name, row.GetRaw(name), reference.GetRaw(name))
+			}
+		}
+	}
+}
+
+type erroringCollectionField struct {
+	core.Field
+	failRaw string
+}
+
+func (field *erroringCollectionField) PrepareValue(record *core.Record, raw any) (any, error) {
+	if value, ok := raw.(string); ok && value == field.failRaw {
+		return nil, errors.New("collection reader test prepare failure")
+	}
+	return field.Field.PrepareValue(record, raw)
+}
+
+func TestCollectionPageRecordsPropagatesPrepareValueError(t *testing.T) {
+	fixture := collectionProjectionFixtureSetup(t, [][3]any{{"2026-09-29 04:05:06.000Z", 2, true}})
+	app := fixture.app
+	for index, field := range fixture.collection.Fields {
+		if field.GetName() == "occurred" {
+			fixture.collection.Fields[index] = &erroringCollectionField{Field: field, failRaw: "2026-09-29 04:05:06.000Z"}
+		}
+	}
+	_, err := collectionPageRecords(context.Background(), app, "tbl_loaded", fixture.collection, fixture.compiled, fixture.bindings)
+	if err == nil {
+		t.Fatal("PrepareValue error was swallowed")
+	}
+	if !strings.Contains(err.Error(), "collection source records could not be loaded") {
+		t.Fatalf("error = %v, want collection read failure", err)
 	}
 }

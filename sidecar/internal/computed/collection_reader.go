@@ -2,6 +2,7 @@ package computed
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
 
@@ -213,10 +214,51 @@ func collectionPageRecords(
 	// Keep QueryCompiler's typed predicates, archive policy and keyset limit
 	// inside the same statement as PocketBase's authoritative value decoding.
 	// The outer ordering preserves the page's stable id traversal.
-	var records []*core.Record
-	if err := app.RecordQuery(&projection).Select(names...).WithContext(ctx).
+	// Rows are scanned with the standard database/sql scanner and one reusable
+	// NullString buffer (no per-row reflection map); values still pass through
+	// the authoritative field.PrepareValue, and the records are internal
+	// read-only projections that must never be saved.
+	rows, err := app.RecordQuery(&projection).Select(names...).WithContext(ctx).
 		AndWhere(dbx.NewExp("id IN (SELECT id FROM ("+compiled.SQL+"))", dbx.Params(compiled.Params))).
-		OrderBy("id").All(&records); err != nil {
+		OrderBy("id").Rows()
+	if err != nil {
+		return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
+	}
+	defer rows.Close()
+	scanBuffer := make([]sql.NullString, len(names))
+	scanRefs := make([]any, len(scanBuffer))
+	for index := range scanBuffer {
+		scanRefs[index] = &scanBuffer[index]
+	}
+	records := make([]*core.Record, 0, collectionPageSize)
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := rows.Scan(scanRefs...); err != nil {
+			return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
+		}
+		record := core.NewRecord(&projection)
+		for index, field := range projection.Fields {
+			var raw any
+			if scanBuffer[index].Valid {
+				raw = scanBuffer[index].String
+			}
+			value, err := field.PrepareValue(record, raw)
+			if err != nil {
+				return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
+			}
+			record.SetRaw(field.GetName(), value)
+		}
+		if err := record.BaseModel.PostScan(); err != nil {
+			return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
+	}
+	if err := rows.Close(); err != nil {
 		return nil, collectionReadError(tableID, "collection source records could not be loaded", err)
 	}
 	return records, nil
