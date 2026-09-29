@@ -2612,7 +2612,13 @@ async function commonFormulaUiJourney(page, recorder, runtime) {
       described.payload.definition.logicalType === "formula", { source: described.payload.definition.formula.source });
   }
   await chooseToolbarMore(page, "refresh");
-  const cell = page.locator(`.tabulator-cell[tabulator-field="${quantity.physicalName}"]`).first();
+  const cell = page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${quantity.physicalName}"].tabulator-editable`,
+  ).first();
+  // Refresh and clock reconciliation can render consecutive grid snapshots.
+  await waitForStableGridState(page, {
+    expectedRows: 1, matchingCell: cell, expectedMatchingCells: 1,
+  });
   const editor = await beginCellEdit(cell);
   await editor.fill("4");
   await editor.press("Enter");
@@ -3820,6 +3826,12 @@ async function scenario26(page, recorder, _network, runtime) {
     ...diagnosticsBefore.pending,
   ].map((item) => item.requestId));
   await chooseToolbarMore(page, "refresh");
+  // The empty renderer can still belong to the snapshot before refresh.
+  await page.waitForFunction((priorIds) => (
+    window.__vibetableE2EBridgeDiagnostics?.roundTrips.some((item) =>
+      !priorIds.includes(item.requestId) && item.requestType === "lookup.query"
+      && item.responseType === "lookup.query" && item.code === null)
+  ), [...priorRequestIds], { timeout: 30_000 });
   await page.waitForFunction((field) => (
     !!document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-cell-empty`)
   ), lookupFieldKey, { timeout: 30_000 });
