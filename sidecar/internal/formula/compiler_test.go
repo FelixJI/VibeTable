@@ -584,3 +584,19 @@ func TestFormulaDateInputUsesProductCalendarShape(t *testing.T) {
 	_, failure = normalizeInput(field, "2026-03-05", DefaultLimits())
 	assertFormulaCode(t, failure, "formula.timezone")
 }
+
+func TestFormulaExplicitOffsetDoesNotUseSystemLocation(t *testing.T) {
+	previous := time.Local
+	time.Local = time.FixedZone("system-location-sentinel", 8*3600)
+	defer func() { time.Local = previous }()
+	value, err := parseFormulaTimestamp("2026-09-01T08:00:00+08:00", v2.LogicalDateTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Location() == time.Local {
+		t.Fatal("explicit offset consulted the system location")
+	}
+	if got := value.UTC().Format(time.RFC3339); got != "2026-09-01T00:00:00Z" {
+		t.Fatalf("explicit offset instant = %s", got)
+	}
+}
