@@ -190,3 +190,13 @@ S10 恢复测量（历史样本）：sidecar kill→可读表 2273.97ms，backen
 原始来源通过validated PocketBase Save准备，汇总/主表与后续变更仍走真实mutation和jobs；本数据集不证明50k导入吞吐。原先mutation造数在49,500行触发30分钟测试超时的失败保留；不同造数方式的耗时不相减为产品收益。无关备注变更的2个全量fanout已降为0，相关源变更在fanout完成前拒绝旧值；表达式/时钟、工作区A→B→A及进行中取消由独立组合回归覆盖。
 
 包含上游定义水印的开发候选 `95532dc1`，其普通构建真实WPF/WebView2 S38于2026-09-30通过，场景75.69008s，33项断言及四组件freshness通过。覆盖可见编辑器创建/编辑三层计算、只读F2、199条来源分页、计算值筛选排序、CSV/XLSX逐值顺序与公式样文本不执行、关闭重开同一workspace身份；无外网/异常/pending，进程、端口及句柄清理通过。该本地场景不替代最终PR全量质量和旧主路径矩阵；此前9月29日中间候选证据保留。相同界面路径截图：[计算值筛选排序](assets/screenshots/vibetable-calculation-chain-filtered.png)、[完整来源分页](assets/screenshots/vibetable-calculation-chain-sources.png)。
+
+## #414 关系生命周期局部候选资格（2026-10-01）
+
+产品提交 `e8949f33f917122e9255849e5505155324954b50` 基于已合入 V2 会话的 main `6db8c6b3`。正式候选构建通过（274 个文件）；真实同包 S38 报告 `20260930T202918Z` 为 1/1 passed、0 failed、0 skipped，wall clock 91.55182s。来源199条、完整三行独立数值、关系/字段删除边界、实际解绑/重新绑定、筛选排序、CSV/XLSX与重开均通过；后台 bridge clean 也通过。截图见 [关系生命周期](quality/screenshots/issue414-relation-lifecycle.png)。此前 `5b897ec3` 的 S38 因7次后台 lookup.query 失败而整场失败，保留原报告，不以39项数值断言通过替代整场结论；共享查询字段映射修正后才通过。
+
+复用 #396 原始 fixture/数据与5组查询预算，10k规模通过。50k首轮 computed warm p95 51.613ms 超过50ms，明确为预算失败；独占复核 warm/cold computed p95 40.154/43.034ms、raw p95 20.173/22.18ms、repeated lookup p95 120.09ms 通过原预算，首轮失败证据仍保留。源修改到完整查询仅为单次观察，不能称p95或提速。
+
+新增关系专属资格复用同一原始10k/50k来源、67条summary与1000条main，实际覆盖 reciprocal WrapValues 与 relationPath AllRecords；不以本来已有全表cursor的conditional lookup冒充这次新增路径。两规模绑定、解绑、重新绑定、来源修改后的全部1000行独立oracle、67条summary新鲜envelope均通过，新path job记录 allRecords=true、processedMainRows=1000。源修改到完整查询单次为41.099048s（10k）与263.082394s（50k），无新增失效延迟预算，不声称性能改善。Windows每1秒观察实际进程 PeakWorkingSet64，10k/50k峰值为142209024/293060608字节；最后未观测区间可能低估，不把累计分配或配置上限当峰值。
+
+这些局部证据不更新本页历史35场样本，不代替当前PR完整required及合并后main CI/CD哨兵。
