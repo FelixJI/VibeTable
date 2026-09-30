@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -26,8 +27,10 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 const calculationChainSeed = uint64(396)
@@ -782,4 +785,54 @@ func TestCalculationChainQualification(t *testing.T) {
 	}
 	measureCalculationChainCold(t, ctx, f, "raw-field-sorted-window", 20, f.rawQuery(), rawExpected)
 	measureCalculationChainCold(t, ctx, f, "filtered-sorted-window", 20, input, filtered)
+	// Reuse the frozen fixture for the affected invalidation path after the
+	// unchanged warm/cold observations. This is one sample, not a p95 claim.
+	f.app = bootstrapApp(t, f.app.DataDir())
+	f.compiler = formula.NewAppCompilerWithLimits(f.app, formula.Limits{EvalTimeout: collectionTestEvalTimeout})
+	service := calculationChainJobs(t, f)
+	counts = observeCalculationChainQueries(t, f)
+	if !measureCalculationChain(t, counts, "source-edit-fanout-complete-query", 1, func() (int, error) {
+		f.data.Sources[1].Amount += 1
+		applyCalculationChain(t, ctx, f, "qualification-source-edit", mutation.Operation{
+			Kind: mutation.OperationUpdate, RecordID: &f.data.Sources[1].ID,
+			Values: map[string]any{f.amount.Identity.PhysicalName: f.data.Sources[1].Amount},
+		})
+		definition, err := schemaexecution.Describe(ctx, f.app, f.main.TableID)
+		if err != nil {
+			return 0, err
+		}
+		record, err := f.app.FindRecordById(f.main.PhysicalName, f.data.Main[0].ID)
+		if err != nil {
+			return 0, err
+		}
+		value, staleErr := relatedcomputation.NewSourceReader().Read(ctx, f.app,
+			f.main.TableID, definition.Snapshot.Fields, f.total, record)
+		var dependencyErr *formula.Error
+		if value != nil || !errors.As(staleErr, &dependencyErr) || dependencyErr.Code != "formula.dependency" {
+			return 0, fmt.Errorf("source edit must reject stale total before fanout: value=%v error=%v", value, staleErr)
+		}
+		drainCalculationChain(t, ctx, f, service)
+		querySource, err := queryschema.New(f.app.DataDir())
+		if err != nil {
+			return 0, err
+		}
+		want := calculationChainOrdered(calculationChainOracle(f.data, instant), 0)
+		request := input
+		request.Filters = []query.FilterExpression{{Field: f.total.Identity.PhysicalName, Operator: query.OperatorGreaterEq, Value: 0.0}}
+		returned := 0
+		for request.Offset < len(want) {
+			page, err := query.NewPort(f.app, querySource).QueryPage(ctx, f.main.TableID, request)
+			if err != nil {
+				return returned, err
+			}
+			if err := f.checkPage(page, want); err != nil {
+				return returned, err
+			}
+			returned += len(page.Rows)
+			request.Offset += request.Limit
+		}
+		return returned, nil
+	}) {
+		return
+	}
 }
