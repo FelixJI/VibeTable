@@ -297,6 +297,13 @@ onMounted(() => void search.refreshStatus());
               <span v-if="hit.snippet" class="result-snippet">{{ hit.snippet }}</span>
               <span class="result-meta">
                 <span v-if="metadataValue(hit, 'relativePath')">{{ metadataValue(hit, "relativePath") }}</span>
+                <NTag v-if="metadataValue(hit, 'extractionStatus')" size="small" :bordered="false">
+                  {{ t(`workspaceSearch.status.${metadataValue(hit, 'extractionStatus')}`) }}
+                </NTag>
+                <span
+                  v-if="metadataValue(hit, 'extractionStatus') === 'indexed' && metadataValue(hit, 'extractionErrorCode')"
+                  data-testid="workspace-search-coverage-warning"
+                >{{ t("workspaceSearch.partialCoverage") }}</span>
                 <span>{{ new Date(hit.revisionTime).toLocaleString() }}</span>
                 <span v-if="search.scope === 'history'">{{ hit.sourceRevision }}</span>
               </span>

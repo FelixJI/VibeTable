@@ -9,8 +9,10 @@ import (
 )
 
 // searchProjectionSchemaVersion owns the derived text columns, their FTS
-// tables, and the triggers that keep those indexes synchronized.
-const searchProjectionSchemaVersion = 1
+// tables, and the triggers that keep those indexes synchronized. Version 2
+// additionally invalidates file/attachment rows written with the version-1
+// generic XML extraction so they are re-derived from their sources.
+const searchProjectionSchemaVersion = 2
 
 func initializeSearchSchema(ctx context.Context, tx *sql.Tx) error {
 	statements := []string{
@@ -59,18 +61,20 @@ func initializeSearchSchema(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if exists && version == searchProjectionSchemaVersion {
-		columns, err := searchDocumentColumns(ctx, tx)
-		if err != nil {
-			return err
+	if exists {
+		if version == searchProjectionSchemaVersion {
+			columns, err := searchDocumentColumns(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if !columns["display_text"] || !columns["projected_title"] {
+				return errors.New("workspace_search.projection_schema_corrupt")
+			}
+			return nil
 		}
-		if !columns["display_text"] || !columns["projected_title"] {
-			return errors.New("workspace_search.projection_schema_corrupt")
+		if version > searchProjectionSchemaVersion {
+			return errors.New("workspace_search.projection_schema_unsupported")
 		}
-		return nil
-	}
-	if exists && version != 0 {
-		return errors.New("workspace_search.projection_schema_unsupported")
 	}
 	return migrateSearchProjection(ctx, tx)
 }
@@ -152,6 +156,21 @@ func migrateSearchProjection(ctx context.Context, tx *sql.Tx) error {
 	if documents > 0 {
 		// A changed derived corpus invalidates cursors from the previous projection.
 		if err := bumpGeneration(ctx, tx); err != nil {
+			return err
+		}
+	}
+	// File and attachment rows written before this schema version used the
+	// generic XML extraction: their bodies no longer match the extractor, so
+	// the derived corpus must be rebuilt from its sources before queries are
+	// served again.
+	var extracted int64
+	if err := tx.QueryRowContext(
+		ctx, `SELECT COUNT(*) FROM search_documents WHERE kind IN ('file','attachment')`,
+	).Scan(&extracted); err != nil {
+		return err
+	}
+	if extracted > 0 {
+		if err := setRebuildRequired(ctx, tx, true); err != nil {
 			return err
 		}
 	}

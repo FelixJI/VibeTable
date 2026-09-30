@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -1514,6 +1515,19 @@ def run_scenario(
         + "\n",
         encoding="utf-8",
     )
+    if scenario.id == "18-workspace-search":
+        for fixture_name, document_name in (
+            ("docx-contract-split", "search-visible.docx"),
+            ("xlsx-ledger", "search-visible.xlsx"),
+            ("pptx-slides-reordered", "search-visible.pptx"),
+        ):
+            fixture_root = ROOT / "tests" / "fixtures" / "ooxml" / fixture_name
+            with zipfile.ZipFile(
+                controls_dir / document_name, "w", zipfile.ZIP_DEFLATED
+            ) as package:
+                for part in sorted(fixture_root.rglob("*")):
+                    if part.is_file() and part.name != "expected.txt":
+                        package.write(part, part.relative_to(fixture_root).as_posix())
     workspace_root = (
         persistent_run.workspace_root
         if persistent_run is not None

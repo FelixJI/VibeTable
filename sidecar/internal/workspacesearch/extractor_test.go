@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -13,6 +14,13 @@ import (
 
 func TestExtractorCoversTextHTMLJSONOOXMLAndNativePDF(t *testing.T) {
 	limits := DefaultExtractionLimits
+	slideDeck := ooxmlMany(t, map[string]string{
+		"ppt/presentation.xml": `<p:presentation xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldIdLst>
+		  <p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>`,
+		"ppt/_rels/presentation.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+		  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>`,
+		"ppt/slides/slide1.xml": fmt.Sprintf(`<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Slide text</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`),
+	})
 	tests := []struct {
 		name, mime string
 		body       []byte
@@ -21,7 +29,8 @@ func TestExtractorCoversTextHTMLJSONOOXMLAndNativePDF(t *testing.T) {
 		{"notes.md", "text/markdown", []byte("# Quarterly report"), "Quarterly report"},
 		{"record.json", "application/json", []byte(`{"title":"Quarterly report"}`), "Quarterly report"},
 		{"page.html", "text/html", []byte(`<p>Visible report</p><script>secret</script>`), "Visible report"},
-		{"report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ooxml(t, "word/document.xml", `<w:document xmlns:w="w"><w:t>Document report</w:t></w:document>`), "Document report"},
+		{"report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ooxml(t, "word/document.xml", `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:t>Document report</w:t></w:document>`), "Document report"},
+		{"slides.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", slideDeck, "Slide text"},
 		{
 			"report.pdf", "application/pdf",
 			pdfQualificationDocument(t, []byte(`BT /F1 12 Tf (Native PDF report) Tj ET`), false),
@@ -69,7 +78,7 @@ func TestExtractorFailsPerSourceWithoutBlockingAndHonorsLimits(t *testing.T) {
 }
 
 func TestOOXMLRejectsDeclaredPartBeyondLimit(t *testing.T) {
-	payload := ooxml(t, "word/document.xml", `<w:document xmlns:w="w"><w:t>too long</w:t></w:document>`)
+	payload := ooxml(t, "word/document.xml", `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:t>too long</w:t></w:document>`)
 	limits := DefaultExtractionLimits
 	limits.MaximumPartBytes = 4
 	result := Extract(context.Background(), "report.docx", "", bytes.NewReader(payload), limits)
@@ -417,8 +426,12 @@ func TestExtractorPropagatesCancellationAcrossStructuredFormatsAndTextMIMEFallba
 	if _, err := extractHTML(cancelled, []byte(`<p>text</p>`)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("HTML cancellation = %v", err)
 	}
-	if ooxmlTextPart("unknown", "content.xml") {
-		t.Fatal("unknown OOXML kind was treated as searchable")
+	if result := extractOOXML(
+		context.Background(), "unknown",
+		ooxml(t, "word/document.xml", `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:t>ignored</w:t></w:document>`),
+		DefaultExtractionLimits,
+	); result.Status != ExtractionIndexed || result.Text != "" {
+		t.Fatalf("unknown OOXML kind was treated as searchable: %#v", result)
 	}
 }
 
@@ -461,21 +474,36 @@ func TestExtractorTraversesJSONXMLAndHTMLValues(t *testing.T) {
 	}
 }
 
-func TestOOXMLSupportsDocumentPresentationAndWorkbookParts(t *testing.T) {
-	tests := []struct {
-		name, part, body, want string
-	}{
-		{"report.docx", "word/header1.xml", `<w:hdr xmlns:w="w"><w:t>Header text</w:t></w:hdr>`, "Header text"},
-		{"slides.pptx", "ppt/slides/slide1.xml", `<p:sld xmlns:p="p"><p:t>Slide text</p:t></p:sld>`, "Slide text"},
-		{"sheet.xlsx", "xl/sharedStrings.xml", `<sst><si><t>Shared text</t></si></sst>`, "Shared text"},
-		{"sheet.xlsx", "xl/worksheets/sheet1.xml", `<worksheet><v>Cell text</v></worksheet>`, "Cell text"},
+func TestOOXMLLocatesMainPartsThroughRootRelationships(t *testing.T) {
+	// A non-standard main part name resolves through the root officeDocument
+	// relationship instead of a fixed part path.
+	nonstandard := ooxmlMany(t, map[string]string{
+		"_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+		  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="custom/main-story.xml"/></Relationships>`,
+		"custom/main-story.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>合同编号 CustomMain</w:t></w:r></w:p></w:body></w:document>`,
+	})
+	result := Extract(context.Background(), "custom.docx", "", bytes.NewReader(nonstandard), DefaultExtractionLimits)
+	if result.Status != ExtractionIndexed || result.Text != "合同编号 CustomMain" {
+		t.Fatalf("non-standard main part = %#v", result)
 	}
-	for _, test := range tests {
-		t.Run(test.name+test.part, func(t *testing.T) {
-			result := Extract(context.Background(), test.name, "", bytes.NewReader(ooxml(t, test.part, test.body)), DefaultExtractionLimits)
-			if result.Status != ExtractionIndexed || !strings.Contains(result.Text, test.want) {
-				t.Fatalf("Extract() = %#v", result)
-			}
+
+	// Stray parts without a reachable main relationship fail closed instead
+	// of being indexed by name prefix.
+	for name, part := range map[string]string{
+		"stray-header.docx": "word/header1.xml",
+		"stray-sheet.xlsx":  "xl/worksheets/sheet1.xml",
+		"stray-slide.pptx":  "ppt/slides/slide1.xml",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertExtractionCode(
+				t,
+				Extract(
+					context.Background(), name, "",
+					bytes.NewReader(ooxml(t, part, `<root><t>stray</t></root>`)),
+					DefaultExtractionLimits,
+				),
+				ExtractionFailed, "extract.ooxml_part_failed",
+			)
 		})
 	}
 }
@@ -485,8 +513,8 @@ func TestOOXMLRejectsArchiveBoundsAndInvalidParts(t *testing.T) {
 	assertExtractionCode(t, invalid, ExtractionFailed, "extract.ooxml_invalid")
 
 	payload := ooxmlMany(t, map[string]string{
-		"word/document.xml": `<w:document xmlns:w="w"><w:t>one</w:t></w:document>`,
-		"word/header1.xml":  `<w:hdr xmlns:w="w"><w:t>two</w:t></w:hdr>`,
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:t>one</w:t></w:document>`,
+		"word/header1.xml":  `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:t>two</w:t></w:hdr>`,
 	})
 	entryLimits := DefaultExtractionLimits
 	entryLimits.MaximumZIPEntries = 1
@@ -515,9 +543,7 @@ func TestOOXMLRejectsArchiveBoundsAndInvalidParts(t *testing.T) {
 		context.Background(), "report.docx", "",
 		bytes.NewReader(ooxml(t, "../word/document.xml", `<w:document/>`)), DefaultExtractionLimits,
 	)
-	if unsafe.Status != ExtractionIndexed || unsafe.Text != "" {
-		t.Fatalf("unsafe entry = %#v", unsafe)
-	}
+	assertExtractionCode(t, unsafe, ExtractionFailed, "extract.ooxml_invalid")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	assertExtractionCode(

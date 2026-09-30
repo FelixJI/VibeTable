@@ -8603,6 +8603,12 @@ async function scenario18(page, recorder, _network, runtime) {
         && ["active", "deleted"].includes(item.status)),
   { andDocuments: andDocuments.result, orDocuments: orDocuments.result });
 
+  for (const name of ["search-visible.docx", "search-visible.xlsx", "search-visible.pptx"]) {
+    await fs.writeFile(documentControl, `${path.join(runtime.controlsDir, name)}\n`, "utf8");
+    await page.getByTestId("document-import").click();
+    await page.locator('[data-testid^="document-row-"]').filter({ hasText: name })
+      .waitFor({ state: "visible", timeout: 30_000 });
+  }
   await page.getByTestId("nav-tables").click();
   await selectTable(page, "E2E Search Records");
   await titleCell.waitFor({ state: "visible", timeout: 30_000 });
@@ -8671,6 +8677,38 @@ async function scenario18(page, recorder, _network, runtime) {
   const indexState = rebuiltIndex.state;
   recorder.check("WorkspaceSearch rebuild completes durably without a silent fallback",
     indexState === "ready", { rebuiltIndex });
+  // Independent literal oracle: Word run boundaries cannot split a visible word,
+  // and Excel's unused shared-string pool is never searchable cell content.
+  await page.getByTestId("workspace-search-input").locator("input").fill("合同编号");
+  const visibleWord = await submitWorkspaceSearch(page, { keyboard: true });
+  recorder.check("packaged OOXML search preserves the complete Chinese word across runs",
+    ["search-visible.docx", "search-visible.xlsx", "search-visible.pptx"].every(name =>
+      visibleWord.hits.some(hit => hit.kind === "file" && hit.title === name)), { visibleWord });
+  await page.getByTestId("workspace-search-coverage-warning").first()
+    .waitFor({ state: "visible", timeout: 30_000 });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "18-ooxml-coverage.png"), fullPage: true });
+  await page.getByTestId("workspace-search-result").filter({ hasText: "search-visible.docx" }).click();
+  await page.getByTestId("file-workspace").waitFor({ state: "visible", timeout: 30_000 });
+  const openedWord = page.locator('[data-testid^="document-row-"]').filter({ hasText: "search-visible.docx" });
+  await openedWord.waitFor({ state: "visible", timeout: 30_000 });
+  recorder.check("OOXML SearchHit opens the same authority file identity through the real UI",
+    await openedWord.count() === 1);
+  await page.getByTestId("nav-search").click();
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-search-input").locator("input").fill("SENTINEL-UNREFERENCED-STRING");
+  const unusedString = await submitWorkspaceSearch(page);
+  recorder.check("unused Excel shared strings do not produce false content hits",
+    unusedString.hits.length === 0, { unusedString });
+  for (const text of ["SlideTwo", "演讲备注"]) {
+    await page.getByTestId("workspace-search-input").locator("input").fill(text);
+    const presentation = await submitWorkspaceSearch(page);
+    recorder.check(`PPTX referenced slide and notes text stays searchable: ${text}`,
+      presentation.hits.some(hit => hit.title === "search-visible.pptx"), { presentation });
+  }
+  await page.getByTestId("workspace-search-input").locator("input").fill("3");
+  const cachedFormula = await submitWorkspaceSearch(page);
+  recorder.check("Excel cached formula values remain searchable without recalculation",
+    cachedFormula.hits.some(hit => hit.title === "search-visible.xlsx"), { cachedFormula });
 
   await page.getByTestId("workspace-search-input").locator("input").fill("E2E");
   await submitWorkspaceSearch(page, { keyboard: true });

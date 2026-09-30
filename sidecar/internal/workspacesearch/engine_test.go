@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -664,6 +665,83 @@ func TestOpenRollsBackFailedLegacySearchProjectionMigration(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesV1ExtractionCorpusToRebuildRequired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1-extraction.db")
+	engine, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
+	}
+	execSearchDatabaseStatements(t, path,
+		`UPDATE search_meta SET value='1' WHERE key='projection_schema_version'`,
+		`INSERT INTO search_documents(
+			hit_id,kind,canonical_id,title,display_text,projected_title,normalized_text,
+			source_revision,revision_time,status,is_current,metadata_json,open_target_json
+		) VALUES (
+			'file:doc-1:rev-1','file','doc-1','合同正文','合同 编 号 broken v1 text',
+			'合同 编 号 broken v1 text','合同 编 号 broken v1 text',
+			'rev-1','2026-08-12T00:00:00Z','indexed',1,'[]','{}')`,
+	)
+
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { migrated.Close() })
+	status, err := migrated.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "degraded" || status.ErrorCode == nil ||
+		*status.ErrorCode != restoreRebuildRequiredCode {
+		t.Fatalf("migrated status = %#v", status)
+	}
+	if _, err := migrated.Query(
+		context.Background(), request("合同"),
+	); err == nil || !strings.Contains(err.Error(), restoreRebuildRequiredCode) {
+		t.Fatalf("stale v1 body stayed queryable: %v", err)
+	}
+
+	// The projection worker clears the flag by promoting a full rebuild that
+	// re-derives file bodies with the current extraction semantics.
+	if err := migrated.Rebuild(context.Background(), []SourceDocument{
+		{
+			Kind: "file", CanonicalID: "doc-1", SourceRevision: "rev-2",
+			Title: "合同正文", Body: "合同编号 VT-2026", RevisionTime: "2026-09-12T00:00:00Z",
+			Status: "indexed", Current: true,
+			Metadata: []contracts.SearchMetadataItem{}, OpenTarget: contracts.SearchOpenTarget{Kind: "file"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := query(t, migrated, request("合同编号"))
+	if len(result.Hits) != 1 || result.Hits[0].SourceRevision != "rev-2" {
+		t.Fatalf("rebuilt corpus hits = %#v", result.Hits)
+	}
+	if broken := query(t, migrated, request("broken")); len(broken.Hits) != 0 {
+		t.Fatalf("v1-era body survived the rebuild: %#v", broken.Hits)
+	}
+
+	// Idempotent reopen keeps the promoted schema without re-invalidating.
+	if err := migrated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopenedStatus, err := reopened.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopenedStatus.State != "ready" {
+		t.Fatalf("reopened status = %#v", reopenedStatus)
+	}
+}
+
 func TestOpenRejectsIncompatibleProjectionSchemas(t *testing.T) {
 	for name, test := range map[string]struct {
 		statements []string
@@ -681,7 +759,8 @@ func TestOpenRejectsIncompatibleProjectionSchemas(t *testing.T) {
 			statements: []string{
 				`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 				`INSERT INTO search_meta(key,value) VALUES
-					('generation','0'),('projection_schema_version','2')`,
+					('generation','0'),('projection_schema_version','` +
+					strconv.Itoa(searchProjectionSchemaVersion+1) + `')`,
 			},
 			want: "workspace_search.projection_schema_unsupported",
 		},
@@ -689,7 +768,8 @@ func TestOpenRejectsIncompatibleProjectionSchemas(t *testing.T) {
 			statements: []string{
 				`CREATE TABLE search_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 				`INSERT INTO search_meta(key,value) VALUES
-					('generation','0'),('projection_schema_version','1')`,
+					('generation','0'),('projection_schema_version','` +
+					strconv.Itoa(searchProjectionSchemaVersion) + `')`,
 				`CREATE TABLE search_documents (
 					rowid INTEGER PRIMARY KEY,
 					kind TEXT NOT NULL,

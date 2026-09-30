@@ -16,7 +16,7 @@
 - 结果：35/35 passed、0 failed、0 skipped。
 - 当前 manifest gap：2（`37-collection-formula-journey`、`38-calculation-chain-journey`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：2（`05-formula-lifecycle`、`14-document-diff`）。
+- 当前 manifest changed：3（`05-formula-lifecycle`、`14-document-diff`、`18-workspace-search`）。
 
 本次 S05 扩展的局部候选验证与截图见 [PR #397](https://github.com/FelixJI/VibeTable/pull/397)。局部验证仅覆盖新增断言，不替代完整 PR 门禁，也不计入本节的历史主干样本。
 
@@ -190,3 +190,9 @@ S10 恢复测量（历史样本）：sidecar kill→可读表 2273.97ms，backen
 原始来源通过validated PocketBase Save准备，汇总/主表与后续变更仍走真实mutation和jobs；本数据集不证明50k导入吞吐。原先mutation造数在49,500行触发30分钟测试超时的失败保留；不同造数方式的耗时不相减为产品收益。无关备注变更的2个全量fanout已降为0，相关源变更在fanout完成前拒绝旧值；表达式/时钟、工作区A→B→A及进行中取消由独立组合回归覆盖。
 
 包含上游定义水印的开发候选 `95532dc1`，其普通构建真实WPF/WebView2 S38于2026-09-30通过，场景75.69008s，33项断言及四组件freshness通过。覆盖可见编辑器创建/编辑三层计算、只读F2、199条来源分页、计算值筛选排序、CSV/XLSX逐值顺序与公式样文本不执行、关闭重开同一workspace身份；无外网/异常/pending，进程、端口及句柄清理通过。该本地场景不替代最终PR全量质量和旧主路径矩阵；此前9月29日中间候选证据保留。相同界面路径截图：[计算值筛选排序](assets/screenshots/vibetable-calculation-chain-filtered.png)、[完整来源分页](assets/screenshots/vibetable-calculation-chain-sources.png)。
+
+## 2026-10-01 OOXML 搜索资格（#410）
+
+开发候选 `1ab09aba` 的真实 WPF/WebView2 S18 单场景通过，用时 42.24863s。合成 DOCX、XLSX、PPTX 均命中“合同编号”；未引用字符串无命中，缓存公式值与演讲备注可检索，部分覆盖提示及打开正确文件均通过。报告绑定 `20260930T171742Z`，该结果不替代完整 PR 门禁，也不扩大 PDF 支持范围。
+
+界面截图：[OOXML 搜索与覆盖提示](quality/screenshots/issue410-ooxml-search.png)。

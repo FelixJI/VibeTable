@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">合同</w:t></w:r>
+      <w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">编</w:t></w:r>
+      <w:r><w:rPr><w:b/></w:rPr><w:t>号</w:t></w:r>
+      <w:r><w:t xml:space="preserve"> VT-2026-09 合同 Draft v2</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Quarterly </w:t></w:r>
+      <w:r><w:rPr><w:i/></w:rPr><w:t xml:space="preserve">report</w:t></w:r>
+      <w:r><w:tab/><w:t xml:space="preserve">FY26</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>离线数据</w:t></w:r>
+      <w:ins w:id="1" w:author="a" w:date="2026-09-01T00:00:00Z">
+        <w:r><w:t xml:space="preserve">工作台交付</w:t></w:r>
+      </w:ins>
+    </w:p>
+  </w:body>
+</w:document>
