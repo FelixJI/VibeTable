@@ -19,8 +19,10 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
+	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 // normalizeStored unwraps bare JSON scalars that some computed-cell writers
@@ -558,5 +560,114 @@ func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.
 	}
 	if !found {
 		t.Fatalf("source row missing from query page: %#v", page.Rows)
+	}
+}
+
+// TestRelationPickerSaveWithFormulaOverPathLookup pins the S38 production
+// failure (#414): a cel formula referencing a same-table path Lookup reads the
+// value the Lookup calculator just materialized on the record, and PocketBase
+// hands that JSON-column scalar back as pbtypes.JSONRaw. normalizeInput must
+// unwrap the storage wrapper and normalize by the declared field type, so the
+// picker save commits and both stored cells match the independent oracle.
+// Old implementation: formula.null "formula used null in an unsupported
+// operation" on the picker save; the field-creation backfill job fails with
+// the same code and leaves the formula column null.
+func TestRelationPickerSaveWithFormulaOverPathLookup(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	orders := createV2IntegrationTable(t, ctx, app, "取值订单", "picker_orders")
+	materials := createV2IntegrationTable(t, ctx, app, "取值物料", "picker_materials")
+	orderCode := createV2IntegrationField(t, ctx, app, orders.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "订单编码"), "picker_order_code")
+	sourceCode := createV2IntegrationField(t, ctx, app, materials.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "物料编码"), "picker_source_code")
+	amount := createV2IntegrationField(t, ctx, app, materials.TableID,
+		fieldDraftForIntegration(t, v2.LogicalNumber, "数量"), "picker_amount")
+	link := createV2IntegrationRelation(t, ctx, app, orders.TableID, orderCode.FieldID,
+		materials.TableID, sourceCode.FieldID, "关联合同", "订单", "one", "picker_relation")
+	linkedDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "关联金额")
+	linkedDraft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{{RelationFieldID: link.FieldID}}, TargetFieldID: amount.FieldID,
+		Aggregation: v2.LookupAggregationSum,
+	}
+	linked := createV2IntegrationField(t, ctx, app, orders.TableID, linkedDraft, "picker_linked_lookup")
+	harness := newRematHarness(t, app)
+	orderID := "pickerorder0001"
+	materialID := "pickermatrl0001"
+	sourceCodeName := sourceCode.Definition.Identity.PhysicalName
+	amountName := amount.Definition.Identity.PhysicalName
+	harness.apply("material insert", materials, "picker-material-insert",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &materialID,
+			Values: map[string]any{sourceCodeName: "MAT-P", amountName: float64(7)}})
+	harness.apply("order insert", orders, "picker-order-insert",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &orderID,
+			Values: map[string]any{
+				orderCode.Definition.Identity.PhysicalName: "ORD-P",
+			}})
+	// The S38 chain shape: a cel formula reading the same-table path Lookup.
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(
+		app, store, fieldchange.WithFormulaBackfillScheduler(harness.jobService),
+	)
+	actor := v2.Actor{ID: "local-user", Kind: "user"}
+	totalDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "关系总额")
+	totalDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: linked.Definition.Identity.PhysicalName + " + 1.0",
+	}
+	revisions, err := catalog.Revisions(ctx, orders.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: orders.TableID,
+		ExpectedSchemaRev: revisions.Schema, Draft: &totalDraft, Actor: actor,
+	})
+	if err != nil || !plan.CanApply {
+		t.Fatalf("total formula plan: %#v %v", plan, err)
+	}
+	totalReceipt, err := executor.Apply(ctx, v2.ApplyRequest{
+		PlanID: plan.PlanID, PlanHash: plan.PlanHash,
+		OperationID: "picker-total-create", Actor: actor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	totalName := totalReceipt.Definition.Identity.PhysicalName
+	linkedName := linked.Definition.Identity.PhysicalName
+	linkName := link.Definition.Identity.PhysicalName
+	// The relation picker save itself: bind the first target through the real
+	// relation service on the production composite calculator (harness).
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := relation.New(app, query.NewPort(app, querySource), harness.kernel)
+	definition, err := schemaexecution.Describe(ctx, app, orders.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyDelta(ctx, relation.DeltaRequest{
+		RelationID:     orders.TableID + "." + link.FieldID,
+		SourceRecordID: orderID,
+		SchemaRevision: definition.Snapshot.SchemaRevision,
+		Adds: []relation.TargetRef{{
+			TableID: materials.TableID, RecordID: materialID, Label: materialID,
+		}},
+		RequestID: "picker-save", IdempotencyKey: "picker-save",
+		Actor: mutation.Actor{Type: "user", ID: "local-user"},
+	}); err != nil {
+		t.Fatalf("relation picker save failed: %#v", err)
+	}
+	if got := storedValue(t, app, orders.PhysicalName, orderID, linkedName); got != float64(7) {
+		t.Fatalf("path lookup after picker save = %#v, want 7", got)
+	}
+	if got := storedValue(t, app, orders.PhysicalName, orderID, totalName); got != float64(8) {
+		t.Fatalf("formula over path lookup = %#v, want 8", got)
+	}
+	if got := sourceLinks(t, app, orders.PhysicalName, orderID, linkName); len(got) != 1 || got[0] != materialID {
+		t.Fatalf("links after picker save = %#v", got)
 	}
 }
