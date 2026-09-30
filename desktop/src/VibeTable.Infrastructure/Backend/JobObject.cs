@@ -86,8 +86,10 @@ internal sealed class JobObject : IDisposable
     /// </summary>
     /// <exception cref="Win32Exception">if <c>CreateJobObject</c> or
     /// <c>SetInformationJobObject</c> fails on Windows.</exception>
-    public static JobObject Create()
+    public static JobObject Create(ulong? processMemoryLimit = null)
     {
+        if (processMemoryLimit == 0)
+            throw new ArgumentOutOfRangeException(nameof(processMemoryLimit));
         if (!IsSupported)
         {
             return new JobObject(IntPtr.Zero);
@@ -104,11 +106,13 @@ internal sealed class JobObject : IDisposable
         // armed for the whole lifetime of every assigned child.
         var info = new JOBOBJECT_BASIC_LIMIT_INFORMATION
         {
-            LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+                (processMemoryLimit.HasValue ? 0x00000100u : 0u), // JOB_OBJECT_LIMIT_PROCESS_MEMORY
         };
         var extended = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
         {
             BasicLimitInformation = info,
+            ProcessMemoryLimit = (UIntPtr)(processMemoryLimit ?? 0),
         };
 
         int size = Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
@@ -124,6 +128,11 @@ internal sealed class JobObject : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(),
                     "SetInformationJobObject(KILL_ON_JOB_CLOSE) failed.");
             }
+        }
+        catch
+        {
+            CloseHandle(handle);
+            throw;
         }
         finally
         {

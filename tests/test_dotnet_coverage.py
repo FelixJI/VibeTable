@@ -125,7 +125,7 @@ def test_dotnet_coverage_config_rejects_missing_metric_instead_of_disabling_gate
         coverage_gate.load_projects(config)
 
 
-def test_inventory_binds_all_six_projects_and_original_ratchets() -> None:
+def test_inventory_binds_all_projects_and_original_ratchets() -> None:
     projects = coverage_gate.load_projects()
     assert {p.assembly: (p.line_minimum, p.branch_minimum) for p in projects} == {
         "VibeTable.Desktop": (63, 53),
@@ -134,6 +134,7 @@ def test_inventory_binds_all_six_projects_and_original_ratchets() -> None:
         "VibeTable.Workspace": (92, 85),
         "VibeTable.Infrastructure": (74, 64),
         "VibeTable.DocumentDiff.OpenXml": (78, 79),
+        "VibeTable.DocumentDiff.Worker": (78, 79),
     }
     configured = {p.test_project for p in projects}
     discovered = {
