@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/sync/singleflight"
 
@@ -27,11 +28,12 @@ type planCacheEntry struct {
 }
 
 type planCache struct {
-	mu      sync.Mutex
-	entries map[planCacheKey]*planCacheEntry
-	lru     list.List
-	flights singleflight.Group
-	compile func(schemaexecution.Table) (*Plan, *Error)
+	mu           sync.Mutex
+	entries      map[planCacheKey]*planCacheEntry
+	lru          list.List
+	flights      singleflight.Group
+	compile      func(schemaexecution.Table) (*Plan, *Error)
+	compilations atomic.Uint64
 	// currentRevision is configured before the cache is shared with callers.
 	currentRevision func(string) (string, error)
 	epoch           uint64
@@ -113,6 +115,7 @@ func (cache *planCache) get(definition schemaexecution.Table) (*Plan, error) {
 			return ready, nil
 		}
 		cache.mu.Unlock()
+		cache.compilations.Add(1)
 		compiled, compileErr := cache.compile(definition)
 		cache.mu.Lock()
 		// A flight may finish after invalidation and an identical re-request.

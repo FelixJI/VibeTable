@@ -13,11 +13,17 @@ import (
 
 type clockCacheKey struct{}
 type clockFieldKey struct{ table, field string }
+type computedDefinitionReference struct {
+	key   clockFieldKey
+	field v2.FieldDefinition
+}
 type clockCache struct {
-	mu         sync.Mutex
-	fields     map[string][]v2.FieldDefinition
-	references map[clockFieldKey][]formula.ClockReference
-	tables     map[clockFieldKey][]string
+	mu          sync.Mutex
+	fields      map[string][]v2.FieldDefinition
+	references  map[clockFieldKey][]formula.ClockReference
+	tables      map[clockFieldKey][]string
+	inputs      map[clockFieldKey][]clockFieldKey
+	definitions map[clockFieldKey][]computedDefinitionReference
 }
 
 // The cache belongs to one authoritative transaction/batch, never a process
@@ -26,7 +32,7 @@ func WithClockCache(ctx context.Context) context.Context {
 	return context.WithValue(ctx, clockCacheKey{}, newClockCache())
 }
 func newClockCache() *clockCache {
-	return &clockCache{fields: map[string][]v2.FieldDefinition{}, references: map[clockFieldKey][]formula.ClockReference{}, tables: map[clockFieldKey][]string{}}
+	return &clockCache{fields: map[string][]v2.FieldDefinition{}, references: map[clockFieldKey][]formula.ClockReference{}, tables: map[clockFieldKey][]string{}, inputs: map[clockFieldKey][]clockFieldKey{}, definitions: map[clockFieldKey][]computedDefinitionReference{}}
 }
 func ClockReferencesFor(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, fieldID string) ([]formula.ClockReference, error) {
 	cache, ok := ctx.Value(clockCacheKey{}).(*clockCache)
@@ -78,10 +84,29 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 		return nil, err
 	}
 	seenTables := map[string]bool{}
+	definitions := []computedDefinitionReference{{key: key, field: *current}}
+	seenDefinitions := map[clockFieldKey]bool{key: true}
+	var inputs []clockFieldKey
+	seenInputs := map[clockFieldKey]bool{}
+	addInput := func(input clockFieldKey) {
+		if !seenInputs[input] {
+			seenInputs[input] = true
+			inputs = append(inputs, input)
+		}
+	}
 	for _, table := range tables {
 		seenTables[table] = true
 	}
 	addTables := func(nested clockFieldKey) {
+		for _, definition := range cache.definitions[nested] {
+			if !seenDefinitions[definition.key] {
+				seenDefinitions[definition.key] = true
+				definitions = append(definitions, definition)
+			}
+		}
+		for _, input := range cache.inputs[nested] {
+			addInput(input)
+		}
 		for _, table := range cache.tables[nested] {
 			if !seenTables[table] {
 				seenTables[table] = true
@@ -123,6 +148,9 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 	if len(dependencies) > 4096 {
 		return nil, fmt.Errorf("computed clock dependency graph exceeds 4096 fields")
 	}
+	if len(dependencies) != 0 {
+		addInput(key)
+	}
 	for _, dependency := range dependencies {
 		target := dependency.GetString("target_field_id")
 		if target == "__path__" {
@@ -136,6 +164,8 @@ func (cache *clockCache) visit(ctx context.Context, app core.App, key clockField
 		addTables(clockFieldKey{dependency.GetString("target_table_id"), target})
 	}
 	cache.tables[key] = tables
+	cache.inputs[key] = inputs
+	cache.definitions[key] = definitions
 	cache.references[key] = result
 	return result, nil
 }

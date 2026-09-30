@@ -1276,6 +1276,9 @@ func saveAudit(
 	dataRevision int64,
 	occurredAt time.Time,
 ) error {
+	if err := relatedcomputation.AdvanceInputRevisions(ctx, app, request.TableID, definition.Snapshot.Fields, before, after, string(operation), dataRevision); err != nil {
+		return err
+	}
 	collection, err := app.FindCollectionByNameOrId("vibetable_audit_events")
 	if err != nil {
 		return storageFailure()

@@ -1,5 +1,5 @@
 import { computed, readonly, ref, watch, type Ref } from "vue";
-import type { ApplyImportResult, ExportFormat, ExportResult, ImportPlan, SessionPathGrant } from "@/contracts";
+import type { ApplyImportResult, ExportFormat, ExportResult, ImportPlan, SessionPathGrant, TableQuery } from "@/contracts";
 import type {
   DataTaskSessionState,
   ExportLookupContext,
@@ -66,6 +66,7 @@ interface DataIoTaskContext {
 interface DataIoTaskOptions {
   readonly service: DataIoTaskPort;
   readonly resolveContext: () => DataIoTaskContext;
+  readonly resolveExportQuery: () => TableQuery;
   readonly importSucceeded: (rowCount: number) => void;
   readonly exportSucceeded: (result: ExportResult) => void;
   readonly reportError: (message: string) => void;
@@ -112,7 +113,9 @@ export function useDataIoTask(options: DataIoTaskOptions) {
   const mappingDirty = ref(false);
   const schemaDrifted = ref(false);
   const repreviewing = ref(false);
-  const exportPanel = ref<ExportLookupPanelState | null>(null);
+  const exportPanel = ref<(ExportLookupPanelState & {
+    readonly query: Readonly<Record<string, unknown>>;
+  }) | null>(null);
   const exportLookupIds = ref<readonly string[]>([]);
   let requestEpoch = 0;
   let catalogRequest = 0;
@@ -368,10 +371,15 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     const collection = resolveExportCollection();
     if (!collection || exportPanel.value) return;
     const scope = captureScope(collection);
+    const { keyword, filters, sorts } = options.resolveExportQuery();
+    // Export every matching record, independent of viewport/group pagination.
+    // Clone the JSON wire values now, before awaiting the catalog or confirmation.
+    const query = JSON.parse(JSON.stringify({ keyword, filters, sorts })) as Record<string, unknown>;
     exportLookupIds.value = [];
     exportPanel.value = {
       format,
       collection,
+      query,
       loading: true,
       error: null,
       options: [],
@@ -425,7 +433,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         : undefined;
       const result = await options.service.exportData(
         panel.collection,
-        {},
+        panel.query,
         panel.format,
         selection,
         () => assertCurrent(scope),

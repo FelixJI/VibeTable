@@ -226,6 +226,22 @@ func TestCollectionFanoutConvergesAcrossSameTableComputedDAG(t *testing.T) {
 		t.Fatalf("derived replay duplicated jobs: %v %v %v", ids, replayed, err)
 	}
 	assertValues(6, 7, 14)
+	// Mixed batches publish operation=update, but their insert still changes
+	// COUNT(TABLE) membership. The unchanged amount contributes no value delta.
+	definition, err = schemaapi.New(app).Describe(ctx, a.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixedID := "cfarow000000004"
+	receipt, err := kernel.Apply(ctx, mutationRequest(a.TableID, definition.Snapshot.SchemaRevision, "cf_mixed_membership",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &mixedID, Values: map[string]any{amount.Definition.Identity.PhysicalName: 0.0}},
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &aIDs[0], Values: map[string]any{amount.Definition.Identity.PhysicalName: 4.0}}))
+	if err != nil || receipt.Status != mutation.StatusApplied {
+		t.Fatalf("mixed membership: %+v, %v", receipt, err)
+	}
+	aIDs = append(aIDs, mixedID)
+	drain()
+	assertValues(6, 7, 21)
 }
 
 func TestCollectionClockRefreshResolvesSameTableAndCrossTableSources(t *testing.T) {

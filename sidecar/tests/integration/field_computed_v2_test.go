@@ -618,12 +618,13 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var staleCount int
-	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&staleCount); err != nil {
+	var unrelatedChangeCount int
+	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&unrelatedChangeCount); err != nil {
 		t.Fatal(err)
 	}
-	if staleCount != 0 {
-		t.Fatalf("stale lookup participated in filtering: count=%d", staleCount)
+	// Balance feeds the formula; the lookup only follows Customer -> Region -> Name.
+	if unrelatedChangeCount != 1 {
+		t.Fatalf("unrelated balance change invalidated lookup filtering: count=%d", unrelatedChangeCount)
 	}
 	regionDefinition, err := schemaapi.New(app).Describe(ctx, region.TableID)
 	if err != nil {
@@ -653,6 +654,21 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	)
 	if err != nil || lookupOnlyJob.GetString("state") != "queued" {
 		t.Fatalf("lookup-only invalidation job = %#v, err=%v", lookupOnlyJob, err)
+	}
+	descriptor, err = querySource.DescribeQueryTable(ctx, app, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err = query.Compile(descriptor, lookupFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleCount int
+	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&staleCount); err != nil {
+		t.Fatal(err)
+	}
+	if staleCount != 0 {
+		t.Fatalf("stale lookup participated in filtering before region fanout: count=%d", staleCount)
 	}
 
 	collection, err := app.FindCollectionByNameOrId(source.PhysicalName)

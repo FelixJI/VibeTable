@@ -2,6 +2,7 @@ package formula
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/cel-go/cel"
@@ -46,16 +47,30 @@ func TestNumericLookupAggregationsAreNumberFormulaInputs(t *testing.T) {
 	plan, compileErr := NewCompiler(DefaultLimits()).CompileExecutionTable(formulaTable(
 		total,
 		formulaField("fld_bonus00001", "f_bonus00001", numberType, "f_total00001 + 1.0"),
+		formulaField("fld_double0001", "f_double0001", numberType, "f_total00001 * 2.0"),
 	))
 	if compileErr != nil {
 		t.Fatal(compileErr)
 	}
-	result, evaluateErr := plan.Evaluate(context.Background(), map[string]any{"f_total00001": 39.5}, nil)
-	if evaluateErr != nil {
-		t.Fatal(evaluateErr)
-	}
-	if result["f_bonus00001"] != 40.5 {
-		t.Fatalf("downstream numeric reference = %#v", result)
+	for _, test := range []struct {
+		name  string
+		input any
+		value float64
+	}{
+		{"stored fractional", 39.5, 39.5},
+		{"wire integer", json.Number("991"), 991},
+		{"wire fractional", json.Number("39.5"), 39.5},
+		{"integer scalar", int64(991), 991},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, evaluateErr := plan.Evaluate(context.Background(), map[string]any{"f_total00001": test.input}, nil)
+			if evaluateErr != nil {
+				t.Fatalf("numeric lookup input %#v (%T): error=%#v", test.input, test.input, evaluateErr)
+			}
+			if result["f_bonus00001"] != test.value+1 || result["f_double0001"] != test.value*2 {
+				t.Fatalf("downstream numeric reference = %#v", result)
+			}
+		})
 	}
 
 	// Inference must classify an aggregated lookup reference as a number.

@@ -44,6 +44,7 @@ import {
 import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
 import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
+import { runCalculationChainJourney } from "./calculation_chain_journey.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -10315,6 +10316,17 @@ const scenarios = {
       beginBridgeMessageCapture, waitForCapturedBridgeMessage,
       beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
       rawLifecycleWorkspaceV2Request, waitForFieldMigration,
+    },
+  ),
+  "38-calculation-chain-journey": (page, recorder, _network, runtime) => runCalculationChainJourney(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+      rawBridgeRequest, waitForQueryPage, selectTable, selectVisibleNOption, fillNInput,
+      waitForVisibleRowCount, chooseToolbarMore, openFieldSettingsFromHeader,
+      beginBridgeMessageCapture, waitForCapturedBridgeMessage, waitForFieldMigration,
+      beginCellEdit, waitForStableGridState, waitForImportSuccess,
+      openWorkspaceCenterFromSwitcher, replicaUiMethod, activateWorkspaceThroughUi,
+      canonicalJsonText,
     },
   ),
 };
