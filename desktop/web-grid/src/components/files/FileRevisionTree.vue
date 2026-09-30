@@ -12,7 +12,7 @@ import { useUiStore } from "@/stores/uiStore";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import { t } from "@/i18n";
-import type { DocumentDiffCompletedPayload } from "@/contracts";
+import type { DocumentDiffCompletedPayload, DocumentDiffChange } from "@/contracts";
 import type { DocumentDiffPhase } from "@/stores/documentWorkspaceStore";
 
 interface TreeRow {
@@ -31,6 +31,10 @@ const props = withDefaults(defineProps<{
   canCompare?: boolean;
   diffPhase?: DocumentDiffPhase;
   diffResult?: DocumentDiffCompletedPayload | null;
+  diffChanges?: readonly DocumentDiffChange[];
+  diffNextCursor?: string | null;
+  diffPageBusy?: boolean;
+  diffError?: string | null;
 }>(), {
   canCompare: false,
   requestedRevisionId: null,
@@ -43,6 +47,8 @@ const emit = defineEmits<{
   activate: [revision: FileRevisionV2];
   compare: [revision: FileRevisionV2];
   cancelCompare: [];
+  nextPage: [];
+  closeCompare: [];
 }>();
 
 const ui = useUiStore();
@@ -224,14 +230,13 @@ function revisionLabel(revision: FileRevisionV2): string {
 const diffMessage = computed(() => {
   const result = props.diffResult;
   if (!result) return props.diffPhase === "failed"
-    ? t("workspaceV2.fileTree.diff.failure.generic")
+    ? t(`workspaceV2.fileTree.diff.failure.${props.diffError ?? "generic"}`)
     : null;
-  if (result.outcome === "identical") return t("workspaceV2.fileTree.diff.identical");
-  if (result.outcome === "changed") return t("workspaceV2.fileTree.diff.changed");
-  if (result.outcome === "changedWithDetails") {
-    return t("workspaceV2.fileTree.diff.details", {
-      added: result.addedLines ?? 0,
-      removed: result.removedLines ?? 0,
+  if (result.outcome === "ready") {
+    const summary = result.session.summary;
+    return t("workspaceV2.fileTree.diff.groups", {
+      total: summary.totalChangeGroups, insertions: summary.insertions,
+      deletions: summary.deletions, replacements: summary.replacements,
     });
   }
   return t(`workspaceV2.fileTree.diff.failure.${result.failure ?? "generic"}`);
@@ -271,12 +276,32 @@ const diffMessage = computed(() => {
     </NAlert>
     <NAlert
       v-else-if="diffMessage"
-      :type="diffPhase === 'failed' ? 'warning' : 'success'"
+      :type="diffPhase === 'failed' || diffResult?.session?.warnings.length ? 'warning' : 'success'"
       :show-icon="true"
       data-testid="diff-result"
     >
       {{ diffMessage }}
     </NAlert>
+    <section v-if="diffResult?.outcome === 'ready'" class="diff-details" data-testid="diff-details">
+      <p v-if="diffResult.session.summary.totalChangeGroups === 0 && (diffResult.session.format === 'binary' || !diffResult.session.warnings.length)">
+        {{ t(diffResult.session.format === 'binary' ? 'workspaceV2.fileTree.diff.identical' : 'workspaceV2.fileTree.diff.semanticEqual') }}
+      </p>
+      <p v-for="warning in diffResult.session.warnings" :key="warning" role="status">
+        {{ t(`workspaceV2.fileTree.diff.warning.${warning}`) }}
+      </p>
+      <ul class="diff-coverage" aria-label="覆盖度">
+        <li v-for="area in diffResult.session.coverage.areas" :key="area.area">{{ area.area }}: {{ area.status }}</li>
+      </ul>
+      <article v-for="change in diffChanges" :key="change.changeId" :data-change-id="change.changeId">
+        <strong>{{ change.kind }} · {{ (change.location.paragraphIndex ?? 0) + 1 }}</strong>
+        <div class="diff-columns">
+          <div><small>{{ t('workspaceV2.fileTree.diff.before') }}</small><pre v-if="change.before"><span v-for="(run, index) in change.before.runs" :key="index">{{ run.text }}</span></pre></div>
+          <div><small>{{ t('workspaceV2.fileTree.diff.after') }}</small><pre v-if="change.after"><span v-for="(run, index) in change.after.runs" :key="index">{{ run.text }}</span></pre></div>
+        </div>
+      </article>
+      <NButton v-if="diffNextCursor" size="tiny" :loading="diffPageBusy" data-testid="diff-next-page" @click="emit('nextPage')">{{ t('files.loadMore') }}</NButton>
+      <NButton size="tiny" data-testid="diff-close" @click="emit('closeCompare')">{{ t('common.close') }}</NButton>
+    </section>
 
     <div v-if="!tree?.revisions.length" class="tree-empty">
       <GitBranch :size="23" />
@@ -390,6 +415,12 @@ const diffMessage = computed(() => {
 
 <style scoped>
 .file-revision-tree { min-height: 0; }
+.diff-details { padding: 12px; }
+.diff-details article { margin: 10px 0; }
+.diff-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.diff-columns > div { min-width: 0; }
+.diff-columns pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; padding: 6px; background: var(--vt-bg-subtle); }
+.diff-coverage { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
 .file-revision-tree > header {
   display: flex;
   align-items: flex-start;

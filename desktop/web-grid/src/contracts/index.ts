@@ -1,4 +1,5 @@
 import type { FormulaAuthorDocument } from "./generated/workbench";
+import type { DocumentDiffSessionResult, DocumentDiffChangePageRequest, DocumentDiffChangePageResult } from "./documentDiffV2";
 import type { WorkCalendarOverride } from "@/calendar/workCalendar";
 
 export interface SharedWorkCalendarResult { readonly overrides: WorkCalendarOverride[]; readonly revision: string }
@@ -1482,6 +1483,8 @@ export type WebMessageType =
   | "document.previewRequested"
   | "document.diffRequested"
   | "document.diffCancelRequested"
+  | "document.diffPageRequested"
+  | "document.diffCloseRequested"
   | "document.revealRequested"
   | "document.relinkRequested"
   // Table-admin requests.
@@ -1616,6 +1619,8 @@ export type HostMessageType =
   | "document.actionCompleted"
   | "document.diffCompleted"
   | "document.diffCancelCompleted"
+  | "document.diffPageCompleted"
+  | "document.diffCloseCompleted"
   | "document.operationFailed"
   | "document.workspaceChanged"
   // Collections-changed notifications.
@@ -1945,6 +1950,8 @@ export interface HostPayloadMap {
   "document.actionCompleted": DocumentActionCompletedPayload;
   "document.diffCompleted": DocumentDiffCompletedPayload;
   "document.diffCancelCompleted": DocumentDiffCancelCompletedPayload;
+  "document.diffPageCompleted": DocumentDiffChangePageResult;
+  "document.diffCloseCompleted": { readonly sessionId: string };
   "document.operationFailed": DocumentOperationFailedPayload;
   "document.workspaceChanged": DocumentWorkspaceChangedPayload;
   // Collections-changed notifications.
@@ -2169,6 +2176,8 @@ export interface WebPayloadMap {
   "document.previewRequested": DocumentHandlePayload;
   "document.diffRequested": DocumentDiffRequestedPayload;
   "document.diffCancelRequested": DocumentDiffCancelRequestedPayload;
+  "document.diffPageRequested": DocumentDiffChangePageRequest;
+  "document.diffCloseRequested": { readonly sessionId: string };
   "document.revealRequested": DocumentHandlePayload;
   "document.relinkRequested": DocumentOpaqueHandlePayload;
   // Table-admin requests.
@@ -2478,21 +2487,7 @@ export interface DocumentDiffCancelCompletedPayload {
   readonly cancelled: boolean;
 }
 
-export interface DocumentDiffCompletedPayload {
-  readonly entryHandle: string;
-  readonly historicalRevisionId: string;
-  readonly effectiveRevisionId: string;
-  readonly outcome: "identical" | "changed" | "changedWithDetails" | "failure";
-  readonly addedLines: number | null;
-  readonly removedLines: number | null;
-  readonly failure:
-    | "unsupported"
-    | "invalidContent"
-    | "io"
-    | "cancelled"
-    | "stale"
-    | null;
-}
+export type DocumentDiffCompletedPayload = DocumentDiffSessionResult;
 
 export interface DocumentBridgeEntry {
   readonly documentId: string;

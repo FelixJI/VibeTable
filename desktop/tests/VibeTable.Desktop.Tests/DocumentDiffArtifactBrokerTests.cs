@@ -142,6 +142,8 @@ public sealed class DocumentDiffArtifactBrokerTests
     {
         using var directory = new TemporaryDirectory();
         using var broker = new DocumentDiffArtifactBroker(directory.Path);
+        var closed = new List<Guid>();
+        broker.SessionClosed += closed.Add;
         using DocumentDiffArtifactOperation operation = broker.CreateOperation(
             Guid.NewGuid(), WorkspaceId, 7);
         await PublishComparisonAsync(operation);
@@ -151,6 +153,7 @@ public sealed class DocumentDiffArtifactBrokerTests
             DocumentDiffArtifactKind.ComparisonDocument);
 
         broker.CloseSession(SessionId);
+        CollectionAssert.AreEqual(new[] { SessionId }, closed.ToArray());
 
         Assert.IsTrue(Directory.Exists(operationDirectory));
         AssertUnavailable(() => broker.OpenRead(
@@ -170,6 +173,8 @@ public sealed class DocumentDiffArtifactBrokerTests
             TimeSpan.FromMinutes(5),
             time,
             (_, _) => DocumentDiffOwnerLiveness.Alive);
+        var closed = new List<Guid>();
+        broker.SessionClosed += closed.Add;
         using DocumentDiffArtifactOperation operation = broker.CreateOperation(
             Guid.NewGuid(), WorkspaceId, 7);
         await PublishComparisonAsync(operation);
@@ -177,6 +182,7 @@ public sealed class DocumentDiffArtifactBrokerTests
 
         time.Advance(TimeSpan.FromMinutes(6));
         broker.CleanupExpired();
+        CollectionAssert.AreEqual(new[] { SessionId }, closed.ToArray());
 
         AssertUnavailable(() => broker.OpenRead(
             SessionId, WorkspaceId, 7,

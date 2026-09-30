@@ -71,7 +71,7 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
                 cancellationToken).ConfigureAwait(false);
             return textOutcome.Kind == DocumentDiffOutcomeKind.Identical
                 ? DocumentDiffOutcome.Changed
-                : textOutcome;
+                : textOutcome with { Details = null }; // Shallow extraction is not a structural V2 provider.
         }
         catch (OperationCanceledException)
         {

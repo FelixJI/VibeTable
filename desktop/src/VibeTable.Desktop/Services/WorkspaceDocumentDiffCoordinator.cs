@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Workspace.Diff;
@@ -13,6 +15,9 @@ internal sealed class WorkspaceDocumentDiffCoordinator
     private readonly IWorkspaceHostEpochLeaseSource _epochLeaseSource;
     private readonly IDocumentDiffEngine _engine;
     private readonly DocumentDiffArtifactBroker _artifacts;
+    private readonly ConcurrentDictionary<Guid, ReadySession> _sessions = [];
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    internal const int MaxPageBytes = 64 * 1024;
 
     public WorkspaceDocumentDiffCoordinator(
         IWorkspaceHostEpochLeaseSource epochLeaseSource,
@@ -23,9 +28,10 @@ internal sealed class WorkspaceDocumentDiffCoordinator
             ?? throw new ArgumentNullException(nameof(epochLeaseSource));
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _artifacts = artifacts ?? throw new ArgumentNullException(nameof(artifacts));
+        _artifacts.SessionClosed += id => _sessions.TryRemove(id, out _);
     }
 
-    public async Task<DocumentDiffPayload> CompareAsync(
+    public async Task<DocumentDiffSessionResult> CompareAsync(
         WorkspaceDocumentBinding binding,
         DocumentCapabilityDescriptor descriptor,
         string entryHandle,
@@ -69,6 +75,7 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                    cancellationToken,
                    lease.CancellationToken))
         {
+            linkedCancellation.CancelAfter(TimeSpan.FromSeconds(30));
             try
             {
                 using DocumentDiffArtifactOperation artifacts = _artifacts.CreateOperation(
@@ -109,10 +116,13 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                         entryHandle,
                         historicalRevisionId,
                         expectedEffectiveRevisionId,
-                        FailureName(outcome.Failure));
+                        outcome.Failure == DocumentDiffFailureKind.Cancelled
+                            ? !_epochLeaseSource.IsCurrent(lease) ? "stale"
+                                : cancellationToken.IsCancellationRequested ? "cancelled" : "timeout"
+                            : FailureName(outcome.Failure));
                 }
 
-                DocumentDiffPayload? assertionFailure = await AssertEffectiveAsync(
+                DocumentDiffSessionResult? assertionFailure = await AssertEffectiveAsync(
                     binding,
                     descriptor.DocumentId,
                     historicalId,
@@ -126,19 +136,46 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                 if (assertionFailure is not null)
                     return assertionFailure;
                 inputs.ConfirmSourceStable();
-                return new DocumentDiffPayload(
-                    entryHandle,
-                    historicalId.ToString("D"),
-                    expectedId.ToString("D"),
-                    OutcomeName(outcome.Kind),
-                    outcome.AddedLines,
-                    outcome.RemovedLines,
-                    null);
+                DocumentDiffDetails details = outcome.Details ?? ShallowDetails(outcome,
+                    descriptor.RelativePath, pair.EffectiveMimeType);
+                string indexPath = artifacts.PrepareArtifact(DocumentDiffArtifactKind.ChangeIndex, "changes.jsonl");
+                var offsets = new List<long>();
+                await using (var index = new FileStream(indexPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    foreach (DocumentDiffChange change in details.Changes)
+                    {
+                        linkedCancellation.Token.ThrowIfCancellationRequested();
+                        byte[] line = JsonSerializer.SerializeToUtf8Bytes(change, JsonOptions);
+                        if (line.Length + 1 > MaxPageBytes - 1024) throw new JsonException("Diff change exceeds page budget.");
+                        offsets.Add(index.Position);
+                        await index.WriteAsync(line, linkedCancellation.Token).ConfigureAwait(false);
+                        await index.WriteAsync("\n"u8.ToArray(), linkedCancellation.Token).ConfigureAwait(false);
+                    }
+                }
+                // Recheck after writing the derived index; a ready session must still be current.
+                assertionFailure = await AssertEffectiveAsync(binding, descriptor.DocumentId,
+                    historicalId, pair.HistoricalContentHash, expectedId, pair.EffectiveContentHash,
+                    entryHandle, historicalRevisionId, lease, linkedCancellation.Token).ConfigureAwait(false);
+                if (assertionFailure is not null) return assertionFailure;
+                linkedCancellation.Token.ThrowIfCancellationRequested();
+                Guid sessionId = Guid.NewGuid();
+                var session = CreateSession(sessionId, entryHandle, historicalId, expectedId, details);
+                var ready = new ReadySession(binding.WorkspaceId, binding.SessionEpoch, descriptor.DocumentId,
+                    pair, entryHandle, offsets.ToArray());
+                _sessions[sessionId] = ready;
+                try { artifacts.Complete(sessionId); }
+                catch { _sessions.TryRemove(sessionId, out _); throw; }
+                if (!_sessions.ContainsKey(sessionId) || !_epochLeaseSource.IsCurrent(lease) || linkedCancellation.IsCancellationRequested)
+                {
+                    CloseSession(sessionId);
+                    return Failure(entryHandle, historicalRevisionId, expectedEffectiveRevisionId, "stale");
+                }
+                return DocumentDiffSessionResult.Ready(session);
             }
             catch (OperationCanceledException)
             {
                 string failure = _epochLeaseSource.IsCurrent(lease)
-                    ? "cancelled"
+                    ? cancellationToken.IsCancellationRequested ? "cancelled" : "timeout"
                     : "stale";
                 return Failure(entryHandle, historicalRevisionId,
                     expectedEffectiveRevisionId, failure);
@@ -160,6 +197,155 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                     expectedEffectiveRevisionId, "io");
             }
         }
+    }
+
+    public async Task<DocumentDiffChangePageResult> ReadPageAsync(
+        WorkspaceDocumentBinding binding, DocumentDiffChangePageRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!_sessions.TryGetValue(request.SessionId, out ReadySession? session))
+            return DocumentDiffChangePageResult.Failed(DocumentDiffPageFailure.SessionExpired);
+        if (session.WorkspaceId != binding.WorkspaceId || session.SessionEpoch != binding.SessionEpoch ||
+            !_epochLeaseSource.TryCaptureHost(binding.WorkspaceId, binding.SessionEpoch,
+                Guid.NewGuid(), out WorkspaceRequestEpochLease? lease) || lease is null)
+        {
+            CloseSession(request.SessionId);
+            return DocumentDiffChangePageResult.Failed(DocumentDiffPageFailure.Stale);
+        }
+        using (lease)
+        using (var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.CancellationToken))
+        {
+            linked.CancelAfter(TimeSpan.FromSeconds(30));
+            try
+            {
+                int start = 0;
+                if (request.Cursor is not null && !session.Cursors.TryGetValue(request.Cursor, out start))
+                    return DocumentDiffChangePageResult.Failed(DocumentDiffPageFailure.InvalidCursor);
+                await using DocumentDiffArtifactReadLease artifact = _artifacts.OpenRead(request.SessionId,
+                    binding.WorkspaceId, binding.SessionEpoch, DocumentDiffArtifactKind.ChangeIndex);
+                DocumentDiffSessionResult? stale = await AssertPageCurrentAsync(binding, session, lease, linked.Token)
+                    .ConfigureAwait(false);
+                if (stale is not null) return InvalidatePage(request.SessionId);
+                var changes = new List<DocumentDiffChange>();
+                int bytes = 0;
+                if (start < session.Offsets.Length)
+                {
+                    artifact.Stream.Position = session.Offsets[start];
+                    using var reader = new StreamReader(artifact.Stream, Encoding.UTF8, leaveOpen: true);
+                    while (start + changes.Count < session.Offsets.Length && changes.Count < request.Limit)
+                    {
+                        string line = await reader.ReadLineAsync(linked.Token).ConfigureAwait(false)
+                            ?? throw new JsonException("Incomplete change index.");
+                        int size = Encoding.UTF8.GetByteCount(line);
+                        if (bytes + size > MaxPageBytes - 1024 && changes.Count > 0) break;
+                        bytes += size;
+                        changes.Add(JsonSerializer.Deserialize<DocumentDiffChange>(line, JsonOptions)
+                            ?? throw new JsonException("Invalid change index."));
+                    }
+                }
+                stale = await AssertPageCurrentAsync(binding, session, lease, linked.Token).ConfigureAwait(false);
+                if (stale is not null || !_sessions.ContainsKey(request.SessionId))
+                    return InvalidatePage(request.SessionId);
+                int next = start + changes.Count;
+                string? cursor = next < session.Offsets.Length
+                    ? session.CursorNames.GetOrAdd(next, _ => Guid.NewGuid().ToString("D")) : null;
+                if (cursor is not null) session.Cursors[cursor] = next;
+                return DocumentDiffChangePageResult.Ready(request, request.SessionId, changes, cursor);
+            }
+            catch (DocumentDiffArtifactUnavailableException)
+            {
+                CloseSession(request.SessionId);
+                return DocumentDiffChangePageResult.Failed(DocumentDiffPageFailure.SessionExpired);
+            }
+            catch (OperationCanceledException)
+            {
+                CloseSession(request.SessionId);
+                return DocumentDiffChangePageResult.Failed(_epochLeaseSource.IsCurrent(lease)
+                    ? cancellationToken.IsCancellationRequested ? DocumentDiffPageFailure.Cancelled
+                        : DocumentDiffPageFailure.Timeout : DocumentDiffPageFailure.Stale);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+            {
+                CloseSession(request.SessionId);
+                throw;
+            }
+        }
+    }
+
+    private Task<DocumentDiffSessionResult?> AssertPageCurrentAsync(WorkspaceDocumentBinding binding,
+        ReadySession session, WorkspaceRequestEpochLease lease, CancellationToken token)
+        => AssertEffectiveAsync(binding, session.DocumentId, session.Pair.HistoricalRevisionId,
+            session.Pair.HistoricalContentHash, session.Pair.EffectiveRevisionId, session.Pair.EffectiveContentHash,
+            session.EntryHandle, session.Pair.HistoricalRevisionId.ToString("D"), lease, token);
+
+    private DocumentDiffChangePageResult InvalidatePage(Guid sessionId)
+    {
+        CloseSession(sessionId);
+        return DocumentDiffChangePageResult.Failed(DocumentDiffPageFailure.Stale);
+    }
+
+    public void CloseSession(Guid sessionId)
+    {
+        _sessions.TryRemove(sessionId, out _);
+        _artifacts.CloseSession(sessionId);
+    }
+
+    public void CloseAllSessions()
+    {
+        foreach (Guid id in _sessions.Keys) CloseSession(id);
+    }
+
+    private static DocumentDiffSession CreateSession(Guid id, string handle, Guid historical,
+        Guid effective, DocumentDiffDetails details)
+    {
+        int Count(DocumentDiffChangeKind kind) => details.Changes.Count(change => change.Kind == kind);
+        var summary = new DocumentDiffSummary(details.Changes.Count, details.Changes.Count,
+            Count(DocumentDiffChangeKind.Insert), Count(DocumentDiffChangeKind.Delete),
+            Count(DocumentDiffChangeKind.Replace), Count(DocumentDiffChangeKind.Move),
+            Count(DocumentDiffChangeKind.Format), Count(DocumentDiffChangeKind.Table),
+            Count(DocumentDiffChangeKind.Comment), Count(DocumentDiffChangeKind.Other));
+        var warnings = new List<DocumentDiffWarning>();
+        if (details.Coverage.Truncated) warnings.Add(DocumentDiffWarning.ResultTruncated);
+        if (details.Coverage.Areas.Any(area => area.Status != DocumentDiffCoverageStatus.Covered))
+            warnings.Add(DocumentDiffWarning.PartialCoverage);
+        return new DocumentDiffSession(id, handle, historical, effective, details.Format,
+            details.Format == DocumentDiffFormat.Xlsx ? DocumentDiffProvider.XlsxBuiltIn : DocumentDiffProvider.BuiltIn,
+            DocumentDiffFidelity.Structural, summary, details.Coverage, warnings, false, false);
+    }
+
+    private static DocumentDiffDetails ShallowDetails(DocumentDiffOutcome outcome, string name, string mime)
+    {
+        bool identical = outcome.Kind == DocumentDiffOutcomeKind.Identical;
+        string extension = Path.GetExtension(name).ToLowerInvariant();
+        var format = extension == ".docx" ? DocumentDiffFormat.Docx
+            : extension == ".xlsx" ? DocumentDiffFormat.Xlsx
+            : DocumentDiffEngine.IsText(new DocumentContentSource(name, mime, null,
+                _ => throw new InvalidOperationException())) ? DocumentDiffFormat.Text : DocumentDiffFormat.Binary;
+        DocumentDiffChange[] changes = identical ? [] : [new(Guid.NewGuid(), DocumentDiffChangeKind.Other,
+            new DocumentDiffLocation(DocumentDiffPart.Body), null, null, DocumentDiffConfidence.Exact)];
+        DocumentDiffCoverageArea[] uncovered = format switch
+        {
+            DocumentDiffFormat.Docx => [DocumentDiffCoverageArea.Structure, DocumentDiffCoverageArea.Formatting,
+                DocumentDiffCoverageArea.Tables, DocumentDiffCoverageArea.HeadersFooters, DocumentDiffCoverageArea.Images],
+            DocumentDiffFormat.Xlsx => [DocumentDiffCoverageArea.WorksheetValues, DocumentDiffCoverageArea.WorksheetFormulas,
+                DocumentDiffCoverageArea.WorksheetStyles, DocumentDiffCoverageArea.WorksheetMerges,
+                DocumentDiffCoverageArea.WorksheetVisibility],
+            DocumentDiffFormat.Binary => [DocumentDiffCoverageArea.VisibleText],
+            _ => [],
+        };
+        var areas = new List<DocumentDiffCoverageEntry>();
+        if (format is DocumentDiffFormat.Text or DocumentDiffFormat.Docx)
+            areas.Add(new(DocumentDiffCoverageArea.VisibleText, identical ? DocumentDiffCoverageStatus.Covered
+                : DocumentDiffCoverageStatus.NotCovered));
+        areas.AddRange(uncovered.Select(area => new DocumentDiffCoverageEntry(area, DocumentDiffCoverageStatus.NotCovered)));
+        return new DocumentDiffDetails(format, changes, new DocumentDiffCoverage(areas, truncated: false));
+    }
+
+    private sealed record ReadySession(Guid WorkspaceId, ulong SessionEpoch, Guid DocumentId,
+        MaterializedDiffPair Pair, string EntryHandle, long[] Offsets)
+    {
+        public ConcurrentDictionary<string, int> Cursors { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<int, string> CursorNames { get; } = [];
     }
 
     private async Task<MaterializedDiffPair> MaterializeAsync(
@@ -220,7 +406,7 @@ internal sealed class WorkspaceDocumentDiffCoordinator
         return pair;
     }
 
-    private async Task<DocumentDiffPayload?> AssertEffectiveAsync(
+    private async Task<DocumentDiffSessionResult?> AssertEffectiveAsync(
         WorkspaceDocumentBinding binding,
         Guid documentId,
         Guid historicalRevisionId,
@@ -378,28 +564,20 @@ internal sealed class WorkspaceDocumentDiffCoordinator
             _ => "io",
         };
 
-    private static string OutcomeName(DocumentDiffOutcomeKind kind)
-        => kind switch
-        {
-            DocumentDiffOutcomeKind.Identical => "identical",
-            DocumentDiffOutcomeKind.Changed => "changed",
-            DocumentDiffOutcomeKind.ChangedWithDetails => "changedWithDetails",
-            _ => throw new InvalidOperationException("Failure must be mapped first."),
-        };
-
-    private static DocumentDiffPayload Failure(
+    private static DocumentDiffSessionResult Failure(
         string entryHandle,
         string historicalRevisionId,
         string effectiveRevisionId,
         string failure)
-        => new(
-            entryHandle,
-            historicalRevisionId,
-            effectiveRevisionId,
-            "failure",
-            null,
-            null,
-            failure);
+        => DocumentDiffSessionResult.Failed(failure switch
+        {
+            "stale" => DocumentDiffSessionFailure.Stale,
+            "cancelled" => DocumentDiffSessionFailure.Cancelled,
+            "unsupported" => DocumentDiffSessionFailure.Unsupported,
+            "invalidContent" => DocumentDiffSessionFailure.InvalidContent,
+            "timeout" => DocumentDiffSessionFailure.Timeout,
+            _ => DocumentDiffSessionFailure.Io,
+        });
 
     private sealed record MaterializedDiffPair(
         Guid DocumentId,

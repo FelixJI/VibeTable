@@ -190,18 +190,26 @@ describe("document workspace bridge integration", () => {
 
   it("completes, rejects, cancels, and fails revision diff operations", async () => {
     const valid = {
-      entryHandle: "entry-1",
-      historicalRevisionId: "33333333-3333-4333-8333-333333333333",
-      effectiveRevisionId: "22222222-2222-4222-8222-222222222222",
-      outcome: "changedWithDetails",
+      outcome: "ready",
       failure: null,
-      addedLines: 4,
-      removedLines: 2,
+      session: {
+        contractVersion: "2.0", sessionId: "55555555-5555-4555-8555-555555555555",
+        entryHandle: "entry-1",
+        historicalRevisionId: "33333333-3333-4333-8333-333333333333",
+        effectiveRevisionId: "22222222-2222-4222-8222-222222222222",
+        format: "text", provider: "builtIn", fidelity: "structural",
+        summary: { totalChangeGroups: 0, rawRevisionCount: 0, insertions: 0, deletions: 0,
+          replacements: 0, moves: 0, formattingChanges: 0, tableChanges: 0, commentChanges: 0, otherChanges: 0 },
+        coverage: { truncated: false, areas: [{ area: "visibleText", status: "covered" }] },
+        warnings: [], canOpenComparisonArtifact: false, canExportComparisonArtifact: false,
+      },
     };
     let result: unknown = valid;
     const request = vi.fn(async (type: string) => {
       if (type === "document.diffRequested") return result;
       if (type === "document.diffCancelRequested") return {};
+      if (type === "document.diffPageRequested") return { outcome: "ready", failure: null,
+        page: { sessionId: valid.session.sessionId, changes: [], nextCursor: null } };
       return {};
     });
     setHostBridgeForTesting({
@@ -217,8 +225,8 @@ describe("document workspace bridge integration", () => {
       type: "document.diffRequested",
       entryHandle: "entry-1",
       operationId: "op-1",
-      historicalRevisionId: valid.historicalRevisionId,
-      expectedEffectiveRevisionId: valid.effectiveRevisionId,
+      historicalRevisionId: valid.session.historicalRevisionId,
+      expectedEffectiveRevisionId: valid.session.effectiveRevisionId,
     });
     await flushPromises();
     expect(store.diffPhase).toBe("ready");
@@ -229,12 +237,12 @@ describe("document workspace bridge integration", () => {
       type: "document.diffRequested",
       entryHandle: "entry-1",
       operationId: "op-2",
-      historicalRevisionId: valid.historicalRevisionId,
-      expectedEffectiveRevisionId: valid.effectiveRevisionId,
+      historicalRevisionId: valid.session.historicalRevisionId,
+      expectedEffectiveRevisionId: valid.session.effectiveRevisionId,
     });
     await flushPromises();
     expect(store.diffPhase).toBe("failed");
-    expect(store.diffError).toContain("invalid result");
+    expect(store.diffError).toContain("unknown or missing fields");
 
     service.dispatch({ type: "document.diffCancelRequested", entryHandle: "entry-1", operationId: "op-2" });
     await flushPromises();
@@ -249,11 +257,24 @@ describe("document workspace bridge integration", () => {
       type: "document.diffRequested",
       entryHandle: "entry-1",
       operationId: "op-3",
-      historicalRevisionId: valid.historicalRevisionId,
-      expectedEffectiveRevisionId: valid.effectiveRevisionId,
+      historicalRevisionId: valid.session.historicalRevisionId,
+      expectedEffectiveRevisionId: valid.session.effectiveRevisionId,
     });
     await flushPromises();
     expect(store.diffError).toBe("diff.io");
+
+    let finishLate: (value: unknown) => void = () => undefined;
+    request.mockImplementationOnce(() => new Promise(resolve => { finishLate = resolve; }));
+    service.dispatch({ type: "document.diffRequested", entryHandle: "entry-1", operationId: "late",
+      historicalRevisionId: valid.session.historicalRevisionId,
+      expectedEffectiveRevisionId: valid.session.effectiveRevisionId });
+    service.dispatch({ type: "document.diffCancelRequested", entryHandle: "entry-1", operationId: "late" });
+    await flushPromises();
+    finishLate(valid);
+    await flushPromises();
+    expect(store.diffResult).toBeNull();
+    expect(store.diffPhase).toBe("idle");
+    expect(request).toHaveBeenCalledWith("document.diffCloseRequested", { sessionId: valid.session.sessionId });
   });
 
   it("exposes preview/reveal/external-drop intents and ignores cancellation without an operation", () => {
