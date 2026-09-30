@@ -269,7 +269,45 @@ public sealed class OpenXmlDocumentDiffEngineTests
         Assert.AreEqual(DocumentDiffFailureKind.Cancelled, outcome.Failure);
     }
 
-    private static DocumentContentSource Content(string name, string mimeType, byte[] bytes)
+    [TestMethod]
+    public async Task CompareAsync_FileExtensionClassifiesFormatsWithoutMime()
+    {
+        IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();
+        byte[] workbook = XlsxSemanticDiffTests.Package(
+            [new XlsxSemanticDiffTests.Sheet("数据", "<c r=\"A1\"><v>1</v></c>")]);
+
+        var xlsx = await engine.CompareAsync(new(
+            Content("before.xlsx", null, workbook),
+            Content("after.xlsx", null, workbook)), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.Identical, xlsx.Kind);
+        Assert.IsNotNull(xlsx.Details);
+        Assert.AreEqual(DocumentDiffFormat.Xlsx, xlsx.Details.Format);
+
+        var docx = await engine.CompareAsync(new(
+            Content("before.docx", null, Docx("before")),
+            Content("after.docx", null, Docx("after"))), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.ChangedWithDetails, docx.Kind);
+
+        var pptx = await engine.CompareAsync(new(
+            Content("before.pptx", null, Pptx("before")),
+            Content("after.pptx", null, Pptx("after"))), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.ChangedWithDetails, pptx.Kind);
+
+        // Unknown extensions stay on the core text/binary engine instead of failing.
+        var plain = await engine.CompareAsync(new(
+            Content("before.txt", null, [1, 2]),
+            Content("after.txt", null, [3, 4])), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.ChangedWithDetails, plain.Kind);
+
+        // A None + Xlsx pair is a mixed-format request and stays unsupported.
+        var mixed = await engine.CompareAsync(new(
+            Content("before.txt", null, [1, 2]),
+            Content("after.xlsx", null, workbook)), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.Failure, mixed.Kind);
+        Assert.AreEqual(DocumentDiffFailureKind.Unsupported, mixed.Failure);
+    }
+
+    private static DocumentContentSource Content(string name, string? mimeType, byte[] bytes)
     {
         return new DocumentContentSource(
             name,

@@ -406,6 +406,145 @@ public sealed class XlsxSemanticDiffTests
             "Replace|日期|D1|value: date: 2026-01-01T00:00:00.5Z|value: date: 2026-01-01T00:00:00.25Z");
     }
 
+    [TestMethod]
+    public async Task MalformedStylesAndDefinitions_FailClosed()
+    {
+        foreach (string styles in new[]
+        {
+            "<wrongRoot xmlns=\"" + S + "\"><fonts><font/></fonts></wrongRoot>",
+            StyleSheet("<font/>", "<xf/>", "<numFmt numFmtId=\"163\" formatCode=\"0\"/>"),
+            StyleSheet("<font/>", "<xf/>", "<numFmt numFmtId=\"164\" formatCode=\"0\"/><numFmt numFmtId=\"164\" formatCode=\"0.0\"/>"),
+            StyleSheet("<font/>", "<xf/>", "<other/>"),
+            "<styleSheet xmlns=\"" + S + "\"><fills><fill/></fills><borders><border/></borders><cellXfs><xf/></cellXfs></styleSheet>",
+            "<styleSheet xmlns=\"" + S + "\"><fonts><font/></fonts><fills><fill/></fills><borders><border/></borders><cellXfs></cellXfs></styleSheet>",
+            "<styleSheet xmlns=\"" + S + "\"><fonts><font/></fonts><fills><fill/></fills><borders><border/></borders><cellXfs><bad/></cellXfs></styleSheet>",
+            StyleSheet("<bad/>", "<xf/>"),
+        })
+        {
+            byte[] package = Package([new("样式", "<c r=\"A1\"><v>1</v></c>")], styles);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => Compare(package, package), styles);
+        }
+    }
+
+    [TestMethod]
+    public async Task CanonicalUnderlineSizeAndWrapTextOff_HaveStableSemantics()
+    {
+        string cell = "<c r=\"A1\" s=\"0\"><v>1</v></c>";
+        // Underline default "single" vs explicit "double" is a real change; sz "11"/"011" is not.
+        Oracle(await Details(
+            Package([new("样式", cell)], StyleSheet("<font><u/><sz val=\"11\"/></font>", "<xf fontId=\"0\"/>")),
+            Package([new("样式", cell)], StyleSheet("<font><u val=\"double\"/><sz val=\"011\"/></font>", "<xf fontId=\"0\"/>"))),
+            "Format|样式|A1|style: font=font()[sz(val=2:11)[],u=single]; fill=fill()[]; border=border()[]; numFmt=builtin:0; alignment=|style: font=font()[sz(val=2:11)[],u=double]; fill=fill()[]; border=border()[]; numFmt=builtin:0; alignment=");
+        // u val="none" contributes nothing, exactly like an omitted underline.
+        var none = await Compare(
+            Package([new("无", cell)], StyleSheet("<font/>", "<xf fontId=\"0\"/>")),
+            Package([new("无", cell)], StyleSheet("<font><u val=\"none\"/></font>", "<xf fontId=\"0\"/>")));
+        Assert.AreEqual(DocumentDiffOutcomeKind.Identical, none.Kind);
+        Oracle(none.Details!);
+        // wrapText=false canonicalizes away like an absent flag.
+        Oracle(await Details(
+            Package([new("标志", cell)], StyleSheet("<font/>", "<xf fontId=\"0\"><alignment wrapText=\"1\"/></xf>")),
+            Package([new("标志", cell)], StyleSheet("<font/>", "<xf fontId=\"0\"><alignment wrapText=\"false\"/></xf>"))),
+            "Format|标志|A1|style: font=font()[]; fill=fill()[]; border=border()[]; numFmt=builtin:0; alignment=alignment(wrapText=4:true)[]|style: font=font()[]; fill=fill()[]; border=border()[]; numFmt=builtin:0; alignment=alignment()[]");
+        foreach (string color in new[] { "12345", "GG808080" })
+        {
+            byte[] invalid = Package([new("颜色", cell)],
+                StyleSheet("<font><color rgb=\"" + color + "\"/></font>", "<xf fontId=\"0\"/>"));
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => Compare(invalid, invalid), color);
+        }
+    }
+
+    [TestMethod]
+    public async Task MalformedCellValuesRangesAndExponents_FailClosed()
+    {
+        foreach (string cells in new[]
+        {
+            "<c r=\"A1\" t=\"inlineStr\"><v>1</v></c>",
+            "<c r=\"A1\" t=\"inlineStr\"/>",
+            "<c r=\"A1\"><is><t>x</t></is></c>",
+            "<c r=\"A1\"><v><b/></v></c>",
+            "<c r=\"A1\"><v>1</v><is><t>y</t></is></c>",
+            "<c r=\"A1\"><v>1e2000000</v></c>",
+            "<c r=\"A1\"><f t=\"dataTable\" r1=\"A1\" r2=\"XFE1\"/><v>1</v></c>",
+        })
+        {
+            byte[] package = Package([new("值", cells)]);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => Compare(package, package), cells);
+        }
+        foreach (string extra in new[]
+        {
+            "<mergeCells><mergeCell ref=\"B1:A1\"/></mergeCells>",
+            "<mergeCells><mergeCell ref=\"A1:B1:C1\"/></mergeCells>",
+        })
+        {
+            byte[] package = Package([new("合并", Extra: extra)]);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => Compare(package, package), extra);
+        }
+    }
+
+    [TestMethod]
+    public async Task SharedStringRunsAndPhonetics_DecodeOrFailClosed()
+    {
+        byte[] valid = Package([new("字", "<c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c>")],
+            shared: "<si><r><rPr><b val=\"1\"/></rPr><t>富</t></r></si>" +
+                "<si><t>振</t><rPh sb=\"0\" eb=\"1\"><t>しん</t></rPh></si>");
+        var identical = await Compare(valid, Package([new("字",
+            "<c r=\"A1\" t=\"inlineStr\"><is><t>富</t></is></c><c r=\"B1\" t=\"inlineStr\"><is><t>振</t></is></c>")]));
+        Assert.AreEqual(DocumentDiffOutcomeKind.Identical, identical.Kind);
+        Oracle(identical.Details!);
+        foreach (string shared in new[]
+        {
+            "<si><t>a</t><t>b</t></si>",
+            "<si><t><b/>a</t></si>",
+            "<si><r><t>a</t></r><t>b</t></si>",
+            "<si><r/></si>",
+            "<si><r><t>a</t><x/></r></si>",
+            "<si><bad/></si>",
+        })
+        {
+            byte[] invalid = Package([new("字")], shared: shared);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => Compare(invalid, invalid), shared);
+        }
+    }
+
+    [TestMethod]
+    public async Task CanonicalZeroAndLeadingDotNumbers_CompareEqual()
+    {
+        var outcome = await Compare(
+            Package([new("零", "<c r=\"A1\"><v>0</v></c><c r=\"B1\"><v>0.000</v></c><c r=\"C1\"><v>.5</v></c>")]),
+            Package([new("零", "<c r=\"A1\"><v>0.0</v></c><c r=\"B1\"><v>0</v></c><c r=\"C1\"><v>0.5</v></c>")]));
+        Assert.AreEqual(DocumentDiffOutcomeKind.Identical, outcome.Kind);
+        Oracle(outcome.Details!);
+    }
+
+    [TestMethod]
+    public async Task DeletedFormulaCellCarriesFormulaAndCacheInCellText()
+    {
+        Oracle(await Details(
+            Package([new("旧", "<c r=\"A1\"><f>1+1</f><v>2</v></c>")]),
+            Package([new("新", "<c r=\"B1\"/>", 2, "xl/worksheets/new.xml")])),
+            "Delete|旧||sheet: 旧|",
+            "Delete|旧|A1|cell: number; formula: normal: 1+1; cache: number: 2; style: default|",
+            "Insert|新|||sheet: 新",
+            "Insert|新|B1||cell: number: <empty>; style: default");
+    }
+
+    [TestMethod]
+    public async Task TruncatedSurrogatePair_NeverSplitsCodePoints()
+    {
+        // The 2048-char cut is applied to the full change text (prefix included); placing
+        // a surrogate pair so index 2046 is its high surrogate keeps the code point whole.
+        string text = new string('中', 2033) + string.Concat(Enumerable.Repeat("\U0001F600", 500));
+        var details = await Details(
+            Package([new("边界", "<c r=\"A1\" t=\"inlineStr\"><is><t>旧</t></is></c>")]),
+            Package([new("边界", "<c r=\"A1\" t=\"inlineStr\"><is><t>" + text + "</t></is></c>")]));
+        Assert.IsTrue(details.Coverage.Truncated);
+        string snippet = details.Changes[0].After!.Runs[0].Text;
+        Assert.AreEqual("value: text: ".Length + 2033 + 1, snippet.Length);
+        Assert.AreEqual('…', snippet[^1]);
+        Assert.AreEqual('中', snippet[^2]);
+    }
+
     private static Task<DocumentDiffOutcome> Compare(byte[] before, byte[] after) =>
         XlsxSemanticDiff.CompareAsync(new(Source(before), Source(after)), CancellationToken.None);
     private static DocumentContentSource Source(byte[] bytes) => new("synthetic.xlsx", null, bytes.Length,
