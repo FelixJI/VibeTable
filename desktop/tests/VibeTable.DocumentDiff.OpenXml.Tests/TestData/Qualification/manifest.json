@@ -81,7 +81,7 @@
       "before": "xlsx/format-before.xlsx",
       "after": "xlsx/format-after.xlsx",
       "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "expectedOutcome": "Changed",
+      "expectedOutcome": "ChangedWithDetails",
       "producer": "Microsoft Excel",
       "covers": [
         "xlsx.style"

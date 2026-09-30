@@ -31,18 +31,29 @@ public sealed class OpenXmlDocumentDiffEngineTests
     }
 
     [TestMethod]
-    public async Task CompareAsync_XlsxVisibleCellChanged_ReturnsLineDetails()
+    public async Task CompareAsync_XlsxRoutesToDeepProviderWithPreciseOracle()
     {
         IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();
+        string before = "<c r=\"A1\"><f>1+1</f></c><c r=\"B1\" s=\"1\"><v>1</v></c>";
+        string after = "<c r=\"A1\"><f>1+1</f><v>2</v></c><c r=\"B1\" s=\"1\"><v>1</v></c>";
         var request = new DocumentDiffRequest(
-            Content("before.xlsx", XlsxMime, Xlsx("before")),
-            Content("after.xlsx", XlsxMime, Xlsx("after")));
+            Content("before.xlsx", XlsxMime, XlsxSemanticDiffTests.Package(
+                [new XlsxSemanticDiffTests.Sheet("数据", before)],
+                XlsxSemanticDiffTests.StyleSheet("<font><name val=\"X\"/></font><font><name val=\"A\"/></font>", "<xf/><xf fontId=\"1\"/>"))),
+            Content("after.xlsx", XlsxMime, XlsxSemanticDiffTests.Package(
+                [new XlsxSemanticDiffTests.Sheet("数据", after)],
+                XlsxSemanticDiffTests.StyleSheet("<font><name val=\"X\"/></font><font><name val=\"B\"/></font>", "<xf/><xf fontId=\"1\"/>"))));
 
         var outcome = await engine.CompareAsync(request, CancellationToken.None);
 
         Assert.AreEqual(DocumentDiffOutcomeKind.ChangedWithDetails, outcome.Kind);
-        Assert.AreEqual(1, outcome.AddedLines);
-        Assert.AreEqual(1, outcome.RemovedLines);
+        Assert.AreEqual(2, outcome.AddedLines);
+        Assert.AreEqual(2, outcome.RemovedLines);
+        Assert.IsNotNull(outcome.Details);
+        Assert.AreEqual(DocumentDiffFormat.Xlsx, outcome.Details.Format);
+        XlsxSemanticDiffTests.Oracle(outcome.Details,
+            "Replace|数据|A1|cache: missing|cache: number: 2",
+            "Format|数据|B1|style: font=font()[name(val=1:A)[]]; fill=fill()[]; border=border()[]; numFmt=builtin:0; alignment=|style: font=font()[name(val=1:B)[]]; fill=fill()[]; border=border()[]; numFmt=builtin:0; alignment=");
     }
 
     [TestMethod]
@@ -152,6 +163,82 @@ public sealed class OpenXmlDocumentDiffEngineTests
         Assert.AreEqual(DocumentDiffOutcomeKind.Changed, outcome.Kind);
     }
 
+    [TestMethod]
+    public async Task CompareAsync_IdenticalMalformedXlsxPackage_FailsClosedInsteadOfBinaryIdentical()
+    {
+        IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();
+        // ZIP with sheet parts but no OPC skeleton: byte-identical, yet not a valid workbook.
+        byte[] malformed = Xlsx("shallow");
+        var request = new DocumentDiffRequest(
+            Content("before.xlsx", XlsxMime, malformed),
+            Content("after.xlsx", XlsxMime, malformed));
+
+        var outcome = await engine.CompareAsync(request, CancellationToken.None);
+
+        Assert.AreEqual(DocumentDiffOutcomeKind.Failure, outcome.Kind);
+        Assert.AreEqual(DocumentDiffFailureKind.InvalidContent, outcome.Failure);
+    }
+
+    [TestMethod]
+    public async Task CompareAsync_IdenticalValidXlsxPackages_ReturnIdenticalWithDeepCoverage()
+    {
+        IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();
+        byte[] workbook = XlsxSemanticDiffTests.Package(
+            [new XlsxSemanticDiffTests.Sheet("数据", "<c r=\"A1\"><v>1</v></c>")]);
+        var request = new DocumentDiffRequest(
+            Content("before.xlsx", XlsxMime, workbook),
+            Content("after.xlsx", XlsxMime, workbook));
+
+        var outcome = await engine.CompareAsync(request, CancellationToken.None);
+
+        Assert.AreEqual(DocumentDiffOutcomeKind.Identical, outcome.Kind);
+        Assert.IsNotNull(outcome.Details);
+        Assert.AreEqual(DocumentDiffFormat.Xlsx, outcome.Details.Format);
+    }
+
+    [TestMethod]
+    public async Task CompareAsync_XlsxBudgetExceeded_FailsUnsupportedInsteadOfShallowChanged()
+    {
+        IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();
+        byte[] workbook = XlsxSemanticDiffTests.Package(
+            [new XlsxSemanticDiffTests.Sheet("预算", "<c r=\"A1\"><v>1</v></c>")]);
+        var request = new DocumentDiffRequest(
+            NonSeekableContent(
+                "before.xlsx",
+                workbook,
+                OpenXmlExtractionLimits.MaxNonSeekablePackageBytes + 1,
+                XlsxMime),
+            NonSeekableContent(
+                "after.xlsx",
+                workbook,
+                OpenXmlExtractionLimits.MaxNonSeekablePackageBytes + 1,
+                XlsxMime));
+
+        var outcome = await engine.CompareAsync(request, CancellationToken.None);
+
+        Assert.AreEqual(DocumentDiffOutcomeKind.Failure, outcome.Kind);
+        Assert.AreEqual(DocumentDiffFailureKind.Unsupported, outcome.Failure);
+    }
+
+    [TestMethod]
+    public async Task CompareAsync_XlsxCancelledToken_ReturnsCancelledFailure()
+    {
+        IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();
+        byte[] workbook = XlsxSemanticDiffTests.Package(
+            [new XlsxSemanticDiffTests.Sheet("数据", "<c r=\"A1\"><v>1</v></c>")]);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+
+        var outcome = await engine.CompareAsync(
+            new DocumentDiffRequest(
+                Content("before.xlsx", XlsxMime, workbook),
+                Content("after.xlsx", XlsxMime, workbook)),
+            cancelled.Token);
+
+        Assert.AreEqual(DocumentDiffOutcomeKind.Failure, outcome.Kind);
+        Assert.AreEqual(DocumentDiffFailureKind.Cancelled, outcome.Failure);
+    }
+
     private static DocumentContentSource Content(string name, string mimeType, byte[] bytes)
     {
         return new DocumentContentSource(
@@ -164,11 +251,12 @@ public sealed class OpenXmlDocumentDiffEngineTests
     private static DocumentContentSource NonSeekableContent(
         string name,
         byte[] bytes,
-        long declaredLength)
+        long declaredLength,
+        string? mimeType = null)
     {
         return new DocumentContentSource(
             name,
-            DocxMime,
+            mimeType ?? DocxMime,
             declaredLength,
             _ => ValueTask.FromResult<Stream>(new NonSeekableStream(bytes)));
     }
