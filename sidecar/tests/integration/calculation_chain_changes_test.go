@@ -357,9 +357,9 @@ func TestCalculationChainWorkspaceIsolationAndInFlightCancellation(t *testing.T)
 	}
 	appA, appB := bootstrapApp(t, directory), bootstrapApp(t, otherDirectory)
 	t.Cleanup(func() { resetApp(t, appA); resetApp(t, appB) })
-	a.app, a.compiler = appA, formula.NewAppCompiler(appA)
+	a.app, a.compiler = appA, formula.NewAppCompilerWithLimits(appA, formula.Limits{EvalTimeout: collectionTestEvalTimeout})
 	b := *a
-	b.app, b.compiler, b.data = appB, formula.NewAppCompiler(appB), smallCalculationChainData()
+	b.app, b.compiler, b.data = appB, formula.NewAppCompilerWithLimits(appB, formula.Limits{EvalTimeout: collectionTestEvalTimeout}), smallCalculationChainData()
 	serviceA, serviceB := calculationChainJobs(t, a), calculationChainJobs(t, &b)
 	for index, item := range []struct {
 		f       *calculationChainFixture

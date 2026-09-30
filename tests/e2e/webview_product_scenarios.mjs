@@ -3981,6 +3981,15 @@ async function scenario26(page, recorder, _network, runtime) {
     })),
   ], "aggregation-source-seed");
   if (aggregationSeed.payload?.status !== "applied") throw new Error(JSON.stringify(aggregationSeed));
+  // The source receipt precedes the persisted Lookup fanout. Open the editor
+  // only after that write, so its frozen data revision includes the new matches.
+  await waitForQueryPage(page, {
+    tableId: currentTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, (payload) => {
+    const value = payload.rows?.find(row => row.id === "condrow00000001")?.[lookupFieldKey];
+    return Array.isArray(value) && value.length === 2
+      && value.includes("唯一 乙改") && value.includes(null);
+  });
   await selectTable(page, "Lookup 条件当前");
   await openFieldSettingsFromHeader(page, lookupFieldKey);
   await page.getByTestId("lookup-editor-entry").click();

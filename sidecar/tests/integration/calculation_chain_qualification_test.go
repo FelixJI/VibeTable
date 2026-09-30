@@ -260,7 +260,7 @@ func newCalculationChainFixture(t *testing.T, ctx context.Context, data calculat
 	// dependent rows use the real mutation kernel in dependency order. This does
 	// not measure bulk import/audit performance. Later changes must use the
 	// kernel and production jobs invalidator.
-	f.compiler = formula.NewAppCompiler(app)
+	f.compiler = formula.NewAppCompilerWithLimits(app, formula.Limits{EvalTimeout: collectionTestEvalTimeout})
 	f.kernel = mutation.New(app, mutation.MetadataSchemaSource{}, mutation.WithFormulaCalculator(
 		computed.New(lookup.NewCalculator(), formula.NewCalculator(f.compiler))))
 	// The schema helper uses a fake scheduler. Complete real empty-table jobs
@@ -517,7 +517,7 @@ func measureCalculationChainCold(t *testing.T, ctx context.Context, f *calculati
 					err = fmt.Errorf("application-cold instance remained open")
 				}
 			}()
-			compiler := formula.NewAppCompiler(app)
+			compiler := formula.NewAppCompilerWithLimits(app, formula.Limits{EvalTimeout: collectionTestEvalTimeout})
 			if app.Store() == f.app.Store() || compiler == f.compiler || compiler.PlanCompilationCount() != 0 || formula.CompilerFor(app) != compiler {
 				return 0, fmt.Errorf("application-cold instance reused compiler/store state")
 			}

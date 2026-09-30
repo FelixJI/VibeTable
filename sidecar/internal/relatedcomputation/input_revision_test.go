@@ -58,6 +58,52 @@ func TestInputRevisionPreservesSameRowAndTransactionBoundFreshness(t *testing.T)
 	if _, err := relatedcomputation.ExpectationFor(ctx, app, "tbl_current", []v2.FieldDefinition{lookup}, "fld_lookup", 3); err == nil {
 		t.Fatal("negative input revision was accepted")
 	}
+	// The same corrupted edge must also fail the business write that would
+	// advance it: AdvanceInputRevisions runs inside the write transaction.
+	if err := relatedcomputation.AdvanceInputRevisions(ctx, app, "tbl_source", fields, map[string]any{"amount": 3}, map[string]any{"amount": 4}, "update", 11); err == nil {
+		t.Fatal("business write advanced a corrupted dependency input revision")
+	}
+}
+
+// TableInputRevision is the seed used by the schema API whenever it writes a
+// new dependency edge. Pin its read contract at this package boundary.
+func TestTableInputRevisionSeedsBusinessRevisionAndFailsClosed(t *testing.T) {
+	app := computationTestApp(t)
+	saveInternalRecord(t, app, "vibetable_tables", map[string]any{"table_id": "tbl_dep", "collection_id": "dep", "physical_name": "dep", "display_name": "Dep", "kind": "base", "schema_revision": 1, "data_revision": 9, "clock_revision": 2, "archive_policy": `{"mode":"none"}`})
+	ctx := context.Background()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	for _, item := range []struct {
+		name    string
+		ctx     context.Context
+		table   string
+		corrupt bool
+		want    int64
+		fails   bool
+	}{
+		{"business revision excludes clock-only transactions", ctx, "tbl_dep", false, 7, false},
+		{"cancelled context", canceled, "tbl_dep", false, 0, true},
+		{"missing table metadata", ctx, "tbl_missing", false, 0, true},
+		{"corrupt counter fails closed", ctx, "tbl_dep", true, 0, true},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			if item.corrupt {
+				if _, err := app.DB().NewQuery("UPDATE vibetable_tables SET clock_revision=1.5 WHERE table_id='tbl_dep'").Execute(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := relatedcomputation.TableInputRevision(item.ctx, app, item.table)
+			if item.fails {
+				if err == nil {
+					t.Fatalf("%s was accepted: revision %d", item.name, got)
+				}
+				return
+			}
+			if err != nil || got != item.want {
+				t.Fatalf("%s: revision %d, %v; want %d", item.name, got, err, item.want)
+			}
+		})
+	}
 }
 
 func TestInputChangesSeparateMembershipRelationAndComputedVersions(t *testing.T) {
@@ -98,5 +144,9 @@ func TestInputChangesSeparateMembershipRelationAndComputedVersions(t *testing.T)
 	path.Set("path_json", []v2.LookupPathStep{{RelationFieldID: "fld_root_link"}, {RelationFieldID: "fld_another_link"}})
 	if relatedcomputation.InputAffected(path, changed) {
 		t.Fatal("unrelated relation edit invalidated the path")
+	}
+	path.Set("path_json", "corrupt")
+	if !relatedcomputation.InputAffected(path, changed) {
+		t.Fatal("corrupt stored relation path was treated as unaffected")
 	}
 }
