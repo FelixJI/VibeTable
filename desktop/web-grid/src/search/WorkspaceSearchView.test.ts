@@ -102,6 +102,34 @@ describe("WorkspaceSearchView", () => {
     wrapper.unmount();
   });
 
+  it("distinguishes limited extraction from complete indexing without rendering source markup", async () => {
+    setWorkspaceV2UiPort({
+      request: vi.fn(async () => readyStatus) as WorkspaceV2UiPort["request"],
+    });
+    const wrapper = mount(WorkspaceSearchView, { global: { plugins: [createPinia()] } });
+    const store = useWorkspaceSearchStore();
+    await flushPromises();
+    store.hits = ["indexed", "truncated", "passwordProtected"].map((status) => ({
+      ...hit("file", status),
+      snippet: "<script>source text</script>",
+      metadata: [
+        { key: "extractionStatus", value: status },
+        { key: "extractionErrorCode", value: "extract.partial_coverage" },
+      ],
+    }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("已索引");
+    expect(wrapper.text()).toContain("正文已截断");
+    expect(wrapper.text()).toContain("需要密码");
+    expect(wrapper.findAll('[data-testid="workspace-search-coverage-warning"]')).toHaveLength(1);
+    expect(wrapper.text()).toContain("正文提取范围受限");
+    expect(wrapper.find("script").exists()).toBe(false);
+    store.hits = [];
+    store.query = "no match";
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get(".empty-state").text()).toContain("没有命中不代表受限文件没有文字");
+    wrapper.unmount();
+  });
   it("re-resolves an Enter-opened stale hit when authority replaces the focused result", async () => {
     const stale = hit("record", "record-old");
     const refreshed = {
