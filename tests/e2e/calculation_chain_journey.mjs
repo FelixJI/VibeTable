@@ -167,6 +167,44 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
       && doubled.formula?.source?.includes(lookup.identity.physicalName)
       && total.formula?.language === "cel-v2" && total.formula?.source?.includes(`TABLE("${summary.tableId}")`));
 
+  // #414 adds a real relation -> path Lookup -> scalar formula to the same
+  // independent chain. Only primitive relation setup uses the existing helper.
+  const relation = await createV2Field(page, main.tableId, "关联合同", "relation", draft => {
+    draft.relation.targetTableId = summary.tableId;
+    draft.relation.displayFieldId = summary.field.fieldId;
+    return draft;
+  });
+  await selectTable(page, mainName);
+  await openNewField("关联金额", "查找引用");
+  await page.getByTestId("lookup-editor-entry").click();
+  await selectVisibleNOption(page, "lookup-mode", "关系路径（沿引用逐跳取值）");
+  await selectVisibleNOption(page, "lookup-relation-step-0", "关联合同");
+  await selectVisibleNOption(page, "lookup-target-field", "二级金额");
+  await selectVisibleNOption(page, "lookup-aggregation", "SUM 求和");
+  await page.getByTestId("lookup-preview-value").waitFor({ timeout: 30_000 });
+  await page.getByTestId("lookup-editor-commit").click();
+  const linkedLookup = await applyDraft(main.tableId);
+  await openNewField("关系总额", "公式");
+  const linkedTotal = await commitFormula(main.tableId, "{关联金额} + 1.0");
+  const targets = await authority(summary.tableId);
+  for (const wanted of oracle()) {
+    const row = page.locator(".grid-wrapper .tabulator-row:visible").filter({
+      has: page.locator(`.tabulator-cell[tabulator-field="${main.field.physicalName}"]`, { hasText: wanted.contract }),
+    });
+    await row.locator(`.tabulator-cell.vt-relation-cell--editable[tabulator-field="${relation.physicalName}"]`).dblclick();
+    const picker = page.locator(".relation-editor:visible");
+    await picker.waitFor();
+    await picker.locator(".relation-editor__candidate").filter({ hasText: wanted.contract }).click();
+    await picker.waitFor({ state: "hidden" });
+    const target = targets.rows.find(item => item[summary.field.physicalName] === wanted.contract);
+    const updated = await authority(main.tableId);
+    recorder.check(`${wanted.contract}: real relation picker binds the stable target identity`,
+      updated.rows.find(item => item[main.field.physicalName] === wanted.contract)?.[relation.physicalName] === target?.id);
+  }
+  recorder.check("path Lookup retains relation/target field identities and typed aggregation",
+    linkedLookup.lookup?.path?.[0]?.relationFieldId === relation.fieldId
+      && linkedLookup.lookup?.targetFieldId === doubled.identity.fieldId
+      && linkedLookup.lookup?.aggregation === "sum");
   const gridRows = async (marker, fields) => page.locator(".grid-wrapper .tabulator-row:visible").evaluateAll(
     (nodes, probe) => nodes.map(row => [probe.marker, ...probe.fields].map(field => {
       const cell = row.querySelector(`.tabulator-cell[tabulator-field="${field}"]`);
@@ -191,7 +229,8 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
   const verifyChain = async stage => {
     await verifyTable(summary, summaryName, [lookup.identity.physicalName, doubled.identity.physicalName],
       oracle().map(row => [row.contract, row.sum, row.doubled]), stage);
-    await verifyTable(main, mainName, [total.identity.physicalName], oracle().map(row => [row.contract, row.total]), stage);
+    await verifyTable(main, mainName, [total.identity.physicalName, linkedLookup.identity.physicalName, linkedTotal.identity.physicalName],
+      oracle().map(row => [row.contract, row.total, row.doubled, row.total]), stage);
   };
   await verifyChain("initial creation");
 
@@ -249,6 +288,15 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
   await panel.getByRole("button", { name: /^(关闭|Close)$/u }).click();
   await panel.waitFor({ state: "hidden" });
 
+  await selectTable(page, summaryName);
+  await openFieldSettingsFromHeader(page, doubled.identity.physicalName);
+  await fillNInput(page, "field-display-name", "二级金额（改名）");
+  const renamed = await applyDraft(summary.tableId);
+  recorder.check("renaming a referenced formula through field settings keeps stable identity",
+    renamed.identity.fieldId === doubled.identity.fieldId
+      && renamed.identity.physicalName === doubled.identity.physicalName);
+  await verifyChain("referenced schema UI rename");
+  await screenshot("relation-schema-lifecycle");
   // Filter and order the third table by its downstream computed value through UI.
   await selectTable(page, mainName);
   await page.getByTestId("view-filter-trigger").click();
@@ -277,7 +325,7 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
   const ordered = oracle().filter(row => row.total > 1).sort((left, right) => right.total - left.total);
   const verifyOrderedView = async stage => {
     await waitForStableGridState(page, { expectedRows: 2 });
-    const expected = ordered.map(row => [row.contract, String(row.total)]);
+    const expected = ordered.map(row => [row.contract, String(row.total), String(row.doubled), String(row.total)]);
     const complete = await authority(main.tableId);
     recorder.check(`${stage}: unfiltered authority retains all three oracle results, including zero-match`,
       complete.rows.length === 3 && oracle().every(expectedRow => complete.rows.some(row =>
@@ -290,8 +338,10 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
       query: { filters: view.state.filters, sorts: view.state.sorts, offset: 0, limit: 100 } });
     recorder.check(`${stage}: full-result query and visible row order/count match the oracle`,
       result.totalRows === 3 && result.filteredRows === 2
-      && isDeepStrictEqual(result.rows.map(row => [row[main.field.physicalName], String(row[total.identity.physicalName])]), expected)
-      && isDeepStrictEqual(await gridRows(main.field.physicalName, [total.identity.physicalName]), expected), { expected });
+      && isDeepStrictEqual(result.rows.map(row => [row[main.field.physicalName], String(row[total.identity.physicalName]),
+        String(row[linkedLookup.identity.physicalName]), String(row[linkedTotal.identity.physicalName])]), expected)
+      && isDeepStrictEqual(await gridRows(main.field.physicalName, [total.identity.physicalName,
+        linkedLookup.identity.physicalName, linkedTotal.identity.physicalName]), expected), { expected });
   };
   await verifyOrderedView("filtered view");
   await screenshot("filtered-sorted-grid");
@@ -314,8 +364,9 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     if (!ready) throw new Error(`${format} export did not create its granted output`);
     if (!runtime.pythonExecutable) throw new Error("Runner locked Python is required for independent export verification");
     const { stdout } = await executeFile(runtime.pythonExecutable, [workbookHelper, "verify-values", target, JSON.stringify({
-      columns: [main.field.physicalName, total.identity.physicalName, note.physicalName],
-      rows: ordered.map(row => [row.contract, row.total, "=1+1"]),
+      columns: [main.field.physicalName, total.identity.physicalName, note.physicalName,
+        linkedLookup.identity.physicalName, linkedTotal.identity.physicalName],
+      rows: ordered.map(row => [row.contract, row.total, "=1+1", row.doubled, row.total]),
     })], { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } });
     recorder.check(`${format} export matches every same-snapshot computed cell and keeps formula-like text inert`,
       JSON.parse(stdout).rows === 2, { verifier: JSON.parse(stdout) });
@@ -339,6 +390,13 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
   await verifyTable(summary, summaryName, [lookup.identity.physicalName, doubled.identity.physicalName],
     oracle().map(row => [row.contract, row.sum, row.doubled]), "reopen");
   await selectTable(page, mainName);
+  const reopenedRelations = await authority(main.tableId);
+  recorder.check("relation, path Lookup and scalar reference survive current-version reopen",
+    oracle().every(expected => reopenedRelations.rows.some(row =>
+      row[main.field.physicalName] === expected.contract
+      && row[linkedLookup.identity.physicalName] === expected.doubled
+      && row[linkedTotal.identity.physicalName] === expected.total)));
+
   await verifyOrderedView("reopen");
   await screenshot("reopened");
   // Shared runner checks no external renderer traffic and releases the Host

@@ -416,9 +416,16 @@ func (service *Service) createFanoutJob(
 			"job.storage_failed", "job storage is unavailable", true,
 		)
 	}
+	// ponytail: PocketBase clears the deleted id from every referencing
+	// relation value in the same transaction, so matching on the vanished
+	// target finds nothing; without an old-edge index the bounded fallback is
+	// a whole-source scan capped at O(source rows) per dependent hop — add the
+	// old-edge index only if measured delete fan-out cost warrants it — using
+	// the same batching/cancellation/resume and idempotent recompute.
 	cursor := fanoutCursor{
-		AllRecords: relationFieldID == "",
-		TableID:    sourceTableID, RelationFieldID: relationFieldID,
+		AllRecords: relationFieldID == "" ||
+			event.Operation == mutation.DataChangeDelete,
+		TableID: sourceTableID, RelationFieldID: relationFieldID,
 		ChangedTableID:  event.TableID,
 		TargetRecordIDs: append([]string(nil), event.RecordIDs...),
 		FormulaFieldIDs: formulaFields, Paths: paths,
@@ -601,7 +608,11 @@ func (service *Service) fanoutPathMatches(
 			if err := consumeBudget(len(ids)); err != nil {
 				return false, err
 			}
-			if last && targetTableID == changedTableID && intersectsFanoutTargets(ids, targets) {
+			// A changed record can sit at any hop, not only the last one:
+			// dependency edges already filtered this job to a path that
+			// crosses the changed table, so intersecting the changed ids on
+			// any hop whose target is the changed table marks the source row.
+			if targetTableID == changedTableID && intersectsFanoutTargets(ids, targets) {
 				return true, nil
 			}
 			if !last {
