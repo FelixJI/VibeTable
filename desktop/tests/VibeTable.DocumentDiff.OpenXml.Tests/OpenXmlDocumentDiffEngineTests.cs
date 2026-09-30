@@ -57,6 +57,24 @@ public sealed class OpenXmlDocumentDiffEngineTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task CompareAsync_MalformedXlsxSharedCellOrRelationshipPartIsInvalidContent(bool duplicateSharedCell)
+    {
+        string cells = duplicateSharedCell
+            ? "<c r=\"A1\"><f t=\"shared\" si=\"0\" ref=\"A1\">1+1</f></c><c r=\"A1\"><f t=\"shared\" si=\"0\"/></c>"
+            : "";
+        (string Name, string Xml)[] extra = duplicateSharedCell ? [] :
+            [("xl/malformed.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"/>")];
+        byte[] bytes = XlsxSemanticDiffTests.Package([new XlsxSemanticDiffTests.Sheet("Data", cells)], extra: extra);
+        var outcome = await new OpenXmlDocumentDiffEngine().CompareAsync(new(
+            Content("before.xlsx", XlsxMime, bytes), Content("after.xlsx", XlsxMime, bytes)), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.Failure, outcome.Kind);
+        Assert.AreEqual(DocumentDiffFailureKind.InvalidContent, outcome.Failure);
+        Assert.IsNull(outcome.Details);
+    }
+
+    [TestMethod]
     public async Task CompareAsync_ExternalXlsxRelationshipIsUnsupportedWithoutFollowingIt()
     {
         byte[] bytes = XlsxSemanticDiffTests.Package([new XlsxSemanticDiffTests.Sheet("数据")],

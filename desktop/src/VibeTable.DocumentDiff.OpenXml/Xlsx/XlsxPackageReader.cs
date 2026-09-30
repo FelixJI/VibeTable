@@ -276,7 +276,8 @@ internal static partial class XlsxSemanticDiff
                         if (formulaType == "shared")
                         {
                             uint si = UInt(Required(formula, "si"));
-                            pendingShared.Add(address, (si, formula.Value, attributes));
+                            if (!pendingShared.TryAdd(address, (si, formula.Value, attributes)))
+                                throw new InvalidDataException("Duplicate cell address.");
                             if (formula.Value.Length != 0)
                             {
                                 if (reference is null || !Contains(reference, r, column) ||
@@ -380,8 +381,13 @@ internal static partial class XlsxSemanticDiff
         {
             XElement root = Xml(name);
             if (root.Name != P + "Relationships") throw new InvalidDataException("Invalid relationships root.");
-            Uri source = PackUriHelper.GetSourcePartUriFromRelationshipPartUri(
-                new Uri("/" + name, UriKind.Relative));
+            Uri source;
+            try
+            {
+                source = PackUriHelper.GetSourcePartUriFromRelationshipPartUri(
+                    new Uri("/" + name, UriKind.Relative));
+            }
+            catch (ArgumentException ex) { throw new InvalidDataException("Invalid relationship part.", ex); }
             var list = new List<Relationship>();
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var rel in root.Elements())

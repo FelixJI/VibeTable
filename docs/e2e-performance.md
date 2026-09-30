@@ -196,3 +196,13 @@ S10 恢复测量（历史样本）：sidecar kill→可读表 2273.97ms，backen
 开发候选 `1ab09aba` 的真实 WPF/WebView2 S18 单场景通过，用时 42.24863s。合成 DOCX、XLSX、PPTX 均命中“合同编号”；未引用字符串无命中，缓存公式值与演讲备注可检索，部分覆盖提示及打开正确文件均通过。报告绑定 `20260930T171742Z`，该结果不替代完整 PR 门禁，也不扩大 PDF 支持范围。
 
 界面截图：[OOXML 搜索与覆盖提示](quality/screenshots/issue410-ooxml-search.png)。
+
+## 2026-10-01 XLSX 稀疏语义对比资格（#413）
+
+正式候选 `3cdcd92b`（274 个文件，ZIP 147593020 字节）的真实 WPF/WebView2 S14 于 `20260930T231200Z` 单场景通过，27.14228s。许可语料的格式和内容变化完整 oracle 分别为 3 和 11 组；另有 2 sheet、10004 个实际 cell、20万字符共享串及末格 XFD1048576 的稀疏语料，精确 75 组变化。三次首次比较分别为 217.3174ms、105.4656ms、439.8808ms，均为单次样本，未称 p95。原始分页每页 7 组和完整稳定 ID、UI 首屏至多 50 组及完整翻页、缓存未重算/部分覆盖、源与历史只读、过期会话拒绝和关闭清理均实际通过。
+
+同包附加采样场景 `20260930T232240Z` 通过（32.26333s）：复用 Windows Job 已核身份成员，每 50ms 名义间隔观测 working set，共 219 个样本，无未验证成员或采样错误。Host 最大观测值 326569984B，同时全 Job 总 working set 最大观测值 1141510144B，包含 Go、WebView2 等全场景成员；不是 XLSX-only RSS、内核峰值或 Worker 1GiB 上限，可能漏掉短进程和采样间分配。观测不修改生产流程或期限。
+
+两处畸形输入（重复共享公式地址、错误关系 part 位置）的生产 engine 分类随后真实 RED→GREEN，OpenXml 全项目 182 项通过。该代码增量待最终候选与完整远端门禁核实。完整本地 quality 在 Go 阶段因已记录的 Windows 空目录 delete-pending/外部句柄类清理失败而失败，既有三次尝试耗尽；保留 FAIL，不追加重试、不改生产关闭语义。其余最新质量阶段及 PR required 以真实报告为准，本地 S14 不替代全量矩阵或 #415 同包组合验收。
+
+真实界面截图：[格式及位置](quality/screenshots/issue413-xlsx-format.png)、[内容及覆盖提示](quality/screenshots/issue413-xlsx-content.png)。
