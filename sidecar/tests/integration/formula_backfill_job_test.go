@@ -950,7 +950,8 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 	}
 
 	countingKernel := &countingFanoutKernel{
-		expectedCount: 10_000,
+		// Dependency freshness is table-wide, including the unrelated final row.
+		expectedCount: 10_001,
 		completed:     make(chan struct{}),
 	}
 	service := jobs.New(app, countingKernel)
@@ -991,9 +992,9 @@ func TestFormulaFanoutPagesMoreThanTenThousandSourceRecords(t *testing.T) {
 		t.Fatalf("10,001-row fan-out progress = %#v", completed.Progress)
 	}
 	operationCount, batchCount := countingKernel.counts()
-	if operationCount != 10_000 || batchCount != 100 {
+	if operationCount != 10_001 || batchCount != 101 {
 		t.Fatalf(
-			"fan-out kernel counts = operations %d batches %d, want 10000 and 100",
+			"fan-out kernel counts = operations %d batches %d, want 10001 and 101",
 			operationCount, batchCount,
 		)
 	}

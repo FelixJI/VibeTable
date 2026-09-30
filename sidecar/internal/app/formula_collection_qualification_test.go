@@ -28,7 +28,14 @@ import (
 func TestFormulaCollectionPreviewS37Qualification(t *testing.T) {
 	pb := schemaProductStore(t)
 	ctx := context.Background()
-	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)})
+	// This complete-result/schema-read qualification is not a throughput SLO.
+	// Race CI observed a 566ms window sample against the production 250ms
+	// deadline. Give this semantic fixture an explicit evaluation budget;
+	// default-budget, cancellation and resource-limit tests remain unchanged.
+	compiler := formula.NewAppCompilerWithLimits(
+		pb, formula.Limits{EvalTimeout: 2 * time.Second},
+	)
+	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: compiler})
 	lifecycle, err := schemacore.NewTableLifecycle(pb)
 	if err != nil {
 		t.Fatal(err)
