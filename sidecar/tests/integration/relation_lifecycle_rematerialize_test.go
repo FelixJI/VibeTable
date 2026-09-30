@@ -42,7 +42,7 @@ type rematHarness struct {
 	kernel     *mutation.Kernel
 	jobService *jobs.Service
 	drain      func(stage string)
-	apply      func(stage string, table v2IntegrationTable, key string, operation mutation.Operation)
+	apply      func(stage string, table v2IntegrationTable, key string, operation ...mutation.Operation)
 }
 
 func newRematHarness(t *testing.T, app *pocketbase.PocketBase) rematHarness {
@@ -91,14 +91,14 @@ func newRematHarness(t *testing.T, app *pocketbase.PocketBase) rematHarness {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	apply := func(stage string, table v2IntegrationTable, key string, operation mutation.Operation) {
+	apply := func(stage string, table v2IntegrationTable, key string, operation ...mutation.Operation) {
 		t.Helper()
 		revisions, err := fieldchange.NewCatalog(app).Revisions(context.Background(), table.TableID)
 		if err != nil {
 			t.Fatalf("%s: load revision: %v", stage, err)
 		}
 		if _, err := kernel.Apply(context.Background(), mutationRequest(
-			table.TableID, revisions.Schema, key, operation,
+			table.TableID, revisions.Schema, key, operation...,
 		)); err != nil {
 			t.Fatalf("%s: %v", stage, err)
 		}
@@ -456,6 +456,103 @@ func TestSetNullTargetDeleteKeepsLinksAndComputedConsistent(t *testing.T) {
 			found = true
 			if fmt.Sprint(row[directSumName]) != "7" {
 				t.Fatalf("query direct sum = %#v, want 7", row[directSumName])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("source row missing from query page: %#v", page.Rows)
+	}
+}
+
+// TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate pins the
+// fresh-review finding for #414: a single mutation batch that deletes a
+// linked target and updates an unrelated record reports the aggregate event
+// operation "update", so the delete fallback must come from the batch audit
+// scan, not only the event kind. The remaining-set oracle (7), cleaned
+// links, and the query surface must all agree after the mixed batch.
+func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	orders := createV2IntegrationTable(t, ctx, app, "混批订单", "mixed_orders")
+	materials := createV2IntegrationTable(t, ctx, app, "混批物料", "mixed_materials")
+	orderCode := createV2IntegrationField(t, ctx, app, orders.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "订单编码"), "mixed_order_code")
+	sourceCode := createV2IntegrationField(t, ctx, app, materials.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "物料编码"), "mixed_source_code")
+	amount := createV2IntegrationField(t, ctx, app, materials.TableID,
+		fieldDraftForIntegration(t, v2.LogicalNumber, "数量"), "mixed_amount")
+	direct := createV2IntegrationRelation(t, ctx, app, orders.TableID, orderCode.FieldID,
+		materials.TableID, sourceCode.FieldID, "直连物料", "直连订单", "many", "mixed_direct")
+	directSumDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "直连求和")
+	directSumDraft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{{RelationFieldID: direct.FieldID}}, TargetFieldID: amount.FieldID,
+		Aggregation: v2.LookupAggregationSum,
+	}
+	directSum := createV2IntegrationField(t, ctx, app, orders.TableID, directSumDraft, "mixed_direct_sum")
+	harness := newRematHarness(t, app)
+	orderID := "mixedorder00001"
+	firstMaterial := "mixedmatrl00001"
+	secondMaterial := "mixedmatrl00002"
+	unlinkedMaterial := "mixedmatrl00003"
+	sourceCodeName := sourceCode.Definition.Identity.PhysicalName
+	amountName := amount.Definition.Identity.PhysicalName
+	directName := direct.Definition.Identity.PhysicalName
+	directSumName := directSum.Definition.Identity.PhysicalName
+	for _, material := range []struct {
+		id     string
+		code   string
+		amount float64
+	}{
+		{firstMaterial, "MAT-M1", 1},
+		{secondMaterial, "MAT-M2", 7},
+		{unlinkedMaterial, "MAT-M3", 5},
+	} {
+		harness.apply("material insert "+material.id, materials, "mixed-insert-"+material.id,
+			mutation.Operation{Kind: mutation.OperationInsert, RecordID: &material.id,
+				Values: map[string]any{sourceCodeName: material.code, amountName: material.amount}})
+	}
+	harness.apply("order insert", orders, "mixed-order-insert",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &orderID,
+			Values: map[string]any{
+				orderCode.Definition.Identity.PhysicalName: "ORD-M",
+				directName: []string{firstMaterial, secondMaterial},
+			}})
+	if got := storedValue(t, app, orders.PhysicalName, orderID, directSumName); got != float64(8) {
+		t.Fatalf("linked set oracle = %#v, want 8", got)
+	}
+	// One batch: delete the linked target and revalue the unrelated record.
+	// The aggregate event reports operation "update"; the delete fallback
+	// must be derived from the batch audit scan.
+	harness.apply("mixed batch", materials, "mixed-batch-delete-update",
+		mutation.Operation{Kind: mutation.OperationDelete, RecordID: &firstMaterial},
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &unlinkedMaterial,
+			Values: map[string]any{amountName: float64(6)}})
+	if _, err := app.FindRecordById(materials.PhysicalName, firstMaterial); err == nil {
+		t.Fatal("deleted target still readable")
+	}
+	if got := sourceLinks(t, app, orders.PhysicalName, orderID, directName); len(got) != 1 || got[0] != secondMaterial {
+		t.Fatalf("order direct links after mixed batch = %#v, want [%s]", got, secondMaterial)
+	}
+	if got := storedValue(t, app, orders.PhysicalName, orderID, directSumName); got != float64(7) {
+		t.Fatalf("remaining set oracle after mixed batch = %#v, want 7", got)
+	}
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := query.NewPort(app, querySource).QueryPage(
+		ctx, orders.TableID, query.TableQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range page.Rows {
+		if fmt.Sprint(row["id"]) == orderID {
+			found = true
+			if fmt.Sprint(row[directSumName]) != "7" {
+				t.Fatalf("query surface after mixed batch = %#v, want 7", row[directSumName])
 			}
 		}
 	}

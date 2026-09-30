@@ -208,6 +208,7 @@ func (service *Service) enqueueFormulaFanout(
 		return []string{}, nil
 	}
 	changed := map[string]bool{}
+	batchDeleted := false
 	if derivedRefresh {
 		// Derived refreshes have no user-edit history; their dependency edges
 		// identify affected computed sources without inventing audit rows.
@@ -221,7 +222,7 @@ func (service *Service) enqueueFormulaFanout(
 			}
 		}
 	} else {
-		changed, err = service.changedTargetFields(app, event.TableID, *event.ChangeSetID)
+		changed, batchDeleted, err = service.changedTargetFields(app, event.TableID, *event.ChangeSetID)
 		if err != nil {
 			return nil, err
 		}
@@ -264,6 +265,7 @@ func (service *Service) enqueueFormulaFanout(
 			event,
 			key.tableID,
 			key.relationFieldID,
+			batchDeleted,
 			dependenciesByKey[key],
 		)
 		if createErr != nil {
@@ -280,10 +282,10 @@ func (service *Service) changedTargetFields(
 	app core.App,
 	tableID string,
 	changeSetID string,
-) (map[string]bool, error) {
+) (map[string]bool, bool, error) {
 	definition, err := schemaexecution.Describe(context.Background(), app, tableID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	events, err := app.FindRecordsByFilter(
 		"vibetable_audit_events",
@@ -294,21 +296,26 @@ func (service *Service) changedTargetFields(
 		dbx.Params{"changeSet": changeSetID, "table": tableID},
 	)
 	if err != nil {
-		return nil, jobError(
+		return nil, false, jobError(
 			"job.storage_failed",
 			"audit state for formula fan-out could not be read",
 			true,
 		)
 	}
 	changed := map[string]bool{}
+	deleted := false
 	for _, event := range events {
+		operation := event.GetString("operation")
+		if operation == string(mutation.OperationDelete) {
+			deleted = true
+		}
 		before := decodedObject(event.GetRaw("before_json"))
 		after := decodedObject(event.GetRaw("after_json"))
-		for field, affected := range relatedcomputation.ChangedInputs(definition.Snapshot.Fields, before, after, event.GetString("operation")) {
+		for field, affected := range relatedcomputation.ChangedInputs(definition.Snapshot.Fields, before, after, operation) {
 			changed[field] = changed[field] || affected
 		}
 	}
-	return changed, nil
+	return changed, deleted, nil
 }
 
 func (service *Service) createFanoutJob(
@@ -317,6 +324,7 @@ func (service *Service) createFanoutJob(
 	event mutation.DataChangedEvent,
 	sourceTableID string,
 	relationFieldID string,
+	batchDeleted bool,
 	dependencies []*core.Record,
 ) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -417,14 +425,16 @@ func (service *Service) createFanoutJob(
 		)
 	}
 	// ponytail: PocketBase clears the deleted id from every referencing
-	// relation value in the same transaction, so matching on the vanished
+	// relation value in the same transaction — whether the delete is the whole
+	// event or one operation inside a mixed update batch — so matching on the vanished
 	// target finds nothing; without an old-edge index the bounded fallback is
 	// a whole-source scan capped at O(source rows) per dependent hop — add the
 	// old-edge index only if measured delete fan-out cost warrants it — using
 	// the same batching/cancellation/resume and idempotent recompute.
 	cursor := fanoutCursor{
 		AllRecords: relationFieldID == "" ||
-			event.Operation == mutation.DataChangeDelete,
+			event.Operation == mutation.DataChangeDelete ||
+			batchDeleted,
 		TableID: sourceTableID, RelationFieldID: relationFieldID,
 		ChangedTableID:  event.TableID,
 		TargetRecordIDs: append([]string(nil), event.RecordIDs...),

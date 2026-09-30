@@ -221,7 +221,7 @@ func TestRelationFieldRetirementBlockedByPathLookupDependency(t *testing.T) {
 	if _, err := executor.Apply(ctx, v2.ApplyRequest{
 		PlanID: free.PlanID, PlanHash: free.PlanHash,
 		OperationID: "path_retire_apply_free", Actor: actor,
-		Confirmations:   free.Confirmations,
+		Confirmations: free.Confirmations,
 	}); err != nil {
 		t.Fatalf("unreferenced sibling relation retire failed to apply: %#v", err)
 	}
