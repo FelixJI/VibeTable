@@ -125,7 +125,7 @@ audit 与 outbox 不重复。snapshot 恢复后重建依赖并得到相同结果
 
 本节仅收口 [#390](https://github.com/FelixJI/VibeTable/issues/390) 声明的个人离线计算范围。
 [#396](https://github.com/FelixJI/VibeTable/issues/396) 本地最终候选的真实同包 S38 已通过；
-完整适用 CI、fresh independent review、正常 squash 及 main/CD 集成尚待完成，不能据此将整份规范标为 Closed。
+完整适用 CI、fresh independent review、正常 squash 及 main/CD 集成的最终证据见 #396 验收记录；本轮范围不等于整份规范 Closed。
 既有历史 main 样本及其 manifest gap 保持原记录。
 
 | 已覆盖范围 | 可执行证据入口 | 对应验收 |
