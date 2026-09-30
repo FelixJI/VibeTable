@@ -265,13 +265,6 @@ func dependencyInputs(ctx context.Context, app core.App, tableID string, fields 
 	return cache.tables[key], cache.inputs[key], cache.definitions[key], nil
 }
 
-// HasComputedInputs identifies cells whose legacy watermark needs one real
-// backfill when upstream definition versions become part of the read contract.
-func HasComputedInputs(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, field v2.FieldDefinition) (bool, error) {
-	_, _, definitions, err := dependencyInputs(ctx, app, tableID, fields, field)
-	return len(definitions) > 1, err
-}
-
 func directDependencyTables(
 	ctx context.Context,
 	app core.App,
