@@ -19,7 +19,7 @@ export function buildLookupProjectionFieldRefs(
 
 /**
  * Preserve the authoritative table view AST when switching to Lookup query.
- * Field names are translated to stable fieldRefs, including remote sorts and
+ * Field references are translated to query column names, including remote sorts and
  * groups. The entire projection is rejected when any node is malformed so the
  * backend never receives a weaker query than the visible table state.
  */

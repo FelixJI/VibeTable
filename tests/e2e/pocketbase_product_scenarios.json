@@ -225,7 +225,7 @@
   {
     "id": "38-calculation-chain-journey",
     "title": "三表计算链的查询、来源和导出一致性",
-    "requirement": "201条纯合成来源经真实CSV导入，覆盖199/1/0匹配；从可见编辑器创建条件SUM Lookup、第二层Formula及第三表集合Formula，编辑来源值和已保存公式后对照独立oracle。对第三表计算值真实筛选排序，核对完整结果计数与网格顺序；条件Lookup来源面板翻页逐条核对全部199项；CSV/XLSX与同快照oracle逐值及顺序一致且公式样文本不可执行，计算列保持只读。经WorkspaceCenter关闭重开后恢复同一身份、计算值和视图；沿用runner无外网与进程清理门禁。",
+    "requirement": "201条纯合成来源经真实CSV导入，覆盖199/1/0匹配；从可见编辑器创建条件SUM Lookup、第二层Formula及第三表集合Formula，编辑来源值和已保存公式后对照独立oracle；通过可见字段编辑器创建跨表Relation、关系SUM Lookup及依赖Formula，目标字段重命名后保持稳定身份和链值。对第三表计算值真实筛选排序，核对完整结果计数与网格顺序；条件Lookup来源面板翻页逐条核对全部199项；CSV/XLSX与同快照oracle逐值及顺序一致且公式样文本不可执行，计算列保持只读。经WorkspaceCenter关闭重开后恢复同一身份、计算值和视图；沿用runner无外网与进程清理门禁。",
     "capabilities": ["formula.collections", "formula.lifecycle", "lookup.aggregation", "lookup.source-pagination", "lookup.export"]
   }
 ]

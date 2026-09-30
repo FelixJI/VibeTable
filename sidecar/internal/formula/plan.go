@@ -375,6 +375,25 @@ func normalizeInput(
 		return nil, nil
 	}
 	valueType := valueTypeForField(field)
+	// Unwrap the PocketBase JSON-column storage wrapper before declared-type
+	// normalization so a JSON scalar follows the double/OnlyInt contract.
+	if raw, ok := value.(pbtypes.JSONRaw); ok {
+		// PocketBase represents an unset nullable JSON field as an empty
+		// JSONRaw byte slice. It is a storage-level null sentinel, not malformed
+		// user JSON; preserve the nullable field semantics for formulas and
+		// mutation recomputation.
+		if len(bytes.TrimSpace(raw)) == 0 {
+			return nil, nil
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		var decoded any
+		if err := decoder.Decode(&decoded); err != nil {
+			return nil, formulaError("formula.type", "JSON input is invalid", map[string]any{"fieldId": field.Identity.FieldID})
+		}
+		value = decoded
+	}
+
 	switch valueType.LogicalType {
 	case v2.LogicalNumber:
 		if !valueType.OnlyInt {
@@ -432,22 +451,6 @@ func normalizeInput(
 			}
 			return parsed.UTC(), nil
 		}
-	}
-	if raw, ok := value.(pbtypes.JSONRaw); ok {
-		// PocketBase represents an unset nullable JSON field as an empty
-		// JSONRaw byte slice. It is a storage-level null sentinel, not malformed
-		// user JSON; preserve the nullable field semantics for formulas and
-		// mutation recomputation.
-		if len(bytes.TrimSpace(raw)) == 0 {
-			return nil, nil
-		}
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.UseNumber()
-		var decoded any
-		if err := decoder.Decode(&decoded); err != nil {
-			return nil, formulaError("formula.type", "JSON input is invalid", map[string]any{"fieldId": field.Identity.FieldID})
-		}
-		value = decoded
 	}
 	normalized, failure := normalizeDynamicInput(value, limits, 0, field.Identity.FieldID)
 	if failure != nil || valueType.ElementType == "" {

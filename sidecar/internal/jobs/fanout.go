@@ -416,8 +416,13 @@ func (service *Service) createFanoutJob(
 			"job.storage_failed", "job storage is unavailable", true,
 		)
 	}
+	// ponytail: the dependency watermark is a table-level expectation, so any
+	// edge advance must recalculate the whole source table. Full-source
+	// recalculation uses 500-row batches with cancellation/resume/idempotency;
+	// O(source rows) per affected dependency. Add row-level watermarks only if
+	// measured cost warrants it.
 	cursor := fanoutCursor{
-		AllRecords: relationFieldID == "",
+		AllRecords: true,
 		TableID:    sourceTableID, RelationFieldID: relationFieldID,
 		ChangedTableID:  event.TableID,
 		TargetRecordIDs: append([]string(nil), event.RecordIDs...),
@@ -601,7 +606,11 @@ func (service *Service) fanoutPathMatches(
 			if err := consumeBudget(len(ids)); err != nil {
 				return false, err
 			}
-			if last && targetTableID == changedTableID && intersectsFanoutTargets(ids, targets) {
+			// A changed record can sit at any hop, not only the last one:
+			// dependency edges already filtered this job to a path that
+			// crosses the changed table, so intersecting the changed ids on
+			// any hop whose target is the changed table marks the source row.
+			if targetTableID == changedTableID && intersectsFanoutTargets(ids, targets) {
 				return true, nil
 			}
 			if !last {

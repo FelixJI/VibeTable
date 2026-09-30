@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/cel-go/cel"
+	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
@@ -80,5 +81,41 @@ func TestNumericLookupAggregationsAreNumberFormulaInputs(t *testing.T) {
 	}
 	if inferred.LogicalType != v2.LogicalNumber || inferred.OnlyInt {
 		t.Fatalf("inferred aggregate reference type = %#v", inferred)
+	}
+}
+
+// TestNormalizeInputUnwrapsPocketBaseJSONRawByDeclaredType pins the storage
+// seam behind the S38 relation-picker failure: PocketBase hands computed JSON
+// columns back as pbtypes.JSONRaw, so normalizeInput must unwrap the storage
+// wrapper first and then normalize by the declared field type — a numeric SUM
+// lookup cell becomes the declared double, an OnlyInt number stays int64,
+// the null sentinel stays nil, and generic dynamic JSON keeps the existing
+// json.Number-to-int64 semantics untouched.
+func TestNormalizeInputUnwrapsPocketBaseJSONRawByDeclaredType(t *testing.T) {
+	limits := DefaultLimits()
+	sumLookup := aggregatedLookupField("fld_total00001", "f_total00001", v2.LookupAggregationSum)
+	onlyIntNumber := scalarField("fld_qty000001", "f_qty000001", ValueType{
+		LogicalType: v2.LogicalNumber, OnlyInt: true,
+	})
+	jsonPayload := scalarField("fld_payload001", "f_payload001", ValueType{
+		LogicalType: v2.LogicalJSON,
+	})
+
+	if got, err := normalizeInput(sumLookup, pbtypes.JSONRaw("14"), limits); err != nil || got != float64(14) {
+		t.Fatalf("numeric SUM lookup JSONRaw(14) = %#v, %v; want float64(14)", got, err)
+	}
+	if got, err := normalizeInput(onlyIntNumber, pbtypes.JSONRaw("3"), limits); err != nil || got != int64(3) {
+		t.Fatalf("OnlyInt number JSONRaw(3) = %#v, %v; want int64(3)", got, err)
+	}
+	if got, err := normalizeInput(sumLookup, pbtypes.JSONRaw("   "), limits); err != nil || got != nil {
+		t.Fatalf("empty JSONRaw sentinel = %#v, %v; want nil", got, err)
+	}
+	got, err := normalizeInput(jsonPayload, pbtypes.JSONRaw(`{"a": 3}`), limits)
+	if err != nil {
+		t.Fatalf("generic JSON error = %#v", err)
+	}
+	object, ok := got.(map[string]any)
+	if !ok || object["a"] != int64(3) {
+		t.Fatalf("generic JSON integer = %#v; want map[a:int64(3)]", got)
 	}
 }

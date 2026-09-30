@@ -885,7 +885,21 @@ func formulaNeedsBackfill(before, after *v2.FieldDefinition) bool {
 	if after == nil || after.Formula == nil {
 		return false
 	}
-	return before == nil || before.Formula == nil || formulaDefinitionChanged(before, after)
+	if before == nil || before.Formula == nil || formulaDefinitionChanged(before, after) {
+		return true
+	}
+	return restoredComputedField(before, after)
+}
+
+// restoredComputedField reports whether a plan transitions a computed field
+// from retired back to active. Retired fields are excluded from computation
+// invalidation, so stored cells silently age while the field is hidden;
+// restore must rematerialize even when the formula/lookup configuration is
+// byte-identical. Retire, purge, and ordinary updates never match here.
+func restoredComputedField(before, after *v2.FieldDefinition) bool {
+	return before != nil && after != nil &&
+		before.Lifecycle.State == v2.LifecycleRetired &&
+		after.Lifecycle.State == v2.LifecycleActive
 }
 
 // Lookup has no formula status to recover from: enqueue its initial or changed
@@ -896,7 +910,10 @@ func lookupNeedsBackfill(app core.App, plan v2.FieldChangePlan) (bool, error) {
 		return false, nil
 	}
 	// DisplayName is part of the persisted lookup metadata and its revision.
-	if before != nil && reflect.DeepEqual(before.Lookup, after.Lookup) && before.DisplayName == after.DisplayName {
+	// Restore keeps both identical yet still needs rematerialization: the
+	// retired field missed every dependency change since it was hidden.
+	if before != nil && reflect.DeepEqual(before.Lookup, after.Lookup) &&
+		before.DisplayName == after.DisplayName && !restoredComputedField(before, after) {
 		return false, nil
 	}
 	table, err := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}", dbx.Params{"table": plan.Intent.TableID})
