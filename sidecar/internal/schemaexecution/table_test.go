@@ -2,11 +2,13 @@ package schemaexecution_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
@@ -232,30 +234,67 @@ func TestDescribeRejectsNonAuthoritativeStoredFieldDefinitions(t *testing.T) {
 	}
 }
 
+// A schema revision changed inside the caller's transaction between the first
+// and last metadata reads must still be rejected: the guard keeps protecting
+// execution snapshots regardless of how the reads are bound to a transaction.
+// The change is a real UPDATE on the caller's own transaction connection,
+// injected right after the initial metadata read has completed (observed via
+// the vibetable_fields select).
 func TestDescribeRejectsRevisionChangedWhileLoading(t *testing.T) {
 	ctx := context.Background()
 	app := newTestApp(t)
 	table := createTestExecutionTable(t, ctx, app, "Conflicting execution table", "conflict-table")
-	conflicting := &revisionConflictApp{App: app}
 
-	_, err := schemaexecution.Describe(ctx, conflicting, table.TableID)
+	var txWriter dbx.Builder
+	var injected bool
+	var injectErr error
+	installHook := func(db *dbx.DB) {
+		previous := db.QueryLogFunc
+		db.QueryLogFunc = func(logCtx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, queryErr error) {
+			if txWriter != nil && strings.Contains(statement, "vibetable_fields") && !injected {
+				injected = true
+				_, injectErr = txWriter.NewQuery(
+					"UPDATE vibetable_tables SET schema_revision = schema_revision + 1, data_revision = data_revision + 1 WHERE table_id = {:table}",
+				).Bind(dbx.Params{"table": table.TableID}).Execute()
+			}
+			if previous != nil {
+				previous(logCtx, elapsed, statement, rows, queryErr)
+			}
+		}
+		t.Cleanup(func() { db.QueryLogFunc = previous })
+	}
+	for _, db := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+		installHook(db)
+	}
+
+	err := app.RunInTransaction(func(txApp core.App) error {
+		txWriter = txApp.NonconcurrentDB()
+		_, err := schemaexecution.Describe(ctx, txApp, table.TableID)
+		return err
+	})
+	if !injected {
+		t.Fatal("revision change never executed: no vibetable_fields select observed")
+	}
+	if injectErr != nil {
+		t.Fatalf("in-transaction revision change failed: %v", injectErr)
+	}
 	if err == nil || !strings.Contains(err.Error(), "schema.execution_revision_conflict") {
 		t.Fatalf("Describe() error = %v; want schema.execution_revision_conflict", err)
 	}
 }
 
 // A legitimate business write that advances data_revision between Describe's
-// first and last metadata reads must not surface as a revision conflict:
-// the execution snapshot has to stay a coherent read while business data
+// first and last metadata reads must not surface as a revision conflict: the
+// execution snapshot has to stay a coherent read while business data
 // revisions advance. The interleave commits a real UPDATE on an independent
-// connection while the load is in progress, deterministic without sleeps.
+// connection (never inside Describe's transaction) right after the initial
+// metadata read completed, observed via the vibetable_fields select on both
+// database pools so old and new read paths stay comparable. Deterministic
+// without sleeps.
 func TestDescribeKeepsConsistentSnapshotWhenBusinessWriteAdvancesDataRevision(t *testing.T) {
 	ctx := context.Background()
 	app := newTestApp(t)
 	table := createTestExecutionTable(t, ctx, app, "并发业务写入表", "concurrent-business-table")
-	// A dedicated connection to the same database file is a genuinely
-	// independent writer: its commit is real concurrency, never a write
-	// smuggled into the caller's transaction.
 	writer, err := core.DefaultDBConnect(filepath.Join(app.DataDir(), "data.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -265,14 +304,34 @@ func TestDescribeKeepsConsistentSnapshotWhenBusinessWriteAdvancesDataRevision(t 
 			t.Errorf("close independent writer: %v", err)
 		}
 	})
-	concurrent := &businessDataRevisionWriteApp{App: app, writer: writer}
 
-	execution, err := schemaexecution.Describe(ctx, concurrent, table.TableID)
-	if concurrent.tableReads != 2 {
-		t.Fatalf("observed vibetable_tables reads = %d; want exactly the first and re-read", concurrent.tableReads)
+	var injected bool
+	var injectErr error
+	installHook := func(db *dbx.DB) {
+		previous := db.QueryLogFunc
+		db.QueryLogFunc = func(logCtx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, queryErr error) {
+			if !injected && strings.Contains(statement, "vibetable_fields") {
+				injected = true
+				_, injectErr = writer.NewQuery(
+					"UPDATE vibetable_tables SET data_revision = data_revision + 1 WHERE table_id = {:table}",
+				).Bind(dbx.Params{"table": table.TableID}).Execute()
+			}
+			if previous != nil {
+				previous(logCtx, elapsed, statement, rows, queryErr)
+			}
+		}
+		t.Cleanup(func() { db.QueryLogFunc = previous })
 	}
-	if concurrent.writeErr != nil {
-		t.Fatalf("interleaved business write failed: %v", concurrent.writeErr)
+	for _, db := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+		installHook(db)
+	}
+
+	execution, err := schemaexecution.Describe(ctx, app, table.TableID)
+	if !injected {
+		t.Fatal("interleave never executed: no vibetable_fields select observed")
+	}
+	if injectErr != nil {
+		t.Fatalf("interleaved business write failed: %v", injectErr)
 	}
 	if err != nil {
 		t.Fatalf("Describe() rejected a legitimate concurrent business write: %v", err)
@@ -319,80 +378,6 @@ func TestExecutionReadsHonorCanceledContextBeforeStorage(t *testing.T) {
 	); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RetiredField() error = %v; want context.Canceled", err)
 	}
-}
-
-type revisionConflictApp struct {
-	core.App
-	tableReads int
-}
-
-// businessDataRevisionWriteApp advances data_revision on an independent
-// database connection right after Describe's first vibetable_tables read,
-// modelling a legitimate concurrent business commit. RunInTransaction
-// re-wraps the transaction app so the interleave keeps firing when Describe
-// ever binds its reads to a transaction, while the write itself stays on the
-// independent connection instead of joining (and deadlocking or faking
-// concurrency inside) the caller's transaction.
-type businessDataRevisionWriteApp struct {
-	core.App
-	writer     *dbx.DB
-	tableReads int
-	writeErr   error
-}
-
-func (app *businessDataRevisionWriteApp) FindFirstRecordByFilter(
-	collectionModelOrIdentifier any,
-	filter string,
-	params ...dbx.Params,
-) (*core.Record, error) {
-	record, err := app.App.FindFirstRecordByFilter(collectionModelOrIdentifier, filter, params...)
-	collection, isString := collectionModelOrIdentifier.(string)
-	if err == nil && isString && collection == "vibetable_tables" {
-		app.tableReads++
-		if app.tableReads == 1 {
-			_, app.writeErr = app.writer.NewQuery(
-				"UPDATE vibetable_tables SET data_revision = data_revision + 1 WHERE table_id = {:table}",
-			).Bind(dbx.Params{"table": record.GetString("table_id")}).Execute()
-		}
-	}
-	return record, err
-}
-
-func (app *businessDataRevisionWriteApp) RunInTransaction(callback func(txApp core.App) error) error {
-	return app.App.RunInTransaction(func(txApp core.App) error {
-		nested := &businessDataRevisionWriteApp{App: txApp, writer: app.writer, tableReads: app.tableReads}
-		err := callback(nested)
-		app.tableReads = nested.tableReads
-		if nested.writeErr != nil {
-			app.writeErr = nested.writeErr
-		}
-		return err
-	})
-}
-
-func (app *revisionConflictApp) RunInTransaction(callback func(txApp core.App) error) error {
-	return app.App.RunInTransaction(func(txApp core.App) error {
-		nested := &revisionConflictApp{App: txApp, tableReads: app.tableReads}
-		err := callback(nested)
-		app.tableReads = nested.tableReads
-		return err
-	})
-}
-
-func (app *revisionConflictApp) FindFirstRecordByFilter(
-	collectionModelOrIdentifier any,
-	filter string,
-	params ...dbx.Params,
-) (*core.Record, error) {
-	record, err := app.App.FindFirstRecordByFilter(collectionModelOrIdentifier, filter, params...)
-	collection, isString := collectionModelOrIdentifier.(string)
-	if err == nil && isString && collection == "vibetable_tables" {
-		app.tableReads++
-		if app.tableReads == 2 {
-			record.Set("schema_revision", record.GetInt("schema_revision")+1)
-		}
-	}
-	return record, err
 }
 
 func createTestExecutionTable(

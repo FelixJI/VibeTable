@@ -98,21 +98,30 @@ func Describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 	}
 
 	var result Table
-	err := app.RunInTransaction(func(txApp core.App) error {
+	read := func(db dbx.Builder) error {
 		var err error
-		result, err = describe(ctx, txApp, tableID)
+		result, err = describe(ctx, app, db, tableID)
 		return err
-	})
+	}
+	var err error
+	// PocketBase's App helper does not bind Begin to the request context.
+	// Follow realtime recovery's context-bound DBX transaction instead.
+	switch db := app.NonconcurrentDB().(type) {
+	case *dbx.DB:
+		err = db.WithContext(ctx).Transactional(func(tx *dbx.Tx) error { return read(tx) })
+	case *dbx.Tx:
+		err = read(db)
+	default:
+		err = errors.New("schema execution database is unavailable")
+	}
+	if ctx.Err() != nil {
+		return Table{}, ctx.Err()
+	}
 	return result, err
 }
 
-// Reuse a caller's transaction, or pin one snapshot across all metadata reads.
-func describe(ctx context.Context, app core.App, tableID string) (Table, error) {
-	initial, err := app.FindFirstRecordByFilter(
-		tablesCollectionName,
-		"table_id = {:tableID}",
-		dbx.Params{"tableID": tableID},
-	)
+func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string) (Table, error) {
+	initial, err := executionTableRecord(ctx, app, db, tableID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Table{}, fmt.Errorf("%w: %s", ErrTableNotFound, tableID)
@@ -122,14 +131,8 @@ func describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 
 	initialSchemaRevision := initial.GetInt("schema_revision")
 	initialDataRevision := initial.GetInt("data_revision")
-	fieldRecords, err := app.FindRecordsByFilter(
-		"vibetable_fields",
-		"table_id={:table} && lifecycle_state!='retired'",
-		"id",
-		0,
-		0,
-		dbx.Params{"table": tableID},
-	)
+	fieldRecords, err := executionRecords(ctx, app, db, "vibetable_fields",
+		dbx.NewExp("table_id={:table} AND lifecycle_state!='retired'", dbx.Params{"table": tableID}), "id")
 	if err != nil {
 		return Table{}, fmt.Errorf("list table fields: %w", err)
 	}
@@ -144,7 +147,9 @@ func describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 
 	physicalName := initial.GetString("physical_name")
 	collectionID := initial.GetString("collection_id")
-	collection, err := app.FindCollectionByNameOrId(collectionID)
+	collection := &core.Collection{}
+	err = db.Select("*").From(collection.TableName()).Where(dbx.HashExp{"id": collectionID}).
+		WithContext(ctx).One(collection)
 	if err != nil {
 		return Table{}, fmt.Errorf("read table collection: %w", err)
 	}
@@ -212,14 +217,8 @@ func describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 	}
 
 	formulaRuntime := make(map[string]FormulaRuntime)
-	formulaRecords, err := app.FindRecordsByFilter(
-		formulasCollectionName,
-		"table_id = {:tableID}",
-		"",
-		0,
-		0,
-		dbx.Params{"tableID": tableID},
-	)
+	formulaRecords, err := executionRecords(ctx, app, db, formulasCollectionName,
+		dbx.HashExp{"table_id": tableID})
 	if err != nil {
 		return Table{}, fmt.Errorf("read formula runtime: %w", err)
 	}
@@ -230,11 +229,7 @@ func describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 		}
 	}
 
-	current, err := app.FindFirstRecordByFilter(
-		tablesCollectionName,
-		"table_id = {:tableID}",
-		dbx.Params{"tableID": tableID},
-	)
+	current, err := executionTableRecord(ctx, app, db, tableID)
 	if err != nil {
 		return Table{}, fmt.Errorf("re-read table execution binding: %w", err)
 	}
@@ -257,6 +252,50 @@ func describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 		ArchivePolicy:         archivePolicy,
 		FormulaRuntime:        formulaRuntime,
 	}, nil
+}
+
+// Read metadata through the same transaction while retaining PocketBase's field
+// decoding. These fixed system collections use the app's existing collection cache.
+func executionRecords(ctx context.Context, app core.App, db dbx.Builder, name string,
+	where dbx.Expression, order ...string,
+) ([]*core.Record, error) {
+	collection, err := app.FindCachedCollectionByNameOrId(name)
+	if err != nil {
+		return nil, err
+	}
+	var rows []dbx.NullStringMap
+	if err := db.Select("*").From(collection.Name).Where(where).OrderBy(order...).
+		WithContext(ctx).All(&rows); err != nil {
+		return nil, err
+	}
+	records := make([]*core.Record, 0, len(rows))
+	for _, row := range rows {
+		record := core.NewRecord(collection)
+		for _, field := range collection.Fields {
+			var raw any
+			if value := row[field.GetName()]; value.Valid {
+				raw = value.String
+			}
+			value, err := field.PrepareValue(record, raw)
+			if err != nil {
+				return nil, err
+			}
+			record.SetRaw(field.GetName(), value)
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func executionTableRecord(ctx context.Context, app core.App, db dbx.Builder, tableID string) (*core.Record, error) {
+	records, err := executionRecords(ctx, app, db, tablesCollectionName, dbx.HashExp{"table_id": tableID})
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return records[0], nil
 }
 
 func decodeField(record *core.Record) (v2.FieldDefinition, error) {
