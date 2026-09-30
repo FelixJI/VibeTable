@@ -4,17 +4,10 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <!--
-      The test project targets net10.0-windows so it can reference the
-      VibeTable.Desktop WPF project, but does NOT set UseWPF=true: the ViewModel
-      and router tests do not touch any WPF control and we want the test
-      host to spin up without dragging the WPF presentation stack in.
-    -->
   </PropertyGroup>
 
-  <!-- WPF windows and the WebView host are composition-heavy. PreviewHost has
-       its own test project and threshold, so neither assembly can hide the
-       other's uncovered lines in a merged total. -->
+  <!-- Worker is measured independently from the OpenXml and Workspace dependencies so
+       neither assembly can hide its uncovered lines or branches. -->
   <PropertyGroup Condition="'$(VibeTableCoverageSettingsDirectory)' != ''">
     <RunSettingsFilePath>$(VibeTableCoverageSettingsDirectory)/$(MSBuildProjectName).runsettings</RunSettingsFilePath>
     <VSTestResultsDirectory>$(VibeTableCoverageResultsDirectory)/$(MSBuildProjectName)</VSTestResultsDirectory>
@@ -35,10 +28,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\VibeTable.Desktop\VibeTable.Desktop.csproj" />
-    <ProjectReference Include="..\..\src\VibeTable.DocumentDiff.Worker\VibeTable.DocumentDiff.Worker.csproj"
-                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\VibeTable.DocumentDiff.OpenXml\VibeTable.DocumentDiff.OpenXml.csproj" />
+    <ProjectReference Include="..\..\src\VibeTable.DocumentDiff.Worker\VibeTable.DocumentDiff.Worker.csproj" />
     <ProjectReference Include="..\..\src\VibeTable.Workspace\VibeTable.Workspace.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\VibeTable.DocumentDiff.OpenXml.Tests\TestData\Qualification\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>Qualification\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
   </ItemGroup>
 
 </Project>

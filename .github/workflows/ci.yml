@@ -146,6 +146,22 @@ jobs:
             build/qa/workbench-qualification-pr.json
           if-no-files-found: warn
           retention-days: 3
+      - name: Upload failed updater evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-updater-evidence
+          path: |
+            build/self-update-smoke/**/.VibeTable.Next.update-pending.json
+            build/self-update-smoke/**/.VibeTable.Next.update-rollback-*.json
+            build/self-update-smoke/**/*.activation-error.txt
+            build/self-update-smoke/**/vibetable-readiness.json
+            build/self-update-smoke/**/vibetable-trace.log
+            build/self-update-smoke/**/host-lifecycle-state.json
+            build/self-update-smoke/**/.self-update-smoke-process.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 3
       - name: Upload immutable candidate handoff
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
