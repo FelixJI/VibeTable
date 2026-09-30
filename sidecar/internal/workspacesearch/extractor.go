@@ -1,7 +1,6 @@
 package workspacesearch
 
 import (
-	"archive/zip"
 	"bytes"
 	"compress/zlib"
 	"context"
@@ -266,61 +265,20 @@ func extractOOXML(
 	payload []byte,
 	limits ExtractionLimits,
 ) ExtractionResult {
-	archive, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
-	if err != nil {
-		return extractionError(ExtractionFailed, "extract.ooxml_invalid")
-	}
-	if len(archive.File) > limits.MaximumZIPEntries {
-		return extractionError(ExtractionResourceLimited, "extract.zip_entries_limit")
-	}
-	var total int64
-	var output strings.Builder
-	for _, file := range archive.File {
-		if err := ctx.Err(); err != nil {
-			return extractionContextError(ctx)
-		}
-		if file.UncompressedSize64 > uint64(limits.MaximumPartBytes) {
-			return extractionError(ExtractionResourceLimited, "extract.zip_part_limit")
-		}
-		total += int64(file.UncompressedSize64)
-		if total > limits.MaximumUncompressed {
-			return extractionError(ExtractionResourceLimited, "extract.zip_total_limit")
-		}
-		if !ooxmlTextPart(kind, file.Name) {
-			continue
-		}
-		part, err := file.Open()
-		if err != nil {
-			return extractionError(ExtractionFailed, "extract.ooxml_part_failed")
-		}
-		text, extractErr := extractXML(ctx, io.LimitReader(part, limits.MaximumPartBytes+1))
-		closeErr := part.Close()
-		if extractErr != nil || closeErr != nil {
-			if ctx.Err() != nil {
-				return extractionContextError(ctx)
-			}
-			return extractionError(ExtractionFailed, "extract.ooxml_part_failed")
-		}
-		output.WriteString(text)
-		output.WriteByte(' ')
-	}
-	return boundedExtraction(strings.Join(strings.Fields(output.String()), " "), limits)
-}
-
-func ooxmlTextPart(kind, name string) bool {
-	clean := filepath.ToSlash(name)
-	if strings.Contains(clean, "../") || strings.HasPrefix(clean, "/") {
-		return false
+	pkg, failure := collectOOXMLPackage(ctx, payload, limits)
+	if failure.Status != "" {
+		return failure
 	}
 	switch kind {
 	case "docx":
-		return clean == "word/document.xml" || strings.HasPrefix(clean, "word/header") || strings.HasPrefix(clean, "word/footer")
-	case "pptx":
-		return strings.HasPrefix(clean, "ppt/slides/slide") && strings.HasSuffix(clean, ".xml")
+		return extractDOCX(ctx, pkg, limits)
 	case "xlsx":
-		return clean == "xl/sharedStrings.xml" || (strings.HasPrefix(clean, "xl/worksheets/sheet") && strings.HasSuffix(clean, ".xml"))
+		return extractXLSX(ctx, pkg, limits)
+	case "pptx":
+		return extractPPTX(ctx, pkg, limits)
+	default:
+		return boundedExtraction("", limits)
 	}
-	return false
 }
 
 var (
@@ -422,11 +380,18 @@ type pdfTextAccumulator struct {
 	output                   strings.Builder
 	limit, runes, limitBytes int
 	space                    bool
+	// undecodable counts text-operator string tokens that carried bytes we
+	// could not decode into visible text. Zero decoded runes plus such
+	// evidence means the page has text we cannot read — not a missing text
+	// layer — and a mix means the accepted text only covers part of the
+	// document (extract.pdf_partial_decode).
+	undecodable int
 }
 
 func (text *pdfTextAccumulator) appendToken(token []byte) bool {
 	decoded, ok := decodePDFString(token)
-	if !ok {
+	if !ok || (len(decoded) > 0 && strings.TrimFunc(decoded, unicode.IsControl) == "") {
+		text.undecodable++
 		return true
 	}
 	for _, value := range decoded {
@@ -457,10 +422,19 @@ func (text *pdfTextAccumulator) appendRune(value rune) bool {
 
 func (text *pdfTextAccumulator) result() ExtractionResult {
 	if text.runes == 0 {
+		if text.undecodable > 0 {
+			// Text operators exist but none of their strings decode: claim
+			// unsupported coverage instead of a missing text layer.
+			return extractionError(ExtractionUnsupported, "extract.unsupported")
+		}
 		return extractionError(ExtractionNoTextLayer, "extract.pdf_no_text")
 	}
 	value := text.output.String()
 	if text.runes <= text.limit {
+		if text.undecodable > 0 {
+			code := "extract.pdf_partial_decode"
+			return ExtractionResult{Status: ExtractionIndexed, Text: value, ErrorCode: &code}
+		}
 		return ExtractionResult{Status: ExtractionIndexed, Text: value}
 	}
 	code := "extract.text_limit"
