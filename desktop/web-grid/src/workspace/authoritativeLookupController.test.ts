@@ -140,8 +140,8 @@ describe("authoritativeLookupController", () => {
       tablePage: () => page,
       loadedRows: () => page.rows,
       columns: () => [
-        { name: "customer", title: "Customer", fieldId: "orders.customer", kind: "relation", dataType: "text", editable: true, nullable: true },
-        { name: "price", title: "Price", fieldId: "orders.price", dataType: "decimal", editable: false, nullable: true },
+        { name: "customer", title: "Customer", fieldId: "fld_customer", kind: "relation", dataType: "text", editable: true, nullable: true },
+        { name: "price", title: "Price", fieldId: "fld_price", dataType: "decimal", editable: false, nullable: true },
       ],
       datasetReady: () => true, pageGeneration: () => 0,
       schemaRevision: () => "schema-1",
@@ -175,8 +175,8 @@ describe("authoritativeLookupController", () => {
     const controller = scope.run(() => createAuthoritativeLookupController(dependencies))!;
     controller.recordQuery({
       filters: [{ field: "customer", operator: "eq", value: "c1" }],
-      sorts: [{ field: "price", direction: "desc" }],
-      groups: [{ field: "customer", direction: "asc" }],
+      sorts: [{ field: "fld_price", direction: "desc" }],
+      groups: [{ field: "fld_customer", direction: "asc" }],
       offset: 0,
       limit: 500,
     });
@@ -193,9 +193,9 @@ describe("authoritativeLookupController", () => {
       collection: "orders",
       fieldRefs: hasLookup ? ["price"] : [],
       query: hasLookup ? {
-        filters: [{ field: "orders.customer", operator: "eq", value: "c1" }],
-        sorts: [{ field: "orders.price", direction: "desc" }],
-        groups: [{ fieldRef: "orders.customer", direction: "asc" }],
+        filters: [{ field: "customer", operator: "eq", value: "c1" }],
+        sorts: [{ field: "price", direction: "desc" }],
+        groups: [{ fieldRef: "customer", direction: "asc" }],
         offset: 0,
         limit: 500,
       } : { filters: [{ field: "id", operator: "in", value: ["visible"] }], sorts: [], groups: [], offset: 0, limit: 1 },
@@ -227,7 +227,7 @@ describe("authoritativeLookupController", () => {
       columns: () => [{
         name: "customer",
         title: "Customer",
-        fieldId: "orders.customer",
+        fieldId: "fld_customer",
         dataType: "text",
         editable: true,
         nullable: true,
@@ -279,7 +279,7 @@ describe("authoritativeLookupController", () => {
     const currentRefresh = controller.refresh();
     expect(queryLookups).toHaveBeenLastCalledWith(expect.objectContaining({
       query: expect.objectContaining({
-        filters: [{ field: "orders.customer", operator: "eq", value: "new-customer" }],
+        filters: [{ field: "customer", operator: "eq", value: "new-customer" }],
       }),
     }));
     current.resolve(result(2));
@@ -308,7 +308,7 @@ describe("authoritativeLookupController", () => {
       columns: () => [{
         name: "price",
         title: "Price",
-        fieldId: "orders.price",
+        fieldId: "fld_price",
         dataType: "decimal",
         editable: false,
         nullable: true,
@@ -372,7 +372,7 @@ describe("authoritativeLookupController", () => {
       columns: () => [{
         name: "customer",
         title: "Customer",
-        fieldId: "orders.customer",
+        fieldId: "fld_customer",
         dataType: "text",
         editable: true,
         nullable: true,
@@ -514,7 +514,7 @@ function receiptHarness(labelsOnly = false) {
   });
   table.setDatasetReady({
     table: "orders", columns: [{
-      name: "price", title: "Price", fieldId: "orders.price", dataType: "decimal",
+      name: "price", title: "Price", fieldId: "fld_price", dataType: "decimal",
       editable: false, nullable: true, ...(labelsOnly ? { kind: "relation" as const } : {}),
     }], rows: [{ rowKey: "original", price: null }], offset: 0, limit: 500,
     totalRows: 1, mode: "remote",

@@ -128,9 +128,11 @@ export function createAuthoritativeLookupController(
       && contextGeneration === dependencies.contextGeneration()
       && collection === dependencies.currentTable();
     const fieldRefs = buildLookupProjectionFieldRefs(lookups);
+    // Query AST uses physical column names; stable IDs are schema identities,
+    // not query fields. Lookup output projection fieldRefs stay separate.
     const fieldRefByName = new Map(columns.map(column => [
+      column.fieldId ?? column.name,
       column.name,
-      column.fieldId ?? `${collection}.${column.name}`,
     ]));
     const source = interactiveQuery ?? page.querySnapshot?.normalizedQuery ?? {};
     try {
