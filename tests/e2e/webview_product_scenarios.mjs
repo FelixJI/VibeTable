@@ -7514,6 +7514,7 @@ async function scenario14(page, recorder, _network, runtime) {
         .filter(node => node.textContent.includes("仅格式变化的相同正文"))
         .map(node => getComputedStyle(node).fontSize));
       recorder.check("DOCX direct font size is visibly different", new Set(sizes).size > 1, { sizes });
+      await page.getByTestId("diff-change").first().scrollIntoViewIfNeeded();
       await page.screenshot({ path: path.join(runtime.evidenceDir, "14-docx-diff-details.png"), fullPage: true });
     }
     const newTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId: imported.documentId });

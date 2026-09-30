@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using VibeTable.Workspace.Diff;
 using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop.Tests;
@@ -7,6 +10,57 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class DocumentDiffWorkerSupervisorTests
 {
+    [TestMethod]
+    [DataRow("summary")]
+    [DataRow("coverage")]
+    [DataRow("change")]
+    public async Task WorkerJsonWithInvalidSemanticValuesHasControlledFailure(string invalid)
+    {
+        string root = CreateOperation(RepositoryRoot());
+        string index = Path.Combine(root, "index");
+        Directory.CreateDirectory(index);
+        string metadataPath = Path.Combine(index, "result.json");
+        string changesPath = Path.Combine(index, "changes.jsonl");
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var summary = invalid == "change" ? new DocumentDiffSummary(1, 1, 0, 0, 1, 0, 0, 0, 0, 0)
+            : new DocumentDiffSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var coverage = new DocumentDiffCoverage(
+            [new(DocumentDiffCoverageArea.VisibleText, DocumentDiffCoverageStatus.Covered)], false);
+        var metadata = JsonSerializer.SerializeToNode(new DocumentDiffWorkerResult(2, summary, coverage, []), options)!;
+        string lines = "";
+        if (invalid == "summary") metadata["summary"]!["totalChangeGroups"] = 1;
+        if (invalid == "coverage")
+        {
+            var areas = metadata["coverage"]!["areas"]!.AsArray();
+            areas.Add(areas[0]!.DeepClone());
+        }
+        if (invalid == "change")
+        {
+            var change = new DocumentDiffChange(Guid.NewGuid(), DocumentDiffChangeKind.Replace,
+                new(DocumentDiffPart.Body), new([new("old", DocumentDiffRichRunRole.Deleted)]),
+                new([new("new", DocumentDiffRichRunRole.Inserted)]),
+                DocumentDiffConfidence.Exact);
+            var node = JsonSerializer.SerializeToNode(change, options)!;
+            node["changeId"] = Guid.Empty.ToString("D");
+            lines = node.ToJsonString() + "\n";
+        }
+        File.WriteAllText(metadataPath, metadata.ToJsonString());
+        File.WriteAllText(changesPath, lines);
+        try
+        {
+            await Assert.ThrowsExactlyAsync<JsonException>(() =>
+                WorkspaceDocumentDiffCoordinator.ReadWorkerResultAsync(index, changesPath, default));
+        }
+        finally
+        {
+            File.Delete(metadataPath);
+            File.Delete(changesPath);
+            foreach (string directory in new[] { "input", "normalized", "index" })
+                Directory.Delete(Path.Combine(root, directory));
+            Directory.Delete(root);
+        }
+    }
+
     [TestMethod]
     public async Task RealWorkerNormalizesBothIsolatedInputsAndExits()
     {

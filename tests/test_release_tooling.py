@@ -3124,6 +3124,19 @@ def test_worker_publish_metadata_uses_real_runtime_packages_and_reviewed_license
         encoding="utf-8",
     )
     (package / "THIRD-PARTY-NOTICES.txt").write_text("upstream notice", encoding="utf-8")
+    runtime_names = (
+        "Microsoft.NETCore.App.Runtime.win-x64",
+        "Microsoft.AspNetCore.App.Runtime.win-x64",
+        "Microsoft.WindowsDesktop.App.Runtime.win-x64",
+    )
+    for name in runtime_names:
+        runtime = cache / name.lower() / "10.0.11"
+        runtime.mkdir(parents=True)
+        (runtime / "runtime.nuspec").write_text(
+            f"<package><metadata><id>{name}</id><version>10.0.11</version>"
+            '<license type="expression">MIT</license></metadata></package>',
+            encoding="utf-8",
+        )
     assets = {
         "targets": {
             "net10.0/win-x64": {
@@ -3137,7 +3150,16 @@ def test_worker_publish_metadata_uses_real_runtime_packages_and_reviewed_license
             name: {"type": "package", "path": name.lower()}
             for name in ("Provider/1.2.3", "UnusedLinux/1.0.0", "BuildTool/1.0.0")
         },
-        "project": {"frameworks": {"net10.0": {"downloadDependencies": []}}},
+        "project": {
+            "frameworks": {
+                "net10.0": {
+                    "frameworkReferences": {"Microsoft.NETCore.App": {}},
+                    "downloadDependencies": [
+                        {"name": name, "version": "[10.0.11, 10.0.11]"} for name in runtime_names
+                    ],
+                }
+            }
+        },
     }
     (project.parent / "obj").mkdir()
     (project.parent / "obj/project.assets.json").write_text(json.dumps(assets), encoding="utf-8")
@@ -3152,7 +3174,12 @@ def test_worker_publish_metadata_uses_real_runtime_packages_and_reviewed_license
     build_next._write_document_diff_metadata(paths, project, output)
     components = json.loads((output / "sbom.cdx.json").read_text(encoding="utf-8"))["components"]
     assert [(item["name"], item["version"], item["purl"]) for item in components] == [
-        ("Provider", "1.2.3", "pkg:nuget/Provider@1.2.3")
+        (
+            "Microsoft.NETCore.App.Runtime.win-x64",
+            "10.0.11",
+            "pkg:nuget/Microsoft.NETCore.App.Runtime.win-x64@10.0.11",
+        ),
+        ("Provider", "1.2.3", "pkg:nuget/Provider@1.2.3"),
     ]
     notices = (output / "THIRD_PARTY_LICENSES.txt").read_text(encoding="utf-8")
     assert "Publisher copyright" in notices

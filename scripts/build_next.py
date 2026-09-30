@@ -1351,9 +1351,13 @@ def _write_document_diff_metadata(paths: RepoPaths, project: Path, output: Path)
     }
     libraries = dict(assets["libraries"])
     for framework in assets["project"]["frameworks"].values():
+        references = framework.get("frameworkReferences", {})
         for dependency in framework.get("downloadDependencies", []):
             name = dependency["name"]
-            if ".Runtime.win-x64" not in name and ".Host.win-x64" not in name:
+            if not any(
+                name in {f"{reference}.Runtime.win-x64", f"{reference}.Host.win-x64"}
+                for reference in references
+            ):
                 continue
             version = dependency["version"].strip("[]").split(",")[0].strip()
             identifier = f"{name}/{version}"
