@@ -38,6 +38,9 @@ func TestPlanCacheLateSchemaRequestDoesNotEvictNewerPlan(t *testing.T) {
 
 func TestPlanCacheSharesConcurrentCompilation(t *testing.T) {
 	compiler := NewCompiler(DefaultLimits())
+	if compiler.PlanCompilationCount() != 0 {
+		t.Fatal("new compiler has compilation attempts")
+	}
 	var calls atomic.Int64
 	entered := make(chan struct{}, 32)
 	release := make(chan struct{})
@@ -47,6 +50,7 @@ func TestPlanCacheSharesConcurrentCompilation(t *testing.T) {
 		<-release
 		return compiler.compileExecutionTable(definition)
 	})
+	compiler.cache = cache
 	definition := formulaTable(formulaField("value_id", "value", integerType, "1"))
 	start := make(chan struct{})
 	var workers sync.WaitGroup
@@ -62,8 +66,8 @@ func TestPlanCacheSharesConcurrentCompilation(t *testing.T) {
 	<-entered
 	close(release)
 	workers.Wait()
-	if calls.Load() != 1 {
-		t.Fatalf("concurrent requests compiled %d times, want 1", calls.Load())
+	if calls.Load() != 1 || compiler.PlanCompilationCount() != 1 {
+		t.Fatalf("concurrent requests compiled %d times, observed %d, want 1", calls.Load(), compiler.PlanCompilationCount())
 	}
 	for index, plan := range plans {
 		if errors[index] != nil || plan == nil || plan != plans[0] {
@@ -165,14 +169,15 @@ func TestPlanCacheDoesNotRetainCompileErrors(t *testing.T) {
 		calls++
 		return compiler.compileExecutionTable(definition)
 	})
+	compiler.cache = cache
 	invalid := formulaTable(formulaField("value_id", "value", integerType, "1 +"))
 	for range 2 {
 		if _, err := cache.get(invalid); err == nil {
 			t.Fatal("invalid expression was accepted")
 		}
 	}
-	if calls != 2 || len(cache.entries) != 0 || cache.lru.Len() != 0 {
-		t.Fatalf("compile error retained: calls=%d entries=%d", calls, len(cache.entries))
+	if calls != 2 || compiler.PlanCompilationCount() != 2 || len(cache.entries) != 0 || cache.lru.Len() != 0 {
+		t.Fatalf("compile error retained: calls=%d observed=%d entries=%d", calls, compiler.PlanCompilationCount(), len(cache.entries))
 	}
 }
 
@@ -382,6 +387,7 @@ func TestPlanCacheReusesSchemaAfterDataAndRuntimeChanges(t *testing.T) {
 		calls++
 		return compiler.compileExecutionTable(definition)
 	})
+	compiler.cache = cache
 	definition := formulaTable(formulaField("value_id", "value", integerType, "1"))
 	first, err := cache.get(definition)
 	if err != nil {
@@ -389,8 +395,8 @@ func TestPlanCacheReusesSchemaAfterDataAndRuntimeChanges(t *testing.T) {
 	}
 	definition.Snapshot.DataRevision++
 	definition.FormulaRuntime["value_id"] = schemaexecution.FormulaRuntime{Version: 2, Status: "updating"}
-	if plan, err := cache.get(definition); err != nil || plan != first || calls != 1 {
-		t.Fatalf("data-only change recompiled the schema: plan=%p error=%v calls=%d", plan, err, calls)
+	if plan, err := cache.get(definition); err != nil || plan != first || calls != 1 || compiler.PlanCompilationCount() != 1 {
+		t.Fatalf("data-only change recompiled the schema: plan=%p error=%v calls=%d observed=%d", plan, err, calls, compiler.PlanCompilationCount())
 	}
 }
 

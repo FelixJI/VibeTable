@@ -73,6 +73,7 @@ func TestCollectionSourceEditInvalidatesTransitiveStoredCells(t *testing.T) {
 				"source_table_id": edge.table, "computed_field_id": edge.field, "computed_kind": "formula",
 				"relation_field_id": "", "target_table_id": edge.target, "target_field_id": targetField,
 				"path_json": fields[edge.table][0].Formula, "definition_version": 1,
+				relatedcomputation.InputRevisionField: 1,
 			})
 		}
 	}
@@ -151,6 +152,10 @@ func TestCollectionSourceEditInvalidatesTransitiveStoredCells(t *testing.T) {
 		if err := txApp.Save(leaf); err != nil {
 			return err
 		}
+		if err := relatedcomputation.AdvanceInputRevisions(context.Background(), txApp, "tbl_leaf", fields["tbl_leaf"],
+			map[string]any{"amount": 7.0}, map[string]any{"amount": 9.0}, "update", 2); err != nil {
+			return err
+		}
 		table, err := txApp.FindFirstRecordByFilter("vibetable_tables", "table_id='tbl_leaf'")
 		if err != nil {
 			return err
@@ -167,6 +172,19 @@ func TestCollectionSourceEditInvalidatesTransitiveStoredCells(t *testing.T) {
 			t.Fatalf("intermediate authority changed: %s, %v", tableID, err)
 		}
 	}
+	materialize(9)
+	assertReadable(true, 9)
+	// An upstream definition edit does not advance any business data revision.
+	// Its old same-table and cross-table consumers must nevertheless be stale.
+	definition, err := app.FindFirstRecordByFilter("vibetable_formulas", "table_id='tbl_middle' && field_id='fld_total'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition.Set("version", 2)
+	if err := app.Save(definition); err != nil {
+		t.Fatal(err)
+	}
+	assertReadable(false, 9)
 	materialize(9)
 	assertReadable(true, 9)
 }

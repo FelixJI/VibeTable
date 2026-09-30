@@ -715,7 +715,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                     }
                 }
             }
-            string logicalType = RequiredString(field, "logicalType");
+            string logicalType = EffectiveLogicalType(field);
             string filterInput = kind == "relation" ? "relation" : logicalType switch
             {
                 "select" => "select",
@@ -898,29 +898,36 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         return new MutationRevision("pocketbase", schemaRevision, dataRevision);
     }
 
+    private static string EffectiveLogicalType(JsonElement field)
+    {
+        string logicalType = RequiredString(field, "logicalType");
+        if (logicalType == "formula")
+        {
+            return RequiredString(RequiredProperty(field, "formula"), "resultType");
+        }
+        if (logicalType == "lookup"
+            && RequiredProperty(field, "lookup").TryGetProperty("aggregation", out JsonElement aggregation)
+            && aggregation.ValueKind == JsonValueKind.String
+            && aggregation.GetString() is "countRecords" or "countNonEmpty" or "countDistinct"
+                or "sum" or "average" or "min" or "max")
+        {
+            // Schema v2 numeric aggregations publish scalar numbers, not value lists.
+            return "number";
+        }
+        return logicalType;
+    }
+
     private static string GridDataType(JsonElement field)
     {
-        string value = RequiredString(field, "logicalType");
-        if (value == "formula")
+        string value = EffectiveLogicalType(field);
+        if (value == "number" && RequiredString(field, "logicalType") != "lookup")
         {
-            value = RequiredString(RequiredProperty(field, "formula"), "resultType");
-            if (value == "number")
-            {
-                JsonElement options = RequiredProperty(RequiredProperty(field, "storage"), "options");
-                if (RequiredBoolean(options, "onlyInt"))
-                {
-                    value = "integer";
-                }
-            }
+            JsonElement options = RequiredProperty(RequiredProperty(field, "storage"), "options");
+            value = RequiredBoolean(options, "onlyInt") ? "integer" : "number";
         }
         else if (value == "lookup")
         {
             value = "json";
-        }
-        else if (value == "number")
-        {
-            JsonElement options = RequiredProperty(RequiredProperty(field, "storage"), "options");
-            value = RequiredBoolean(options, "onlyInt") ? "integer" : "number";
         }
         return value switch
         {

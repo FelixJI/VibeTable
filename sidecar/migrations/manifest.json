@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 14,
+  "schemaVersion": 15,
   "migrations": [
     {
       "id": 2026072401,
@@ -79,6 +79,12 @@
       "name": "clock_revision",
       "source": "2026092802_clock_revision.go",
       "sha256": "4423a5155abbf66881df80ed5d0c7cb6e5317e9cf94ad2ff73f3399005b47a3c"
+    },
+    {
+      "id": 2026092901,
+      "name": "dependency_input_revision",
+      "source": "2026092901_dependency_input_revision.go",
+      "sha256": "dbc1714a47696b80bad0c7cee5be2a8f6a67ed6c20335cf1e6c88c3d574c014e"
     }
   ]
 }

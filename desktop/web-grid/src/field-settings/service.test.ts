@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import type { CapabilityV2, FieldDefinitionV2, FieldSettingsDescribeResultV2 } from "@/contracts";
+import type {
+  CapabilityV2, FieldDefinitionV2, FieldSettingsDescribeResultV2, JsonValueV2,
+} from "@/contracts";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useFieldSettingsStore } from "./store";
@@ -1005,6 +1007,84 @@ describe("field settings service", () => {
     expect(request).not.toHaveBeenCalledWith("formula.draft.validate", expect.anything());
     expect(store.formulaValidation).toBeNull();
   });
+
+  async function previewLookupSample(value: JsonValueV2) {
+    const document = { displaySource: "{匹配金额} * 2.0", documentRevision: 1, tokens: [] };
+    request.mockImplementation((method: string) => {
+      if (method === "field.settings.describe") {
+        return Promise.resolve({ ...describeResult(false), capabilities: [formulaCapability()] });
+      }
+      if (method === "formula.draft.validate") {
+        return Promise.resolve({
+          canonicalSource: "f_lookup * 2.0", resultType: "number",
+          dependencies: ["fld_lookup"], relationAggregatePaths: [], authorDocument: document,
+        });
+      }
+      if (method === "formula.preview") {
+        return Promise.resolve({ values: { f_formula_preview: 0 } });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const columns = [{
+      name: "f_lookup", title: "匹配金额", fieldId: "fld_lookup", kind: "lookup" as const,
+      dataType: "decimal" as const, editable: false, nullable: true,
+    }, {
+      name: "f_json", title: "用户 JSON", fieldId: "fld_json", kind: "scalar" as const,
+      dataType: "json" as const, editable: true, nullable: true,
+    }];
+    const userObject = { state: "ok", value: 991, provenance: [] };
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque", columns,
+      rows: [{ rowKey: "r1", id: "r1", f_lookup: value, f_json: userObject }],
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    await service.openCreate("tbl_opaque", "formula");
+    store.setFormulaCatalog({ ...relationSchema("tbl_opaque").schema, columns }, {});
+    await service.validateFormulaDraft({
+      kind: "document", displaySource: document.displaySource, authorDocument: document,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    return { store, userObject };
+  }
+
+  it.each([0, false, null, [0, 991]].map(value => ({ value })))(
+    "previews successful Lookup cell values without changing user JSON ($value)", async ({ value }) => {
+      const cell = {
+        state: "ok", value, provenance: [], provenanceTotal: 0,
+        provenanceTotalKnown: true, provenanceOffset: 0, provenanceLimit: 100,
+        provenanceHasMore: false,
+      };
+      const { store, userObject } = await previewLookupSample(cell);
+      expect(request).toHaveBeenCalledWith("formula.preview", expect.objectContaining({
+        row: { f_lookup: value, f_json: userObject },
+      }));
+      expect(store.formulaPreviewReady).toBe(true);
+      expect(useTableStore().allRows[0]?.f_lookup).toEqual(cell);
+    },
+  );
+
+  it.each([0, false, null, [0, 991]].map(value => ({ value })))(
+    "preserves already projected Lookup values ($value)", async ({ value }) => {
+      const { userObject } = await previewLookupSample(value);
+      expect(request).toHaveBeenCalledWith("formula.preview", expect.objectContaining({
+        row: { f_lookup: value, f_json: userObject },
+      }));
+    },
+  );
+
+  it.each(["pending", "invalid", "restricted", "too_expensive"])(
+    "does not preview a %s Lookup using its stale value", async state => {
+      const { store } = await previewLookupSample({ state, value: 991, provenance: [] });
+      expect(request.mock.calls.filter(([method]) => method === "formula.preview")).toEqual([]);
+      expect(store.formulaPreviewReady).toBe(false);
+      expect(store.formulaPreviewError).toContain("匹配金额");
+      expect(store.formulaPreviewError).toContain(state);
+    },
+  );
 
   it("invalidates the previous validation and preview as soon as the input changes", async () => {
     const described = { ...describeResult(false), capabilities: [formulaCapability()] };

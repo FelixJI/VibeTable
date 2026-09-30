@@ -791,16 +791,29 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     const sourceSchema = store.formulaSourceSchema;
     // The grid adds a primary-key column that is not a Schema V2 formula input.
     // Keep declared system fields such as AutoDate in the preview activation.
-    const physicalNames = new Set(
-      sourceSchema?.columns
-        .filter(item => item.name !== sourceSchema.primaryKey)
-        .map(item => item.name) ?? [],
-    );
-    const sample = Object.fromEntries(
-      // Formula inputs are Schema V2 physical fields, not renderer row identity.
-      Object.entries(row).filter(([key]) => physicalNames.has(key)),
-    ) as Readonly<Record<string, JsonValueV2>>;
+    const columns = sourceSchema?.columns
+      .filter(item => item.name !== sourceSchema.primaryKey) ?? [];
+    const sample: Record<string, JsonValueV2> = {};
     store.beginFormulaPreview();
+    for (const column of columns) {
+      if (!Object.hasOwn(row, column.name)) continue;
+      const value = row[column.name];
+      // Only authoritative Lookup columns carry cell status/provenance envelopes.
+      // Bare scalar/list projections and ordinary user JSON retain their values.
+      if (column.kind === "lookup" && value !== null
+        && typeof value === "object" && !Array.isArray(value)) {
+        const cell = value as Record<string, unknown>;
+        if (cell.state !== "ok" || !Object.hasOwn(cell, "value")) {
+          store.failFormulaPreview(new Error(
+            `查找字段“${column.title}”的样例值尚不可用（${String(cell.state ?? "invalid")}）`,
+          ));
+          return;
+        }
+        sample[column.name] = cell.value as JsonValueV2;
+      } else {
+        sample[column.name] = value as JsonValueV2;
+      }
+    }
     formulaPreview.schedule({
       tableId,
       field,

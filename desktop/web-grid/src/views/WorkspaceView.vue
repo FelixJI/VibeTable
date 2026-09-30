@@ -229,6 +229,7 @@ const {
   confirmExportData: confirmExportLookupData,
 } = useDataIoTask({
   service: dataIoService,
+  resolveExportQuery: () => viewQuery.toQuery(),
   resolveContext: () => ({
     collection: workspace.currentTable,
     schemaRevision: tableStore.schemaRevision,

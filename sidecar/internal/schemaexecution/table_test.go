@@ -2,10 +2,13 @@ package schemaexecution_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
@@ -231,15 +234,118 @@ func TestDescribeRejectsNonAuthoritativeStoredFieldDefinitions(t *testing.T) {
 	}
 }
 
+// A schema revision changed inside the caller's transaction between the first
+// and last metadata reads must still be rejected: the guard keeps protecting
+// execution snapshots regardless of how the reads are bound to a transaction.
+// The change is a real UPDATE on the caller's own transaction connection,
+// injected right after the initial metadata read has completed (observed via
+// the vibetable_fields select).
 func TestDescribeRejectsRevisionChangedWhileLoading(t *testing.T) {
 	ctx := context.Background()
 	app := newTestApp(t)
 	table := createTestExecutionTable(t, ctx, app, "Conflicting execution table", "conflict-table")
-	conflicting := &revisionConflictApp{App: app}
 
-	_, err := schemaexecution.Describe(ctx, conflicting, table.TableID)
+	var txWriter dbx.Builder
+	var injected bool
+	var injectErr error
+	installHook := func(db *dbx.DB) {
+		previous := db.QueryLogFunc
+		db.QueryLogFunc = func(logCtx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, queryErr error) {
+			if txWriter != nil && strings.Contains(statement, "vibetable_fields") && !injected {
+				injected = true
+				_, injectErr = txWriter.NewQuery(
+					"UPDATE vibetable_tables SET schema_revision = schema_revision + 1, data_revision = data_revision + 1 WHERE table_id = {:table}",
+				).Bind(dbx.Params{"table": table.TableID}).Execute()
+			}
+			if previous != nil {
+				previous(logCtx, elapsed, statement, rows, queryErr)
+			}
+		}
+		t.Cleanup(func() { db.QueryLogFunc = previous })
+	}
+	for _, db := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+		installHook(db)
+	}
+
+	err := app.RunInTransaction(func(txApp core.App) error {
+		txWriter = txApp.NonconcurrentDB()
+		_, err := schemaexecution.Describe(ctx, txApp, table.TableID)
+		return err
+	})
+	if !injected {
+		t.Fatal("revision change never executed: no vibetable_fields select observed")
+	}
+	if injectErr != nil {
+		t.Fatalf("in-transaction revision change failed: %v", injectErr)
+	}
 	if err == nil || !strings.Contains(err.Error(), "schema.execution_revision_conflict") {
 		t.Fatalf("Describe() error = %v; want schema.execution_revision_conflict", err)
+	}
+}
+
+// A legitimate business write that advances data_revision between Describe's
+// first and last metadata reads must not surface as a revision conflict: the
+// execution snapshot has to stay a coherent read while business data
+// revisions advance. The interleave commits a real UPDATE on an independent
+// connection (never inside Describe's transaction) right after the initial
+// metadata read completed, observed via the vibetable_fields select on both
+// database pools so old and new read paths stay comparable. Deterministic
+// without sleeps.
+func TestDescribeKeepsConsistentSnapshotWhenBusinessWriteAdvancesDataRevision(t *testing.T) {
+	ctx := context.Background()
+	app := newTestApp(t)
+	table := createTestExecutionTable(t, ctx, app, "并发业务写入表", "concurrent-business-table")
+	writer, err := core.DefaultDBConnect(filepath.Join(app.DataDir(), "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close independent writer: %v", err)
+		}
+	})
+
+	var injected bool
+	var injectErr error
+	installHook := func(db *dbx.DB) {
+		previous := db.QueryLogFunc
+		db.QueryLogFunc = func(logCtx context.Context, elapsed time.Duration, statement string, rows *sql.Rows, queryErr error) {
+			if !injected && strings.Contains(statement, "vibetable_fields") {
+				injected = true
+				_, injectErr = writer.NewQuery(
+					"UPDATE vibetable_tables SET data_revision = data_revision + 1 WHERE table_id = {:table}",
+				).Bind(dbx.Params{"table": table.TableID}).Execute()
+			}
+			if previous != nil {
+				previous(logCtx, elapsed, statement, rows, queryErr)
+			}
+		}
+		t.Cleanup(func() { db.QueryLogFunc = previous })
+	}
+	for _, db := range []*dbx.DB{app.ConcurrentDB().(*dbx.DB), app.NonconcurrentDB().(*dbx.DB)} {
+		installHook(db)
+	}
+
+	execution, err := schemaexecution.Describe(ctx, app, table.TableID)
+	if !injected {
+		t.Fatal("interleave never executed: no vibetable_fields select observed")
+	}
+	if injectErr != nil {
+		t.Fatalf("interleaved business write failed: %v", injectErr)
+	}
+	if err != nil {
+		t.Fatalf("Describe() rejected a legitimate concurrent business write: %v", err)
+	}
+	committed, findErr := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": table.TableID})
+	if findErr != nil {
+		t.Fatal(findErr)
+	}
+	// The interleaved write committed on its own connection, and the returned
+	// snapshot must be one coherent pre-write state, not a torn mix.
+	if execution.Snapshot.DataRevision != 0 || committed.GetInt("data_revision") != 1 {
+		t.Fatalf("snapshot data revision = %d, committed = %d; want 0 and 1",
+			execution.Snapshot.DataRevision, committed.GetInt("data_revision"))
 	}
 }
 
@@ -272,27 +378,6 @@ func TestExecutionReadsHonorCanceledContextBeforeStorage(t *testing.T) {
 	); !errors.Is(err, context.Canceled) {
 		t.Fatalf("RetiredField() error = %v; want context.Canceled", err)
 	}
-}
-
-type revisionConflictApp struct {
-	core.App
-	tableReads int
-}
-
-func (app *revisionConflictApp) FindFirstRecordByFilter(
-	collectionModelOrIdentifier any,
-	filter string,
-	params ...dbx.Params,
-) (*core.Record, error) {
-	record, err := app.App.FindFirstRecordByFilter(collectionModelOrIdentifier, filter, params...)
-	collection, isString := collectionModelOrIdentifier.(string)
-	if err == nil && isString && collection == "vibetable_tables" {
-		app.tableReads++
-		if app.tableReads == 2 {
-			record.Set("schema_revision", record.GetInt("schema_revision")+1)
-		}
-	}
-	return record, err
 }
 
 func createTestExecutionTable(

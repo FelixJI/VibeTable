@@ -15,6 +15,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
@@ -206,7 +207,7 @@ func (service *Service) enqueueFormulaFanout(
 	if len(dependencies) == 0 {
 		return []string{}, nil
 	}
-	changed := map[string]struct{}{}
+	changed := map[string]bool{}
 	if derivedRefresh {
 		// Derived refreshes have no user-edit history; their dependency edges
 		// identify affected computed sources without inventing audit rows.
@@ -216,7 +217,7 @@ func (service *Service) enqueueFormulaFanout(
 		}
 		for _, field := range definition.Snapshot.Fields {
 			if field.Formula != nil || field.Lookup != nil {
-				changed[field.Identity.FieldID] = struct{}{}
+				changed[field.Identity.FieldID] = true
 			}
 		}
 	} else {
@@ -235,7 +236,7 @@ func (service *Service) enqueueFormulaFanout(
 		if derivedRefresh && targetFieldID == "__path__" {
 			continue // Derived caches never change relation membership.
 		}
-		if _, relevant := changed[targetFieldID]; !relevant && targetFieldID != "__path__" {
+		if !relatedcomputation.InputAffected(dependency, changed) {
 			continue
 		}
 		key := dependencyKey{
@@ -279,18 +280,18 @@ func (service *Service) changedTargetFields(
 	app core.App,
 	tableID string,
 	changeSetID string,
-) (map[string]struct{}, error) {
+) (map[string]bool, error) {
 	definition, err := schemaexecution.Describe(context.Background(), app, tableID)
 	if err != nil {
 		return nil, err
 	}
 	events, err := app.FindRecordsByFilter(
 		"vibetable_audit_events",
-		"change_set_id={:changeSet}",
+		"change_set_id={:changeSet} && table_id={:table}",
 		"+sequence",
 		0,
 		0,
-		dbx.Params{"changeSet": changeSetID},
+		dbx.Params{"changeSet": changeSetID, "table": tableID},
 	)
 	if err != nil {
 		return nil, jobError(
@@ -299,17 +300,12 @@ func (service *Service) changedTargetFields(
 			true,
 		)
 	}
-	changed := map[string]struct{}{}
+	changed := map[string]bool{}
 	for _, event := range events {
 		before := decodedObject(event.GetRaw("before_json"))
 		after := decodedObject(event.GetRaw("after_json"))
-		for _, field := range definition.Snapshot.Fields {
-			if !reflect.DeepEqual(
-				before[field.Identity.PhysicalName],
-				after[field.Identity.PhysicalName],
-			) {
-				changed[field.Identity.FieldID] = struct{}{}
-			}
+		for field, affected := range relatedcomputation.ChangedInputs(definition.Snapshot.Fields, before, after, event.GetString("operation")) {
+			changed[field] = changed[field] || affected
 		}
 	}
 	return changed, nil

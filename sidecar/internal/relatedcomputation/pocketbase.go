@@ -41,7 +41,7 @@ func ExpectationFor(
 	if err != nil {
 		return Expectation{}, err
 	}
-	tables, err := dependencyTables(ctx, app, tableID, fields, field)
+	tables, inputs, definitions, err := dependencyInputs(ctx, app, tableID, fields, field)
 	if err != nil {
 		return Expectation{}, err
 	}
@@ -64,11 +64,60 @@ func ExpectationFor(
 		}
 		revisions[tableID] = business
 	}
+	if len(inputs) != 0 {
+		conditions := make([]dbx.Expression, 0, len(inputs))
+		for _, input := range inputs {
+			conditions = append(conditions, dbx.HashExp{"source_table_id": input.table, "computed_field_id": input.field})
+		}
+		var edges []*core.Record
+		if err := app.RecordQuery("vibetable_computation_dependencies").AndWhere(dbx.Or(conditions...)).WithContext(ctx).All(&edges); err != nil {
+			return Expectation{}, err
+		}
+		selected := map[string]int64{}
+		for _, edge := range edges {
+			if edge.Collection().Fields.GetByName(InputRevisionField) == nil {
+				continue
+			}
+			revision, valid := storedTableCounter(edge.GetRaw(InputRevisionField))
+			if !valid {
+				return Expectation{}, errors.New("dependency input revision is invalid")
+			}
+			target := edge.GetString("target_table_id")
+			selected[target] = max(selected[target], revision)
+		}
+		for table, revision := range selected {
+			// Same-row operands are already protected by SourceDataRevision.
+			// Only refine tables present in the existing transitive watermark.
+			if _, tracked := revisions[table]; tracked {
+				revisions[table] = revision
+			}
+		}
+	}
 	references, err := ClockReferencesFor(ctx, app, tableID, fields, fieldID)
 	if err != nil {
 		return Expectation{}, err
 	}
 	watermark := Watermark(revisions)
+	versions := map[string]int{}
+	for _, definition := range definitions {
+		if definition.key == (clockFieldKey{tableID, fieldID}) {
+			continue
+		}
+		version, err := definitionVersion(app, definition.key.table, definition.field)
+		if err != nil {
+			return Expectation{}, err
+		}
+		versions[definition.key.table+"/"+definition.key.field] = version
+	}
+	if len(versions) != 0 {
+		// JSON sorts semantic table/field keys. Keep actual definition versions
+		// explicit; schema edits must invalidate even before data fanout starts.
+		raw, err := json.Marshal(versions)
+		if err != nil {
+			return Expectation{}, err
+		}
+		watermark += "|definitions:" + string(raw)
+	}
 	if period := formula.ClockSignature(ctx, references); period != "" {
 		watermark += "|" + period
 	}
@@ -198,7 +247,7 @@ func definitionVersion(
 	return version, nil
 }
 
-func dependencyTables(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, field v2.FieldDefinition) ([]string, error) {
+func dependencyInputs(ctx context.Context, app core.App, tableID string, fields []v2.FieldDefinition, field v2.FieldDefinition) ([]string, []clockFieldKey, []computedDefinitionReference, error) {
 	cache, ok := ctx.Value(clockCacheKey{}).(*clockCache)
 	if !ok {
 		cache = newClockCache()
@@ -211,9 +260,9 @@ func dependencyTables(ctx context.Context, app core.App, tableID string, fields 
 	cache.fields[tableID] = fields
 	key := clockFieldKey{tableID, field.Identity.FieldID}
 	if _, err := cache.visit(ctx, app, key, map[clockFieldKey]bool{}); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return cache.tables[key], nil
+	return cache.tables[key], cache.inputs[key], cache.definitions[key], nil
 }
 
 func directDependencyTables(

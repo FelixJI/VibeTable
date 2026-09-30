@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/dbx"
@@ -618,12 +619,13 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var staleCount int
-	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&staleCount); err != nil {
+	var unrelatedChangeCount int
+	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&unrelatedChangeCount); err != nil {
 		t.Fatal(err)
 	}
-	if staleCount != 0 {
-		t.Fatalf("stale lookup participated in filtering: count=%d", staleCount)
+	// Balance feeds the formula; the lookup only follows Customer -> Region -> Name.
+	if unrelatedChangeCount != 1 {
+		t.Fatalf("unrelated balance change invalidated lookup filtering: count=%d", unrelatedChangeCount)
 	}
 	regionDefinition, err := schemaapi.New(app).Describe(ctx, region.TableID)
 	if err != nil {
@@ -653,6 +655,21 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 	)
 	if err != nil || lookupOnlyJob.GetString("state") != "queued" {
 		t.Fatalf("lookup-only invalidation job = %#v, err=%v", lookupOnlyJob, err)
+	}
+	descriptor, err = querySource.DescribeQueryTable(ctx, app, source.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err = query.Compile(descriptor, lookupFilter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleCount int
+	if err := app.DB().NewQuery(compiled.CountSQL).Bind(compiled.Params).Row(&staleCount); err != nil {
+		t.Fatal(err)
+	}
+	if staleCount != 0 {
+		t.Fatalf("stale lookup participated in filtering before region fanout: count=%d", staleCount)
 	}
 
 	collection, err := app.FindCollectionByNameOrId(source.PhysicalName)
@@ -747,6 +764,129 @@ func TestFormulaAndLookupCreateThroughFieldChangeV2(t *testing.T) {
 			formulaScheduler.enqueued,
 			formulaScheduler.started,
 		)
+	}
+}
+
+// A corrupted dependency watermark must fail the business write inside the
+// mutation transaction instead of committing a half-invalidated graph.
+func TestCorruptedDependencyRevisionFailsClosedInsideMutationTransaction(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	source := createV2IntegrationTable(t, ctx, app, "依赖回滚源", "dep_revision_source")
+	target := createV2IntegrationTable(t, ctx, app, "依赖回滚目标", "dep_revision_target")
+	title := createV2IntegrationField(t, ctx, app, target.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "标题"), "dep_revision_title")
+	name := createV2IntegrationField(t, ctx, app, source.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "名称"), "dep_revision_name")
+	link := createV2IntegrationRelation(t, ctx, app, source.TableID, name.FieldID,
+		target.TableID, title.FieldID, "链接", "链接来源", "one", "dep_revision_link")
+	lookupDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "选中值")
+	lookupDraft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{{RelationFieldID: link.FieldID}}, TargetFieldID: title.FieldID,
+	}
+	createV2IntegrationField(t, ctx, app, source.TableID, lookupDraft, "dep_revision_lookup")
+	titleName := title.Definition.Identity.PhysicalName
+	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := core.NewRecord(targetCollection)
+	row.Set(titleName, "original")
+	row.Set(title.Definition.Value.Presence.PhysicalName, true)
+	if err := app.Save(row); err != nil {
+		t.Fatal(err)
+	}
+	edges, err := app.FindRecordsByFilter("vibetable_computation_dependencies",
+		"target_table_id={:table} && target_field_id={:field}", "", 0, 0,
+		dbx.Params{"table": target.TableID, "field": title.FieldID})
+	if err != nil || len(edges) != 1 {
+		t.Fatalf("title dependency edges = %#v, %v", edges, err)
+	}
+	seededRevision := edges[0].GetFloat(relatedcomputation.InputRevisionField)
+	// Corrupt the stored watermark out-of-band; PocketBase field validation
+	// would reject it, exactly like real storage damage.
+	if _, err := app.DB().NewQuery(
+		"UPDATE vibetable_computation_dependencies SET input_revision=-1 WHERE id={:id}",
+	).Bind(dbx.Params{"id": edges[0].Id}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := schemaapi.New(app).Describe(ctx, target.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	countRecords := func(collection string) int {
+		t.Helper()
+		records, listErr := app.FindAllRecords(collection)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		return len(records)
+	}
+	state := func() (data float64, audits, outbox, keys int) {
+		t.Helper()
+		meta, metaErr := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}",
+			dbx.Params{"table": target.TableID})
+		if metaErr != nil {
+			t.Fatal(metaErr)
+		}
+		return meta.GetFloat("data_revision"), countRecords("vibetable_audit_events"),
+			countRecords("vibetable_outbox"), countRecords("vibetable_idempotency_keys")
+	}
+	beforeData, beforeAudits, beforeOutbox, beforeKeys := state()
+	request := mutationRequest(target.TableID, execution.Snapshot.SchemaRevision, "dep_revision_corrupt",
+		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &row.Id,
+			Values: map[string]any{titleName: "changed"}})
+	if _, err := kernel.Apply(ctx, request); err == nil ||
+		!strings.Contains(err.Error(), "dependency input revision is invalid") {
+		t.Fatalf("corrupted dependency watermark error = %#v", err)
+	}
+	if data, audits, outbox, keys := state(); data != beforeData || audits != beforeAudits ||
+		outbox != beforeOutbox || keys != beforeKeys {
+		t.Fatalf("failed write left partial state: data=%v audits=%d outbox=%d keys=%d",
+			data, audits, outbox, keys)
+	}
+	stored, err := app.FindRecordById(targetCollection, row.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.GetString(titleName) != "original" {
+		t.Fatalf("rolled-back row title = %q", stored.GetString(titleName))
+	}
+	if _, err := app.FindFirstRecordByFilter("vibetable_idempotency_keys", "key={:key}",
+		dbx.Params{"key": "dep_revision_corrupt"}); err == nil {
+		t.Fatal("failed write persisted an idempotency record")
+	}
+	// Repairing the watermark must let the same idempotent business retry
+	// commit exactly once: no half-written state survives the failed attempt.
+	if _, err := app.DB().NewQuery(
+		"UPDATE vibetable_computation_dependencies SET input_revision={:revision} WHERE id={:id}",
+	).Bind(dbx.Params{"revision": seededRevision, "id": edges[0].Id}).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := kernel.Apply(ctx, request)
+	if err != nil {
+		t.Fatalf("retry after repair: %#v", err)
+	}
+	stored, err = app.FindRecordById(targetCollection, row.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Status != mutation.StatusApplied || stored.GetString(titleName) != "changed" {
+		t.Fatalf("retried receipt = %#v, title = %q", receipt, stored.GetString(titleName))
+	}
+	if data, audits, outbox, keys := state(); data != beforeData+1 || audits != beforeAudits+1 ||
+		outbox != beforeOutbox+1 || keys != beforeKeys+1 {
+		t.Fatalf("retried write committed more than once: data=%v audits=%d outbox=%d keys=%d",
+			data, audits, outbox, keys)
+	}
+	edge, err := app.FindRecordById("vibetable_computation_dependencies", edges[0].Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision := edge.GetFloat(relatedcomputation.InputRevisionField); revision != seededRevision+1 {
+		t.Fatalf("dependency input revision after retry = %v, want %v", revision, seededRevision+1)
 	}
 }
 

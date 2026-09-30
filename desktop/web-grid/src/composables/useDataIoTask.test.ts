@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ref } from "vue";
-import type { ApplyImportResult, ExportResult, ImportPlan, SessionPathGrant } from "@/contracts";
+import type { ApplyImportResult, ExportResult, ImportPlan, SessionPathGrant, TableQuery } from "@/contracts";
 import type {
   ExportLookupContext,
   ExportLookupSelection,
@@ -70,6 +70,7 @@ function setup(
   overrides: Partial<DataIoTaskPort> = {},
   resolveContext: () => Context
     = () => ({ collection: "orders", schemaRevision: "schema_0001" }),
+  resolveExportQuery: () => TableQuery = () => ({}),
 ) {
   const session = previewSession();
   const service: DataIoTaskPort = {
@@ -107,6 +108,7 @@ function setup(
   const task = useDataIoTask({
     service,
     resolveContext,
+    resolveExportQuery,
     importSucceeded,
     exportSucceeded,
     reportError,
@@ -462,6 +464,49 @@ describe("useDataIoTask", () => {
     context.value = { ...context.value, collection: "invoices" };
     expect(task.previewSession.value).toBeNull();
     expect(task.relationOptions.value).toBeNull();
+  });
+
+  it("exports the effective filtered and sorted query without viewport or group pagination", async () => {
+    const query: TableQuery = {
+      keyword: "合同",
+      filters: [{ field: "total", operator: "gt", value: 1 }],
+      sorts: [{ field: "total", direction: "desc" }],
+      offset: 100, limit: 100,
+      groups: [{ field: "contract" }],
+      summaries: [{ field: "total", function: "sum" }],
+      groupOffset: 100, groupLimit: 100,
+    };
+    const { task, service } = setup({}, undefined, () => query);
+    await task.exportData("csv");
+    await task.confirmExportData();
+    expect(service.exportData).toHaveBeenCalledWith("orders", {
+      keyword: "合同",
+      filters: [{ field: "total", operator: "gt", value: 1 }],
+      sorts: [{ field: "total", direction: "desc" }],
+    }, "csv", undefined, expect.any(Function), expect.any(Function));
+  });
+
+  it("keeps the opening query snapshot when nested filters and sort change before confirmation", async () => {
+    const query = ref({
+      keyword: "合同",
+      filters: [{ filters: [{ field: "total", operator: "in" as const, value: [1, 2] }] }],
+      sorts: [{ field: "total", direction: "desc" as "asc" | "desc" }],
+    });
+    let resolveCatalog!: (value: ExportLookupContext) => void;
+    const pending = new Promise<ExportLookupContext>((resolve) => { resolveCatalog = resolve; });
+    const { task, service } = setup({ loadExportLookupContext: vi.fn(() => pending) }, undefined, () => query.value);
+    const opened = task.exportData("xlsx");
+    query.value.keyword = "other";
+    query.value.filters[0].filters[0].value.push(3);
+    query.value.sorts[0].direction = "asc";
+    resolveCatalog(exportContext);
+    await opened;
+    await task.confirmExportData();
+    expect(service.exportData).toHaveBeenCalledWith("orders", {
+      keyword: "合同",
+      filters: [{ filters: [{ field: "total", operator: "in", value: [1, 2] }] }],
+      sorts: [{ field: "total", direction: "desc" }],
+    }, "xlsx", undefined, expect.any(Function), expect.any(Function));
   });
 
   it("runs the confirmed export with the selected Lookup ids and describe revision", async () => {

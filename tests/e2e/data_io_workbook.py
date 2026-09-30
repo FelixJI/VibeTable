@@ -43,7 +43,13 @@ def write_native(
     }
 
 
-def verify_export(path: Path, columns: list[str], expected: list[list[str]]) -> dict[str, object]:
+def verify_export(
+    path: Path,
+    columns: list[str],
+    expected: list[list[str | int | float]],
+    *,
+    string_cells_only: bool = True,
+) -> dict[str, object]:
     if path.suffix == ".csv":
         with path.open(encoding="utf-8-sig", newline="") as stream:
             rows = list(csv.reader(stream))
@@ -53,10 +59,13 @@ def verify_export(path: Path, columns: list[str], expected: list[list[str]]) -> 
             assert len(workbook.worksheets) == 1, "Expected exactly one exported worksheet"
             rows = []
             for cells in workbook.worksheets[0].iter_rows():
-                # All populated cells in these text/date-wire fixtures are strings.
-                # data_only=False ensures formulas cannot masquerade as cached text.
-                assert all(cell.data_type == "s" for cell in cells if cell.value is not None), (
+                # S35 retains its strict string-only contract. S38 also accepts
+                # numeric cells, while neither mode permits executable formulas.
+                allowed = {"s"} if string_cells_only else {"s", "n"}
+                assert all(cell.data_type in allowed for cell in cells if cell.value is not None), (
                     "Exported cells must be strings, not formulas, numbers or native dates"
+                    if string_cells_only
+                    else "Exported cell type differs or contains an executable formula"
                 )
                 rows.append([cell.value for cell in cells])
         finally:
@@ -70,7 +79,24 @@ def verify_export(path: Path, columns: list[str], expected: list[list[str]]) -> 
     assert all(len(row) == len(header) for row in data), "Ragged exported rows"
     indexes = [header.index(column) for column in columns]
     actual = [tuple(row[index] for index in indexes) for row in data]
-    assert Counter(actual) == Counter(map(tuple, expected)), "Exported row multiset differs"
+    if string_cells_only:
+        assert Counter(actual) == Counter(map(tuple, expected)), "Exported row multiset differs"
+    else:
+        # Numeric CSV cells are textual by format. Parse only columns whose
+        # independent expected value is numeric; never evaluate text/formulas.
+        assert len(actual) == len(expected), "Exported row count differs"
+        if path.suffix == ".csv":
+            normalized = []
+            for row, wanted in zip(actual, expected, strict=True):
+                cells = []
+                for value, target in zip(row, wanted, strict=True):
+                    if type(target) in (int, float):
+                        value = json.loads(value)
+                        assert type(value) in (int, float), "Expected a numeric CSV value"
+                    cells.append(value)
+                normalized.append(tuple(cells))
+            actual = normalized
+        assert actual == list(map(tuple, expected)), "Exported ordered cells differ"
     return {"rows": len(actual), "columns": columns, "format": path.suffix[1:]}
 
 
@@ -82,8 +108,10 @@ def main() -> None:
         result = write_native(
             path, payload["columns"], payload["date"], payload["stamp"], payload["notes"]
         )
-    elif action == "verify":
-        result = verify_export(path, payload["columns"], payload["rows"])
+    elif action in {"verify", "verify-values"}:
+        result = verify_export(
+            path, payload["columns"], payload["rows"], string_cells_only=action == "verify"
+        )
     else:
         raise ValueError("Unsupported workbook fixture action")
     print(json.dumps(result, ensure_ascii=False))

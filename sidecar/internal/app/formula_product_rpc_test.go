@@ -730,6 +730,43 @@ func TestFormulaProductIntegerDraftInspectionFeedsPreviewStorage(t *testing.T) {
 	}
 }
 
+func TestFormulaProductNumericLookupPreviewAcceptsWireInteger(t *testing.T) {
+	pb := schemaProductStore(t)
+	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)})
+	table, amount, output := createFormulaProductTable(t, pb)
+	defaults, err := v2.RecommendedDefaults(v2.LogicalLookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := applySchemaProductField(t, pb, v2.FieldChangeIntent{
+		Action: v2.ActionCreate, TableID: table.TableID,
+		Draft: &v2.FieldDraft{
+			DisplayName: "Matched amount", LogicalType: v2.LogicalLookup,
+			Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+			Lookup: &v2.LookupSpec{
+				Path: []v2.LookupPathStep{}, TargetFieldID: amount.Identity.FieldID, Aggregation: v2.LookupAggregationSum,
+				Condition: &v2.LookupCondition{SourceTableID: table.TableID, Match: "all", Rules: []v2.LookupConditionRule{
+					{SourceFieldID: amount.Identity.FieldID, Operator: "gte", Operand: &v2.LookupOperand{Kind: "constant", Value: 0.0}},
+				}},
+			},
+		},
+	}, "formula-numeric-lookup-preview")
+	output.Formula = &v2.FormulaSpec{Language: "cel-v2", Source: lookup.Definition.Identity.PhysicalName + " * 2.0", ResultType: v2.LogicalNumber}
+	output.Storage.Options.OnlyInt = false
+	result, err := invoke("formula.preview", map[string]any{
+		"tableId": table.TableID, "field": formulaTestWireField(t, output),
+		"row":             map[string]any{amount.Identity.PhysicalName: 0, lookup.Definition.Identity.PhysicalName: json.Number("991")},
+		"changedFieldIds": []any{lookup.FieldID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := result.(map[string]any)["values"].(map[string]any)[output.Identity.PhysicalName]
+	if value != float64(1982) {
+		t.Fatalf("numeric lookup wire preview = %#v (%T), want 1982", value, value)
+	}
+}
+
 func TestFormulaProductCollectionPreviewAcceptsVersionedScalarAndList(t *testing.T) {
 	pb := schemaProductStore(t)
 	invoke := formulaTestInvoker(t, formulaDomain{app: pb, compiler: formula.NewAppCompiler(pb)})

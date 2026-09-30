@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
+	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -24,6 +26,14 @@ func (catalog *Catalog) replaceComputationDependencies(
 	app core.App,
 	definition schemaexecution.Table,
 ) error {
+	previous, err := app.FindRecordsByFilter(computationDependenciesCollection, "source_table_id={:table}", "", 0, 0, dbx.Params{"table": definition.Snapshot.TableID})
+	if err != nil {
+		return storageError(err)
+	}
+	previousByKey := make(map[[6]string]*core.Record, len(previous))
+	for _, edge := range previous {
+		previousByKey[computationEdgeKey(edge)] = edge
+	}
 	if err := deleteMetadataByTable(
 		app,
 		computationDependenciesCollection,
@@ -35,6 +45,28 @@ func (catalog *Catalog) replaceComputationDependencies(
 	collection, err := app.FindCollectionByNameOrId(computationDependenciesCollection)
 	if err != nil {
 		return storageError(err)
+	}
+	// Replacing a table's graph must preserve unchanged semantic edges. A rename
+	// must not lift an unrelated input revision and strand otherwise ready cells.
+	restoreInputRevisions := func() error {
+		if collection.Fields.GetByName(relatedcomputation.InputRevisionField) == nil {
+			return nil
+		}
+		current, err := app.FindRecordsByFilter(computationDependenciesCollection, "source_table_id={:table}", "", 0, 0, dbx.Params{"table": definition.Snapshot.TableID})
+		if err != nil {
+			return err
+		}
+		for _, edge := range current {
+			if old := previousByKey[computationEdgeKey(edge)]; old != nil && sameComputationEdge(old, edge) {
+				if !reflect.DeepEqual(edge.GetRaw(relatedcomputation.InputRevisionField), old.GetRaw(relatedcomputation.InputRevisionField)) {
+					edge.Set(relatedcomputation.InputRevisionField, old.GetRaw(relatedcomputation.InputRevisionField))
+					if err := app.Save(edge); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
 	}
 	formulaDependencies, err := app.FindRecordsByFilter(
 		formulaDepsCollection,
@@ -174,7 +206,20 @@ func (catalog *Catalog) replaceComputationDependencies(
 			}
 		}
 	}
-	return nil
+	return restoreInputRevisions()
+}
+
+func computationEdgeKey(edge *core.Record) [6]string {
+	return [6]string{edge.GetString("source_table_id"), edge.GetString("computed_field_id"), edge.GetString("computed_kind"), edge.GetString("relation_field_id"), edge.GetString("target_table_id"), edge.GetString("target_field_id")}
+}
+
+func sameComputationEdge(left, right *core.Record) bool {
+	for _, name := range []string{"definition_version", "path_json"} {
+		if !reflect.DeepEqual(left.GetRaw(name), right.GetRaw(name)) {
+			return false
+		}
+	}
+	return true
 }
 
 func saveComputationDependency(
@@ -198,6 +243,13 @@ func saveComputationDependency(
 	record.Set("target_field_id", targetFieldID)
 	record.Set("path_json", types.JSONRaw(pathRaw))
 	record.Set("definition_version", definitionVersion)
+	if collection.Fields.GetByName(relatedcomputation.InputRevisionField) != nil {
+		revision, err := relatedcomputation.TableInputRevision(context.Background(), app, targetTableID)
+		if err != nil {
+			return storageError(err)
+		}
+		record.Set(relatedcomputation.InputRevisionField, revision)
+	}
 	if err := app.Save(record); err != nil {
 		return storageError(fmt.Errorf("save computation dependency: %w", err))
 	}

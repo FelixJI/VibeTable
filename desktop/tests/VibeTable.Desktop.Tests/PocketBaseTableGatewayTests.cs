@@ -474,7 +474,8 @@ public sealed class PocketBaseTableGatewayTests
         doubled["storage"]!["kind"] = "computed";
         doubled["storage"]!["options"]!["onlyInt"] = true;
         doubled["display"]!["kind"] = "readonly";
-        transport.Respond("schema.getTable", SchemaWithFields("items", doubled));
+        transport.Respond("schema.getTable", SchemaWithFields(
+            "items", doubled, V2Field("quantity", "quantity", "Quantity", "number")));
         transport.Respond(
             "query.view",
             ViewResponse("""
@@ -494,6 +495,75 @@ public sealed class PocketBaseTableGatewayTests
         var formula = page.Columns.Single(column => column.Name == "f_doubled0");
         Assert.AreEqual("integer", formula.DataType);
         Assert.IsFalse(formula.Editable);
+    }
+
+    [TestMethod]
+    [DataRow("formula", "number", "decimal", "number", "gt")]
+    [DataRow("formula", "dateTime", "datetime", "dateTime", "gt")]
+    [DataRow("formula", "bool", "boolean", "boolean", "eq")]
+    [DataRow("lookup", "countRecords", "decimal", "number", "gt")]
+    [DataRow("lookup", "countNonEmpty", "decimal", "number", "gt")]
+    [DataRow("lookup", "countDistinct", "decimal", "number", "gt")]
+    [DataRow("lookup", "sum", "decimal", "number", "gt")]
+    [DataRow("lookup", "average", "decimal", "number", "gt")]
+    [DataRow("lookup", "min", "decimal", "number", "gt")]
+    [DataRow("lookup", "max", "decimal", "number", "gt")]
+    [DataRow("lookup", "values", "json", "text", "containsAny")]
+    [DataRow("lookup", "distinct", "json", "text", "containsAny")]
+    public async Task ComputedColumnFiltersUseDeclaredResultCapabilities(
+        string kind, string resultOrAggregation, string dataType, string filterInput, string filterOperator)
+    {
+        JsonObject field = V2Field("computed", "computed", "Computed", kind);
+        if (kind == "formula")
+        {
+            field["formula"] = new JsonObject
+            {
+                ["language"] = "cel-v1", ["source"] = "0",
+                ["resultType"] = resultOrAggregation,
+            };
+        }
+        else
+        {
+            field["lookup"] = new JsonObject
+            {
+                ["aggregation"] = resultOrAggregation,
+                ["targetFieldId"] = "fld_amount",
+                ["path"] = new JsonArray(new JsonObject { ["relationFieldId"] = "fld_source" }),
+            };
+        }
+        field["storage"]!["kind"] = "computed";
+        field["storage"]!["options"]!["onlyInt"] = false;
+        JsonObject schema = JsonNode.Parse(SchemaWithFields("orders", field))!.AsObject();
+        JsonObject template = schema["capabilities"]![0]!.DeepClone().AsObject();
+        schema["capabilities"] = new JsonArray(new[] { "formula", "lookup", "number", "dateTime", "bool" }
+            .Select(type =>
+            {
+                JsonObject capability = template.DeepClone().AsObject();
+                capability["logicalType"] = type;
+                capability["filterOperators"] = type switch
+                {
+                    "number" or "dateTime" => new JsonArray("eq", "gt", "gte", "lt", "lte"),
+                    "lookup" => new JsonArray("containsAny", "containsAll"),
+                    _ => new JsonArray("eq", "ne"),
+                };
+                return (JsonNode)capability;
+            }).ToArray());
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", schema.ToJsonString());
+        transport.Respond("query.view", ViewResponse(PageResponse("schema_0001", 0, "f_computed")));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+
+        TablePage page = await QueryViewAsync(gateway, "orders", 0, 100);
+        ColumnSchema column = page.Columns.Single(item => item.Name == "f_computed");
+
+        Assert.AreEqual(dataType, column.DataType);
+        Assert.AreEqual(filterInput, column.FilterInput);
+        CollectionAssert.Contains(column.FilterOperators!.ToArray(), filterOperator);
+        Assert.AreEqual(kind, column.Kind);
+        Assert.AreEqual(kind == "lookup" ? "orders.fld_computed" : null, column.LookupId);
+        Assert.IsFalse(column.Editable);
+        CollectionAssert.AreEqual(new[] { "schema.getTable", "query.view" }, transport.Methods);
     }
 
     [TestMethod]

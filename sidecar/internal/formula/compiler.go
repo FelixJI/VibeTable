@@ -86,6 +86,13 @@ func (compiler *Compiler) EvaluationTimeout() time.Duration {
 	return compiler.limits.EvalTimeout
 }
 
+// PlanCompilationCount counts execution-plan compilation attempts, including
+// failures. Cache hits and callers sharing an in-flight compilation do not add
+// attempts. It does not count authoring or individual CEL expression compiles.
+func (compiler *Compiler) PlanCompilationCount() uint64 {
+	return compiler.cache.compilations.Load()
+}
+
 type CompiledFormula struct {
 	ClockReferences        []ClockReference
 	FieldID                string
@@ -603,16 +610,16 @@ func celTypeForField(field v2.FieldDefinition) (*cel.Type, error) {
 		// schema catalog performs the static cross-table checks.
 		return cel.DynType, nil
 	}
-	if field.LogicalType == v2.LogicalLookup && field.Lookup != nil &&
-		v2.LookupAggregationNumeric(v2.ResolvedLookupAggregation(*field.Lookup)) {
-		// Counts and numeric summaries materialize number/one values, so
-		// downstream formulas type-check and infer them as numbers.
-		return cel.DoubleType, nil
-	}
 	return celTypeForValueType(valueTypeForField(field))
 }
 
 func valueTypeForField(field v2.FieldDefinition) ValueType {
+	if field.LogicalType == v2.LogicalLookup && field.Lookup != nil &&
+		v2.LookupAggregationNumeric(v2.ResolvedLookupAggregation(*field.Lookup)) {
+		// Numeric lookups have one double contract for declarations, activation
+		// normalization and aggregate consumers, including integer wire values.
+		return ValueType{LogicalType: v2.LogicalNumber}
+	}
 	logicalType := field.LogicalType
 	if field.LogicalType == v2.LogicalFormula && field.Formula != nil {
 		logicalType = field.Formula.ResultType

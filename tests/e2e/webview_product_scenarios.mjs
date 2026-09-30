@@ -44,6 +44,7 @@ import {
 import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
 import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
+import { runCalculationChainJourney } from "./calculation_chain_journey.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -3980,6 +3981,15 @@ async function scenario26(page, recorder, _network, runtime) {
     })),
   ], "aggregation-source-seed");
   if (aggregationSeed.payload?.status !== "applied") throw new Error(JSON.stringify(aggregationSeed));
+  // The source receipt precedes the persisted Lookup fanout. Open the editor
+  // only after that write, so its frozen data revision includes the new matches.
+  await waitForQueryPage(page, {
+    tableId: currentTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, (payload) => {
+    const value = payload.rows?.find(row => row.id === "condrow00000001")?.[lookupFieldKey];
+    return Array.isArray(value) && value.length === 2
+      && value.includes("唯一 乙改") && value.includes(null);
+  });
   await selectTable(page, "Lookup 条件当前");
   await openFieldSettingsFromHeader(page, lookupFieldKey);
   await page.getByTestId("lookup-editor-entry").click();
@@ -10315,6 +10325,17 @@ const scenarios = {
       beginBridgeMessageCapture, waitForCapturedBridgeMessage,
       beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
       rawLifecycleWorkspaceV2Request, waitForFieldMigration,
+    },
+  ),
+  "38-calculation-chain-journey": (page, recorder, _network, runtime) => runCalculationChainJourney(
+    page, recorder, runtime, {
+      waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+      rawBridgeRequest, waitForQueryPage, selectTable, selectVisibleNOption, fillNInput,
+      waitForVisibleRowCount, chooseToolbarMore, openFieldSettingsFromHeader,
+      beginBridgeMessageCapture, waitForCapturedBridgeMessage, waitForFieldMigration,
+      beginCellEdit, waitForStableGridState, waitForImportSuccess,
+      openWorkspaceCenterFromSwitcher, replicaUiMethod, activateWorkspaceThroughUi,
+      canonicalJsonText,
     },
   ),
 };

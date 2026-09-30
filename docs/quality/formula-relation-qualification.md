@@ -114,12 +114,35 @@ audit 与 outbox 不重复。snapshot 恢复后重建依赖并得到相同结果
 
 | 能力 | 当前支撑证据 | 当前结论 |
 |---|---|---|
-| Formula 内核 | `sidecar/internal/formula/*` 及单元/集成测试 | 有 producer 基础；作者协议和产品链未闭合 |
+| Formula 作者与计算链 | `sidecar/internal/formula/*`、S05/S37 与下述 S38 | 常用/日期/集合作者路径已有证据；本轮三表组合通过，不再以“作者协议和产品链未闭合”笼统标记 |
 | Relation 原子性 | relation service、Mutation Kernel 与 reciprocal tests | 有 producer 基础；pair update/integrity/picker 未闭合 |
-| Lookup | calculator、来源分页和 1/8/9 跳测试 | 有遍历基础；页面级查询复杂度未资格化 |
-| fan-out/backfill | 持久 jobs、取消/恢复、10k integration | 有恢复基础；公开状态、成本与产品 E2E 未闭合 |
-| `05-formula-lifecycle` | 空表转换和非空迁移失败回滚 | 不证明 authoring 或计算链 |
+| Lookup | calculator、1/8/9 跳回归、S26/S38 与 `TestCalculationChainQualification` | 条件汇总、完整来源分页及固定 100 行重复条件的查询次数已有证据；不外推其他任意谓词的复杂度 |
+| fan-out/backfill | 持久 jobs、取消/恢复、10k integration，三表变更与进行中取消组合回归 | 本轮受影响链传播及旧值拒绝已有证据；六态所有 consumer 与真实进程中断恢复仍按原资格单独判断 |
+| `05-formula-lifecycle` | 常用/日期公式编辑、筛选排序、导出与重开；新增链见 S38 | 保留原失败回滚覆盖；不再把当前 S05 限定为早期空表转换样本 |
 | `06-relation-fanout` | 双端配置更新、冻结摘要、重开及冲突零写入；见 [pair 更新资格](relation-pair-update.md) | 本地定向通过；不证明标签消费、完整记录选择、Lookup 或跨表重算 |
+
+### 本轮 Formula/条件 Lookup 组合资格（#396）
+
+本节仅收口 [#390](https://github.com/FelixJI/VibeTable/issues/390) 声明的个人离线计算范围。
+[#396](https://github.com/FelixJI/VibeTable/issues/396) 本地最终候选的真实同包 S38 已通过；
+完整适用 CI、fresh independent review、正常 squash 及 main/CD 集成的最终证据见 #396 验收记录；本轮范围不等于整份规范 Closed。
+既有历史 main 样本及其 manifest gap 保持原记录。
+
+| 已覆盖范围 | 可执行证据入口 | 对应验收 |
+|---|---|---|
+| 可见 UI 创建条件 SUM Lookup、标量 Formula 与跨表集合 Formula；修改来源值和已存公式后，两层结果逐值对齐独立 oracle | [S38 场景](../../tests/e2e/calculation_chain_journey.mjs)及[独立 fixture/oracle](../../tests/e2e/calculation_chain_journey.test.mjs)；常用/日期与集合语法分别沿用 S05/S37 | GAC1–3；AC1/AC7 的代表链部分 |
+| 第三表按计算值筛选排序，完整结果/计数与网格一致；0/1/199 匹配，真实来源详情从 100 条翻页并核对全部 199 条；CSV/XLSX 同快照逐值及顺序一致、公式样文本不执行、计算列只读；关闭重开保留工作区身份与视图 | 同一 S38；[独立导出读取器](../../tests/e2e/data_io_workbook.py) | GAC4；AC2/AC7 |
+| 来源新增/修改/删除、匹配进入/退出、无关字段不排全量任务、schema/表达式及受控时钟变化后刷新；旧值在 fan-out 完成前拒绝 | [三表变更回归](../../sidecar/tests/integration/calculation_chain_changes_test.go)的 `TestCalculationChainChangesPropagateAndRefresh`；字段删除/循环、导入失败/取消等沿用各自既有契约，不归入 S38 的 UI 覆盖 | GAC3/GAC5；AC1/AC4 的组合部分 |
+| 同身份和修订、不同数据的工作区 A→B→A 无串值；正在执行的查询取消；同包离线运行与正常退出清理 | 同文件 `TestCalculationChainWorkspaceIsolationAndInFlightCancellation`；S38 的无外网、bridge 与 lifecycle 门禁 | GAC5；AC6 |
+| 固定 10k/50k 来源、1k 主表、100 行视窗；完整结果 oracle、冷热分位数、查询/编译计数与进程内存满足预先冻结预算；重复 Lookup 条件只执行一次匹配查询 | [规模 fixture](../../sidecar/tests/integration/calculation_chain_qualification_test.go)的 `TestCalculationChainQualification`；[批量摘要回归](../../sidecar/tests/integration/query_digest_batch_test.go)；[测量口径及前后计数](../e2e-performance.md#2026-09-29-三表计算链资格) | GAC6；AC3–5 |
+
+规模测量是显式独立进程入口；默认测试中的未选择规模运行不算性能通过。application-cold 不等于磁盘冷启动，
+DBX 查询回调数不等于 SQLite 扫描行数；非可下推集合谓词仍受[集合执行边界](formula-collections.md#执行边界)限制。
+原始来源采用 validated PocketBase Save 准备，这组规模结果不证明 50k 导入吞吐。
+
+本轮不解除本规范更广的 Relation 四种基数/pair 全生命周期、六态在全部 consumer 的一致投影、真实 fan-out
+进程中断与 snapshot 恢复组合等要求，也不承诺全量飞书函数/语法兼容。对应范围须按各自证据判断；
+#390 GAC7 / #396 AC8 的最终门禁状态由实际 PR 与合并后证据回填。
 
 ## 7. Closed 完成定义
 

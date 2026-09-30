@@ -737,21 +737,46 @@ func (port *Port) queryRows(
 	// Provider-neutral/query-compiler tests and virtual sources may not have a
 	// PocketBase record collection. Product descriptors always supply
 	// DigestFields; an empty list explicitly opts out of row-digest projection.
-	if len(descriptor.DigestFields) == 0 {
+	if len(descriptor.DigestFields) == 0 || len(rows) == 0 {
 		return rows, nil
 	}
 	collection, err := app.FindCollectionByNameOrId(descriptor.PhysicalName)
 	if err != nil {
 		return nil, err
 	}
-	for _, row := range rows {
-		recordID := fmt.Sprint(row[descriptor.PrimaryKey])
-		if recordID == "" {
+	recordIDs := make([]string, len(rows))
+	for index, row := range rows {
+		recordIDs[index] = fmt.Sprint(row[descriptor.PrimaryKey])
+		if recordIDs[index] == "" {
 			return nil, errors.New("query row omitted its primary key")
 		}
-		record, err := app.FindRecordById(collection, recordID)
+	}
+	// Keep complete PocketBase records (including Original) for the existing
+	// digest contract, but load each bounded page once within this transaction.
+	records := make(map[string]*core.Record, len(rows))
+	for start := 0; start < len(recordIDs); start += 256 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		batch, err := app.FindRecordsByIds(collection, recordIDs[start:min(start+256, len(recordIDs))],
+			func(statement *dbx.SelectQuery) error {
+				statement.WithContext(ctx)
+				return nil
+			})
 		if err != nil {
 			return nil, err
+		}
+		for _, record := range batch {
+			records[record.Id] = record
+		}
+	}
+	for index, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		record := records[recordIDs[index]]
+		if record == nil {
+			return nil, errors.New("query row record could not be read")
 		}
 		var digestRow map[string]any
 		if descriptor.DigestProjector != nil {
