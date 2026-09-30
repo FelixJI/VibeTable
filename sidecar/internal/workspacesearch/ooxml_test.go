@@ -1118,3 +1118,64 @@ func BenchmarkExtractDOCXVisibleTextAtTextLimit(b *testing.B) {
 		}
 	}
 }
+
+// Interrupt every observed read/XML boundary on the small legal packages.
+// This pins cancellation and deadline classification without timing races.
+func TestOOXMLOrderedExtractionInterruptionsKeepTheirStatus(t *testing.T) {
+	for _, fixture := range []struct {
+		name    string
+		extract func(context.Context, *ooxmlPackage, ExtractionLimits) ExtractionResult
+	}{
+		{"xlsx-ledger", extractXLSX},
+		{"pptx-slides-reordered", extractPPTX},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			payload, _ := loadOOXMLPackageFixture(t, fixture.name)
+			pkg, failure := collectOOXMLPackage(context.Background(), payload, DefaultExtractionLimits)
+			if pkg == nil {
+				t.Fatalf("invalid legal fixture: %#v", failure)
+			}
+			probe := &ooxmlInterruptionContext{Context: context.Background(), done: make(chan struct{})}
+			if result := fixture.extract(probe, pkg, DefaultExtractionLimits); result.Status != ExtractionIndexed {
+				t.Fatalf("uninterrupted fixture: %#v", result)
+			}
+			for _, interruption := range []struct {
+				err    error
+				status ExtractionStatus
+				code   string
+			}{
+				{context.Canceled, ExtractionCancelled, "extract.cancelled"},
+				{context.DeadlineExceeded, ExtractionResourceLimited, "extract.timeout"},
+			} {
+				for boundary := 1; boundary <= probe.checks; boundary++ {
+					ctx := &ooxmlInterruptionContext{Context: context.Background(), done: make(chan struct{}), at: boundary, failure: interruption.err}
+					result := fixture.extract(ctx, pkg, DefaultExtractionLimits)
+					if result.Status != interruption.status || result.ErrorCode == nil || *result.ErrorCode != interruption.code {
+						t.Fatalf("%v at boundary %d: %#v", interruption.err, boundary, result)
+					}
+				}
+			}
+		})
+	}
+}
+
+type ooxmlInterruptionContext struct {
+	context.Context
+	done        chan struct{}
+	checks, at  int
+	failure     error
+	interrupted bool
+}
+
+func (ctx *ooxmlInterruptionContext) Done() <-chan struct{} { return ctx.done }
+func (ctx *ooxmlInterruptionContext) Err() error {
+	ctx.checks++
+	if ctx.at > 0 && ctx.checks >= ctx.at {
+		if !ctx.interrupted {
+			close(ctx.done)
+			ctx.interrupted = true
+		}
+		return ctx.failure
+	}
+	return nil
+}

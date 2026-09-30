@@ -332,7 +332,10 @@ func extractPPTX(ctx context.Context, pkg *ooxmlPackage, limits ExtractionLimits
 		return ooxmlPartFailure(ctx, err)
 	}
 	slideOrder, err := orderedRelationshipIDs(ctx, presentationPayload, nsPresentationML, "sldId")
-	if err != nil || len(slideOrder) == 0 {
+	if err != nil {
+		return ooxmlPartFailure(ctx, err)
+	}
+	if len(slideOrder) == 0 {
 		return extractionError(ExtractionFailed, "extract.ooxml_part_failed")
 	}
 	baseDir := path.Dir(mainName)
@@ -422,7 +425,10 @@ func extractXLSX(ctx context.Context, pkg *ooxmlPackage, limits ExtractionLimits
 		return ooxmlPartFailure(ctx, err)
 	}
 	sheetOrder, err := orderedRelationshipIDs(ctx, workbookPayload, nsSpreadsheetML, "sheet")
-	if err != nil || len(sheetOrder) == 0 {
+	if err != nil {
+		return ooxmlPartFailure(ctx, err)
+	}
+	if len(sheetOrder) == 0 {
 		return extractionError(ExtractionFailed, "extract.ooxml_part_failed")
 	}
 	shared := []string{}
