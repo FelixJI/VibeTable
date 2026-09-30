@@ -251,6 +251,7 @@ func TestComputedFieldRestoreRematerializesStoredValues(t *testing.T) {
 	if got := storedValue(t, app, orders.PhysicalName, orderID, sumName); got != float64(11) {
 		t.Fatalf("lookup after formula restore = %#v, want 11", got)
 	}
+
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -442,6 +443,7 @@ func TestSetNullTargetDeleteKeepsLinksAndComputedConsistent(t *testing.T) {
 	assertDirectShip("after restore event", float64(7), float64(12))
 	assertChain("after restore event", float64(12))
 	// The query surface must agree with the stored aggregates.
+
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -469,7 +471,7 @@ func TestSetNullTargetDeleteKeepsLinksAndComputedConsistent(t *testing.T) {
 // TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate pins the
 // fresh-review finding for #414: a single mutation batch that deletes a
 // linked target and updates an unrelated record reports the aggregate event
-// operation "update", so the delete fallback must come from the batch audit
+// operation "update"; the table-level watermark still advances, so
 // scan, not only the event kind. The remaining-set oracle (7), cleaned
 // links, and the query surface must all agree after the mixed batch.
 func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.T) {
@@ -524,8 +526,8 @@ func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.
 		t.Fatalf("linked set oracle = %#v, want 8", got)
 	}
 	// One batch: delete the linked target and revalue the unrelated record.
-	// The aggregate event reports operation "update"; the delete fallback
-	// must be derived from the batch audit scan.
+	// The aggregate event reports operation "update", yet the table-level
+	// watermark still advances, so the whole source table is recalculated.
 	harness.apply("mixed batch", materials, "mixed-batch-delete-update",
 		mutation.Operation{Kind: mutation.OperationDelete, RecordID: &firstMaterial},
 		mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &unlinkedMaterial,
@@ -539,6 +541,7 @@ func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.
 	if got := storedValue(t, app, orders.PhysicalName, orderID, directSumName); got != float64(7) {
 		t.Fatalf("remaining set oracle after mixed batch = %#v, want 7", got)
 	}
+
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -640,6 +643,7 @@ func TestRelationPickerSaveWithFormulaOverPathLookup(t *testing.T) {
 	linkName := link.Definition.Identity.PhysicalName
 	// The relation picker save itself: bind the first target through the real
 	// relation service on the production composite calculator (harness).
+
 	querySource, err := queryschema.New(app.DataDir())
 	if err != nil {
 		t.Fatal(err)
@@ -670,4 +674,221 @@ func TestRelationPickerSaveWithFormulaOverPathLookup(t *testing.T) {
 	if got := sourceLinks(t, app, orders.PhysicalName, orderID, linkName); len(got) != 1 || got[0] != materialID {
 		t.Fatalf("links after picker save = %#v", got)
 	}
+}
+
+// TestRelationHopFanoutKeepsWholeSourceTableFresh pins the 5aac S38 root
+// cause: the dependency watermark is a table-level expectation, so any edge
+// advance must recalculate the whole source table. With the old row-exact
+// fanout, a target-value update or a mid-hop relink leaves every source row
+// that does not reference the changed record permanently in
+// calculation.pending even after all jobs drain. Each stage first proves the
+// stale projection exists before draining (the invalidation itself fires),
+// then requires fresh scalar values on every row once jobs settle.
+func TestRelationHopFanoutKeepsWholeSourceTableFresh(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	orders := createV2IntegrationTable(t, ctx, app, "全表订单", "hop_orders")
+	shipments := createV2IntegrationTable(t, ctx, app, "全表运单", "hop_shipments")
+	materials := createV2IntegrationTable(t, ctx, app, "全表物料", "hop_materials")
+	orderCode := createV2IntegrationField(t, ctx, app, orders.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "订单编码"), "hop_order_code")
+	shipCode := createV2IntegrationField(t, ctx, app, shipments.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "运单编码"), "hop_ship_code")
+	sourceCode := createV2IntegrationField(t, ctx, app, materials.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "物料编码"), "hop_source_code")
+	amount := createV2IntegrationField(t, ctx, app, materials.TableID,
+		fieldDraftForIntegration(t, v2.LogicalNumber, "数量"), "hop_amount")
+	orderShip := createV2IntegrationRelation(t, ctx, app, orders.TableID, orderCode.FieldID,
+		shipments.TableID, shipCode.FieldID, "运单", "订单", "many", "hop_order_ship")
+	shipLink := createV2IntegrationRelation(t, ctx, app, shipments.TableID, shipCode.FieldID,
+		materials.TableID, sourceCode.FieldID, "运单物料", "运单", "many", "hop_ship_link")
+	sumDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "跨表求和")
+	sumDraft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{
+			{RelationFieldID: orderShip.FieldID}, {RelationFieldID: shipLink.FieldID},
+		},
+		TargetFieldID: amount.FieldID, Aggregation: v2.LookupAggregationSum,
+	}
+	sumLookup := createV2IntegrationField(t, ctx, app, orders.TableID, sumDraft, "hop_sum_lookup")
+
+	harness := newRematHarness(t, app)
+	orderOne := "hoporder0000001"
+	orderTwo := "hoporder0000002"
+	orderThree := "hoporder0000003"
+	shipmentOne := "hopship00000001"
+	shipmentTwo := "hopship00000002"
+	materialOne := "hopmatrl0000001"
+	materialTwo := "hopmatrl0000002"
+	shipCodeName := shipCode.Definition.Identity.PhysicalName
+	sourceCodeName := sourceCode.Definition.Identity.PhysicalName
+	amountName := amount.Definition.Identity.PhysicalName
+	orderShipName := orderShip.Definition.Identity.PhysicalName
+	shipLinkName := shipLink.Definition.Identity.PhysicalName
+	sumName := sumLookup.Definition.Identity.PhysicalName
+
+	harness.apply("material one", materials, "hop-m1",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &materialOne,
+			Values: map[string]any{sourceCodeName: "M1", amountName: float64(10)}})
+	harness.apply("material two", materials, "hop-m2",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &materialTwo,
+			Values: map[string]any{sourceCodeName: "M2", amountName: float64(20)}})
+	harness.apply("shipment one", shipments, "hop-s1",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &shipmentOne,
+			Values: map[string]any{shipCodeName: "S1",
+				shipLinkName: []string{materialOne, materialTwo}}})
+	// S2 stays unreferenced by any order row for the mid-hop relink stage.
+	harness.apply("shipment two", shipments, "hop-s2",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &shipmentTwo,
+			Values: map[string]any{shipCodeName: "S2", shipLinkName: []string{materialOne}}})
+	harness.apply("order one", orders, "hop-o1",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &orderOne,
+			Values: map[string]any{
+				orderCode.Definition.Identity.PhysicalName: "O1",
+				orderShipName: []string{shipmentOne},
+			}})
+	harness.apply("order two", orders, "hop-o2",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &orderTwo,
+			Values: map[string]any{
+				orderCode.Definition.Identity.PhysicalName: "O2",
+				orderShipName: []string{shipmentOne},
+			}})
+	harness.apply("order three", orders, "hop-o3",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &orderThree,
+			Values: map[string]any{orderCode.Definition.Identity.PhysicalName: "O3"}})
+
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := query.NewPort(app, querySource)
+	// wireValue returns the query-page projection: a fresh cell is a bare
+	// scalar, a stale cell is the updating envelope object.
+	wireValue := func(recordID string) any {
+		t.Helper()
+		page, err := port.QueryPage(ctx, orders.TableID, query.TableQuery{Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page.Rows {
+			if fmt.Sprint(row["id"]) == recordID {
+				if envelope, ok := row[sumName].(map[string]any); ok {
+					return envelope
+				}
+				return row[sumName]
+			}
+		}
+		t.Fatalf("row %s missing from query page", recordID)
+		return nil
+	}
+	assertStale := func(stage, recordID string) {
+		t.Helper()
+		envelope, ok := wireValue(recordID).(map[string]any)
+		if !ok || envelope["state"] != "updating" {
+			t.Fatalf("%s: row %s expected stale before fan-out runs, got %#v",
+				stage, recordID, wireValue(recordID))
+		}
+	}
+	// holdFanoutWrites pins the existing jobs business-write gate seam: the
+	// gate is installed before the business write runs, and the first
+	// formula.fanout.batch blocks until the stale projection has been
+	// verified, giving deterministic before/after fan-out semantics without
+	// sleeps or retries.
+	holdFanoutWrites := func(stage string, mutate func(), verify func()) {
+		t.Helper()
+		reachedGate := make(chan struct{}, 1)
+		release := make(chan struct{})
+		defer close(release)
+		harness.jobService.SetBusinessWriteGate(func(
+			ctx context.Context,
+			kind string,
+			identity string,
+			apply func(context.Context) error,
+		) error {
+			if kind == "formula.fanout.batch" {
+				select {
+				case reachedGate <- struct{}{}:
+				default:
+				}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			return apply(ctx)
+		})
+		mutate()
+		select {
+		case <-reachedGate:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: fan-out never reached the write gate", stage)
+		}
+		verify()
+	}
+	assertFresh := func(stage string, want map[string]float64) {
+		t.Helper()
+		for recordID, expected := range want {
+			projection := wireValue(recordID)
+			if envelope, ok := projection.(map[string]any); ok {
+				t.Fatalf("%s: row %s still stale after jobs drain: %#v",
+					stage, recordID, envelope)
+			}
+			value, ok := projection.(float64)
+			if !ok || value != expected {
+				t.Fatalf("%s: row %s value=%#v want %v", stage, recordID, projection, expected)
+			}
+		}
+	}
+	assertFresh("baseline", map[string]float64{
+		orderOne: 30, orderTwo: 30, orderThree: 0,
+	})
+
+	// Target-value update: O1/O2 both reference M2, O3 references nothing.
+	// Before draining, every row must show the stale projection (the
+	// table-level watermark advanced); after draining, all rows are fresh.
+	holdFanoutWrites("(b) before fan-out", func() {
+		if _, err := harness.kernel.Apply(context.Background(), func() mutation.Request {
+			revisions, revErr := fieldchange.NewCatalog(app).Revisions(context.Background(), materials.TableID)
+			if revErr != nil {
+				t.Fatal(revErr)
+			}
+			return mutationRequest(materials.TableID, revisions.Schema, "hop-m2-update",
+				mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &materialTwo,
+					Values: map[string]any{amountName: float64(25)}})
+		}()); err != nil {
+			t.Fatal(err)
+		}
+	}, func() {
+		assertStale("(b) before fan-out", orderOne)
+		assertStale("(b) before fan-out", orderThree)
+	})
+	harness.drain("(b) target value update")
+	assertFresh("(b) after drain", map[string]float64{
+		orderOne: 35, orderTwo: 35, orderThree: 0,
+	})
+
+	// Mid-hop relink of a shipment no order references: no row-exact fanout
+	// can match, yet the table-level watermark advances, so the whole source
+	// table must be recalculated.
+	holdFanoutWrites("(d) before fan-out", func() {
+		if _, err := harness.kernel.Apply(context.Background(), func() mutation.Request {
+			revisions, revErr := fieldchange.NewCatalog(app).Revisions(context.Background(), shipments.TableID)
+			if revErr != nil {
+				t.Fatal(revErr)
+			}
+			return mutationRequest(shipments.TableID, revisions.Schema, "hop-s2-relink",
+				mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &shipmentTwo,
+					Values: map[string]any{shipLinkName: []string{materialTwo}}})
+		}()); err != nil {
+			t.Fatal(err)
+		}
+	}, func() {
+		assertStale("(d) before fan-out", orderOne)
+		assertStale("(d) before fan-out", orderThree)
+	})
+	harness.drain("(d) mid-hop relink")
+	assertFresh("(d) after drain", map[string]float64{
+		orderOne: 35, orderTwo: 35, orderThree: 0,
+	})
 }
