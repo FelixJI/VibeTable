@@ -629,7 +629,7 @@ func walkOOXMLStory(
 	decoder.Strict = true
 	var line strings.Builder
 	lineRunes := 0
-	var paragraphDepth, fallbackDepth, moveFromDepth int
+	var fallbackDepth, moveFromDepth int
 	inText, preserveSpace := false, false
 	pendingCap := budget.pendingRuneCap()
 	flush := func() {
@@ -673,10 +673,13 @@ func walkOOXMLStory(
 			case isElement(element, rules.textNS, "t"):
 				inText = true
 				preserveSpace = preservesXMLSpace(element.Attr)
-			case isElement(element, rules.paragraphNS, "p"):
-				paragraphDepth++
 			case isElement(element, nsMarkupCompatibility, "Fallback"):
 				fallbackDepth++
+			case rules.captureWordprocessingReferences &&
+				isElement(element, nsWordprocessingML, "txbxContent"):
+				// A text box is its own visible block: close the story line
+				// before its first paragraph and again after the last one.
+				flush()
 			case isElement(element, rules.tabNS, "tab"):
 				if lineRunes < pendingCap {
 					line.WriteByte('\t')
@@ -712,12 +715,13 @@ func walkOOXMLStory(
 			case isEndElement(element, rules.textNS, "t"):
 				inText, preserveSpace = false, false
 			case isEndElement(element, rules.paragraphNS, "p"):
-				if paragraphDepth > 0 {
-					paragraphDepth--
-					if paragraphDepth == 0 {
-						flush()
-					}
-				}
+				// Every paragraph closes its own line, including paragraphs
+				// nested in w:txbxContent: story text before and after a text
+				// box must never merge with the box text into one word.
+				flush()
+			case rules.captureWordprocessingReferences &&
+				isEndElement(element, nsWordprocessingML, "txbxContent"):
+				flush()
 			}
 		case xml.CharData:
 			if !inText || budget.overflow {
@@ -904,15 +908,19 @@ func worksheetVisibleCells(
 	cellType, cellStyle := "", -1
 	inCell, inValue, inFormula, inInline := false, false, false, false
 	hadFormula := false
+	hadCachedValue := false
 	inText, preserveSpace := false, false
 	pendingCap := budget.pendingRuneCap()
 	closeCell := func() {
 		text, partial := cellVisibleText(
 			cellType, value.String(), inline.String(), shared,
 		)
-		if hadFormula {
-			// Formula without a cached <v>: never recalculated, never
-			// fabricated.
+		if hadFormula && (!hadCachedValue ||
+			(cellType != "str" && strings.TrimSpace(value.String()) == "")) {
+			// Formula without an indexable cache: uncalculated numeric
+			// formulas surface as <f>…</f><v></v> (openpyxl), so a blank
+			// non-string cache is still missing. Only t="str" legally caches
+			// an empty string. Never recalculated, never fabricated.
 			partial = true
 		}
 		if cellStyle >= 0 && cellStyle < len(dateStyles) && dateStyles[cellStyle] {
@@ -924,7 +932,7 @@ func worksheetVisibleCells(
 		value.Reset()
 		inline.Reset()
 		valueRunes, inlineRunes = 0, 0
-		cellType, cellStyle, inFormula, hadFormula = "", -1, false, false
+		cellType, cellStyle, inFormula, hadFormula, hadCachedValue = "", -1, false, false, false
 		inCell = false
 	}
 	err := walkStrictXML(ctx, payload, func(decoder *xml.Decoder, token xml.Token) error {
@@ -936,7 +944,7 @@ func worksheetVisibleCells(
 					closeCell()
 				}
 				inCell = true
-				cellType, cellStyle, hadFormula = "", -1, false
+				cellType, cellStyle, hadFormula, hadCachedValue = "", -1, false, false
 				for _, attribute := range element.Attr {
 					switch attribute.Name.Local {
 					case "t":
@@ -949,9 +957,14 @@ func worksheetVisibleCells(
 				}
 			case inCell && isElement(element, nsSpreadsheetML, "f"):
 				inFormula = true
+				hadFormula = true
 			case inCell && !inFormula && isElement(element, nsSpreadsheetML, "v"):
 				inValue = true
 				value.Reset()
+				// Any <v> counts as a present cache element; whether it is
+				// indexable is decided at cell close from its content and
+				// the declared cell type.
+				hadCachedValue = true
 			case inCell && isElement(element, nsSpreadsheetML, "is"):
 				inInline = true
 				inline.Reset()

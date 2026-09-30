@@ -202,14 +202,70 @@ func TestDOCXKeepsTabsBreaksAndReferencedHeaderFooterParts(t *testing.T) {
 	}
 }
 
+// TestXLSXFormulaWithoutCacheMarksPartialAndCacheClearsIt isolates the
+// formula-cache honesty contract from every other partial source:
+// uncalculated numeric formulas — written by openpyxl as <f>…</f><v></v>
+// — warn (indexed + extract.ooxml_partial), while a real cache never
+// warns; only a t="str" empty string is a legal empty cache. Formulas are
+// never recalculated.
+func TestXLSXFormulaWithoutCacheMarksPartialAndCacheClearsIt(t *testing.T) {
+	cases := []struct {
+		name        string
+		cell        string
+		wantText    string
+		wantPartial bool
+	}{
+		{"formula without v", `<c r="B1"><f>NOW()</f></c>`, "", true},
+		{"numeric formula with empty cache", `<c r="B1"><f>SUM(1,2)</f><v/></c>`, "", true},
+		{"string formula with empty cache", `<c r="B1" t="str"><f>A1&amp;""</f><v/></c>`, "", false},
+		{"formula with numeric cache", `<c r="B1"><f>SUM(1,2)</f><v>3</v></c>`, "3", false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			payload := ooxmlMany(t, map[string]string{
+				"xl/workbook.xml": fmt.Sprintf(`<workbook xmlns="%s" xmlns:r="%s"><sheets>
+				  <sheet name="S1" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+					testSpreadsheetNS, testRelNS),
+				"xl/_rels/workbook.xml.rels": fmt.Sprintf(`<Relationships xmlns="%s">
+				  <Relationship Id="rId1" Type="%s" Target="worksheets/sheet1.xml"/></Relationships>`,
+					testPackageRelNS, testRelType("worksheet")),
+				"xl/worksheets/sheet1.xml": fmt.Sprintf(`<worksheet xmlns="%s"><sheetData>
+				  <row r="1"><c r="A1"><v>42</v></c>%s</row>
+				</sheetData></worksheet>`, testSpreadsheetNS, test.cell),
+			})
+			result := Extract(context.Background(), "formula-cache.xlsx", "", bytes.NewReader(payload), DefaultExtractionLimits)
+			wantBody := "42"
+			if test.wantText != "" {
+				wantBody += "\n" + test.wantText
+			}
+			if result.Status != ExtractionIndexed || result.Text != wantBody {
+				t.Fatalf("Extract() = %#v, want indexed %q", result, wantBody)
+			}
+			if test.wantPartial && (result.ErrorCode == nil || *result.ErrorCode != ooxmlPartialCode) {
+				t.Fatalf("Extract() = %#v, want partial code %q", result, ooxmlPartialCode)
+			}
+			if !test.wantPartial && result.ErrorCode != nil {
+				t.Fatalf("cached formula must not warn: %#v", result)
+			}
+		})
+	}
+}
+
 // TestDOCXIndexesTextBoxesWalkedWithTheStory proves the matrix claim that
-// text boxes inside the main story are covered as part of the story walk.
+// text boxes inside the main story are covered as part of the story walk,
+// including paragraph boundaries: nested w:txbxContent w:p paragraphs flush
+// on their own, so story text before and after the box never merges with
+// the box text into a fake word, and the mc:Fallback duplicate is skipped.
 func TestDOCXIndexesTextBoxesWalkedWithTheStory(t *testing.T) {
 	body := fmt.Sprintf(`<w:document xmlns:w="%s" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><w:body>
-	  <w:p><w:r><w:t>正文旁</w:t><mc:AlternateContent>
-	    <mc:Choice><w:drawing><w:txbxContent><w:p><w:r><w:t>文本框内容 TextBoxBody</w:t></w:r></w:p></w:txbxContent></w:drawing></mc:Choice>
-	    <mc:Fallback><w:pict><w:txbxContent><w:p><w:r><w:t>TextBoxBody</w:t></w:r></w:p></w:txbxContent></w:pict></mc:Fallback>
-	  </mc:AlternateContent></w:r></w:p>
+	  <w:p>
+	    <w:r><w:t>正文旁</w:t></w:r>
+	    <mc:AlternateContent>
+	      <mc:Choice><w:drawing><w:txbxContent><w:p><w:r><w:t>文本框内容 TextBoxBody</w:t></w:r></w:p></w:txbxContent></w:drawing></mc:Choice>
+	      <mc:Fallback><w:pict><w:txbxContent><w:p><w:r><w:t>TextBoxBody</w:t></w:r></w:p></w:txbxContent></w:pict></mc:Fallback>
+	    </mc:AlternateContent>
+	    <w:r><w:t>正文后</w:t></w:r>
+	  </w:p>
 	</w:body></w:document>`, testWordNS)
 	result := Extract(
 		context.Background(), "textbox.docx", "",
@@ -218,8 +274,10 @@ func TestDOCXIndexesTextBoxesWalkedWithTheStory(t *testing.T) {
 	if result.Status != ExtractionIndexed {
 		t.Fatalf("textbox Extract() = %#v", result)
 	}
-	if strings.Count(result.Text, "TextBoxBody") != 1 ||
-		!strings.Contains(result.Text, "文本框内容 TextBoxBody") {
+	if result.Text != "正文旁\n文本框内容 TextBoxBody\n正文后" {
+		t.Fatalf("textbox text must keep story and box paragraph boundaries: %q", result.Text)
+	}
+	if strings.Count(result.Text, "TextBoxBody") != 1 {
 		t.Fatalf("textbox text must appear once (Choice, not Fallback): %q", result.Text)
 	}
 }
