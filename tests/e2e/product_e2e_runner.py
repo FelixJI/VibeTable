@@ -1370,6 +1370,42 @@ def _scenario_runtime_directory(evidence_root: Path, scenario: Scenario) -> Path
     return (evidence_root / "_runtime" / scenario_number).resolve()
 
 
+def _write_sparse_diff_workbooks(controls_dir: Path) -> None:
+    """Reuse a real closed OPC fixture for 10,004 sparse cells and 75 known changes."""
+    fixture = (
+        ROOT
+        / "desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/xlsx/content-before.xlsx"
+    )
+    with zipfile.ZipFile(fixture) as source:
+        parts = {name: source.read(name) for name in source.namelist()}
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    parts["xl/sharedStrings.xml"] = (
+        f'<sst xmlns="{ns}"><si><t>{"长共享文本" * 40000}</t></si></sst>'.encode()
+    )
+    for changed in (False, True):
+        output = controls_dir / f"sparse-{'after' if changed else 'before'}.xlsx"
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, content in parts.items():
+                if name not in ("xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"):
+                    archive.writestr(name, content)
+            for sheet in (1, 2):
+                rows = []
+                for i in range(5000):
+                    value = 2 * i + 1
+                    if changed and sheet == 1 and i < 75:
+                        value = -value
+                    row = i * 200 + 1
+                    cell = f'<c r="A{row}"><v>{value}</v></c>'
+                    if i == 0:
+                        cell += '<c r="B1" t="s"><v>0</v></c>'
+                    rows.append(f'<row r="{row}">{cell}</row>')
+                rows.append('<row r="1048576"><c r="XFD1048576"><v>1</v></c></row>')
+                archive.writestr(
+                    f"xl/worksheets/sheet{sheet}.xml",
+                    f'<worksheet xmlns="{ns}"><dimension ref="A1:XFD1048576"/><sheetData>{"".join(rows)}</sheetData></worksheet>',
+                )
+
+
 def run_scenario(
     scenario: Scenario,
     *,
@@ -1478,6 +1514,8 @@ def run_scenario(
         + "\n",
         encoding="utf-8",
     )
+    if scenario.id == "14-document-diff":
+        _write_sparse_diff_workbooks(controls_dir)
     if scenario.id == "18-workspace-search":
         for fixture_name, document_name in (
             ("docx-contract-split", "search-visible.docx"),

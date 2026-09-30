@@ -217,6 +217,8 @@ public sealed class XlsxSemanticDiffTests
             byte[] package = Package([new("安全")], extra: [(name, xml)]);
             if (name.EndsWith("unselected.xml", StringComparison.Ordinal))
                 await Assert.ThrowsExactlyAsync<XmlException>(() => Compare(package, package));
+            else if (name.EndsWith("extra.xml.rels", StringComparison.Ordinal))
+                await Assert.ThrowsExactlyAsync<NotSupportedException>(() => Compare(package, package));
             else await Assert.ThrowsExactlyAsync<InvalidDataException>(() => Compare(package, package));
         }
         byte[] missing = Package([new("安全", Part: "xl/worksheets/sheet1.xml")],

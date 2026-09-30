@@ -57,6 +57,18 @@ public sealed class OpenXmlDocumentDiffEngineTests
     }
 
     [TestMethod]
+    public async Task CompareAsync_ExternalXlsxRelationshipIsUnsupportedWithoutFollowingIt()
+    {
+        byte[] bytes = XlsxSemanticDiffTests.Package([new XlsxSemanticDiffTests.Sheet("数据")],
+            extra: [("xl/_rels/extra.xml.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"external\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://invalid.example\" TargetMode=\"External\"/></Relationships>")]);
+        var outcome = await new OpenXmlDocumentDiffEngine().CompareAsync(new(
+            Content("before.xlsx", XlsxMime, bytes), Content("after.xlsx", XlsxMime, bytes)), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffOutcomeKind.Failure, outcome.Kind);
+        Assert.AreEqual(DocumentDiffFailureKind.Unsupported, outcome.Failure);
+        Assert.IsNull(outcome.Details);
+    }
+
+    [TestMethod]
     public async Task CompareAsync_PptxVisibleTextChanged_ReturnsLineDetails()
     {
         IDocumentDiffEngine engine = new OpenXmlDocumentDiffEngine();

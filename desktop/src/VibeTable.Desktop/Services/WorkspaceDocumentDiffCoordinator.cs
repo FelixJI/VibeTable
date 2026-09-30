@@ -305,6 +305,8 @@ internal sealed class WorkspaceDocumentDiffCoordinator
             Count(DocumentDiffChangeKind.Format), Count(DocumentDiffChangeKind.Table),
             Count(DocumentDiffChangeKind.Comment), Count(DocumentDiffChangeKind.Other));
         var warnings = new List<DocumentDiffWarning>();
+        if (details.Format == DocumentDiffFormat.Xlsx)
+            warnings.Add(DocumentDiffWarning.CachedValuesNotRecalculated);
         if (details.Coverage.Truncated) warnings.Add(DocumentDiffWarning.ResultTruncated);
         if (details.Coverage.Areas.Any(area => area.Status != DocumentDiffCoverageStatus.Covered))
             warnings.Add(DocumentDiffWarning.PartialCoverage);

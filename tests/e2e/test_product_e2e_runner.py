@@ -4422,3 +4422,30 @@ def test_plugin_host_restart_acceptance_is_selected_only_for_its_scenarios(
     assert report["status"] == "passed"
     assert routed == []
     assert (tmp_path / "evidence2").exists()
+
+
+def test_sparse_diff_workbooks_have_frozen_independent_values(tmp_path: Path) -> None:
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    runner._write_sparse_diff_workbooks(tmp_path)
+    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    values = []
+    for version in ("before", "after"):
+        cells = {}
+        with zipfile.ZipFile(tmp_path / f"sparse-{version}.xlsx") as archive:
+            shared = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            assert len(shared.findtext("s:si/s:t", namespaces=ns) or "") == 200000
+            for sheet in (1, 2):
+                root = ET.fromstring(archive.read(f"xl/worksheets/sheet{sheet}.xml"))
+                dimension = root.find("s:dimension", ns)
+                assert dimension is not None
+                assert dimension.get("ref") == "A1:XFD1048576"
+                for cell in root.findall(".//s:c", ns):
+                    cells[(sheet, cell.get("r"))] = cell.findtext("s:v", namespaces=ns)
+        assert len(cells) == 10004
+        values.append(cells)
+    delta = {
+        key: (value, values[1][key]) for key, value in values[0].items() if values[1][key] != value
+    }
+    assert delta == {(1, f"A{i * 200 + 1}"): (str(2 * i + 1), str(-(2 * i + 1))) for i in range(75)}

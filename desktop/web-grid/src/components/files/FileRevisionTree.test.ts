@@ -61,6 +61,7 @@ describe("FileRevisionTree", () => {
       coverage: { truncated: false, areas: [{ area: "visibleText", status: "partial" }] },
       warnings: ["partialCoverage"], canOpenComparisonArtifact: false, canExportComparisonArtifact: false,
     } });
+    if (result.outcome !== "ready") throw new Error("Expected a ready fixture.");
     const run = { text: "<img src=x onerror=alert(1)>", role: "deleted" as const, bold: null,
       italic: null, underline: null, strike: null, fontSizePt: null, fontFamily: null,
       foreground: null, background: null, styleName: null };
@@ -72,6 +73,26 @@ describe("FileRevisionTree", () => {
       diffPhase: "ready", diffResult: result, diffChanges: [change], diffNextCursor: "opaque" } });
     expect(wrapper.text()).toContain(run.text);
     expect(wrapper.find("img").exists()).toBe(false);
+    await wrapper.setProps({ diffChanges: [{ ...change, kind: "format", location: {
+      ...change.location, part: "header", sectionIndex: 1, tableIndex: 0, rowIndex: 2, columnIndex: 3,
+    }, after: { runs: [{ ...run, text: "styled", role: "changed", bold: true, fontSizePt: 14,
+      fontFamily: "Aptos", foreground: "#123456" }] } }] });
+    expect(wrapper.text()).toContain("格式 · 页眉 · 第 2 节 · 表格 1 · 行 3 · 列 4 · 段落 1");
+    const styled = wrapper.get('[data-diff-role="changed"]').element as HTMLElement;
+    expect(styled.style.fontSize).toBe("14pt");
+    expect(styled.style.fontWeight).toBe("bold");
+    expect(wrapper.find("img").exists()).toBe(false);
+    await wrapper.setProps({ diffChanges: [{ ...change, kind: "replace", location: {
+      ...change.location, part: "worksheet", paragraphIndex: null, sheetName: "报价表", cellAddress: "D12",
+    }, before: { runs: [{ ...run, text: "formula: B12*C12" }] }, after: {
+      runs: [{ ...run, text: "formula: B12*C12*(1-E12)" }],
+    } }], diffResult: { ...result, session: { ...result.session,
+      warnings: ["partialCoverage", "cachedValuesNotRecalculated"],
+    } } });
+    expect(wrapper.text()).toContain("替换 · 工作表 · 报价表 · D12");
+    expect(wrapper.text()).toContain("公式未重新计算");
+    expect(wrapper.text()).toContain("formula: B12*C12*(1-E12)");
+
     expect(wrapper.text()).toContain("仅部分内容被覆盖");
     await wrapper.get('[data-testid="diff-next-page"]').trigger("click");
     await wrapper.get('[data-testid="diff-close"]').trigger("click");

@@ -140,7 +140,7 @@ internal static partial class XlsxSemanticDiff
             XElement workbook = Xml(workbookPart);
             if (workbook.Name != S + "workbook") throw new InvalidDataException("Invalid workbook root.");
             if (workbook.Element(S + "externalReferences") is not null)
-                throw new InvalidDataException("External workbook references are unsupported.");
+                throw new NotSupportedException("External workbook references are unsupported.");
             bool date1904 = Boolean((string?)Only(workbook, "workbookPr")?.Attribute("date1904") ?? "0");
             string workbookRels = RelationshipsName(workbookPart);
             var sharedRelation = OptionalRelationship(workbookRels, "sharedStrings");
@@ -390,12 +390,14 @@ internal static partial class XlsxSemanticDiff
                 string id = Required(rel, "Id");
                 string type = Required(rel, "Type");
                 string target = Required(rel, "Target");
+                string mode = (string?)rel.Attribute("TargetMode") ?? "Internal";
                 if (rel.Name != P + "Relationship" || rel.HasElements || !ids.Add(id) ||
-                    !Uri.TryCreate(type, UriKind.Absolute, out _) ||
-                    ((string?)rel.Attribute("TargetMode") ?? "Internal") != "Internal")
-                    throw new InvalidDataException("Invalid or external XLSX relationship.");
+                    !Uri.TryCreate(type, UriKind.Absolute, out _) || mode is not ("Internal" or "External"))
+                    throw new InvalidDataException("Invalid XLSX relationship.");
                 try { XmlConvert.VerifyNCName(id); }
                 catch (XmlException ex) { throw new InvalidDataException("Invalid relationship ID.", ex); }
+                if (mode == "External")
+                    throw new NotSupportedException("External XLSX relationships are unsupported.");
                 if (target.Contains(':') || target.Contains('\\') || target.Contains('?') ||
                     target.Contains('#') || target.Any(char.IsControl) || target.StartsWith("//", StringComparison.Ordinal))
                     throw new InvalidDataException("Invalid internal target.");

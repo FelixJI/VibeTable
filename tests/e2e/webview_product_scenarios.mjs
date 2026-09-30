@@ -7443,6 +7443,132 @@ async function scenario14(page, recorder, _network, runtime) {
     rawMaterializeFailure.includes("workspace.method_not_public"),
   { rawMaterializeFailure });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff-stale.png"), fullPage: true });
+
+
+  const xlsxFixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+    "../../desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/xlsx");
+  // Frozen from the fixture XML, independently of the production provider.
+  const border = "border=border()[bottom()[],diagonal()[],left()[],right()[],top()[]]";
+  const font = "charset(val=3:134)[],color(theme=1:1)[],family(val=1:3)[],name(val=2:等线)[],scheme(val=5:minor)[],sz(val=2:11)[]";
+  const oldStyle = `font=font()[${font}]; fill=fill()[patternFill(patternType=5:solid)[bgColor(indexed=2:64)[],fgColor(rgb=8:FFFFFFFF)[]]]; ${border}; numFmt=builtin:2; alignment=alignment(vertical=6:center)[]`;
+  const newStyle = `font=font()[b=true,${font}]; fill=fill()[patternFill(patternType=5:solid)[bgColor(indexed=2:64)[],fgColor(rgb=8:FFFFFF00)[]]]; ${border}; numFmt=builtin:10; alignment=alignment(vertical=6:center)[]`;
+  const defaultStyle = `font=font()[${font.replace("family(val=1:3)", "family(val=1:2)")}]; fill=fill()[patternFill(patternType=4:none)[]]; ${border}; numFmt=builtin:0; alignment=alignment(vertical=6:center)[]`;
+  const visibilityOracle = [
+    ["other", "报价表", null, "row 8 hidden: true", "row 8 hidden: false"],
+    ["other", "报价表", null, "hidden columns: 6:6", "hidden columns: <none>"],
+  ];
+  const formatOracle = [["format", "报价表", "B7", `style: ${oldStyle}`, `style: ${newStyle}`], ...visibilityOracle];
+  const contentOracle = [
+    ["other", "新增工作表", null, "sheet name: 待删除工作表", "sheet name: 新增工作表"],
+    ["replace", "新增工作表", "A1", "value: text: 旧", "value: text: 新增"],
+    ["insert", "报价表", "D1", null, `cell: number: <empty>; style: ${defaultStyle}`],
+    ["replace", "报价表", "B7", "value: number: 1e2", "value: number: 12e1"],
+    ["format", "报价表", "B7", `style: ${oldStyle}`, `style: ${newStyle}`],
+    ["replace", "报价表", "D12", "formula: normal: B12*C12", "formula: normal: B12*C12*(1-E12)"],
+    ["replace", "报价表", "D12", "cache: number: 12e1", "cache: number: 108"],
+    ["table", "报价表", "A1:C1", "merge: A1:C1", null],
+    ["table", "报价表", "A1:D1", null, "merge: A1:D1"],
+    ...visibilityOracle,
+  ];
+  const sparseOracle = Array.from({ length: 75 }, (_, i) => ["replace", "待删除工作表",
+    `A${i * 200 + 1}`, `value: number: ${2 * i + 1}`, `value: number: ${-(2 * i + 1)}`]);
+  for (const [caseName, oracle] of [["format", formatOracle], ["content", contentOracle], ["sparse", sparseOracle]]) {
+    const name = `document-${caseName}.xlsx`;
+    const before = path.join(caseName === "sparse" ? runtime.controlsDir : xlsxFixtures, `${caseName}-before.xlsx`);
+    const after = path.join(caseName === "sparse" ? runtime.controlsDir : xlsxFixtures, `${caseName}-after.xlsx`);
+    const syntheticSource = path.join(runtime.controlsDir, name);
+    await fs.copyFile(before, syntheticSource);
+    await fs.writeFile(path.join(runtime.controlsDir, "document-source.txt"), `${syntheticSource}\n`, "utf8");
+    await page.getByTestId("document-import").click();
+    const row = page.locator('[data-testid^="document-row-"]').filter({ hasText: name });
+    await row.waitFor({ state: "visible", timeout: 30_000 });
+    const queried = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+      logic: "and", filters: [{ field: "displayName", operator: "eq", value: name }],
+      sort: [{ field: "relativePath", direction: "asc" }], limit: 50, cursor: null,
+    });
+    const imported = queried.result.documents.find(item => item.relativePath === name);
+    const oldTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId: imported.documentId });
+    const historical = oldTree.result.effectiveRevisionId;
+    await fs.copyFile(after, syntheticSource);
+    const sourceBytes = await fs.readFile(syntheticSource);
+    await fs.writeFile(path.join(runtime.controlsDir, "file-upgrade-source.txt"), `${syntheticSource}\n`, "utf8");
+    await rawWorkspaceV2Request(page, "fileHistory.upgrade", {
+      documentId: imported.documentId, revisionId: historical, pathGrant: "host-picker://file-upgrade",
+    });
+    const oldHandle = await row.getAttribute("data-testid");
+    await workspace.getByTestId("document-refresh").click();
+    await page.waitForFunction(({ old, target }) => [...document.querySelectorAll('[data-testid^="document-row-"]')]
+      .find(candidate => candidate.textContent?.includes(target))?.getAttribute("data-testid") !== old,
+    { old: oldHandle, target: name });
+    await row.click();
+    await workspace.locator(".inspector-tabs button").nth(1).click();
+    const started = performance.now();
+    await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+    await page.getByTestId("compare-revision").first().click();
+    const compared = await waitForCapturedBridgeMessage(page, 30_000);
+    const session = compared.payload?.session;
+    recorder.check(`XLSX ${caseName} uses deep production session`, compared.payload?.outcome === "ready"
+      && session?.format === "xlsx" && session?.provider === "xlsxBuiltIn"
+      && session.historicalRevisionId === historical && session.summary.totalChangeGroups === oracle.length,
+    { compared, wallClockMs: performance.now() - started, cellCount: caseName === "sparse" ? 10004 : null,
+      sheetCount: caseName === "sparse" ? 2 : null, sharedStringCharacters: caseName === "sparse" ? 200000 : null,
+      rowExtent: caseName === "sparse" ? 1048576 : null, inputBytes: sourceBytes.length });
+    recorder.check(`XLSX ${caseName} declares cache and partial styles`,
+      session.warnings.includes("cachedValuesNotRecalculated") && session.warnings.includes("partialCoverage")
+      && session.coverage.areas.some(item => item.area === "worksheetStyles" && item.status === "partial")
+      && session.coverage.areas.some(item => item.area === "worksheetFormulas" && item.status === "covered"),
+    { coverage: session.coverage, warnings: session.warnings });
+    const changes = [];
+    let cursor = null;
+    do {
+      const response = await rawBridgeRequest(page, "document.diffPageRequested", {
+        sessionId: session.sessionId, cursor, limit: 7,
+      }, 30_000, ["document.diffPageCompleted"]);
+      recorder.check(`XLSX ${caseName} page is bounded and valid`, response.payload?.outcome === "ready"
+        && response.payload.page.changes.length <= 7, { response });
+      changes.push(...response.payload.page.changes);
+      cursor = response.payload.page.nextCursor;
+    } while (cursor !== null);
+    const actual = changes.map(change => [change.kind, change.location.sheetName, change.location.cellAddress,
+      change.before === null ? null : change.before.runs.map(run => run.text).join(""),
+      change.after === null ? null : change.after.runs.map(run => run.text).join("")]);
+    recorder.check(`XLSX ${caseName} complete before-after oracle`, isDeepStrictEqual(actual, oracle)
+      && new Set(changes.map(change => change.changeId)).size === oracle.length, { actual, oracle });
+    await page.getByTestId("diff-details").waitFor({ state: "visible" });
+    const firstCount = await page.locator("[data-change-id]").count();
+    recorder.check(`XLSX ${caseName} first screen is bounded`, firstCount <= 50 && firstCount > 0, { firstCount });
+    while (await page.getByTestId("diff-next-page").count()) {
+      const previous = await page.locator("[data-change-id]").count();
+      await page.getByTestId("diff-next-page").click();
+      await page.waitForFunction(count => document.querySelectorAll("[data-change-id]").length > count, previous);
+    }
+    const ids = await page.locator("[data-change-id]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-change-id")));
+    recorder.check(`XLSX ${caseName} UI pages preserve stable IDs`,
+      isDeepStrictEqual(ids, changes.map(change => change.changeId)), { ids });
+    const text = await page.getByTestId("diff-details").innerText();
+    recorder.check(`XLSX ${caseName} renders sheet-cell and cache warning`, text.includes("公式未重新计算")
+      && text.includes(caseName === "sparse" ? "待删除工作表" : "报价表")
+      && text.includes(caseName === "sparse" ? "A1" : "B7"), { text: text.slice(0, 3000) });
+    if (caseName !== "sparse") {
+      await page.locator("[data-change-id]").first().scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(runtime.evidenceDir, `14-xlsx-${caseName}.png`), fullPage: true });
+    }
+    const newTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId: imported.documentId });
+    recorder.check(`XLSX ${caseName} preserves historical objects and source`,
+      isDeepStrictEqual(newTree.result.revisions.find(item => item.revisionId === historical),
+        oldTree.result.revisions.find(item => item.revisionId === historical))
+      && newTree.result.effectiveRevisionId === session.effectiveRevisionId
+      && sourceBytes.equals(await fs.readFile(syntheticSource)));
+    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+    await page.getByTestId("diff-close").click();
+    await waitForCapturedBridgeMessage(page, 30_000);
+    const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
+      sessionId: session.sessionId, cursor: null, limit: 50,
+    }, 30_000, ["document.diffPageCompleted"]);
+    const artifactRoot = path.join(runtime.dataRoot, "document-diff");
+    recorder.check(`XLSX ${caseName} expires and cleans known outputs`, expired.payload?.failure === "sessionExpired"
+      && (!fsSync.existsSync(artifactRoot) || (await fs.readdir(artifactRoot)).length === 0));
+  }
 }
 
 async function requestWithStaleWorkspaceScope(page, method, params, staleSession) {

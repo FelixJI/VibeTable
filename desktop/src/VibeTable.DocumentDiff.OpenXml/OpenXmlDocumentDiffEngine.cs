@@ -86,6 +86,10 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         {
             return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.Cancelled);
         }
+        catch (NotSupportedException) when (beforeFormat == OpenXmlFormat.Xlsx)
+        {
+            return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.Unsupported);
+        }
         catch (InvalidDataException)
         {
             return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.InvalidContent);
