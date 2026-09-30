@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { mount } from "@vue/test-utils";
 import FileRevisionTree from "./FileRevisionTree.vue";
+import { parseDocumentDiffSessionResult, type DocumentDiffChange } from "@/contracts/documentDiffV2";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 
 const documentId = "22222222-2222-4222-8222-222222222222";
@@ -49,6 +50,35 @@ const revisions: readonly FileRevisionV2[] = [
 ];
 
 describe("FileRevisionTree", () => {
+  it("renders escaped before-after context and partial coverage with page and close actions", async () => {
+    const result = parseDocumentDiffSessionResult({ outcome: "ready", failure: null, session: {
+      contractVersion: "2.0", sessionId: "33333333-3333-4333-8333-333333333333",
+      entryHandle: "entry", historicalRevisionId: "11111111-1111-4111-8111-111111111111",
+      effectiveRevisionId: "22222222-2222-4222-8222-222222222222",
+      format: "text", provider: "builtIn", fidelity: "structural",
+      summary: { totalChangeGroups: 1, rawRevisionCount: 1, insertions: 0, deletions: 0, replacements: 1,
+        moves: 0, formattingChanges: 0, tableChanges: 0, commentChanges: 0, otherChanges: 0 },
+      coverage: { truncated: false, areas: [{ area: "visibleText", status: "partial" }] },
+      warnings: ["partialCoverage"], canOpenComparisonArtifact: false, canExportComparisonArtifact: false,
+    } });
+    const run = { text: "<img src=x onerror=alert(1)>", role: "deleted" as const, bold: null,
+      italic: null, underline: null, strike: null, fontSizePt: null, fontFamily: null,
+      foreground: null, background: null, styleName: null };
+    const change: DocumentDiffChange = { changeId: "44444444-4444-4444-8444-444444444444", kind: "replace",
+      location: { part: "body", paragraphIndex: 0, sectionIndex: null, nearestHeading: null,
+        tableIndex: null, rowIndex: null, columnIndex: null, sheetName: null, cellAddress: null },
+      before: { runs: [run] }, after: { runs: [{ ...run, text: "after", role: "inserted" }] }, confidence: "exact" };
+    const wrapper = mount(FileRevisionTree, { props: { tree: null, busy: false,
+      diffPhase: "ready", diffResult: result, diffChanges: [change], diffNextCursor: "opaque" } });
+    expect(wrapper.text()).toContain(run.text);
+    expect(wrapper.find("img").exists()).toBe(false);
+    expect(wrapper.text()).toContain("仅部分内容被覆盖");
+    await wrapper.get('[data-testid="diff-next-page"]').trigger("click");
+    await wrapper.get('[data-testid="diff-close"]').trigger("click");
+    expect(wrapper.emitted("nextPage")).toHaveLength(1);
+    expect(wrapper.emitted("closeCompare")).toHaveLength(1);
+  });
+
   beforeEach(() => setActivePinia(createPinia()));
 
   it("renders an ARIA tree, collapses autosaves, and marks the effective path", () => {

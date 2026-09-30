@@ -80,7 +80,7 @@
   {
     "id": "14-document-diff",
     "title": "真实文件历史版本比较",
-    "requirement": "通过 host-only picker 导入真实 TXT 历史版本，以真实 restore revision 建立当前版本后，从 FileRevisionTree 的“与当前版本比较”执行 closed document.diffRequested；验证本地化 identical 结果、两阶段 effective CAS 的 stale 失败，以及 renderer 原始 fileHistory.materializeDiffPair 请求被拒绝。",
+    "requirement": "通过 host-only picker 导入真实 TXT 历史版本并以 restore 验证无变化会话，再经真实 upgrade 建立含77组插入/删除/替换的合成修订；从 FileRevisionTree 执行唯一 V2 session/page 路由，核对首屏50项、完整before/after oracle、分类计数与稳定标识、关闭后的会话过期和产物清理、effective CAS 的 stale 失败，以及 renderer 原始 materializeDiffPair 请求被拒绝。",
     "capabilities": ["file-history.diff"]
   },
   {

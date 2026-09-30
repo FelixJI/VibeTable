@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VibeTable.Contracts;
+using VibeTable.Workspace.Diff;
 using VibeTable.Infrastructure.Diagnostics;
 
 namespace VibeTable.Desktop.Services;
@@ -40,12 +41,15 @@ public sealed class DocumentBrowseRequestController
             "document.previewRequested" or
             "document.diffRequested" or
             "document.diffCancelRequested" or
+            "document.diffPageRequested" or
+            "document.diffCloseRequested" or
             "document.pickRequested" or
             "document.relinkRequested";
 
     public void SetWorkspace(WorkspaceDocumentOsAdapter documents)
     {
         CancelDiffRequests();
+        CurrentWorkspace()?.CloseDiffSessions();
         ArgumentNullException.ThrowIfNull(documents);
         TaskCompletionSource<WorkspaceGeneration> replacement;
         WorkspaceGeneration next;
@@ -82,6 +86,8 @@ public sealed class DocumentBrowseRequestController
                 value => value.Preview),
             "document.diffRequested" => DiffAsync(request),
             "document.diffCancelRequested" => CancelDiffAsync(request),
+            "document.diffPageRequested" => DiffPageAsync(request),
+            "document.diffCloseRequested" => CloseDiffAsync(request),
             "document.pickRequested" => RejectAsync(
                 request,
                 "文件导入协议尚未就绪。",
@@ -325,11 +331,17 @@ public sealed class DocumentBrowseRequestController
             return;
         try
         {
-            DocumentDiffPayload result = await documents.CompareAsync(
+            DocumentDiffSessionResult result = await documents.CompareAsync(
                 state.EntryHandle,
                 state.HistoricalRevisionId,
                 state.ExpectedEffectiveRevisionId,
                 state.Token).ConfigureAwait(false);
+            if (state.Token.IsCancellationRequested || !ReferenceEquals(documents, CurrentWorkspace()))
+            {
+                if (result.Session is not null) documents.CloseDiffSession(result.Session.SessionId);
+                result = DocumentDiffSessionResult.Failed(ReferenceEquals(documents, CurrentWorkspace())
+                    ? DocumentDiffSessionFailure.Cancelled : DocumentDiffSessionFailure.Stale);
+            }
             _reply.PostResponse("document.diffCompleted", request.RequestId, result);
         }
         catch (Exception exception)
@@ -341,6 +353,47 @@ public sealed class DocumentBrowseRequestController
             _diffRequests.TryRemove(operationId, out _);
             state.Dispose();
         }
+    }
+
+    private async Task DiffPageAsync(RoutedWebRequest request)
+    {
+        WorkspaceDocumentOsAdapter? documents = RequireWorkspace(request);
+        if (documents is null) return;
+        try
+        {
+            if (!HasExactProperties(request.Payload, "sessionId", "cursor", "limit")) throw new JsonException();
+            var page = JsonSerializer.Deserialize<DocumentDiffChangePageRequest>(request.Payload.GetRawText(),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)
+                { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow }) ?? throw new JsonException();
+            DocumentDiffChangePageResult result = await documents.ReadDiffPageAsync(page, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!ReferenceEquals(documents, CurrentWorkspace()))
+            {
+                documents.CloseDiffSession(page.SessionId);
+                result = DocumentDiffChangePageResult.Failed(DocumentDiffPageFailure.Stale);
+            }
+            _reply.PostResponse("document.diffPageCompleted", request.RequestId, result);
+        }
+        catch (Exception exception) when (exception is JsonException or ArgumentException)
+        {
+            Reject(request, "文档比较分页参数无效。", "BAD_PAYLOAD");
+        }
+        catch (Exception exception) { PostFailure(request, exception, "DOCUMENT_DIFF_FAILED"); }
+    }
+
+    private Task CloseDiffAsync(RoutedWebRequest request)
+    {
+        WorkspaceDocumentOsAdapter? documents = RequireWorkspace(request);
+        if (documents is null) return Task.CompletedTask;
+        if (!HasExactProperties(request.Payload, "sessionId") ||
+            !Guid.TryParseExact(GetString(request.Payload, "sessionId"), "D", out Guid id) || id == Guid.Empty)
+        {
+            Reject(request, "文档比较会话参数无效。", "BAD_PAYLOAD");
+            return Task.CompletedTask;
+        }
+        documents.CloseDiffSession(id);
+        _reply.PostResponse("document.diffCloseCompleted", request.RequestId, new { sessionId = id });
+        return Task.CompletedTask;
     }
 
     private bool TryCreateDiffState(

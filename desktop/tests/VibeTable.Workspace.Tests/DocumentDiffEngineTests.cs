@@ -7,6 +7,39 @@ namespace VibeTable.Workspace.Tests;
 public sealed class DocumentDiffEngineTests
 {
     [TestMethod]
+    public async Task TextSnippetBudgetReportsExplicitTruncationAndPreservesUnicode()
+    {
+        var engine = new DocumentDiffEngine();
+        var natural = await engine.CompareAsync(Request("natural.txt", "old", "自然省略号…"), CancellationToken.None);
+        Assert.IsFalse(natural.Details!.Coverage.Truncated);
+        var longText = await engine.CompareAsync(Request("long.txt", "old", new string('a', 2047) + "😀more"), CancellationToken.None);
+        Assert.IsTrue(longText.Details!.Coverage.Truncated);
+        Assert.AreEqual(new string('a', 2047) + "…", longText.Details.Changes[0].After!.Runs[0].Text);
+    }
+
+    [TestMethod]
+    public async Task TextDetailsMatchIndependentBeforeAfterOracleAndRoundTrip()
+    {
+        var outcome = await new DocumentDiffEngine().CompareAsync(Request("sample.txt",
+            "start\ndeleted\nanchor\nold\nend", "start\nanchor\nnew\nend\ninserted"), CancellationToken.None);
+        Assert.IsNotNull(outcome.Details);
+        CollectionAssert.AreEqual(new[] { DocumentDiffChangeKind.Delete, DocumentDiffChangeKind.Replace,
+            DocumentDiffChangeKind.Insert }, outcome.Details.Changes.Select(change => change.Kind).ToArray());
+        CollectionAssert.AreEqual(new string?[] { "deleted\n", "old\n", null },
+            outcome.Details.Changes.Select(change => change.Before?.Runs.Single(run => run.Role != DocumentDiffRichRunRole.Context).Text).ToArray());
+        CollectionAssert.AreEqual(new string?[] { null, "new\n", "inserted\n" },
+            outcome.Details.Changes.Select(change => change.After?.Runs.Single(run => run.Role != DocumentDiffRichRunRole.Context).Text).ToArray());
+        Assert.AreEqual("anchor\n", outcome.Details.Changes[1].Before!.Runs[0].Text);
+        Assert.AreEqual(3, outcome.Details.Changes.Select(change => change.ChangeId).Distinct().Count());
+        foreach (DocumentDiffChange change in outcome.Details.Changes)
+        {
+            string wire = System.Text.Json.JsonSerializer.Serialize(change);
+            Assert.AreEqual(change.ChangeId,
+                System.Text.Json.JsonSerializer.Deserialize<DocumentDiffChange>(wire)!.ChangeId);
+        }
+    }
+
+    [TestMethod]
     public async Task CompareAsync_IdenticalBinaryContent_ReturnsIdentical()
     {
         IDocumentDiffEngine engine = new DocumentDiffEngine();

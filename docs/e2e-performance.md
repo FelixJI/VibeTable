@@ -16,7 +16,7 @@
 - 结果：35/35 passed、0 failed、0 skipped。
 - 当前 manifest gap：2（`37-collection-formula-journey`、`38-calculation-chain-journey`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：1（`05-formula-lifecycle`）。
+- 当前 manifest changed：2（`05-formula-lifecycle`、`14-document-diff`）。
 
 本次 S05 扩展的局部候选验证与截图见 [PR #397](https://github.com/FelixJI/VibeTable/pull/397)。局部验证仅覆盖新增断言，不替代完整 PR 门禁，也不计入本节的历史主干样本。
 

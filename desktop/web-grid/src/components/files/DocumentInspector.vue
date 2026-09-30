@@ -7,7 +7,7 @@ import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";
 import FileRevisionTree from "@/components/files/FileRevisionTree.vue";
 import { t } from "@/i18n";
-import type { DocumentDiffCompletedPayload } from "@/contracts";
+import type { DocumentDiffCompletedPayload, DocumentDiffChange } from "@/contracts";
 import type { DocumentDiffPhase } from "@/stores/documentWorkspaceStore";
 
 const props = defineProps<{
@@ -18,6 +18,10 @@ const props = defineProps<{
   revisionTree?: FileRevisionTreeProjection | null;
   diffPhase?: DocumentDiffPhase;
   diffResult?: DocumentDiffCompletedPayload | null;
+  diffChanges?: readonly DocumentDiffChange[];
+  diffNextCursor?: string | null;
+  diffPageBusy?: boolean;
+  diffError?: string | null;
 }>();
 
 const effectiveTab = computed<InspectorTab>(() =>
@@ -41,6 +45,8 @@ const emit = defineEmits<{
   activateFileRevision: [entry: DocumentEntry, revision: FileRevisionV2];
   compareFileRevision: [entry: DocumentEntry, revision: FileRevisionV2];
   cancelFileDiff: [];
+  nextDiffPage: [];
+  closeFileDiff: [];
 }>();
 
 function unavailableTitle(entry: DocumentEntry): string {
@@ -162,11 +168,17 @@ async function moveTab(event: KeyboardEvent, currentTab: InspectorTab): Promise<
           :can-compare="entry.capabilities.includes('diff')"
           :diff-phase="diffPhase"
           :diff-result="diffResult"
+          :diff-changes="diffChanges"
+          :diff-next-cursor="diffNextCursor"
+          :diff-page-busy="diffPageBusy"
+          :diff-error="diffError"
           @restore="emit('restoreFileRevision', entry, $event)"
           @upgrade="emit('upgradeFileRevision', entry, $event)"
           @activate="emit('activateFileRevision', entry, $event)"
           @compare="emit('compareFileRevision', entry, $event)"
           @cancel-compare="emit('cancelFileDiff')"
+          @next-page="emit('nextDiffPage')"
+          @close-compare="emit('closeFileDiff')"
         />
       </section>
     </template>

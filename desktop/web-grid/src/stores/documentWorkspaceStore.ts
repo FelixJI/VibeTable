@@ -1,6 +1,6 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import type { DocumentDiffCompletedPayload } from "@/contracts";
+import type { DocumentDiffCompletedPayload, DocumentDiffChange, DocumentDiffChangePageResult } from "@/contracts";
 import { registerWorkspaceEpochReset } from "@/stores/workspaceSessionStore";
 
 export type DocumentAuthority = "workspace";
@@ -61,6 +61,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   const authorityFilter = ref<DocumentAuthority>("workspace");
   const diffPhase = ref<DocumentDiffPhase>("idle");
   const diffResult = ref<DocumentDiffCompletedPayload | null>(null);
+  const diffChanges = ref<readonly DocumentDiffChange[]>([]);
+  const diffNextCursor = ref<string | null>(null);
+  const diffPageBusy = ref(false);
   const diffTarget = ref<{
     readonly entryHandle: string;
     readonly operationId: string;
@@ -74,6 +77,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     diffGeneration += 1;
     diffPhase.value = "idle";
     diffResult.value = null;
+    diffChanges.value = [];
+    diffNextCursor.value = null;
+    diffPageBusy.value = false;
     diffTarget.value = null;
     diffError.value = null;
   }
@@ -246,6 +252,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     diffGeneration += 1;
     diffPhase.value = "busy";
     diffResult.value = null;
+    diffChanges.value = [];
+    diffNextCursor.value = null;
+    diffPageBusy.value = false;
     diffError.value = null;
     diffTarget.value = {
       entryHandle,
@@ -261,10 +270,10 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     result: DocumentDiffCompletedPayload,
   ): boolean {
     const target = diffTarget.value;
-    if (generation !== diffGeneration || !target ||
-      target.entryHandle !== result.entryHandle ||
-      target.historicalRevisionId !== result.historicalRevisionId ||
-      target.effectiveRevisionId !== result.effectiveRevisionId) {
+    if (generation !== diffGeneration || !target || (result.outcome === "ready" && (
+      target.entryHandle !== result.session.entryHandle ||
+      target.historicalRevisionId !== result.session.historicalRevisionId ||
+      target.effectiveRevisionId !== result.session.effectiveRevisionId))) {
       return false;
     }
     diffResult.value = result;
@@ -274,7 +283,10 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   }
 
   function failDiff(generation: number, message: string): boolean {
-    if (generation !== diffGeneration || diffPhase.value !== "busy") return false;
+    if (generation !== diffGeneration) return false;
+    diffResult.value = null;
+    diffChanges.value = [];
+    diffNextCursor.value = null;
     diffPhase.value = "failed";
     diffError.value = message;
     return true;
@@ -283,6 +295,32 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
   function cancelDiff(): void {
     resetDiff();
   }
+
+  function completeDiffPage(generation: number, result: DocumentDiffChangePageResult): boolean {
+    if (generation !== diffGeneration || diffResult.value?.outcome !== "ready") return false;
+    diffPageBusy.value = false;
+    if (result.outcome === "failure") {
+      diffResult.value = null;
+      diffChanges.value = [];
+      diffNextCursor.value = null;
+      diffPhase.value = "failed";
+      diffError.value = result.failure;
+      return true;
+    }
+    if (result.page.sessionId !== diffResult.value.session.sessionId) return false;
+    const ids = new Set(diffChanges.value.map(change => change.changeId));
+    if (result.page.changes.some(change => ids.has(change.changeId))) throw new Error("Duplicate diff change");
+    const merged = [...diffChanges.value, ...result.page.changes];
+    const expected = diffResult.value.session.summary.totalChangeGroups;
+    if (merged.length > expected || (result.page.nextCursor === null && merged.length !== expected)) {
+      throw new Error("Diff page count does not match summary");
+    }
+    diffChanges.value = merged;
+    diffNextCursor.value = result.page.nextCursor;
+    return true;
+  }
+
+  function currentDiffGeneration(): number { return diffGeneration; }
 
   function clear(): void {
     phase.value = "idle";
@@ -313,6 +351,9 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     authorityFilter,
     diffPhase,
     diffResult,
+    diffChanges,
+    diffNextCursor,
+    diffPageBusy,
     diffTarget,
     diffError,
     visibleEntries,
@@ -329,6 +370,8 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     showInspector,
     beginDiff,
     completeDiff,
+    completeDiffPage,
+    currentDiffGeneration,
     failDiff,
     cancelDiff,
     clear,

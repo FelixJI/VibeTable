@@ -739,6 +739,68 @@ describe("FileWorkspaceView", () => {
     expect(wrapper.emitted("intent")).toHaveLength(beforeNoop!);
   });
 
+  it("routes visible diff paging, close, and cancellation through the Inspector", async () => {
+    const store = useDocumentWorkspaceStore();
+    const protection = useWorkspaceProtectionStore();
+    const selected = entry({
+      documentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      entryHandle: "diff-controls",
+      displayName: "changes.txt",
+      effectiveRevisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      capabilities: ["history", "diff"],
+    });
+    const historical = fileRevision(selected.documentId, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    store.setEntries([selected]);
+    protection.setFileTree({
+      documentId: selected.documentId,
+      effectiveRevisionId: selected.effectiveRevisionId!,
+      revisions: [historical],
+    });
+    const wrapper = mount(FileWorkspaceView);
+    store.selectAt(0);
+    store.showInspector("history");
+    const generation = store.beginDiff(selected.entryHandle, historical.revisionId, selected.effectiveRevisionId!);
+    const sessionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const readyOperationId = store.diffTarget!.operationId;
+    expect(store.completeDiff(generation, {
+      outcome: "ready", failure: null,
+      session: {
+        contractVersion: "2.0", sessionId, entryHandle: selected.entryHandle,
+        historicalRevisionId: historical.revisionId,
+        effectiveRevisionId: selected.effectiveRevisionId!,
+        format: "text", provider: "builtIn", fidelity: "structural",
+        summary: {
+          totalChangeGroups: 2, rawRevisionCount: 2, insertions: 2, deletions: 0,
+          replacements: 0, moves: 0, formattingChanges: 0, tableChanges: 0,
+          commentChanges: 0, otherChanges: 0,
+        },
+        coverage: { truncated: false, areas: [{ area: "visibleText", status: "covered" }] },
+        warnings: [], canOpenComparisonArtifact: false, canExportComparisonArtifact: false,
+      },
+    })).toBe(true);
+    store.diffNextCursor = "opaque-next-page";
+    await wrapper.vm.$nextTick();
+    await wrapper.get('[data-testid="diff-next-page"]').trigger("click");
+    expect(wrapper.emitted("intent")?.at(-1)?.[0]).toEqual({
+      type: "document.diffPageRequested", sessionId, cursor: "opaque-next-page", limit: 50,
+    });
+    await wrapper.get('[data-testid="diff-close"]').trigger("click");
+    expect(wrapper.emitted("intent")?.slice(-2).map(events => events[0])).toEqual([
+      { type: "document.diffCloseRequested", sessionId },
+      { type: "document.diffCancelRequested", entryHandle: selected.entryHandle, operationId: readyOperationId },
+    ]);
+    expect(store.diffPhase).toBe("idle");
+    expect(wrapper.find('[data-testid="diff-details"]').exists()).toBe(false);
+    store.beginDiff(selected.entryHandle, historical.revisionId, selected.effectiveRevisionId!);
+    const operationId = store.diffTarget!.operationId;
+    await wrapper.vm.$nextTick();
+    await wrapper.get('[data-testid="diff-cancel"]').trigger("click");
+    expect(wrapper.emitted("intent")?.at(-1)?.[0]).toEqual({
+      type: "document.diffCancelRequested", entryHandle: selected.entryHandle, operationId,
+    });
+    expect(store.diffPhase).toBe("idle");
+    wrapper.unmount();
+  });
   it("offers every fail-closed pending-file decision and closes when the queue drains", async () => {
     const store = useDocumentWorkspaceStore();
     const protection = useWorkspaceProtectionStore();
