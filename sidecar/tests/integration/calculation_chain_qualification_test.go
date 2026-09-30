@@ -787,8 +787,9 @@ func TestCalculationChainQualification(t *testing.T) {
 	measureCalculationChainCold(t, ctx, f, "filtered-sorted-window", 20, input, filtered)
 	// Reuse the frozen fixture for the affected invalidation path after the
 	// unchanged warm/cold observations. This is one sample, not a p95 claim.
-	f.app = bootstrapApp(t, f.app.DataDir())
-	t.Cleanup(func() { resetApp(t, f.app) })
+	reopenedApp := bootstrapApp(t, f.app.DataDir())
+	f.app = reopenedApp
+	t.Cleanup(func() { resetApp(t, reopenedApp) })
 	f.compiler = formula.NewAppCompilerWithLimits(f.app, formula.Limits{EvalTimeout: collectionTestEvalTimeout})
 	service := calculationChainJobs(t, f)
 	counts = observeCalculationChainQueries(t, f)
