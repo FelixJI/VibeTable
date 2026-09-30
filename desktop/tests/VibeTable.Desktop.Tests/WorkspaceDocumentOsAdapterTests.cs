@@ -652,7 +652,9 @@ public sealed class WorkspaceDocumentOsAdapterTests
     }
 
     [TestMethod]
-    public async Task DiffCapabilityMaterializesThroughHostGrantAndCleansEveryFile()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DiffCapabilityMaterializesThroughHostGrantAndCleansEveryFile(bool advanceDuringPage)
     {
         using var directory = new TemporaryDirectory();
         string workspaceRoot = Path.Combine(directory.Path, "workspace");
@@ -668,6 +670,8 @@ public sealed class WorkspaceDocumentOsAdapterTests
         DateTime sourceLastWriteTime = File.GetLastWriteTimeUtc(materialized);
         var engine = new InspectingDiffEngine();
         var epochs = new FakeEpochLeaseSource();
+        bool sourceStale = false;
+        int staleAssertions = 0;
         var handler = new RecordingHandler(request =>
         {
             using JsonDocument body = JsonDocument.Parse(
@@ -734,7 +738,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
                   "effectiveRevisionId":"{{RevisionId:D}}",
                   "historicalContentHash":"{{BeforeHash}}",
                   "effectiveContentHash":"{{AfterHash}}",
-                  "stable":true
+                  "stable":{{(!sourceStale || (advanceDuringPage && staleAssertions++ == 0)).ToString().ToLowerInvariant()}}
                 }
                 """);
         });
@@ -754,23 +758,41 @@ public sealed class WorkspaceDocumentOsAdapterTests
             CancellationToken.None)).Entries.Single();
 
         Assert.IsTrue(entry.Capabilities.Contains("diff"));
-        DocumentDiffPayload result = await adapter.CompareAsync(
+        DocumentDiffSessionResult result = await adapter.CompareAsync(
             entry.EntryHandle,
             "44444444-4444-4444-8444-444444444444",
             RevisionId.ToString("D"),
             CancellationToken.None);
 
-        Assert.AreEqual("changedWithDetails", result.Outcome);
-        Assert.AreEqual(1, result.AddedLines);
-        Assert.AreEqual(1, result.RemovedLines);
+        Assert.AreEqual(DocumentDiffResultOutcome.Ready, result.Outcome);
+        Assert.IsNotNull(result.Session);
+        Assert.AreEqual(1, result.Session.Summary.TotalChangeGroups);
+        DocumentDiffChangePageResult page = await adapter.ReadDiffPageAsync(
+            new(result.Session.SessionId, null, 1), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffResultOutcome.Ready, page.Outcome);
+        Assert.IsNotNull(page.Page);
+        Assert.AreEqual(1, page.Page.Changes.Count);
+        Assert.AreEqual("before\n", page.Page.Changes[0].Before!.Runs[0].Text);
+        Assert.AreEqual("after\n", page.Page.Changes[0].After!.Runs[0].Text);
+        var samePage = await adapter.ReadDiffPageAsync(new(result.Session.SessionId, null, 1), CancellationToken.None);
+        Assert.AreEqual(page.Page.Changes[0].ChangeId, samePage.Page!.Changes[0].ChangeId);
+        DocumentDiffChangePageResult invalid = await adapter.ReadDiffPageAsync(
+            new(result.Session.SessionId, "not-issued", 1), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffPageFailure.InvalidCursor, invalid.Failure);
+        sourceStale = true; // Restore/activation makes the authority's CAS assertion fail.
+        var stalePage = await adapter.ReadDiffPageAsync(new(result.Session.SessionId, null, 1), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffPageFailure.Stale, stalePage.Failure);
+        adapter.CloseDiffSession(result.Session.SessionId);
+        DocumentDiffChangePageResult expired = await adapter.ReadDiffPageAsync(
+            new(result.Session.SessionId, null, 1), CancellationToken.None);
+        Assert.AreEqual(DocumentDiffPageFailure.SessionExpired, expired.Failure);
         Assert.AreEqual("before", engine.Before);
         Assert.AreEqual("after", engine.After);
         CollectionAssert.AreEqual(sourceContent, await File.ReadAllBytesAsync(materialized));
         Assert.AreEqual(sourceLastWriteTime, File.GetLastWriteTimeUtc(materialized));
         Assert.IsTrue(!Directory.Exists(diffRoot) ||
             Directory.GetFileSystemEntries(diffRoot).Length == 0);
-        Assert.AreEqual(3, epochs.LeaseCount);
-        Assert.AreEqual(3, epochs.CompletedLeaseCount);
+        Assert.AreEqual(epochs.LeaseCount, epochs.CompletedLeaseCount);
     }
 
     [TestMethod]
@@ -800,7 +822,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             string destination = grant.RootElement.GetProperty("path").GetString()!;
             File.WriteAllText(
                 Path.Combine(destination, WorkspaceDocumentDiffCoordinator.HistoricalFileName),
-                "tampered");
+                "tamper"); // Same byte length as "before"; length cannot establish identity.
             File.WriteAllText(
                 Path.Combine(destination, WorkspaceDocumentDiffCoordinator.EffectiveFileName),
                 "after");
@@ -833,14 +855,14 @@ public sealed class WorkspaceDocumentOsAdapterTests
         DocumentBridgeEntry entry = (await adapter.ListGlobalAsync(
             CancellationToken.None)).Entries.Single();
 
-        DocumentDiffPayload result = await adapter.CompareAsync(
+        DocumentDiffSessionResult result = await adapter.CompareAsync(
             entry.EntryHandle,
             "44444444-4444-4444-8444-444444444444",
             RevisionId.ToString("D"),
             CancellationToken.None);
 
-        Assert.AreEqual("failure", result.Outcome);
-        Assert.AreEqual("stale", result.Failure);
+        Assert.AreEqual(DocumentDiffResultOutcome.Failure, result.Outcome);
+        Assert.AreEqual(DocumentDiffSessionFailure.Stale, result.Failure);
         Assert.IsNull(engine.Before);
         Assert.IsTrue(!Directory.Exists(diffRoot) ||
             Directory.GetFileSystemEntries(diffRoot).Length == 0);
@@ -947,8 +969,8 @@ public sealed class WorkspaceDocumentOsAdapterTests
         Assert.IsTrue(((dynamic)cancel.Payload!).cancelled);
         Assert.IsNotNull(completed);
         Assert.AreEqual("diff-1", completed.RequestId);
-        Assert.AreEqual("failure", ((DocumentDiffPayload)completed.Payload!).Outcome);
-        Assert.AreEqual("cancelled", ((DocumentDiffPayload)completed.Payload!).Failure);
+        Assert.AreEqual(DocumentDiffResultOutcome.Failure, ((DocumentDiffSessionResult)completed.Payload!).Outcome);
+        Assert.AreEqual(DocumentDiffSessionFailure.Cancelled, ((DocumentDiffSessionResult)completed.Payload!).Failure);
         Assert.IsTrue(engine.CancellationObserved);
         Assert.IsTrue(!Directory.Exists(diffRoot) ||
             Directory.GetFileSystemEntries(diffRoot).Length == 0);
@@ -1056,10 +1078,98 @@ public sealed class WorkspaceDocumentOsAdapterTests
         Assert.IsTrue(((dynamic)cancel.Payload!).cancelled);
         Assert.IsNotNull(completed);
         Assert.AreEqual(
-            "cancelled",
-            ((DocumentDiffPayload)completed.Payload!).Failure);
+            DocumentDiffSessionFailure.Cancelled,
+            ((DocumentDiffSessionResult)completed.Payload!).Failure);
         Assert.IsTrue(!Directory.Exists(diffRoot) ||
             Directory.GetFileSystemEntries(diffRoot).Length == 0);
+    }
+
+    [TestMethod]
+    [DataRow("docx", false)]
+    [DataRow("xlsx", false)]
+    [DataRow("bin", false)]
+    [DataRow("txt", true)]
+    [DataRow("epoch", true)]
+    public async Task PublicationCloseAndExpiryRevokeMetadataWithoutDeletingActiveReaders(string extension, bool closeDuringPublication)
+    {
+        using var directory = new TemporaryDirectory();
+        var time = new PublicationTimeProvider();
+        using var broker = new DocumentDiffArtifactBroker(directory.Path, TimeSpan.FromMinutes(1), time);
+        var handler = new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            JsonElement root = body.RootElement;
+            bool materializing = root.GetProperty("method").GetString() == WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod;
+            if (materializing)
+            {
+                using JsonDocument grant = JsonDocument.Parse(DecodeGrant(request));
+                string destination = grant.RootElement.GetProperty("path").GetString()!;
+                File.WriteAllText(Path.Combine(destination, "historical.content"), "before");
+                File.WriteAllText(Path.Combine(destination, "effective.content"), "before");
+            }
+            var result = new Dictionary<string, object>
+            {
+                ["documentId"] = DocumentId.ToString("D"),
+                ["historicalRevisionId"] = "44444444-4444-4444-8444-444444444444",
+                ["effectiveRevisionId"] = RevisionId.ToString("D"),
+                ["historicalContentHash"] = BeforeHash,
+                ["effectiveContentHash"] = BeforeHash,
+            };
+            if (materializing)
+            {
+                result["historicalMimeType"] = "application/octet-stream";
+                result["effectiveMimeType"] = "application/octet-stream";
+            }
+            else result["stable"] = true;
+            return RpcSuccess(root, JsonSerializer.Serialize(result));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        var binding = new WorkspaceDocumentBinding(WorkspaceId, 7, true, directory.Path, gateway,
+            [WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod, WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod]);
+        var capabilities = new DocumentCapabilityStore();
+        string handle = capabilities.Issue(WorkspaceId, 7, DocumentId, $"synthetic.{extension}", RevisionId, ["diff"]);
+        WorkspaceDocumentDiffCoordinator? coordinator = null;
+        var epochs = new FakeEpochLeaseSource();
+        var engine = new InspectingDiffEngine(() =>
+        {
+            if (extension == "epoch") epochs.Current = false;
+            else if (closeDuringPublication) time.OnNextRead = () => coordinator!.CloseAllSessions();
+        });
+        coordinator = new WorkspaceDocumentDiffCoordinator(epochs, engine, broker);
+        var compared = await coordinator.CompareAsync(binding, capabilities.Resolve(handle, "diff", WorkspaceId, 7),
+            handle, "44444444-4444-4444-8444-444444444444", RevisionId.ToString("D"), CancellationToken.None);
+        if (closeDuringPublication)
+        {
+            Assert.AreEqual(DocumentDiffSessionFailure.Stale, compared.Failure);
+        }
+        else
+        {
+            Assert.IsNotNull(compared.Session);
+            Assert.IsTrue(compared.Session.Warnings.Contains(DocumentDiffWarning.PartialCoverage));
+            Assert.IsTrue(compared.Session.Coverage.Areas.Any(area => area.Status == DocumentDiffCoverageStatus.NotCovered));
+            using (var reader = broker.OpenRead(compared.Session.SessionId, WorkspaceId, 7, DocumentDiffArtifactKind.ChangeIndex))
+            {
+                time.Now += TimeSpan.FromMinutes(2);
+                broker.CleanupExpired();
+                var expired = await coordinator.ReadPageAsync(binding, new(compared.Session.SessionId, null, 1), CancellationToken.None);
+                Assert.AreEqual(DocumentDiffPageFailure.SessionExpired, expired.Failure);
+                Assert.IsTrue(Directory.GetDirectories(directory.Path).Length > 0);
+            }
+        }
+        Assert.AreEqual(0, Directory.GetFileSystemEntries(directory.Path).Length);
+    }
+
+    private sealed class PublicationTimeProvider : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
+        public Action? OnNextRead { get; set; }
+        public override DateTimeOffset GetUtcNow()
+        {
+            Action? action = OnNextRead;
+            OnNextRead = null;
+            action?.Invoke();
+            return Now;
+        }
     }
 
     private static WorkspaceDocumentOsAdapter Adapter(
@@ -1228,7 +1338,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             => Task.FromResult<string?>(null);
     }
 
-    private sealed class InspectingDiffEngine : IDocumentDiffEngine
+    private sealed class InspectingDiffEngine(Action? afterCompared = null) : IDocumentDiffEngine
     {
         public string? Before { get; private set; }
         public string? After { get; private set; }
@@ -1245,7 +1355,9 @@ public sealed class WorkspaceDocumentOsAdapterTests
             using var afterReader = new StreamReader(after);
             Before = await beforeReader.ReadToEndAsync(cancellationToken);
             After = await afterReader.ReadToEndAsync(cancellationToken);
-            return DocumentDiffOutcome.ChangedWithDetails(1, 1);
+            DocumentDiffOutcome result = await new DocumentDiffEngine().CompareAsync(request, cancellationToken);
+            afterCompared?.Invoke();
+            return result;
         }
     }
 
@@ -1280,6 +1392,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
 
         public int LeaseCount { get; private set; }
         public int CompletedLeaseCount { get; private set; }
+        public bool Current { get; set; } = true;
 
         public bool TryCaptureHost(
             Guid workspaceId,
@@ -1302,7 +1415,7 @@ public sealed class WorkspaceDocumentOsAdapterTests
             return true;
         }
 
-        public bool IsCurrent(WorkspaceRequestEpochLease? lease) => lease is not null;
+        public bool IsCurrent(WorkspaceRequestEpochLease? lease) => Current && lease is not null;
     }
 
     private sealed class TemporaryDirectory : IDisposable

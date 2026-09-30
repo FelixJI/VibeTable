@@ -80,6 +80,7 @@ public enum DocumentDiffSessionFailure
 [JsonConverter(typeof(JsonStringEnumConverter<DocumentDiffPageFailure>))]
 public enum DocumentDiffPageFailure
 {
+    [JsonStringEnumMemberName("timeout")] Timeout,
     [JsonStringEnumMemberName("sessionExpired")] SessionExpired,
     [JsonStringEnumMemberName("invalidCursor")] InvalidCursor,
     [JsonStringEnumMemberName("cancelled")] Cancelled,
@@ -453,6 +454,10 @@ public sealed record DocumentDiffRichRun
 
 public sealed record DocumentDiffRichSnippet
 {
+    [JsonConstructor]
+    public DocumentDiffRichSnippet(IReadOnlyList<DocumentDiffRichRun> runs)
+        : this((IEnumerable<DocumentDiffRichRun>)runs) { }
+
     public DocumentDiffRichSnippet(IEnumerable<DocumentDiffRichRun> runs)
     {
         ArgumentNullException.ThrowIfNull(runs);

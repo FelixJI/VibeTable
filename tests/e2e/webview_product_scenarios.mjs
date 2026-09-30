@@ -7270,6 +7270,16 @@ async function scenario13(page, recorder, _network, runtime) {
 
 async function scenario14(page, recorder, _network, runtime) {
   await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const sourcePath = path.join(runtime.controlsDir, "document-diff-source.txt");
+  const beforeLines = ["deleted-only", "start"];
+  const afterLines = ["start"];
+  for (let index = 0; index < 75; index += 1) {
+    beforeLines.push(`old ${index}`, `anchor ${index}`);
+    afterLines.push(`new ${index}`, `anchor ${index}`);
+  }
+  beforeLines.push("end");
+  afterLines.push("end", "inserted-only");
+  await fs.writeFile(sourcePath, `${beforeLines.join("\n")}\n`, "utf8");
   await page.getByTestId("nav-files").click();
   const workspace = page.getByTestId("file-workspace");
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
@@ -7302,7 +7312,7 @@ async function scenario14(page, recorder, _network, runtime) {
     expectedEffectiveRevisionId: historicalRevisionId,
     historicalRevisionId,
   });
-  const effectiveRevisionId = restored.result?.revisionId;
+  let effectiveRevisionId = restored.result?.revisionId;
   recorder.check("real restore creates a second immutable revision for comparison",
     typeof effectiveRevisionId === "string"
       && effectiveRevisionId !== historicalRevisionId,
@@ -7322,7 +7332,7 @@ async function scenario14(page, recorder, _network, runtime) {
     hasText: "document-diff-source.txt",
   });
   const refreshedHandleAttribute = await refreshedRow.getAttribute("data-testid");
-  const entryHandle = refreshedHandleAttribute?.replace(/^document-row-/u, "");
+  let entryHandle = refreshedHandleAttribute?.replace(/^document-row-/u, "");
   await refreshedRow.click();
   await workspace.locator(".inspector-tabs button").nth(1).click();
   await page.getByTestId("file-revision-tree").waitFor({ state: "visible" });
@@ -7334,11 +7344,65 @@ async function scenario14(page, recorder, _network, runtime) {
   const resultAlert = page.getByTestId("diff-result");
   await resultAlert.waitFor({ state: "visible", timeout: 30_000 });
   recorder.check("FileRevisionTree uses the closed operation and renders a localized result",
-    completed.payload?.outcome === "identical"
-      && completed.payload?.historicalRevisionId === historicalRevisionId
-      && completed.payload?.effectiveRevisionId === effectiveRevisionId
+    completed.payload?.outcome === "ready"
+      && completed.payload?.session?.historicalRevisionId === historicalRevisionId
+      && completed.payload?.session?.effectiveRevisionId === effectiveRevisionId
+      && completed.payload?.session?.summary?.totalChangeGroups === 0
       && (await resultAlert.innerText()).trim().length > 0,
   { completed, text: await resultAlert.innerText() });
+
+  // The picker source is a synthetic fixture; immutable workspace revisions are never edited.
+  await fs.writeFile(sourcePath, `${afterLines.join("\n")}\n`, "utf8");
+  const upgraded = await rawWorkspaceV2Request(page, "fileHistory.upgrade", {
+    documentId: document.documentId,
+    revisionId: historicalRevisionId,
+    pathGrant: "host-picker://file-upgrade",
+  });
+  effectiveRevisionId = upgraded.result?.revisionId;
+  recorder.check("host picker upgrade registers the synthetic changed revision",
+    typeof effectiveRevisionId === "string" && effectiveRevisionId !== restored.result?.revisionId,
+  { upgraded: upgraded.result });
+  await workspace.getByTestId("document-refresh").click();
+  await page.waitForFunction(({ oldHandle, name }) => {
+    const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+      .find(candidate => candidate.textContent?.includes(name));
+    return current?.getAttribute("data-testid") !== oldHandle;
+  }, { oldHandle: refreshedHandleAttribute, name: "document-diff-source.txt" });
+  const changedRow = page.locator('[data-testid^="document-row-"]').filter({ hasText: "document-diff-source.txt" });
+  entryHandle = (await changedRow.getAttribute("data-testid"))?.replace(/^document-row-/u, "");
+  await changedRow.click();
+  await workspace.locator(".inspector-tabs button").nth(1).click();
+  await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+  await page.getByTestId("compare-revision").first().click();
+  const changed = await waitForCapturedBridgeMessage(page, 30_000);
+  const summary = changed.payload?.session?.summary;
+  recorder.check("V2 summary matches the independent text group oracle",
+    changed.payload?.outcome === "ready" && summary?.totalChangeGroups === 77
+      && summary?.insertions === 1 && summary?.deletions === 1 && summary?.replacements === 75,
+  { changed });
+  await page.getByTestId("diff-next-page").waitFor({ state: "visible", timeout: 30_000 });
+  const firstCount = await page.locator("[data-change-id]").count();
+  recorder.check("first screen has a bounded change count", firstCount === 50, { firstCount });
+  await page.getByTestId("diff-next-page").click();
+  await page.waitForFunction(() => document.querySelectorAll("[data-change-id]").length === 77);
+  const ids = await page.locator("[data-change-id]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-change-id")));
+  const text = await page.getByTestId("diff-details").innerText();
+  const oraclePresent = Array.from({ length: 75 }, (_, index) => index)
+    .every(index => text.includes(`old ${index}`) && text.includes(`new ${index}`));
+  recorder.check("paged before-after text has no missing or duplicate groups",
+    ids.length === 77 && new Set(ids).size === 77 && oraclePresent
+      && text.includes("deleted-only") && text.includes("inserted-only"), { ids });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff.png"), fullPage: true });
+  await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+  await page.getByTestId("diff-close").click();
+  await waitForCapturedBridgeMessage(page, 30_000);
+  const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
+    sessionId: changed.payload.session.sessionId, cursor: null, limit: 50,
+  }, 30_000, ["document.diffPageCompleted"]);
+  const artifactRoot = path.join(runtime.dataRoot, "document-diff");
+  const remaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
+  recorder.check("closed session expires and removes all known comparison artifacts",
+    expired.payload?.failure === "sessionExpired" && remaining.length === 0, { expired, remaining });
 
   const staleAdvance = await rawWorkspaceV2Request(page, "fileHistory.restore", {
     documentId: document.documentId,
@@ -7377,7 +7441,7 @@ async function scenario14(page, recorder, _network, runtime) {
   recorder.check("renderer cannot invoke raw diff materialization",
     rawMaterializeFailure.includes("workspace.method_not_public"),
   { rawMaterializeFailure });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff.png"), fullPage: true });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff-stale.png"), fullPage: true });
 }
 
 async function requestWithStaleWorkspaceScope(page, method, params, staleSession) {

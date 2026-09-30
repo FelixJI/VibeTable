@@ -48,6 +48,7 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
     private readonly Dictionary<Guid, ArtifactSession> _sessions = [];
     private readonly ITimer _cleanupTimer;
     private bool _disposed;
+    public event Action<Guid>? SessionClosed;
 
     public DocumentDiffArtifactBroker(
         string root,
@@ -446,6 +447,7 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
     private void CloseSessionLocked(Guid sessionId, ArtifactSession session)
     {
         _sessions.Remove(sessionId);
+        SessionClosed?.Invoke(sessionId);
         if (_operations.TryGetValue(session.OperationId, out OperationState? state))
         {
             state.Closing = true;

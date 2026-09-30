@@ -41,6 +41,8 @@ public sealed record DocumentDiffOutcome
 
     public DocumentDiffFailureKind? Failure { get; }
 
+    public DocumentDiffDetails? Details { get; init; }
+
     public static DocumentDiffOutcome Identical { get; } = new(DocumentDiffOutcomeKind.Identical);
 
     public static DocumentDiffOutcome Changed { get; } = new(DocumentDiffOutcomeKind.Changed);
@@ -96,6 +98,12 @@ public sealed class DocumentContentSource
 public sealed record DocumentDiffRequest(
     DocumentContentSource Before,
     DocumentContentSource After);
+
+/// <summary>Provider output consumed by the shared revision-session lifecycle.</summary>
+public sealed record DocumentDiffDetails(
+    DocumentDiffFormat Format,
+    IReadOnlyList<DocumentDiffChange> Changes,
+    DocumentDiffCoverage Coverage);
 
 public interface IDocumentDiffEngine
 {
@@ -177,7 +185,7 @@ public sealed class DocumentDiffEngine : IDocumentDiffEngine
         }
     }
 
-    private static bool IsText(DocumentContentSource source)
+    public static bool IsText(DocumentContentSource source)
     {
         if (!string.IsNullOrWhiteSpace(source.MimeType))
         {
@@ -213,12 +221,16 @@ public sealed class DocumentDiffEngine : IDocumentDiffEngine
             return DocumentDiffOutcome.Changed;
         }
 
-        var lcs = LongestCommonSubsequence(beforeLines, afterLines, cancellationToken);
+        var (lcs, changes, truncated) = CompareLines(beforeLines, afterLines, cancellationToken);
         var addedLines = afterLines.Count - lcs;
         var removedLines = beforeLines.Count - lcs;
-        return addedLines == 0 && removedLines == 0
+        var outcome = addedLines == 0 && removedLines == 0
             ? DocumentDiffOutcome.Changed
             : DocumentDiffOutcome.ChangedWithDetails(addedLines, removedLines);
+        return outcome with { Details = new DocumentDiffDetails(
+            DocumentDiffFormat.Text, changes, new DocumentDiffCoverage(
+                [new(DocumentDiffCoverageArea.VisibleText, DocumentDiffCoverageStatus.Covered)],
+                truncated)) };
     }
 
     private static async Task<List<string>?> ReadLinesAsync(
@@ -320,33 +332,94 @@ public sealed class DocumentDiffEngine : IDocumentDiffEngine
         return true;
     }
 
-    private static int LongestCommonSubsequence(
+    private static (int Length, DocumentDiffChange[] Changes, bool Truncated) CompareLines(
         IReadOnlyList<string> before,
         IReadOnlyList<string> after,
         CancellationToken cancellationToken)
     {
-        var previous = new int[after.Count + 1];
-        var current = new int[after.Count + 1];
-        for (var beforeIndex = 1; beforeIndex <= before.Count; beforeIndex++)
+        var lengths = new int[before.Count + 1, after.Count + 1];
+        for (var beforeIndex = before.Count - 1; beforeIndex >= 0; beforeIndex--)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            for (var afterIndex = 1; afterIndex <= after.Count; afterIndex++)
+            for (var afterIndex = after.Count - 1; afterIndex >= 0; afterIndex--)
             {
                 if ((afterIndex & 255) == 0)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                 }
 
-                current[afterIndex] = before[beforeIndex - 1] == after[afterIndex - 1]
-                    ? previous[afterIndex - 1] + 1
-                    : Math.Max(previous[afterIndex], current[afterIndex - 1]);
+                lengths[beforeIndex, afterIndex] = before[beforeIndex] == after[afterIndex]
+                    ? lengths[beforeIndex + 1, afterIndex + 1] + 1
+                    : Math.Max(lengths[beforeIndex + 1, afterIndex], lengths[beforeIndex, afterIndex + 1]);
             }
-
-            (previous, current) = (current, previous);
-            Array.Clear(current);
         }
+        var changes = new List<DocumentDiffChange>();
+        bool truncated = false;
+        int b = 0, a = 0;
+        while (b < before.Count || a < after.Count)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (b < before.Count && a < after.Count && before[b] == after[a])
+            {
+                b++;
+                a++;
+                continue;
+            }
+            int location = b;
+            var removed = new List<string>();
+            var added = new List<string>();
+            while (b < before.Count || a < after.Count)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (b < before.Count && a < after.Count && before[b] == after[a]) break;
+                if (a < after.Count && (b == before.Count || lengths[b, a + 1] > lengths[b + 1, a]))
+                    added.Add(after[a++]);
+                else
+                    removed.Add(before[b++]);
+            }
+            changes.Add(new DocumentDiffChange(Guid.NewGuid(),
+                removed.Count == 0 ? DocumentDiffChangeKind.Insert
+                    : added.Count == 0 ? DocumentDiffChangeKind.Delete : DocumentDiffChangeKind.Replace,
+                new DocumentDiffLocation(DocumentDiffPart.Body, paragraphIndex: location),
+                Snippet(removed, DocumentDiffRichRunRole.Deleted, location > 0 ? before[location - 1] : null,
+                    b < before.Count ? before[b] : null, ref truncated),
+                Snippet(added, DocumentDiffRichRunRole.Inserted, location > 0 ? before[location - 1] : null,
+                    b < before.Count ? before[b] : null, ref truncated), DocumentDiffConfidence.Exact));
+        }
+        return (lengths[0, 0], changes.ToArray(), truncated);
+    }
 
-        return previous[after.Count];
+    private static DocumentDiffRichSnippet? Snippet(List<string> lines, DocumentDiffRichRunRole role,
+        string? previous, string? next, ref bool truncated)
+    {
+        if (lines.Count == 0) return null;
+        string text = string.Join("\n", lines) + "\n";
+        if (text.Length > 2048)
+        {
+            truncated = true;
+            int end = char.IsHighSurrogate(text[2047]) ? 2047 : 2048;
+            text = text[..end] + "…";
+        }
+        var runs = new List<DocumentDiffRichRun>();
+        for (int position = 0; position < 3; position++)
+        {
+            if (position == 1)
+            {
+                runs.Add(new DocumentDiffRichRun(text, role));
+                continue;
+            }
+            string? context = position == 0 ? previous : next;
+            if (context is null) continue;
+            string content = context;
+            if (content.Length > 256)
+            {
+                truncated = true;
+                content = content[..(char.IsHighSurrogate(content[255]) ? 255 : 256)] + "…";
+            }
+            var run = new DocumentDiffRichRun(content + "\n", DocumentDiffRichRunRole.Context);
+            runs.Add(run);
+        }
+        return new(runs);
     }
 
     private static async Task<bool> StreamsEqualAsync(

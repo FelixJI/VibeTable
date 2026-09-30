@@ -116,6 +116,8 @@ public sealed class WebMessageRouter
         "document.previewRequested",
         "document.diffRequested",
         "document.diffCancelRequested",
+        "document.diffPageRequested",
+        "document.diffCloseRequested",
         "document.revealRequested",
         "document.relinkRequested",
         // Native-file attachment actions. File paths arrive only as WebView2
@@ -223,6 +225,8 @@ public sealed class WebMessageRouter
         "document.actionCompleted",
         "document.diffCompleted",
         "document.diffCancelCompleted",
+        "document.diffPageCompleted",
+        "document.diffCloseCompleted",
         "document.operationFailed",
         "document.workspaceChanged",
         // Correlated native attachment action acknowledgements.

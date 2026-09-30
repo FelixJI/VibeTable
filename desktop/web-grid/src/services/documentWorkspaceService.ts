@@ -1,8 +1,9 @@
+import { watch } from "vue";
 import type { DocumentAuthority } from "@/stores/documentWorkspaceStore";
+import { parseDocumentDiffSessionResult, parseDocumentDiffChangePageResult } from "@/contracts/documentDiffV2";
 import type { DocumentCapability, DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import type {
-  DocumentDiffCompletedPayload,
   DocumentListLoadedPayload,
   FileDocumentQuery,
 } from "@/contracts";
@@ -17,6 +18,8 @@ export type DocumentWorkspaceScope =
     };
 
 export type DocumentWorkspaceIntent =
+  | { readonly type: "document.diffPageRequested"; readonly sessionId: string; readonly cursor: string | null; readonly limit: number }
+  | { readonly type: "document.diffCloseRequested"; readonly sessionId: string }
   | { readonly type: "document.listRequested"; readonly scope: DocumentWorkspaceScope; readonly authority: DocumentAuthority; readonly query: FileDocumentQuery }
   | { readonly type: "document.importRequested"; readonly scope: DocumentWorkspaceScope }
   | { readonly type: "document.externalDropRequested"; readonly scope: DocumentWorkspaceScope; readonly files: readonly File[] }
@@ -51,6 +54,8 @@ export interface DocumentWorkspaceService {
     expectedEffectiveRevisionId: string,
   ): void;
   cancelDiff(entryHandle: string, operationId?: string): void;
+  diffPage(sessionId: string, cursor: string | null): void;
+  closeDiff(sessionId: string): void;
   reveal(entryHandle: string): void;
   relink(handle: string): void;
 }
@@ -64,6 +69,8 @@ export function createDocumentWorkspaceService(
 ): DocumentWorkspaceService {
   const diffOperations = new Map<string, string>();
   return {
+    diffPage: (sessionId, cursor) => dispatch({ type: "document.diffPageRequested", sessionId, cursor, limit: 50 }),
+    closeDiff: (sessionId) => dispatch({ type: "document.diffCloseRequested", sessionId }),
     list: (scope, authority, query = defaultDocumentQuery()) => dispatch({
       type: "document.listRequested", scope, authority, query,
     }),
@@ -105,6 +112,26 @@ export function useDocumentWorkspaceService(): {
   const store = useDocumentWorkspaceStore();
   let lastScope: DocumentWorkspaceScope = { kind: "global" };
   let listGeneration = 0;
+  watch(() => store.diffResult?.session?.sessionId, (next, old) => {
+    if (old && old !== next) void bridge.request("document.diffCloseRequested", { sessionId: old })
+      .catch(error => store.setFailed(error instanceof Error ? error.message : String(error)));
+  }, { flush: "sync" });
+
+  async function readPage(sessionId: string, cursor: string | null, limit: number): Promise<void> {
+    if (store.diffPageBusy) return;
+    const generation = store.currentDiffGeneration();
+    store.diffPageBusy = true;
+    const request = { sessionId, cursor, limit };
+    try {
+      const raw = await bridge.request("document.diffPageRequested", request);
+      store.completeDiffPage(generation, parseDocumentDiffChangePageResult(raw, request));
+    } catch (error) {
+      if (store.failDiff(generation, error instanceof Error ? error.message : String(error))) {
+        store.diffPageBusy = false;
+        await bridge.request("document.diffCloseRequested", { sessionId });
+      }
+    }
+  }
 
   async function execute(intent: DocumentWorkspaceIntent): Promise<void> {
     try {
@@ -171,7 +198,12 @@ export function useDocumentWorkspaceService(): {
               historicalRevisionId: intent.historicalRevisionId,
               expectedEffectiveRevisionId: intent.expectedEffectiveRevisionId,
             });
-            store.completeDiff(generation, parseDocumentDiffResult(raw));
+            const result = parseDocumentDiffSessionResult(raw);
+            if (!store.completeDiff(generation, result)) {
+              if (result.outcome === "ready") await bridge.request("document.diffCloseRequested", { sessionId: result.session.sessionId });
+            } else if (result.outcome === "ready") {
+              await readPage(result.session.sessionId, null, 50);
+            }
           } catch (error) {
             store.failDiff(
               generation,
@@ -186,6 +218,13 @@ export function useDocumentWorkspaceService(): {
             entryHandle: intent.entryHandle,
             operationId: intent.operationId,
           });
+          return;
+        case "document.diffPageRequested":
+          await readPage(intent.sessionId, intent.cursor, intent.limit);
+          return;
+        case "document.diffCloseRequested":
+          store.cancelDiff();
+          await bridge.request(intent.type, { sessionId: intent.sessionId });
           return;
       }
     } catch (error) {
@@ -264,43 +303,4 @@ function normalizeCapabilities(values: readonly string[]): readonly DocumentCapa
     }
   }
   return [...result];
-}
-
-const canonicalUuid =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-function parseDocumentDiffResult(value: unknown): DocumentDiffCompletedPayload {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("document.diffCompleted returned an invalid result");
-  }
-  const source = value as Record<string, unknown>;
-  const keys = Object.keys(source).sort();
-  const expected = [
-    "addedLines",
-    "effectiveRevisionId",
-    "entryHandle",
-    "failure",
-    "historicalRevisionId",
-    "outcome",
-    "removedLines",
-  ].sort();
-  const outcomes = ["identical", "changed", "changedWithDetails", "failure"];
-  const failures = ["unsupported", "invalidContent", "io", "cancelled", "stale", null];
-  if (JSON.stringify(keys) !== JSON.stringify(expected) ||
-    typeof source.entryHandle !== "string" || !source.entryHandle ||
-    typeof source.historicalRevisionId !== "string" ||
-    !canonicalUuid.test(source.historicalRevisionId) ||
-    typeof source.effectiveRevisionId !== "string" ||
-    !canonicalUuid.test(source.effectiveRevisionId) ||
-    typeof source.outcome !== "string" || !outcomes.includes(source.outcome) ||
-    !failures.includes(source.failure as string | null) ||
-    !(source.addedLines === null ||
-      (typeof source.addedLines === "number" && Number.isInteger(source.addedLines)
-        && source.addedLines >= 0)) ||
-    !(source.removedLines === null ||
-      (typeof source.removedLines === "number" && Number.isInteger(source.removedLines)
-        && source.removedLines >= 0))) {
-    throw new Error("document.diffCompleted returned an invalid result");
-  }
-  return source as unknown as DocumentDiffCompletedPayload;
 }

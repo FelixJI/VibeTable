@@ -147,7 +147,7 @@ export interface DocumentDiffChangePage {
   readonly nextCursor: string | null;
 }
 
-export type DocumentDiffPageFailure = "sessionExpired" | "invalidCursor" | "cancelled" | "stale";
+export type DocumentDiffPageFailure = "sessionExpired" | "invalidCursor" | "cancelled" | "stale" | "timeout";
 
 export type DocumentDiffChangePageResult =
   | { readonly outcome: "ready"; readonly page: DocumentDiffChangePage; readonly failure: null }
@@ -327,6 +327,9 @@ function parseSession(value: unknown): DocumentDiffSession {
 }
 
 export function parseDocumentDiffSessionResult(value: unknown): DocumentDiffSessionResult {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > 64 * 1024) {
+    throw new Error("document diff session exceeds byte budget");
+  }
   const source = record(value, "document diff session result");
   exact(source, ["outcome", "session", "failure"], "document diff session result");
   if (source.outcome === "ready" && source.failure === null) {
@@ -460,6 +463,9 @@ export function parseDocumentDiffChangePageResult(
   value: unknown,
   requestValue: DocumentDiffChangePageRequest,
 ): DocumentDiffChangePageResult {
+  if (new TextEncoder().encode(JSON.stringify(value)).length > 64 * 1024) {
+    throw new Error("document diff page exceeds byte budget");
+  }
   const request = createDocumentDiffChangePageRequest(requestValue);
   const source = record(value, "document diff page result");
   exact(source, ["outcome", "page", "failure"], "document diff page result");
@@ -468,7 +474,7 @@ export function parseDocumentDiffChangePageResult(
       outcome: "failure",
       page: null,
       failure: oneOf(source.failure, [
-        "sessionExpired", "invalidCursor", "cancelled", "stale",
+        "sessionExpired", "invalidCursor", "cancelled", "stale", "timeout",
       ] as const, "document diff page failure"),
     };
   }
