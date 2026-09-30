@@ -97,6 +97,17 @@ func Describe(ctx context.Context, app core.App, tableID string) (Table, error) 
 		return Table{}, err
 	}
 
+	var result Table
+	err := app.RunInTransaction(func(txApp core.App) error {
+		var err error
+		result, err = describe(ctx, txApp, tableID)
+		return err
+	})
+	return result, err
+}
+
+// Reuse a caller's transaction, or pin one snapshot across all metadata reads.
+func describe(ctx context.Context, app core.App, tableID string) (Table, error) {
 	initial, err := app.FindFirstRecordByFilter(
 		tablesCollectionName,
 		"table_id = {:tableID}",

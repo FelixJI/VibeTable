@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -243,6 +244,52 @@ func TestDescribeRejectsRevisionChangedWhileLoading(t *testing.T) {
 	}
 }
 
+// A legitimate business write that advances data_revision between Describe's
+// first and last metadata reads must not surface as a revision conflict:
+// the execution snapshot has to stay a coherent read while business data
+// revisions advance. The interleave commits a real UPDATE on an independent
+// connection while the load is in progress, deterministic without sleeps.
+func TestDescribeKeepsConsistentSnapshotWhenBusinessWriteAdvancesDataRevision(t *testing.T) {
+	ctx := context.Background()
+	app := newTestApp(t)
+	table := createTestExecutionTable(t, ctx, app, "并发业务写入表", "concurrent-business-table")
+	// A dedicated connection to the same database file is a genuinely
+	// independent writer: its commit is real concurrency, never a write
+	// smuggled into the caller's transaction.
+	writer, err := core.DefaultDBConnect(filepath.Join(app.DataDir(), "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("close independent writer: %v", err)
+		}
+	})
+	concurrent := &businessDataRevisionWriteApp{App: app, writer: writer}
+
+	execution, err := schemaexecution.Describe(ctx, concurrent, table.TableID)
+	if concurrent.tableReads != 2 {
+		t.Fatalf("observed vibetable_tables reads = %d; want exactly the first and re-read", concurrent.tableReads)
+	}
+	if concurrent.writeErr != nil {
+		t.Fatalf("interleaved business write failed: %v", concurrent.writeErr)
+	}
+	if err != nil {
+		t.Fatalf("Describe() rejected a legitimate concurrent business write: %v", err)
+	}
+	committed, findErr := app.FindFirstRecordByFilter("vibetable_tables", "table_id={:table}",
+		dbx.Params{"table": table.TableID})
+	if findErr != nil {
+		t.Fatal(findErr)
+	}
+	// The interleaved write committed on its own connection, and the returned
+	// snapshot must be one coherent pre-write state, not a torn mix.
+	if execution.Snapshot.DataRevision != 0 || committed.GetInt("data_revision") != 1 {
+		t.Fatalf("snapshot data revision = %d, committed = %d; want 0 and 1",
+			execution.Snapshot.DataRevision, committed.GetInt("data_revision"))
+	}
+}
+
 func TestRetiredFieldRejectsActiveAndUnknownFields(t *testing.T) {
 	ctx := context.Background()
 	app := newTestApp(t)
@@ -277,6 +324,59 @@ func TestExecutionReadsHonorCanceledContextBeforeStorage(t *testing.T) {
 type revisionConflictApp struct {
 	core.App
 	tableReads int
+}
+
+// businessDataRevisionWriteApp advances data_revision on an independent
+// database connection right after Describe's first vibetable_tables read,
+// modelling a legitimate concurrent business commit. RunInTransaction
+// re-wraps the transaction app so the interleave keeps firing when Describe
+// ever binds its reads to a transaction, while the write itself stays on the
+// independent connection instead of joining (and deadlocking or faking
+// concurrency inside) the caller's transaction.
+type businessDataRevisionWriteApp struct {
+	core.App
+	writer     *dbx.DB
+	tableReads int
+	writeErr   error
+}
+
+func (app *businessDataRevisionWriteApp) FindFirstRecordByFilter(
+	collectionModelOrIdentifier any,
+	filter string,
+	params ...dbx.Params,
+) (*core.Record, error) {
+	record, err := app.App.FindFirstRecordByFilter(collectionModelOrIdentifier, filter, params...)
+	collection, isString := collectionModelOrIdentifier.(string)
+	if err == nil && isString && collection == "vibetable_tables" {
+		app.tableReads++
+		if app.tableReads == 1 {
+			_, app.writeErr = app.writer.NewQuery(
+				"UPDATE vibetable_tables SET data_revision = data_revision + 1 WHERE table_id = {:table}",
+			).Bind(dbx.Params{"table": record.GetString("table_id")}).Execute()
+		}
+	}
+	return record, err
+}
+
+func (app *businessDataRevisionWriteApp) RunInTransaction(callback func(txApp core.App) error) error {
+	return app.App.RunInTransaction(func(txApp core.App) error {
+		nested := &businessDataRevisionWriteApp{App: txApp, writer: app.writer, tableReads: app.tableReads}
+		err := callback(nested)
+		app.tableReads = nested.tableReads
+		if nested.writeErr != nil {
+			app.writeErr = nested.writeErr
+		}
+		return err
+	})
+}
+
+func (app *revisionConflictApp) RunInTransaction(callback func(txApp core.App) error) error {
+	return app.App.RunInTransaction(func(txApp core.App) error {
+		nested := &revisionConflictApp{App: txApp, tableReads: app.tableReads}
+		err := callback(nested)
+		app.tableReads = nested.tableReads
+		return err
+	})
 }
 
 func (app *revisionConflictApp) FindFirstRecordByFilter(
