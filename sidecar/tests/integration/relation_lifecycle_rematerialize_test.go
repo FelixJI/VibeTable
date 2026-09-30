@@ -18,6 +18,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+
 	"github.com/vibetable/vibetable/sidecar/internal/relatedcomputation"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -891,4 +892,193 @@ func TestRelationHopFanoutKeepsWholeSourceTableFresh(t *testing.T) {
 	assertFresh("(d) after drain", map[string]float64{
 		orderOne: 35, orderTwo: 35, orderThree: 0,
 	})
+}
+
+// TestPairReciprocalWritesStoreComputedEnvelopes pins the 99c5 S38 root
+// cause: the reciprocal half of a paired relation write must materialize
+// computed cells through WrapValues exactly like the primary applyOperation
+// path, never bare scalars. The fixture mirrors the S38 shape — a summary
+// computed field consumed by both a cel-v2 TABLE formula and a path Lookup —
+// and runs bind/unbind/relink through the real kernel; every stage must keep
+// both the target (summary) and source (main) query projections fresh with
+// envelope-shaped stored JSON on summary rows.
+func TestPairReciprocalWritesStoreComputedEnvelopes(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	source := createV2IntegrationTable(t, ctx, app, "配对来源", "pr_source")
+	summary := createV2IntegrationTable(t, ctx, app, "配对汇总", "pr_summary")
+	main := createV2IntegrationTable(t, ctx, app, "配对主表", "pr_main")
+	sourceCode := createV2IntegrationField(t, ctx, app, source.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "合同"), "pr_source_contract")
+	sourceAmount := createV2IntegrationField(t, ctx, app, source.TableID,
+		fieldDraftForIntegration(t, v2.LogicalNumber, "金额"), "pr_source_amount")
+	summaryCode := createV2IntegrationField(t, ctx, app, summary.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "合同"), "pr_summary_contract")
+	mainCode := createV2IntegrationField(t, ctx, app, main.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "合同"), "pr_main_contract")
+
+	harness := newRematHarness(t, app)
+	sourceOne := "prsrc0000000001"
+	sourceTwo := "prsrc0000000002"
+	summaryOne := "prsum0000000001"
+	summaryTwo := "prsum0000000002"
+	mainOne := "prmain000000001"
+	sourceCodeName := sourceCode.Definition.Identity.PhysicalName
+	sourceAmountName := sourceAmount.Definition.Identity.PhysicalName
+	summaryCodeName := summaryCode.Definition.Identity.PhysicalName
+	mainCodeName := mainCode.Definition.Identity.PhysicalName
+	harness.apply("source one", source, "pr-src-1",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &sourceOne,
+			Values: map[string]any{sourceCodeName: "合同甲", sourceAmountName: float64(991)}})
+	harness.apply("source two", source, "pr-src-2",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &sourceTwo,
+			Values: map[string]any{sourceCodeName: "合同乙", sourceAmountName: float64(7)}})
+	harness.apply("summary one", summary, "pr-sum-1",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &summaryOne,
+			Values: map[string]any{summaryCodeName: "合同甲"}})
+	harness.apply("summary two", summary, "pr-sum-2",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &summaryTwo,
+			Values: map[string]any{summaryCodeName: "合同乙"}})
+
+	catalog := fieldchange.NewCatalog(app)
+	store := fieldchange.NewPocketBasePlanStore(app)
+	planner := fieldchange.NewPlanner(catalog, catalog, store, v2.NewIdentityAllocator(nil))
+	executor := fieldchange.NewExecutor(app, store, fieldchange.WithFormulaBackfillScheduler(harness.jobService))
+	actor := v2.Actor{ID: "local-user", Kind: "user"}
+	createField := func(stage string, table v2IntegrationTable, draft v2.FieldDraft) v2.ApplyReceipt {
+		t.Helper()
+		revisions, err := catalog.Revisions(ctx, table.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+			Action: v2.ActionCreate, TableID: table.TableID,
+			ExpectedSchemaRev: revisions.Schema, Draft: &draft, Actor: actor,
+		})
+		if err != nil || !plan.CanApply {
+			t.Fatalf("%s plan: %#v %v", stage, plan, err)
+		}
+		receipt, err := executor.Apply(ctx, v2.ApplyRequest{
+			PlanID: plan.PlanID, PlanHash: plan.PlanHash,
+			OperationID: stage, Actor: actor,
+		})
+		if err != nil {
+			t.Fatalf("%s apply: %v", stage, err)
+		}
+		harness.drain(stage)
+		return receipt
+	}
+
+	matchDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "匹配金额")
+	matchDraft.Lookup = &v2.LookupSpec{
+		Path: []v2.LookupPathStep{}, TargetFieldID: sourceAmount.FieldID,
+		Aggregation: v2.LookupAggregationSum,
+		Condition: &v2.LookupCondition{
+			SourceTableID: source.TableID, Match: "all",
+			Rules: []v2.LookupConditionRule{{
+				SourceFieldID: sourceCode.FieldID, Operator: "eq",
+				Operand: &v2.LookupOperand{Kind: "field", FieldID: summaryCode.FieldID},
+			}},
+		},
+	}
+	matchReceipt := createField("pr-match", summary, matchDraft)
+	doubledDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "二级金额")
+	doubledDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1", Source: matchReceipt.Definition.Identity.PhysicalName + " * 2.0",
+	}
+	doubledReceipt := createField("pr-doubled", summary, doubledDraft)
+	link := createV2IntegrationRelation(t, ctx, app, main.TableID, mainCode.FieldID,
+		summary.TableID, summaryCode.FieldID, "关联合同", "订单", "one", "pr_relation")
+	totalDraft := fieldDraftForIntegration(t, v2.LogicalFormula, "三级金额")
+	totalDraft.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v2",
+		Source: fmt.Sprintf(
+			"SUMIF(TABLE(%q), CurrentValue.%s == %s, CurrentValue.%s) + 1.0",
+			summary.TableID, summaryCodeName, mainCodeName,
+			doubledReceipt.Definition.Identity.PhysicalName),
+	}
+	totalReceipt := createField("pr-total", main, totalDraft)
+	linkedDraft := fieldDraftForIntegration(t, v2.LogicalLookup, "关联金额")
+	linkedDraft.Lookup = &v2.LookupSpec{
+		Path:          []v2.LookupPathStep{{RelationFieldID: link.FieldID}},
+		TargetFieldID: doubledReceipt.FieldID, Aggregation: v2.LookupAggregationSum,
+	}
+	linkedReceipt := createField("pr-linked", main, linkedDraft)
+	harness.apply("main row insert", main, "pr-main-insert",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &mainOne,
+			Values: map[string]any{mainCodeName: "合同甲"}})
+
+	querySource, err := queryschema.New(app.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := query.NewPort(app, querySource)
+	linkName := link.Definition.Identity.PhysicalName
+	matchName := matchReceipt.Definition.Identity.PhysicalName
+	doubledName := doubledReceipt.Definition.Identity.PhysicalName
+	linkedName := linkedReceipt.Definition.Identity.PhysicalName
+	totalName := totalReceipt.Definition.Identity.PhysicalName
+	assertTable := func(stage string, table v2IntegrationTable, expected map[string]map[string]float64) {
+		t.Helper()
+		definition, err := schemaexecution.Describe(ctx, app, table.TableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := port.QueryPage(ctx, table.TableID, query.TableQuery{Limit: 10})
+		if err != nil || len(page.Rows) != len(expected) {
+			t.Fatalf("%s table %s rows=%d want=%d: %v", stage, table.TableID, len(page.Rows), len(expected), err)
+		}
+		seen := map[string]bool{}
+		for _, row := range page.Rows {
+			recordID, ok := row["id"].(string)
+			values, found := expected[recordID]
+			if !ok || !found || seen[recordID] {
+				t.Fatalf("%s unexpected or repeated row %#v", stage, row)
+			}
+			seen[recordID] = true
+			record, err := app.FindRecordById(definition.PhysicalName, recordID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for column, want := range values {
+				value, ok := row[column].(float64)
+				if !ok || value != want {
+					t.Fatalf("%s %s/%s value=%#v want=%v", stage, recordID, column, row[column], want)
+				}
+				field, found := definition.Field(column)
+				if !found {
+					t.Fatalf("computed field %s unavailable", column)
+				}
+				envelope, readable := relatedcomputation.Decode(record.GetRaw(column))
+				expectation, err := relatedcomputation.ExpectationFor(ctx, app, table.TableID,
+					definition.Snapshot.Fields, field.Identity.FieldID, int64(record.GetInt(relatedcomputation.RowRevisionField)))
+				if err != nil || !readable || !envelope.Fresh(expectation) {
+					t.Fatalf("%s %s/%s unreadable or stale stored envelope: %#v expectation=%#v readable=%v %v",
+						stage, recordID, column, envelope, expectation, readable, err)
+				}
+			}
+		}
+	}
+	summaryValues := map[string]map[string]float64{
+		summaryOne: {matchName: 991, doubledName: 1982},
+		summaryTwo: {matchName: 7, doubledName: 14},
+	}
+	for _, stage := range []struct {
+		name   string
+		target any
+		linked float64
+	}{
+		{"bind", summaryOne, 1982},
+		{"unbind", nil, 0},
+		{"relink", summaryTwo, 14},
+	} {
+		harness.apply("picker "+stage.name, main, "pr-"+stage.name,
+			mutation.Operation{Kind: mutation.OperationUpdate, RecordID: &mainOne,
+				Values: map[string]any{linkName: stage.target}})
+		assertTable(stage.name, summary, summaryValues)
+		assertTable(stage.name, main, map[string]map[string]float64{
+			mainOne: {totalName: 1983, linkedName: stage.linked},
+		})
+	}
 }

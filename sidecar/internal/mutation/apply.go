@@ -932,7 +932,22 @@ func (kernel *Kernel) calculateRelatedFormulas(
 	if err != nil {
 		return err
 	}
-	for name, value := range normalized {
+	// Reciprocal writes must persist the same versioned envelope as the
+	// primary applyOperation path: a bare scalar in the computed JSON column
+	// reads back as permanently calculation.pending. The reciprocal record
+	// keeps its existing row revision, so the envelope stays consistent with
+	// what the freshness reader compares against that record field.
+	stored, err := relatedcomputation.WrapValues(
+		ctx, app, definition.Snapshot.TableID, definition.Snapshot.Fields,
+		int64(record.GetInt(relatedcomputation.RowRevisionField)), normalized,
+	)
+	if err != nil {
+		return mutationError(
+			"mutation.computed.version_failed", nil,
+			"computed version could not be derived", nil, true,
+		)
+	}
+	for name, value := range stored {
 		record.Set(name, value)
 	}
 	return nil
