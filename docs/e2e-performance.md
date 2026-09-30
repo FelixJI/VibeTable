@@ -193,7 +193,7 @@ S10 恢复测量（历史样本）：sidecar kill→可读表 2273.97ms，backen
 
 ## #414 关系生命周期局部候选资格（2026-10-01）
 
-产品提交 `e8949f33f917122e9255849e5505155324954b50` 基于已合入 V2 会话的 main `6db8c6b3`。正式候选构建通过（274 个文件）；真实同包 S38 报告 `20260930T202918Z` 为 1/1 passed、0 failed、0 skipped，wall clock 91.55182s。来源199条、完整三行独立数值、关系/字段删除边界、实际解绑/重新绑定、筛选排序、CSV/XLSX与重开均通过；后台 bridge clean 也通过。截图见 [关系生命周期](quality/screenshots/issue414-relation-lifecycle.png)。此前 `5b897ec3` 的 S38 因7次后台 lookup.query 失败而整场失败，保留原报告，不以39项数值断言通过替代整场结论；共享查询字段映射修正后才通过。
+产品提交 `e8949f33f917122e9255849e5505155324954b50` 基于已合入 V2 会话的 main `6db8c6b3`。正式候选构建通过（274 个文件）；真实同包 S38 报告 `20260930T202918Z` 为 1/1 passed、0 failed、0 skipped，wall clock 91.55182s。来源199条、完整三行独立数值、初始关系绑定、引用字段改名、筛选排序、CSV/XLSX与重开均通过；Go integration/scale 另行验证删除拒绝、解绑与重新绑定，不作为 S38 界面覆盖；后台 bridge clean 也通过。截图见 [关系生命周期](quality/screenshots/issue414-relation-lifecycle.png)。此前 `5b897ec3` 的 S38 因7次后台 lookup.query 失败而整场失败，保留原报告，不以39项数值断言通过替代整场结论；共享查询字段映射修正后才通过。
 
 复用 #396 原始 fixture/数据与5组查询预算，10k规模通过。50k首轮 computed warm p95 51.613ms 超过50ms，明确为预算失败；独占复核 warm/cold computed p95 40.154/43.034ms、raw p95 20.173/22.18ms、repeated lookup p95 120.09ms 通过原预算，首轮失败证据仍保留。源修改到完整查询仅为单次观察，不能称p95或提速。
 
