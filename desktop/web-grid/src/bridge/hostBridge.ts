@@ -334,6 +334,8 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "document.listLoaded",
   "document.actionCompleted",
   "document.diffCompleted",
+  "document.diffPageCompleted",
+  "document.diffCloseCompleted",
   "document.operationFailed",
   "document.workspaceChanged",
   "plugin.catalog.changed",
@@ -492,6 +494,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "document.previewRequested",
   "document.diffRequested",
   "document.diffCancelRequested",
+  "document.diffPageRequested",
+  "document.diffCloseRequested",
   "document.revealRequested",
   "document.relinkRequested",
   // Open the embedded data administration surface in this webview.
@@ -551,6 +555,8 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "document.previewRequested": ["document.actionCompleted"],
   "document.diffRequested": ["document.diffCompleted"],
   "document.diffCancelRequested": ["document.diffCancelCompleted"],
+  "document.diffPageRequested": ["document.diffPageCompleted"],
+  "document.diffCloseRequested": ["document.diffCloseCompleted"],
   "document.revealRequested": ["document.actionCompleted"],
   // Desktop currently names correlated replies `workspace.v2.response`.
   // Keep `reply` accepted for protocol-v2 producers that use the catalog term.

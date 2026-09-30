@@ -135,7 +135,7 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
     public string ResolveDragOutPath(string handle)
         => ResolveExisting(handle, "dragOut");
 
-    public Task<DocumentDiffPayload> CompareAsync(
+    public Task<DocumentDiffSessionResult> CompareAsync(
         string handle,
         string historicalRevisionId,
         string expectedEffectiveRevisionId,
@@ -158,6 +158,15 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
             expectedEffectiveRevisionId,
             cancellationToken);
     }
+
+    public Task<DocumentDiffChangePageResult> ReadDiffPageAsync(DocumentDiffChangePageRequest request,
+        CancellationToken cancellationToken)
+        => (_diffCoordinator ?? throw new DocumentFileOperationException(
+            "文档比较不可用。", "DOCUMENT_DIFF_UNAVAILABLE"))
+            .ReadPageAsync(RequireBinding(), request, cancellationToken);
+
+    public void CloseDiffSession(Guid sessionId) => _diffCoordinator?.CloseSession(sessionId);
+    public void CloseDiffSessions() => _diffCoordinator?.CloseAllSessions();
 
     public async Task<WorkspaceDocumentImportResult?> ImportFromPickerAsync(
         CancellationToken cancellationToken)
@@ -223,7 +232,11 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
             Path.GetFileName(document.RelativePath));
     }
 
-    public void RotateCapabilityEpoch() => _capabilities.RotateEpoch();
+    public void RotateCapabilityEpoch()
+    {
+        CloseDiffSessions();
+        _capabilities.RotateEpoch();
+    }
 
     internal bool MatchesScope(WorkspaceWireScope? scope)
     {
@@ -806,12 +819,3 @@ public sealed record DocumentQueryInput
     [JsonPropertyName("cursor")]
     public required string? Cursor { get; init; }
 }
-
-public sealed record DocumentDiffPayload(
-    string EntryHandle,
-    string HistoricalRevisionId,
-    string EffectiveRevisionId,
-    string Outcome,
-    int? AddedLines,
-    int? RemovedLines,
-    string? Failure);

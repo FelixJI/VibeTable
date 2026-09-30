@@ -126,7 +126,7 @@ public sealed class WorkspaceBootstrapPublisher(
                 methods,
                 WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod,
                 WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod))
-            capabilities.Add("document.diff.v1");
+            capabilities.Add("document.diff.v2");
         if (ContainsEvery(
                 methods,
                 "retention.get",

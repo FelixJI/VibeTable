@@ -135,8 +135,9 @@ task/
 `input` 只读；接受已有修订等正规化只能写 `normalized`；provider 结果只能写 `output`；分页索引只能写
 `index`。Web 和插件只能获得 session/artifact handle，不能获得这些真实路径。比较完成后还必须确认源
 revision 的 `contentHash`、`effectiveRevisionId` 与 workspace epoch 均未变化，任一不一致就返回 `stale`
-并丢弃结果。现有链路已经执行 effective-revision CAS 和 workspace epoch 检查；contentHash 的前后绑定
-与任务级 manifest/TTL 属于 artifact broker 的待实现门禁。完成、失败、取消、超时和崩溃恢复都由 broker
+并丢弃结果。现有 broker 已执行 materialized input 的 contentHash 验证、读取租约、任务级 manifest/TTL
+和比较后 CAS 发布门禁。文本生产路径复用这些能力发布 V2 session 与派生索引，每次分页前后继续检查
+effective-revision CAS 和 workspace epoch；Office 当前浅对比明确报告未覆盖范围。完成、失败、取消、超时和崩溃恢复都由 broker
 依据 manifest 与 TTL 清理已知文件，不能扫描或删除任务目录之外的对象。
 
 源隔离测试还必须记录并断言 workspace repository 对象和用户源文件的内容与 `LastWriteTime` 均未变化；

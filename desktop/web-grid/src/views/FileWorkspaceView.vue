@@ -269,6 +269,7 @@ function compareFileRevision(entry: DocumentEntry, revision: FileRevisionV2): vo
 }
 
 function cancelFileDiff(): void {
+  if (store.diffResult?.outcome === "ready") service.closeDiff(store.diffResult.session.sessionId);
   const target = store.diffTarget;
   if (!target) return;
   service.cancelDiff(target.entryHandle, target.operationId);
@@ -316,6 +317,7 @@ function onExternalDrop(event: DragEvent): void {
 
 onMounted(requestList);
 onBeforeUnmount(() => {
+  cancelFileDiff();
   if (dropFeedbackTimer) clearTimeout(dropFeedbackTimer);
   if (queryTimer) clearTimeout(queryTimer);
 });
@@ -327,6 +329,13 @@ watch(filterField, () => {
   filterOperator.value = operatorOptions.value[0] ?? "eq";
 });
 watch(filterLogic, requestList);
+watch(() => [store.primaryHandle, store.inspectorTab, currentRevisionTree.value?.effectiveRevisionId],
+  () => {
+    const target = store.diffTarget;
+    if (target && (store.primaryHandle !== target.entryHandle || store.inspectorTab !== "history"
+      || (currentRevisionTree.value?.effectiveRevisionId
+        && currentRevisionTree.value.effectiveRevisionId !== target.effectiveRevisionId))) cancelFileDiff();
+  });
 watch(
   () => protection.pendingFileChanges.length,
   (count) => {
@@ -440,6 +449,10 @@ watch(
         :requested-revision-id="props.requestedRevisionId"
         :diff-phase="store.diffPhase"
         :diff-result="store.diffResult"
+        :diff-changes="store.diffChanges"
+        :diff-next-cursor="store.diffNextCursor"
+        :diff-page-busy="store.diffPageBusy"
+        :diff-error="store.diffError"
         @tab="store.showInspector"
         @preview="service.preview($event.entryHandle)"
         @history="history"
@@ -449,6 +462,8 @@ watch(
         @activate-file-revision="(_entry, revision) => activateFileRevision(revision)"
         @compare-file-revision="compareFileRevision"
         @cancel-file-diff="cancelFileDiff"
+        @close-file-diff="cancelFileDiff"
+        @next-diff-page="store.diffResult?.outcome === 'ready' && service.diffPage(store.diffResult.session.sessionId, store.diffNextCursor)"
       />
     </div>
 
