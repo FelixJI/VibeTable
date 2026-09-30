@@ -3,11 +3,15 @@ package integration_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 
 	"github.com/vibetable/vibetable/sidecar/internal/computed"
@@ -1080,5 +1084,217 @@ func TestPairReciprocalWritesStoreComputedEnvelopes(t *testing.T) {
 		assertTable(stage.name, main, map[string]map[string]float64{
 			mainOne: {totalName: 1983, linkedName: stage.linked},
 		})
+	}
+}
+
+// TestPairReciprocalComputedVersionFailureFailsClosedAtomically pins the
+// failure half of the reciprocal version contract added in 5b897ec3: when
+// relatedcomputation.WrapValues cannot derive the computed version for a
+// reciprocal target — here a legal, active formula field definition whose
+// authoritative vibetable_formulas metadata row was lost, the exact drift
+// state the relatedcomputation layer already pins as fail-closed — the whole
+// mutation transaction must fail closed with the explicit
+// mutation.computed.version_failed code and Retryable=true, writing no
+// partial computed value and leaving the source link set, the reciprocal
+// target state, the stored computed envelope, and both table data revisions
+// untouched. Restoring the authoritative metadata lets the identical edit
+// commit, so the retryable classification is observable, not decorative.
+func TestPairReciprocalComputedVersionFailureFailsClosedAtomically(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	source := createV2IntegrationTable(t, ctx, app, "版本失败来源", "vf_source")
+	target := createV2IntegrationTable(t, ctx, app, "版本失败目标", "vf_target")
+	sourceCode := createV2IntegrationField(t, ctx, app, source.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "来源编码"), "vf_source_code")
+	targetCode := createV2IntegrationField(t, ctx, app, target.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "目标编码"), "vf_target_code")
+	targetAmount := createV2IntegrationField(t, ctx, app, target.TableID,
+		fieldDraftForIntegration(t, v2.LogicalNumber, "目标金额"), "vf_target_amount")
+	link := createV2IntegrationRelation(t, ctx, app, source.TableID, sourceCode.FieldID,
+		target.TableID, targetCode.FieldID, "关联目标", "来源", "many", "vf_relation")
+	if link.Definition == nil {
+		t.Fatal("relation fixture omitted field definition")
+	}
+	doubled := fieldDraftForIntegration(t, v2.LogicalFormula, "翻倍金额")
+	doubled.Formula = &v2.FormulaDraftSpec{
+		Language: "cel-v1",
+		Source:   targetAmount.Definition.Identity.PhysicalName + " * 2.0",
+	}
+	formulaField := createV2IntegrationFormula(t, ctx, app, target.TableID, doubled, "vf_formula")
+	if formulaField.Definition == nil {
+		t.Fatal("formula fixture omitted field definition")
+	}
+	kernel := mutation.New(
+		app,
+		mutation.MetadataSchemaSource{},
+		mutation.WithFormulaCalculator(computed.New(
+			lookup.NewCalculator(),
+			formula.NewCalculator(formula.NewCompiler(formula.DefaultLimits())),
+		)),
+	)
+	applyMutation := func(key string, tableID string, operations ...mutation.Operation) error {
+		t.Helper()
+		revisions, err := fieldchange.NewCatalog(app).Revisions(ctx, tableID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = kernel.Apply(ctx, mutationRequest(tableID, revisions.Schema, key, operations...))
+		return err
+	}
+	sourceID := "vfsrc0000000001"
+	targetID := "vftgt0000000001"
+	linkName := link.Definition.Identity.PhysicalName
+	computedName := formulaField.Definition.Identity.PhysicalName
+	targetDefinition, err := schemaexecution.Describe(ctx, app, target.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reciprocalName := ""
+	for _, field := range targetDefinition.Snapshot.Fields {
+		if field.LogicalType == v2.LogicalRelation && field.Relation != nil &&
+			field.Relation.TargetTableID == source.TableID {
+			reciprocalName = field.Identity.PhysicalName
+		}
+	}
+	if reciprocalName == "" {
+		t.Fatal("paired relation did not create a reciprocal target field")
+	}
+	if err := applyMutation("vf-target-insert", target.TableID,
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &targetID,
+			Values: map[string]any{
+				targetCode.Definition.Identity.PhysicalName:   "目标甲",
+				targetAmount.Definition.Identity.PhysicalName: float64(21),
+			}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMutation("vf-source-insert", source.TableID,
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &sourceID,
+			Values: map[string]any{
+				sourceCode.Definition.Identity.PhysicalName: "来源甲",
+				linkName: []string{targetID},
+			}}); err != nil {
+		t.Fatal(err)
+	}
+	type failureState struct {
+		links          []string
+		reciprocal     []string
+		sourceRevision int64
+		targetRevision int64
+	}
+	snapshotState := func() failureState {
+		t.Helper()
+		sourceRecord, err := app.FindRecordById(source.PhysicalName, sourceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetRecord, err := app.FindRecordById(target.PhysicalName, targetID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := targetRecord.GetRaw(computedName)
+		stored, ok := relatedcomputation.Decode(raw)
+		if !ok || stored.State != "ready" || stored.Value != float64(42) {
+			t.Fatalf("pre-failure stored envelope = %#v (raw %#v)", stored, raw)
+		}
+		return failureState{
+			links:          sourceRecord.GetStringSlice(linkName),
+			reciprocal:     targetRecord.GetStringSlice(reciprocalName),
+			sourceRevision: tableDataRevision(t, app, source.TableID),
+			targetRevision: tableDataRevision(t, app, target.TableID),
+		}
+	}
+	// The stored envelope must stay byte-identical, not merely value-equal:
+	// a partial or rewritten version block would be visible corruption.
+	rawStored := func() string {
+		t.Helper()
+		targetRecord, err := app.FindRecordById(target.PhysicalName, targetID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw, ok := targetRecord.GetRaw(computedName).(types.JSONRaw); ok {
+			return string(raw)
+		}
+		return fmt.Sprintf("%v", targetRecord.GetRaw(computedName))
+	}
+	before := snapshotState()
+	beforeEnvelope := rawStored()
+	if len(before.links) != 1 || before.links[0] != targetID ||
+		len(before.reciprocal) != 1 || before.reciprocal[0] != sourceID {
+		t.Fatalf("paired fixture state = %#v", before)
+	}
+	// Lose the authoritative formula metadata while the field definition
+	// stays active: the calculator still compiles from the definition
+	// snapshot, but WrapValues cannot derive DefinitionVersion, so the
+	// reciprocal write must fail closed instead of storing a versionless
+	// or partial computed value.
+	formulaMeta, err := app.FindFirstRecordByFilter(
+		"vibetable_formulas",
+		"table_id={:table} && field_id={:field}",
+		dbx.Params{"table": target.TableID, "field": formulaField.FieldID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := map[string]any{
+		"table_id": target.TableID, "field_id": formulaField.FieldID,
+		"source":      formulaMeta.GetString("source"),
+		"language":    formulaMeta.GetString("language"),
+		"result_type": formulaMeta.GetString("result_type"),
+		"version":     formulaMeta.GetInt("version"), "status": formulaMeta.GetString("status"),
+	}
+	if err := app.Delete(formulaMeta); err != nil {
+		t.Fatal(err)
+	}
+	unlink := mutation.Operation{
+		Kind: mutation.OperationUpdate, RecordID: &sourceID,
+		Values: map[string]any{linkName: []string{}},
+	}
+	err = applyMutation("vf-source-unlink", source.TableID, unlink)
+	var productErr *mutation.ProductError
+	if !errors.As(err, &productErr) ||
+		productErr.Code != "mutation.computed.version_failed" ||
+		!productErr.Retryable {
+		t.Fatalf("reciprocal version derivation error = %#v, want mutation.computed.version_failed retryable", err)
+	}
+	after := snapshotState()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("failed reciprocal write changed persisted state: before=%#v after=%#v", before, after)
+	}
+	if envelope := rawStored(); envelope != beforeEnvelope {
+		t.Fatalf("failed reciprocal write rewrote the stored envelope:\nbefore=%s\nafter =%s", beforeEnvelope, envelope)
+	}
+	// Repairing the authoritative metadata lets the identical edit commit:
+	// retryable=true is an observable recovery contract, not a decoration.
+	formulaCollection, err := app.FindCollectionByNameOrId("vibetable_formulas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := core.NewRecord(formulaCollection)
+	for name, value := range metadata {
+		restored.Set(name, value)
+	}
+	if err := app.Save(restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMutation("vf-source-unlink-retry", source.TableID, unlink); err != nil {
+		t.Fatal(err)
+	}
+	sourceRecord, err := app.FindRecordById(source.PhysicalName, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRecord, err := app.FindRecordById(target.PhysicalName, targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if links := sourceRecord.GetStringSlice(linkName); len(links) != 0 {
+		t.Fatalf("retried unlink left links = %#v", links)
+	}
+	if reciprocal := targetRecord.GetStringSlice(reciprocalName); len(reciprocal) != 0 {
+		t.Fatalf("retried unlink left reciprocal = %#v", reciprocal)
+	}
+	if got, want := relatedcomputation.ProjectStored(targetRecord.GetRaw(computedName)), float64(42); got != want {
+		t.Fatalf("retried unlink recomputed value = %#v, want %#v", got, want)
 	}
 }
