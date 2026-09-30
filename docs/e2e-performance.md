@@ -16,7 +16,7 @@
 - 结果：35/35 passed、0 failed、0 skipped。
 - 当前 manifest gap：2（`37-collection-formula-journey`、`38-calculation-chain-journey`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：2（`05-formula-lifecycle`、`14-document-diff`）。
+- 当前 manifest changed：3（`05-formula-lifecycle`、`14-document-diff`、`18-workspace-search`）。
 
 本次 S05 扩展的局部候选验证与截图见 [PR #397](https://github.com/FelixJI/VibeTable/pull/397)。局部验证仅覆盖新增断言，不替代完整 PR 门禁，也不计入本节的历史主干样本。
 
@@ -193,10 +193,16 @@ S10 恢复测量（历史样本）：sidecar kill→可读表 2273.97ms，backen
 
 ## #414 关系生命周期局部候选资格（2026-10-01）
 
-产品提交 `e8949f33f917122e9255849e5505155324954b50` 基于已合入 V2 会话的 main `6db8c6b3`。正式候选构建通过（274 个文件）；真实同包 S38 报告 `20260930T202918Z` 为 1/1 passed、0 failed、0 skipped，wall clock 91.55182s。来源199条、完整三行独立数值、初始关系绑定、引用字段改名、筛选排序、CSV/XLSX与重开均通过；Go integration/scale 另行验证删除拒绝、解绑与重新绑定，不作为 S38 界面覆盖；后台 bridge clean 也通过。截图见 [关系生命周期](quality/screenshots/issue414-relation-lifecycle.png)。此前 `5b897ec3` 的 S38 因7次后台 lookup.query 失败而整场失败，保留原报告，不以39项数值断言通过替代整场结论；共享查询字段映射修正后才通过。
+产品提交 `e8949f33f917122e9255849e5505155324954b50` 基于已合入 V2 会话的 main `6db8c6b3`。正式候选构建通过（274 个文件）；真实同包 S38 报告 `20260930T202918Z` 仅选择 S38：执行 1 场、成功 1 场、失败 0 场、跳过 0 场；清单中另外 36 场未在该局部报告执行，wall clock 91.55182s。来源199条、完整三行独立数值、初始关系绑定、引用字段改名、筛选排序、CSV/XLSX与重开均通过；Go integration/scale 另行验证删除拒绝、解绑与重新绑定，不作为 S38 界面覆盖；后台 bridge clean 也通过。截图见 [关系生命周期](quality/screenshots/issue414-relation-lifecycle.png)。此前 `5b897ec3` 的 S38 因7次后台 lookup.query 失败而整场失败，保留原报告，不以39项数值断言通过替代整场结论；共享查询字段映射修正后才通过。
 
 复用 #396 原始 fixture/数据与5组查询预算，10k规模通过。50k首轮 computed warm p95 51.613ms 超过50ms，明确为预算失败；独占复核 warm/cold computed p95 40.154/43.034ms、raw p95 20.173/22.18ms、repeated lookup p95 120.09ms 通过原预算，首轮失败证据仍保留。源修改到完整查询仅为单次观察，不能称p95或提速。
 
 新增关系专属资格复用同一原始10k/50k来源、67条summary与1000条main，实际覆盖 reciprocal WrapValues 与 relationPath AllRecords；不以本来已有全表cursor的conditional lookup冒充这次新增路径。两规模绑定、解绑、重新绑定、来源修改后的全部1000行独立oracle、67条summary新鲜envelope均通过，新path job记录 allRecords=true、processedMainRows=1000。源修改到完整查询单次为41.099048s（10k）与263.082394s（50k），无新增失效延迟预算，不声称性能改善。Windows每1秒观察实际进程 PeakWorkingSet64，10k/50k峰值为142209024/293060608字节；最后未观测区间可能低估，不把累计分配或配置上限当峰值。
 
 这些局部证据不更新本页历史35场样本，不代替当前PR完整required及合并后main CI/CD哨兵。
+
+## 2026-10-01 OOXML 搜索资格（#410）
+
+开发候选 `1ab09aba` 的真实 WPF/WebView2 S18 单场景通过，用时 42.24863s。合成 DOCX、XLSX、PPTX 均命中“合同编号”；未引用字符串无命中，缓存公式值与演讲备注可检索，部分覆盖提示及打开正确文件均通过。报告绑定 `20260930T171742Z`，该结果不替代完整 PR 门禁，也不扩大 PDF 支持范围。
+
+界面截图：[OOXML 搜索与覆盖提示](quality/screenshots/issue410-ooxml-search.png)。

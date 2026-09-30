@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Quarterly</t></is></c>
+      <c r="B1"><f>SUM(1,2)</f><v>3</v></c>
+      <c r="C1"><f>SUM(A1:B1)</f></c>
+    </row>
+  </sheetData>
+</worksheet>
