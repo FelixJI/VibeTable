@@ -5,6 +5,7 @@ import test from "node:test";
 import { parse, compileStyle } from "../../desktop/web-grid/node_modules/@vue/compiler-sfc/dist/compiler-sfc.esm-browser.js";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import { observeTestPhases } from "./test_phase_evidence.mjs";
+import { waitForLookupCellText } from "./webview_product_scenarios.mjs";
 
 const root = new URL("../../", import.meta.url);
 const output = new URL("build/lookup-sources-viewport/", root);
@@ -110,4 +111,60 @@ test("lookup source pagination keeps header and load-more inside the viewport", 
   await phases.phase("close modal", () => page.locator(".lookup-sources-panel > header button").click({ timeout: 2_000 }));
   await phases.phase("wait for closed modal", () => page.locator(".lookup-sources-panel").waitFor({ state: "hidden" }));
   assert.deepEqual(pageErrors, []);
+  // Query text and authoritative Lookup provenance arrive in separate renders.
+  // Reuse the real page, controlling publication rather than adding a sleep.
+  await t.test("Lookup waits for text and source count in one DOM snapshot", async () => {
+    for (const sourceCount of [1, 2]) {
+      await page.setContent('<div class="grid-wrapper" aria-busy="false">'
+        + '<div class="tabulator-cell" tabulator-field="lookup">'
+        + '<span class="vt-lookup-text">唯一 乙</span></div></div>');
+      const controlledPage = {
+        async waitForFunction(predicate, args, options) {
+          assert.equal(options.timeout, 30_000);
+          const first = await page.evaluateHandle(predicate, args);
+          if (await first.jsonValue()) return first;
+          await first.dispose();
+          await page.evaluate((count) => {
+            document.querySelector(".tabulator-cell").insertAdjacentHTML("beforeend",
+              '<button class="vt-lookup-source">source</button>'.repeat(count));
+          }, sourceCount);
+          return page.waitForFunction(predicate, args, options);
+        },
+        evaluate: (...args) => page.evaluate(...args),
+      };
+      const snapshot = await waitForLookupCellText(
+        controlledPage, "lookup", "唯一 乙", 30_000, sourceCount,
+      );
+      const actual = await page.evaluate(() => {
+        const cell = document.querySelector('.grid-wrapper[aria-busy="false"] .tabulator-cell');
+        return {
+          text: cell.querySelector(".vt-lookup-text").textContent,
+          textCount: cell.querySelectorAll(".vt-lookup-text").length,
+          sourceCount: cell.querySelectorAll(".vt-lookup-source").length,
+        };
+      });
+      assert.ok(actual.text === "唯一 乙" && actual.sourceCount === sourceCount,
+        JSON.stringify({ sourceCount, actual }));
+      assert.deepEqual(snapshot, actual);
+    }
+    await page.locator(".vt-lookup-source").evaluateAll((elements) => {
+      for (const element of elements) element.remove();
+    });
+    assert.deepEqual(await waitForLookupCellText(page, "lookup", "唯一 乙"), {
+      text: "唯一 乙", textCount: 1, sourceCount: 0,
+    });
+    const timeout = new Error("controlled polling deadline");
+    await assert.rejects(waitForLookupCellText({
+      async waitForFunction(predicate, args, options) {
+        assert.equal(options.timeout, 30_000);
+        assert.equal(await page.evaluate(predicate, args), false);
+        throw timeout;
+      },
+      evaluate: (...args) => page.evaluate(...args),
+    }, "lookup", "唯一 乙", 30_000, 1), (error) => {
+      assert.equal(error.cause, timeout);
+      assert.match(error.message, /"actual":\{"text":"唯一 乙","textCount":1,"sourceCount":0\}/);
+      return true;
+    });
+  });
 });

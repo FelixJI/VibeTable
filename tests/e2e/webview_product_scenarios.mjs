@@ -4,6 +4,7 @@ import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
@@ -3637,10 +3638,36 @@ async function openFieldSettingsFromHeader(page, physicalName) {
   await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
 }
 
-async function waitForLookupCellText(page, physicalName, expected, timeoutMs = 30_000) {
-  await page.waitForFunction(({ field, text }) => (
-    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-lookup-text`)?.textContent === text
-  ), { field: physicalName, text: expected }, { timeout: timeoutMs });
+export async function waitForLookupCellText(
+  page, physicalName, expected, timeoutMs = 30_000, expectedSourceCount = null,
+) {
+  const observe = ({ field, text, sourceCount, readyOnly = true }) => {
+    const cell = document.querySelector(
+      `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${field}"]`,
+    );
+    const actual = {
+      text: cell?.querySelector(".vt-lookup-text")?.textContent ?? null,
+      textCount: cell?.querySelectorAll(".vt-lookup-text").length ?? 0,
+      sourceCount: cell?.querySelectorAll(".vt-lookup-source").length ?? 0,
+    };
+    if (!readyOnly) return actual;
+    return actual.text === text && (sourceCount === null || actual.sourceCount === sourceCount)
+      ? actual : false;
+  };
+  const args = { field: physicalName, text: expected, sourceCount: expectedSourceCount };
+  try {
+    const snapshot = await page.waitForFunction(observe, args, { timeout: timeoutMs });
+    try {
+      return await snapshot.jsonValue();
+    } finally {
+      await snapshot.dispose();
+    }
+  } catch (error) {
+    const actual = await page.evaluate(observe, { ...args, readyOnly: false }).catch(() => null);
+    throw new Error(`lookup cell did not become ready: ${JSON.stringify({ ...args, actual })}`, {
+      cause: error,
+    });
+  }
 }
 
 async function scenario26(page, recorder, _network, runtime) {
@@ -3853,12 +3880,12 @@ async function scenario26(page, recorder, _network, runtime) {
   if (matchedSources.payload?.status !== "applied") {
     throw new Error(`condition source rows did not commit: ${JSON.stringify(matchedSources)}`);
   }
-  await waitForLookupCellText(page, lookupFieldKey, "重值 甲");
+  const deduplicatedLookup = await waitForLookupCellText(page, lookupFieldKey, "重值 甲", 30_000, 2);
   recorder.check("按值保序去重后单一值与双来源计数并存",
-    (await lookupCell().locator(".vt-lookup-text").innerText()) === "重值 甲"
-      && await lookupCell().locator(".vt-lookup-text").count() === 1
-      && await lookupCell().locator(".vt-lookup-source").count() === 2,
-    {});
+    deduplicatedLookup.text === "重值 甲"
+      && deduplicatedLookup.textCount === 1
+      && deduplicatedLookup.sourceCount === 2,
+    { actual: deduplicatedLookup });
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "26-conditional-lookup-dedup.png"),
     fullPage: true,
@@ -3873,11 +3900,10 @@ async function scenario26(page, recorder, _network, runtime) {
   if (currentShifted.payload?.status !== "applied") {
     throw new Error(`condition current update did not commit: ${JSON.stringify(currentShifted)}`);
   }
-  await waitForLookupCellText(page, lookupFieldKey, "唯一 乙");
+  const shiftedLookup = await waitForLookupCellText(page, lookupFieldKey, "唯一 乙", 30_000, 1);
   recorder.check("当前行字段变更触发条件重算",
-    (await lookupCell().locator(".vt-lookup-text").innerText()) === "唯一 乙"
-      && await lookupCell().locator(".vt-lookup-source").count() === 1,
-    {});
+    shiftedLookup.text === "唯一 乙" && shiftedLookup.sourceCount === 1,
+    { actual: shiftedLookup });
 
   const sourceRow = (await readRows(sourceTableId)).find((row) => row.id === "condsrc00000003");
   const sourceShifted = await applyProductMutation(page, sourceTableId, [{
@@ -10675,4 +10701,6 @@ async function main() {
   process.exit(result.status === "passed" ? 0 : 1);
 }
 
-await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}
