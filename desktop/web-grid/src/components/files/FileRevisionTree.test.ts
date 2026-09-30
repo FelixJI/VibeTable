@@ -72,6 +72,16 @@ describe("FileRevisionTree", () => {
       diffPhase: "ready", diffResult: result, diffChanges: [change], diffNextCursor: "opaque" } });
     expect(wrapper.text()).toContain(run.text);
     expect(wrapper.find("img").exists()).toBe(false);
+    await wrapper.setProps({ diffChanges: [{ ...change, kind: "format", location: {
+      ...change.location, part: "header", sectionIndex: 1, tableIndex: 0, rowIndex: 2, columnIndex: 3,
+    }, after: { runs: [{ ...run, text: "styled", role: "changed", bold: true, fontSizePt: 14,
+      fontFamily: "Aptos", foreground: "#123456" }] } }] });
+    expect(wrapper.text()).toContain("格式 · 页眉 · 第 2 节 · 表格 1 · 行 3 · 列 4 · 段落 1");
+    const styled = wrapper.get('[data-diff-role="changed"]').element as HTMLElement;
+    expect(styled.style.fontSize).toBe("14pt");
+    expect(styled.style.fontWeight).toBe("bold");
+    expect(wrapper.find("img").exists()).toBe(false);
+
     expect(wrapper.text()).toContain("仅部分内容被覆盖");
     await wrapper.get('[data-testid="diff-next-page"]').trigger("click");
     await wrapper.get('[data-testid="diff-close"]').trigger("click");

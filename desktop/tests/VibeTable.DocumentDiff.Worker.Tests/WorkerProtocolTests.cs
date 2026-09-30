@@ -68,6 +68,40 @@ public sealed class WorkerProtocolTests
         RemoveEmptyOperation(root);
     }
 
+    [TestMethod]
+    [DataRow("existing-revisions.docx", "existing-revisions.docx", 0, true)]
+    [DataRow("format-before.docx", "format-after.docx", 2, false)]
+    public async Task ComparisonPublishesValidatedIndexAndActualRevisionWarnings(
+        string before, string after, int formattingChanges, bool normalizedRevisions)
+    {
+        string root = CreateOperation();
+        Directory.CreateDirectory(Path.Combine(root, "index"));
+        byte[] originalBefore = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Qualification/docx", before));
+        byte[] originalAfter = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Qualification/docx", after));
+        File.WriteAllBytes(Path.Combine(root, "input/historical.content"), originalBefore);
+        File.WriteAllBytes(Path.Combine(root, "input/effective.content"), originalAfter);
+        using var request = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(
+            new { version = 2, operationDirectory = root, operation = "compareDocx" }));
+        Assert.AreEqual(0, await Program.RunAsync(request));
+        var metadata = JsonSerializer.Deserialize<VibeTable.Workspace.Diff.DocumentDiffWorkerResult>(
+            File.ReadAllBytes(Path.Combine(root, "index/result.json")), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.AreEqual(2, metadata.Version);
+        Assert.AreEqual(formattingChanges, metadata.Summary.FormattingChanges);
+        Assert.AreEqual(normalizedRevisions, metadata.Warnings.Contains(
+            VibeTable.Workspace.Diff.DocumentDiffWarning.ExistingRevisionsNormalized));
+        string[] lines = File.ReadAllLines(Path.Combine(root, "index/changes.jsonl"));
+        Assert.AreEqual(metadata.Summary.TotalChangeGroups, lines.Length);
+        Assert.IsTrue(lines.All(line => Encoding.UTF8.GetByteCount(line) + 1 <= 64 * 1024 - 1024));
+        Assert.IsFalse(Directory.GetFiles(Path.Combine(root, "index")).Any(path => path.EndsWith(".partial", StringComparison.Ordinal)));
+        CollectionAssert.AreEqual(originalBefore, File.ReadAllBytes(Path.Combine(root, "input/historical.content")));
+        CollectionAssert.AreEqual(originalAfter, File.ReadAllBytes(Path.Combine(root, "input/effective.content")));
+        foreach (string file in new[] { "input/historical.content", "input/effective.content", "normalized/historical.final.docx",
+                     "normalized/effective.final.docx", "index/changes.jsonl", "index/result.json" })
+            File.Delete(Path.Combine(root, file));
+        Directory.Delete(Path.Combine(root, "index"));
+        RemoveEmptyOperation(root);
+    }
+
     private static async Task<int> RunAsync(string root)
     {
         using var request = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(

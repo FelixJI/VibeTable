@@ -17,7 +17,7 @@ internal static class DocumentDiffWorkerSupervisor
     // ProcessStartInfo is an internal launch seam for real-process fault tests;
     // the product caller always selects the fixed worker from its package layout.
     internal static async Task<int> RunAsync(ProcessStartInfo startInfo, string operationDirectory,
-        TimeSpan timeout, CancellationToken cancellationToken)
+        TimeSpan timeout, CancellationToken cancellationToken, bool compareDocx = false)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         if (!OperatingSystem.IsWindows())
@@ -46,7 +46,8 @@ internal static class DocumentDiffWorkerSupervisor
             output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, deadline.Token);
             error = process.StandardError.BaseStream.CopyToAsync(Stream.Null, deadline.Token);
             await JsonSerializer.SerializeAsync(process.StandardInput.BaseStream,
-                new { version = 1, operationDirectory }, cancellationToken: deadline.Token).ConfigureAwait(false);
+                new { version = compareDocx ? 2 : 1, operationDirectory,
+                    operation = compareDocx ? "compareDocx" : null }, cancellationToken: deadline.Token).ConfigureAwait(false);
             await process.StandardInput.BaseStream.FlushAsync(deadline.Token).ConfigureAwait(false);
             process.StandardInput.Close();
             await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);

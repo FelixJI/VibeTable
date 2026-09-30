@@ -37,6 +37,41 @@ public sealed class DocumentDiffWorkerSupervisorTests
     }
 
     [TestMethod]
+    public async Task RealWorkerComparisonPublishesBoundedMetadataAndChangeIndex()
+    {
+        string repo = RepositoryRoot();
+        string root = CreateOperation(repo);
+        Directory.CreateDirectory(Path.Combine(root, "index"));
+        string fixtures = Path.Combine(repo, "desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/docx");
+        File.Copy(Path.Combine(fixtures, "format-before.docx"), Path.Combine(root, "input/historical.content"));
+        File.Copy(Path.Combine(fixtures, "format-after.docx"), Path.Combine(root, "input/effective.content"));
+        string configuration = typeof(DocumentDiffWorkerSupervisorTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()!.Configuration;
+        string worker = Path.Combine(repo, "desktop/src/VibeTable.Desktop/bin", configuration,
+            "net10.0-windows/resources/document-diff/VibeTable.DocumentDiff.Worker.exe");
+        var start = new ProcessStartInfo(worker);
+        int exit = await DocumentDiffWorkerSupervisor.RunAsync(start, root, TimeSpan.FromSeconds(30), default, compareDocx: true);
+        Assert.AreEqual(0, exit);
+        using var result = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "index/result.json")));
+        Assert.AreEqual(2, result.RootElement.GetProperty("version").GetInt32());
+        Assert.AreEqual(2, result.RootElement.GetProperty("summary").GetProperty("formattingChanges").GetInt32());
+        string[] changes = File.ReadAllLines(Path.Combine(root, "index/changes.jsonl"));
+        Assert.AreEqual(3, changes.Length);
+        using var structural = System.Text.Json.JsonDocument.Parse(changes[2]);
+        Assert.AreEqual("other", structural.RootElement.GetProperty("kind").GetString());
+        Assert.AreEqual(1, structural.RootElement.GetProperty("location").GetProperty("paragraphIndex").GetInt32());
+        foreach (string side in new[] { "historical", "effective" })
+        {
+            File.Delete(Path.Combine(root, "input", side + ".content"));
+            File.Delete(Path.Combine(root, "normalized", side + ".final.docx"));
+        }
+        File.Delete(Path.Combine(root, "index/result.json"));
+        File.Delete(Path.Combine(root, "index/changes.jsonl"));
+        Directory.Delete(Path.Combine(root, "index"));
+        RemoveEmptyOperation(root);
+    }
+
+    [TestMethod]
     [DataRow(true)]
     [DataRow(false)]
     public async Task RunningWorkerIsStoppedBeforeCancellationOrTimeoutReturns(bool cancel)

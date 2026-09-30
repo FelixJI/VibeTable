@@ -103,7 +103,11 @@ public sealed record DocumentDiffRequest(
 public sealed record DocumentDiffDetails(
     DocumentDiffFormat Format,
     IReadOnlyList<DocumentDiffChange> Changes,
-    DocumentDiffCoverage Coverage);
+    DocumentDiffCoverage Coverage)
+{
+    public DocumentDiffSummary? Summary { get; init; }
+    public IReadOnlyList<DocumentDiffWarning> Warnings { get; init; } = [];
+}
 
 public interface IDocumentDiffEngine
 {

@@ -1351,8 +1351,9 @@ def test_run_scenario_success_closes_the_cdp_owner_lease(
         local_data: Path,
         host_scope: Any,
         process_network: dict[str, Any] | None = None,
+        measure_diff_worker: bool = False,
     ) -> tuple[int, str, str]:
-        del local_data, host_scope, process_network
+        del local_data, host_scope, process_network, measure_diff_worker
         (scenario_dir / f"{scenario.id}-result.json").write_text(
             json.dumps({"scenario": scenario.id, "status": "passed"}),
             encoding="utf-8",
@@ -3896,10 +3897,11 @@ def test_nonzero_node_exit_preserves_structured_scenario_failure_but_rejects_pas
         local_data: Path,
         host_scope: Any,
         process_network: dict[str, Any] | None = None,
+        measure_diff_worker: bool = False,
     ) -> tuple[int, str, str]:
         del local_data
         del host_scope
-        del process_network
+        del process_network, measure_diff_worker
         (scenario_dir / f"{scenario.id}-result.json").write_text(
             json.dumps({"scenario": scenario.id, **node_result}),
             encoding="utf-8",
@@ -4422,3 +4424,54 @@ def test_plugin_host_restart_acceptance_is_selected_only_for_its_scenarios(
     assert report["status"] == "passed"
     assert routed == []
     assert (tmp_path / "evidence2").exists()
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_document_diff_worker_memory_uses_only_verified_job_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verified: bool
+) -> None:
+    class Scope:
+        @staticmethod
+        def working_set_snapshot() -> ProcessWorkingSetSnapshot:
+            return ProcessWorkingSetSnapshot(
+                (
+                    ProcessWorkingSetMember(
+                        71, "VibeTable.DocumentDiff.Worker.exe", verified, 123456
+                    ),
+                    ProcessWorkingSetMember(72, "unrelated.exe", True, 999999999),
+                )
+            )
+
+    class Node:
+        polls = 0
+        returncode = 0
+
+        def poll(self) -> int | None:
+            self.polls += 1
+            return None if self.polls == 1 else 0
+
+        @staticmethod
+        def communicate(timeout: int) -> tuple[str, str]:
+            assert timeout == 10
+            return "", ""
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: Node())
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: None)
+    runner._run_node_runner(
+        ["node"],
+        scenario_dir=tmp_path,
+        local_data=tmp_path,
+        host_scope=Scope(),
+        measure_diff_worker=True,
+    )
+    evidence = json.loads((tmp_path / "document-diff-worker-memory.json").read_text())
+    assert evidence["samples"] == 1
+    assert "blindSpots" in evidence
+    if verified:
+        assert evidence["workers"] == {
+            "71": {"pid": 71, "samples": 1, "peakWorkingSetBytes": 123456}
+        }
+        assert not evidence["errors"]
+    else:
+        assert not evidence["workers"]
+        assert evidence["errors"]

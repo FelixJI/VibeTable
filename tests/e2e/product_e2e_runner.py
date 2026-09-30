@@ -51,6 +51,7 @@ from scripts.qa._windows_tcp_table import query_windows_tcp_table  # noqa: E402
 from scripts.qa.windows_process_scope import (  # noqa: E402
     ProcessLaunchSpec,
     ProcessScopeSnapshot,
+    ProcessWorkingSetSnapshot,
     ScopeTerminationResult,
     ScopeWaitResult,
     TargetTerminationResult,
@@ -145,7 +146,7 @@ class _ManagedScope(_LifecycleScope, _CloseScope, Protocol):
 
 
 class _HostObservationScope(_SnapshotScope, _FaultScope, Protocol):
-    pass
+    def working_set_snapshot(self) -> ProcessWorkingSetSnapshot: ...
 
 
 class _PortOwnerLease(Protocol):
@@ -1075,6 +1076,7 @@ def _run_node_runner(
     local_data: Path,
     host_scope: _HostObservationScope,
     process_network: dict[str, Any] | None = None,
+    measure_diff_worker: bool = False,
 ) -> tuple[int, str, str]:
     fault_request = scenario_dir / "fault-request.json"
     fault_result = scenario_dir / "fault-result.json"
@@ -1093,6 +1095,13 @@ def _run_node_runner(
     handled_fault_ids: set[str] = set()
     invalid_fault_reported = False
     handled_storage_proof_ids: set[str] = set()
+    worker_memory: dict[str, Any] = {
+        "method": "identity-verified Job members, sampled working set every driver loop (nominal 50 ms)",
+        "blindSpots": "Short-lived workers and allocations between samples can be missed; this is an observed peak, not the Job memory limit or a kernel peak counter.",
+        "samples": 0,
+        "workers": {},
+        "errors": [],
+    }
     next_network_sample = 0.0
     deadline = time.monotonic() + 180
     while node_process.poll() is None:
@@ -1142,7 +1151,35 @@ def _run_node_runner(
                 _process_network_report(process_network, status="monitoring"),
             )
             next_network_sample = time.monotonic() + 0.25
+        if measure_diff_worker:
+            try:
+                snapshot = host_scope.working_set_snapshot()
+                worker_memory["samples"] += 1
+                for member in snapshot.members:
+                    if member.executable_name.casefold() != "vibetable.documentdiff.worker.exe":
+                        continue
+                    if not member.identity_verified or member.working_set_bytes is None:
+                        worker_memory["errors"].append(
+                            f"worker {member.pid} identity/memory unavailable"
+                        )
+                        continue
+                    observed = worker_memory["workers"].setdefault(
+                        str(member.pid),
+                        {
+                            "pid": member.pid,
+                            "samples": 0,
+                            "peakWorkingSetBytes": 0,
+                        },
+                    )
+                    observed["samples"] += 1
+                    observed["peakWorkingSetBytes"] = max(
+                        observed["peakWorkingSetBytes"], member.working_set_bytes
+                    )
+            except (OSError, RuntimeError) as exc:
+                worker_memory["errors"].append(str(exc))
         time.sleep(0.05)
+    if measure_diff_worker:
+        _write_json_atomic(scenario_dir / "document-diff-worker-memory.json", worker_memory)
     if process_network is not None:
         _record_process_network(host_scope, process_network)
         _write_json_atomic(
@@ -1631,6 +1668,7 @@ def run_scenario(
                 local_data=readiness_dir / "local-data",
                 host_scope=scope,
                 process_network=process_network,
+                measure_diff_worker=scenario.id == "14-document-diff",
             )
             phase_timings["driverMs"] = time.monotonic() - driver_started
             (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
@@ -1653,6 +1691,9 @@ def run_scenario(
                     "nodeExitCode": node_returncode,
                     "evidenceDirectory": str(scenario_dir),
                     "processNetwork": process_network_report,
+                    "documentDiffWorkerMemory": _read_json(
+                        scenario_dir / "document-diff-worker-memory.json"
+                    ),
                 }
             )
             if readiness.get("ready") is not True:
@@ -1690,6 +1731,16 @@ def run_scenario(
                             f"{node_stderr.strip() or 'no stderr'}"
                         ),
                     }
+            elif scenario.id == "14-document-diff" and (
+                not (result.get("documentDiffWorkerMemory") or {}).get("workers")
+                or (result.get("documentDiffWorkerMemory") or {}).get("errors")
+            ):
+                result["status"] = "failed"
+                result["error"] = {
+                    "code": "DOCUMENT_DIFF_WORKER_MEMORY_UNVERIFIED",
+                    "message": "The actual packaged Worker had no verified memory samples or observation errors.",
+                    "details": result.get("documentDiffWorkerMemory"),
+                }
             elif result.get("status") != "passed":
                 result["status"] = "failed"
                 result["error"] = {

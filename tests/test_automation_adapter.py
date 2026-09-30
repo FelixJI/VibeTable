@@ -1287,6 +1287,23 @@ def test_spdx_is_derived_from_the_built_package_sbom(
         ),
         encoding="utf-8",
     )
+    worker = tmp_path / "dist/VibeTable.Next/resources/document-diff/sbom.cdx.json"
+    worker.parent.mkdir(parents=True)
+    worker.write_text(
+        json.dumps(
+            {
+                "components": [
+                    {
+                        "name": "Clippit",
+                        "version": "3.9.0",
+                        "purl": "pkg:nuget/Clippit@3.9.0",
+                        "licenses": [{"license": {"id": "MIT"}}],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
     output = tmp_path / "artifacts/SBOM.spdx.json"
     output.parent.mkdir()
@@ -1302,8 +1319,10 @@ def test_spdx_is_derived_from_the_built_package_sbom(
         "1.2.3",
         "0.40.1",
         "0.40.1",
+        "3.9.0",
     ]
-    assert len({item["SPDXID"] for item in document["packages"]}) == 3
+    assert document["packages"][-1]["licenseDeclared"] == "MIT"
+    assert len({item["SPDXID"] for item in document["packages"]}) == 4
     assert document["packages"][0]["checksums"] == [
         {
             "algorithm": "SHA256",
@@ -1322,6 +1341,9 @@ def test_release_metadata_binds_archive_identity_and_spdx(
     cyclonedx = package_root / "resources/sidecar/sbom.cdx.json"
     cyclonedx.parent.mkdir(parents=True)
     cyclonedx.write_text('{"components":[]}', encoding="utf-8")
+    worker = package_root / "resources/document-diff/sbom.cdx.json"
+    worker.parent.mkdir(parents=True)
+    worker.write_text('{"components":[]}', encoding="utf-8")
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     archive = artifacts / "VibeTable-v1.2.3-win-x64.zip"

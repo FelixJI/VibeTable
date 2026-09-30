@@ -31,7 +31,8 @@
     "backend": "resources/backend/vibetable-backend.exe",
     "webGrid": "resources/web-grid",
     "sidecar": "resources/sidecar/vibetable-pb.exe",
-    "previewHost": "VibeTable.Next.exe"
+    "previewHost": "VibeTable.Next.exe",
+    "documentDiffWorker": "resources/document-diff/VibeTable.DocumentDiff.Worker.exe"
   },
   "assets": {
     "migrations": "resources/sidecar/migrations/manifest.json",
@@ -39,6 +40,8 @@
     "sidecarChecksum": "resources/sidecar/vibetable-pb.exe.sha256",
     "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
     "sbom": "resources/sidecar/sbom.cdx.json",
+    "documentDiffLicenses": "resources/document-diff/THIRD_PARTY_LICENSES.txt",
+    "documentDiffSbom": "resources/document-diff/sbom.cdx.json",
     "recoveryToolProvenance": "resources/sidecar/recovery-tools.provenance.json",
     "recoveryGuide": "resources/RECOVERY.md",
     "workspaceContracts": "resources/contracts/v2",

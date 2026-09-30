@@ -691,7 +691,8 @@ public partial class MainWindow : Window
                 : new TestModeLocalDocumentFilePicker(_e2eControlsDir),
             _workspaceSessionFilter,
             new OpenXmlDocumentDiffEngine(),
-            Path.Combine(_productDataRoot, "document-diff"));
+            Path.Combine(_productDataRoot, "document-diff"),
+            Path.Combine(AppContext.BaseDirectory, "resources", "document-diff", "VibeTable.DocumentDiff.Worker.exe"));
         _dispatcher.SetDocumentWorkspace(_documentWorkspace);
         _configuredProductBinding = binding;
         _authorityTransition.Transition(

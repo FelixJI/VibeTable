@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -51,6 +52,7 @@ BACKEND_EXE_NAME = "vibetable-backend.exe"
 # The published product is a Windows desktop package even when source-contract
 # checks run on Linux. Keep the manifest target-platform deterministic instead
 # of letting the CI host silently rewrite package paths.
+DIFF_WORKER_EXE_NAME = "VibeTable.DocumentDiff.Worker.exe"
 SIDECAR_EXE_NAME = "vibetable-pb.exe"
 KOPIA_EXE_NAME = "kopia.exe"
 AGE_EXE_NAME = "age.exe"
@@ -310,12 +312,15 @@ def build_npm_build_command(_paths: RepoPaths) -> list[str]:
 
 
 def build_dotnet_publish_command(
-    paths: RepoPaths, output_dir: str | os.PathLike[str] | None = None
+    paths: RepoPaths,
+    output_dir: str | os.PathLike[str] | None = None,
+    *,
+    project: Path | None = None,
 ) -> list[str]:
     command = [
         "dotnet",
         "publish",
-        str(paths.desktop_csproj),
+        str(project or paths.desktop_csproj),
         "--configuration",
         "Release",
         "--runtime",
@@ -323,6 +328,7 @@ def build_dotnet_publish_command(
         "--self-contained",
         "true",
         "-p:PublishSingleFile=true",
+        "-p:NuGetLockFilePath=obj/publish.packages.lock.json",
         "-p:IncludeNativeLibrariesForSelfExtract=true",
         "-p:EnableCompressionInSingleFile=true",
         "-p:DebugType=None",
@@ -436,6 +442,7 @@ def render_manifest(
             "webGrid": "resources/web-grid",
             "sidecar": f"resources/sidecar/{SIDECAR_EXE_NAME}",
             "previewHost": HOST_EXE_NAME,
+            "documentDiffWorker": f"resources/document-diff/{DIFF_WORKER_EXE_NAME}",
         },
         "assets": {
             "migrations": "resources/sidecar/migrations/manifest.json",
@@ -443,6 +450,8 @@ def render_manifest(
             "sidecarChecksum": f"resources/sidecar/{SIDECAR_EXE_NAME}.sha256",
             "licenses": "resources/sidecar/THIRD_PARTY_LICENSES.txt",
             "sbom": "resources/sidecar/sbom.cdx.json",
+            "documentDiffLicenses": "resources/document-diff/THIRD_PARTY_LICENSES.txt",
+            "documentDiffSbom": "resources/document-diff/sbom.cdx.json",
             "recoveryToolProvenance": f"resources/sidecar/{RECOVERY_PROVENANCE_NAME}",
             "recoveryGuide": "resources/RECOVERY.md",
             "workspaceContracts": "resources/contracts/v2",
@@ -1284,9 +1293,19 @@ def _build_backend(paths: RepoPaths, *, skip: bool) -> None:
     shutil.move(str(produced), str(paths.backend_dir))
 
 
+def _prepare_desktop_publish_locks(paths: RepoPaths) -> None:
+    # Publish adds RID/ILLink dependencies. Seed its own generated locks with the
+    # committed versions so publishing cannot rewrite normal locked restore inputs.
+    for source in sorted((paths.repo_root / "desktop/src").glob("*/packages.lock.json")):
+        target = source.parent / "obj/publish.packages.lock.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
 def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
     if skip:
         return
+    _prepare_desktop_publish_locks(paths)
     output = paths.scratch_root / "desktop"
     output.mkdir(parents=True, exist_ok=True)
     _run(
@@ -1299,6 +1318,117 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
         raise BuildError("desktop publish output is missing")
     paths.host_exe.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, paths.host_exe)
+    project = (
+        paths.repo_root
+        / "desktop/src/VibeTable.DocumentDiff.Worker/VibeTable.DocumentDiff.Worker.csproj"
+    )
+    worker_output = paths.scratch_root / "document-diff"
+    worker_output.mkdir(parents=True, exist_ok=True)
+    _run(build_dotnet_publish_command(paths, worker_output, project=project), cwd=paths.repo_root)
+    worker_exe = worker_output / DIFF_WORKER_EXE_NAME
+    if not worker_exe.is_file():
+        raise BuildError("document diff worker publish output is missing")
+    worker_destination = paths.resources_dir / "document-diff"
+    worker_destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(worker_exe, worker_destination / DIFF_WORKER_EXE_NAME)
+    _write_document_diff_metadata(paths, project, worker_destination)
+
+
+def _write_document_diff_metadata(paths: RepoPaths, project: Path, output: Path) -> None:
+    assets = json.loads((project.parent / "obj/project.assets.json").read_text(encoding="utf-8"))
+    package_roots = [Path(root) for root in assets["packageFolders"]]
+    runtime_target = assets["targets"].get("net10.0/win-x64")
+    if not isinstance(runtime_target, dict):
+        raise BuildError("document diff win-x64 dependency inventory is missing")
+    runtime_libraries = {
+        name
+        for name, value in runtime_target.items()
+        if any(
+            Path(asset).name != "_._"
+            for kind in ("runtime", "native")
+            for asset in value.get(kind, {})
+        )
+    }
+    libraries = dict(assets["libraries"])
+    for framework in assets["project"]["frameworks"].values():
+        for dependency in framework.get("downloadDependencies", []):
+            name = dependency["name"]
+            if ".Runtime.win-x64" not in name and ".Host.win-x64" not in name:
+                continue
+            version = dependency["version"].strip("[]").split(",")[0].strip()
+            identifier = f"{name}/{version}"
+            libraries[identifier] = {"type": "package", "path": identifier.lower()}
+            runtime_libraries.add(identifier)
+    notices: list[str] = []
+    components: list[dict[str, object]] = []
+    # NuGet expression licenses need their text too; reuse the repository's MIT grant.
+    mit = (paths.repo_root / "LICENSE").read_text(encoding="utf-8")
+    mit = mit[mit.index("Permission is hereby granted") :]
+    for identifier, library in sorted(libraries.items()):
+        if library["type"] != "package" or identifier not in runtime_libraries:
+            continue
+        package = next(
+            (root / library["path"] for root in package_roots if (root / library["path"]).is_dir()),
+            None,
+        )
+        if package is None:
+            raise BuildError(f"document diff package cache is missing: {identifier}")
+        nuspec = next(package.glob("*.nuspec"), None)
+        if nuspec is None:
+            raise BuildError(f"document diff package metadata is missing: {identifier}")
+        metadata = ET.parse(nuspec).getroot().find("{*}metadata")
+        if metadata is None:
+            raise BuildError(f"document diff package metadata is invalid: {identifier}")
+        name = metadata.findtext("{*}id")
+        version = metadata.findtext("{*}version")
+        license_element = metadata.find("{*}license")
+        if not name or not version or license_element is None:
+            raise BuildError(f"document diff package license is missing: {identifier}")
+        if f"{name}/{version}".casefold() != identifier.casefold():
+            raise BuildError(f"document diff package name/version differs: {identifier}")
+        declared = license_element.text or ""
+        if license_element.get("type") != "expression" or declared != "MIT":
+            raise BuildError(f"document diff package license needs review: {identifier}")
+        copyright_text = metadata.findtext("{*}copyright") or ""
+        authors = metadata.findtext("{*}authors") or ""
+        text = [f"{name} {version} — {declared}", copyright_text, f"Authors: {authors}", mit]
+        for path in sorted(package.rglob("*")):
+            if path.is_file() and path.name.casefold() in {
+                "license.txt",
+                "license",
+                "third-party-notices.txt",
+                "notice.txt",
+                "notice",
+            }:
+                text.extend([str(path.relative_to(package)), path.read_text(encoding="utf-8-sig")])
+        notices.append("\n".join(text))
+        components.append(
+            {
+                "type": "library",
+                "name": name,
+                "version": version,
+                "purl": f"pkg:nuget/{name}@{version}",
+                "licenses": [{"license": {"id": declared}}],
+                "copyright": copyright_text,
+            }
+        )
+    if not components:
+        raise BuildError("document diff dependency inventory is empty")
+    (output / "THIRD_PARTY_LICENSES.txt").write_text("\n\n".join(notices) + "\n", encoding="utf-8")
+    (output / "sbom.cdx.json").write_text(
+        json.dumps(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "version": 1,
+                "components": components,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _stage_self_update_smoke_package(

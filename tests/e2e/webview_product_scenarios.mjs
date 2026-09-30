@@ -7443,6 +7443,116 @@ async function scenario14(page, recorder, _network, runtime) {
     rawMaterializeFailure.includes("workspace.method_not_public"),
   { rawMaterializeFailure });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "14-document-diff-stale.png"), fullPage: true });
+
+
+  const docxFixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+    "../../desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/docx");
+  for (const [name, before, after, normalized] of [
+    ["document-format.docx", "format-before.docx", "format-after.docx", false],
+    ["document-existing-revisions.docx", "existing-revisions.docx", "existing-revisions.docx", true],
+  ]) {
+    const syntheticSource = path.join(runtime.controlsDir, name);
+    await fs.copyFile(path.join(docxFixtures, before), syntheticSource);
+    await fs.writeFile(path.join(runtime.controlsDir, "document-source.txt"), `${syntheticSource}\n`, "utf8");
+    await page.getByTestId("document-import").click();
+    const docxRow = page.locator('[data-testid^="document-row-"]').filter({ hasText: name });
+    await docxRow.waitFor({ state: "visible", timeout: 30_000 });
+    const docxQuery = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+      logic: "and", filters: [{ field: "displayName", operator: "eq", value: name }],
+      sort: [{ field: "relativePath", direction: "asc" }], limit: 50, cursor: null,
+    });
+    const imported = docxQuery.result.documents.find(item => item.relativePath === name);
+    const oldTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId: imported.documentId });
+    const historical = oldTree.result.effectiveRevisionId;
+    if (normalized) {
+      await rawWorkspaceV2Request(page, "fileHistory.restore", {
+        documentId: imported.documentId, expectedEffectiveRevisionId: historical, historicalRevisionId: historical,
+      });
+    } else {
+      await fs.copyFile(path.join(docxFixtures, after), syntheticSource);
+      await fs.writeFile(path.join(runtime.controlsDir, "file-upgrade-source.txt"), `${syntheticSource}\n`, "utf8");
+      await rawWorkspaceV2Request(page, "fileHistory.upgrade", {
+        documentId: imported.documentId, revisionId: historical, pathGrant: "host-picker://file-upgrade",
+      });
+    }
+    const oldHandle = await docxRow.getAttribute("data-testid");
+    await workspace.getByTestId("document-refresh").click();
+    await page.waitForFunction(({ old, target }) => [...document.querySelectorAll('[data-testid^="document-row-"]')]
+      .find(candidate => candidate.textContent?.includes(target))?.getAttribute("data-testid") !== old,
+    { old: oldHandle, target: name });
+    await docxRow.click();
+    await workspace.locator(".inspector-tabs button").nth(1).click();
+    await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+    await page.getByTestId("compare-revision").first().click();
+    const compared = await waitForCapturedBridgeMessage(page, 30_000);
+    const session = compared.payload?.session;
+    recorder.check(`DOCX ${name} uses the actual Worker session`, compared.payload?.outcome === "ready"
+      && session?.format === "docx" && session?.historicalRevisionId === historical,
+    { compared });
+    recorder.check(`DOCX ${name} reports an independent complete group oracle`,
+      session.summary.totalChangeGroups === (normalized ? 0 : 3)
+        && session.summary.formattingChanges === (normalized ? 0 : 2)
+        && session.summary.otherChanges === (normalized ? 0 : 1)
+        && session.summary.insertions === 0 && session.summary.deletions === 0
+        && session.summary.replacements === 0 && session.summary.moves === 0
+        && session.summary.tableChanges === 0 && session.summary.commentChanges === 0, { summary: session.summary });
+    recorder.check(`DOCX ${name} declares coverage and normalization honestly`,
+      session.warnings.includes("partialCoverage")
+        && session.warnings.includes("existingRevisionsNormalized") === normalized
+        && session.coverage.areas.some(item => item.area === "visibleText" && item.status === "covered")
+        && session.coverage.areas.some(item => item.area === "fields" && item.status === "notCovered"),
+    { coverage: session.coverage, warnings: session.warnings });
+    await page.getByTestId("diff-details").waitFor({ state: "visible" });
+    const details = await page.getByTestId("diff-details").innerText();
+    recorder.check(`DOCX ${name} renders specific locations and readable results`, normalized
+      ? details.includes("已有修订已在副本中接受后比较")
+      : details.includes("段落格式") && details.includes("仅格式变化的相同正文")
+        && details.includes("段落 1") && await page.locator('[data-change-id]').count() === 3,
+    { details });
+    if (!normalized) {
+      const sizes = await page.locator('[data-change-id] span').evaluateAll(nodes => nodes
+        .filter(node => node.textContent.includes("仅格式变化的相同正文"))
+        .map(node => getComputedStyle(node).fontSize));
+      recorder.check("DOCX direct font size is visibly different", new Set(sizes).size > 1, { sizes });
+      await page.screenshot({ path: path.join(runtime.evidenceDir, "14-docx-diff-details.png"), fullPage: true });
+    }
+    const newTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId: imported.documentId });
+    const unchangedHistorical = newTree.result.revisions.find(item => item.revisionId === historical);
+    const originalHistorical = oldTree.result.revisions.find(item => item.revisionId === historical);
+    recorder.check(`DOCX ${name} comparison preserves authority objects and effective pointer`,
+      isDeepStrictEqual(unchangedHistorical, originalHistorical)
+        && newTree.result.effectiveRevisionId === session.effectiveRevisionId,
+    { originalHistorical, unchangedHistorical, effectiveRevisionId: newTree.result.effectiveRevisionId });
+    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+    await page.getByTestId("diff-close").click();
+    await waitForCapturedBridgeMessage(page, 30_000);
+    if (!normalized) {
+      await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+      await page.getByTestId("compare-revision").first().click();
+      await page.getByTestId("diff-cancel").click({ timeout: 10_000 });
+      const cancelled = await waitForCapturedBridgeMessage(page, 30_000);
+      recorder.check("actual DOCX cancellation returns no ready session", cancelled.payload?.outcome === "failure"
+        && cancelled.payload?.failure === "cancelled" && cancelled.payload?.session === null, { cancelled });
+      recorder.check("cancelled DOCX cleans all registered Worker outputs",
+        !fsSync.existsSync(artifactRoot) || (await fs.readdir(artifactRoot)).length === 0);
+      await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+      await page.getByTestId("compare-revision").first().click();
+      const retried = await waitForCapturedBridgeMessage(page, 30_000);
+      recorder.check("DOCX retries after cancellation with a fresh valid session", retried.payload?.outcome === "ready"
+        && retried.payload?.session?.sessionId !== session.sessionId
+        && retried.payload?.session?.summary?.totalChangeGroups === 3, { retried });
+      await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+      await page.getByTestId("diff-close").click();
+      await waitForCapturedBridgeMessage(page, 30_000);
+    }
+    const closedPage = await rawBridgeRequest(page, "document.diffPageRequested", {
+      sessionId: session.sessionId, cursor: null, limit: 50,
+    }, 30_000, ["document.diffPageCompleted"]);
+    const knownRemaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
+    recorder.check(`DOCX ${name} closes its session and cleans Worker files`,
+      closedPage.payload?.failure === "sessionExpired" && knownRemaining.length === 0,
+    { closedPage, knownRemaining });
+  }
 }
 
 async function requestWithStaleWorkspaceScope(page, method, params, staleSession) {
