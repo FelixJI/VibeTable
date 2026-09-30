@@ -5,6 +5,8 @@ using VibeTable.Workspace.Diff;
 
 namespace VibeTable.DocumentDiff.OpenXml;
 
+using static OpenXmlReadSafety;
+
 internal static class OpenXmlExtractionLimits
 {
     internal const long MaxNonSeekablePackageBytes = 64L * 1024 * 1024;
@@ -426,52 +428,6 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         return output.ToString();
     }
 
-    private static XmlReaderSettings SecureXmlSettings()
-    {
-        return new XmlReaderSettings
-        {
-            DtdProcessing = DtdProcessing.Prohibit,
-            XmlResolver = null,
-        };
-    }
-
-    private static ExpandedByteBudget ValidateArchive(ZipArchive archive)
-    {
-        if (archive.Entries.Count > OpenXmlExtractionLimits.MaxPackageEntries)
-        {
-            throw new DiffBudgetExceededException();
-        }
-        long declaredXmlBytes = 0;
-        foreach (var entry in archive.Entries)
-        {
-            if (!entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            if (entry.Length > OpenXmlExtractionLimits.MaxXmlPartBytes)
-            {
-                throw new DiffBudgetExceededException();
-            }
-            declaredXmlBytes = checked(declaredXmlBytes + entry.Length);
-            if (declaredXmlBytes > OpenXmlExtractionLimits.MaxExpandedXmlBytes)
-            {
-                throw new DiffBudgetExceededException();
-            }
-        }
-        return new ExpandedByteBudget();
-    }
-
-    private static Stream OpenBoundedEntry(
-        ZipArchiveEntry entry,
-        ExpandedByteBudget expandedBudget)
-    {
-        if (entry.Length > OpenXmlExtractionLimits.MaxXmlPartBytes)
-        {
-            throw new DiffBudgetExceededException();
-        }
-        return new BudgetedEntryStream(entry.Open(), expandedBudget);
-    }
-
     private static void AppendElementText(
         XmlReader reader,
         StringBuilder target,
@@ -521,49 +477,6 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         output.Append(value);
     }
 
-    private static async ValueTask<Stream> EnsureSeekableAsync(
-        DocumentContentSource content,
-        Stream source,
-        CancellationToken cancellationToken)
-    {
-        if (content.Length is > OpenXmlExtractionLimits.MaxNonSeekablePackageBytes)
-        {
-            throw new DiffBudgetExceededException();
-        }
-        if (source.CanSeek)
-        {
-            if (source.Length > OpenXmlExtractionLimits.MaxNonSeekablePackageBytes)
-            {
-                throw new DiffBudgetExceededException();
-            }
-            source.Position = 0;
-            return new NonOwningStream(source);
-        }
-
-        var copy = new MemoryStream();
-        var buffer = new byte[64 * 1024];
-        long total = 0;
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-            {
-                break;
-            }
-            total += read;
-            if (total > OpenXmlExtractionLimits.MaxNonSeekablePackageBytes)
-            {
-                copy.Dispose();
-                throw new DiffBudgetExceededException();
-            }
-            await copy.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
-                .ConfigureAwait(false);
-        }
-        copy.Position = 0;
-        return copy;
-    }
-
     private static DocumentContentSource TextSource(string text)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
@@ -582,56 +495,6 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         Pptx,
     }
 
-    private sealed class NonOwningStream(Stream inner) : Stream
-    {
-        public override bool CanRead => inner.CanRead;
-
-        public override bool CanSeek => inner.CanSeek;
-
-        public override bool CanWrite => false;
-
-        public override long Length => inner.Length;
-
-        public override long Position
-        {
-            get => inner.Position;
-            set => inner.Position = value;
-        }
-
-        public override void Flush() => inner.Flush();
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            return inner.Read(buffer, offset, count);
-        }
-
-        public override long Seek(long offset, SeekOrigin origin)
-        {
-            return inner.Seek(offset, origin);
-        }
-
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count)
-        {
-            throw new NotSupportedException();
-        }
-    }
-
-    private sealed class ExpandedByteBudget
-    {
-        private long _consumed;
-
-        public void Consume(int count)
-        {
-            _consumed = checked(_consumed + count);
-            if (_consumed > OpenXmlExtractionLimits.MaxExpandedXmlBytes)
-            {
-                throw new DiffBudgetExceededException();
-            }
-        }
-    }
-
     private sealed class VisibleTextBudget
     {
         private int _consumed;
@@ -646,76 +509,4 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         }
     }
 
-    private sealed class BudgetedEntryStream(
-        Stream inner,
-        ExpandedByteBudget budget) : Stream
-    {
-        private long _entryBytes;
-
-        public override bool CanRead => inner.CanRead;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            int read = inner.Read(buffer, offset, count);
-            Consume(read);
-            return read;
-        }
-
-        public override int Read(Span<byte> buffer)
-        {
-            int read = inner.Read(buffer);
-            Consume(read);
-            return read;
-        }
-
-        public override async ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            int read = await inner.ReadAsync(buffer, cancellationToken)
-                .ConfigureAwait(false);
-            Consume(read);
-            return read;
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                inner.Dispose();
-            }
-            base.Dispose(disposing);
-        }
-
-        public override ValueTask DisposeAsync() => inner.DisposeAsync();
-        public override void Flush() => throw new NotSupportedException();
-        public override long Seek(long offset, SeekOrigin origin)
-            => throw new NotSupportedException();
-        public override void SetLength(long value)
-            => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count)
-            => throw new NotSupportedException();
-
-        private void Consume(int count)
-        {
-            _entryBytes = checked(_entryBytes + count);
-            if (_entryBytes > OpenXmlExtractionLimits.MaxXmlPartBytes)
-            {
-                throw new DiffBudgetExceededException();
-            }
-            budget.Consume(count);
-        }
-    }
-
-    private sealed class DiffBudgetExceededException : Exception
-    {
-    }
 }

@@ -41,6 +41,30 @@ tokenizer 会扩大到整句，而且不能把 provider 的原子 `w:ins`/`w:del
 由真实 corpus 锁定逻辑分组。格式变化需由 VibeTable 的 OOXML 格式指纹比较实现；Word 原生比较仅作为
 用户显式选择的高保真补充。
 
+PR-3/4 的 managed Clippit 3.9.0 预检查进一步发现：`WordSeparators` 可令普通中文单字替换只产生
+`甲`/`乙` 修订，也能将 `100万元 → 120万元` 限定为 `100`/`120`；但扩展汉字 `𠀀 → 𠀁` 和
+emoji `👩🏽‍💻 → 👩🏻‍💻` 在默认及 CJK 分隔符配置下均产生零条修订。输出包含新文本且原始
+`w:ins`/`w:del` 均为零，Microsoft365 schema 验证仍通过。这证明包结构合法不能证明比较语义完整，
+也不能把 Clippit 的零修订结果作为“相同”的权威结论。样本从已有 Word 语料的内存副本替换正文构造，
+没有修改语料或源文件。生产 provider 必须通过独立的 Unicode 文本元素对齐及原文/终态还原验证，
+解决该遗漏后才可发布比较稿；调整分隔符不足以解除这一门禁。
+
+同一 managed 预检查确认 `RevisionAccepter.AcceptRevisions` 可在派生副本上清除已有插入/删除修订，
+结果通过 schema 验证，原始语料内容和修改时间均保持不变。该结果仅证明归一化路径，不解除上述
+Unicode 比较门禁。
+
+固定上游提交 `41a64150b5339524dc6555a7d07a99c06a188b0a` 的原因链为：
+[`ComparisonUnits`](https://github.com/sergey-tihon/Clippit/blob/41a64150b5339524dc6555a7d07a99c06a188b0a/Clippit/Comparer/WmlComparer.Internal.Methods.ComparisonUnits.cs#L135)
+逐 `char` 建 atom，
+[`ComparisonUnitAtom`](https://github.com/sergey-tihon/Clippit/blob/41a64150b5339524dc6555a7d07a99c06a188b0a/Clippit/Comparer/ComparisonUnitAtom.cs#L70)
+将孤立代理字符交给默认 UTF-8 编码，
+[`WmlComparerUtil`](https://github.com/sergey-tihon/Clippit/blob/41a64150b5339524dc6555a7d07a99c06a188b0a/Clippit/Comparer/WmlComparerUtil.cs#L39)
+的替代回退丢失了原字符差异，最终 Equal 分支采用 after 元素。这是比较键构造前的信息损失，
+不是摘要算法的随机碰撞；修改分隔符或单独更换摘要算法不能解决。首期 Unicode 文本仍必须完整支持，
+不能以“不支持扩展汉字/emoji”缩减产品范围。自有对齐和修订生成需补足该边界；比较稿同时验证
+“接受修订得到 after、拒绝修订得到 before”的语义还原，且不能只在零修订时检查，因为正常修订和漏报
+修改可能出现在同一文档中。
+
 ### Word / WPS
 
 Word 16.0 可只读打开内置候选输出，也可作为后续可选原生比较 provider。它必须运行在独立 helper 进程，
@@ -141,7 +165,65 @@ materialized leaf 的权威校验；若未来 artifact 跨进程交接需要摘�
 
 ## 后果
 
+### Unicode 修订生成的局部资格证据
+
+2026-09-05，自有 `DocxTextDiffer` 与 `DocxRevisionRuns` 在真实 DOCX 包副本中验证了
+扩展汉字/emoji/金额混合替换、纯格式修改、组合字符、整段插入和删除五组场景。
+固定 Clippit 3.9.0 的 `RevisionAccepter.AcceptRevisions` 与
+`RevisionProcessor.RejectRevisions` 分别还原新版和旧版文字及粗体/斜体 run 属性；
+比较结果与两种还原结果均通过 Open XML SDK schema 验证。
+
+补充 CR/CRLF 回归后，确认 XML 默认写入会丢失原始换行字符；本方 part 写入使用
+`NewLineHandling.Entitize`，并在序列化后重新断言文字与样式。Clippit 3.9.0 的
+接受/拒绝处理仍会将文本中的 CR/CRLF 归一化为 LF，因此实际 provider 必须先按
+本 ADR 的最终显示内容策略归一化输入，再进行比较；双向还原的基线是归一化输入，
+不得声称第三方处理保留了原始 CR 字节。真实包补充场景分别记录原始、归一化和
+接受/拒绝后的文本，归一化基线上的六组验证通过；输入源对象不参与写入。
+
+这仅证明正规化纯文本 run 的修订写入边界，不证明整篇文档的段落、表格、关系、
+页眉页脚、逻辑分组或 UI 已实现，也不解除 Clippit 原生 Unicode 比较的否决结论。
+后续 provider 必须保留真实包双向语义还原测试，不能以 XML 合法或单向接受成功代替。
+
+### 已有修订归一化的进程边界
+
+固定 Clippit 3.9.0 提供 `RevisionAccepter.AcceptRevisions(WordprocessingDocument)`，
+可直接处理 `normalized/` 中的派生文件，避免 `WmlDocument` API 的显式整包字节复制。
+本地对已有修订样本及两份综合样本验证：直接重载与已验证 API 的所有 part 内容一致，
+结果均通过 SDK schema 验证，源内容和修改时间不变。该观察不是峰值内存或超时资格。
+
+上述重载没有取消注入点；仅在调用前后检查 token 或对 `Task.Run` 使用 `WaitAsync`
+不能终止正在执行的库代码。生产归一化采用独立任务 worker，宿主拥有进程并监督整个
+预检、SDK 打开、接受、保存及退出流程；确认退出后才能清理派生文件。worker 不接收
+workspace authority 或 Office COM 对象。需先完成包含二进制 part 的流式展开预检，
+再调用 SDK；不能把可见文本 part 的读取预算等同于整包验证，也不能承诺第三方零重复解析。
+2026-09-30 迁移候选已包含独立 worker、输出复验和运行中取消/超时测试，宿主通过
+Windows Job 设置 1 GiB 单进程内存上限。产品 provider/UI 接线、发布包交接与实际峰值内存
+资格仍未完成；这组局部测试不代表可以放行生产。
+
+整包预检已独立实现：按 OPC content type 识别 XML，而非 ZIP 后缀；所有 XML 共用
+16 MiB 单 part、64 MiB 总展开量及 250,000 节点/属性预算。二进制 part 独立限制为
+64 MiB，整包展开量限制为 256 MiB；每个实际读取到 EOF 的条目核对声明长度。
+元数据仅解析一次，其他 XML 流式校验，二进制完整读取，均不访问外部关系资源。
+这些限制约束预检输入，不等同于后续 SDK/Clippit DOM 的进程峰值内存保证。
+
+段落序列按相等文本锚点对齐；未匹配区间保留双方范围，供后续结构与文字细化处理。
+锚点不代表格式或其他内容相等；不同 story/container 必须分别调用，不能跨表格单元格
+或正文/页眉边界强行合并。超过显式 LCS、文字或段落预算时保留范围并标记截断。
+
 ### 正向
+
+DOCX 包读取与关系解析使用现有有预算的 ZIP/XML 入口；`System.IO.Packaging 10.0.2`
+仅负责 OPC part URI 规范化，不用 `Package.Open` 绕过读取预算。包内条目和内部关系目标
+共用规范化 key，编码别名冲突即拒绝；原始 ZIP 名称只用于返回实际条目。
+外部关系仅保留元数据，既不解析资源也不发起网络或文件访问。
+内部目标先验证 authority/query/转义，再分离 fragment，不能把 `ResolvePartUri`
+会丢弃的信息当作已验证。依赖恢复生成 lock，并通过 `--locked-mode` 核对；
+content-types 的 Default/Override 由独立映射解析，Override 优先，非法 MIME、重复映射和
+非规范 part name 拒绝。类型声明而非文件后缀决定正文等 part 的种类，因此无 `.xml`
+后缀的有效正文仍经相同安全 XML 读取。正文由唯一包根关系定位，不假设固定路径；
+页眉页脚按 section/variant 保留继承绑定及显示开关，notes 单独选择。奇偶页设置单独保留，
+以区分“无 even 引用且偶数页空白”和“所有页沿用 default”的差异。同一 part 不重复读取。
+这仍不等于已完成整包归一化、Strict 命名空间转换或 provider/UI 集成。
 
 - 默认能力不依赖本机 Office，离线且结果可由稳定 contract 消费。
 - Word 高保真能力与主进程、workspace 源对象和默认结果模型隔离。
