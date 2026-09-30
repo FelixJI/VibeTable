@@ -106,4 +106,24 @@ func TestQueryDigestReadsRecordsInBoundedBatches(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || len(page.Rows) != 0 || reads.Load() != 1 {
 		t.Fatalf("cancelled digest read returned page=%+v error=%v reads=%d", page, err, reads.Load())
 	}
+
+	// Cancelling while digests are being projected must abort the page without
+	// partial results: the projector itself cancels after the first row.
+	t.Run("cancel-during-projection", func(t *testing.T) {
+		cancelDuringRead = nil
+		projectionCtx, projectionCancel := context.WithCancel(context.Background())
+		defer projectionCancel()
+		projected := 0
+		originalProjector := source.descriptor.DigestProjector
+		source.descriptor.DigestProjector = func(record *core.Record) map[string]any {
+			projected++
+			projectionCancel()
+			return originalProjector(record)
+		}
+		page, err := port.QueryPage(projectionCtx, "digest", query.TableQuery{Limit: 4})
+		if !errors.Is(err, context.Canceled) || len(page.Rows) != 0 || projected != 1 {
+			t.Fatalf("cancelled projection returned page=%+v error=%v projected=%d",
+				page, err, projected)
+		}
+	})
 }
