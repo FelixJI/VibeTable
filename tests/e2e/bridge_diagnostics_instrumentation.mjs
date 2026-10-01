@@ -15,6 +15,7 @@ export function installBridgeDiagnosticsInPage() {
     // stays fail closed instead of retaining identity indefinitely.
     retiredAssociations: [],
     inboundRevisions: [],
+    taskStates: [],
     replicaObservations: [],
     diagnosticCursor: 0,
     pending: {},
@@ -324,6 +325,24 @@ export function installBridgeDiagnosticsInPage() {
             ? message.payload.table.slice(0, 64) : null,
         });
       }
+      // Host-owned task.changed envelopes drive renderer task progress; keep
+      // their stable protocol identity timeline so failed jobs stay diagnosable
+      // without retaining task messages, cursors, or raw payload data.
+      if (message?.type === "task.changed") {
+        const task = message.payload;
+        pushBounded(diagnostics.taskStates, {
+          at: new Date().toISOString(),
+          taskId: typeof task?.taskId === "string" ? task.taskId : null,
+          taskType: typeof task?.taskType === "string" ? task.taskType : null,
+          state: typeof task?.state === "string" ? task.state : null,
+          progress: typeof task?.progress === "number" && Number.isFinite(task.progress)
+            ? task.progress
+            : null,
+          sequence: Number.isSafeInteger(task?.sequence) ? task.sequence : null,
+          occurredAt: typeof task?.occurredAt === "string" ? task.occurredAt : null,
+          errorCode: typeof task?.error?.code === "string" ? task.error.code : null,
+        });
+      }
       if (isFailure) {
         let completedRequest = null;
         for (let index = diagnostics.recentCompleted.length - 1; index >= 0; index -= 1) {
@@ -420,6 +439,7 @@ export function readBridgeDiagnosticsInPage() {
     roundTrips: diagnostics.roundTrips,
     failures: diagnostics.failures,
     inboundRevisions: diagnostics.inboundRevisions,
+    taskStates: diagnostics.taskStates,
     replicaObservations: diagnostics.replicaObservations ?? [],
     acknowledgedFailures: diagnostics.acknowledgedFailures ?? [],
     retiredRequests: diagnostics.retiredRequests ?? [],
