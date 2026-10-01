@@ -82,13 +82,16 @@ LANE_STAGES = {
 }
 PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
-# Keep directory-replica transport with data IO so the standard product suite
-# stays within its unchanged 30-minute budget as scenarios gain assertions.
+# Keep directory-replica transport and the calculation-chain journeys in the
+# data IO lane so the standard product suite stays within its unchanged
+# 30-minute budget as scenarios gain assertions.
 DATA_IO_SCENARIO_IDS = (
     "23-directory-replica-recovery",
     "24-directory-replica-conflict",
     "34-relation-lookup-data-io",
     "35-data-io-interoperability",
+    "37-collection-formula-journey",
+    "38-calculation-chain-journey",
 )
 
 

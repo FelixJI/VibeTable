@@ -1895,6 +1895,11 @@ def run_product_acceptance(
             f"wallClockMs={wall_clock_ms}",
             flush=True,
         )
+        if result.get("status") != "passed":
+            # A later scenario can hit the outer stage timeout before main()
+            # prints its summary; flush the failed diagnostics inline so the
+            # lane log still names this scenario and its error code.
+            print(_format_failed_scenario(result), flush=True)
     report = write_aggregate(report_path, audit=audit, results=results)
     return (0 if report["status"] == "passed" else 1), report
 

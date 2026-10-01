@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from qa import next as next_gate
+from qa import release_eligibility
 
 
 def _candidate_args(tmp_path: Path) -> list[str]:
@@ -311,6 +312,8 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "24-directory-replica-conflict",
         "34-relation-lookup-data-io",
         "35-data-io-interoperability",
+        "37-collection-formula-journey",
+        "38-calculation-chain-journey",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
@@ -2454,5 +2457,7 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         "--evidence-root",
         str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
-    assert product_command.count("--scenario") == len(next_gate.load_scenarios()) - 4
+    assert product_command.count("--scenario") == (
+        len(next_gate.load_scenarios()) - len(release_eligibility.DATA_IO_SCENARIO_IDS)
+    )
     assert Path(product_cwd) == next_gate.REPO_ROOT
