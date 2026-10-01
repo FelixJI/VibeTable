@@ -2660,6 +2660,41 @@ def test_interrupted_acceptance_retains_every_selected_scenario(
     assert "[product-e2e] scenario 02-all-field-schema start" in progress
 
 
+def test_interrupted_acceptance_flushes_earlier_failed_scenario_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected = ("01-offline-first-start", "02-all-field-schema", "03-schema-errors")
+    started: list[str] = []
+
+    def failed_first_then_interrupted(scenario: Any, **_kwargs: Any) -> dict[str, Any]:
+        started.append(scenario.id)
+        if scenario.id == "01-offline-first-start":
+            return runner._failure_result(
+                scenario,
+                code="NODE_RUNNER_FAILED",
+                message="Node runner 退出码非零，场景结果保持结构化失败。",
+            )
+        if scenario.id == "02-all-field-schema":
+            raise KeyboardInterrupt("runner killed mid-scenario")
+        return _passing_scenario_result(scenario)
+
+    _patch_acceptance_preflight(monkeypatch, run_scenario=failed_first_then_interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_product_acceptance(
+            package_root=tmp_path / "package",
+            evidence_root=tmp_path / "evidence",
+            selected=selected,
+        )
+
+    assert started == ["01-offline-first-start", "02-all-field-schema"]
+    progress = capsys.readouterr().out
+    assert "[product-e2e] scenario 01-offline-first-start failed" in progress
+    assert "NODE_RUNNER_FAILED" in progress
+
+
 def test_completed_acceptance_keeps_the_full_passing_aggregate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

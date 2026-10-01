@@ -125,6 +125,8 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
         "24-directory-replica-conflict",
         "34-relation-lookup-data-io",
         "35-data-io-interoperability",
+        "37-collection-formula-journey",
+        "38-calculation-chain-journey",
     }
 
 
