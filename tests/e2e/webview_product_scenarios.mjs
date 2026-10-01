@@ -7515,6 +7515,9 @@ async function scenario14(page, recorder, _network, runtime) {
         && session.coverage.areas.some(item => item.area === "fields" && item.status === "notCovered"),
     { coverage: session.coverage, warnings: session.warnings });
     await page.getByTestId("diff-details").waitFor({ state: "visible" });
+    if (!normalized) {
+      await page.getByTestId("diff-details").locator("[data-change-id]").first().waitFor({ state: "visible", timeout: 30_000 });
+    }
     const details = await page.getByTestId("diff-details").innerText();
     recorder.check(`DOCX ${name} renders specific locations and readable results`, normalized
       ? details.includes("已有修订已在副本中接受后比较")
