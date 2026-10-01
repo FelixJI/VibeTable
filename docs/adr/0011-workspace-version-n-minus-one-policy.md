@@ -102,7 +102,7 @@ artifact checksum 全部通过，当前 disabled gate 仍不得授权 promotion�
 ### 3. 旧格式 fail closed
 
 workspace manifest format 小于 3 时，当前产品明确拒绝，执行零写入，也不提供未经验证的自动迁移。
-format 大于 2 时按 newer-format 路径拒绝并保持零写入。拒绝不能创建同名空工作区、修改原 manifest、
+format 大于 3 时按 newer-format 路径拒绝并保持零写入。拒绝不能创建同名空工作区、修改原 manifest、
 数据库、repository 或 Snapshot。
 
 SnapshotPackage 只接受 format 2；小于或大于 2 的 package 均拒绝并保持零写入。package metadata 中的
