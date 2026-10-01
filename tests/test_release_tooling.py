@@ -3109,8 +3109,9 @@ def test_self_update_rollback_does_not_treat_nonterminal_worker_as_failure(
 
 
 @pytest.mark.parametrize("license_name", ["MIT", "unreviewed"])
+@pytest.mark.parametrize("relocated", [False, True])
 def test_worker_publish_metadata_uses_real_runtime_packages_and_reviewed_licenses(
-    tmp_path: Path, license_name: str
+    tmp_path: Path, license_name: str, relocated: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "desktop/src/Worker/Worker.csproj"
     project.parent.mkdir(parents=True)
@@ -3165,8 +3166,27 @@ def test_worker_publish_metadata_uses_real_runtime_packages_and_reviewed_license
             }
         },
     }
-    (project.parent / "obj").mkdir()
-    (project.parent / "obj/project.assets.json").write_text(json.dumps(assets), encoding="utf-8")
+    assets_path = (
+        tmp_path / "build/dotnet/obj/Worker/project.assets.json"
+        if relocated
+        else project.parent / "obj/project.assets.json"
+    )
+    assets_path.parent.mkdir(parents=True)
+    assets_path.write_text(json.dumps(assets), encoding="utf-8")
+    if relocated:
+        stale = project.parent / "obj/project.assets.json"
+        stale.parent.mkdir()
+        stale.write_text('{"targets": {}}', encoding="utf-8")
+
+    def resolve_assets(
+        command: list[str], *, cwd: Path, capture: bool
+    ) -> subprocess.CompletedProcess[str]:
+        assert command == ["dotnet", "msbuild", str(project), "-getProperty:ProjectAssetsFile"]
+        assert cwd == tmp_path
+        assert capture
+        return subprocess.CompletedProcess(command, 0, stdout=str(assets_path) + "\n")
+
+    monkeypatch.setattr(build_next, "_run", resolve_assets)
     output = tmp_path / "package"
     output.mkdir()
     paths = build_next.RepoPaths.default(tmp_path)

@@ -1335,7 +1335,12 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
 
 
 def _write_document_diff_metadata(paths: RepoPaths, project: Path, output: Path) -> None:
-    assets = json.loads((project.parent / "obj/project.assets.json").read_text(encoding="utf-8"))
+    assets_path = _run(
+        ["dotnet", "msbuild", str(project), "-getProperty:ProjectAssetsFile"],
+        cwd=paths.repo_root,
+        capture=True,
+    ).stdout.strip()
+    assets = json.loads(Path(assets_path).read_text(encoding="utf-8"))
     package_roots = [Path(root) for root in assets["packageFolders"]]
     runtime_target = assets["targets"].get("net10.0/win-x64")
     if not isinstance(runtime_target, dict):
