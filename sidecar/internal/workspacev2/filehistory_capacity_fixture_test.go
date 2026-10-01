@@ -44,6 +44,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
 const (
@@ -470,25 +471,34 @@ func ensureCapacityHostAuthority(
 	return path
 }
 
-// ensureCapacityHostAuditOutbox mirrors createAuditOutbox but is idempotent
-// so repeated bootstrap/reopen cycles over the same pb_data succeed.
-func ensureCapacityHostAuditOutbox(t *testing.T, app *pocketbase.PocketBase) {
-	t.Helper()
-	if _, err := app.DB().NewQuery(`
-		CREATE TABLE IF NOT EXISTS vibetable_audit_outbox (
-			event_id TEXT PRIMARY KEY,
-			source_epoch TEXT NOT NULL,
-			source_sequence INTEGER NOT NULL,
-			mutation_identity TEXT NOT NULL,
-			payload_hash TEXT NOT NULL,
-			payload_json BLOB NOT NULL,
-			occurred_at TEXT NOT NULL,
-			status TEXT NOT NULL,
-			attempts INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(source_epoch, source_sequence)
-		)
-	`).Execute(); err != nil {
-		t.Fatal(err)
+func TestCapacityHostFixturePocketBaseSchemaSurvivesColdReopen(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), ".vibetable", "data")
+	services := newCapacityHostServices(t, dataDir)
+	t.Cleanup(func() {
+		if services != nil {
+			services.close(t)
+		}
+	})
+	collection, err := services.app.FindCollectionByNameOrId("vibetable_audit_outbox")
+	if err != nil {
+		t.Fatalf("capacity fixture has no PocketBase audit outbox collection: %v", err)
+	}
+	collectionID := collection.Id
+	if err := services.app.RunAllMigrations(); err != nil {
+		t.Fatalf("repeat real startup migrations: %v", err)
+	}
+	services.close(t)
+	services = nil
+	services = newCapacityHostServices(t, dataDir)
+	reopened, err := services.app.FindCollectionByNameOrId("vibetable_audit_outbox")
+	if err != nil {
+		t.Fatalf("cold reopen lost audit outbox collection: %v", err)
+	}
+	if reopened.Id != collectionID {
+		t.Fatalf("cold reopen replaced collection %s with %s", collectionID, reopened.Id)
+	}
+	if err := services.app.RunAllMigrations(); err != nil {
+		t.Fatalf("repeat cold startup migrations: %v", err)
 	}
 }
 
@@ -504,10 +514,15 @@ func newCapacityHostServices(t *testing.T, dataDir string) *capacityHostServices
 		DefaultDataDir:  dataDir,
 		HideStartBanner: true,
 	})
+	// Bootstrap and real app migrations finish before any recorded operation.
+	migrations.Register(app)
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
-	ensureCapacityHostAuditOutbox(t, app)
+	if err := app.RunAllMigrations(); err != nil {
+		resetErr := app.ResetBootstrapState()
+		t.Fatalf("initialize capacity host migrations: %v", errors.Join(err, resetErr))
+	}
 	ledger, err := auditledger.Open(
 		filepath.Join(filepath.Dir(dataDir), "audit"),
 	)
@@ -1238,13 +1253,13 @@ func writeCapacityHostFixtureMetadata(
 		},
 		HostRequirements: []string{
 			"the workspace ships .vibetable/coordination/desktop-runtime-authority.json binding the exact fence/claim and the LastSessionEpoch floor of the persisted coordination lease; the real Host reads it (DesktopWorkspaceAuthorityStore.TryRead/Prepare), reuses the same claim/fence, advances the session epoch strictly (WorkspaceSessionManager raises its floor via ReadLastSessionEpoch), and the sidecar resumes the coordination database with that identity — no manual identity parameters are involved",
-			"the real sidecar bootstraps PocketBase inside the fixture dataDir and applies migrations; the producer only pre-created an idempotent IF NOT EXISTS audit outbox table",
+			"the producer initializes PocketBase with the real registered application migrations before any measured operation; the real sidecar repeats the same startup migrations against that durable schema on cold open",
 			"first screen reads fileHistory.queryDocuments / fileHistory.readTree over the same RPC surface the product uses",
 		},
 		Boundaries: []string{
 			"no actual WPF/WebView2 Host was started; cold-open compatibility is proven only by the verified same-lease Runtime reopen inside this producer, not by the real shell",
 			"the lease was created by this Go producer with natural first-writer values (fence 1, fresh claim, session 1) plus the consumer-format authority file; Host takeover follows the same file-based contract but remains unverified with the actual WPF process",
-			"RPC transport, WebView rendering, and real migration application timing are not measured here",
+			"RPC transport and WebView rendering are not measured here; PocketBase bootstrap and real application migrations complete outside the operation timing and TotalAlloc windows",
 			"readTreeProjection+JSON measures the workspacev2 projection and serialization only",
 			"the derived root expands one real validated save; the real-save accumulation path to the cap was not executed",
 			"the depth chain is all-formal (V1..V4096) for the real-Host all-formal first-screen case",
