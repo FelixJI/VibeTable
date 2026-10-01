@@ -144,7 +144,7 @@ function hydrationTerminal(request = hydrationRequest()) {
   };
 }
 
-async function withHydrationCapture(check, capabilities = ["conflict.center.v2"]) {
+async function withHydrationCapture(check, capabilities = ["conflict.center.v2"], storage = null) {
   const bridge = makeWebView();
   globalThis.window = { chrome: { webview: bridge.webview } };
   const originalPost = bridge.webview.postMessage;
@@ -156,6 +156,7 @@ async function withHydrationCapture(check, capabilities = ["conflict.center.v2"]
     bridge.webview.postMessage(ownerRequest());
     const bootstrap = writableBootstrap();
     bootstrap.payload.capabilities = capabilities;
+    bootstrap.payload.storage = storage;
     bridge.dispatch(bootstrap);
     bridge.dispatch(ownerTerminal());
     await check({ bridge, capture, originalPost });
@@ -816,5 +817,42 @@ test("S32 waits for each switched workspace database before reading its calendar
     assert.equal(bridge.listenerCount(), 0);
   } finally {
     delete globalThis.window;
+  }
+});
+
+
+test("direct file workspace waits for its declared hydration tail", async (t) => {
+  for (const [method, capabilities, storage] of [
+    ["fileHistory.listPendingChanges", ["fileHistory.tree.v2"], null],
+    ["retention.status", ["fileHistory.tree.v2", "retention.policy.v2", "repository.settings.v2"], null],
+    ["replica.status", ["fileHistory.tree.v2", "repository.settings.v2"], { mode: "mirrored" }],
+  ]) {
+    await t.test(method, () => withHydrationCapture(async ({ bridge, capture }) => {
+      bridge.dispatch(databaseOpened());
+      assert.equal(captureCompletedInPage(), false);
+      const request = hydrationRequest();
+      request.payload.method = method;
+      bridge.webview.postMessage(request);
+      assert.equal(captureCompletedInPage(), false);
+      bridge.dispatch(hydrationTerminal(request));
+      assert.equal((await capture.wait()).type, "database.opened");
+    }, capabilities, storage));
+  }
+});
+
+test("file hydration still rejects failures and wrong session identities", async (t) => {
+  for (const kind of ["failure", "stale-session"]) {
+    await t.test(kind, () => withHydrationCapture(async ({ bridge, capture }) => {
+      const request = hydrationRequest();
+      request.payload.method = "fileHistory.listPendingChanges";
+      if (kind === "stale-session") request.wire.sessionEpoch = 6;
+      bridge.webview.postMessage(request);
+      const terminal = hydrationTerminal(request);
+      if (kind === "failure") terminal.payload.ok = false;
+      bridge.dispatch(terminal);
+      bridge.dispatch(databaseOpened());
+      await assert.rejects(capture.wait(), kind === "failure"
+        ? /CAPTURE_HYDRATION_FAILED/ : /CAPTURE_HYDRATION_IDENTITY_MISMATCH/);
+    }, ["fileHistory.tree.v2"]));
   }
 });
