@@ -58,7 +58,7 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
         ILocalDocumentFilePicker filePicker,
         IWorkspaceHostEpochLeaseSource? epochLeaseSource,
         IDocumentDiffEngine? diffEngine,
-        string? diffTempRoot)
+        string? diffTempRoot, string? diffWorkerExecutablePath = null)
     {
         _bindingProvider = bindingProvider
             ?? throw new ArgumentNullException(nameof(bindingProvider));
@@ -78,7 +78,7 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
             _diffCoordinator = new WorkspaceDocumentDiffCoordinator(
                 epochLeaseSource,
                 diffEngine,
-                _diffArtifacts);
+                _diffArtifacts, diffWorkerExecutablePath);
         }
         else if (diffEngine is not null || diffTempRoot is not null)
         {

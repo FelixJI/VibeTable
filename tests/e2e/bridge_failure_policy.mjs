@@ -424,3 +424,30 @@ export class SidecarRecoveryReadWindow {
     return this.#closedPromise;
   }
 }
+
+// Called only by deliberate healthy close/reopen scenarios. Keep the late Host
+// failure as acknowledged evidence; current-epoch and unrelated errors stay fatal.
+export function acknowledgeRetiredLookupFailuresInPage({ workspaceId, sessionEpoch }) {
+  const diagnostics = (globalThis.window ?? globalThis).__vibetableE2EBridgeDiagnostics;
+  if (!diagnostics || typeof workspaceId !== "string"
+    || !Number.isSafeInteger(sessionEpoch) || sessionEpoch < 1) {
+    throw new Error("lookup retirement diagnostics require an exact workspace epoch");
+  }
+  const acknowledged = diagnostics.failures.filter(failure => (
+    failure.responseType === "operation.failed"
+    && failure.code === "workspace.session_stale"
+    && failure.requestType === "lookup.query"
+    && typeof failure.requestId === "string" && failure.requestId.length > 0
+    && Number.isSafeInteger(failure.cursor)
+    && diagnostics.retiredRequests.some(retired => (
+      retired.requestId === failure.requestId && retired.requestType === "lookup.query"
+      && retired.workspaceId === workspaceId && retired.sessionEpoch === sessionEpoch
+      && retired.outcome === "workspace-retired"
+      && Number.isSafeInteger(retired.cursor) && retired.cursor < failure.cursor
+    ))
+  ));
+  diagnostics.failures = diagnostics.failures.filter(failure => !acknowledged.includes(failure));
+  diagnostics.acknowledgedFailures ??= [];
+  diagnostics.acknowledgedFailures.push(...acknowledged);
+  return acknowledged.length;
+}

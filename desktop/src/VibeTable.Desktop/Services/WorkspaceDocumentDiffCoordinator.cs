@@ -15,6 +15,7 @@ internal sealed class WorkspaceDocumentDiffCoordinator
     private readonly IWorkspaceHostEpochLeaseSource _epochLeaseSource;
     private readonly IDocumentDiffEngine _engine;
     private readonly DocumentDiffArtifactBroker _artifacts;
+    private readonly string? _workerExecutablePath;
     private readonly ConcurrentDictionary<Guid, ReadySession> _sessions = [];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     internal const int MaxPageBytes = 64 * 1024;
@@ -22,12 +23,13 @@ internal sealed class WorkspaceDocumentDiffCoordinator
     public WorkspaceDocumentDiffCoordinator(
         IWorkspaceHostEpochLeaseSource epochLeaseSource,
         IDocumentDiffEngine engine,
-        DocumentDiffArtifactBroker artifacts)
+        DocumentDiffArtifactBroker artifacts, string? workerExecutablePath = null)
     {
         _epochLeaseSource = epochLeaseSource
             ?? throw new ArgumentNullException(nameof(epochLeaseSource));
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _artifacts = artifacts ?? throw new ArgumentNullException(nameof(artifacts));
+        _workerExecutablePath = workerExecutablePath;
         _artifacts.SessionClosed += id => _sessions.TryRemove(id, out _);
     }
 
@@ -99,7 +101,17 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                     return Failure(entryHandle, historicalRevisionId,
                         expectedEffectiveRevisionId, "stale");
 
-                DocumentDiffOutcome outcome = await _engine.CompareAsync(
+                string indexPath = artifacts.PrepareArtifact(DocumentDiffArtifactKind.ChangeIndex, "changes.jsonl");
+                DocumentDiffDetails? workerDetails = null;
+                long[]? workerOffsets = null;
+                if (_workerExecutablePath is not null && (Path.GetExtension(descriptor.RelativePath)
+                        .Equals(".docx", StringComparison.OrdinalIgnoreCase) ||
+                        pair.EffectiveMimeType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                    (workerDetails, workerOffsets) = await CompareDocxAsync(artifacts, indexPath,
+                        linkedCancellation.Token).ConfigureAwait(false);
+                DocumentDiffOutcome outcome = workerDetails is not null
+                    ? DocumentDiffOutcome.Changed with { Details = workerDetails }
+                    : await _engine.CompareAsync(
                     new DocumentDiffRequest(
                         ContentSource(
                             descriptor.RelativePath,
@@ -138,8 +150,9 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                 inputs.ConfirmSourceStable();
                 DocumentDiffDetails details = outcome.Details ?? ShallowDetails(outcome,
                     descriptor.RelativePath, pair.EffectiveMimeType);
-                string indexPath = artifacts.PrepareArtifact(DocumentDiffArtifactKind.ChangeIndex, "changes.jsonl");
                 var offsets = new List<long>();
+                if (workerOffsets is not null) offsets.AddRange(workerOffsets);
+                if (workerOffsets is null)
                 await using (var index = new FileStream(indexPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     foreach (DocumentDiffChange change in details.Changes)
@@ -179,6 +192,10 @@ internal sealed class WorkspaceDocumentDiffCoordinator
                     : "stale";
                 return Failure(entryHandle, historicalRevisionId,
                     expectedEffectiveRevisionId, failure);
+            }
+            catch (TimeoutException)
+            {
+                return Failure(entryHandle, historicalRevisionId, expectedEffectiveRevisionId, "timeout");
             }
             catch (DocumentDiffSidecarException exception)
             {
@@ -299,20 +316,111 @@ internal sealed class WorkspaceDocumentDiffCoordinator
         Guid effective, DocumentDiffDetails details)
     {
         int Count(DocumentDiffChangeKind kind) => details.Changes.Count(change => change.Kind == kind);
-        var summary = new DocumentDiffSummary(details.Changes.Count, details.Changes.Count,
+        var summary = details.Summary ?? new DocumentDiffSummary(details.Changes.Count, details.Changes.Count,
             Count(DocumentDiffChangeKind.Insert), Count(DocumentDiffChangeKind.Delete),
             Count(DocumentDiffChangeKind.Replace), Count(DocumentDiffChangeKind.Move),
             Count(DocumentDiffChangeKind.Format), Count(DocumentDiffChangeKind.Table),
             Count(DocumentDiffChangeKind.Comment), Count(DocumentDiffChangeKind.Other));
-        var warnings = new List<DocumentDiffWarning>();
-        if (details.Format == DocumentDiffFormat.Xlsx)
+        var warnings = details.Warnings.Distinct().ToList();
+        if (details.Format == DocumentDiffFormat.Xlsx
+            && !warnings.Contains(DocumentDiffWarning.CachedValuesNotRecalculated))
             warnings.Add(DocumentDiffWarning.CachedValuesNotRecalculated);
-        if (details.Coverage.Truncated) warnings.Add(DocumentDiffWarning.ResultTruncated);
-        if (details.Coverage.Areas.Any(area => area.Status != DocumentDiffCoverageStatus.Covered))
+        if (details.Coverage.Truncated && !warnings.Contains(DocumentDiffWarning.ResultTruncated))
+            warnings.Add(DocumentDiffWarning.ResultTruncated);
+        if (details.Coverage.Areas.Any(area => area.Status != DocumentDiffCoverageStatus.Covered)
+            && !warnings.Contains(DocumentDiffWarning.PartialCoverage))
             warnings.Add(DocumentDiffWarning.PartialCoverage);
         return new DocumentDiffSession(id, handle, historical, effective, details.Format,
             details.Format == DocumentDiffFormat.Xlsx ? DocumentDiffProvider.XlsxBuiltIn : DocumentDiffProvider.BuiltIn,
             DocumentDiffFidelity.Structural, summary, details.Coverage, warnings, false, false);
+    }
+
+    private async Task<(DocumentDiffDetails Details, long[] Offsets)> CompareDocxAsync(
+        DocumentDiffArtifactOperation artifacts, string indexPath, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_workerExecutablePath)) throw new DocumentDiffSidecarException("providerUnavailable");
+        int exit;
+        try
+        {
+            exit = await DocumentDiffWorkerSupervisor.RunAsync(
+                new System.Diagnostics.ProcessStartInfo(_workerExecutablePath!), artifacts.OperationDirectory,
+                TimeSpan.FromSeconds(30), cancellationToken, compareDocx: true).ConfigureAwait(false);
+        }
+        catch (DocumentDiffWorkerExitUnknownException)
+        {
+            artifacts.RetainArtifacts();
+            throw;
+        }
+        if (exit != 0) throw new DocumentDiffSidecarException(exit switch
+        {
+            2 => "invalidContent", 3 or 4 => "unsupported", _ => "io",
+        });
+        return await ReadWorkerResultAsync(artifacts.IndexDirectory, indexPath, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static async Task<(DocumentDiffDetails Details, long[] Offsets)> ReadWorkerResultAsync(
+        string indexDirectory, string indexPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string resultPath = Path.Combine(indexDirectory, "result.json");
+            foreach (string path in new[] { resultPath, indexPath })
+                if ((File.GetAttributes(path) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+                    throw new IOException("Unsafe worker result.");
+            DocumentDiffWorkerResult result;
+            await using (var metadata = new FileStream(resultPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (metadata.Length > 256 * 1024) throw new JsonException("Oversized worker metadata.");
+                result = await JsonSerializer.DeserializeAsync<DocumentDiffWorkerResult>(metadata, JsonOptions,
+                    cancellationToken).ConfigureAwait(false) ?? throw new JsonException("Missing worker metadata.");
+            }
+            if (result.Version != 2 || result.Summary is null || result.Coverage is null || result.Warnings is null ||
+                result.Summary.TotalChangeGroups > 20_000 || result.Summary.RawRevisionCount > 500_000)
+                throw new JsonException("Invalid worker metadata.");
+            var changes = new List<DocumentDiffChange>();
+            var offsets = new List<long>();
+            var ids = new HashSet<Guid>();
+            long position = 0;
+            await using (var index = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (index.Length > 64L * 1024 * 1024) throw new JsonException("Oversized change index.");
+                using var reader = new StreamReader(index, new UTF8Encoding(false, true), leaveOpen: true);
+                while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+                {
+                    int size = Encoding.UTF8.GetByteCount(line) + 1;
+                    if (size > MaxPageBytes - 1024 || changes.Count == 20_000)
+                        throw new JsonException("Worker change exceeds the page budget.");
+                    DocumentDiffChange change = JsonSerializer.Deserialize<DocumentDiffChange>(line, JsonOptions)
+                        ?? throw new JsonException("Missing worker change.");
+                    if (!ids.Add(change.ChangeId)) throw new JsonException("Duplicate worker change.");
+                    foreach (DocumentDiffRichSnippet? snippet in new[] { change.Before, change.After })
+                        if (snippet is not null && (snippet.Runs.Sum(run => (long)run.Text.Length) > 2048 ||
+                            snippet.Runs.Where(run => run.Role == DocumentDiffRichRunRole.Context)
+                                .Sum(run => (long)run.Text.Length) > 256))
+                            throw new JsonException("Worker snippet exceeds its text budget.");
+                    offsets.Add(position);
+                    position += size;
+                    changes.Add(change);
+                }
+                if (position != index.Length) throw new JsonException("Invalid change-index framing.");
+            }
+            int Count(DocumentDiffChangeKind kind) => changes.Count(change => change.Kind == kind);
+            DocumentDiffSummary summary = result.Summary;
+            if (summary.TotalChangeGroups != changes.Count || summary.Insertions != Count(DocumentDiffChangeKind.Insert) ||
+                summary.Deletions != Count(DocumentDiffChangeKind.Delete) || summary.Replacements != Count(DocumentDiffChangeKind.Replace) ||
+                summary.Moves != Count(DocumentDiffChangeKind.Move) || summary.FormattingChanges != Count(DocumentDiffChangeKind.Format) ||
+                summary.TableChanges != Count(DocumentDiffChangeKind.Table) || summary.CommentChanges != Count(DocumentDiffChangeKind.Comment) ||
+                summary.OtherChanges != Count(DocumentDiffChangeKind.Other))
+                throw new JsonException("Worker summary does not match its change index.");
+            return (new DocumentDiffDetails(DocumentDiffFormat.Docx, changes.AsReadOnly(), result.Coverage)
+                { Summary = summary, Warnings = result.Warnings }, offsets.ToArray());
+        }
+        catch (ArgumentException exception)
+        {
+            // Includes JSON constructor validation and strict UTF-8 decoding failures.
+            throw new JsonException("Invalid Worker result.", exception);
+        }
     }
 
     private static DocumentDiffDetails ShallowDetails(DocumentDiffOutcome outcome, string name, string mime)
@@ -578,6 +686,7 @@ internal sealed class WorkspaceDocumentDiffCoordinator
             "unsupported" => DocumentDiffSessionFailure.Unsupported,
             "invalidContent" => DocumentDiffSessionFailure.InvalidContent,
             "timeout" => DocumentDiffSessionFailure.Timeout,
+            "providerUnavailable" => DocumentDiffSessionFailure.ProviderUnavailable,
             _ => DocumentDiffSessionFailure.Io,
         });
 

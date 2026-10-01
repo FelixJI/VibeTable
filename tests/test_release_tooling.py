@@ -359,6 +359,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "webGrid": "resources/web-grid",
         "sidecar": "resources/sidecar/vibetable-pb.exe",
         "previewHost": "VibeTable.Next.exe",
+        "documentDiffWorker": "resources/document-diff/VibeTable.DocumentDiff.Worker.exe",
     }
     assert manifest["assets"]["migrations"] == "resources/sidecar/migrations/manifest.json"
     assert manifest["assets"]["sbom"] == "resources/sidecar/sbom.cdx.json"
@@ -2208,6 +2209,11 @@ def test_package_contract_validates_v2_formats_recovery_and_bundled_tools(
         REPO_ROOT / "docs" / "RECOVERY.md",
         stage.resources_dir / "RECOVERY.md",
     )
+    worker = stage.resources_dir / "document-diff"
+    worker.mkdir()
+    (worker / build_next.DIFF_WORKER_EXE_NAME).write_bytes(b"worker")
+    (worker / "THIRD_PARTY_LICENSES.txt").write_text("MIT", encoding="utf-8")
+    (worker / "sbom.cdx.json").write_text('{"components":[]}', encoding="utf-8")
     build_next.write_manifest(stage)
     build_next.write_release_manifest(stage)
     lock = build_next.load_recovery_tool_lock(REPO_ROOT)
@@ -3096,3 +3102,87 @@ def test_self_update_rollback_does_not_treat_nonterminal_worker_as_failure(
             updated_process_id=fixture.updated_process_id,
             timeout_seconds=0.01,
         )
+
+
+@pytest.mark.parametrize("license_name", ["MIT", "unreviewed"])
+def test_worker_publish_metadata_uses_real_runtime_packages_and_reviewed_licenses(
+    tmp_path: Path, license_name: str
+) -> None:
+    project = tmp_path / "desktop/src/Worker/Worker.csproj"
+    project.parent.mkdir(parents=True)
+    project.write_text("<Project/>", encoding="utf-8")
+    (tmp_path / "LICENSE").write_text(
+        (REPO_ROOT / "LICENSE").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    cache = tmp_path / "cache"
+    package = cache / "provider/1.2.3"
+    package.mkdir(parents=True)
+    (package / "provider.nuspec").write_text(
+        f"<package><metadata><id>Provider</id><version>1.2.3</version><authors>Publisher</authors>"
+        f'<copyright>Publisher copyright</copyright><license type="expression">{license_name}</license>'
+        "</metadata></package>",
+        encoding="utf-8",
+    )
+    (package / "THIRD-PARTY-NOTICES.txt").write_text("upstream notice", encoding="utf-8")
+    runtime_names = (
+        "Microsoft.NETCore.App.Runtime.win-x64",
+        "Microsoft.AspNetCore.App.Runtime.win-x64",
+        "Microsoft.WindowsDesktop.App.Runtime.win-x64",
+    )
+    for name in runtime_names:
+        runtime = cache / name.lower() / "10.0.11"
+        runtime.mkdir(parents=True)
+        (runtime / "runtime.nuspec").write_text(
+            f"<package><metadata><id>{name}</id><version>10.0.11</version>"
+            '<license type="expression">MIT</license></metadata></package>',
+            encoding="utf-8",
+        )
+    assets = {
+        "targets": {
+            "net10.0/win-x64": {
+                "Provider/1.2.3": {"runtime": {"lib/net10.0/provider.dll": {}}},
+                "UnusedLinux/1.0.0": {"native": {"runtimes/win-x64/native/_._": {}}},
+                "BuildTool/1.0.0": {"build": {"build/tool.props": {}}},
+            }
+        },
+        "packageFolders": {str(cache): {}},
+        "libraries": {
+            name: {"type": "package", "path": name.lower()}
+            for name in ("Provider/1.2.3", "UnusedLinux/1.0.0", "BuildTool/1.0.0")
+        },
+        "project": {
+            "frameworks": {
+                "net10.0": {
+                    "frameworkReferences": {"Microsoft.NETCore.App": {}},
+                    "downloadDependencies": [
+                        {"name": name, "version": "[10.0.11, 10.0.11]"} for name in runtime_names
+                    ],
+                }
+            }
+        },
+    }
+    (project.parent / "obj").mkdir()
+    (project.parent / "obj/project.assets.json").write_text(json.dumps(assets), encoding="utf-8")
+    output = tmp_path / "package"
+    output.mkdir()
+    paths = build_next.RepoPaths.default(tmp_path)
+    if license_name != "MIT":
+        with pytest.raises(build_next.BuildError, match="license needs review"):
+            build_next._write_document_diff_metadata(paths, project, output)
+        assert not list(output.iterdir())
+        return
+    build_next._write_document_diff_metadata(paths, project, output)
+    components = json.loads((output / "sbom.cdx.json").read_text(encoding="utf-8"))["components"]
+    assert [(item["name"], item["version"], item["purl"]) for item in components] == [
+        (
+            "Microsoft.NETCore.App.Runtime.win-x64",
+            "10.0.11",
+            "pkg:nuget/Microsoft.NETCore.App.Runtime.win-x64@10.0.11",
+        ),
+        ("Provider", "1.2.3", "pkg:nuget/Provider@1.2.3"),
+    ]
+    notices = (output / "THIRD_PARTY_LICENSES.txt").read_text(encoding="utf-8")
+    assert "Publisher copyright" in notices
+    assert "upstream notice" in notices
+    assert "Permission is hereby granted" in notices
+    assert str(cache) not in notices

@@ -12,7 +12,7 @@ internal static class DocxNormalizer
     // This method runs only inside the owned worker. Cancellation cannot interrupt
     // Clippit; the supervising host must terminate and observe that process first.
     // The caller owns a new, isolated output stream, never a source revision file.
-    public static async Task NormalizeAsync(DocumentContentSource input, Stream derived,
+    public static async Task<bool> NormalizeAsync(DocumentContentSource input, Stream derived,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -40,6 +40,7 @@ internal static class DocxNormalizer
                 await derived.WriteAsync(buffer.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
             }
         }
+        bool existingRevisions = false;
         await ValidateAsync(requireFinalContent: false).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         derived.Position = 0;
@@ -53,18 +54,29 @@ internal static class DocxNormalizer
         await derived.FlushAsync(cancellationToken).ConfigureAwait(false);
         await ValidateAsync(requireFinalContent: true).ConfigureAwait(false);
         derived.Position = 0;
+        return existingRevisions;
+
+        void ObserveExistingRevisions(string namespaceUri, string localName)
+        {
+            if (IsRevisionElement(namespaceUri, localName)) existingRevisions = true;
+        }
 
         Task ValidateAsync(bool requireFinalContent) => DocxPackagePreflight.ValidateAsync(new DocumentContentSource(
             "derived.docx", null, derived.Length,
             _ => ValueTask.FromResult<Stream>(new NonOwningStream(derived))), cancellationToken,
-            requireFinalContent ? RejectRemainingRevisions : null);
+            requireFinalContent ? RejectRemainingRevisions : ObserveExistingRevisions);
     }
 
     // Clippit does not accept revisions in every Word part (for example comments).
     // Check all XML during the existing bounded postflight, not only selected stories.
     private static void RejectRemainingRevisions(string namespaceUri, string localName)
     {
-        if (namespaceUri == "http://schemas.openxmlformats.org/wordprocessingml/2006/main" &&
+        if (IsRevisionElement(namespaceUri, localName))
+            throw new NotSupportedException("The document contains revisions that could not be normalized.");
+    }
+
+    private static bool IsRevisionElement(string namespaceUri, string localName) =>
+        namespaceUri == "http://schemas.openxmlformats.org/wordprocessingml/2006/main" &&
             (localName is "ins" or "del" or "cellIns" or "cellDel" or "cellMerge" ||
              localName.EndsWith("Change", StringComparison.Ordinal) ||
              localName.StartsWith("moveFrom", StringComparison.Ordinal) ||
@@ -72,7 +84,5 @@ internal static class DocxNormalizer
              localName.StartsWith("customXmlInsRange", StringComparison.Ordinal) ||
              localName.StartsWith("customXmlDelRange", StringComparison.Ordinal) ||
              localName.StartsWith("customXmlMoveFromRange", StringComparison.Ordinal) ||
-             localName.StartsWith("customXmlMoveToRange", StringComparison.Ordinal)))
-            throw new NotSupportedException("The document contains revisions that could not be normalized.");
-    }
+             localName.StartsWith("customXmlMoveToRange", StringComparison.Ordinal));
 }

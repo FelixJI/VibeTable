@@ -214,7 +214,7 @@ export function installBridgeDiagnosticsInPage() {
           : message.type,
         payloadShape,
         ...((message.type === "dashboard.listRequested" || message.type === "dashboard.manifestRequested"
-          || message.type === "settings.readWorkCalendar")
+          || message.type === "settings.readWorkCalendar" || message.type === "lookup.query")
           && message.scope?.scope === "workspace" ? {
             retirementScope: {
               workspaceId: message.scope.workspaceId,

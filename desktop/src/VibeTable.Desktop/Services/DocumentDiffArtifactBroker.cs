@@ -37,6 +37,13 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
         "input/effective.content.partial",
         "input/historical.content",
         "input/effective.content",
+        "normalized/historical.final.docx.partial",
+        "normalized/historical.final.docx",
+        "normalized/effective.final.docx.partial",
+        "normalized/effective.final.docx",
+        "index/changes.jsonl.partial",
+        "index/result.json.partial",
+        "index/result.json",
     ];
 
     private readonly object _gate = new();
@@ -201,7 +208,7 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
                     _operations.ContainsKey(operationId))
                     continue;
                 OperationState? state = ReadManifest(operationDirectory, operationId);
-                if (state is null || state.Manifest.ExpiresAt > _timeProvider.GetUtcNow())
+                if (state is null || state.Manifest.State == "retained" || state.Manifest.ExpiresAt > _timeProvider.GetUtcNow())
                     continue;
                 DocumentDiffOwnerLiveness liveness;
                 try
@@ -383,6 +390,16 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
         }
     }
 
+    internal void RetainArtifacts(OperationState state)
+    {
+        lock (_gate)
+        {
+            RequireRunning(state);
+            state.Manifest.State = "retained";
+            WriteManifest(state);
+        }
+    }
+
     internal void Release(OperationState state)
     {
         lock (_gate)
@@ -457,6 +474,7 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
 
     private void TryFinalizeCleanup(OperationState state)
     {
+        if (state.Manifest.State == "retained") return;
         if (state.ActiveInputGeneration is not null || state.ActiveReaders != 0)
         {
             state.Manifest.State = "closing";
@@ -522,7 +540,7 @@ internal sealed class DocumentDiffArtifactBroker : IDisposable
                 manifest.SessionEpoch == 0 || manifest.OwnerProcessId <= 0 ||
                 manifest.OwnerProcessStartedAt == default || manifest.CreatedAt == default ||
                 manifest.CreatedAt > manifest.ExpiresAt ||
-                manifest.State is not ("running" or "ready" or "closing") ||
+                manifest.State is not ("running" or "ready" or "closing" or "retained") ||
                 manifest.KnownFiles is null || manifest.Artifacts is null ||
                 manifest.KnownFiles.Count != manifest.KnownFiles.Distinct(StringComparer.Ordinal).Count() ||
                 !manifest.KnownFiles.Contains(ManifestFileName, StringComparer.Ordinal) ||
@@ -896,6 +914,12 @@ internal sealed class DocumentDiffArtifactOperation : IDisposable
             historicalContentHash,
             effectiveContentHash,
             cancellationToken);
+    }
+
+    public void RetainArtifacts()
+    {
+        ThrowIfDisposed();
+        _broker.RetainArtifacts(_state);
     }
 
     public void Complete(Guid sessionId)

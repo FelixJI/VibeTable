@@ -80,7 +80,7 @@
   {
     "id": "14-document-diff",
     "title": "真实文件历史版本比较",
-    "requirement": "通过 host-only picker 导入真实 TXT 历史版本并以 restore 验证无变化会话，再经真实 upgrade 建立含77组插入/删除/替换的合成修订；从 FileRevisionTree 执行唯一 V2 session/page 路由，核对首屏≤50项、完整before/after oracle、分类计数与稳定标识、关闭后的会话过期和产物清理、effective CAS 的 stale 失败，以及 renderer 原始 materializeDiffPair 请求被拒绝。 同包 XLSX 格式/内容语料核对全部3/11组独立oracle、工作表/单元格位置、公式与缓存独立及缓存未重算警告；两sheet、10004实际稀疏cell、XFD1048576跨度和20万字共享串比较75处变化，首屏有界、完整分页稳定ID、原件及历史只读、关闭过期清理和真实截图。",
+    "requirement": "通过 host-only picker 导入真实 TXT 历史版本并以 restore 验证无变化会话，再经真实 upgrade 建立含77组插入/删除/替换的合成修订；从 FileRevisionTree 执行唯一 V2 session/page 路由，核对首屏≤50项、完整before/after oracle、分类计数与稳定标识、关闭后的会话过期和产物清理、effective CAS 的 stale 失败，以及 renderer 原始 materializeDiffPair 请求被拒绝。 同包 XLSX 格式/内容语料核对全部3/11组独立oracle、工作表/单元格位置、公式与缓存独立及缓存未重算警告；两sheet、10004实际稀疏cell、XFD1048576跨度和20万字共享串比较75处变化，首屏有界、完整分页稳定ID、原件及历史只读、关闭过期清理和真实截图。随后通过同包受限 Worker 比较 DOCX 基础字符/段落格式和已有修订副本，精确核对3组格式/结构变化与0组归一化变化、覆盖提示、具体位置与安全渲染、权威修订和有效指针不变及关闭清理，并记录经身份核对的 Job 成员内存采样。",
     "capabilities": ["file-history.diff"]
   },
   {
