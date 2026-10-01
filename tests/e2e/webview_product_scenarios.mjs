@@ -7973,11 +7973,14 @@ async function scenario39Seed(page, recorder, runtime) {
     await page.getByTestId("diff-close").click();
     await waitForCapturedBridgeMessage(page, 30_000);
   };
-  const restoreAncestorThroughUi = async file => {
+  const restoreAncestorThroughUi = async (file, liveSession = null) => {
     const row = page.locator('[data-testid^="document-row-"]').filter({ hasText: file.name });
     await row.first().waitFor({ state: "visible", timeout: 30_000 });
-    await row.first().click();
-    await fileWorkspace.locator(".inspector-tabs button").nth(1).click();
+    const selected = await row.first().getAttribute("aria-selected");
+    const historySelected = await fileWorkspace.getByRole("tab").nth(1).getAttribute("aria-selected");
+    recorder.check(`${file.name}: ancestor restore keeps the selected document's open history`,
+      await row.count() === 1 && selected === "true" && historySelected === "true",
+      { selected, historySelected });
     const tree = page.getByTestId("file-revision-tree");
     await tree.waitFor({ state: "visible", timeout: 30_000 });
     const ancestor = tree.locator(`.tree-row[data-revision-id="${file.historicalRevisionId}"]`);
@@ -7994,10 +7997,16 @@ async function scenario39Seed(page, recorder, runtime) {
     await page.evaluate(() => {
       if (window.__vibetableE2EFileChangeEvents) return;
       window.__vibetableE2EFileChangeEvents = [];
+      window.__vibetableE2EDiffCloseEvents = [];
       window.chrome.webview.addEventListener("message", (event) => {
         let message = event.data;
         if (typeof message === "string") {
           try { message = JSON.parse(message); } catch { return; }
+        }
+        if (message?.type === "document.diffCloseCompleted") {
+          window.__vibetableE2EDiffCloseEvents.push({
+            at: new Date().toISOString(), sessionId: message.payload?.sessionId ?? null,
+          });
         }
         if (message?.type === "document.workspaceChanged") {
           window.__vibetableE2EFileChangeEvents.push({
@@ -8008,6 +8017,16 @@ async function scenario39Seed(page, recorder, runtime) {
         }
       });
     });
+    if (liveSession) {
+      await page.getByTestId("diff-result").waitFor({ state: "visible", timeout: 30_000 });
+      const livePage = await rawBridgeRequest(page, "document.diffPageRequested", {
+        sessionId: liveSession.sessionId, cursor: null, limit: 50,
+      }, 30_000, ["document.diffPageCompleted"]);
+      recorder.check(`${file.name}: its live diff session is still ready immediately before restore`,
+        livePage.type === "document.diffPageCompleted" && livePage.payload?.outcome === "ready"
+          && livePage.payload?.page?.sessionId === liveSession.sessionId,
+        { livePage, sessionId: liveSession.sessionId });
+    }
     const previousHandle = await row.first().getAttribute("data-testid");
     const refreshMarker = new Date().toISOString();
     await beginWorkspaceV2MethodCapture(page, "fileHistory.restore");
@@ -8104,13 +8123,16 @@ async function scenario39Seed(page, recorder, runtime) {
   // restore; the tree effective change must cancel and expire that session.
   const xlsxRequested = await openHistoryHitThroughUi(xlsx, "旧");
   const liveSession = await compareThroughUi(xlsx, 11, xlsxRequested);
-  const xlsxRestore = await restoreAncestorThroughUi(xlsx);
+  const xlsxRestore = await restoreAncestorThroughUi(xlsx, liveSession);
   await page.getByTestId("diff-result").waitFor({ state: "hidden", timeout: 30_000 });
-  await page.waitForFunction(marker => {
+  await page.waitForFunction(({ marker, sessionId }) => {
     const roundTrips = window.__vibetableE2EBridgeDiagnostics?.roundTrips ?? [];
-    return roundTrips.some(item => item.requestType === "document.diffCloseRequested"
+    const closed = (window.__vibetableE2EDiffCloseEvents ?? []).some(item =>
+      item.sessionId === sessionId && item.at > marker);
+    return closed && roundTrips.some(item => item.requestType === "document.diffCloseRequested"
+      && item.responseType === "document.diffCloseCompleted" && item.code === null
       && item.startedAt > marker);
-  }, xlsxRestore.marker, { timeout: 30_000 });
+  }, { marker: xlsxRestore.marker, sessionId: liveSession.sessionId }, { timeout: 30_000 });
   const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
     sessionId: liveSession.sessionId, cursor: null, limit: 50,
   }, 30_000, ["document.diffPageCompleted"]);

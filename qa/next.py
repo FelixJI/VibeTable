@@ -1302,6 +1302,43 @@ def persist_product_e2e_evidence(
             if not copied and item["status"] == "passed":
                 raise ValueError(f"passing capacity report lacks raw evidence: {filename}")
 
+    for item in scenarios:
+        if item["scenario"] != "39-file-workflow-combination":
+            continue
+        for phase, filenames in {
+            "seed": (
+                "39-record-file-entry.png",
+                "39-restored-revision-tree.png",
+                "39-restored-search.png",
+            ),
+            "resume": ("39-resumed.png",),
+        }.items():
+            phase_root = run_source / "39-file-workflow-combination" / phase
+            phase_runs = []
+            if phase_root.is_dir():
+                for phase_run in phase_root.iterdir():
+                    if (
+                        not phase_run.is_dir()
+                        or re.fullmatch(r"\d{8}T\d{6}Z", phase_run.name) is None
+                    ):
+                        continue
+                    try:
+                        datetime.strptime(phase_run.name, "%Y%m%dT%H%M%SZ")
+                    except ValueError:
+                        continue
+                    phase_runs.append(phase_run)
+            latest = max(phase_runs, key=lambda path: path.name, default=None)
+            for filename in filenames:
+                copied = latest is not None and _copy_if_file(
+                    latest / filename,
+                    run_destination
+                    / "39-file-workflow-combination"
+                    / phase
+                    / latest.name
+                    / filename,
+                )
+                if not copied and item["status"] == "passed":
+                    raise ValueError(f"passing S39 report lacks screenshot evidence: {filename}")
     for item in failed_scenarios:
         scenario_id = item.get("scenario")
         if (

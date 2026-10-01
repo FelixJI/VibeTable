@@ -1695,6 +1695,12 @@ def _prepare_complete_product_reports(
             ),
             encoding="utf-8",
         )
+        if "39-file-workflow-combination" in selected[stage]:
+            for phase, filenames in S39_SCREENSHOTS.items():
+                phase_root = run_root / "39-file-workflow-combination" / phase / "20260817T010204Z"
+                phase_root.mkdir(parents=True)
+                for filename in filenames:
+                    (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
         if "40-file-history-capacity" in selected[stage]:
             persistent = run_root / "40-file-history-capacity" / "persistent"
             (persistent / "fixtures").mkdir(parents=True)
@@ -2518,3 +2524,116 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
         "product-e2e-report.json",
         *(f"{scenario_id}/persistent/{name}" for name in evidence),
     }
+
+
+S39_SCREENSHOTS = {
+    "seed": ("39-record-file-entry.png", "39-restored-revision-tree.png", "39-restored-search.png"),
+    "resume": ("39-resumed.png",),
+}
+
+
+def _s39_screenshot_run(tmp_path: Path, status: str) -> Path:
+    run = tmp_path / "source" / "20261001T231000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "scenarios": [
+                    {
+                        "scenario": "39-file-workflow-combination",
+                        "status": status,
+                        "screenshot": str(tmp_path / "outside.png"),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for phase, filenames in S39_SCREENSHOTS.items():
+        for timestamp in ("20261001T231001Z", "20261001T231002Z", "20261399T235959Z"):
+            directory = run / "39-file-workflow-combination" / phase / timestamp
+            directory.mkdir(parents=True)
+            for filename in filenames:
+                (directory / filename).write_bytes(f"{timestamp}:{filename}".encode())
+            (directory / "unrelated.png").write_bytes(b"not requested")
+            (directory / "workspace.db").write_bytes(b"private")
+            (directory / "seed-state.json").write_bytes(b"private")
+    (tmp_path / "outside.png").write_bytes(b"outside")
+    return run
+
+
+def test_s39_screenshots_archive_only_the_four_current_phase_images(tmp_path: Path) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    expected = {"product-e2e-report.json"}
+    for phase, filenames in S39_SCREENSHOTS.items():
+        for filename in filenames:
+            relative = f"39-file-workflow-combination/{phase}/20261001T231002Z/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == f"20261001T231002Z:{filename}".encode()
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == expected
+
+
+@pytest.mark.parametrize("phase", ["seed", "resume"])
+def test_s39_screenshots_missing_current_image_cannot_fall_back_to_old_phase(
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    filename = S39_SCREENSHOTS[phase][0]
+    (run / "39-file-workflow-combination" / phase / "20261001T231002Z" / filename).unlink()
+    with pytest.raises(ValueError, match=filename):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_s39_screenshots_missing_resume_phase_rejects_passing_report(tmp_path: Path) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    for filename in S39_SCREENSHOTS["resume"]:
+        for source in (run / "39-file-workflow-combination" / "resume").glob(f"*/{filename}"):
+            source.unlink()
+    with pytest.raises(ValueError, match=r"39-resumed\.png"):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_s39_screenshots_copy_failure_rejects_passing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raises: bool,
+) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    copy = next_gate._copy_if_file
+
+    def fail_image(source: Path, destination: Path) -> bool:
+        if source.name == "39-restored-search.png":
+            if raises:
+                raise OSError("synthetic screenshot copy failure")
+            return False
+        return copy(source, destination)
+
+    monkeypatch.setattr(next_gate, "_copy_if_file", fail_image)
+    with pytest.raises(
+        OSError if raises else ValueError,
+        match="copy failure" if raises else "39-restored-search.png",
+    ):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_s39_screenshots_failed_report_keeps_only_images_produced_in_current_phase(
+    tmp_path: Path,
+) -> None:
+    run = _s39_screenshot_run(tmp_path, "failed")
+    for phase, filenames in S39_SCREENSHOTS.items():
+        for filename in filenames:
+            if filename != "39-record-file-entry.png":
+                (
+                    run / "39-file-workflow-combination" / phase / "20261001T231002Z" / filename
+                ).unlink()
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    images = {path.relative_to(retained).as_posix() for path in retained.rglob("*.png")}
+    assert images == {"39-file-workflow-combination/seed/20261001T231002Z/39-record-file-entry.png"}
