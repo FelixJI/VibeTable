@@ -52,6 +52,16 @@ type rematHarness struct {
 	apply      func(stage string, table v2IntegrationTable, key string, operation ...mutation.Operation)
 }
 
+// newRematApp registers the bootstrap-state reset as the FIRST t.Cleanup,
+// so cleanup LIFO ordering runs it after the harness job-service shutdown:
+// background recalculation jobs always join while the app is bootstrapped.
+func newRematApp(t *testing.T) *pocketbase.PocketBase {
+	t.Helper()
+	app := bootstrapApp(t, queryTempDir(t))
+	t.Cleanup(func() { resetApp(t, app) })
+	return app
+}
+
 func newRematHarness(t *testing.T, app *pocketbase.PocketBase) rematHarness {
 	t.Helper()
 	jobService := jobs.New(app, nil)
@@ -123,14 +133,44 @@ func storedValue(t *testing.T, app *pocketbase.PocketBase, table, recordID, fiel
 	return normalizeStored(relatedcomputation.ProjectStored(record.GetRaw(fieldName)))
 }
 
+// TestRematFixtureShutsDownJobsBeforeAppReset pins the fixture cleanup
+// order: the observer t.Cleanup is registered between the app-reset and
+// harness-shutdown cleanups, so LIFO runs it after Shutdown but before
+// reset — the app must still be bootstrapped with a cancelled job-service
+// context when the observer runs (pre-fix defer reset ran first).
+func TestRematFixtureShutsDownJobsBeforeAppReset(t *testing.T) {
+	app := newRematApp(t)
+	var harness rematHarness
+	t.Cleanup(func() {
+		if harness.jobService == nil {
+			t.Errorf("ordering observer ran before the harness was built")
+			return
+		}
+		if err := harness.jobService.Context().Err(); err == nil {
+			t.Errorf("job service context still live when the ordering observer ran")
+		}
+		if !app.IsBootstrapped() {
+			t.Errorf("app was reset before the job service shutdown observer ran")
+		}
+	})
+	harness = newRematHarness(t, app)
+	ctx := context.Background()
+	probe := createV2IntegrationTable(t, ctx, app, "清理顺序", "order_probe")
+	code := createV2IntegrationField(t, ctx, app, probe.TableID,
+		fieldDraftForIntegration(t, v2.LogicalText, "顺序编码"), "order_probe_code")
+	probeID := "orderprobe00001"
+	harness.apply("order probe insert", probe, "order-probe-insert",
+		mutation.Operation{Kind: mutation.OperationInsert, RecordID: &probeID,
+			Values: map[string]any{code.Definition.Identity.PhysicalName: "ORD-O"}})
+}
+
 // TestComputedFieldRestoreRematerializesStoredValues pins #414 AC5 for both
 // computed kinds: after a lookup or formula field is retired, a dependency
 // value changes, and the field is restored, the stored cell and the query
 // surface must expose the fresh oracle value instead of a silently stale
 // snapshot from before retirement.
 func TestComputedFieldRestoreRematerializesStoredValues(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	orders := createV2IntegrationTable(t, ctx, app, "恢复订单", "restore_remat_orders")
 	materials := createV2IntegrationTable(t, ctx, app, "恢复物料", "restore_remat_materials")
@@ -289,8 +329,7 @@ func TestComputedFieldRestoreRematerializesStoredValues(t *testing.T) {
 // silently resurrect links, and that archive/restore target events keep their
 // links, so membership matching stays valid for them.
 func TestSetNullTargetDeleteKeepsLinksAndComputedConsistent(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	orders := createV2IntegrationTable(t, ctx, app, "清链订单", "setnull_orders")
 	shipments := createV2IntegrationTable(t, ctx, app, "清链运单", "setnull_shipments")
@@ -480,8 +519,7 @@ func TestSetNullTargetDeleteKeepsLinksAndComputedConsistent(t *testing.T) {
 // scan, not only the event kind. The remaining-set oracle (7), cleaned
 // links, and the query surface must all agree after the mixed batch.
 func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	orders := createV2IntegrationTable(t, ctx, app, "混批订单", "mixed_orders")
 	materials := createV2IntegrationTable(t, ctx, app, "混批物料", "mixed_materials")
@@ -581,8 +619,7 @@ func TestSetNullMixedBatchDeleteAndUnrelatedUpdateRefreshesAggregate(t *testing.
 // operation" on the picker save; the field-creation backfill job fails with
 // the same code and leaves the formula column null.
 func TestRelationPickerSaveWithFormulaOverPathLookup(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	orders := createV2IntegrationTable(t, ctx, app, "取值订单", "picker_orders")
 	materials := createV2IntegrationTable(t, ctx, app, "取值物料", "picker_materials")
@@ -679,6 +716,8 @@ func TestRelationPickerSaveWithFormulaOverPathLookup(t *testing.T) {
 	if got := sourceLinks(t, app, orders.PhysicalName, orderID, linkName); len(got) != 1 || got[0] != materialID {
 		t.Fatalf("links after picker save = %#v", got)
 	}
+	// Drain the ApplyDelta-scheduled fanout so the test ends at true completion.
+	harness.drain("picker save fanout")
 }
 
 // TestRelationHopFanoutKeepsWholeSourceTableFresh pins the 5aac S38 root
@@ -690,8 +729,7 @@ func TestRelationPickerSaveWithFormulaOverPathLookup(t *testing.T) {
 // stale projection exists before draining (the invalidation itself fires),
 // then requires fresh scalar values on every row once jobs settle.
 func TestRelationHopFanoutKeepsWholeSourceTableFresh(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	orders := createV2IntegrationTable(t, ctx, app, "全表订单", "hop_orders")
 	shipments := createV2IntegrationTable(t, ctx, app, "全表运单", "hop_shipments")
@@ -907,8 +945,7 @@ func TestRelationHopFanoutKeepsWholeSourceTableFresh(t *testing.T) {
 // both the target (summary) and source (main) query projections fresh with
 // envelope-shaped stored JSON on summary rows.
 func TestPairReciprocalWritesStoreComputedEnvelopes(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	source := createV2IntegrationTable(t, ctx, app, "配对来源", "pr_source")
 	summary := createV2IntegrationTable(t, ctx, app, "配对汇总", "pr_summary")
@@ -1100,8 +1137,7 @@ func TestPairReciprocalWritesStoreComputedEnvelopes(t *testing.T) {
 // untouched. Restoring the authoritative metadata lets the identical edit
 // commit, so the retryable classification is observable, not decorative.
 func TestPairReciprocalComputedVersionFailureFailsClosedAtomically(t *testing.T) {
-	app := bootstrapApp(t, queryTempDir(t))
-	defer resetApp(t, app)
+	app := newRematApp(t)
 	ctx := context.Background()
 	source := createV2IntegrationTable(t, ctx, app, "版本失败来源", "vf_source")
 	target := createV2IntegrationTable(t, ctx, app, "版本失败目标", "vf_target")
