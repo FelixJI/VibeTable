@@ -141,6 +141,76 @@ func raceEffective(t *testing.T, fixture historyFixture) Revision {
 	return Revision{}
 }
 
+// firstErrNotifyContext reports the first Err() call so the test can
+// cancel only after the pre-lock check has already passed with a live
+// context. Its fields are touched only by the reader goroutine.
+type firstErrNotifyContext struct {
+	context.Context
+	firstErr chan struct{}
+	notified bool
+}
+
+func (ctx *firstErrNotifyContext) Err() error {
+	err := ctx.Context.Err()
+	if !ctx.notified {
+		ctx.notified = true
+		close(ctx.firstErr)
+	}
+	return err
+}
+
+// A stable read on an already-cancelled context returns before any IO, and
+// a cancellation landing while the read queues for the history read lock is
+// honored once the lock is granted.
+func TestWatcherStableReadCancellation(t *testing.T) {
+	t.Run("pre-cancelled", func(t *testing.T) {
+		fixture, filesRoot, _ := raceSetup(t)
+		raceWriteDisk(t, filesRoot, "data")
+		watcher := raceWatcher(t, fixture, filesRoot, &raceSeam{})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		content, err := watcher.ReadStable(ctx, "a.txt")
+		if !errors.Is(err, context.Canceled) || content != nil {
+			t.Fatalf(
+				"pre-cancelled read = (%#v, %v); want (nil, context.Canceled)",
+				content, err,
+			)
+		}
+	})
+	t.Run("cancelled-while-waiting-for-read-lock", func(t *testing.T) {
+		fixture, filesRoot, _ := raceSetup(t)
+		raceWriteDisk(t, filesRoot, "data")
+		watcher := raceWatcher(t, fixture, filesRoot, &raceSeam{})
+		parent, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx := &firstErrNotifyContext{
+			Context: parent, firstErr: make(chan struct{}),
+		}
+		type readOutcome struct {
+			content []byte
+			err     error
+		}
+		outcome := make(chan readOutcome, 1)
+		fixture.service.mu.Lock()
+		go func() {
+			content, err := watcher.ReadStable(ctx, "a.txt")
+			outcome <- readOutcome{content: content, err: err}
+		}()
+		<-ctx.firstErr // pre-lock check passed with a live context
+		cancel()
+		fixture.service.mu.Unlock() // the reader acquires the lock only now
+		result := <-outcome
+		if !errors.Is(result.err, context.Canceled) ||
+			result.content != nil {
+			t.Fatalf(
+				"cancelled lock-wait read = (%#v, %v); "+
+					"want (nil, context.Canceled)",
+				result.content, result.err,
+			)
+		}
+	})
+}
+
 // A file snapshot taken before a mid-scan formal commit must never replace
 // the racing revision as effective or materialize its stale bytes back over
 // the newly committed content.
