@@ -77,9 +77,22 @@ export async function runFileHistoryCapacityJourney(page, recorder, runtime, hel
   const displayedPath = selected.result.documents
     .find(document => document.documentId === fixture.selectedMultiDocumentId).relativePath;
   const search = page.getByTestId("file-workspace").getByRole("textbox").first();
-  await search.fill(path.basename(displayedPath));
   const row = page.locator('[data-testid^="document-row-"]')
     .filter({ hasText: path.basename(displayedPath) });
+  const previousHandle = await row.count() ? await row.getAttribute("data-testid") : null;
+  const filterMarker = new Date().toISOString();
+  await search.fill(path.basename(displayedPath));
+  // The debounced list reload replaces entry handles and clears stale selection.
+  await page.waitForFunction(({ marker, handle, name }) => {
+    const refreshed = (window.__vibetableE2EBridgeDiagnostics?.roundTrips ?? []).some(item =>
+      item.requestType === "document.listRequested" && item.startedAt > marker
+      && item.responseType === "document.listLoaded" && item.code === null);
+    const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+      .find(candidate => candidate.textContent?.includes(name));
+    return refreshed && current instanceof HTMLElement
+      && current.getAttribute("data-testid") !== handle;
+  }, { marker: filterMarker, handle: previousHandle, name: path.basename(displayedPath) },
+  { timeout: 30000 });
   await row.waitFor({ state: "visible", timeout: 30000 });
   const treeUiStarted = performance.now();
   await row.click();
