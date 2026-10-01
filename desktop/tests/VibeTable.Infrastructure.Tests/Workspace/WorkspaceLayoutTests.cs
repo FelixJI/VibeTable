@@ -52,7 +52,7 @@ public sealed class WorkspaceLayoutTests
             WorkspaceEncryptionMode.Protected);
         var paths = WorkspaceLayout.Paths(root);
 
-        Assert.AreEqual(2UL, result.Manifest.FormatVersion);
+        Assert.AreEqual(3UL, result.Manifest.FormatVersion);
         Assert.AreEqual(result.Manifest.WorkspaceId, WorkspaceLayout.ReadManifest(root).WorkspaceId);
         foreach (var directory in new[]
         {
@@ -65,7 +65,8 @@ public sealed class WorkspaceLayoutTests
 
     [TestMethod]
     [DataRow(1)]
-    [DataRow(3)]
+    [DataRow(2)]
+    [DataRow(4)]
     public void UnsupportedWorkspaceFormatIsExplicitlyRejected(int formatVersion)
     {
         using var fixture = new LayoutFixture();

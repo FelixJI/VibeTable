@@ -10,6 +10,11 @@ import { calculationChainUiFixture } from "./calculation_chain_journey.mjs";
 export const COMBINATION_DOCX = "document-format.docx";
 export const COMBINATION_XLSX = "document-content.xlsx";
 
+export function fileWorkflowHasCurrentBinding(hits, documentId, revisionId) {
+  const current = hits.filter(hit => hit.kind === "file" && hit.canonicalId === documentId);
+  return current.length > 0 && current.every(hit => hit.sourceRevision === revisionId);
+}
+
 export function fileWorkflowCombinationSources() {
   const sources = calculationChainUiFixture();
   const first = sources[0];

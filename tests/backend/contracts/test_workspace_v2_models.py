@@ -29,7 +29,7 @@ FIXTURES = ROOT / "contracts" / "v2" / "fixtures"
 NEGATIVE_FIXTURES = ROOT / "contracts" / "v2" / "negative-fixtures.json"
 
 MODEL_BY_FIXTURE = {
-    "workspace-manifest.json": WorkspaceManifest,
+    "workspace-manifest-current.json": WorkspaceManifest,
     "workspace-registry-entry.json": WorkspaceRegistryEntry,
     "workspace-session.json": WorkspaceSession,
     "file-document.json": FileDocument,
@@ -53,9 +53,9 @@ def test_v2_fixture_strictly_round_trips(fixture_name: str, model: type) -> None
     assert parsed.model_dump(mode="json", by_alias=True) == payload
 
 
-@pytest.mark.parametrize("format_version", [1, 3])
+@pytest.mark.parametrize("format_version", [1, 2, 4])
 def test_workspace_manifest_rejects_every_unsupported_format(format_version: int) -> None:
-    payload = json.loads((FIXTURES / "workspace-manifest.json").read_text(encoding="utf-8"))
+    payload = json.loads((FIXTURES / "workspace-manifest-current.json").read_text(encoding="utf-8"))
     payload["formatVersion"] = format_version
 
     with pytest.raises(ValidationError):

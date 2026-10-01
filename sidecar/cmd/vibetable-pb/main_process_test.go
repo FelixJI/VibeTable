@@ -1114,13 +1114,13 @@ func createV2Workspace(t *testing.T, root string) string {
 	}
 	raw := `{
 		"contractVersion":"2.0",
-		"formatVersion":2,
+		"formatVersion":3,
 		"workspaceId":"11111111-1111-4111-8111-111111111111",
 		"displayName":"HTTP test workspace",
 		"createdAt":"2026-07-28T08:00:00Z",
 		"storageMode":"direct",
 		"encryptionMode":"convenient",
-		"repositoryFormat":"kopia-v3",
+		"repositoryFormat":"kopia-v4",
 		"topologySchemaVersion":1,
 		"businessSchemaVersion":1,
 		"importedFromWorkspaceId":null,

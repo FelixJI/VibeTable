@@ -2221,8 +2221,8 @@ def _produce_file_history_capacity_fixtures(persistent_root: Path) -> dict[str, 
     environment = os.environ.copy()
     environment[CAPACITY_FIXTURE_ENV] = str(fixture_root)
     environment["GOTOOLCHAIN"] = "local"
-    environment.setdefault("GOCACHE", str(ROOT / ".codex-go-cache"))
-    environment.setdefault("GOTMPDIR", str(ROOT / ".codex-test-tmp"))
+    environment.setdefault("GOCACHE", str(ROOT / "build" / "go-cache"))
+    environment.setdefault("GOTMPDIR", str(ROOT / "build" / "go-tmp"))
     Path(environment["GOCACHE"]).mkdir(parents=True, exist_ok=True)
     Path(environment["GOTMPDIR"]).mkdir(parents=True, exist_ok=True)
     command = [

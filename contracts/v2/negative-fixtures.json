@@ -2,8 +2,24 @@
   "schemaVersion": 1,
   "cases": [
     {
+      "name": "workspace-manifest-previous-format-rejected",
+      "fixture": "workspace-manifest-current.json",
+      "operation": "replace",
+      "path": ["formatVersion"],
+      "value": 2,
+      "expected": "reject"
+    },
+    {
+      "name": "workspace-manifest-newer-format-rejected",
+      "fixture": "workspace-manifest-current.json",
+      "operation": "replace",
+      "path": ["formatVersion"],
+      "value": 4,
+      "expected": "reject"
+    },
+    {
       "name": "workspace-manifest-top-level-unknown",
-      "fixture": "workspace-manifest.json",
+      "fixture": "workspace-manifest-current.json",
       "operation": "add",
       "path": ["unexpected"],
       "value": true,
@@ -11,7 +27,7 @@
     },
     {
       "name": "workspace-manifest-required-field-missing",
-      "fixture": "workspace-manifest.json",
+      "fixture": "workspace-manifest-current.json",
       "operation": "remove",
       "path": ["formatVersion"],
       "value": null,
@@ -19,7 +35,7 @@
     },
     {
       "name": "workspace-manifest-enum-invalid",
-      "fixture": "workspace-manifest.json",
+      "fixture": "workspace-manifest-current.json",
       "operation": "replace",
       "path": ["storageMode"],
       "value": "remote",
@@ -27,7 +43,7 @@
     },
     {
       "name": "workspace-manifest-enum-must-be-string",
-      "fixture": "workspace-manifest.json",
+      "fixture": "workspace-manifest-current.json",
       "operation": "replace",
       "path": ["storageMode"],
       "value": 0,
@@ -43,7 +59,7 @@
     },
     {
       "name": "workspace-manifest-trailing-json",
-      "fixture": "workspace-manifest.json",
+      "fixture": "workspace-manifest-current.json",
       "operation": "appendRaw",
       "path": [],
       "value": " {}",

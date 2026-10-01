@@ -82,7 +82,7 @@ def test_current_writer_derives_app_version_while_n_minus_one_evidence_is_frozen
     assert policy["currentWriter"]["appVersion"] == app_version
     assert policy["currentWriter"] == {
         "appVersion": app_version,
-        "workspaceManifestFormat": 2,
+        "workspaceManifestFormat": 3,
         "snapshotPackageFormat": 2,
         "internalSnapshotManifestFormat": 2,
     }
@@ -100,7 +100,7 @@ def test_current_writer_derives_app_version_while_n_minus_one_evidence_is_frozen
         ],
     }
     assert policy["workspaceManifest"] == {
-        "supportedFormat": 2,
+        "supportedFormat": 3,
         "topologySchemaVersion": 1,
         "businessSchemaVersion": 1,
         "olderFormatDisposition": "reject-zero-write-no-automatic-migration",
@@ -261,6 +261,29 @@ def test_workspace_manifest_schema_versions_match_runtime_writer_and_readers() -
     snapshot_reader = GO_SNAPSHOT_VALIDATION.read_text(encoding="utf-8")
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
 
+    manifest_schema = json.loads(
+        (ROOT / "contracts/v2/contracts.schema.json").read_text(encoding="utf-8")
+    )["$defs"]["WorkspaceManifest"]
+    manifest_fixture = json.loads(
+        (ROOT / "contracts/v2/fixtures/workspace-manifest-current.json").read_text(encoding="utf-8")
+    )
+    python_reader = (ROOT / "backend/contracts/workspace_v2.py").read_text(encoding="utf-8")
+    typescript_reader = (ROOT / "desktop/web-grid/src/contracts/workspaceV2.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "FormatVersion = WorkspaceV2Json.WorkspaceFormatVersion" in writer
+    assert re.search(r"WorkspaceFormatVersion\s*=\s*3", csharp_reader)
+    assert re.search(r"WorkspaceFormatVersion\s*=\s*uint64\(3\)", go_reader)
+    assert "format_version: Literal[3]" in python_reader
+    assert "source.formatVersion !== 3" in typescript_reader
+    assert (
+        policy["currentWriter"]["workspaceManifestFormat"]
+        == policy["workspaceManifest"]["supportedFormat"]
+        == manifest_schema["properties"]["formatVersion"]["const"]
+        == manifest_fixture["formatVersion"]
+        == 3
+    )
+
     topology_writer = re.search(r"TopologySchemaVersion\s*=\s*(\d+)", writer)
     business_writer = re.search(r"BusinessSchemaVersion\s*=\s*(\d+)", writer)
     business_reader = re.search(
@@ -346,7 +369,7 @@ def test_workspace_manifest_schema_versions_match_runtime_writer_and_readers() -
             "writer compatibility appVersion values must be unique",
         ),
         (
-            lambda policy: policy["workspaceManifest"].update(supportedFormat=3),
+            lambda policy: policy["workspaceManifest"].update(supportedFormat=4),
             "workspace manifest format must match current writer",
         ),
         (

@@ -31,6 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
   saved: [];
+  openDocument: [documentId: string];
 }>();
 const bridge = useHostBridge();
 const service = useContentModelService();
@@ -385,6 +386,7 @@ watch(() => [props.show, props.tableId] as const, ([show], [previousShow, previo
                 <NTag :type="item.active ? 'success' : 'error'" size="small">
                   {{ item.active ? '正常' : '关联已断开' }}
                 </NTag>
+                <NButton size="tiny" data-testid="content-link-open" :disabled="!item.active" @click="emit('openDocument', item.link.documentId)">查看文件版本</NButton>
                 <NButton v-if="!item.active" size="tiny" data-testid="content-link-repair" :disabled="!selectedDocument" @click="repairLink(item)">重新绑定</NButton>
                 <NButton size="tiny" quaternary @click="deleteLink(item)">移除关联</NButton>
               </article>

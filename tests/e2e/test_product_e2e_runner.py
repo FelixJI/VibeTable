@@ -469,13 +469,13 @@ def _write_packaged_workspace(root: Path) -> None:
         json.dumps(
             {
                 "contractVersion": "2.0",
-                "formatVersion": 2,
+                "formatVersion": 3,
                 "workspaceId": "11111111-1111-4111-8111-111111111111",
                 "displayName": "Packaged runtime baseline",
                 "createdAt": "2026-08-29T00:00:00Z",
                 "storageMode": "direct",
                 "encryptionMode": "convenient",
-                "repositoryFormat": "kopia-v3",
+                "repositoryFormat": "kopia-v4",
                 "topologySchemaVersion": 1,
                 "businessSchemaVersion": 1,
                 "importedFromWorkspaceId": None,

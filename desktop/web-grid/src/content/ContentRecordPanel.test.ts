@@ -407,6 +407,8 @@ describe("ContentRecordPanel", () => {
     const activeCard = firstPanel.get('[data-testid="content-link-link-active"]');
     expect(activeCard.text()).toContain(activeDocument.displayName);
     expect(activeCard.text()).toContain("正常");
+    await activeCard.get('[data-testid="content-link-open"]').trigger("click");
+    expect(firstPanel.emitted("openDocument")).toEqual([[activeDocument.documentId]]);
     firstPanel.unmount();
 
     const reopenedPanel = mountPanel({ documents: [] });
@@ -415,6 +417,8 @@ describe("ContentRecordPanel", () => {
     const brokenCard = reopenedPanel.get('[data-testid="content-link-link-active"]');
     expect(brokenCard.text()).toContain(activeDocument.displayName);
     expect(brokenCard.findComponent(NTag).text()).toBe("关联已断开");
+    expect(brokenCard.get('[data-testid="content-link-open"]').attributes("disabled")).toBeDefined();
+    expect(reopenedPanel.emitted("openDocument")).toBeUndefined();
     reopenedPanel.unmount();
   });
 

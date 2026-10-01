@@ -48,7 +48,7 @@ import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
 import { runCalculationChainJourney } from "./calculation_chain_journey.mjs";
 import { runFileHistoryCapacityJourney } from "./file_history_capacity_journey.mjs";
 import { COMBINATION_DOCX, COMBINATION_XLSX, FILE_WORKFLOW_FINAL_CALCULATION_ORACLE,
-  fileWorkflowCombinationBeforeCorpus, fileWorkflowCombinationSources } from "./file_workflow_combination.mjs";
+  fileWorkflowCombinationBeforeCorpus, fileWorkflowCombinationSources, fileWorkflowHasCurrentBinding } from "./file_workflow_combination.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -7823,7 +7823,19 @@ async function scenario39Seed(page, recorder, runtime) {
   recorder.check("both qualified documents link to the existing 合同甲 record through the content UI",
     links.payload?.items?.length === 2 && [docx.documentId, xlsx.documentId].every(id =>
       links.payload.items.some(item => item.link?.documentId === id)), { links: links.payload });
-  await page.locator(".n-drawer-header__close").last().click();
+  const linkedDocxCard = contentPanel.locator(".link-card").filter({ hasText: COMBINATION_DOCX });
+  await linkedDocxCard.getByTestId("content-link-open").click();
+  await contentPanel.waitFor({ state: "hidden", timeout: 30_000 });
+  const linkedTree = page.getByTestId("file-revision-tree");
+  await linkedTree.waitFor({ state: "visible", timeout: 30_000 });
+  await linkedTree.locator(`.tree-row[data-revision-id="${docx.effectiveRevisionId}"]`)
+    .waitFor({ state: "visible", timeout: 30_000 });
+  const linkedRows = page.locator('[data-testid^="document-row-"]');
+  recorder.check("the 合同甲 linked-file entry opens the document's authoritative revision tree",
+    await linkedRows.count() === 1 && (await linkedRows.first().innerText()).includes(COMBINATION_DOCX)
+      && await linkedTree.locator(`.tree-row[data-revision-id="${docx.effectiveRevisionId}"]`).count() === 1,
+    { recordId: mainRecord.id, documentId: docx.documentId, effectiveRevisionId: docx.effectiveRevisionId });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "39-record-file-entry.png"), fullPage: true });
 
   // Real current/history content search localized to the two documents. The
   // first rebuild initializes the shared index; hit sets are always filtered
@@ -8116,10 +8128,14 @@ async function scenario39Seed(page, recorder, runtime) {
     }
     recorder.check(label, false, { ...details, last });
   };
-  await retryFileSearch("仅格式变化的相同正文", hits => hits.some(hit =>
-      hit.canonicalId === docx.documentId && hit.sourceRevision === docxRestore.restoreRevisionId),
+  await retryFileSearch("仅格式变化的相同正文", hits => fileWorkflowHasCurrentBinding(
+      hits, docx.documentId, docxRestore.restoreRevisionId),
   "the DOCX current binding advances to the restored revision without a manual rebuild",
     { docx: docx.documentId, restoredRevisionId: docxRestore.restoreRevisionId });
+  await retryFileSearch("旧", hits => fileWorkflowHasCurrentBinding(
+      hits, xlsx.documentId, xlsxRestore.restoreRevisionId),
+    "the restored XLSX current text remains indexed only under its restored revision",
+    { xlsx: xlsx.documentId, restoredRevisionId: xlsxRestore.restoreRevisionId });
   await retryFileSearch("新增", hits => !hits.some(hit => hit.canonicalId === xlsx.documentId),
     "the superseded XLSX current hit no longer masquerades as the current revision",
     { xlsx: xlsx.documentId, supersededRevisionId: xlsx.effectiveRevisionId });
@@ -8270,6 +8286,22 @@ async function scenario39Resume(page, recorder, statePath, runtime) {
     links.payload?.items?.length === 2 && state.files.every(file =>
       links.payload.items.some(item => item.link?.documentId === file.documentId)),
     { links: links.payload });
+  await page.getByTestId("nav-search").click();
+  await page.getByTestId("workspace-search-view").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-search-scope-current").check();
+  for (const [name, query] of [[COMBINATION_DOCX, "仅格式变化的相同正文"], [COMBINATION_XLSX, "旧"]]) {
+    const file = state.files.find(item => item.name === name);
+    await page.getByTestId("workspace-search-input").locator("input").fill(query);
+    const result = await submitWorkspaceSearch(page, { keyboard: true });
+    recorder.check(`${name}: cold-reopened current search keeps only the restored revision`,
+      fileWorkflowHasCurrentBinding(result.hits, file.documentId, file.restoreRevisionId), { result });
+  }
+  await page.getByTestId("workspace-search-input").locator("input").fill("新增");
+  const obsoleteCurrent = await submitWorkspaceSearch(page, { keyboard: true });
+  const resumedXlsx = state.files.find(item => item.name === COMBINATION_XLSX);
+  recorder.check("cold-reopened search does not resurrect superseded XLSX current text",
+    !obsoleteCurrent.hits.some(hit => hit.kind === "file" && hit.canonicalId === resumedXlsx.documentId),
+    { obsoleteCurrent });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "39-resumed.png"), fullPage: true });
   return { workspaceId: switched.result?.workspaceId };
 }

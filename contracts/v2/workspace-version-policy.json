@@ -3,7 +3,7 @@
   "policyRevision": 2,
   "currentWriter": {
     "appVersion": "0.5.1",
-    "workspaceManifestFormat": 2,
+    "workspaceManifestFormat": 3,
     "snapshotPackageFormat": 2,
     "internalSnapshotManifestFormat": 2
   },
@@ -26,7 +26,7 @@
     ]
   },
   "workspaceManifest": {
-    "supportedFormat": 2,
+    "supportedFormat": 3,
     "topologySchemaVersion": 1,
     "businessSchemaVersion": 1,
     "olderFormatDisposition": "reject-zero-write-no-automatic-migration",

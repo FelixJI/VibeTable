@@ -367,13 +367,13 @@ def _create_v2_workspace(root: Path) -> Path:
         (metadata / name).mkdir(parents=True)
     manifest = {
         "contractVersion": "2.0",
-        "formatVersion": 2,
+        "formatVersion": 3,
         "workspaceId": WORKSPACE_ID,
         "displayName": "Packaged sidecar v2 matrix",
         "createdAt": "2026-07-28T08:00:00Z",
         "storageMode": "direct",
         "encryptionMode": "convenient",
-        "repositoryFormat": "kopia-v3",
+        "repositoryFormat": "kopia-v4",
         "topologySchemaVersion": 1,
         "businessSchemaVersion": 1,
         "importedFromWorkspaceId": None,
@@ -473,8 +473,8 @@ def _run_workspace_v2_smoke(
     )
     build_info = json.loads(build_info_result.stdout)
     assert build_info["protocolV2Version"] == "2.0"
-    assert build_info["workspaceFormat"] == "2"
-    assert build_info["repositoryFormat"] == "kopia-v3"
+    assert build_info["workspaceFormat"] == "3"
+    assert build_info["repositoryFormat"] == "kopia-v4"
     assert build_info["snapshotFormat"] == "2"
     assert build_info["packageFormat"] == "2"
     assert build_info["kopiaVersion"]

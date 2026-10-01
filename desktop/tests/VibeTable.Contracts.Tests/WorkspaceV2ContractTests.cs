@@ -10,7 +10,7 @@ public sealed class WorkspaceV2ContractTests
     private static readonly Dictionary<string, Func<string, IWorkspaceV2Contract>> Readers =
         new(StringComparer.Ordinal)
         {
-            ["workspace-manifest.json"] = WorkspaceV2Json.DeserializeStrict<WorkspaceManifestV2>,
+            ["workspace-manifest-current.json"] = WorkspaceV2Json.DeserializeStrict<WorkspaceManifestV2>,
             ["workspace-registry-entry.json"] = WorkspaceV2Json.DeserializeStrict<WorkspaceRegistryEntryV2>,
             ["workspace-session.json"] = WorkspaceV2Json.DeserializeStrict<WorkspaceSessionV2>,
             ["file-document.json"] = WorkspaceV2Json.DeserializeStrict<FileDocumentV2>,
@@ -37,7 +37,7 @@ public sealed class WorkspaceV2ContractTests
     [TestMethod]
     public void V2ModelsRejectUnknownMissingInvalidAndTrailingJson()
     {
-        var original = JsonNode.Parse(ReadFixture("workspace-manifest.json"))!.AsObject();
+        var original = JsonNode.Parse(ReadFixture("workspace-manifest-current.json"))!.AsObject();
 
         var unknown = original.DeepClone().AsObject();
         unknown["unexpected"] = true;
@@ -61,10 +61,11 @@ public sealed class WorkspaceV2ContractTests
 
     [TestMethod]
     [DataRow(1)]
-    [DataRow(3)]
+    [DataRow(2)]
+    [DataRow(4)]
     public void WorkspaceManifestRejectsEveryUnsupportedFormat(int formatVersion)
     {
-        JsonObject manifest = JsonNode.Parse(ReadFixture("workspace-manifest.json"))!.AsObject();
+        JsonObject manifest = JsonNode.Parse(ReadFixture("workspace-manifest-current.json"))!.AsObject();
         manifest["formatVersion"] = formatVersion;
 
         JsonException error = Assert.ThrowsExactly<JsonException>(

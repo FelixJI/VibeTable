@@ -200,13 +200,13 @@ def _prepare_workspace(workspace_root: Path) -> None:
         (metadata / name).mkdir(parents=True)
     manifest = {
         "contractVersion": "2.0",
-        "formatVersion": 2,
+        "formatVersion": 3,
         "workspaceId": WORKSPACE_ID,
         "displayName": "Packaged runtime baseline",
         "createdAt": "2026-08-29T00:00:00Z",
         "storageMode": "direct",
         "encryptionMode": "convenient",
-        "repositoryFormat": "kopia-v3",
+        "repositoryFormat": "kopia-v4",
         "topologySchemaVersion": 1,
         "businessSchemaVersion": 1,
         "importedFromWorkspaceId": None,

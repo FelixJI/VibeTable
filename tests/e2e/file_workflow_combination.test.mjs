@@ -7,6 +7,7 @@ import {
   FILE_WORKFLOW_FINAL_CALCULATION_ORACLE,
   fileWorkflowCombinationBeforeCorpus,
   fileWorkflowCombinationSources,
+  fileWorkflowHasCurrentBinding,
 } from "./file_workflow_combination.mjs";
 
 test("S39 source corpus pins the S38 fixture plus its single visible edit", () => {
@@ -44,4 +45,12 @@ test("S39 rejects unknown corpus names and resolves the two static before fixtur
     assert.ok(fs.statSync(fixture).isFile(), `${fixture} must exist`);
     assert.ok(fs.statSync(fixture).size > 0);
   }
+});
+
+test("restored current search rejects stale bindings and a missing file index", () => {
+  const restored = { kind: "file", canonicalId: "doc", sourceRevision: "restored" };
+  const stale = { ...restored, sourceRevision: "old" };
+  assert.equal(fileWorkflowHasCurrentBinding([restored], "doc", "restored"), true);
+  assert.equal(fileWorkflowHasCurrentBinding([restored, stale], "doc", "restored"), false);
+  assert.equal(fileWorkflowHasCurrentBinding([], "doc", "restored"), false);
 });

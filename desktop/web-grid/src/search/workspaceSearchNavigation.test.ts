@@ -76,6 +76,25 @@ function harness(resolved: SearchHit | null) {
 }
 
 describe("workspace search navigation", () => {
+  it("opens a linked document only after the current authority list resolves its identity", async () => {
+    const h = harness(null);
+    h.navigation.openDocument("document-1");
+    expect(h.ports.resolveHit).not.toHaveBeenCalled();
+    expect(h.ports.selectDocument).not.toHaveBeenCalled();
+    expect(h.ports.dispatchDocument).toHaveBeenCalledWith(expect.objectContaining({
+      type: "document.listRequested",
+      query: expect.objectContaining({
+        filters: [{ field: "documentId", operator: "eq", value: "document-1" }],
+      }),
+    }));
+    h.documents.value = [document()];
+    h.phase.value = "ready";
+    await nextTick();
+    expect(h.ports.selectDocument).toHaveBeenCalledWith(0);
+    expect(h.ports.showDocumentHistory).toHaveBeenCalledOnce();
+    expect(h.ports.readDocumentHistory).toHaveBeenCalledWith("document-1");
+    expect(h.navigation.requestedRevisionId.value).toBeNull();
+  });
   it("rereads authority before opening a record or attachment", async () => {
     const refreshed = hit("attachment", { recordId: "record-2" });
     const h = harness(refreshed);

@@ -73,8 +73,8 @@ def _release_build_info() -> dict[str, str]:
         "schemaVersion": versions.schema,
         "migrationHash": versions.migration_hash,
         "protocolV2Version": "2.0",
-        "workspaceFormat": "2",
-        "repositoryFormat": "kopia-v3",
+        "workspaceFormat": "3",
+        "repositoryFormat": "kopia-v4",
         "snapshotFormat": "2",
         "packageFormat": "2",
         "kopiaVersion": build_next.KOPIA_VERSION,
@@ -378,8 +378,8 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "ageKeygen": "resources/sidecar/tools/age-keygen.exe",
     }
     assert manifest["formats"] == {
-        "workspace": 2,
-        "repository": "kopia-v3",
+        "workspace": 3,
+        "repository": "kopia-v4",
         "snapshot": 2,
         "package": 2,
         "contracts": "2.0",
@@ -2794,6 +2794,10 @@ def test_handoff_dependencies_preserve_core_and_add_workspace_v2_evidence() -> N
         "contracts/schema-v2/schema.schema.json",
         "contracts/v2/contracts.schema.json",
     ]
+    assert {
+        "contracts/v2/fixtures/workspace-manifest.json",
+        "contracts/v2/fixtures/workspace-manifest-current.json",
+    } <= set(dependencies["fixtures"]["CONTRACT"])
     for fixtures in dependencies["fixtures"].values():
         for relative in fixtures:
             assert (REPO_ROOT / relative).is_file(), relative

@@ -132,7 +132,7 @@ func OpenKopia(ctx context.Context, configFile string, password string) (*KopiaR
 		repository: repository,
 		lockPath:   normalizedConfig + ".vibetable.lock",
 		state: kopiaState{
-			FormatVersion: 2,
+			FormatVersion: 3,
 			Objects:       map[string]string{},
 			Manifests:     map[string]string{},
 			Pins:          []RootPin{},
@@ -274,13 +274,13 @@ func (repository *KopiaRepository) Commit(
 			labels := cloneLabels(input.Labels)
 			labels["type"] = "vibetable-manifest"
 			labels["vibetable.publicId"] = string(publicID)
-			internalID, err := writer.PutManifest(sessionCtx, labels, ManifestRecord{
-				ID: publicID, Name: input.Name, Labels: cloneLabels(input.Labels),
-				// kopia's manifest Manager synchronously json.Marshal's the
-				// payload into its own pendingEntry bytes, so it never retains
-				// this slice and the caller stays free to reuse it.
-				Payload: input.Payload,
+			wire, wireErr := encodeKopiaManifest(ManifestRecord{
+				ID: publicID, Name: input.Name, Labels: cloneLabels(input.Labels), Payload: input.Payload,
 			})
+			if wireErr != nil {
+				return DurableCommitReceipt{}, wireErr
+			}
+			internalID, err := writer.PutManifest(sessionCtx, labels, wire)
 			if err != nil {
 				return DurableCommitReceipt{}, err
 			}
@@ -332,8 +332,12 @@ func (repository *KopiaRepository) GetManifest(
 	if !ok || kopia == nil {
 		return ManifestRecord{}, ErrNotFound
 	}
-	var record ManifestRecord
-	if _, err := kopia.GetManifest(ctx, kopiamanifest.ID(internal), &record); err != nil {
+	var wire kopiaManifestEnvelope
+	if _, err := kopia.GetManifest(ctx, kopiamanifest.ID(internal), &wire); err != nil {
+		return ManifestRecord{}, errors.Join(ErrCorrupt, err)
+	}
+	record, err := decodeKopiaManifest(wire)
+	if err != nil {
 		return ManifestRecord{}, errors.Join(ErrCorrupt, err)
 	}
 	canonicalID, err := canonicalManifestID(ManifestInput{
@@ -645,7 +649,10 @@ func (repository *KopiaRepository) loadState(ctx context.Context) error {
 	if _, err := repository.repository.GetManifest(ctx, entries[0].ID, &state); err != nil {
 		return errors.Join(ErrCorrupt, err)
 	}
-	if state.FormatVersion != 2 || state.Objects == nil || state.Manifests == nil {
+	if state.FormatVersion != 3 {
+		return errors.Join(ErrCorrupt, errors.New("workspace.format_unsupported"))
+	}
+	if state.Objects == nil || state.Manifests == nil {
 		return errors.Join(
 			ErrCorrupt,
 			fmt.Errorf(

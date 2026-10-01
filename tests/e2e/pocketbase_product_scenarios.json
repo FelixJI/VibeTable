@@ -231,7 +231,7 @@
   {
     "id": "39-file-workflow-combination",
     "title": "同包同UUID计算链与文件全流程组合",
-    "requirement": "同一发布包内同一workspace UUID先跑完整S38三表计算链与完整S14真实文件比较，再经真实内容UI把DOCX/XLSX两个合格文档链接到计算主表合同甲记录；中文当前/历史内容搜索按目标文档与修订定位；从真实版本树祖先节点“恢复为新版本”而非升级或原始RPC，恢复后文件列表、有效指针、物化字节与不可变历史一致，旧当前命中不得冒充新当前，无需手工重建索引即恢复当前绑定；对比恢复前后0组差异且过期有效修订diff以stale失败；首Host正常退出后第二真实Host同manifest UUID冷重开，独立字面oracle（甲199/994/2982/2983、乙1/7/21/22、丙0/0/0/1、首行金额4）与稳定字段身份、持久筛选两行降序、同两文件当前/物化及记录链接全部对齐。",
+    "requirement": "同一发布包内同一workspace UUID先跑完整S38三表计算链与完整S14真实文件比较，再经真实内容UI把DOCX/XLSX两个合格文档链接到计算主表合同甲记录，并从关联卡真实点击查看文件版本进入对应文档版本树；中文当前/历史内容搜索真实点击并按目标文档与修订定位；从真实版本树祖先节点“恢复为新版本”，恢复后文件列表、有效指针、物化字节与不可变历史一致，两文档全部当前命中只能绑定新恢复修订且必须保留正文正向命中，无需手工重建索引；恢复前后对比0组差异，恢复前打开的有效修订比较以sessionExpired拒绝继续；首Host正常退出后第二真实Host同manifest UUID冷重开，独立字面oracle（甲199/994/2982/2983、乙1/7/21/22、丙0/0/0/1、首行金额4）与稳定字段身份、持久筛选两行降序、同两文件当前/物化及记录链接全部对齐，再核对两文档当前正文命中绑定恢复修订且升级时旧词不再冒充当前。",
     "capabilities": ["formula.collections", "lookup.aggregation", "file-history.diff", "file-history.query", "workspace-search.query", "workspace-search.rebuild", "content.record", "record-document-link.lifecycle", "history.restore"]
   },
   {

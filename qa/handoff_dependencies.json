@@ -230,6 +230,7 @@
       "contracts/schema-v2/fixtures/field-change-intent.json",
       "contracts/schema-v2/fixtures/migration-status.json",
       "contracts/v2/fixtures/workspace-manifest.json",
+      "contracts/v2/fixtures/workspace-manifest-current.json",
       "contracts/v2/fixtures/workspace-session.json",
       "contracts/v2/fixtures/snapshot-manifest.json",
       "contracts/v2/fixtures/snapshot-seal.json"

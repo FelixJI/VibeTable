@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-const workspaceRepositoryFormat = "kopia-v3"
+const workspaceRepositoryFormat = "kopia-v4"
 
 var ErrRepositoryNotInitialized = errors.New(
 	"repository.not_initialized",
