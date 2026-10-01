@@ -7421,16 +7421,36 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
   recorder.check("closed session expires and removes all known comparison artifacts",
     expired.payload?.failure === "sessionExpired" && remaining.length === 0, { expired, remaining });
 
+  const staleRefreshMarker = new Date().toISOString();
   const staleAdvance = await rawWorkspaceV2Request(page, "fileHistory.restore", {
     documentId: document.documentId,
     expectedEffectiveRevisionId: effectiveRevisionId,
     historicalRevisionId,
   });
+  await page.waitForFunction(({ marker, oldHandle }) => {
+    const refreshed = (window.__vibetableE2EBridgeDiagnostics?.roundTrips ?? []).some(item =>
+      item.requestType === "document.listRequested" && item.startedAt > marker
+      && item.responseType === "document.listLoaded" && item.code === null);
+    const row = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+      .find(candidate => candidate.textContent?.includes("document-diff-source.txt"));
+    return refreshed && row instanceof HTMLElement
+      && row.getAttribute("data-testid") !== `document-row-${oldHandle}`;
+  }, { marker: staleRefreshMarker, oldHandle: entryHandle }, { timeout: 30000 });
+  const retired = await rawBridgeRequest(page, "document.diffRequested", {
+    entryHandle, operationId: crypto.randomUUID(), historicalRevisionId,
+    expectedEffectiveRevisionId: effectiveRevisionId,
+  }, 30_000, ["document.diffCompleted"]);
+  recorder.check("automatic refresh retires the old document comparison authorization",
+    retired.type === "operation.failed" && retired.payload?.code === "DOCUMENT_HANDLE_INVALID",
+  { retired });
+  await acknowledgeExpectedBridgeFailure(page, retired);
+  const currentHandle = (await changedRow.getAttribute("data-testid"))
+    ?.replace(/^document-row-/u, "");
   const stale = await rawBridgeRequest(
     page,
     "document.diffRequested",
     {
-      entryHandle,
+      entryHandle: currentHandle,
       operationId: crypto.randomUUID(),
       historicalRevisionId,
       expectedEffectiveRevisionId: effectiveRevisionId,
@@ -7438,7 +7458,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
     30_000,
     ["document.diffCompleted"],
   );
-  recorder.check("materialization CAS fails closed when the revision has advanced",
+  recorder.check("current authorization rejects an advanced comparison revision",
     stale.type === "document.diffCompleted"
       && stale.payload?.outcome === "failure"
       && stale.payload?.failure === "stale",
