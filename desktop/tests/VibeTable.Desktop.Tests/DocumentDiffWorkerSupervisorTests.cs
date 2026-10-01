@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using VibeTable.Workspace.Diff;
 using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop.Tests;
@@ -7,6 +10,57 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class DocumentDiffWorkerSupervisorTests
 {
+    [TestMethod]
+    [DataRow("summary")]
+    [DataRow("coverage")]
+    [DataRow("change")]
+    public async Task WorkerJsonWithInvalidSemanticValuesHasControlledFailure(string invalid)
+    {
+        string root = CreateOperation(RepositoryRoot());
+        string index = Path.Combine(root, "index");
+        Directory.CreateDirectory(index);
+        string metadataPath = Path.Combine(index, "result.json");
+        string changesPath = Path.Combine(index, "changes.jsonl");
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var summary = invalid == "change" ? new DocumentDiffSummary(1, 1, 0, 0, 1, 0, 0, 0, 0, 0)
+            : new DocumentDiffSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        var coverage = new DocumentDiffCoverage(
+            [new(DocumentDiffCoverageArea.VisibleText, DocumentDiffCoverageStatus.Covered)], false);
+        var metadata = JsonSerializer.SerializeToNode(new DocumentDiffWorkerResult(2, summary, coverage, []), options)!;
+        string lines = "";
+        if (invalid == "summary") metadata["summary"]!["totalChangeGroups"] = 1;
+        if (invalid == "coverage")
+        {
+            var areas = metadata["coverage"]!["areas"]!.AsArray();
+            areas.Add(areas[0]!.DeepClone());
+        }
+        if (invalid == "change")
+        {
+            var change = new DocumentDiffChange(Guid.NewGuid(), DocumentDiffChangeKind.Replace,
+                new(DocumentDiffPart.Body), new([new("old", DocumentDiffRichRunRole.Deleted)]),
+                new([new("new", DocumentDiffRichRunRole.Inserted)]),
+                DocumentDiffConfidence.Exact);
+            var node = JsonSerializer.SerializeToNode(change, options)!;
+            node["changeId"] = Guid.Empty.ToString("D");
+            lines = node.ToJsonString() + "\n";
+        }
+        File.WriteAllText(metadataPath, metadata.ToJsonString());
+        File.WriteAllText(changesPath, lines);
+        try
+        {
+            await Assert.ThrowsExactlyAsync<JsonException>(() =>
+                WorkspaceDocumentDiffCoordinator.ReadWorkerResultAsync(index, changesPath, default));
+        }
+        finally
+        {
+            File.Delete(metadataPath);
+            File.Delete(changesPath);
+            foreach (string directory in new[] { "input", "normalized", "index" })
+                Directory.Delete(Path.Combine(root, directory));
+            Directory.Delete(root);
+        }
+    }
+
     [TestMethod]
     public async Task RealWorkerNormalizesBothIsolatedInputsAndExits()
     {
@@ -33,6 +87,41 @@ public sealed class DocumentDiffWorkerSupervisorTests
             File.Delete(final);
             File.Delete(Path.Combine(root, "input", side + ".content"));
         }
+        RemoveEmptyOperation(root);
+    }
+
+    [TestMethod]
+    public async Task RealWorkerComparisonPublishesBoundedMetadataAndChangeIndex()
+    {
+        string repo = RepositoryRoot();
+        string root = CreateOperation(repo);
+        Directory.CreateDirectory(Path.Combine(root, "index"));
+        string fixtures = Path.Combine(repo, "desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/docx");
+        File.Copy(Path.Combine(fixtures, "format-before.docx"), Path.Combine(root, "input/historical.content"));
+        File.Copy(Path.Combine(fixtures, "format-after.docx"), Path.Combine(root, "input/effective.content"));
+        string configuration = typeof(DocumentDiffWorkerSupervisorTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()!.Configuration;
+        string worker = Path.Combine(repo, "desktop/src/VibeTable.Desktop/bin", configuration,
+            "net10.0-windows/resources/document-diff/VibeTable.DocumentDiff.Worker.exe");
+        var start = new ProcessStartInfo(worker);
+        int exit = await DocumentDiffWorkerSupervisor.RunAsync(start, root, TimeSpan.FromSeconds(30), default, compareDocx: true);
+        Assert.AreEqual(0, exit);
+        using var result = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "index/result.json")));
+        Assert.AreEqual(2, result.RootElement.GetProperty("version").GetInt32());
+        Assert.AreEqual(2, result.RootElement.GetProperty("summary").GetProperty("formattingChanges").GetInt32());
+        string[] changes = File.ReadAllLines(Path.Combine(root, "index/changes.jsonl"));
+        Assert.AreEqual(3, changes.Length);
+        using var structural = System.Text.Json.JsonDocument.Parse(changes[2]);
+        Assert.AreEqual("other", structural.RootElement.GetProperty("kind").GetString());
+        Assert.AreEqual(1, structural.RootElement.GetProperty("location").GetProperty("paragraphIndex").GetInt32());
+        foreach (string side in new[] { "historical", "effective" })
+        {
+            File.Delete(Path.Combine(root, "input", side + ".content"));
+            File.Delete(Path.Combine(root, "normalized", side + ".final.docx"));
+        }
+        File.Delete(Path.Combine(root, "index/result.json"));
+        File.Delete(Path.Combine(root, "index/changes.jsonl"));
+        Directory.Delete(Path.Combine(root, "index"));
         RemoveEmptyOperation(root);
     }
 

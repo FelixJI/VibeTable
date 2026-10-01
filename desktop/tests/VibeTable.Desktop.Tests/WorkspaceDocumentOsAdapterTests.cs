@@ -1159,6 +1159,93 @@ public sealed class WorkspaceDocumentOsAdapterTests
         Assert.AreEqual(0, Directory.GetFileSystemEntries(directory.Path).Length);
     }
 
+    [TestMethod]
+    [DataRow("ready")]
+    [DataRow("missing")]
+    [DataRow("invalid")]
+    [DataRow("stale")]
+    public async Task ProductionDocxWorkerPublishesValidatedPagesOnlyAfterAuthorityCAS(string mode)
+    {
+        string repo = new DirectoryInfo(AppContext.BaseDirectory).FullName;
+        while (!File.Exists(Path.Combine(repo, ".ci/project.json")))
+            repo = Directory.GetParent(repo)!.FullName;
+        string configuration = typeof(WorkspaceDocumentOsAdapterTests).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyConfigurationAttribute), false)
+            .Cast<System.Reflection.AssemblyConfigurationAttribute>().Single().Configuration;
+        string fixtures = Path.Combine(repo, "desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/docx");
+        byte[] before = File.ReadAllBytes(Path.Combine(fixtures, mode == "invalid" ? "corrupt.docx" : "format-before.docx"));
+        byte[] after = File.ReadAllBytes(Path.Combine(fixtures, "format-after.docx"));
+        // Simulates the authority's content-addressed materialization contract.
+        string beforeHash = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(before)).ToLowerInvariant();
+        string afterHash = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(after)).ToLowerInvariant();
+        using var directory = new TemporaryDirectory();
+        using var broker = new DocumentDiffArtifactBroker(directory.Path);
+        var handler = new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            JsonElement root = body.RootElement;
+            bool materializing = root.GetProperty("method").GetString() == WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod;
+            if (materializing)
+            {
+                using JsonDocument grant = JsonDocument.Parse(DecodeGrant(request));
+                string input = grant.RootElement.GetProperty("path").GetString()!;
+                File.WriteAllBytes(Path.Combine(input, "historical.content"), before);
+                File.WriteAllBytes(Path.Combine(input, "effective.content"), after);
+            }
+            var result = new Dictionary<string, object>
+            {
+                ["documentId"] = DocumentId.ToString("D"),
+                ["historicalRevisionId"] = "44444444-4444-4444-8444-444444444444",
+                ["effectiveRevisionId"] = RevisionId.ToString("D"),
+                ["historicalContentHash"] = beforeHash,
+                ["effectiveContentHash"] = afterHash,
+            };
+            if (materializing)
+            {
+                result["historicalMimeType"] = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                result["effectiveMimeType"] = result["historicalMimeType"];
+            }
+            else result["stable"] = mode != "stale";
+            return RpcSuccess(root, JsonSerializer.Serialize(result));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        var binding = new WorkspaceDocumentBinding(WorkspaceId, 7, true, directory.Path, gateway,
+            [WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod, WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod]);
+        var capabilities = new DocumentCapabilityStore();
+        string handle = capabilities.Issue(WorkspaceId, 7, DocumentId, "synthetic.docx", RevisionId, ["diff"]);
+        string worker = mode == "missing" ? Path.Combine(repo, "build/unavailable-document-diff-worker.exe")
+            : Path.Combine(repo, "desktop/src/VibeTable.Desktop/bin", configuration,
+                "net10.0-windows/resources/document-diff/VibeTable.DocumentDiff.Worker.exe");
+        var coordinator = new WorkspaceDocumentDiffCoordinator(new FakeEpochLeaseSource(),
+            new InspectingDiffEngine(), broker, worker);
+        var compared = await coordinator.CompareAsync(binding, capabilities.Resolve(handle, "diff", WorkspaceId, 7),
+            handle, "44444444-4444-4444-8444-444444444444", RevisionId.ToString("D"), CancellationToken.None);
+        if (mode == "ready")
+        {
+            Assert.IsNotNull(compared.Session);
+            Assert.AreEqual(3, compared.Session.Summary.TotalChangeGroups);
+            Assert.AreEqual(2, compared.Session.Summary.FormattingChanges);
+            Assert.IsTrue(compared.Session.Warnings.Contains(DocumentDiffWarning.PartialCoverage));
+            var page = await coordinator.ReadPageAsync(binding, new(compared.Session.SessionId, null, 1), CancellationToken.None);
+            Assert.IsNotNull(page.Page);
+            Assert.AreEqual(1, page.Page.Changes.Count);
+            Assert.IsNotNull(page.Page.NextCursor);
+            var next = await coordinator.ReadPageAsync(binding, new(compared.Session.SessionId, page.Page.NextCursor, 50), CancellationToken.None);
+            Assert.AreEqual(2, next.Page!.Changes.Count);
+            coordinator.CloseSession(compared.Session.SessionId);
+        }
+        else
+            Assert.AreEqual(mode switch {
+                "missing" => DocumentDiffSessionFailure.ProviderUnavailable,
+                "invalid" => DocumentDiffSessionFailure.InvalidContent,
+                _ => DocumentDiffSessionFailure.Stale,
+            }, compared.Failure);
+        Assert.AreEqual(0, Directory.GetFileSystemEntries(directory.Path).Length);
+        CollectionAssert.AreEqual(before, File.ReadAllBytes(Path.Combine(fixtures,
+            mode == "invalid" ? "corrupt.docx" : "format-before.docx")));
+        CollectionAssert.AreEqual(after, File.ReadAllBytes(Path.Combine(fixtures, "format-after.docx")));
+    }
+
     private sealed class PublicationTimeProvider : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;

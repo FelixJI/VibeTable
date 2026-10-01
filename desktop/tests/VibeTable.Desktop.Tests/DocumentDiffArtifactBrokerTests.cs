@@ -452,6 +452,50 @@ public sealed class DocumentDiffArtifactBrokerTests
         Directory.Delete(inputDirectory, recursive: false);
     }
 
+    [TestMethod]
+    public void WorkerExitUnknownRetainsKnownFilesAcrossDisposeAndExpiredDeadOwnerCleanup()
+    {
+        using var directory = new TemporaryDirectory();
+        var time = new ManualTimeProvider();
+        string operationDirectory;
+        string normalized;
+        using (var broker = new DocumentDiffArtifactBroker(directory.Path, TimeSpan.FromMinutes(5), time))
+        {
+            using DocumentDiffArtifactOperation operation = broker.CreateOperation(Guid.NewGuid(), WorkspaceId, 7);
+            operationDirectory = operation.OperationDirectory;
+            normalized = Path.Combine(operation.NormalizedDirectory, "historical.final.docx.partial");
+            File.WriteAllText(normalized, "worker may still own this");
+            operation.RetainArtifacts();
+        }
+        time.Advance(TimeSpan.FromMinutes(6));
+        using var restarted = new DocumentDiffArtifactBroker(directory.Path, TimeSpan.FromMinutes(5), time,
+            (_, _) => DocumentDiffOwnerLiveness.Dead);
+        restarted.CleanupExpired();
+        Assert.AreEqual("worker may still own this", File.ReadAllText(normalized));
+        using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(operationDirectory, "manifest.json")));
+        Assert.AreEqual("retained", manifest.RootElement.GetProperty("state").GetString());
+    }
+
+    [TestMethod]
+    public void FailedWorkerCleansOnlyRegisteredNormalizedAndIndexFiles()
+    {
+        using var directory = new TemporaryDirectory();
+        using var broker = new DocumentDiffArtifactBroker(directory.Path);
+        string operationDirectory;
+        using (DocumentDiffArtifactOperation operation = broker.CreateOperation(Guid.NewGuid(), WorkspaceId, 7))
+        {
+            operationDirectory = operation.OperationDirectory;
+            string index = operation.PrepareArtifact(DocumentDiffArtifactKind.ChangeIndex, "changes.jsonl");
+            File.WriteAllText(index, "index");
+            foreach (string relative in new[] {
+                "normalized/historical.final.docx", "normalized/historical.final.docx.partial",
+                "normalized/effective.final.docx", "normalized/effective.final.docx.partial",
+                "index/changes.jsonl.partial", "index/result.json", "index/result.json.partial" })
+                File.WriteAllText(Path.Combine(operationDirectory, relative), "worker output");
+        }
+        Assert.IsFalse(Directory.Exists(operationDirectory));
+    }
+
     private static async Task PublishComparisonAsync(
         DocumentDiffArtifactOperation operation)
     {

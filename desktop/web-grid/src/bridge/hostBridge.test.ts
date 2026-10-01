@@ -1,11 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
-import { createHostBridge } from "./hostBridge";
+import { BridgeOperationError, createHostBridge } from "./hostBridge";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type {
   BridgeMessage,
   DatabaseOpenedPayload,
+  LookupQueryParams,
   RealtimeRecoverySnapshot,
   TablePage,
 } from "@/contracts";
@@ -58,6 +59,52 @@ function queryPayload(table: string, limit: number) {
   };
 }
 
+/** Minimal readonly `lookup.query` payload matching the closed contract. */
+function lookupQueryPayload(): LookupQueryParams {
+  return {
+    contract: "vibetable.lookup-query.v1",
+    collection: "orders",
+    fieldRefs: ["customer_id"],
+    query: { filters: [], sorts: [], groups: [], offset: 0, limit: 200 },
+    requestGeneration: 1,
+    schemaRevision: "schema-rev-1",
+    permissionRevision: "permission-rev-1",
+    lookupRevision: "lookup-rev-1",
+  };
+}
+
+/** Opens an active workspace session (epoch 7) so scoped envelopes attach. */
+function openWorkspaceSessionFixture(
+  session: ReturnType<typeof useWorkspaceSessionStore>,
+): void {
+  session.configureCapabilities(["workspace.session.v2"]);
+  session.setWorkspaces([{
+    contractVersion: "2.0",
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    displayName: "E2E",
+    selectedRoot: "D:\\E2E",
+    activityRoot: null,
+    storageKind: "fixed",
+    coordinationStrength: "strong",
+    lastOpenedAt: null,
+    lastKnownHealth: "healthy",
+    lastSnapshotAt: null,
+    lastSyncAt: null,
+    pendingSync: false,
+  }]);
+  session.applySession({
+    contractVersion: "2.0",
+    workspaceId: "11111111-1111-4111-8111-111111111111",
+    sessionEpoch: 7,
+    state: "openedWritable",
+    openMode: "writable",
+    writable: true,
+    provisional: false,
+    phase: "idle",
+    errorCode: null,
+  });
+}
+
 describe("HostBridge", () => {
   let webview: ReturnType<typeof makeWebview>;
 
@@ -70,51 +117,83 @@ describe("HostBridge", () => {
     vi.useRealTimers();
   });
 
-  it("settles scoped controller requests on epoch retirement without waiting for timeout", async () => {
-    vi.useFakeTimers();
-    const session = useWorkspaceSessionStore();
-    session.configureCapabilities(["workspace.session.v2"]);
-    session.setWorkspaces([{
-      contractVersion: "2.0",
-      workspaceId: "11111111-1111-4111-8111-111111111111",
-      displayName: "E2E",
-      selectedRoot: "D:\\E2E",
-      activityRoot: null,
-      storageKind: "fixed",
-      coordinationStrength: "strong",
-      lastOpenedAt: null,
-      lastKnownHealth: "healthy",
-      lastSnapshotAt: null,
-      lastSyncAt: null,
-      pendingSync: false,
-    }]);
-    session.applySession({
-      contractVersion: "2.0",
-      workspaceId: "11111111-1111-4111-8111-111111111111",
-      sessionEpoch: 7,
-      state: "openedWritable",
-      openMode: "writable",
-      writable: true,
-      provisional: false,
-      phase: "idle",
-      errorCode: null,
+  for (const retirementTrigger of ["closeSession", "beginClose", "epochRotate"] as const) {
+    it(`settles scoped controller requests on ${retirementTrigger} retirement without waiting for timeout`, async () => {
+      vi.useFakeTimers();
+      const session = useWorkspaceSessionStore();
+      openWorkspaceSessionFixture(session);
+      const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+      bridge.start();
+      const retired = vi.fn();
+      window.addEventListener("vibetable:bridge-request-retired", retired);
+      const requests = [
+        bridge.request("dashboard.listRequested", {}),
+        bridge.request("dashboard.manifestRequested", {}),
+        bridge.request("settings.readWorkCalendar", {}),
+        bridge.request("lookup.query", lookupQueryPayload()),
+      ].map(promise => promise.catch(error => error));
+      if (retirementTrigger === "closeSession") {
+        session.closeSession();
+      } else if (retirementTrigger === "beginClose") {
+        expect(session.beginClose()).toBe(true);
+      } else {
+        session.applySession({
+          contractVersion: "2.0",
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          sessionEpoch: 8,
+          state: "openedWritable",
+          openMode: "writable",
+          writable: true,
+          provisional: false,
+          phase: "idle",
+          errorCode: null,
+        });
+      }
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+      for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
+      expect(retired).toHaveBeenCalledTimes(4);
+      const lookupEnvelope = webview.postMessage.mock.calls
+        .map(call => call[0] as BridgeMessage)
+        .find(message => message.type === "lookup.query");
+      expect(lookupEnvelope?.requestId).toEqual(expect.any(String));
+      expect(retired).toHaveBeenCalledWith(expect.objectContaining({
+        detail: {
+          requestId: lookupEnvelope!.requestId,
+          requestType: "lookup.query",
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          sessionEpoch: 7,
+        },
+      }));
+      await vi.advanceTimersByTimeAsync(1001);
+      window.removeEventListener("vibetable:bridge-request-retired", retired);
+      bridge.stop();
     });
-    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+  }
+
+  it("rejects a current-epoch lookup.query operation.failed instead of swallowing it", async () => {
+    openWorkspaceSessionFixture(useWorkspaceSessionStore());
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1000,
+      generateRequestId: () => "lookup-current-1",
+    });
     bridge.start();
-    const retired = vi.fn();
-    window.addEventListener("vibetable:bridge-request-retired", retired);
-    const requests = [
-      bridge.request("dashboard.listRequested", {}),
-      bridge.request("dashboard.manifestRequested", {}),
-      bridge.request("settings.readWorkCalendar", {}),
-    ].map(promise => promise.catch(error => error));
-    session.closeSession();
-    await Promise.resolve();
-    expect(vi.getTimerCount()).toBe(0);
-    for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-    expect(retired).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(1001);
-    window.removeEventListener("vibetable:bridge-request-retired", retired);
+    const pending = bridge.request("lookup.query", lookupQueryPayload());
+    webview.emit({
+      type: "operation.failed",
+      requestId: "lookup-current-1",
+      payload: {
+        code: "workspace.session_stale",
+        message: "session stale",
+        operation: "lookup.query",
+      },
+    });
+    await expect(pending).rejects.toBeInstanceOf(BridgeOperationError);
+    await expect(pending).rejects.toMatchObject({
+      code: "workspace.session_stale",
+      operation: "lookup.query",
+    });
     bridge.stop();
   });
 

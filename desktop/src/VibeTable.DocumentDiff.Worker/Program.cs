@@ -26,7 +26,8 @@ internal static class Program
                 new ExpandedByteBudget(MaxRequestBytes), MaxRequestBytes);
             var request = await JsonSerializer.DeserializeAsync<NormalizeRequest>(bounded, JsonOptions)
                 .ConfigureAwait(false);
-            if (request is null || request.Version != 1 ||
+            if (request is null || !((request.Version == 1 && request.Operation is null) ||
+                (request.Version == 2 && request.Operation == "compareDocx")) ||
                 string.IsNullOrWhiteSpace(request.OperationDirectory) ||
                 !Path.IsPathFullyQualified(request.OperationDirectory))
                 return 2;
@@ -37,6 +38,8 @@ internal static class Program
             EnsureDirectory(root);
             EnsureDirectory(Path.Combine(root, "input"));
             EnsureDirectory(Path.Combine(root, "normalized"));
+            if (request.Version == 2) EnsureDirectory(Path.Combine(root, "index"));
+            bool existingRevisions = false;
             foreach (string side in new[] { "historical", "effective" })
             {
                 string sourcePath = Path.Combine(root, "input", side + ".content");
@@ -50,9 +53,11 @@ internal static class Program
                         FileAccess.Read, FileShare.Read)));
                 await using (var derived = new FileStream(partialPath, FileMode.CreateNew,
                                  FileAccess.ReadWrite, FileShare.None))
-                    await DocxNormalizer.NormalizeAsync(source, derived).ConfigureAwait(false);
+                    existingRevisions |= await DocxNormalizer.NormalizeAsync(source, derived).ConfigureAwait(false);
                 File.Move(partialPath, finalPath, overwrite: false);
             }
+            if (request.Version == 2)
+                await DocxComparisonWriter.WriteAsync(root, existingRevisions).ConfigureAwait(false);
             return 0;
         }
         catch (DiffBudgetExceededException) { return 3; }
@@ -76,5 +81,5 @@ internal static class Program
         }
     }
 
-    private sealed record NormalizeRequest(int Version, string OperationDirectory);
+    private sealed record NormalizeRequest(int Version, string OperationDirectory, string? Operation = null);
 }

@@ -1,5 +1,6 @@
 import {
   BridgeOperationError,
+  BridgeRequestRetiredError,
   BridgeTimeoutError,
 } from "@/bridge/hostBridge";
 import type { MutationErrorPayload } from "@/contracts";
@@ -34,6 +35,9 @@ export function relationLookupNoticeKey(error: unknown): string {
 
 /** Map bridge details to stable, localized UI copy; never expose raw messages. */
 export function relationLookupErrorMessage(error: unknown): string | null {
+  // A locally retired lookup belongs to a workspace the renderer already
+  // left; it is not a user-facing failure.
+  if (error instanceof BridgeRequestRetiredError) return null;
   if (error instanceof BridgeTimeoutError) {
     return t("workspace.notification.relationLookupTimeout");
   }

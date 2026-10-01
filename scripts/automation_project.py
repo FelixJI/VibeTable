@@ -398,6 +398,9 @@ def _write_build_identity(output: Path, version: str, archive: Path) -> None:
 def _write_spdx(output: Path, version: str, archive: Path) -> None:
     source = REPO_ROOT / "dist/VibeTable.Next/resources/sidecar/sbom.cdx.json"
     cyclonedx = json.loads(source.read_text(encoding="utf-8"))
+    worker_source = REPO_ROOT / "dist/VibeTable.Next/resources/document-diff/sbom.cdx.json"
+    worker_bom = json.loads(worker_source.read_text(encoding="utf-8"))
+    cyclonedx["components"].extend(worker_bom["components"])
     packages: list[dict[str, object]] = []
     relationships: list[dict[str, str]] = []
     used: set[str] = set()
@@ -414,9 +417,24 @@ def _write_spdx(output: Path, version: str, archive: Path) -> None:
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": False,
             "licenseConcluded": "NOASSERTION",
-            "licenseDeclared": "NOASSERTION",
-            "copyrightText": "NOASSERTION",
+            "licenseDeclared": next(
+                (
+                    str(item["license"]["id"])
+                    for item in component.get("licenses", [])
+                    if item.get("license", {}).get("id")
+                ),
+                "NOASSERTION",
+            ),
+            "copyrightText": str(component.get("copyright") or "NOASSERTION"),
         }
+        if component.get("purl"):
+            package["externalRefs"] = [
+                {
+                    "referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "purl",
+                    "referenceLocator": str(component["purl"]),
+                }
+            ]
         packages.append(package)
         relationships.append(
             {

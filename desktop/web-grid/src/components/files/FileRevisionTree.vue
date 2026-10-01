@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { NAlert, NButton, NIcon, NTag } from "naive-ui";
 import {
   ChevronDown,
@@ -12,8 +12,33 @@ import { useUiStore } from "@/stores/uiStore";
 import type { FileRevisionTreeProjection } from "@/stores/workspaceProtectionStore";
 import type { FileRevisionV2 } from "@/contracts/workspaceV2";
 import { t } from "@/i18n";
-import type { DocumentDiffCompletedPayload, DocumentDiffChange } from "@/contracts";
+import type { DocumentDiffCompletedPayload, DocumentDiffChange, DocumentDiffRichRun } from "@/contracts";
 import type { DocumentDiffPhase } from "@/stores/documentWorkspaceStore";
+
+function diffRunStyle(run: DocumentDiffRichRun): CSSProperties {
+  return {
+    fontWeight: run.bold === null ? undefined : run.bold ? "bold" : "normal",
+    fontStyle: run.italic === null ? undefined : run.italic ? "italic" : "normal",
+    textDecoration: [run.underline ? "underline" : "", run.strike ? "line-through" : ""].filter(Boolean).join(" "),
+    fontSize: run.fontSizePt === null ? undefined : `${run.fontSizePt}pt`,
+    fontFamily: run.fontFamily === null ? undefined : JSON.stringify(run.fontFamily),
+    color: run.foreground ?? undefined,
+    backgroundColor: run.background ?? undefined,
+  };
+}
+
+function diffLocation(change: DocumentDiffChange): string {
+  const location = change.location;
+  const pieces = [t(`workspaceV2.fileTree.diff.part.${location.part}`)];
+  for (const [name, value] of [["section", location.sectionIndex], ["table", location.tableIndex],
+    ["row", location.rowIndex], ["column", location.columnIndex], ["paragraph", location.paragraphIndex]] as const) {
+    if (value !== null) pieces.push(t(`workspaceV2.fileTree.diff.location.${name}`, { index: value + 1 }));
+  }
+  if (location.sheetName !== null) pieces.push(location.sheetName);
+  if (location.cellAddress !== null) pieces.push(location.cellAddress);
+  if (location.nearestHeading !== null) pieces.push(location.nearestHeading);
+  return pieces.join(" · ");
+}
 
 interface TreeRow {
   readonly revision: FileRevisionV2;
@@ -293,10 +318,10 @@ const diffMessage = computed(() => {
         <li v-for="area in diffResult.session.coverage.areas" :key="area.area">{{ area.area }}: {{ area.status }}</li>
       </ul>
       <article v-for="change in diffChanges" :key="change.changeId" :data-change-id="change.changeId">
-        <strong>{{ change.kind }} · {{ (change.location.paragraphIndex ?? 0) + 1 }}</strong>
+        <strong>{{ t(`workspaceV2.fileTree.diff.kind.${change.kind}`) }} · {{ diffLocation(change) }}</strong>
         <div class="diff-columns">
-          <div><small>{{ t('workspaceV2.fileTree.diff.before') }}</small><pre v-if="change.before"><span v-for="(run, index) in change.before.runs" :key="index">{{ run.text }}</span></pre></div>
-          <div><small>{{ t('workspaceV2.fileTree.diff.after') }}</small><pre v-if="change.after"><span v-for="(run, index) in change.after.runs" :key="index">{{ run.text }}</span></pre></div>
+          <div><small>{{ t('workspaceV2.fileTree.diff.before') }}</small><pre v-if="change.before"><span v-for="(run, index) in change.before.runs" :key="index" :style="diffRunStyle(run)" :data-diff-role="run.role">{{ run.text }}</span></pre></div>
+          <div><small>{{ t('workspaceV2.fileTree.diff.after') }}</small><pre v-if="change.after"><span v-for="(run, index) in change.after.runs" :key="index" :style="diffRunStyle(run)" :data-diff-role="run.role">{{ run.text }}</span></pre></div>
         </div>
       </article>
       <NButton v-if="diffNextCursor" size="tiny" :loading="diffPageBusy" data-testid="diff-next-page" @click="emit('nextPage')">{{ t('files.loadMore') }}</NButton>

@@ -183,6 +183,10 @@ public sealed record DocumentDiffCoverageEntry
 
 public sealed record DocumentDiffCoverage
 {
+    [JsonConstructor]
+    public DocumentDiffCoverage(IReadOnlyList<DocumentDiffCoverageEntry> areas, bool truncated)
+        : this((IEnumerable<DocumentDiffCoverageEntry>)areas, truncated) { }
+
     public DocumentDiffCoverage(
         IEnumerable<DocumentDiffCoverageEntry> areas,
         bool truncated)
