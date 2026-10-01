@@ -7614,7 +7614,7 @@ async function scenario14(page, recorder, _network, runtime) {
     await fs.copyFile(after, syntheticSource);
     const sourceBytes = await fs.readFile(syntheticSource);
     await fs.writeFile(path.join(runtime.controlsDir, "file-upgrade-source.txt"), `${syntheticSource}\n`, "utf8");
-    await rawWorkspaceV2Request(page, "fileHistory.upgrade", {
+    const upgraded = await rawWorkspaceV2Request(page, "fileHistory.upgrade", {
       documentId: imported.documentId, revisionId: historical, pathGrant: "host-picker://file-upgrade",
     });
     const oldHandle = await row.getAttribute("data-testid");
@@ -7629,10 +7629,20 @@ async function scenario14(page, recorder, _network, runtime) {
     await page.getByTestId("compare-revision").first().click();
     const compared = await waitForCapturedBridgeMessage(page, 30_000);
     const session = compared.payload?.session;
+    let comparedRevisions = null;
+    if (session?.historicalRevisionId !== historical
+      || session?.effectiveRevisionId !== upgraded.result?.revisionId
+      || session?.summary.totalChangeGroups !== oracle.length) {
+      const observedTree = await rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId: imported.documentId });
+      comparedRevisions = observedTree.result?.revisions.filter(revision =>
+        revision.revisionId === historical || revision.revisionId === session?.effectiveRevisionId);
+    }
     recorder.check(`XLSX ${caseName} uses deep production session`, compared.payload?.outcome === "ready"
       && session?.format === "xlsx" && session?.provider === "xlsxBuiltIn"
-      && session.historicalRevisionId === historical && session.summary.totalChangeGroups === oracle.length,
-    { compared, wallClockMs: performance.now() - started, cellCount: caseName === "sparse" ? 10004 : null,
+      && session.historicalRevisionId === historical && session.effectiveRevisionId === upgraded.result?.revisionId
+      && session.summary.totalChangeGroups === oracle.length,
+    { compared, upgraded, comparedRevisions, expectedHistoricalRevisionId: historical, expectedChangeGroups: oracle.length, importedDocumentId: imported.documentId,
+      wallClockMs: performance.now() - started, cellCount: caseName === "sparse" ? 10004 : null,
       sheetCount: caseName === "sparse" ? 2 : null, sharedStringCharacters: caseName === "sparse" ? 200000 : null,
       rowExtent: caseName === "sparse" ? 1048576 : null, inputBytes: sourceBytes.length });
     recorder.check(`XLSX ${caseName} declares cache and partial styles`,

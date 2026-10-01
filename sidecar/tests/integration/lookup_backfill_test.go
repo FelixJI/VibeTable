@@ -31,6 +31,26 @@ func (scheduler *deferredComputedBackfill) Start(jobID string) bool {
 	return true
 }
 
+// Observe the real backfill Apply error before jobs maps it to its public error.
+// Embedding preserves the clock and fanout materialization paths.
+type backfillDiagnosticsKernel struct {
+	*mutation.Kernel
+	t *testing.T
+}
+
+func (kernel backfillDiagnosticsKernel) Apply(ctx context.Context, request mutation.Request) (mutation.Receipt, error) {
+	receipt, err := kernel.Kernel.Apply(ctx, request)
+	if err != nil {
+		code := "<absent>"
+		var formulaErr *formula.Error
+		if errors.As(err, &formulaErr) {
+			code = formulaErr.Code
+		}
+		kernel.t.Logf("durable backfill batch failure: type=%T formula code=%q", err, code)
+	}
+	return receipt, err
+}
+
 func TestLookupSchemaChangesBackfillExistingRows(t *testing.T) {
 	for _, withFormula := range []bool{false, true} {
 		t.Run(fmt.Sprintf("withCollectionFormula=%t", withFormula), func(t *testing.T) {
@@ -81,7 +101,7 @@ func TestLookupSchemaChangesBackfillExistingRows(t *testing.T) {
 					t.Fatalf("schema change did not enqueue a durable backfill: before=%d after=%d", previous, len(scheduler.started))
 				}
 				jobID := scheduler.started[previous]
-				restarted := jobs.New(app, kernel)
+				restarted := jobs.New(app, backfillDiagnosticsKernel{Kernel: kernel, t: t})
 				defer restarted.Shutdown()
 				queued, err := restarted.Get(ctx, jobID)
 				if err != nil || queued.State != "queued" || queued.Progress.Total != 3 {
