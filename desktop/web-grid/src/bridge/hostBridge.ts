@@ -334,6 +334,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "document.listLoaded",
   "document.actionCompleted",
   "document.diffCompleted",
+  "document.diffCancelCompleted",
   "document.diffPageCompleted",
   "document.diffCloseCompleted",
   "document.operationFailed",

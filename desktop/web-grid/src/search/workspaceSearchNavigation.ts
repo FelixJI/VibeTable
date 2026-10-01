@@ -1,4 +1,4 @@
-import { ref, watch, type Ref } from "vue";
+import { nextTick, ref, watch, type Ref } from "vue";
 import type { SearchHit } from "@/contracts/generated/workbench";
 import type {
   DocumentEntry,
@@ -52,7 +52,7 @@ export function createWorkspaceSearchNavigation(
     () => [ports.getDocuments(), ports.getDocumentPhase()] as const,
     ([entries, phase]) => {
       const pending = pendingDocument.value;
-      if (!pending) return;
+      if (!pending || phase !== "ready") return;
       const index = entries.findIndex((entry) => entry.documentId === pending.documentId);
       if (index < 0) {
         if (phase === "ready") {
@@ -75,6 +75,8 @@ export function createWorkspaceSearchNavigation(
 
   async function open(indexedHit: SearchHit): Promise<void> {
     const epoch = ++openEpoch;
+    pendingDocument.value = null;
+    requestedRevisionId.value = null;
     const hit = await ports.resolveHit(indexedHit);
     if (epoch !== openEpoch) return;
     if (!hit) {
@@ -114,21 +116,25 @@ export function createWorkspaceSearchNavigation(
   }
 
   function openDocument(documentId: string, sourceRevision: string | null = null): void {
-    ++openEpoch;
-    pendingDocument.value = { documentId, sourceRevision };
+    const epoch = ++openEpoch;
+    pendingDocument.value = null;
     requestedRevisionId.value = null;
     ports.navigate("files");
-    ports.dispatchDocument({
-      type: "document.listRequested",
-      scope: { kind: "global" },
-      authority: "workspace",
-      query: {
-        logic: "and",
-        filters: [{ field: "documentId", operator: "eq", value: documentId }],
-        sort: [{ field: "documentId", direction: "asc" }],
-        limit: 1,
-        cursor: null,
-      },
+    void nextTick(() => {
+      if (epoch !== openEpoch) return;
+      pendingDocument.value = { documentId, sourceRevision };
+      ports.dispatchDocument({
+        type: "document.listRequested",
+        scope: { kind: "global" },
+        authority: "workspace",
+        query: {
+          logic: "and",
+          filters: [{ field: "documentId", operator: "eq", value: documentId }],
+          sort: [{ field: "documentId", direction: "asc" }],
+          limit: 1,
+          cursor: null,
+        },
+      });
     });
   }
 

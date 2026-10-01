@@ -255,6 +255,27 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("resolves a document diff cancellation from the serialized Host response", async () => {
+    const diagnostic = vi.fn();
+    const bridge = createHostBridge({
+      webview, timeoutMs: 1000, generateRequestId: () => "diff-cancel",
+      onDiagnostic: diagnostic,
+    });
+    bridge.start();
+    const pending = bridge.request("document.diffCancelRequested", {
+      entryHandle: "entry-1", operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    const payload = { entryHandle: "entry-1", cancelled: true };
+    webview.emit(JSON.stringify({
+      type: "document.diffCancelCompleted", requestId: "diff-cancel", payload,
+    }));
+    try {
+      await expect(pending).resolves.toEqual(payload);
+      expect(diagnostic).not.toHaveBeenCalled();
+    } finally {
+      bridge.stop();
+    }
+  });
   it("round-trips the closed application preferences RPC types", async () => {
     const ids = ["preferences-get", "preferences-update"];
     const bridge = createHostBridge({

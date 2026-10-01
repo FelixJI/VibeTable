@@ -1,4 +1,10 @@
-import { nextTick, ref } from "vue";
+import { defineComponent, h, nextTick, onMounted, ref } from "vue";
+import { flushPromises, mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
+import type { HostBridge } from "@/bridge/hostBridge";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { defaultDocumentQuery, useDocumentWorkspaceService } from "@/services/documentWorkspaceService";
+import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { describe, expect, it, vi } from "vitest";
 import type { SearchHit } from "@/contracts/generated/workbench";
 import type {
@@ -76,9 +82,139 @@ function harness(resolved: SearchHit | null) {
 }
 
 describe("workspace search navigation", () => {
+  it("dispatches the target after the files mount query and selects only its ready handles", async () => {
+    setActivePinia(createPinia());
+    const store = useDocumentWorkspaceStore();
+    const documentId = "11111111-1111-4111-8111-111111111111";
+    const oldEntry = { ...document(), documentId, entryHandle: "old-handle" };
+    store.setEntries([oldEntry]);
+    const replies: Array<(payload: unknown) => void> = [];
+    const request = vi.fn((_type: string, _payload: unknown) => new Promise<unknown>((resolve) => replies.push(resolve)));
+    setHostBridgeForTesting({ request, on: vi.fn(() => () => undefined) } as unknown as HostBridge);
+    const service = useDocumentWorkspaceService();
+    const base = harness(null);
+    const showFiles = ref(false);
+    const selectDocument = vi.fn((index: number) => store.selectAt(index));
+    const navigation = createWorkspaceSearchNavigation({
+      ...base.ports,
+      getDocuments: () => store.entries,
+      getDocumentPhase: () => store.phase,
+      dispatchDocument: service.dispatch,
+      selectDocument,
+      showDocumentHistory: () => store.showInspector("history"),
+      navigate: () => { showFiles.value = true; },
+    });
+    const FilePane = defineComponent({
+      setup() {
+        onMounted(() => {
+          store.setAuthorityFilter("workspace");
+          service.dispatch({
+            type: "document.listRequested", scope: { kind: "global" },
+            authority: "workspace", query: defaultDocumentQuery(),
+          });
+        });
+        return () => null;
+      },
+    });
+    const wrapper = mount(defineComponent({
+      setup: () => () => showFiles.value ? h(FilePane) : null,
+    }));
+    try {
+      navigation.openDocument(documentId);
+      expect(request).not.toHaveBeenCalled();
+      await nextTick();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request.mock.calls[0]).toEqual([
+        "document.listRequested", expect.objectContaining({ query: defaultDocumentQuery() }),
+      ]);
+      expect(request.mock.calls[1]).toEqual([
+        "document.listRequested", expect.objectContaining({
+          query: expect.objectContaining({
+            filters: [{ field: "documentId", operator: "eq", value: documentId }], limit: 1,
+          }),
+        }),
+      ]);
+      expect(store.phase).toBe("loading");
+      expect(selectDocument).not.toHaveBeenCalled();
+      const currentEntry = { ...oldEntry, entryHandle: "current-handle" };
+      replies[1]!({ entries: [currentEntry], nextCursor: null, topologyRevision: 2 });
+      await flushPromises();
+      expect(store.primaryHandle).toBe("current-handle");
+      expect(store.inspectorTab).toBe("history");
+      expect(base.ports.readDocumentHistory).toHaveBeenCalledWith(documentId);
+      replies[0]!({ entries: [oldEntry], nextCursor: null, topologyRevision: 1 });
+      await flushPromises();
+      expect(store.primaryHandle).toBe("current-handle");
+      expect(store.entries).toHaveLength(1);
+      expect(selectDocument).toHaveBeenCalledOnce();
+    } finally {
+      wrapper.unmount();
+      setHostBridgeForTesting(null);
+    }
+  });
+
+  it("ignores retained entries until the targeted list is ready", async () => {
+    const h = harness(null);
+    h.navigation.openDocument("document-1");
+    await nextTick();
+    h.documents.value = [{ ...document(), entryHandle: "retained-handle" }];
+    await nextTick();
+    expect(h.ports.selectDocument).not.toHaveBeenCalled();
+    expect(h.ports.readDocumentHistory).not.toHaveBeenCalled();
+    h.documents.value = [{ ...document(), entryHandle: "ready-handle" }];
+    h.phase.value = "ready";
+    await nextTick();
+    expect(h.ports.selectDocument).toHaveBeenCalledOnce();
+    expect(h.ports.readDocumentHistory).toHaveBeenCalledOnce();
+  });
+
+  it("retires a file selection while the next search authority read is still pending", async () => {
+    let resolveSearch!: (value: SearchHit | null) => void;
+    const h = harness(null);
+    h.ports.resolveHit.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveSearch = resolve;
+    }));
+    h.navigation.openDocument("document-1");
+    await nextTick();
+    const nextSearch = h.navigation.open(hit("record"));
+    h.documents.value = [document()];
+    h.phase.value = "ready";
+    await nextTick();
+    expect(h.ports.selectDocument).not.toHaveBeenCalled();
+    resolveSearch(hit("record"));
+    await nextSearch;
+    expect(h.ports.navigate).toHaveBeenLastCalledWith("tables");
+  });
+  it("retires an older scheduled document query after a newer linked click", async () => {
+    const h = harness(null);
+    h.navigation.openDocument("document-1");
+    h.navigation.openDocument("document-2");
+    await nextTick();
+    expect(h.ports.dispatchDocument).toHaveBeenCalledOnce();
+    expect(h.ports.dispatchDocument).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({
+        filters: [{ field: "documentId", operator: "eq", value: "document-2" }],
+      }),
+    }));
+  });
+
+  it("retires a pending file selection when a new search opens a table record", async () => {
+    const h = harness(hit("record"));
+    h.navigation.openDocument("document-1");
+    await nextTick();
+    await h.navigation.open(hit("record"));
+    h.documents.value = [document()];
+    h.phase.value = "ready";
+    await nextTick();
+    expect(h.ports.navigate).toHaveBeenLastCalledWith("tables");
+    expect(h.ports.selectDocument).not.toHaveBeenCalled();
+    expect(h.ports.readDocumentHistory).not.toHaveBeenCalled();
+  });
+
   it("opens a linked document only after the current authority list resolves its identity", async () => {
     const h = harness(null);
     h.navigation.openDocument("document-1");
+    await nextTick();
     expect(h.ports.resolveHit).not.toHaveBeenCalled();
     expect(h.ports.selectDocument).not.toHaveBeenCalled();
     expect(h.ports.dispatchDocument).toHaveBeenCalledWith(expect.objectContaining({
