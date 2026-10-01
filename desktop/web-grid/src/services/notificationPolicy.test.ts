@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BridgeOperationError,
+  BridgeRequestRetiredError,
   BridgeTimeoutError,
 } from "@/bridge/hostBridge";
 import {
@@ -56,5 +57,29 @@ describe("notificationPolicy", () => {
         new BridgeOperationError({ code: "CANCELLED", message: "cancelled" }),
       ),
     ).toBeNull();
+  });
+
+  it("stays silent for explicitly retired lookup requests while real failures stay visible", () => {
+    // A locally retired in-flight lookup.query belongs to a workspace the
+    // renderer already left; it is not a user-facing failure.
+    expect(relationLookupErrorMessage(new BridgeRequestRetiredError())).toBeNull();
+
+    // Genuine current-epoch bridge failures must keep their actionable copy.
+    expect(
+      relationLookupErrorMessage(
+        new BridgeOperationError({
+          code: "RELATION_LOOKUP_FAILED",
+          message: "private host detail",
+        }),
+      ),
+    ).toContain("关系");
+    expect(
+      relationLookupErrorMessage(
+        new BridgeOperationError({
+          code: "WORKSPACE_ERROR",
+          message: "private host detail",
+        }),
+      ),
+    ).not.toBeNull();
   });
 });

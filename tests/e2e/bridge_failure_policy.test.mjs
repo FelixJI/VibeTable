@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
+  acknowledgeRetiredLookupFailuresInPage,
   beginSidecarRecoveryNotificationFailureWindowInPage,
   isExpectedSidecarRecoveryFailure,
   pythonRecoveryReadinessMethod,
@@ -973,4 +974,38 @@ test("lazy topology requires complete verified Host and Sidecar membership", asy
   }
   members = [host, sidecar, python];
   await observe({}, 1);
+});
+
+test("lookup close acknowledges only the exact retired epoch's late stale terminal", () => {
+  const scope = { workspaceId: "workspace-a", sessionEpoch: 7 };
+  const retired = { requestId: "lookup-old", requestType: "lookup.query", ...scope,
+    cursor: 10, outcome: "workspace-retired" };
+  const failure = { requestId: "lookup-old", requestType: "lookup.query", cursor: 11,
+    responseType: "operation.failed", code: "workspace.session_stale" };
+  const previous = globalThis.__vibetableE2EBridgeDiagnostics;
+  try {
+    for (const [changedFailure, changedRetired, accepted] of [
+      [failure, retired, true],
+      [{ ...failure, requestId: "current" }, retired, false],
+      [{ ...failure, requestType: "query.page" }, retired, false],
+      [{ ...failure, responseType: "document.operationFailed" }, retired, false],
+      [{ ...failure, code: "LOOKUP_FAILED" }, retired, false],
+      [{ ...failure, cursor: 9 }, retired, false],
+      [failure, { ...retired, workspaceId: "workspace-b" }, false],
+      [failure, { ...retired, sessionEpoch: 8 }, false],
+      [failure, { ...retired, requestType: "query.page" }, false],
+      [failure, { ...retired, outcome: "completed" }, false],
+      [failure, null, false],
+    ]) {
+      const diagnostics = globalThis.__vibetableE2EBridgeDiagnostics = {
+        failures: [changedFailure], retiredRequests: changedRetired ? [changedRetired] : [],
+        acknowledgedFailures: [],
+      };
+      assert.equal(acknowledgeRetiredLookupFailuresInPage(scope), Number(accepted));
+      assert.deepEqual(diagnostics.failures, accepted ? [] : [changedFailure]);
+      assert.deepEqual(diagnostics.acknowledgedFailures, accepted ? [changedFailure] : []);
+    }
+  } finally {
+    globalThis.__vibetableE2EBridgeDiagnostics = previous;
+  }
 });

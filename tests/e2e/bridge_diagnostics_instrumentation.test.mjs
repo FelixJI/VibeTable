@@ -681,7 +681,7 @@ test("records document operation failure notifications without retaining private
   }
 });
 
-for (const method of ["dashboard.listRequested", "settings.readWorkCalendar"]) {
+for (const method of ["dashboard.listRequested", "settings.readWorkCalendar", "lookup.query"]) {
 test(`retirement only settles ${method} with matching type and epoch`, () => {
   const listeners = new Map();
   const webview = { postMessage() {}, addEventListener(type, listener) { listeners.set(type, listener); } };
@@ -751,7 +751,7 @@ function installRetirementHarness(method) {
   return { retire, postScoped, lateFailure };
 }
 
-for (const method of ["dashboard.listRequested", "dashboard.manifestRequested"]) {
+for (const method of ["dashboard.listRequested", "dashboard.manifestRequested", "lookup.query"]) {
 test(`late BAD_WORKSPACE_SCOPE failure after ${method} retirement keeps code and request identity`, () => {
   const { retire, postScoped, lateFailure } = installRetirementHarness(method);
   try {
@@ -809,6 +809,29 @@ test(`retired request receiving another real error still records the failure`, (
     assert.equal(result.failures.length, 1);
     assert.equal(result.failures[0].code, "WORKSPACE_ERROR");
     assert.equal(result.failures[0].requestType, "dashboard.listRequested");
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test(`late workspace.session_stale after lookup.query retirement keeps the real failure and identity`, () => {
+  const { retire, postScoped, lateFailure } = installRetirementHarness("lookup.query");
+  try {
+    installBridgeDiagnosticsInPage();
+    postScoped("old-lookup", 1);
+    retire("old-lookup");
+    lateFailure("old-lookup", "workspace.session_stale", "session stale at close");
+
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.pending.length, 0);
+    assert.equal(result.retiredRequests.length, 1, "retirement evidence stays");
+    assert.equal(result.retiredRequests[0].requestType, "lookup.query");
+    // The late real host failure is retained, never auto-swallowed.
+    assert.equal(result.failures.length, 1);
+    assert.equal(result.failures[0].requestId, "old-lookup");
+    assert.equal(result.failures[0].requestType, "lookup.query");
+    assert.equal(result.failures[0].code, "workspace.session_stale");
+    assert.equal(result.acknowledgedFailures.length, 0);
   } finally {
     delete globalThis.window;
   }

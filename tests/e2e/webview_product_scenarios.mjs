@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
+  acknowledgeRetiredLookupFailuresInPage,
   beginSidecarRecoveryNotificationFailureWindowInPage,
   pythonRecoveryReadinessMethod,
   pythonRecoveryReadinessParams,
@@ -2836,10 +2837,13 @@ async function scenario05(page, recorder, _network, runtime) {
     cancelledStatus.payload?.phase === "cancelled", { cancelledStatus });
 
   const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
-  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
-  recorder.check("schema lifecycle closes the actual workspace", closed.result?.state === "closed", { closed });
   await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
+  recorder.check("schema lifecycle closes the actual workspace", closed.result?.state === "closed", { closed });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
   await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
   const reopened = await waitForCapturedBridgeMessage(page, 60_000);
   const persistedStatus = await rawBridgeRequest(page, "field.change.status", {
@@ -3382,10 +3386,13 @@ async function scenario28(page, recorder) {
   recorder.check("Lookup renders the committed target through the live refresh path", true);
 
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
-  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
-  if (closed.result?.state !== "closed") throw new Error(`relation workspace close failed: ${JSON.stringify(closed)}`);
   await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
+  if (closed.result?.state !== "closed") throw new Error(`relation workspace close failed: ${JSON.stringify(closed)}`);
+  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
   await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
   const reopened = await waitForCapturedBridgeMessage(page, 60_000);
   const persisted = await read(articleTableId);
@@ -3397,6 +3404,7 @@ async function scenario28(page, recorder) {
       && JSON.stringify(persisted.rows[0][relation.physicalName]) === JSON.stringify([extraId])
       && persistedTargets.rows.some(row => row.id === newTarget.id && row[authors.field.physicalName] === createdLabel),
     { reopened, persisted, persistedTargets });
+  await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
 
 }
 
@@ -3921,12 +3929,15 @@ async function scenario26(page, recorder, _network, runtime) {
     {});
 
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
-  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
-  const closed = await rawLifecycleWorkspaceV2Request(page, "workspace.close", { reason: "user" }, 60_000);
+  await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
   if (closed.result?.state !== "closed") {
     throw new Error(`condition workspace close failed: ${JSON.stringify(closed)}`);
   }
-  await openWorkspaceCenterFromSwitcher(page);
+  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
   await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
   const reopened = await waitForCapturedBridgeMessage(page, 60_000);
   const persistedList = await rawBridgeRequest(page, "lookup.list", { collection: currentTableId });
@@ -4058,6 +4069,7 @@ async function scenario26(page, recorder, _network, runtime) {
   } while (Date.now() < exportDeadline);
   recorder.check("导出与网格及下游公式使用相同聚合值", exportedRows[1]?.[exportedRows[0]?.indexOf(lookupFieldKey)] === "40"
     && exportedRows[1]?.[exportedRows[0]?.indexOf(downstream.physicalName)] === "80", { exportedRows });
+  await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
 }
 
 async function selectTable(page, displayName) {
