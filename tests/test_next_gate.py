@@ -2637,3 +2637,71 @@ def test_s39_screenshots_failed_report_keeps_only_images_produced_in_current_pha
     assert retained is not None
     images = {path.relative_to(retained).as_posix() for path in retained.rglob("*.png")}
     assert images == {"39-file-workflow-combination/seed/20261001T231002Z/39-record-file-entry.png"}
+
+
+@pytest.mark.parametrize(
+    ("coverage_code", "evidence", "expected"),
+    [
+        (0, "present", 0),
+        (0, "missing", 1),
+        (0, "copy-false", 1),
+        (0, "copy-error", 1),
+        (1, "present", 1),
+        (None, "present", 0),
+    ],
+)
+def test_core_lane_retains_capacity_record_only_after_passing_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    coverage_code: int | None,
+    evidence: str,
+    expected: int,
+) -> None:
+    monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path / "repo")
+    qa_temp = tmp_path / "qa-temp"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(next_gate.handoff_gate, "artifact_hashes", lambda _deps: {})
+    monkeypatch.setattr(next_gate.handoff_gate, "release_source_hash", lambda _deps: "s" * 64)
+    results = (
+        []
+        if coverage_code is None
+        else [next_gate.StageResult("go-coverage", ["test"], coverage_code, 0.01, "", "", "repo")]
+    )
+    monkeypatch.setattr(next_gate, "run_lane", lambda *_args: (coverage_code or 0, results))
+    source = next_gate.REPO_ROOT / "build/qa/415-capacity/capacity-qualification.json"
+    source.parent.mkdir(parents=True)
+    raw = b'{"operations":[{"scale":"s32","elapsedMillis":12}]}'
+    if evidence != "missing":
+        source.write_bytes(raw)
+    if evidence in {"copy-false", "copy-error"}:
+
+        def failed_copy(_source: Path, _destination: Path) -> bool:
+            if evidence == "copy-error":
+                raise OSError("synthetic capacity copy failure")
+            return False
+
+        monkeypatch.setattr(next_gate, "_copy_if_file", failed_copy)
+    report = tmp_path / "lane.json"
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "core",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == expected
+    )
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is (expected == 0)
+    retained = next_gate.REPO_ROOT / (
+        "build/automation/lane-evidence/core/415-capacity/capacity-qualification.json"
+    )
+    if coverage_code == 0 and evidence == "present":
+        assert retained.read_bytes() == raw
+    else:
+        assert not retained.exists()

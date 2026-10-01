@@ -287,17 +287,14 @@ func (recorder *capacityRecorder) write(t *testing.T) {
 	}
 	directory := capacityEvidenceDirectory()
 	if directory == "" {
-		t.Log("capacity qualification evidence directory not located; keeping the in-test record only")
-		return
+		t.Fatal("capacity qualification evidence directory not located")
 	}
 	if err := os.MkdirAll(directory, 0o755); err != nil {
-		t.Logf("capacity qualification evidence directory unavailable: %v", err)
-		return
+		t.Fatalf("capacity qualification evidence directory unavailable: %v", err)
 	}
 	target := filepath.Join(directory, "capacity-qualification.json")
 	if err := os.WriteFile(target, append(payload, '\n'), 0o644); err != nil {
-		t.Logf("capacity qualification record write failed: %v", err)
-		return
+		t.Fatalf("capacity qualification record write failed: %v", err)
 	}
 	t.Logf("capacity qualification record written to %s", target)
 }

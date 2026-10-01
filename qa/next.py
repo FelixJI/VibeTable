@@ -1655,6 +1655,24 @@ def _main(argv: list[str] | None = None) -> int:
                 if required:
                     code = code or 1
     if args.lane:
+        if any(result.stage == "go-coverage" and result.returncode == 0 for result in results):
+            filename = "capacity-qualification.json"
+            source = REPO_ROOT / "build" / "qa" / "415-capacity" / filename
+            destination = (
+                REPO_ROOT
+                / "build"
+                / "automation"
+                / "lane-evidence"
+                / args.lane
+                / "415-capacity"
+                / filename
+            )
+            try:
+                if not _copy_if_file(source, destination):
+                    raise ValueError(f"passing Go coverage lacks capacity evidence: {filename}")
+            except (OSError, ValueError) as exc:
+                print(f"could not persist capacity evidence: {exc}", file=sys.stderr)
+                code = code or 1
         runtime_baseline_result = next(
             (result for result in results if result.stage == "runtime-baseline"),
             None,
