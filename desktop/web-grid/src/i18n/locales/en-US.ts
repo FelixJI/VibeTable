@@ -1268,7 +1268,7 @@ export const messages: Record<string, string> = {
   "workspaceV2.fileTree.diff.identical": "Change summary: the file content is identical in both versions.",
   "workspaceV2.fileTree.diff.changed": "Change summary: the versions differ, but this format or file size has no content counts.",
   "workspaceV2.fileTree.diff.details": "Change summary: {added} item(s) added and {removed} removed. Text is counted by line; Office files by visible content item.",
-  "workspaceV2.fileTree.diff.failure.unsupported": "These file formats cannot be compared.",
+  "workspaceV2.fileTree.diff.failure.unsupported": "The format, external links or other features are unsupported, or comparison resource limits were exceeded.",
   "workspaceV2.fileTree.diff.failure.invalidContent": "The file content is invalid and cannot be compared.",
   "workspaceV2.fileTree.diff.failure.io": "The revision content could not be read. Try again.",
   "workspaceV2.fileTree.diff.failure.cancelled": "The comparison was cancelled.",

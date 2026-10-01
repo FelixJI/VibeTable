@@ -1268,7 +1268,7 @@ export const messages: Record<string, string> = {
   "workspaceV2.fileTree.diff.identical": "变化摘要：两个版本的文件内容完全相同。",
   "workspaceV2.fileTree.diff.changed": "变化摘要：两个版本不同；此格式或文件规模不提供内容计数。",
   "workspaceV2.fileTree.diff.details": "变化摘要：新增 {added} 项，删除 {removed} 项。文本按行、Office 文件按可见内容项统计。",
-  "workspaceV2.fileTree.diff.failure.unsupported": "这两个文件格式无法比较。",
+  "workspaceV2.fileTree.diff.failure.unsupported": "此文件格式、外链或其他特性暂不支持，或超出比较资源预算。",
   "workspaceV2.fileTree.diff.failure.invalidContent": "文件内容无效，无法完成比较。",
   "workspaceV2.fileTree.diff.failure.io": "读取版本内容失败，请重试。",
   "workspaceV2.fileTree.diff.failure.cancelled": "比较已取消。",

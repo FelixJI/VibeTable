@@ -115,6 +115,67 @@ func TestExternalIngestAmbiguousHashRequiresConfirmationWithoutMutation(t *testi
 	}
 }
 
+func TestExternalIngestRequestedNewIdentityRequiresConfirmationOnOwnedPath(
+	t *testing.T,
+) {
+	fixture := newHistoryFixture(t)
+	if _, err := fixture.save(context.Background(), SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne,
+		Path: "owned/report.txt", Kind: RevisionFormal,
+		Content: []byte("owned"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ingestor, err := NewIngestor(fixture.service, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ingestor.Ingest(
+		context.Background(),
+		externalMetadata(ExternalChange{
+			Token: fixture.token, Kind: ExternalStableSave,
+			DocumentID: testDocumentTwo,
+			TargetPath: "owned/report.txt",
+			Content:    []byte("edited"), ContentProvided: true,
+		}),
+	)
+	if err != nil || result.Confirmation == nil ||
+		len(result.Confirmation.CandidateDocumentIDs) != 1 ||
+		result.Confirmation.CandidateDocumentIDs[0] != testDocumentOne {
+		t.Fatalf("confirmation = %#v, %v", result, err)
+	}
+	documents := fixture.service.List()
+	if len(documents) != 1 ||
+		len(documents[0].Revisions) != 1 ||
+		documents[0].EffectiveRevisionID != documents[0].Revisions[0].RevisionID {
+		t.Fatal("cross-identity binding mutated the owned document")
+	}
+}
+
+func TestExternalIngestRequestedNewIdentityCreatesDocumentOnFreePath(
+	t *testing.T,
+) {
+	fixture := newHistoryFixture(t)
+	ingestor, err := NewIngestor(fixture.service, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ingestor.Ingest(
+		context.Background(),
+		externalMetadata(ExternalChange{
+			Token: fixture.token, Kind: ExternalStableSave,
+			DocumentID: testDocumentTwo,
+			TargetPath: "free/report.txt",
+			Content:    []byte("fresh"), ContentProvided: true,
+		}),
+	)
+	if err != nil || result.Save == nil ||
+		result.Save.Document.DocumentID != testDocumentTwo ||
+		result.Save.Revision.RevisionOrdinal != 1 {
+		t.Fatalf("new identity save = %#v, %v", result, err)
+	}
+}
+
 func TestExternalIngestUnknownRenameRequiresConfirmation(t *testing.T) {
 	fixture := newHistoryFixture(t)
 	ingestor, err := NewIngestor(fixture.service, nil)

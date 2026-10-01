@@ -225,11 +225,13 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Capture the CAS basis before reading bytes so a newer revision cannot
+	// authorize a stale snapshot.
+	documents := watcher.ingestor.service.List()
 	onDisk, err := watcher.scanStableFiles(ctx)
 	if err != nil {
 		return err
 	}
-	documents := watcher.ingestor.service.List()
 	activeByPath := make(map[string]Document, len(documents))
 	for _, document := range documents {
 		if document.Status == DocumentActive {
@@ -285,6 +287,11 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 			change.DocumentID = document.DocumentID
 			change.ExpectedEffectiveRevision =
 				stringPointer(document.EffectiveRevisionID)
+		} else {
+			// An untracked path carries a pre-allocated identity so the
+			// resolver can distinguish a genuine new document from a path that
+			// gained a tracked identity while the scan was running.
+			change.DocumentID = watcher.ingestor.newID()
 		}
 		result, err := watcher.ingestor.Ingest(ctx, change)
 		if err != nil {
@@ -418,6 +425,19 @@ func (watcher *Watcher) stableRead(
 	ctx context.Context,
 	path string,
 ) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// The history read lock excludes the materializer's staged/rollback
+	// transient states, which Save and Restore apply while holding the write
+	// lock across their commit boundary. Ponytail: this per-file global
+	// history lock lets bounded IO block commits; switch to per-document
+	// synchronization only if real commit contention shows up.
+	watcher.ingestor.service.mu.RLock()
+	defer watcher.ingestor.service.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for attempt := 0; attempt < 3; attempt++ {
 		before, err := os.Stat(path)
 		if err != nil || !before.Mode().IsRegular() ||

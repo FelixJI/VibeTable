@@ -50,14 +50,23 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
             return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.Unsupported);
         }
 
-        var binaryOutcome = await _core.CompareAsync(request, cancellationToken).ConfigureAwait(false);
-        if (binaryOutcome.Kind != DocumentDiffOutcomeKind.Changed)
-        {
-            return binaryOutcome;
-        }
-
         try
         {
+            // XLSX routes to the deep semantic provider before the binary-identical shortcut
+            // below, so byte-identical but malformed workbooks fail closed instead of
+            // reporting Identical.
+            if (beforeFormat == OpenXmlFormat.Xlsx)
+            {
+                return await XlsxSemanticDiff.CompareAsync(request, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var binaryOutcome = await _core.CompareAsync(request, cancellationToken).ConfigureAwait(false);
+            if (binaryOutcome.Kind != DocumentDiffOutcomeKind.Changed)
+            {
+                return binaryOutcome;
+            }
+
             var beforeText = await ExtractVisibleTextAsync(
                 beforeFormat,
                 request.Before,
@@ -77,6 +86,10 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         {
             return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.Cancelled);
         }
+        catch (NotSupportedException) when (beforeFormat == OpenXmlFormat.Xlsx)
+        {
+            return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.Unsupported);
+        }
         catch (InvalidDataException)
         {
             return DocumentDiffOutcome.Failed(DocumentDiffFailureKind.InvalidContent);
@@ -95,7 +108,11 @@ public sealed class OpenXmlDocumentDiffEngine : IDocumentDiffEngine
         }
         catch (DiffBudgetExceededException)
         {
-            return DocumentDiffOutcome.Changed;
+            // The deep XLSX provider must not degrade to the shallow fallback that claimed
+            // Changed: report Unsupported. DOCX/PPTX shallow paths keep the historical result.
+            return beforeFormat == OpenXmlFormat.Xlsx
+                ? DocumentDiffOutcome.Failed(DocumentDiffFailureKind.Unsupported)
+                : DocumentDiffOutcome.Changed;
         }
     }
 

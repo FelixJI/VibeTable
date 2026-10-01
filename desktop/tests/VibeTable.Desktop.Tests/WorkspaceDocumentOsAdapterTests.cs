@@ -1246,6 +1246,94 @@ public sealed class WorkspaceDocumentOsAdapterTests
         CollectionAssert.AreEqual(after, File.ReadAllBytes(Path.Combine(fixtures, "format-after.docx")));
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ProductionXlsxPagesCarryCacheWarningAndAuthorityCAS(bool stale)
+    {
+        string repo = AppContext.BaseDirectory;
+        while (!File.Exists(Path.Combine(repo, ".ci/project.json")))
+            repo = Directory.GetParent(repo)!.FullName;
+        string fixtures = Path.Combine(repo, "desktop/tests/VibeTable.DocumentDiff.OpenXml.Tests/TestData/Qualification/xlsx");
+        byte[] before = File.ReadAllBytes(Path.Combine(fixtures, "format-before.xlsx"));
+        byte[] after = File.ReadAllBytes(Path.Combine(fixtures, "format-after.xlsx"));
+        // Simulates the authority's existing content-addressed materialization contract.
+        string beforeHash = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(before)).ToLowerInvariant();
+        string afterHash = "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(after)).ToLowerInvariant();
+        using var directory = new TemporaryDirectory();
+        using var broker = new DocumentDiffArtifactBroker(directory.Path);
+        var handler = new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            JsonElement root = body.RootElement;
+            bool materializing = root.GetProperty("method").GetString() == WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod;
+            if (materializing)
+            {
+                using JsonDocument grant = JsonDocument.Parse(DecodeGrant(request));
+                string input = grant.RootElement.GetProperty("path").GetString()!;
+                File.WriteAllBytes(Path.Combine(input, "historical.content"), before);
+                File.WriteAllBytes(Path.Combine(input, "effective.content"), after);
+            }
+            var result = new Dictionary<string, object>
+            {
+                ["documentId"] = DocumentId.ToString("D"),
+                ["historicalRevisionId"] = "44444444-4444-4444-8444-444444444444",
+                ["effectiveRevisionId"] = RevisionId.ToString("D"),
+                ["historicalContentHash"] = beforeHash,
+                ["effectiveContentHash"] = afterHash,
+            };
+            if (materializing)
+            {
+                result["historicalMimeType"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+                result["effectiveMimeType"] = result["historicalMimeType"];
+            }
+            else result["stable"] = !stale;
+            return RpcSuccess(root, JsonSerializer.Serialize(result));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        var binding = new WorkspaceDocumentBinding(WorkspaceId, 7, true, directory.Path, gateway,
+            [WorkspaceDocumentOsAdapter.MaterializeDiffPairMethod, WorkspaceDocumentOsAdapter.AssertEffectiveRevisionMethod]);
+        var capabilities = new DocumentCapabilityStore();
+        string handle = capabilities.Issue(WorkspaceId, 7, DocumentId, "synthetic.xlsx", RevisionId, ["diff"]);
+        var coordinator = new WorkspaceDocumentDiffCoordinator(new FakeEpochLeaseSource(),
+            new VibeTable.DocumentDiff.OpenXml.OpenXmlDocumentDiffEngine(), broker);
+        var compared = await coordinator.CompareAsync(binding, capabilities.Resolve(handle, "diff", WorkspaceId, 7),
+            handle, "44444444-4444-4444-8444-444444444444", RevisionId.ToString("D"), CancellationToken.None);
+        if (stale)
+            Assert.AreEqual(DocumentDiffSessionFailure.Stale, compared.Failure);
+        else
+        {
+            Assert.IsNotNull(compared.Session);
+            Assert.AreEqual(DocumentDiffFormat.Xlsx, compared.Session.Format);
+            Assert.AreEqual(DocumentDiffProvider.XlsxBuiltIn, compared.Session.Provider);
+            Assert.AreEqual(3, compared.Session.Summary.TotalChangeGroups);
+            Assert.AreEqual(1, compared.Session.Summary.FormattingChanges);
+            Assert.AreEqual(2, compared.Session.Summary.OtherChanges);
+            Assert.IsTrue(compared.Session.Warnings.Contains(DocumentDiffWarning.CachedValuesNotRecalculated));
+            Assert.IsTrue(compared.Session.Warnings.Contains(DocumentDiffWarning.PartialCoverage));
+            var page = await coordinator.ReadPageAsync(binding, new(compared.Session.SessionId, null, 1), CancellationToken.None);
+            Assert.IsNotNull(page.Page);
+            DocumentDiffChange format = page.Page.Changes.Single();
+            Assert.AreEqual(DocumentDiffChangeKind.Format, format.Kind);
+            Assert.AreEqual("报价表", format.Location.SheetName);
+            Assert.AreEqual("B7", format.Location.CellAddress);
+            StringAssert.Contains(string.Concat(format.Before!.Runs.Select(run => run.Text)), "numFmt=builtin:2");
+            StringAssert.Contains(string.Concat(format.After!.Runs.Select(run => run.Text)), "numFmt=builtin:10");
+            var next = await coordinator.ReadPageAsync(binding, new(compared.Session.SessionId, page.Page.NextCursor, 50), CancellationToken.None);
+            Assert.IsNotNull(next.Page);
+            CollectionAssert.AreEqual(new[] { "row 8 hidden: true", "hidden columns: 6:6" },
+                next.Page.Changes.Select(change => string.Concat(change.Before!.Runs.Select(run => run.Text))).ToArray());
+            CollectionAssert.AreEqual(new[] { "row 8 hidden: false", "hidden columns: <none>" },
+                next.Page.Changes.Select(change => string.Concat(change.After!.Runs.Select(run => run.Text))).ToArray());
+            coordinator.CloseSession(compared.Session.SessionId);
+            var expired = await coordinator.ReadPageAsync(binding, new(compared.Session.SessionId, null, 50), CancellationToken.None);
+            Assert.AreEqual(DocumentDiffPageFailure.SessionExpired, expired.Failure);
+        }
+        Assert.AreEqual(0, Directory.GetFileSystemEntries(directory.Path).Length);
+        CollectionAssert.AreEqual(before, File.ReadAllBytes(Path.Combine(fixtures, "format-before.xlsx")));
+        CollectionAssert.AreEqual(after, File.ReadAllBytes(Path.Combine(fixtures, "format-after.xlsx")));
+    }
+
     private sealed class PublicationTimeProvider : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;

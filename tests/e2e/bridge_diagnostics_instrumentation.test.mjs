@@ -287,6 +287,92 @@ test("records host-driven dataset notification revisions", () => {
   }
 });
 
+test("records a bounded inbound task.changed timeline with stable job identity and error codes", () => {
+  const posted = [];
+  const listeners = [];
+  const webview = {
+    postMessage(message) {
+      posted.push(message);
+    },
+    addEventListener(type, listener) {
+      if (type === "message") listeners.push(listener);
+    },
+  };
+  globalThis.window = { chrome: { webview } };
+  try {
+    installBridgeDiagnosticsInPage();
+    const taskEvent = (sequence, state, progress, error = null) => ({
+      data: {
+        type: "task.changed",
+        payload: {
+          contractVersion: "2.0",
+          topic: "task.changed",
+          eventId: `evt_task_${sequence}`,
+          sequence,
+          occurredAt: "2026-07-24T08:31:00Z",
+          taskId: "job_formula_01HZX",
+          taskType: "formulaBackfill",
+          state,
+          progress,
+          cursor: "row:6250",
+          error,
+        },
+      },
+    });
+    for (let sequence = 10; sequence < 215; sequence += 1) {
+      listeners[0](taskEvent(sequence, "running", 0.25));
+    }
+    listeners[0](taskEvent(3, "running", 0.5));
+    const failedEnvelope = taskEvent(4, "failed", 0.5, {
+      contractVersion: "2.0",
+      code: "formula.resource_limit",
+      path: null,
+      message: "private failure message",
+      details: { secret: "private-detail" },
+      retryable: false,
+    });
+    listeners[0](failedEnvelope);
+
+    const snapshot = readBridgeDiagnosticsInPage();
+    assert.equal(snapshot.taskStates.length, 200);
+    assert.equal(snapshot.taskStates[0].sequence, 17);
+    assert.deepEqual({ ...snapshot.taskStates.at(-2), at: null }, {
+      at: null,
+      taskId: "job_formula_01HZX",
+      taskType: "formulaBackfill",
+      state: "running",
+      progress: 0.5,
+      sequence: 3,
+      occurredAt: "2026-07-24T08:31:00Z",
+      errorCode: null,
+    });
+    assert.deepEqual({ ...snapshot.taskStates.at(-1), at: null }, {
+      at: null,
+      taskId: "job_formula_01HZX",
+      taskType: "formulaBackfill",
+      state: "failed",
+      progress: 0.5,
+      sequence: 4,
+      occurredAt: "2026-07-24T08:31:00Z",
+      errorCode: "formula.resource_limit",
+    });
+    assert.ok(snapshot.taskStates.every((entry) => typeof entry.at === "string"));
+    assert.equal(snapshot.notifications.length, 0);
+    assert.equal(posted.length, 0);
+    assert.equal(failedEnvelope.data.payload.error.message, "private failure message");
+    assert.deepEqual(Object.keys(failedEnvelope.data.payload), [
+      "contractVersion", "topic", "eventId", "sequence", "occurredAt",
+      "taskId", "taskType", "state", "progress", "cursor", "error",
+    ]);
+    const artifact = JSON.stringify(snapshot);
+    assert.equal(artifact.includes("private failure message"), false);
+    assert.equal(artifact.includes("private-detail"), false);
+    assert.equal(artifact.includes("row:6250"), false);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
 test("retains realtime.stopped notification with bounded host failure detail", () => {  const listeners = [];
   const webview = {
     postMessage() {},

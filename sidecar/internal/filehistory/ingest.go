@@ -119,6 +119,14 @@ func (ConservativeIdentityResolver) Resolve(
 					"path belongs to a deleted document", matches,
 				), nil
 			}
+			if requestedNewID != "" &&
+				requestedNewID != document.DocumentID {
+				return confirmation(
+					"requested identity differs from the document at this "+
+						"path",
+					matches,
+				), nil
+			}
 			return IdentityResolution{
 				DocumentID: document.DocumentID,
 			}, nil
