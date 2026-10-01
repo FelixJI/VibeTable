@@ -2268,6 +2268,12 @@ def _produce_file_history_capacity_fixtures(persistent_root: Path) -> dict[str, 
                 timed_out = True
     elapsed = round(time.monotonic() - started, 3)
     evidence |= {"returncode": returncode, "elapsedSeconds": elapsed}
+    for scale in CAPACITY_FIXTURE_SCALES:
+        metadata_path = fixture_root / scale / "fixture.json"
+        if metadata_path.is_file():
+            retained = persistent_root / "fixtures" / f"{scale}.json"
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(metadata_path, retained)
     lifecycle = evidence.get("lifecycle")
     if timed_out:
         return evidence | {

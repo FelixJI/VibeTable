@@ -4905,6 +4905,9 @@ def test_file_history_capacity_producer_validates_metadata(
         assert producer["code"] == "CAPACITY_FIXTURE_METADATA_INVALID"
     assert created
     assert all(path.is_file() for path in created)
+    for path in created:
+        retained = tmp_path / "evidence" / "fixtures" / f"{path.parent.name}.json"
+        assert retained.read_bytes() == path.read_bytes()
     assert Path(str(producer["stdout"])).read_bytes() == b"go test streamed output\n"
     assert producer["lifecycle"]["status"] == "passed"
     assert launched == []

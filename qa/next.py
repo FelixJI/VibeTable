@@ -1287,6 +1287,21 @@ def persist_product_e2e_evidence(
                 f"found {actual_scenarios} in {report_path}"
             )
 
+    for item in scenarios:
+        if item["scenario"] != "40-file-history-capacity":
+            continue
+        persistent = run_source / item["scenario"] / "persistent"
+        retained = run_destination / item["scenario"] / "persistent"
+        for filename in (
+            "producer-stdout.log",
+            "producer-stderr.log",
+            "fixtures/near-limit-9980x9990.json",
+            "fixtures/depth-4096.json",
+        ):
+            copied = _copy_if_file(persistent / filename, retained / filename)
+            if not copied and item["status"] == "passed":
+                raise ValueError(f"passing capacity report lacks raw evidence: {filename}")
+
     for item in failed_scenarios:
         scenario_id = item.get("scenario")
         if (

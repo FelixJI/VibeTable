@@ -1695,6 +1695,15 @@ def _prepare_complete_product_reports(
             ),
             encoding="utf-8",
         )
+        if "40-file-history-capacity" in selected[stage]:
+            persistent = run_root / "40-file-history-capacity" / "persistent"
+            (persistent / "fixtures").mkdir(parents=True)
+            for filename in ("producer-stdout.log", "producer-stderr.log"):
+                (persistent / filename).write_text("synthetic unit-test log", encoding="utf-8")
+            for scale in ("near-limit-9980x9990", "depth-4096"):
+                (persistent / "fixtures" / f"{scale}.json").write_text(
+                    '{"operations": []}', encoding="utf-8"
+                )
     return selected
 
 
@@ -2465,3 +2474,47 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         len(next_gate.load_scenarios()) - len(release_eligibility.DATA_IO_SCENARIO_IDS)
     )
     assert Path(product_cwd) == next_gate.REPO_ROOT
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+@pytest.mark.parametrize("missing_measurement", [False, True])
+def test_capacity_evidence_retains_measurements_and_producer_logs(
+    tmp_path: Path, status: str, missing_measurement: bool
+) -> None:
+    source_root = tmp_path / "source"
+    run = source_root / "20261001T210000Z"
+    scenario_id = "40-file-history-capacity"
+    persistent = run / scenario_id / "persistent"
+    (persistent / "fixtures").mkdir(parents=True)
+    report = {"status": status, "scenarios": [{"scenario": scenario_id, "status": status}]}
+    (run / "product-e2e-report.json").write_text(json.dumps(report), encoding="utf-8")
+    evidence = {
+        "producer-stdout.log": b"real producer partial stdout\n",
+        "producer-stderr.log": b"real producer partial stderr\n",
+        "fixtures/near-limit-9980x9990.json": b'{"operations":[{"totalAllocBytes":123456}]}',
+        "fixtures/depth-4096.json": b'{"operations":[{"totalAllocBytes":654321}]}',
+    }
+    for name, raw in evidence.items():
+        (persistent / name).write_bytes(raw)
+    (persistent / "workspace.db").write_bytes(b"must not be archived")
+    if missing_measurement:
+        missing_name = "fixtures/depth-4096.json"
+        (persistent / missing_name).unlink()
+        evidence.pop(missing_name)
+        if status == "passed":
+            with pytest.raises(ValueError, match=r"depth-4096\.json"):
+                next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+            return
+
+    retained = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert retained is not None
+    for name, raw in evidence.items():
+        (persistent / name).unlink()
+        assert (retained / scenario_id / "persistent" / name).read_bytes() == raw
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == {
+        "product-e2e-report.json",
+        *(f"{scenario_id}/persistent/{name}" for name in evidence),
+    }
