@@ -9,8 +9,8 @@
 分片调整依据为：
 
 - [PR400 的 CI 诊断记录](https://github.com/FelixJI/VibeTable/pull/400)（历史事实，保留）：原标准分片完成 32 场已用约 1779 秒，S23/S24 合计约 356 秒。
-- main 成功样本 [run 36781713078](https://github.com/FelixJI/VibeTable/actions/runs/36781713078)：resilience 33 场已包含 S37/S38（两场合计约 217 秒），全程约 1693.9 秒，对 1800 秒预算余量仅约 106 秒。
-- resilience 失败样本 [run 36792999964](https://github.com/FelixJI/VibeTable/actions/runs/36792999964)：同为 33 场，01–37 已计约 1665.3 秒，机器时长增量累积耗尽余量，S38 执行中被 1800 秒外层预算终止。
+- main 成功样本 run 36781713078（完整归属见 [#410 验收记录](https://github.com/FelixJI/VibeTable/issues/410)）：resilience 33 场已包含 S37/S38（两场合计约 217 秒），全程约 1693.9 秒，对 1800 秒预算余量仅约 106 秒。
+- resilience 失败样本 run 36792999964（原始失败见 [PR #419](https://github.com/FelixJI/VibeTable/pull/419#issuecomment-5922504924)）：同为 33 场，01–37 已计约 1665.3 秒，机器时长增量累积耗尽余量，S38 执行中被 1800 秒外层预算终止。
 
 因此将 S37/S38 迁入原仅 4 场、约 8 分钟的 `data-io` 分片。以下已发布样本的分片数量与路径保留其原时点事实。
 
