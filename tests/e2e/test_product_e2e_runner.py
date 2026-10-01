@@ -6,9 +6,10 @@ import io
 import json
 import sqlite3
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import IO, Any
 
 import pytest
 
@@ -2590,6 +2591,7 @@ def _patch_acceptance_preflight(
     *,
     run_scenario: Any,
     host_presentation_restart: Any = None,
+    file_history_capacity: Any = None,
 ) -> None:
     monkeypatch.setattr(runner, "audit_package", lambda _package_root: {"passed": True})
     monkeypatch.setattr(runner.shutil, "which", lambda _name: "node")
@@ -2600,6 +2602,11 @@ def _patch_acceptance_preflight(
             "_run_host_presentation_restart_acceptance",
             host_presentation_restart,
         )
+    monkeypatch.setattr(
+        runner,
+        "_run_file_history_capacity_acceptance",
+        file_history_capacity or _passing_scenario_result,
+    )
 
 
 def _latest_acceptance_report(evidence_root: Path) -> dict[str, Any]:
@@ -4537,3 +4544,458 @@ def test_document_diff_worker_memory_uses_only_verified_job_members(
     else:
         assert not evidence["workers"]
         assert evidence["errors"]
+
+
+def test_file_workflow_combination_registers_a_strict_persistent_seed_whitelist() -> None:
+    assert runner._PERSISTENT_RESTART_SEED_FIELDS["39-file-workflow-combination"] == (
+        "workspaceId",
+        "chain",
+        "files",
+        "recordId",
+    )
+
+
+def test_file_workflow_combination_routes_through_the_two_host_restart_acceptance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routed: list[str] = []
+
+    def record_restart(scenario: Any, **_kwargs: object) -> dict[str, Any]:
+        routed.append(scenario.id)
+        return _passing_scenario_result(scenario)
+
+    _patch_acceptance_preflight(
+        monkeypatch,
+        run_scenario=_passing_scenario_result,
+        host_presentation_restart=record_restart,
+    )
+
+    exit_code, report = runner.run_product_acceptance(
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence",
+        selected=("39-file-workflow-combination",),
+    )
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert routed == ["39-file-workflow-combination"]
+
+
+def test_file_workflow_combination_seed_whitelist_gates_the_resume_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario("39-file-workflow-combination", "combination", "restart")
+    workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    calls: list[runner._PersistentScenarioRun] = []
+
+    def two_phases(*_args: object, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        calls.append(persistent)
+        if persistent.phase == "seed":
+            created_root = persistent.readiness_dir / "local-data" / "workspaces" / workspace_id
+            manifest = created_root / ".vibetable" / "workspace.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+            registry = (
+                persistent.readiness_dir
+                / "local-data"
+                / "VibeTable"
+                / "shell"
+                / "workspace-registry-v2.json"
+            )
+            registry.parent.mkdir(parents=True)
+            registry.write_text(
+                json.dumps(
+                    {
+                        "workspaces": [
+                            {"workspaceId": workspace_id, "selectedRoot": str(created_root)}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            seed: dict[str, object] = {
+                "status": "passed",
+                "lifecycle": {"status": "passed"},
+                "workspaceId": workspace_id,
+                "chain": {"main": {"tableId": "table-main"}},
+                "files": [{"name": "document-format.docx"}],
+                # "recordId" deliberately missing.
+            }
+            return seed
+        return {"status": "passed", "lifecycle": {"status": "passed"}}
+
+    monkeypatch.setattr(runner, "run_scenario", two_phases)
+    result = runner._run_host_presentation_restart_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "HOST_PRESENTATION_SEED_INVALID"
+    assert [run.phase for run in calls] == ["seed"]
+
+
+def test_file_workflow_combination_keeps_diff_worker_measurement_seed_only() -> None:
+    # Whitespace-normalized source scan: the runner must measure the actual
+    # diff Worker for S39 exactly like S14, but only in phases that run diff
+    # sessions (the seed), and must keep failing when samples are missing.
+    source = " ".join(Path(runner.__file__).read_text(encoding="utf-8").split())
+    measurement = (
+        'measure_diff_worker=scenario.id in {"14-document-diff", "39-file-workflow-combination"} '
+        'and (persistent_run is None or persistent_run.phase == "seed"),'
+    )
+    gate = (
+        'elif ( scenario.id in {"14-document-diff", "39-file-workflow-combination"} '
+        'and (persistent_run is None or persistent_run.phase == "seed") and '
+        '( not (result.get("documentDiffWorkerMemory") or {}).get("workers") '
+        'or (result.get("documentDiffWorkerMemory") or {}).get("errors") ) ): '
+        'result["status"] = "failed"'
+    )
+    sparse = (
+        'if scenario.id in {"14-document-diff", "39-file-workflow-combination"} and '
+        '( persistent_run is None or persistent_run.phase == "seed" ): '
+        "_write_sparse_diff_workbooks(controls_dir)"
+    )
+    assert measurement in source
+    assert gate in source
+    assert sparse in source
+    assert source.count("_write_sparse_diff_workbooks(controls_dir)") == 1
+
+
+def test_file_workflow_combination_dispatches_dedicated_persistent_phases() -> None:
+    source = Path(runner.NODE_RUNNER).read_text(encoding="utf-8")
+    seed_branch = source[
+        source.index('args["persistent-phase"] === "seed"') : source.index(
+            "seedNaturalRetentionAging(candidate, checks);"
+        )
+    ]
+    resume_branch = source[
+        source.index('args["persistent-phase"] === "resume"') : source.index(
+            "resumeNaturalRetentionAging(candidate, checks, args.state);"
+        )
+    ]
+    assert 'args.scenario === "39-file-workflow-combination"' in seed_branch
+    assert "scenario39Seed(candidate, checks, runtime)" in seed_branch
+    assert 'args.scenario === "39-file-workflow-combination"' in resume_branch
+    assert "scenario39Resume(candidate, checks, args.state, runtime)" in resume_branch
+
+
+def _capacity_fake_fixtures(tmp_path: Path) -> dict[str, str]:
+    fixtures: dict[str, str] = {}
+    for scale in runner.CAPACITY_FIXTURE_SCALES:
+        workspace_root = tmp_path / scale / "workspace"
+        manifest = workspace_root / ".vibetable" / "workspace.json"
+        manifest.parent.mkdir(parents=True)
+        workspace_id = f"capacity-{scale}-workspace"
+        manifest.write_text(json.dumps({"workspaceId": workspace_id}), encoding="utf-8")
+        fixture_path = tmp_path / scale / "fixture.json"
+        fixture_path.write_text(
+            json.dumps(
+                {
+                    "fixtures": [
+                        {
+                            "name": scale,
+                            "workspaceRoot": str(workspace_root),
+                            "manifestPath": str(manifest),
+                            "selectedMultiDocumentId": "doc-1",
+                            "selectedMultiRelativePath": f"capacity/{scale}/multi.txt",
+                            "identity": {"workspaceId": workspace_id, "sessionEpoch": 1},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        fixtures[scale] = str(fixture_path)
+    return fixtures
+
+
+def test_file_history_capacity_routes_through_its_own_acceptance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    routed: list[str] = []
+
+    def record_capacity(scenario: Any, **_kwargs: object) -> dict[str, Any]:
+        routed.append(scenario.id)
+        return _passing_scenario_result(scenario)
+
+    _patch_acceptance_preflight(
+        monkeypatch,
+        run_scenario=_passing_scenario_result,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_file_history_capacity_acceptance",
+        record_capacity,
+    )
+
+    exit_code, report = runner.run_product_acceptance(
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence",
+        selected=(runner.CAPACITY_SCENARIO_ID,),
+    )
+
+    assert exit_code == 0
+    assert report["status"] == "passed"
+    assert routed == [runner.CAPACITY_SCENARIO_ID]
+
+
+def test_file_history_capacity_producer_failure_never_launches_a_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario(runner.CAPACITY_SCENARIO_ID, "capacity", "restart")
+    launched: list[object] = []
+
+    def fail_producer(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"status": "failed", "code": "CAPACITY_FIXTURE_PRODUCTION_FAILED"}
+
+    def record_launch(*_args: object, **kwargs: object) -> dict[str, object]:
+        launched.append(kwargs.get("persistent_run"))
+        return _passing_scenario_result(scenario)
+
+    monkeypatch.setattr(runner, "_produce_file_history_capacity_fixtures", fail_producer)
+    monkeypatch.setattr(runner, "run_scenario", record_launch)
+
+    result = runner._run_file_history_capacity_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "CAPACITY_FIXTURE_PRODUCTION_FAILED"
+    assert launched == []
+
+
+@pytest.mark.parametrize("failing_scale", runner.CAPACITY_FIXTURE_SCALES)
+def test_file_history_capacity_one_failed_scale_never_aggregates_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failing_scale: str
+) -> None:
+    scenario = runner.Scenario(runner.CAPACITY_SCENARIO_ID, "capacity", "restart")
+    fixtures = _capacity_fake_fixtures(tmp_path)
+    runs: list[runner._PersistentScenarioRun] = []
+
+    def produce(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"status": "passed", "fixtures": fixtures}
+
+    def per_scale(scenario: Any, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        assert isinstance(persistent, runner._PersistentScenarioRun)
+        runs.append(persistent)
+        fixture_scale = str(persistent.state_path).replace("\\", "/").split("/")[-2]
+        if fixture_scale == failing_scale:
+            return {"status": "failed", "lifecycle": {"status": "passed"}}
+        return {"status": "passed", "lifecycle": {"status": "passed"}, "durationMs": 5.0}
+
+    monkeypatch.setattr(runner, "_produce_file_history_capacity_fixtures", produce)
+    monkeypatch.setattr(runner, "run_scenario", per_scale)
+
+    result = runner._run_file_history_capacity_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "CAPACITY_SCALE_FAILED"
+    # Both scales keep their own full phase results; neither substitutes the other.
+    assert set(result["phases"]) >= {"producer", *runner.CAPACITY_FIXTURE_SCALES}
+    assert result["phases"][failing_scale]["status"] == "failed"
+    assert [run.phase for run in runs] == ["capacity", "capacity"]
+    assert len({str(run.readiness_dir) for run in runs}) == len(runs)
+
+
+def test_file_history_capacity_combined_pass_keeps_both_scale_results(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scenario = runner.Scenario(runner.CAPACITY_SCENARIO_ID, "capacity", "restart")
+    fixtures = _capacity_fake_fixtures(tmp_path)
+
+    def produce(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "status": "passed",
+            "elapsedSeconds": 1.5,
+            "fixtures": fixtures,
+        }
+
+    def per_scale(scenario: Any, **kwargs: object) -> dict[str, object]:
+        persistent = kwargs["persistent_run"]
+        fixture_scale = str(persistent.state_path).replace("\\", "/").split("/")[-2]
+        return {
+            "status": "passed",
+            "lifecycle": {"status": "passed"},
+            "durationMs": 60_000.0,
+            "runnerPhasesMs": {"driverMs": 50_000.0},
+            "evidenceDirectory": str(persistent.scenario_dir),
+            "uiTimings": [{"name": f"{fixture_scale}-first-screen", "durationMs": 12.0}],
+        }
+
+    monkeypatch.setattr(runner, "_produce_file_history_capacity_fixtures", produce)
+    monkeypatch.setattr(runner, "run_scenario", per_scale)
+
+    result = runner._run_file_history_capacity_acceptance(
+        scenario, package_root=tmp_path, run_root=tmp_path / "evidence", node="node"
+    )
+
+    assert result["status"] == "passed"
+    assert set(result["scales"]) == set(runner.CAPACITY_FIXTURE_SCALES)
+    assert all(item["status"] == "passed" for item in result["scales"].values())
+    assert len(result["uiTimings"]) == len(runner.CAPACITY_FIXTURE_SCALES)
+    assert result["durationMs"] == 121_500.0
+
+
+@pytest.mark.parametrize("metadata_case", ["missing-identity", "empty", "outside", "valid"])
+def test_file_history_capacity_producer_validates_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, metadata_case: str
+) -> None:
+    # Drive the real producer validation: a faked Job-scoped `go test` writes
+    # scenario fixtures straight to disk (with streamed log output); the
+    # runner must reject invalid metadata without ever launching a Host.
+    created: list[Path] = []
+
+    def fake_launch(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+    ) -> Any:
+        del cwd
+        assert str(command[0]).endswith(("go.exe", "go"))
+        fixture_root = Path(str(env[runner.CAPACITY_FIXTURE_ENV]))
+        for scale in runner.CAPACITY_FIXTURE_SCALES:
+            entry = {
+                "name": scale,
+                "workspaceRoot": str(fixture_root / scale / "workspace"),
+                "manifestPath": str(
+                    fixture_root / scale / "workspace" / ".vibetable" / "workspace.json"
+                ),
+                "selectedMultiDocumentId": "doc-1",
+                "selectedMultiRelativePath": f"capacity/{scale}/multi.txt",
+                "identity": {"workspaceId": f"capacity-{scale}-workspace", "sessionEpoch": 1},
+            }
+            if scale == "depth-4096" and metadata_case == "missing-identity":
+                entry.pop("identity")
+            if metadata_case == "outside":
+                entry["workspaceRoot"] = str(tmp_path / "foreign-workspace")
+            path = fixture_root / scale / "fixture.json"
+            path.parent.mkdir(parents=True)
+            entries = [] if metadata_case == "empty" else [entry]
+            path.write_text(json.dumps({"fixtures": entries}), encoding="utf-8")
+            created.append(path)
+        stdout.write(b"go test streamed output\n")
+        stderr.write(b"")
+        return _FakeScope(exit_code=0, members=())
+
+    monkeypatch.setattr(runner, "_launch_host_process", fake_launch)
+    monkeypatch.setattr("qa.fault_injection._resolve", lambda tool: tool)
+    monkeypatch.setattr(runner, "CAPACITY_FIXTURE_BASE", tmp_path / "capacity-base")
+    launched: list[object] = []
+    monkeypatch.setattr(
+        runner,
+        "run_scenario",
+        lambda *args, **kwargs: launched.append(kwargs.get("persistent_run")) or {},
+    )
+
+    producer = runner._produce_file_history_capacity_fixtures(tmp_path / "evidence")
+
+    if metadata_case == "valid":
+        assert producer["status"] == "passed"
+        assert set(producer["fixtures"]) == set(runner.CAPACITY_FIXTURE_SCALES)
+    else:
+        assert producer["status"] == "failed"
+        assert producer["code"] == "CAPACITY_FIXTURE_METADATA_INVALID"
+    assert created
+    assert all(path.is_file() for path in created)
+    assert Path(str(producer["stdout"])).read_bytes() == b"go test streamed output\n"
+    assert producer["lifecycle"]["status"] == "passed"
+    assert launched == []
+
+
+def _capacity_producer_scope_fake(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    scope: Any,
+) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_launch_host_process",
+        lambda *args, **kwargs: scope,
+    )
+    monkeypatch.setattr("qa.fault_injection._resolve", lambda tool: tool)
+    monkeypatch.setattr(runner, "CAPACITY_FIXTURE_BASE", tmp_path / "capacity-base")
+
+
+def test_capacity_producer_normal_ownership_drains_without_termination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scope = _FakeScope(exit_code=0, members=())
+    _capacity_producer_scope_fake(monkeypatch, tmp_path, scope)
+
+    producer = runner._produce_file_history_capacity_fixtures(tmp_path / "evidence")
+
+    # A normally exited go root is proven empty and closed; the empty Job is
+    # never terminated unconditionally. This run has no fixtures, so the
+    # metadata check fails afterwards, but the lifecycle must be clean.
+    assert scope.terminate_calls == 0
+    assert scope.close_calls == 1
+    assert producer["lifecycle"]["status"] == "passed"
+    assert producer["returncode"] == 0
+    assert producer["code"] == "CAPACITY_FIXTURE_METADATA_INVALID"
+
+
+def test_capacity_producer_timeout_terminates_the_job_tree_and_keeps_partial_logs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _StreamingTimeoutScope(_FakeScope):
+        def __init__(self) -> None:
+            super().__init__(exit_code=None, members=(101,))
+
+    scope = _StreamingTimeoutScope()
+
+    def fake_launch(
+        command: Sequence[str],
+        *,
+        cwd: Path,
+        env: Mapping[str, str],
+        stdout: IO[bytes],
+        stderr: IO[bytes],
+    ) -> Any:
+        del command, cwd, env
+        stdout.write(b"partial go output before the deadline\n")
+        return scope
+
+    monkeypatch.setattr(runner, "_launch_host_process", fake_launch)
+    monkeypatch.setattr("qa.fault_injection._resolve", lambda tool: tool)
+    monkeypatch.setattr(runner, "CAPACITY_FIXTURE_BASE", tmp_path / "capacity-base")
+
+    producer = runner._produce_file_history_capacity_fixtures(tmp_path / "evidence")
+
+    assert producer["status"] == "failed"
+    assert producer["code"] == "CAPACITY_FIXTURE_PRODUCTION_TIMEOUT"
+    assert producer["returncode"] is None
+    assert Path(str(producer["stdout"])).read_bytes() == b"partial go output before the deadline\n"
+    lifecycle = producer["lifecycle"]
+    assert lifecycle["status"] == "failed"
+    assert lifecycle["waitEmpty"]["status"] == "failed"
+    assert lifecycle["termination"]["status"] == "passed"
+    assert scope.terminate_calls == 1
+    assert scope.close_calls == 1
+
+
+def test_capacity_producer_cleanup_failure_never_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _CloseFailingScope(_FakeScope):
+        def close(self) -> None:
+            self.close_calls += 1
+            raise RuntimeError("close failed")
+
+    scope = _CloseFailingScope(exit_code=0, members=())
+    _capacity_producer_scope_fake(monkeypatch, tmp_path, scope)
+
+    producer = runner._produce_file_history_capacity_fixtures(tmp_path / "evidence")
+
+    assert producer["status"] == "failed"
+    assert producer["code"] == "CAPACITY_PRODUCER_CLEANUP_FAILED"
+    assert producer["lifecycle"]["status"] == "failed"
+    assert "close failed" in producer["error"]
+    assert scope.close_calls == 1

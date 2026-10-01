@@ -188,6 +188,15 @@ func (repository *KopiaRepository) AcceptAuthority(
 		(next.FenceEpoch == current.FenceEpoch && next.ClaimID != current.ClaimID)) {
 		return ErrStaleAuthority
 	}
+	if current != nil && authorityEqual(*current, next) {
+		// Runtime.Open re-accepts the already-published lease authority on
+		// every open. The durable state is exactly `next`, so republishing
+		// would only replace the identical state manifest under a new
+		// internal ID (writer manifest scan plus flush per open). Every
+		// lease check above still ran; a genuinely advanced authority keeps
+		// going through the publish path below.
+		return nil
+	}
 	nextState := cloneKopiaState(repository.state)
 	copy := next
 	nextState.Authority = &copy
@@ -257,18 +266,20 @@ func (repository *KopiaRepository) Commit(
 		receipt.Objects[input.Name] = publicID
 	}
 	for _, input := range request.Manifests {
-		canonical, err := canonicalManifest(input)
+		publicID, err := canonicalManifestID(input)
 		if err != nil {
 			return DurableCommitReceipt{}, err
 		}
-		publicID := manifestID(canonical)
 		if _, exists := next.Manifests[string(publicID)]; !exists {
 			labels := cloneLabels(input.Labels)
 			labels["type"] = "vibetable-manifest"
 			labels["vibetable.publicId"] = string(publicID)
 			internalID, err := writer.PutManifest(sessionCtx, labels, ManifestRecord{
 				ID: publicID, Name: input.Name, Labels: cloneLabels(input.Labels),
-				Payload: append(json.RawMessage(nil), input.Payload...),
+				// kopia's manifest Manager synchronously json.Marshal's the
+				// payload into its own pendingEntry bytes, so it never retains
+				// this slice and the caller stays free to reuse it.
+				Payload: input.Payload,
 			})
 			if err != nil {
 				return DurableCommitReceipt{}, err
@@ -325,10 +336,10 @@ func (repository *KopiaRepository) GetManifest(
 	if _, err := kopia.GetManifest(ctx, kopiamanifest.ID(internal), &record); err != nil {
 		return ManifestRecord{}, errors.Join(ErrCorrupt, err)
 	}
-	canonical, err := canonicalManifest(ManifestInput{
+	canonicalID, err := canonicalManifestID(ManifestInput{
 		Name: record.Name, Labels: record.Labels, Payload: record.Payload,
 	})
-	if err != nil || record.ID != id || manifestID(canonical) != id {
+	if err != nil || record.ID != id || canonicalID != id {
 		return ManifestRecord{}, ErrCorrupt
 	}
 	return record, nil

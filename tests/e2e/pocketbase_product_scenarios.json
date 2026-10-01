@@ -227,5 +227,17 @@
     "title": "三表计算链的查询、来源和导出一致性",
     "requirement": "201条纯合成来源经真实CSV导入，覆盖199/1/0匹配；从可见编辑器创建条件SUM Lookup、第二层Formula及第三表集合Formula，编辑来源值和已保存公式后对照独立oracle；通过可见字段编辑器创建跨表Relation、关系SUM Lookup及依赖Formula，目标字段重命名后保持稳定身份和链值。对第三表计算值真实筛选排序，核对完整结果计数与网格顺序；条件Lookup来源面板翻页逐条核对全部199项；CSV/XLSX与同快照oracle逐值及顺序一致且公式样文本不可执行，计算列保持只读。经WorkspaceCenter关闭重开后恢复同一身份、计算值和视图；沿用runner无外网与进程清理门禁。",
     "capabilities": ["formula.collections", "formula.lifecycle", "lookup.aggregation", "lookup.source-pagination", "lookup.export"]
+  },
+  {
+    "id": "39-file-workflow-combination",
+    "title": "同包同UUID计算链与文件全流程组合",
+    "requirement": "同一发布包内同一workspace UUID先跑完整S38三表计算链与完整S14真实文件比较，再经真实内容UI把DOCX/XLSX两个合格文档链接到计算主表合同甲记录；中文当前/历史内容搜索按目标文档与修订定位；从真实版本树祖先节点“恢复为新版本”而非升级或原始RPC，恢复后文件列表、有效指针、物化字节与不可变历史一致，旧当前命中不得冒充新当前，无需手工重建索引即恢复当前绑定；对比恢复前后0组差异且过期有效修订diff以stale失败；首Host正常退出后第二真实Host同manifest UUID冷重开，独立字面oracle（甲199/994/2982/2983、乙1/7/21/22、丙0/0/0/1、首行金额4）与稳定字段身份、持久筛选两行降序、同两文件当前/物化及记录链接全部对齐。",
+    "capabilities": ["formula.collections", "lookup.aggregation", "file-history.diff", "file-history.query", "workspace-search.query", "workspace-search.rebuild", "content.record", "record-document-link.lifecycle", "history.restore"]
+  },
+  {
+    "id": "40-file-history-capacity",
+    "title": "合法容量边界真实冷打开资格",
+    "requirement": "test-only Go producer 在全新合成root下生成近限（9,980文档/9,990修订）与最大链深4096两个合法FileHistory工作区（绑定真实claim/fence/LastSessionEpoch的desktop-runtime-authority）；每个scale由独立真实Host冷启动经正常连接/注册/打开UI路径接入同UUID工作区，无手改registry/SQL；真实RPC queryDocuments首页与readTree全链各≤2s、冷打开≤30s冻结预算，全部formal链在真实WebView完整绘制first/effective行且aria-current成功、无栈错误；producer分别测量Go TotalAlloc，UI仅记录耗时不宣称内核峰值；两scale均status与lifecycle通过才组合通过。",
+    "capabilities": ["file-history.capacity"]
   }
 ]

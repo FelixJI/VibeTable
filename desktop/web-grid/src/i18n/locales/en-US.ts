@@ -1068,6 +1068,7 @@ export const messages: Record<string, string> = {
   "workspaceV2.settings.storage": "Storage, retention & keys",
   "workspaceV2.settings.versions": "Versions & recovery",
   "workspaceV2.operation.failed": "The operation did not complete",
+  "workspaceV2.error.fileHistoryResourceLimit": "File history has reached a capacity limit: each workspace supports up to 10000 files and 10000 total revisions shared by all files, with up to 4096 revisions in one chain. Use another workspace to continue saving; existing history is never deleted automatically.",
   "workspaceV2.error.storageRequiresMirrored": "The selected location is non-fixed storage and cannot use direct mode. SMB network locations require mirrored mode; if mirrored mode is unavailable, choose a fixed local disk.",
   "workspaceV2.error.networkProtocolUnsupported": "The selected network location is not SMB (for example, it may be WebDAV). Only SMB can be used as a mirrored location; a workspace cannot be created here.",
   "workspaceV2.snapshot.kicker": "WORKSPACE PROTECTION",

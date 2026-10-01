@@ -46,6 +46,9 @@ import { runRelationLookupDataIo } from "./relation_lookup_data_io.mjs";
 import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
 import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
 import { runCalculationChainJourney } from "./calculation_chain_journey.mjs";
+import { runFileHistoryCapacityJourney } from "./file_history_capacity_journey.mjs";
+import { COMBINATION_DOCX, COMBINATION_XLSX, FILE_WORKFLOW_FINAL_CALCULATION_ORACLE,
+  fileWorkflowCombinationBeforeCorpus, fileWorkflowCombinationSources } from "./file_workflow_combination.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
@@ -7280,8 +7283,9 @@ async function scenario13(page, recorder, _network, runtime) {
   await page.screenshot({ path: path.join(runtime.evidenceDir, "13-protection-policy.png"), fullPage: true });
 }
 
-async function scenario14(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+async function scenario14(page, recorder, _network, runtime, shell = waitForShell) {
+  await shell(page, recorder, { requireDatabaseOpened: true });
+  const qualifiedFiles = [];
   const sourcePath = path.join(runtime.controlsDir, "document-diff-source.txt");
   const beforeLines = ["deleted-only", "start"];
   const afterLines = ["start"];
@@ -7568,6 +7572,9 @@ async function scenario14(page, recorder, _network, runtime) {
     recorder.check(`DOCX ${name} closes its session and cleans Worker files`,
       closedPage.payload?.failure === "sessionExpired" && knownRemaining.length === 0,
     { closedPage, knownRemaining });
+    qualifiedFiles.push({ name, format: "docx", documentId: imported.documentId,
+      historicalRevisionId: historical, effectiveRevisionId: newTree.result.effectiveRevisionId,
+      historicalContentHash: originalHistorical.contentHash, historicalSize: originalHistorical.size });
   }
 
   const xlsxFixtures = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
@@ -7703,7 +7710,568 @@ async function scenario14(page, recorder, _network, runtime) {
     const artifactRoot = path.join(runtime.dataRoot, "document-diff");
     recorder.check(`XLSX ${caseName} expires and cleans known outputs`, expired.payload?.failure === "sessionExpired"
       && (!fsSync.existsSync(artifactRoot) || (await fs.readdir(artifactRoot)).length === 0));
+    const historicalRevision = oldTree.result.revisions.find(item => item.revisionId === historical);
+    qualifiedFiles.push({ name, format: "xlsx", documentId: imported.documentId,
+      historicalRevisionId: historical, effectiveRevisionId: newTree.result.effectiveRevisionId,
+      historicalContentHash: historicalRevision.contentHash, historicalSize: historicalRevision.size });
   }
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  return { workspaceId: session.workspaceId, files: qualifiedFiles };
+}
+
+// S39 / #415: one active workspace, one package, two real Hosts. The seed runs
+// the complete S38 calculation chain and the complete S14 diff qualification
+// inside the same workspace UUID, then binds the two qualified documents to
+// the existing 合同甲 record, exercises real current/history search bindings,
+// and restores both ancestor revisions through the real UI. The resume phase
+// cold-reopens the same manifest UUID in a second real Host and verifies the
+// pinned literal calculation oracle plus the restored file identities.
+async function waitForActiveWorkspaceShell(page, recorder) {
+  await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("workspace-switcher").waitFor({ state: "visible", timeout: 30_000 });
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  recorder.check("combination phase reuses the already-active workspace identity",
+    typeof session?.workspaceId === "string" && Number.isSafeInteger(session.sessionEpoch)
+      && session.sessionEpoch > 0, { session });
+  return session;
+}
+
+async function combinationDocumentEntry(page, name) {
+  const listed = await rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
+    logic: "and",
+    filters: [{ field: "displayName", operator: "eq", value: name }],
+    sort: [{ field: "relativePath", direction: "asc" }],
+    limit: 50,
+    cursor: null,
+  });
+  return listed.result?.documents?.find(item => item.relativePath === name) ?? null;
+}
+
+async function combinationWorkspaceRoot(page, runtime, recorder, workspaceId) {
+  const root = path.join(runtime.dataRoot, "workspaces", workspaceId);
+  const manifest = JSON.parse(await fs.readFile(path.join(root, ".vibetable", "workspace.json"), "utf8"));
+  recorder.check("combination binds the managed workspace root through its manifest UUID",
+    manifest.workspaceId === workspaceId, { manifest, root });
+  return root;
+}
+
+async function scenario39Seed(page, recorder, runtime) {
+  const helpers = {
+    waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
+    rawBridgeRequest, waitForQueryPage, selectTable, selectVisibleNOption, fillNInput,
+    waitForVisibleRowCount, chooseToolbarMore, openFieldSettingsFromHeader,
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage, waitForFieldMigration,
+    beginCellEdit, waitForStableGridState, waitForImportSuccess,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, activateWorkspaceThroughUi,
+    canonicalJsonText,
+  };
+  const reuseShell = () => waitForActiveWorkspaceShell(page, recorder);
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  const createdSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  const chain = await runCalculationChainJourney(page, recorder, runtime,
+    { ...helpers, waitForShell: reuseShell });
+  const diff = await scenario14(page, recorder, null, runtime, reuseShell);
+  recorder.check("S38 and S14 complete inside the single created workspace identity",
+    chain.workspaceId === createdSession.workspaceId && diff.workspaceId === chain.workspaceId,
+    { created: createdSession.workspaceId, chain: chain.workspaceId, diff: diff.workspaceId });
+  const docx = diff.files.find(file => file.name === COMBINATION_DOCX);
+  const xlsx = diff.files.find(file => file.name === COMBINATION_XLSX);
+  recorder.check("the combination reuses the real 3-group DOCX and 11-group XLSX qualified files",
+    docx?.format === "docx" && typeof docx.historicalContentHash === "string"
+      && docx.historicalSize > 0 && docx.historicalRevisionId !== docx.effectiveRevisionId
+      && xlsx?.format === "xlsx" && typeof xlsx.historicalContentHash === "string"
+      && xlsx.historicalSize > 0 && xlsx.historicalRevisionId !== xlsx.effectiveRevisionId,
+    { docx, xlsx });
+
+  // Bind both document identities to the existing 合同甲 record through the
+  // real content UI. The body editor field is required by the ContentProfile
+  // configuration; it is the only schema addition this scenario makes.
+  const mainName = "链路主表";
+  await createV2Field(page, chain.chain.main.tableId, "正文", "editor");
+  await selectTable(page, mainName);
+  await chooseToolbarMore(page, "refresh");
+  const mainAuthority = (await rawBridgeRequest(page, "query.page", {
+    tableId: chain.chain.main.tableId, query: { filters: [], sorts: [], offset: 0, limit: 500 },
+  })).payload;
+  const mainRecord = mainAuthority.rows.find(
+    row => row[chain.chain.main.marker.physicalName] === "合同甲");
+  if (!mainRecord?.id) throw new Error(`no 合同甲 record identity: ${JSON.stringify(mainAuthority.snapshot)}`);
+  const mainCell = page.locator(
+    `.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${chain.chain.main.marker.physicalName}"]`,
+    { hasText: "合同甲" });
+  await mainCell.first().waitFor({ state: "visible", timeout: 30_000 });
+  await mainCell.first().click();
+  await page.getByTestId("toolbar-content-record").click();
+  const profileConfig = page.getByTestId("content-profile-config");
+  await profileConfig.waitFor({ state: "visible", timeout: 30_000 });
+  await selectVisibleNOption(page, "content-profile-title", "合同");
+  await selectVisibleNOption(page, "content-profile-body", "正文");
+  await selectVisibleNOptions(page, "content-profile-searchable", ["合同", "正文"]);
+  await page.getByTestId("content-profile-save").click();
+  const contentPanel = page.getByTestId("content-record-panel");
+  await contentPanel.waitFor({ state: "visible", timeout: 30_000 });
+  for (const name of [COMBINATION_DOCX, COMBINATION_XLSX]) {
+    await selectVisibleNOption(page, "content-link-document", name);
+    await page.getByTestId("content-link-create").click();
+    await contentPanel.locator(".link-card").filter({ hasText: name })
+      .getByText("正常", { exact: true }).waitFor({ timeout: 30_000 });
+  }
+  const links = await rawBridgeRequest(page, "recordDocumentLink.list", {
+    tableId: chain.chain.main.tableId, recordId: mainRecord.id,
+  });
+  recorder.check("both qualified documents link to the existing 合同甲 record through the content UI",
+    links.payload?.items?.length === 2 && [docx.documentId, xlsx.documentId].every(id =>
+      links.payload.items.some(item => item.link?.documentId === id)), { links: links.payload });
+  await page.locator(".n-drawer-header__close").last().click();
+
+  // Real current/history content search localized to the two documents. The
+  // first rebuild initializes the shared index; hit sets are always filtered
+  // by the target documentId because other files may share the same text.
+  await page.getByTestId("nav-search").click();
+  const searchView = page.getByTestId("workspace-search-view");
+  await searchView.waitFor({ state: "visible", timeout: 30_000 });
+  const rebuilt = await rebuildWorkspaceSearchAndWaitForTerminal(page);
+  recorder.check("first WorkspaceSearch rebuild initializes the shared workspace index",
+    rebuilt.state === "ready", { rebuilt });
+  const scope = async value => page.getByTestId(`workspace-search-scope-${value}`).check();
+  const searchFileHits = async query => {
+    await page.getByTestId("workspace-search-input").locator("input").fill(query);
+    return (await submitWorkspaceSearch(page, { keyboard: true })).hits
+      .filter(hit => hit.kind === "file");
+  };
+  await scope("current");
+  const docxCurrent = await searchFileHits("仅格式变化的相同正文");
+  recorder.check("DOCX format-only corpus binds its current hit to the upgrade revision",
+    docxCurrent.some(hit => hit.canonicalId === docx.documentId
+      && hit.sourceRevision === docx.effectiveRevisionId), { docxCurrent });
+  await scope("history");
+  const docxHistorical = await searchFileHits("仅格式变化的相同正文");
+  recorder.check("DOCX history scope resolves the immutable pre-upgrade revision binding",
+    docxHistorical.some(hit => hit.canonicalId === docx.documentId
+      && hit.sourceRevision === docx.historicalRevisionId), { docxHistorical });
+  await scope("current");
+  const xlsxCurrent = await searchFileHits("新增");
+  recorder.check("XLSX current scope binds the upgraded workbook revision",
+    xlsxCurrent.some(hit => hit.canonicalId === xlsx.documentId
+      && hit.sourceRevision === xlsx.effectiveRevisionId), { xlsxCurrent });
+  await scope("history");
+  const xlsxHistorical = await searchFileHits("旧");
+  recorder.check("XLSX history scope resolves the historical workbook revision binding",
+    xlsxHistorical.some(hit => hit.canonicalId === xlsx.documentId
+      && hit.sourceRevision === xlsx.historicalRevisionId), { xlsxHistorical });
+
+  // AC5 chain per file through the real UI: history SearchHit -> exact
+  // requested revision -> real 3/11-group diff -> UI ancestor restore -> the
+  // XLSX live session is invalidated by that restore -> 0-group re-diff.
+  const fileWorkspace = page.getByTestId("file-workspace");
+  const openHistoryHitThroughUi = async (file, query) => {
+    await page.getByTestId("nav-search").click();
+    await searchView.waitFor({ state: "visible", timeout: 30_000 });
+    await page.getByTestId("workspace-search-scope-history").check();
+    await page.getByTestId("workspace-search-input").locator("input").fill(query);
+    const result = await submitWorkspaceSearch(page, { keyboard: true });
+    const hit = result.hits.find(item => item.kind === "file"
+      && item.canonicalId === file.documentId
+      && item.sourceRevision === file.historicalRevisionId);
+    if (!hit || hit.openTarget?.documentId !== file.documentId) {
+      throw new Error(`history hit missing for ${file.name}: ${JSON.stringify(result)}`);
+    }
+    // History result cards render the sourceRevision; filter by it so the
+    // click targets the exact immutable revision hit, never a namesake.
+    const card = page.getByTestId("workspace-search-result").filter({ hasText: file.name })
+      .filter({ hasText: file.historicalRevisionId });
+    await card.first().waitFor({ state: "visible", timeout: 30_000 });
+    await card.first().click();
+    await fileWorkspace.waitFor({ state: "visible", timeout: 30_000 });
+    const rows = page.locator('[data-testid^="document-row-"]');
+    await rows.first().waitFor({ state: "visible", timeout: 30_000 });
+    recorder.check(`${file.name}: the history SearchHit opens exactly the requested document row`,
+      await rows.count() === 1 && (await rows.first().innerText()).includes(file.name),
+      { rowCount: await rows.count(), hit });
+    const requested = page.locator(
+      `.tree-row.requested[data-revision-id="${file.historicalRevisionId}"]`);
+    await requested.waitFor({ state: "visible", timeout: 30_000 });
+    recorder.check(`${file.name}: the hit focuses its exact source revision in the history tree`,
+      (await requested.getAttribute("data-revision-id")) === hit.sourceRevision, { hit });
+    return requested;
+  };
+  const openCurrentHitThroughUi = async (file, query) => {
+    await page.getByTestId("nav-search").click();
+    await searchView.waitFor({ state: "visible", timeout: 30_000 });
+    await page.getByTestId("workspace-search-scope-current").check();
+    await page.getByTestId("workspace-search-input").locator("input").fill(query);
+    const result = await submitWorkspaceSearch(page, { keyboard: true });
+    const hit = result.hits.find(item => item.kind === "file"
+      && item.canonicalId === file.documentId
+      && item.sourceRevision === file.effectiveRevisionId);
+    if (!hit || hit.openTarget?.documentId !== file.documentId) {
+      throw new Error(`current hit missing for ${file.name}: ${JSON.stringify(result)}`);
+    }
+    // Current cards do not render sourceRevision; the file name is unique in
+    // this workspace, and the hit binding itself is pinned above.
+    const card = page.getByTestId("workspace-search-result").filter({ hasText: file.name });
+    await card.first().waitFor({ state: "visible", timeout: 30_000 });
+    await card.first().click();
+    await fileWorkspace.waitFor({ state: "visible", timeout: 30_000 });
+    const rows = page.locator('[data-testid^="document-row-"]');
+    await rows.first().waitFor({ state: "visible", timeout: 30_000 });
+    recorder.check(`${file.name}: the current SearchHit opens the effective revision's own document row`,
+      await rows.count() === 1 && (await rows.first().innerText()).includes(file.name)
+        && hit.sourceRevision === file.effectiveRevisionId,
+      { rowCount: await rows.count(), hit });
+    return hit;
+  };
+  const compareThroughUi = async (file, expectedGroups, historicalRow) => {
+    await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+    await historicalRow.getByTestId("compare-revision").click();
+    const compared = await waitForCapturedBridgeMessage(page, 30_000);
+    const session = compared.payload?.session;
+    recorder.check(`${file.name}: the pre-restore compare runs its real ${expectedGroups}-group session`,
+      compared.payload?.outcome === "ready"
+        && session?.historicalRevisionId === file.historicalRevisionId
+        && session?.effectiveRevisionId === file.effectiveRevisionId
+        && session?.summary?.totalChangeGroups === expectedGroups, { compared });
+    await page.getByTestId("diff-result").waitFor({ state: "visible", timeout: 30_000 });
+    return session;
+  };
+  const closeDiffThroughUi = async () => {
+    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+    await page.getByTestId("diff-close").click();
+    await waitForCapturedBridgeMessage(page, 30_000);
+  };
+  const restoreAncestorThroughUi = async file => {
+    const row = page.locator('[data-testid^="document-row-"]').filter({ hasText: file.name });
+    await row.first().waitFor({ state: "visible", timeout: 30_000 });
+    await row.first().click();
+    await fileWorkspace.locator(".inspector-tabs button").nth(1).click();
+    const tree = page.getByTestId("file-revision-tree");
+    await tree.waitFor({ state: "visible", timeout: 30_000 });
+    const ancestor = tree.locator(`.tree-row[data-revision-id="${file.historicalRevisionId}"]`);
+    await ancestor.waitFor({ state: "visible", timeout: 30_000 });
+    const before = await rawWorkspaceV2Request(page, "fileHistory.readTree", {
+      documentId: file.documentId,
+    });
+    // Minimal dedicated inbound listener. The generic beginBridgeMessageCapture
+    // owns the single __vibetableE2EBridgeCapture slot and would be silently
+    // replaced by the restore method-terminal capture below (whose waiter
+    // could then observe the wrong terminal), and diagnostics.notifications
+    // only records outbound renderer messages. A real inbound accumulation
+    // listener is therefore the smallest honest evidence channel here.
+    await page.evaluate(() => {
+      if (window.__vibetableE2EFileChangeEvents) return;
+      window.__vibetableE2EFileChangeEvents = [];
+      window.chrome.webview.addEventListener("message", (event) => {
+        let message = event.data;
+        if (typeof message === "string") {
+          try { message = JSON.parse(message); } catch { return; }
+        }
+        if (message?.type === "document.workspaceChanged") {
+          window.__vibetableE2EFileChangeEvents.push({
+            at: new Date().toISOString(),
+            reason: message.payload?.reason ?? null,
+            affectedCount: message.payload?.affectedCount ?? null,
+          });
+        }
+      });
+    });
+    const previousHandle = await row.first().getAttribute("data-testid");
+    const refreshMarker = new Date().toISOString();
+    await beginWorkspaceV2MethodCapture(page, "fileHistory.restore");
+    await ancestor.getByRole("button", { name: "恢复为新版本" }).click();
+    const terminal = await waitForCapturedBridgeMessage(page, 30_000);
+    const restoreRevisionId = terminal.payload?.result?.revisionId;
+    recorder.check(`${file.name}: the UI ancestor restore action returns a fresh revision`,
+      terminal.payload?.ok === true && typeof restoreRevisionId === "string"
+        && restoreRevisionId !== file.historicalRevisionId
+        && restoreRevisionId !== file.effectiveRevisionId, { terminal });
+    await page.waitForFunction(({ marker, handle, name }) => {
+      const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+      // A completed, successful list reload — round trips are only recorded
+      // after retirement, and responseType pins the success terminal.
+      const refreshed = (diagnostics?.roundTrips ?? []).some(item =>
+        item.requestType === "document.listRequested" && item.startedAt > marker
+        && item.responseType === "document.listLoaded" && item.code === null);
+      const notified = (window.__vibetableE2EFileChangeEvents ?? []).some(item =>
+        item.at > marker && item.reason === "restore");
+      if (!refreshed || !notified) return false;
+      // The refreshed list must actually be applied: a fresh list re-issues
+      // the entry handle of the selected document row.
+      const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+        .find(candidate => candidate.textContent?.includes(name));
+      return current instanceof HTMLElement && current.getAttribute("data-testid") !== handle;
+    }, { marker: refreshMarker, handle: previousHandle, name: file.name }, { timeout: 30_000 });
+    recorder.check(
+      `${file.name}: the Host restore notice reloads and applies a successful document list`,
+      true, { refreshMarker, notice: "document.workspaceChanged(reason=restore)",
+        terminal: "document.listLoaded", previousHandle });
+    const after = await rawWorkspaceV2Request(page, "fileHistory.readTree", {
+      documentId: file.documentId,
+    });
+    const revisions = after.result?.revisions ?? [];
+    const restored = revisions.find(item => item.revisionId === restoreRevisionId);
+    recorder.check(`${file.name}: restore appends a new revision that points at the original`,
+      after.result?.effectiveRevisionId === restoreRevisionId
+        && restored?.kind === "restore"
+        && restored?.restoredFromRevisionId === file.historicalRevisionId
+        && restored?.parentRevisionId === file.effectiveRevisionId
+        && restored?.contentHash === file.historicalContentHash
+        && restored?.size === file.historicalSize, { restored });
+    recorder.check(`${file.name}: the immutable history objects stay identical across restore`,
+      isDeepStrictEqual(
+        revisions.find(item => item.revisionId === file.historicalRevisionId),
+        before.result?.revisions?.find(item => item.revisionId === file.historicalRevisionId))
+      && isDeepStrictEqual(
+        revisions.find(item => item.revisionId === file.effectiveRevisionId),
+        before.result?.revisions?.find(item => item.revisionId === file.effectiveRevisionId)),
+      { historicalRevisionId: file.historicalRevisionId, effectiveRevisionId: file.effectiveRevisionId });
+    await tree.locator(`.tree-row[data-revision-id="${restoreRevisionId}"]`)
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const entry = await combinationDocumentEntry(page, file.name);
+    recorder.check(`${file.name}: the refreshed list summary follows the restored revision`,
+      entry?.status === "active" && entry?.effectiveRevisionId === restoreRevisionId
+        && entry?.sizeBytes === file.historicalSize, { entry });
+    return { restoreRevisionId, entry, marker: refreshMarker };
+  };
+  const compareRestoredThroughUi = async (file, restoreRevisionId) => {
+    const row = page.locator('[data-testid^="document-row-"]').filter({ hasText: file.name });
+    await row.first().waitFor({ state: "visible", timeout: 30_000 });
+    await row.first().click();
+    await fileWorkspace.locator(".inspector-tabs button").nth(1).click();
+    const tree = page.getByTestId("file-revision-tree");
+    await tree.waitFor({ state: "visible", timeout: 30_000 });
+    const historical = tree.locator(`.tree-row[data-revision-id="${file.historicalRevisionId}"]`);
+    await historical.waitFor({ state: "visible", timeout: 30_000 });
+    await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
+    await historical.getByTestId("compare-revision").click();
+    const compared = await waitForCapturedBridgeMessage(page, 30_000);
+    const session = compared.payload?.session;
+    recorder.check(`${file.name}: post-restore compare reports zero change groups against the original`,
+      compared.payload?.outcome === "ready"
+        && session?.historicalRevisionId === file.historicalRevisionId
+        && session?.effectiveRevisionId === restoreRevisionId
+        && session?.summary?.totalChangeGroups === 0, { compared });
+    await page.getByTestId("diff-result").waitFor({ state: "visible", timeout: 30_000 });
+  };
+
+  // Frozen current/history hit contract: both files' current bindings are
+  // opened through their real result cards before the history chain runs.
+  await openCurrentHitThroughUi(docx, "仅格式变化的相同正文");
+  await openCurrentHitThroughUi(xlsx, "新增");
+
+  // DOCX: hit -> 3-group diff -> close -> restore -> 0-group re-diff -> close.
+  const docxRequested = await openHistoryHitThroughUi(docx, "仅格式变化的相同正文");
+  await compareThroughUi(docx, 3, docxRequested);
+  await closeDiffThroughUi();
+  const docxRestore = await restoreAncestorThroughUi(docx);
+  await compareRestoredThroughUi(docx, docxRestore.restoreRevisionId);
+  await closeDiffThroughUi();
+
+  // XLSX: hit -> live 11-group session kept open across the file's own UI
+  // restore; the tree effective change must cancel and expire that session.
+  const xlsxRequested = await openHistoryHitThroughUi(xlsx, "旧");
+  const liveSession = await compareThroughUi(xlsx, 11, xlsxRequested);
+  const xlsxRestore = await restoreAncestorThroughUi(xlsx);
+  await page.getByTestId("diff-result").waitFor({ state: "hidden", timeout: 30_000 });
+  await page.waitForFunction(marker => {
+    const roundTrips = window.__vibetableE2EBridgeDiagnostics?.roundTrips ?? [];
+    return roundTrips.some(item => item.requestType === "document.diffCloseRequested"
+      && item.startedAt > marker);
+  }, xlsxRestore.marker, { timeout: 30_000 });
+  const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
+    sessionId: liveSession.sessionId, cursor: null, limit: 50,
+  }, 30_000, ["document.diffPageCompleted"]);
+  recorder.check("the pre-restore live XLSX session is invalidated by the restore, not merely CAS-rejected",
+    expired.type === "document.diffPageCompleted"
+      && expired.payload?.failure === "sessionExpired", { expired, liveSession });
+  await compareRestoredThroughUi(xlsx, xlsxRestore.restoreRevisionId);
+  await closeDiffThroughUi();
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "39-restored-revision-tree.png"), fullPage: true });
+
+  // The materialized workspace files must keep the static before-corpus bytes.
+  const workspaceRoot = await combinationWorkspaceRoot(page, runtime, recorder, chain.workspaceId);
+  for (const file of [docx, xlsx]) {
+    const materialized = await fs.readFile(path.join(workspaceRoot, "files", file.name));
+    const corpus = await fs.readFile(fileWorkflowCombinationBeforeCorpus(file.name));
+    recorder.check(`${file.name}: the restored effective revision materializes the exact before-corpus bytes`,
+      materialized.equals(corpus), { materializedBytes: materialized.length, corpusBytes: corpus.length });
+  }
+
+  // Search again without any manual rebuild. The projection worker must move
+  // the current bindings to the restored revisions on its own; the superseded
+  // current hit may not masquerade as the new current result.
+  await page.getByTestId("nav-search").click();
+  await searchView.waitFor({ state: "visible", timeout: 30_000 });
+  await scope("current");
+  const retryFileSearch = async (query, predicate, label, details) => {
+    const deadline = Date.now() + 15_000;
+    let last = null;
+    while (Date.now() < deadline) {
+      last = await searchFileHits(query);
+      if (predicate(last)) {
+        recorder.check(label, true, { last });
+        return;
+      }
+      await page.waitForTimeout(750);
+    }
+    recorder.check(label, false, { ...details, last });
+  };
+  await retryFileSearch("仅格式变化的相同正文", hits => hits.some(hit =>
+      hit.canonicalId === docx.documentId && hit.sourceRevision === docxRestore.restoreRevisionId),
+  "the DOCX current binding advances to the restored revision without a manual rebuild",
+    { docx: docx.documentId, restoredRevisionId: docxRestore.restoreRevisionId });
+  await retryFileSearch("新增", hits => !hits.some(hit => hit.canonicalId === xlsx.documentId),
+    "the superseded XLSX current hit no longer masquerades as the current revision",
+    { xlsx: xlsx.documentId, supersededRevisionId: xlsx.effectiveRevisionId });
+  await scope("history");
+  const xlsxHistoryAfter = await searchFileHits("新增");
+  recorder.check("history scope still resolves the superseded XLSX upgrade revision",
+    xlsxHistoryAfter.some(hit => hit.canonicalId === xlsx.documentId
+      && hit.sourceRevision === xlsx.effectiveRevisionId), { xlsxHistoryAfter });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "39-restored-search.png"), fullPage: true });
+
+  // Strict identity whitelist for the resume phase: stable ids plus the
+  // authority's existing content hash/size. No computed value is an oracle.
+  const whitelistedFile = (file, restoreRevisionId) => ({
+    name: file.name, format: file.format, documentId: file.documentId,
+    historicalRevisionId: file.historicalRevisionId,
+    historicalContentHash: file.historicalContentHash,
+    historicalSize: file.historicalSize,
+    restoreRevisionId,
+  });
+  return {
+    workspaceId: chain.workspaceId,
+    chain: chain.chain,
+    files: [whitelistedFile(docx, docxRestore.restoreRevisionId),
+      whitelistedFile(xlsx, xlsxRestore.restoreRevisionId)],
+    recordId: mainRecord.id,
+  };
+}
+
+async function scenario39Resume(page, recorder, statePath, runtime) {
+  const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+  const { start, switched } = await activateRestartedWorkspace(page, state.workspaceId);
+  recorder.check("second real Host cold-opens the same workspace UUID writable",
+    switched.result?.workspaceId === state.workspaceId
+      && Number.isSafeInteger(switched.result?.sessionEpoch)
+      && switched.result.sessionEpoch > 0
+      && switched.result?.state === "openedWritable",
+    { start, expected: state.workspaceId, switched: switched.result });
+  const request = async (type, payload) => {
+    const response = await rawBridgeRequest(page, type, payload);
+    if (response.type === "operation.failed" || response.payload?.error) {
+      throw new Error(`${type}: ${JSON.stringify(response)}`);
+    }
+    return response.payload;
+  };
+  const authority = async tableId => (await request("query.page", {
+    tableId, query: { filters: [], sorts: [], offset: 0, limit: 500 },
+  }));
+  const { source, summary, main } = state.chain;
+  const oracle = FILE_WORKFLOW_FINAL_CALCULATION_ORACLE;
+  const sources = fileWorkflowCombinationSources();
+
+  // Complete fresh source values: every frozen row, not just summary numbers.
+  const sourcePage = await authority(source.tableId);
+  const firstRow = sourcePage.rows.find(row => row[source.marker.physicalName] === "来源-000");
+  recorder.check("second Host reads every frozen source row including the single visible edit",
+    sourcePage.rows.length === 201 && firstRow?.[source.amount.physicalName] === 4
+      && sources.every(expected => sourcePage.rows.some(row =>
+        row[source.marker.physicalName] === expected.marker
+        && row[source.contract.physicalName] === expected.contract
+        && row[source.amount.physicalName] === expected.amount)),
+    { first: sources[0], firstRow, sourceCount: sourcePage.rows.length });
+
+  const summaryPage = await authority(summary.tableId);
+  const mainPage = await authority(main.tableId);
+  const summaryRow = contract => summaryPage.rows.find(
+    row => row[summary.marker.physicalName] === contract);
+  const mainRow = contract => mainPage.rows.find(
+    row => row[main.marker.physicalName] === contract);
+  recorder.check("second Host reproduces the pinned literal calculation oracle",
+    oracle.every(expected => {
+      const summaryTarget = summaryRow(expected.contract);
+      const mainTarget = mainRow(expected.contract);
+      return summaryTarget?.[summary.lookup.physicalName] === expected.sum
+        && summaryTarget?.[summary.doubled.physicalName] === expected.doubled
+        && mainTarget?.[main.total.physicalName] === expected.total
+        && mainTarget?.[main.linkedLookup.physicalName] === expected.doubled
+        && mainTarget?.[main.linkedTotal.physicalName] === expected.total;
+    }), { oracle, summary: oracle.map(item => summaryRow(item.contract)),
+      main: oracle.map(item => mainRow(item.contract)) });
+  recorder.check("relation cells still bind the stable summary row identities",
+    oracle.every(expected => mainRow(expected.contract)?.[main.relation.physicalName]
+      === summaryRow(expected.contract)?.id),
+    { relations: oracle.map(expected => mainRow(expected.contract)?.[main.relation.physicalName]) });
+
+  for (const [tableId, identity, fields] of [
+    [summary.tableId, summary, [summary.lookup, summary.doubled]],
+    [main.tableId, main, [main.note, main.relation, main.total, main.linkedLookup, main.linkedTotal]],
+  ]) {
+    const schema = await request("schema.describe", {
+      collection: tableId,
+      requestGeneration: 0,
+      accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+    });
+    const columns = schema.schema?.columns ?? [];
+    recorder.check(`second Host keeps the whitelisted field identities for ${identity.tableId}`,
+      [identity.marker, ...fields].every(field => columns.some(column =>
+        column.fieldId === field.fieldId && column.name === field.physicalName)),
+      { columns });
+  }
+
+  await page.getByTestId("nav-tables").click();
+  await selectTable(page, "链路主表");
+  await waitForStableGridState(page, { expectedRows: 2 });
+  const totalHeader = page.locator(
+    `.tabulator-col[tabulator-field="${main.total.physicalName}"]`).first();
+  const view = await request("gridState.get", { table: main.tableId });
+  const visibleOrder = await page.locator(".grid-wrapper .tabulator-row:visible").evaluateAll(
+    (nodes, probe) => nodes.map(node =>
+      node.querySelector(`.tabulator-cell[tabulator-field="${probe}"]`)?.textContent?.trim()),
+    main.marker.physicalName);
+  recorder.check("the persisted computed filter and descending order survive the cold reopen",
+    view.state?.filters?.some(item => item.field === main.total.physicalName
+      && item.operator === "gt" && Number(item.value) === 1)
+      && view.state?.sorts?.[0]?.field === main.total.physicalName
+      && view.state.sorts[0].direction === "desc"
+      && await totalHeader.getAttribute("aria-sort") === "descending"
+      && isDeepStrictEqual(visibleOrder, ["合同甲", "合同乙"]),
+    { view, visibleOrder });
+
+  const workspaceRoot = await combinationWorkspaceRoot(page, runtime, recorder, state.workspaceId);
+  for (const file of state.files) {
+    const tree = await rawWorkspaceV2Request(page, "fileHistory.readTree", {
+      documentId: file.documentId,
+    });
+    const revisions = tree.result?.revisions ?? [];
+    const restored = revisions.find(item => item.revisionId === file.restoreRevisionId);
+    const historical = revisions.find(item => item.revisionId === file.historicalRevisionId);
+    recorder.check(`${file.name}: the restored revision stays effective in the second Host`,
+      tree.result?.effectiveRevisionId === file.restoreRevisionId
+        && restored?.kind === "restore"
+        && restored?.restoredFromRevisionId === file.historicalRevisionId, { restored });
+    recorder.check(`${file.name}: the immutable historical object keeps its authority identity`,
+      historical?.contentHash === file.historicalContentHash
+        && historical?.size === file.historicalSize, { historical });
+    const entry = await combinationDocumentEntry(page, file.name);
+    recorder.check(`${file.name}: the document list follows the restored effective revision`,
+      entry?.status === "active" && entry?.effectiveRevisionId === file.restoreRevisionId, { entry });
+    const materialized = await fs.readFile(path.join(workspaceRoot, "files", file.name));
+    const corpus = await fs.readFile(fileWorkflowCombinationBeforeCorpus(file.name));
+    recorder.check(`${file.name}: the materialized workspace file keeps the before-corpus bytes`,
+      materialized.equals(corpus),
+      { materializedBytes: materialized.length, corpusBytes: corpus.length });
+  }
+  const links = await rawBridgeRequest(page, "recordDocumentLink.list", {
+    tableId: main.tableId, recordId: state.recordId,
+  });
+  recorder.check("the 合同甲 record keeps both explicit document links across the cold reopen",
+    links.payload?.items?.length === 2 && state.files.every(file =>
+      links.payload.items.some(item => item.link?.documentId === file.documentId)),
+    { links: links.payload });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "39-resumed.png"), fullPage: true });
+  return { workspaceId: switched.result?.workspaceId };
 }
 
 async function requestWithStaleWorkspaceScope(page, method, params, staleSession) {
@@ -10702,6 +11270,16 @@ const scenarios = {
       canonicalJsonText,
     },
   ),
+  "39-file-workflow-combination": (page, recorder, _network, runtime) => scenario39Seed(
+    page, recorder, runtime,
+  ),
+  "40-file-history-capacity": (page, recorder, _network, runtime, metadataPath) =>
+    runFileHistoryCapacityJourney(page, recorder, runtime, {
+      metadataPath,
+      rawWorkspaceV2Request,
+      replicaUiMethod,
+      activateWorkspaceThroughUi,
+    }),
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {
@@ -10987,6 +11565,9 @@ async function main() {
         if (args.scenario === "11-plugin-mutation") {
           return scenario11(candidate, checks, network, runtime);
         }
+        if (args.scenario === "39-file-workflow-combination") {
+          return scenario39Seed(candidate, checks, runtime);
+        }
         return seedNaturalRetentionAging(candidate, checks);
       }
       : args["persistent-phase"] === "resume"
@@ -10996,6 +11577,9 @@ async function main() {
           }
           if (args.scenario === "11-plugin-mutation") {
             return resumePluginHostRestart(candidate, checks, args.state, runtime);
+          }
+          if (args.scenario === "39-file-workflow-combination") {
+            return scenario39Resume(candidate, checks, args.state, runtime);
           }
           return resumeNaturalRetentionAging(candidate, checks, args.state);
         }
@@ -11016,7 +11600,9 @@ async function main() {
           });
         },
       };
-      const phaseResult = await implementation(page, recorder, network, runtime);
+      const phaseResult = await (args["persistent-phase"] === "capacity"
+        ? implementation(page, recorder, network, runtime, args.state)
+        : implementation(page, recorder, network, runtime));
       if (phaseResult && args["persistent-phase"]) Object.assign(result, phaseResult);
       if (ORDINARY_WORKER_FREE_SCENARIOS.has(args.scenario)) {
         await assertOrdinaryWorkerFreeTopology(recorder, runtime, args.scenario);

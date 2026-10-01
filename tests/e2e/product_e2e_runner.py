@@ -84,6 +84,25 @@ _NATURAL_AGING_SCENARIO = Scenario(
     requirement="A1 two-phase 24-hour natural retention acceptance",
 )
 
+# S40: the legal-capacity Host acceptance. The opt-in Go test-only producer
+# builds two fresh synthetic workspaces (near-limit documents/revisions and
+# the maximum 4096-revision chain); each scale is then opened by its own real
+# cold Host through the normal connect/register/open UI path.
+CAPACITY_SCENARIO_ID = "40-file-history-capacity"
+CAPACITY_FIXTURE_ENV = "VIBETABLE_415_CAPACITY_HOST_FIXTURE_ROOT"
+CAPACITY_FIXTURE_BASE = ROOT / "build" / "qa" / "415-capacity"
+CAPACITY_FIXTURE_SCALES = ("near-limit-9980x9990", "depth-4096")
+CAPACITY_PRODUCER_TEST = "TestCapacityHostFixtureProduction"
+CAPACITY_PRODUCER_TIMEOUT_SECONDS = 15 * 60
+CAPACITY_REQUIRED_FIXTURE_FIELDS = (
+    "name",
+    "workspaceRoot",
+    "manifestPath",
+    "selectedMultiDocumentId",
+    "selectedMultiRelativePath",
+)
+CAPACITY_REQUIRED_IDENTITY_FIELDS = ("workspaceId", "sessionEpoch")
+
 # Scenarios that prove persistence across a real Host restart run the shared
 # seed/resume acceptance below. Each entry names the seed result fields its
 # resume phase needs; the two scenarios deliberately require different seed
@@ -103,6 +122,12 @@ _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
         "pluginId",
         "tableId",
         "packageHash",
+    ),
+    "39-file-workflow-combination": (
+        "workspaceId",
+        "chain",
+        "files",
+        "recordId",
     ),
 }
 
@@ -1551,7 +1576,9 @@ def run_scenario(
         + "\n",
         encoding="utf-8",
     )
-    if scenario.id == "14-document-diff":
+    if scenario.id in {"14-document-diff", "39-file-workflow-combination"} and (
+        persistent_run is None or persistent_run.phase == "seed"
+    ):
         _write_sparse_diff_workbooks(controls_dir)
     if scenario.id == "18-workspace-search":
         for fixture_name, document_name in (
@@ -1720,7 +1747,9 @@ def run_scenario(
                 local_data=readiness_dir / "local-data",
                 host_scope=scope,
                 process_network=process_network,
-                measure_diff_worker=scenario.id == "14-document-diff",
+                measure_diff_worker=scenario.id
+                in {"14-document-diff", "39-file-workflow-combination"}
+                and (persistent_run is None or persistent_run.phase == "seed"),
             )
             phase_timings["driverMs"] = time.monotonic() - driver_started
             (scenario_dir / "runner-stdout.log").write_text(node_stdout, encoding="utf-8")
@@ -1783,9 +1812,13 @@ def run_scenario(
                             f"{node_stderr.strip() or 'no stderr'}"
                         ),
                     }
-            elif scenario.id == "14-document-diff" and (
-                not (result.get("documentDiffWorkerMemory") or {}).get("workers")
-                or (result.get("documentDiffWorkerMemory") or {}).get("errors")
+            elif (
+                scenario.id in {"14-document-diff", "39-file-workflow-combination"}
+                and (persistent_run is None or persistent_run.phase == "seed")
+                and (
+                    not (result.get("documentDiffWorkerMemory") or {}).get("workers")
+                    or (result.get("documentDiffWorkerMemory") or {}).get("errors")
+                )
             ):
                 result["status"] = "failed"
                 result["error"] = {
@@ -1968,6 +2001,13 @@ def run_product_acceptance(
                 run_root=run_root,
                 node=node,
             )
+        elif scenario.id == CAPACITY_SCENARIO_ID:
+            result = _run_file_history_capacity_acceptance(
+                scenario,
+                package_root=package_root.resolve(),
+                run_root=run_root,
+                node=node,
+            )
         else:
             result = run_scenario(
                 scenario,
@@ -2094,6 +2134,303 @@ def _host_presentation_phase_failure(
             scenario,
             code=code,
             message="两阶段真实 Host 重启资格未完成。",
+        ),
+        "phases": dict(phases),
+    }
+
+
+def _capacity_producer_wait_empty(scope: _ManagedScope) -> dict[str, Any]:
+    try:
+        result = scope.wait_empty(timeout=5.0)
+    except (OSError, RuntimeError) as exc:
+        return {"remainingPids": None, "errors": [str(exc)], "status": "failed"}
+    return {
+        "remainingPids": (
+            list(result.remaining_pids) if result.remaining_pids is not None else None
+        ),
+        "errors": list(result.errors),
+        "status": "passed" if result.success else "failed",
+    }
+
+
+@contextmanager
+def _capacity_producer_scope_lifetime(
+    scope: _ManagedScope,
+    evidence: dict[str, Any],
+) -> Iterator[None]:
+    """Prove the producer's Job scope is drained on success, failure or timeout.
+
+    A normally exited root is demonstrated empty via wait_empty and then
+    closed without an unconditional termination; any remaining members (the
+    timeout case leaves the whole go test tree in the Job) are terminated and
+    the outcome is recorded, never swallowed into a passing producer.
+    """
+    try:
+        yield
+    finally:
+        cleanup: dict[str, Any] = {}
+        wait = _capacity_producer_wait_empty(scope)
+        cleanup["waitEmpty"] = wait
+        termination: dict[str, Any] | None = None
+        if wait["status"] != "passed":
+            termination = _terminate_scope(scope)
+            cleanup["termination"] = termination
+        close_error = _close_scope(scope)
+        cleanup["closeError"] = close_error
+        failures = [
+            *wait["errors"],
+            *(termination["errors"] if termination is not None else []),
+            *([close_error] if close_error is not None else []),
+        ]
+        cleanup["errors"] = failures
+        cleanup["status"] = (
+            "passed"
+            if wait["status"] == "passed"
+            and (termination is None or termination["status"] == "passed")
+            and close_error is None
+            and not failures
+            else "failed"
+        )
+        evidence["lifecycle"] = cleanup
+
+
+def _produce_file_history_capacity_fixtures(persistent_root: Path) -> dict[str, Any]:
+    """Run the opt-in Go fixture producer once, fail-closed and bounded."""
+    from qa.fault_injection import _resolve as resolve_tool  # reuse the exact Go resolver
+
+    persistent_root.mkdir(parents=True, exist_ok=True)
+    evidence: dict[str, Any] = {
+        "status": "failed",
+        "env": CAPACITY_FIXTURE_ENV,
+        "test": CAPACITY_PRODUCER_TEST,
+        "timeoutSeconds": CAPACITY_PRODUCER_TIMEOUT_SECONDS,
+    }
+    try:
+        go = resolve_tool("go")
+    except (OSError, RuntimeError) as exc:
+        return evidence | {
+            "code": "CAPACITY_GO_TOOLCHAIN_UNAVAILABLE",
+            "error": str(exc),
+        }
+    fixture_root = (CAPACITY_FIXTURE_BASE / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")).resolve()
+    if fixture_root.exists():
+        return evidence | {
+            "code": "CAPACITY_FIXTURE_TARGET_EXISTS",
+            "error": f"refusing to overwrite an existing fixture run: {fixture_root}",
+        }
+    environment = os.environ.copy()
+    environment[CAPACITY_FIXTURE_ENV] = str(fixture_root)
+    environment["GOTOOLCHAIN"] = "local"
+    environment.setdefault("GOCACHE", str(ROOT / ".codex-go-cache"))
+    environment.setdefault("GOTMPDIR", str(ROOT / ".codex-test-tmp"))
+    Path(environment["GOCACHE"]).mkdir(parents=True, exist_ok=True)
+    Path(environment["GOTMPDIR"]).mkdir(parents=True, exist_ok=True)
+    command = [
+        go,
+        "test",
+        "-count=1",
+        f"-run=^{CAPACITY_PRODUCER_TEST}$",
+        "./internal/workspacev2",
+    ]
+    stdout_path = persistent_root / "producer-stdout.log"
+    stderr_path = persistent_root / "producer-stderr.log"
+    evidence |= {
+        "command": command,
+        "fixtureRoot": str(fixture_root),
+        "stdout": str(stdout_path),
+        "stderr": str(stderr_path),
+    }
+    started = time.monotonic()
+    timed_out = False
+    returncode: int | None = None
+    with ExitStack() as resources:
+        stdout = resources.enter_context(stdout_path.open("wb"))
+        stderr = resources.enter_context(stderr_path.open("wb"))
+        try:
+            scope = _launch_host_process(
+                command,
+                cwd=ROOT / "sidecar",
+                env=environment,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except (OSError, RuntimeError) as exc:
+            return evidence | {
+                "code": "CAPACITY_PRODUCER_SCOPE_LAUNCH_FAILED",
+                "error": str(exc),
+            }
+        # The log files stream directly from the Job's go test tree, so any
+        # partial output before a timeout or failure is preserved as evidence.
+        with _capacity_producer_scope_lifetime(scope, evidence):
+            try:
+                returncode = scope.root.wait(timeout=CAPACITY_PRODUCER_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+    elapsed = round(time.monotonic() - started, 3)
+    evidence |= {"returncode": returncode, "elapsedSeconds": elapsed}
+    lifecycle = evidence.get("lifecycle")
+    if timed_out:
+        return evidence | {
+            "code": "CAPACITY_FIXTURE_PRODUCTION_TIMEOUT",
+            "error": (
+                f"go test exceeded {CAPACITY_PRODUCER_TIMEOUT_SECONDS}s; "
+                "Job cleanup evidence is recorded in lifecycle; no retry"
+            ),
+        }
+    if not isinstance(lifecycle, dict) or lifecycle.get("status") != "passed":
+        cleanup_errors = lifecycle.get("errors", []) if isinstance(lifecycle, dict) else []
+        return evidence | {
+            "code": "CAPACITY_PRODUCER_CLEANUP_FAILED",
+            "error": "producer Job scope cleanup did not complete cleanly: "
+            + "; ".join(str(item) for item in cleanup_errors),
+        }
+    if returncode != 0:
+        return evidence | {
+            "code": "CAPACITY_FIXTURE_PRODUCTION_FAILED",
+            "error": f"go test exited {returncode}; no retry",
+        }
+    fixtures: dict[str, Path] = {}
+    problems: list[str] = []
+    for scale in CAPACITY_FIXTURE_SCALES:
+        metadata_path = fixture_root / scale / "fixture.json"
+        metadata = _read_json(metadata_path)
+        entries = metadata.get("fixtures") if isinstance(metadata, dict) else None
+        entry = entries[0] if isinstance(entries, list) and len(entries) == 1 else None
+        if not isinstance(entry, dict):
+            problems.append(f"{scale}: fixture.json lacks fixtures[0]")
+            continue
+        missing = [
+            name
+            for name in CAPACITY_REQUIRED_FIXTURE_FIELDS
+            if not isinstance(entry.get(name), str) or not entry[name]
+        ]
+        nested_identity = entry.get("identity")
+        identity = nested_identity if isinstance(nested_identity, dict) else entry
+        missing += [
+            f"identity.{name}"
+            for name in CAPACITY_REQUIRED_IDENTITY_FIELDS
+            if not isinstance(identity.get(name), (str, int)) or identity.get(name) in (None, "", 0)
+        ]
+        if missing:
+            problems.append(f"{scale}: missing {', '.join(missing)}")
+            continue
+        expected_workspace = (fixture_root / scale / "workspace").resolve()
+        expected_manifest = expected_workspace / ".vibetable" / "workspace.json"
+        if (
+            entry["name"] != scale
+            or Path(entry["workspaceRoot"]).resolve() != expected_workspace
+            or Path(entry["manifestPath"]).resolve() != expected_manifest
+        ):
+            problems.append(f"{scale}: workspace paths escape the synthetic fixture")
+            continue
+        fixtures[scale] = metadata_path
+    if problems or set(fixtures) != set(CAPACITY_FIXTURE_SCALES):
+        return evidence | {
+            "code": "CAPACITY_FIXTURE_METADATA_INVALID",
+            "error": "; ".join(problems) or "scale set mismatch",
+        }
+    return evidence | {"status": "passed", "fixtures": {k: str(v) for k, v in fixtures.items()}}
+
+
+def _run_file_history_capacity_acceptance(
+    scenario: Scenario,
+    *,
+    package_root: Path,
+    run_root: Path,
+    node: str,
+) -> dict[str, Any]:
+    """Produce the capacity fixtures once, then run each scale in its own cold Host."""
+    persistent_root = (run_root / scenario.id / "persistent").resolve()
+    persistent_root.mkdir(parents=True, exist_ok=True)
+    producer = _produce_file_history_capacity_fixtures(persistent_root)
+    phase_results: dict[str, Any] = {"producer": producer}
+    if producer.get("status") != "passed":
+        return _capacity_phase_failure(
+            scenario, phase_results, "CAPACITY_FIXTURE_PRODUCTION_FAILED"
+        )
+    scale_summaries: dict[str, Any] = {}
+    combined_ui_timings: list[Any] = []
+    scale_failures: list[str] = []
+    for scale in CAPACITY_FIXTURE_SCALES:
+        fixture_path = Path(str(producer["fixtures"][scale])).resolve()
+        metadata = _read_json(fixture_path) or {}
+        entry = (metadata.get("fixtures") or [{}])[0]
+        identity = entry.get("identity") if isinstance(entry.get("identity"), dict) else entry
+        workspace_root = Path(str(entry["workspaceRoot"])).resolve()
+        manifest = _read_json(workspace_root / ".vibetable" / "workspace.json")
+        if manifest is None or manifest.get("workspaceId") != identity.get("workspaceId"):
+            phase_results[scale] = {
+                "status": "failed",
+                "error": {"code": "CAPACITY_FIXTURE_WORKSPACE_IDENTITY_INVALID"},
+                "fixture": str(fixture_path),
+            }
+            return _capacity_phase_failure(scenario, phase_results, "CAPACITY_SCALE_FAILED")
+        scale_dir = (
+            run_root / scenario.id / "scales" / scale / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        )
+        readiness_dir = persistent_root / "host" / scale
+        result = run_scenario(
+            scenario,
+            package_root=package_root.resolve(),
+            evidence_root=run_root,
+            node=node,
+            persistent_run=_PersistentScenarioRun(
+                phase="capacity",
+                state_path=fixture_path,
+                scenario_dir=scale_dir,
+                readiness_dir=readiness_dir,
+                workspace_root=workspace_root,
+            ),
+        )
+        phase_results[scale] = result
+        combined_ui_timings.extend(result.get("uiTimings") or [])
+        scale_summaries[scale] = {
+            "status": result.get("status"),
+            "lifecycle": (result.get("lifecycle") or {}).get("status"),
+            "evidenceDirectory": result.get("evidenceDirectory"),
+            "runnerPhasesMs": result.get("runnerPhasesMs"),
+            "runnerWallClockMs": result.get("runnerWallClockMs"),
+        }
+        if (
+            result.get("status") != "passed"
+            or (result.get("lifecycle") or {}).get("status") != "passed"
+        ):
+            scale_failures.append(scale)
+    if scale_failures:
+        return _capacity_phase_failure(scenario, phase_results, "CAPACITY_SCALE_FAILED")
+    return {
+        "scenario": scenario.id,
+        "title": scenario.title,
+        "requirement": scenario.requirement,
+        "status": "passed",
+        "durationMs": round(
+            sum(
+                float(phase_results[scale].get("durationMs") or 0.0)
+                for scale in CAPACITY_FIXTURE_SCALES
+            )
+            + float(producer.get("elapsedSeconds") or 0.0) * 1000,
+            2,
+        ),
+        "runnerPhasesMs": {
+            scale: phase_results[scale].get("runnerPhasesMs") for scale in CAPACITY_FIXTURE_SCALES
+        },
+        "uiTimings": combined_ui_timings,
+        "scales": scale_summaries,
+        "phases": phase_results,
+        "persistentState": str(persistent_root),
+    }
+
+
+def _capacity_phase_failure(
+    scenario: Scenario,
+    phases: Mapping[str, Any],
+    code: str,
+) -> dict[str, Any]:
+    return {
+        **_failure_result(
+            scenario,
+            code=code,
+            message="真实 Host 合法容量资格未完成。",
         ),
         "phases": dict(phases),
     }

@@ -92,6 +92,7 @@ DATA_IO_SCENARIO_IDS = (
     "35-data-io-interoperability",
     "37-collection-formula-journey",
     "38-calculation-chain-journey",
+    "39-file-workflow-combination",
 )
 
 

@@ -111,6 +111,7 @@ export function useDocumentWorkspaceService(): {
   const bridge = useHostBridge();
   const store = useDocumentWorkspaceStore();
   let lastScope: DocumentWorkspaceScope = { kind: "global" };
+  let lastListQuery: FileDocumentQuery | null = null;
   let listGeneration = 0;
   watch(() => store.diffResult?.session?.sessionId, (next, old) => {
     if (old && old !== next) void bridge.request("document.diffCloseRequested", { sessionId: old })
@@ -139,6 +140,7 @@ export function useDocumentWorkspaceService(): {
         case "document.listRequested": {
           const generation = ++listGeneration;
           lastScope = intent.scope;
+          lastListQuery = intent.query;
           store.beginLoad();
           let payload: DocumentListLoadedPayload;
           try {
@@ -237,7 +239,13 @@ export function useDocumentWorkspaceService(): {
       type: "document.listRequested",
       scope: lastScope,
       authority: store.authorityFilter,
-      query: defaultDocumentQuery(store.query),
+      // A change notice only resets pagination to the first page. It reuses
+      // the last real list intent's complete query so a successful change
+      // never silently drops the user's active filters, and it creates no
+      // second query authority of its own.
+      query: lastListQuery === null
+        ? defaultDocumentQuery(store.query)
+        : { ...lastListQuery, cursor: null },
     });
   });
   bridge.on("document.operationFailed", (payload) => {

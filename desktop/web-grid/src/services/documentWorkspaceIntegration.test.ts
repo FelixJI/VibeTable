@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HostBridge } from "@/bridge/hostBridge";
+import type { FileDocumentQuery } from "@/contracts";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import {
@@ -111,6 +112,58 @@ describe("document workspace bridge integration", () => {
     expect(request.mock.calls.at(-1)?.[1]).toMatchObject({
       scope: { kind: "record", collection: "orders", itemId: 7 },
     });
+  });
+
+  it("refreshes from a workspace-changed notice with the last full query and a reset cursor", async () => {
+    const handlers = new Map<string, (payload: never) => void>();
+    const request = vi.fn(async (_type: string, _payload: Record<string, unknown>) => ({
+      entries: [entry()],
+      nextCursor: "cursor-2",
+      topologyRevision: 2,
+    }));
+    setHostBridgeForTesting({
+      request,
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn((type: string, handler: (payload: never) => void) => {
+        handlers.set(type, handler);
+        return () => handlers.delete(type);
+      }),
+    } as unknown as HostBridge);
+    const service = useDocumentWorkspaceService();
+
+    const filteredQuery: FileDocumentQuery = {
+      logic: "or",
+      filters: [
+        { field: "extension", operator: "eq", value: ".pdf" },
+        { field: "sizeBytes", operator: "gt", value: 1024 },
+      ],
+      sort: [{ field: "relativePath", direction: "asc" }],
+      limit: 25,
+      cursor: null,
+    };
+    service.dispatch({
+      type: "document.listRequested",
+      scope: { kind: "global" },
+      authority: "workspace",
+      query: filteredQuery,
+    });
+    await flushPromises();
+    service.dispatch({
+      type: "document.listRequested",
+      scope: { kind: "global" },
+      authority: "workspace",
+      query: { ...filteredQuery, cursor: "cursor-2" },
+    });
+    await flushPromises();
+
+    handlers.get("document.workspaceChanged")?.({ reason: "restore", affectedCount: 1 } as never);
+    await flushPromises();
+
+    // A successful change notice may only reset pagination to the first
+    // page; silently dropping the user's active filters is a stale refresh.
+    const refresh = request.mock.calls.at(-1)?.[1] as { query: FileDocumentQuery };
+    expect(refresh.query).toEqual({ ...filteredQuery, cursor: null });
   });
 
   it("ignores an older file-list response that completes after a newer query", async () => {

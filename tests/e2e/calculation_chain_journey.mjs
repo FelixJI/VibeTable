@@ -399,6 +399,19 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
 
   await verifyOrderedView("reopen");
   await screenshot("reopened");
+  const identity = ({ fieldId, physicalName }) => ({ fieldId, physicalName });
+  return {
+    workspaceId: session.workspaceId,
+    chain: {
+      source: { tableId: source.tableId, marker: identity(source.field),
+        contract: identity(sourceContract), amount: identity(amount) },
+      summary: { tableId: summary.tableId, marker: identity(summary.field),
+        lookup: identity(lookup.identity), doubled: identity(doubled.identity) },
+      main: { tableId: main.tableId, marker: identity(main.field), note: identity(note),
+        relation: identity(relation), total: identity(total.identity),
+        linkedLookup: identity(linkedLookup.identity), linkedTotal: identity(linkedTotal.identity) },
+    },
+  };
   // Shared runner checks no external renderer traffic and releases the Host
   // process scope, ports and workspace handles on both success and failure.
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WorkspaceV2RequestError } from "./workspaceV2HostAdapter";
 import {
   BridgeOperationError,
   BridgeRequestRetiredError,
@@ -46,6 +47,19 @@ describe("notificationPolicy", () => {
     expect(localized).not.toContain(error.message);
   });
 
+  it("explains the shared file-history limits for both request error paths", () => {
+    for (const error of [
+      new WorkspaceV2RequestError("filehistory.resource_limit", "workspace v2 request failed", false),
+      new BridgeOperationError({ code: "filehistory.resource_limit", message: "raw host failure" }),
+    ]) {
+      const message = workspaceV2ErrorMessage(error);
+      expect(message).toContain("10000");
+      expect(message).toContain("4096");
+      expect(message).toContain("共用");
+      expect(message).toContain("不会自动删除");
+      expect(message).not.toContain(error.message);
+    }
+  });
   it("maps timeouts and suppresses cancellations", () => {
     expect(
       relationLookupErrorMessage(

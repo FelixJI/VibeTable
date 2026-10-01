@@ -127,6 +127,7 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
         "35-data-io-interoperability",
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
+        "39-file-workflow-combination",
     }
 
 

@@ -314,6 +314,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "35-data-io-interoperability",
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
+        "39-file-workflow-combination",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
@@ -1198,7 +1199,10 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
 
 
-@pytest.mark.parametrize("scenario", ["11-plugin-mutation", "33-host-grid-presentation"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["11-plugin-mutation", "33-host-grid-presentation", "39-file-workflow-combination"],
+)
 @pytest.mark.parametrize("failed_phase", ["seed", "resume"])
 def test_product_e2e_failure_evidence_retains_host_restart_phases(
     tmp_path: Path,

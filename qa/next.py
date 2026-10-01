@@ -1328,7 +1328,11 @@ def persist_product_e2e_evidence(
             runtime_root / "host",
             run_destination / "_runtime" / scenario_number / "host",
         )
-        if scenario_id in {"11-plugin-mutation", "33-host-grid-presentation"}:
+        if scenario_id in {
+            "11-plugin-mutation",
+            "33-host-grid-presentation",
+            "39-file-workflow-combination",
+        }:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase
                 if not phase_root.is_dir():
@@ -1351,6 +1355,28 @@ def persist_product_e2e_evidence(
                 scenario_source / "persistent" / "host",
                 scenario_destination / "persistent" / "host",
             )
+        if scenario_id == "40-file-history-capacity":
+            for scale in ("near-limit-9980x9990", "depth-4096"):
+                scale_root = scenario_source / "scales" / scale
+                if scale_root.is_dir():
+                    for scale_run in sorted(scale_root.iterdir()):
+                        if (
+                            not scale_run.is_dir()
+                            or re.fullmatch(r"\d{8}T\d{6}Z", scale_run.name) is None
+                        ):
+                            continue
+                        retained = scenario_destination / "scales" / scale / scale_run.name
+                        for filename in (
+                            *PRODUCT_E2E_EVIDENCE_FILES,
+                            f"{scenario_id}-result.json",
+                            f"{scenario_id}-trace.zip",
+                            f"{scenario_id}.png",
+                        ):
+                            _copy_if_file(scale_run / filename, retained / filename)
+                copy_runtime_diagnostics(
+                    scenario_source / "persistent" / "host" / scale,
+                    scenario_destination / "persistent" / "host" / scale,
+                )
         if scenario_id == "24-directory-replica-conflict":
             for phase in REPLICA_E2E_PHASES:
                 for host in REPLICA_E2E_HOSTS:

@@ -1068,6 +1068,7 @@ export const messages: Record<string, string> = {
   "workspaceV2.settings.storage": "存储、保留与密钥",
   "workspaceV2.settings.versions": "版本与恢复",
   "workspaceV2.operation.failed": "操作未完成",
+  "workspaceV2.error.fileHistoryResourceLimit": "文件历史已达到容量限制：每个工作区最多 10000 个文件，所有文件共用 10000 个修订，单条版本链最多 4096 个修订。请使用其他工作区继续保存；现有历史不会自动删除。",
   "workspaceV2.error.storageRequiresMirrored": "所选位置属于非固定存储，不能使用直接模式。SMB 网络位置必须使用镜像模式；若镜像选项不可用，请改选本机固定磁盘。",
   "workspaceV2.error.networkProtocolUnsupported": "所选网络位置不是 SMB（例如可能是 WebDAV）。当前仅支持将 SMB 用作镜像位置，不能在该位置创建工作区。",
   "workspaceV2.snapshot.kicker": "WORKSPACE PROTECTION",
