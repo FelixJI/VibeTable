@@ -29,6 +29,7 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
     private readonly IWorkspaceHostEpochLeaseSource? _epochLeaseSource;
     private readonly DocumentDiffArtifactBroker? _diffArtifacts;
     private readonly WorkspaceDocumentDiffCoordinator? _diffCoordinator;
+    private readonly SemaphoreSlim _listGate = new(1, 1);
     private long _sequence;
     private bool _disposed;
 
@@ -92,21 +93,32 @@ public sealed class WorkspaceDocumentOsAdapter : IWorkspaceDocumentCommands, IDi
         DocumentQueryInput? query = null)
     {
         WorkspaceDocumentBinding binding = RequireBinding();
-        DocumentQueryPage documents = await ReadDocumentsAsync(
-            binding,
-            query ?? DocumentQueryInput.Default,
-            cancellationToken).ConfigureAwait(false);
-        if (query?.Cursor is null)
-            _capabilities.RevokeAll();
-        DocumentBridgeEntry[] entries = documents.Documents
-            .Select(document => CreateEntry(binding, document))
-            .ToArray();
-        return new DocumentListPayload(
-            null,
-            null,
-            entries,
-            documents.NextCursor,
-            documents.TopologyRevision);
+        // The gateway orders HTTP exchanges; this gate also orders the
+        // subsequent capability revocation and publication for each list.
+        await _listGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            DocumentQueryPage documents = await ReadDocumentsAsync(
+                binding,
+                query ?? DocumentQueryInput.Default,
+                cancellationToken).ConfigureAwait(false);
+            if (query?.Cursor is null)
+                _capabilities.RevokeAll();
+            DocumentBridgeEntry[] entries = documents.Documents
+                .Select(document => CreateEntry(binding, document))
+                .ToArray();
+            return new DocumentListPayload(
+                null,
+                null,
+                entries,
+                documents.NextCursor,
+                documents.TopologyRevision);
+        }
+        finally
+        {
+            _listGate.Release();
+        }
     }
 
     public Task<DocumentListPayload> ListRecordAsync(
