@@ -7808,6 +7808,7 @@ async function scenario39Seed(page, recorder, runtime) {
   // real content UI. The body editor field is required by the ContentProfile
   // configuration; it is the only schema addition this scenario makes.
   const mainName = "链路主表";
+  await page.getByTestId("nav-tables").click();
   await createV2Field(page, chain.chain.main.tableId, "正文", "editor");
   await selectTable(page, mainName);
   await chooseToolbarMore(page, "refresh");
