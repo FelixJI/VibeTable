@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -30,7 +29,6 @@ const (
 	relationsCollection   = "vibetable_relations"
 	lookupsCollection     = "vibetable_lookups"
 	formulaDepsCollection = "vibetable_formula_dependencies"
-	maxSafeRevision       = int64(1<<53 - 1)
 )
 
 type DeleteResult struct {
@@ -107,45 +105,16 @@ func (catalog *Catalog) describe(
 	if err := ctx.Err(); err != nil {
 		return schemaexecution.Table{}, err
 	}
-	record, err := catalog.findTable(app, tableID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return schemaexecution.Table{}, &schemaerror.ProductError{
-				Code: "schema.table.not_found", Path: "tableId", Message: "table was not found",
-			}
-		}
-		return schemaexecution.Table{}, storageError(err)
-	}
-	storedSchemaRevision, err := parseStoredRevision(
-		record.GetRaw("schema_revision"),
-		"schema.metadata.invalid_schema_revision",
-		"schemaRevision",
-	)
-	if err != nil {
-		return schemaexecution.Table{}, err
-	}
-	storedDataRevision, err := parseStoredRevision(
-		record.GetRaw("data_revision"),
-		"schema.metadata.invalid_data_revision",
-		"dataRevision",
-	)
-	if err != nil {
-		return schemaexecution.Table{}, err
-	}
 	definition, err := schemaexecution.Describe(ctx, app, tableID)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return schemaexecution.Table{}, err
 	}
 	if err == nil {
-		definitionRevision, parseErr := v2.ParseSchemaRevision(definition.Snapshot.SchemaRevision)
-		if parseErr != nil || definitionRevision != storedSchemaRevision ||
-			definition.Snapshot.DataRevision != storedDataRevision {
-			return schemaexecution.Table{}, &schemaerror.ProductError{
-				Code: "schema.metadata.revision_mismatch", Path: "schemaRevision",
-				Message: "stored schema revision metadata is inconsistent",
-			}
-		}
 		return definition, nil
+	}
+	var productErr *schemaerror.ProductError
+	if errors.As(err, &productErr) {
+		return schemaexecution.Table{}, productErr
 	}
 	if errors.Is(err, schemaexecution.ErrTableNotFound) {
 		return schemaexecution.Table{}, &schemaerror.ProductError{
@@ -846,7 +815,7 @@ func (catalog *Catalog) GetDataRevision(
 		}
 		return 0, storageError(err)
 	}
-	return parseStoredRevision(
+	return schemaexecution.ParseStoredRevision(
 		record.GetRaw("data_revision"),
 		"schema.metadata.invalid_data_revision",
 		"dataRevision",
@@ -1109,75 +1078,6 @@ func storageError(err error) *schemaerror.ProductError {
 		Code: "schema.storage.failed", Path: "", Message: "schema storage operation failed",
 	}
 	return schemaerror.WithCause(productErr, err)
-}
-
-func parseStoredRevision(
-	value any,
-	code string,
-	path string,
-) (int64, error) {
-	var revision int64
-	switch number := value.(type) {
-	case float64:
-		if number < 0 || number > float64(maxSafeRevision) ||
-			math.Trunc(number) != number {
-			return 0, invalidStoredRevision(code, path)
-		}
-		revision = int64(number)
-	case float32:
-		converted := float64(number)
-		if converted < 0 || converted > float64(maxSafeRevision) ||
-			math.Trunc(converted) != converted {
-			return 0, invalidStoredRevision(code, path)
-		}
-		revision = int64(number)
-	case int:
-		revision = int64(number)
-	case int64:
-		revision = number
-	case int32:
-		revision = int64(number)
-	case uint:
-		if uint64(number) > uint64(maxSafeRevision) {
-			return 0, invalidStoredRevision(code, path)
-		}
-		revision = int64(number)
-	case uint64:
-		if number > uint64(maxSafeRevision) {
-			return 0, invalidStoredRevision(code, path)
-		}
-		revision = int64(number)
-	case uint32:
-		revision = int64(number)
-	case json.Number:
-		parsed, parseErr := number.Int64()
-		if parseErr != nil {
-			return 0, invalidStoredRevision(code, path)
-		}
-		revision = parsed
-	default:
-		return 0, invalidStoredRevision(code, path)
-	}
-	if revision < 0 || revision > maxSafeRevision {
-		return 0, invalidStoredRevision(code, path)
-	}
-	return revision, nil
-}
-
-func validateStoredDataRevision(value any) error {
-	_, err := parseStoredRevision(
-		value,
-		"schema.metadata.invalid_data_revision",
-		"dataRevision",
-	)
-	return err
-}
-
-func invalidStoredRevision(code, path string) *schemaerror.ProductError {
-	return &schemaerror.ProductError{
-		Code: code, Path: path,
-		Message: "stored revision must be a present non-negative safe integer",
-	}
 }
 
 func (catalog *Catalog) validateIncomingComputations(ctx context.Context, changed schemaexecution.Table) error {

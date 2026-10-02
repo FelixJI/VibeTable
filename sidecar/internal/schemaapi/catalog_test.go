@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
 func TestDescribeReturnsCancellationBeforeTouchingStorage(t *testing.T) {
@@ -17,20 +18,20 @@ func TestDescribeReturnsCancellationBeforeTouchingStorage(t *testing.T) {
 	}
 }
 
-func TestValidateStoredDataRevisionRejectsMissingNegativeAndFractionalValues(t *testing.T) {
+func TestParseStoredDataRevisionRejectsMissingNegativeAndFractionalValues(t *testing.T) {
 	for _, value := range []any{
 		nil, -1.0, 1.5, "0", float64(1<<53) + 2, uint64(1 << 53),
 	} {
-		err := validateStoredDataRevision(value)
+		_, err := schemaexecution.ParseStoredRevision(value, "schema.metadata.invalid_data_revision", "dataRevision")
 		var productErr *schemaerror.ProductError
 		if !errors.As(err, &productErr) ||
 			productErr.Code != "schema.metadata.invalid_data_revision" {
-			t.Fatalf("validateStoredDataRevision(%#v) = %#v", value, err)
+			t.Fatalf("ParseStoredRevision(%#v) = %#v", value, err)
 		}
 	}
 	for _, value := range []any{0.0, 1.0, int64(2)} {
-		if err := validateStoredDataRevision(value); err != nil {
-			t.Fatalf("validateStoredDataRevision(%#v): %v", value, err)
+		if _, err := schemaexecution.ParseStoredRevision(value, "schema.metadata.invalid_data_revision", "dataRevision"); err != nil {
+			t.Fatalf("ParseStoredRevision(%#v): %v", value, err)
 		}
 	}
 }
