@@ -1689,7 +1689,24 @@ do {
     if ($documents.Count -eq 0) { Start-Sleep -Milliseconds 25 }
 } while ($documents.Count -eq 0)
 [Console]::Error.WriteLine("UIA_STAGE document-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($documents.Count)")
-if ($documents.Count -ne 1) { throw "UIA_DOCUMENT_COUNT expected=1 actual=$($documents.Count)" }
+if ($documents.Count -ne 1) {
+    $metadata = @(foreach ($document in @($documents | Select-Object -First 8)) {
+        $current = $document.Current
+        $parent = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)
+        $class = [string]$current.ClassName
+        $id = [string]$current.AutomationId
+        $parentClass = [string]$parent.Current.ClassName
+        @{ type = $current.ControlType.ProgrammaticName;
+           class = $class.Substring(0, [Math]::Min(80, $class.Length));
+           offscreen = $current.IsOffscreen; content = $current.IsContentElement;
+           id = $id.Substring(0, [Math]::Min(80, $id.Length)); hwnd = $current.NativeWindowHandle;
+           parentType = $parent.Current.ControlType.ProgrammaticName;
+           parentClass = $parentClass.Substring(0, [Math]::Min(80, $parentClass.Length)) }
+    })
+    $json = ConvertTo-Json -InputObject $metadata -Compress
+    [Console]::Error.WriteLine("UIA_DOCUMENT_METADATA count=$($documents.Count) items=$json")
+    throw "UIA_DOCUMENT_COUNT expected=1 actual=$($documents.Count)"
+}
 $tabCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::TabItem)

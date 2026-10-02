@@ -5793,6 +5793,11 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
             "$tabCondition ="
         )
     ]
+    # The deterministic provider stub has no real UIA parent.
+    query = query.replace(
+        "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
+        "$document.Parent",
+    )
     # Execute the production query with a deterministic provider transition.
     # No desktop/window is inspected and no UI input is generated.
     assemblies = script[: script.index(' [Console]::Error.WriteLine("UIA_STAGE root begin'.strip())]
@@ -5829,3 +5834,65 @@ $root | Add-Member ScriptMethod FindAll {
         assert result.returncode == (0 if counts[-1] == 1 else 1), result.stderr
         if counts == (2,):
             assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in result.stderr
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA metadata contract")
+def test_native_document_failure_metadata_is_bounded_and_excludes_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+
+    captured: dict[str, str] = {}
+
+    def capture(command, **_kwargs):
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="[]")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    script = captured["script"]
+    metadata = script[
+        script.index("    $metadata = @(") : script.index('    throw "UIA_DOCUMENT_COUNT')
+    ].replace(
+        "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
+        "$document.Parent",
+    )
+    harness = """
+$ErrorActionPreference = 'Stop'
+$documents = @(1..12 | ForEach-Object {
+    [pscustomobject]@{
+        Current = [pscustomobject]@{
+            ControlType = [pscustomobject]@{ProgrammaticName='ControlType.Edit'}
+            ClassName = ('c' * 100); AutomationId = ('i' * 100)
+            IsOffscreen = $true; IsContentElement = $false; NativeWindowHandle = $_
+            Name = 'PRIVATE_CONTENT_MUST_NOT_BE_READ'
+        }
+        Parent = [pscustomobject]@{Current=[pscustomobject]@{
+            ControlType=[pscustomobject]@{ProgrammaticName='ControlType.Window'}
+            ClassName=('p' * 100); Name='PRIVATE_PARENT_MUST_NOT_BE_READ'
+        }}
+    }
+})
+"""
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode((harness + metadata).encode("utf-16-le")).decode("ascii"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    line = next(line for line in result.stderr.splitlines() if "UIA_DOCUMENT_METADATA" in line)
+    assert "count=12" in line
+    items = json.loads(line.split("items=", 1)[1])
+    assert len(items) == 8
+    assert all(len(item[field]) == 80 for item in items for field in ("class", "id", "parentClass"))
+    assert all(item["offscreen"] is True and item["content"] is False for item in items)
+    assert "PRIVATE_" not in result.stderr
+    assert len(line) < 4096
