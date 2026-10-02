@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 // Restore must preserve the published state when a dependency fails, including
 // cancellation after materialization but before the authoritative head CAS.
 func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testing.T) {
-	for _, name := range []string{"cancel_after_materialization", "permission_read", "missing_content", "stale_effective", "missing_revision"} {
+	for _, name := range []string{"cancel_after_materialization", "stage_create_failure", "permission_read", "missing_content", "stale_effective", "missing_revision"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			root := t.TempDir()
@@ -85,9 +86,22 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 				t.Fatal(err)
 			}
 			var expected error
+			var blockedStage string
 			switch name {
 			case "cancel_after_materialization":
 				expected = context.Canceled
+			case "stage_create_failure":
+				repository.target = first.Revision.ObjectID
+				repository.beforeOpen = func() {
+					blockedStage = filepath.Join(materializer.journalRoot,
+						fmt.Sprintf("txn-%020d", coordinator.RecoveryState().PendingMutationRevision), "stage-000000")
+					// Occupy the synthetic staging destination so the real exclusive
+					// file creation fails after the current materialization is backed up.
+					if err := os.WriteFile(blockedStage, []byte("occupied"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				expected = os.ErrExist
 			case "permission_read":
 				repository.target, repository.failure = first.Revision.ObjectID, os.ErrPermission
 				expected = os.ErrPermission
@@ -101,10 +115,17 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 				request.TargetRevisionID = "46666666-6666-4666-8666-666666666666"
 				expected = ErrRevisionNotFound
 			}
-			if _, err := service.Restore(restoreCtx, request); !errors.Is(err, expected) {
-				t.Fatalf("restore error=%v want=%v", err, expected)
+			_, restoreErr := service.Restore(restoreCtx, request)
+			if !errors.Is(restoreErr, expected) {
+				t.Fatalf("restore error=%v want=%v", restoreErr, expected)
 			}
-			repository.target, repository.failure = "", nil
+			if name == "stage_create_failure" {
+				var pathErr *os.PathError
+				if blockedStage == "" || !errors.As(restoreErr, &pathErr) || pathErr.Op != "open" || pathErr.Path != blockedStage {
+					t.Fatalf("restore did not fail creating the staged file: %v", restoreErr)
+				}
+			}
+			repository.target, repository.failure, repository.beforeOpen = "", nil, nil
 			document, err := service.Inspect(testDocumentOne)
 			if err != nil || !reflect.DeepEqual(document, second.Document) {
 				t.Fatalf("failed restore changed document: %#v err=%v", document, err)
@@ -163,11 +184,15 @@ func TestRestoreFailuresKeepHeadHistoryMaterializationAndReceiptAtomic(t *testin
 
 type restoreReadFailureRepository struct {
 	objectrepo.Repository
-	target  objectrepo.ObjectID
-	failure error
+	target     objectrepo.ObjectID
+	failure    error
+	beforeOpen func()
 }
 
 func (repository *restoreReadFailureRepository) Open(ctx context.Context, id objectrepo.ObjectID) (io.ReadCloser, error) {
+	if id == repository.target && repository.beforeOpen != nil {
+		repository.beforeOpen()
+	}
 	if id == repository.target && repository.failure != nil {
 		return nil, repository.failure
 	}
