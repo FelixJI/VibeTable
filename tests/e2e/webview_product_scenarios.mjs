@@ -7918,7 +7918,8 @@ async function scenario39Seed(page, recorder, runtime) {
     await card.first().click();
     await fileWorkspace.waitFor({ state: "visible", timeout: 30_000 });
     const rows = page.locator('[data-testid^="document-row-"]');
-    await rows.first().waitFor({ state: "visible", timeout: 30_000 });
+    await page.locator('[data-testid^="document-row-"][aria-selected="true"]')
+      .filter({ hasText: file.name }).waitFor({ state: "visible", timeout: 30_000 });
     recorder.check(`${file.name}: the history SearchHit opens exactly the requested document row`,
       await rows.count() === 1 && (await rows.first().innerText()).includes(file.name),
       { rowCount: await rows.count(), hit });
@@ -7948,7 +7949,8 @@ async function scenario39Seed(page, recorder, runtime) {
     await card.first().click();
     await fileWorkspace.waitFor({ state: "visible", timeout: 30_000 });
     const rows = page.locator('[data-testid^="document-row-"]');
-    await rows.first().waitFor({ state: "visible", timeout: 30_000 });
+    await page.locator('[data-testid^="document-row-"][aria-selected="true"]')
+      .filter({ hasText: file.name }).waitFor({ state: "visible", timeout: 30_000 });
     recorder.check(`${file.name}: the current SearchHit opens the effective revision's own document row`,
       await rows.count() === 1 && (await rows.first().innerText()).includes(file.name)
         && hit.sourceRevision === file.effectiveRevisionId,

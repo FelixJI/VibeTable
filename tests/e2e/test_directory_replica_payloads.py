@@ -28,7 +28,7 @@ def _replica(root: Path, *, with_payload: bool = True) -> Path:
         root,
         ".vibetable/workspace.json",
         json.dumps(
-            {"formatVersion": 2, "workspaceId": WORKSPACE_ID, "storageMode": "mirrored"}
+            {"formatVersion": 3, "workspaceId": WORKSPACE_ID, "storageMode": "mirrored"}
         ).encode(),
     )
     _write(
@@ -165,6 +165,8 @@ def test_seed_refuses_linked_payload_before_creating_destination(
     [
         (Path(".vibetable/workspace.json"), "storageMode", "direct"),
         (Path(".vibetable/workspace.json"), "formatVersion", 1),
+        (Path(".vibetable/workspace.json"), "formatVersion", 2),
+        (Path(".vibetable/workspace.json"), "formatVersion", 4),
         (REMOTE / "identity.json", "workspaceId", "33333333-3333-4333-8333-333333333333"),
         (REMOTE / "identity.json", "strength", "strong"),
         (REMOTE / "identity.json", "replicaId", "not-a-uuid"),
