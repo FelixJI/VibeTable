@@ -172,9 +172,9 @@ func TestWatcherReadStablePreservesMissingAndRejectsUnsafePaths(t *testing.T) {
 				t.Errorf("remove only the synthetic link: %v", err)
 			}
 		})
-		for _, relative := range []string{"linked-parent", "linked-parent/secret.txt", "linked-parent/missing.txt"} {
+		for _, relative := range []string{"linked-parent", "linked-parent/secret.txt", "linked-parent/missing.txt", "linked-parent/missing-parent/missing.txt"} {
 			content, err := watcher.ReadStable(context.Background(), relative)
-			if content != nil || !errors.Is(err, ErrUnsafeFilePath) {
+			if content != nil || !errors.Is(err, ErrUnsafeFilePath) || errors.Is(err, os.ErrNotExist) {
 				t.Errorf("unsafe read %s = %q, %v", relative, content, err)
 			}
 		}

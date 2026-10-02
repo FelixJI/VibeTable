@@ -748,12 +748,7 @@ func safeLstat(path string, root string) (os.FileInfo, error) {
 	if !pathWithin(root, path) {
 		return nil, ErrUnsafeFilePath
 	}
-	parent := filepath.Dir(path)
-	if _, err := os.Lstat(parent); err == nil {
-		if err := verifyExistingParents(root, parent); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := verifyExistingParents(root, filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	info, err := os.Lstat(path)
@@ -764,20 +759,19 @@ func safeLstat(path string, root string) (os.FileInfo, error) {
 }
 
 func verifyExistingParents(root string, parent string) error {
-	current := parent
-	for {
-		if current == root {
-			return nil
-		}
+	for current := parent; current != root; current = filepath.Dir(current) {
 		if !pathWithin(root, current) {
 			return ErrUnsafeFilePath
 		}
 		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil || !info.IsDir() || pathHasReparsePoint(current) {
 			return errors.Join(ErrUnsafeFilePath, err)
 		}
-		current = filepath.Dir(current)
 	}
+	return nil
 }
 
 func removeTransaction(path string) error {
