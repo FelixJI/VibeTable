@@ -15,15 +15,20 @@ public static class PreviewHostEntry
             if (directory.Exists && directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 throw new IOException("Preview evidence directory contains a reparse point.");
         string destination = Path.Combine(root, "document-native-preview-result.json");
-        if (File.Exists(destination) && File.GetAttributes(destination).HasFlag(FileAttributes.ReparsePoint))
+        if ((File.Exists(destination) || Directory.Exists(destination)) &&
+            File.GetAttributes(destination).HasFlag(FileAttributes.ReparsePoint))
             throw new IOException("Preview evidence file is a reparse point.");
         string temporary = destination + ".tmp";
-        if (File.Exists(temporary) && File.GetAttributes(temporary).HasFlag(FileAttributes.ReparsePoint))
+        if ((File.Exists(temporary) || Directory.Exists(temporary)) &&
+            File.GetAttributes(temporary).HasFlag(FileAttributes.ReparsePoint))
             throw new IOException("Preview evidence temporary file is a reparse point.");
         File.WriteAllText(temporary, JsonSerializer.Serialize(new
         {
-            outcome, source = arguments.FilePath, handlerClsid = arguments.HandlerClsid,
-            processId = Environment.ProcessId, hwnd = hwnd.ToInt64(),
+            outcome,
+            source = arguments.FilePath,
+            handlerClsid = arguments.HandlerClsid,
+            processId = Environment.ProcessId,
+            hwnd = hwnd.ToInt64(),
         }));
         File.Move(temporary, destination, overwrite: true);
     }

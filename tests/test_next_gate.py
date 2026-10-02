@@ -315,6 +315,10 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
         "39-file-workflow-combination",
+        "41-file-document-operations",
+        "42-file-document-native-operations",
+        "43-file-revision-leaves",
+        "44-file-restore-crash",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 

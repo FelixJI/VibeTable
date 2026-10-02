@@ -305,26 +305,33 @@ public sealed class ShellPreviewHandlerResolverTests
     [TestMethod]
     [DataRow("document-native-preview-result.json")]
     [DataRow("document-native-preview-result.json.tmp")]
-    public void PreviewEvidence_RejectsAReparseResultOrTemporaryFile(string name)
+    public void PreviewEvidence_RejectsAReparseResultOrTemporaryPath(string name)
     {
         var fixture = CreatePreviewEvidenceFixture();
-        string sentinel = Path.Combine(Path.GetDirectoryName(fixture.Controls)!, "sentinel.json");
+        string outside = Path.Combine(Path.GetDirectoryName(fixture.Controls)!, "outside");
+        Directory.CreateDirectory(outside);
+        string sentinel = Path.Combine(outside, "sentinel.json");
         File.WriteAllText(sentinel, "synthetic outside sentinel");
         string link = Path.Combine(fixture.Controls, name);
-        File.CreateSymbolicLink(link, sentinel);
+        CreatePreviewEvidenceJunction(link, outside);
         try
         {
             var arguments = new PreviewHostArguments(fixture.Source, PreviewClsid, fixture.Controls);
 
-            Assert.Throws<IOException>(() =>
+            var error = Assert.Throws<IOException>(() =>
                 PreviewHostEntry.WriteEvidence(arguments, "do-preview-returned", new IntPtr(123)));
+            Assert.AreEqual(name.EndsWith(".tmp", StringComparison.Ordinal)
+                ? "Preview evidence temporary file is a reparse point."
+                : "Preview evidence file is a reparse point.", error.Message);
 
             Assert.AreEqual("synthetic outside sentinel", File.ReadAllText(sentinel));
-            CollectionAssert.AreEqual(new[] { link }, Directory.GetFiles(fixture.Controls));
+            CollectionAssert.AreEqual(new[] { sentinel }, Directory.GetFiles(outside));
+            CollectionAssert.AreEqual(new[] { link }, Directory.GetDirectories(fixture.Controls));
+            Assert.HasCount(0, Directory.GetFiles(fixture.Controls));
         }
         finally
         {
-            File.Delete(link);
+            Directory.Delete(link);
         }
     }
 

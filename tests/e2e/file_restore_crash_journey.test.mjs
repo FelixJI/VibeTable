@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pauseRestoreInPage, requireRestorePublication, requireRecoveredRestore, requireRestoreCrashCheckpoint } from "./file_restore_crash_journey.mjs";
+import { hasRestoreWorkspaceSessionInPage, pauseRestoreInPage, requireRestorePublication, requireRecoveredRestore, requireRestoreCrashCheckpoint } from "./file_restore_crash_journey.mjs";
 
 test("only the exact pending Restore has an intentional crash exception", () => {
   const request = { requestId: "restore" };
@@ -82,4 +82,26 @@ test("recovery binds the seed Restore intent even when startup publishes a later
     const wrong = { ...proof.head, [field]: typeof proof.head[field] === "number" ? proof.head[field] + 1 : "wrong-claim" };
     assert.throws(() => requireRecoveredRestore(before, after, "old", result, recovered, wrong));
   }
+});
+
+
+test("reopen waits for the exact new workspace bootstrap instead of a switch terminal", t => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  t.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else delete globalThis.window;
+  });
+  const diagnostics = { workspaceSession: null };
+  Object.defineProperty(globalThis, "window", { configurable: true,
+    value: { __vibetableE2EBridgeDiagnostics: diagnostics } });
+  const expected = { workspaceId: "restored-workspace", sessionEpoch: 8 };
+  assert.equal(hasRestoreWorkspaceSessionInPage(expected), false);
+  for (const workspaceSession of [
+    { ...expected, workspaceId: "other-workspace" }, { ...expected, sessionEpoch: 7 },
+  ]) {
+    diagnostics.workspaceSession = workspaceSession;
+    assert.equal(hasRestoreWorkspaceSessionInPage(expected), false);
+  }
+  diagnostics.workspaceSession = expected;
+  assert.equal(hasRestoreWorkspaceSessionInPage(expected), true);
 });
