@@ -305,6 +305,7 @@ func TestSchemaGetTableProductHTTPRejectsInvalidTableMetadata(t *testing.T) {
 	}{
 		{"display-name", "UPDATE vibetable_tables SET display_name={:value} WHERE table_id={:table}", ""},
 		{"kind", "UPDATE vibetable_tables SET kind={:value} WHERE table_id={:table}", "corrupt"},
+		{"schema-revision", "UPDATE vibetable_tables SET schema_revision={:value} WHERE table_id={:table}", -1},
 		{"data-revision", "UPDATE vibetable_tables SET data_revision={:value} WHERE table_id={:table}", -1},
 		{"archive-policy", "UPDATE vibetable_tables SET archive_policy={:value} WHERE table_id={:table}", `{"mode":"corrupt","fieldId":null,"archivedValue":null}`},
 	} {
