@@ -128,8 +128,11 @@ def ensure_npm(repo_root: Path) -> Path:
     node = ensure_node(repo_root)
     prefix = repo_root / ".tools" / "npm"
     package = prefix / "node_modules" / "npm" / "package.json"
+    npm_bin = prefix / "node_modules" / ".bin"
+    entries = (npm_bin / "npm.cmd", package.parent / "bin" / "npm-cli.js")
     if (
-        not package.is_file()
+        not all(entry.is_file() for entry in entries)
+        or not package.is_file()
         or json.loads(package.read_text(encoding="utf-8"))["version"] != NPM_VERSION
     ):
         subprocess.run(
@@ -141,12 +144,16 @@ def ensure_npm(repo_root: Path) -> Path:
                 str(prefix),
                 f"npm@{NPM_VERSION}",
                 "--no-save",
+                "--bin-links=true",
                 "--package-lock=false",
                 "--no-audit",
                 "--no-fund",
             ],
             check=True,
         )
-    if json.loads(package.read_text(encoding="utf-8"))["version"] != NPM_VERSION:
-        raise RuntimeError(f"npm restore did not produce version {NPM_VERSION}")
-    return prefix / "node_modules" / ".bin"
+    if (
+        not all(entry.is_file() for entry in entries)
+        or json.loads(package.read_text(encoding="utf-8"))["version"] != NPM_VERSION
+    ):
+        raise RuntimeError(f"npm restore did not produce runnable version {NPM_VERSION}")
+    return npm_bin
