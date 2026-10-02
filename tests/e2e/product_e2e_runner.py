@@ -1675,7 +1675,15 @@ $condition = [System.Windows.Automation.OrCondition]::new($documentCondition, $e
 # A visible Shell window can precede its UIA document provider. Wait only
 # for absence; the enclosing subprocess still enforces the original 5s budget.
 do {
-    $documents = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    $documents = @(foreach ($document in $root.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants, $condition)) {
+        # Classic Notepad exposes its status panes as Edit controls. Their
+        # parent role distinguishes them from document editors, without names.
+        $parent = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)
+        if ($document.Current.ControlType.ProgrammaticName -eq "ControlType.Edit" -and
+            $parent.Current.ControlType.ProgrammaticName -eq "ControlType.StatusBar") { continue }
+        $document
+    })
     if ($documents.Count -eq 0) { Start-Sleep -Milliseconds 25 }
 } while ($documents.Count -eq 0)
 [Console]::Error.WriteLine("UIA_STAGE document-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($documents.Count)")

@@ -5770,9 +5770,23 @@ def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed
 
 
 @pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA query contract")
-@pytest.mark.parametrize("counts", [(0, 0, 1), (2,), (0,)])
+@pytest.mark.parametrize(
+    ("counts", "status_panes", "control_type"),
+    [
+        ((0, 0, 1), 0, "Document"),
+        ((2,), 0, "Document"),
+        ((0,), 0, "Document"),
+        ((1,), 5, "Document"),
+        ((1,), 5, "Edit"),
+        ((2,), 5, "Document"),
+        ((0,), 5, "Document"),
+    ],
+)
 def test_native_document_query_waits_only_for_absent_provider_with_original_budget(
-    monkeypatch: pytest.MonkeyPatch, counts: tuple[int, ...]
+    monkeypatch: pytest.MonkeyPatch,
+    counts: tuple[int, ...],
+    status_panes: int,
+    control_type: str,
 ) -> None:
     import base64
 
@@ -5801,7 +5815,8 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
     # This provider stub exercises the query loop, so it needs no UIA assembly
     # compilation or real provider registration inside the production deadline.
     query = query.replace("[System.Windows.Automation.TreeScope]::Descendants", "4")
-    harness = """
+    harness = (
+        """
 $ErrorActionPreference = 'Stop'
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $script:counts = @(COUNTS)
@@ -5810,9 +5825,21 @@ $root = [pscustomobject]@{}
 $root | Add-Member ScriptMethod FindAll {
     $count = $script:counts[[Math]::Min($script:call, $script:counts.Count - 1)]
     $script:call++
-    return [pscustomobject]@{Count=$count}
+    $window = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.Window"}}}
+    $status = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.StatusBar"}}}
+    for ($index=0; $index -lt $count; $index++) {
+        [pscustomobject]@{Count=1; Parent=$window; Current=@{
+            ControlType=@{ProgrammaticName="ControlType.CONTROL_TYPE"}}}
+    }
+    for ($index=0; $index -lt STATUS_PANES; $index++) {
+        [pscustomobject]@{Count=1; Parent=$status; Current=@{
+            ControlType=@{ProgrammaticName="ControlType.Edit"}}}
+    }
 }
 """.replace("COUNTS", ",".join(map(str, counts)))
+        .replace("STATUS_PANES", str(status_panes))
+        .replace("CONTROL_TYPE", control_type)
+    )
     command = [
         "powershell.exe",
         "-NoProfile",
