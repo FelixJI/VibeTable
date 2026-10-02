@@ -1,6 +1,24 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+export function hasVisibleCapacityRevisionsInPage({ firstId, effectiveId }) {
+  const trees = document.querySelectorAll('[data-testid="file-revision-tree"]');
+  if (trees.length !== 1) return false;
+  const tree = trees[0];
+  return [
+    `.tree-row[data-revision-id="${firstId}"]`,
+    `.tree-row[data-revision-id="${effectiveId}"][aria-current="true"]`,
+  ].every(selector => {
+    const elements = tree.querySelectorAll(selector);
+    if (elements.length !== 1) return false;
+    const element = elements[0];
+    const bounds = element.getBoundingClientRect();
+    const visibility = getComputedStyle(element).visibility;
+    return bounds.width > 0 && bounds.height > 0
+      && visibility !== "hidden" && visibility !== "collapse";
+  });
+}
+
 // The fixture producer and this consumer both use the existing file-history
 // authority. This journey starts in a real packaged Host with cold data.
 export async function runFileHistoryCapacityJourney(page, recorder, runtime, helpers) {
@@ -101,19 +119,14 @@ export async function runFileHistoryCapacityJourney(page, recorder, runtime, hel
   // The revision tree lives on the inspector's history tab; opening the row
   // alone keeps the summary tab, exactly like the other file scenarios.
   await page.getByTestId("file-workspace").locator(".inspector-tabs button").nth(1).click();
-  const revisionTree = page.getByTestId("file-revision-tree");
-  await revisionTree.waitFor({ state: "visible", timeout: 30000 });
-  const firstRevision = revisionTree.locator(
-    `.tree-row[data-revision-id="${fixture.selectedMultiFirstRevisionId}"]`);
-  const effective = revisionTree.locator(
-    `.tree-row[data-revision-id="${fixture.selectedMultiEffectiveRevisionId}"][aria-current="true"]`);
-  await firstRevision.waitFor({ state: "visible", timeout: 30000 });
-  await effective.waitFor({ state: "visible", timeout: 30000 });
-  // Seal readiness before attribute evidence and its CDP trace snapshots.
+  // Inspect both exact revisions in one browser pass. Serial locator calls
+  // each snapshot the same 4096-row tree before the next check can start.
+  await page.waitForFunction(hasVisibleCapacityRevisionsInPage, {
+    firstId: fixture.selectedMultiFirstRevisionId,
+    effectiveId: fixture.selectedMultiEffectiveRevisionId,
+  }, { timeout: 30000 });
   const treeUiMs = performance.now() - treeUiStarted;
-  recorder.check("the legal all-formal chain renders its first and effective revisions",
-    await firstRevision.getAttribute("data-revision-id") === fixture.selectedMultiFirstRevisionId
-      && await effective.getAttribute("aria-current") === "true");
+  recorder.check("the legal all-formal chain renders its first and effective revisions", true);
   const treeUiHarnessMs = performance.now() - treeUiStarted;
   recorder.check("full legal tree first screen stays within the existing 30s UI wait",
     treeUiMs <= 30000, { elapsedMs: treeUiMs, harnessElapsedMs: treeUiHarnessMs });

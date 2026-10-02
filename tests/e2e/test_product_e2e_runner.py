@@ -5851,7 +5851,10 @@ $root | Add-Member ScriptMethod FindAll {
         with pytest.raises(subprocess.TimeoutExpired):
             subprocess.run(command, capture_output=True, timeout=5, check=False)
     else:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        except subprocess.TimeoutExpired as error:
+            pytest.fail(f"UIA query exceeded its original 5s budget; stderr={error.stderr!r}")
         assert result.returncode == (0 if counts[-1] == 1 else 1), result.stderr
         if counts == (2,):
             assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in result.stderr
