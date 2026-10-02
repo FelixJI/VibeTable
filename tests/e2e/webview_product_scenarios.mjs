@@ -7299,6 +7299,23 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
   await page.getByTestId("nav-files").click();
   const workspace = page.getByTestId("file-workspace");
   await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  async function refreshDocumentRow(name, oldHandle) {
+    const marker = new Date().toISOString();
+    await workspace.getByTestId("document-refresh").click();
+    await page.waitForFunction(({ marker, oldHandle, name }) => {
+      const diagnostics = window.__vibetableE2EBridgeDiagnostics;
+      const refreshed = (diagnostics?.roundTrips ?? []).some(item =>
+        item.requestType === "document.listRequested" && item.startedAt > marker
+        && item.responseType === "document.listLoaded" && item.code === null);
+      // An automatic reload can replace the handle while manual refresh is pending.
+      const settled = Object.values(diagnostics?.pending ?? {})
+        .every(item => item.requestType !== "document.listRequested");
+      const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
+        .find(candidate => candidate.textContent?.includes(name));
+      return refreshed && settled && current instanceof HTMLElement
+        && current.getAttribute("data-testid") !== oldHandle;
+    }, { marker, oldHandle, name }, { timeout: 30_000 });
+  }
   await page.getByTestId("document-import").click();
   const row = page.locator('[data-testid^="document-row-"]').filter({
     hasText: "document-diff-source.txt",
@@ -7335,15 +7352,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
   { historicalRevisionId, effectiveRevisionId, restored: restored.result });
 
   const oldHandleAttribute = await row.getAttribute("data-testid");
-  await workspace.locator(".file-toolbar > button").first().click();
-  await page.waitForFunction(
-    ({ oldHandle, name }) => {
-      const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
-        .find((candidate) => candidate.textContent?.includes(name));
-      return current?.getAttribute("data-testid") !== oldHandle;
-    },
-    { oldHandle: oldHandleAttribute, name: "document-diff-source.txt" },
-  );
+  await refreshDocumentRow("document-diff-source.txt", oldHandleAttribute);
   const refreshedRow = page.locator('[data-testid^="document-row-"]').filter({
     hasText: "document-diff-source.txt",
   });
@@ -7378,12 +7387,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
   recorder.check("host picker upgrade registers the synthetic changed revision",
     typeof effectiveRevisionId === "string" && effectiveRevisionId !== restored.result?.revisionId,
   { upgraded: upgraded.result });
-  await workspace.getByTestId("document-refresh").click();
-  await page.waitForFunction(({ oldHandle, name }) => {
-    const current = [...document.querySelectorAll('[data-testid^="document-row-"]')]
-      .find(candidate => candidate.textContent?.includes(name));
-    return current?.getAttribute("data-testid") !== oldHandle;
-  }, { oldHandle: refreshedHandleAttribute, name: "document-diff-source.txt" });
+  await refreshDocumentRow("document-diff-source.txt", refreshedHandleAttribute);
   const changedRow = page.locator('[data-testid^="document-row-"]').filter({ hasText: "document-diff-source.txt" });
   entryHandle = (await changedRow.getAttribute("data-testid"))?.replace(/^document-row-/u, "");
   await changedRow.click();
@@ -7512,10 +7516,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       });
     }
     const oldHandle = await docxRow.getAttribute("data-testid");
-    await workspace.getByTestId("document-refresh").click();
-    await page.waitForFunction(({ old, target }) => [...document.querySelectorAll('[data-testid^="document-row-"]')]
-      .find(candidate => candidate.textContent?.includes(target))?.getAttribute("data-testid") !== old,
-    { old: oldHandle, target: name });
+    await refreshDocumentRow(name, oldHandle);
     await docxRow.click();
     await workspace.locator(".inspector-tabs button").nth(1).click();
     await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
@@ -7648,10 +7649,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       documentId: imported.documentId, revisionId: historical, pathGrant: "host-picker://file-upgrade",
     });
     const oldHandle = await row.getAttribute("data-testid");
-    await workspace.getByTestId("document-refresh").click();
-    await page.waitForFunction(({ old, target }) => [...document.querySelectorAll('[data-testid^="document-row-"]')]
-      .find(candidate => candidate.textContent?.includes(target))?.getAttribute("data-testid") !== old,
-    { old: oldHandle, target: name });
+    await refreshDocumentRow(name, oldHandle);
     await row.click();
     await workspace.locator(".inspector-tabs button").nth(1).click();
     const started = performance.now();

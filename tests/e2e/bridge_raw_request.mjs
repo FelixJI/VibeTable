@@ -103,8 +103,10 @@ export async function requestWorkspaceV2InPage({ method, params }) {
     throw new Error(`workspace wire E2E port unavailable for ${method}`);
   }
   try {
+    // Seal the complete product request before CDP transfers the result to Node.
+    const started = performance.now();
     const result = await wirePort.request({ method, params });
-    return { result };
+    return { result, elapsedMs: performance.now() - started };
   } catch (error) {
     const code = typeof error?.code === "string" ? error.code : "workspace.operation_failed";
     const detail = { code };

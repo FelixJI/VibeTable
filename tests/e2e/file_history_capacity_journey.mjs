@@ -54,19 +54,21 @@ export async function runFileHistoryCapacityJourney(page, recorder, runtime, hel
     logic: "and", filters: [], sort: [{ field: "relativePath", direction: "asc" }],
     limit: 50, cursor: null,
   });
-  const pageMs = performance.now() - pageStarted;
+  const pageHarnessMs = performance.now() - pageStarted;
   recorder.check("real RPC first page obeys the frozen 2s budget and bounded count",
-    pageMs <= 2000 && first.result.documents.length === Math.min(50, fixture.documents),
-    { elapsedMs: pageMs, count: first.result.documents.length });
+    first.elapsedMs <= 2000 && first.result.documents.length === Math.min(50, fixture.documents),
+    { elapsedMs: first.elapsedMs, harnessElapsedMs: pageHarnessMs,
+      count: first.result.documents.length });
   const treeStarted = performance.now();
   const tree = await helpers.rawWorkspaceV2Request(page, "fileHistory.readTree", {
     documentId: fixture.selectedMultiDocumentId,
   });
-  const treeMs = performance.now() - treeStarted;
+  const treeHarnessMs = performance.now() - treeStarted;
   recorder.check("real RPC serializes the complete legal revision chain within 2s",
-    treeMs <= 2000 && tree.result.revisions.length === fixture.selectedMultiRevisionCount
+    tree.elapsedMs <= 2000 && tree.result.revisions.length === fixture.selectedMultiRevisionCount
       && tree.result.effectiveRevisionId === fixture.selectedMultiEffectiveRevisionId,
-    { elapsedMs: treeMs, count: tree.result.revisions.length });
+    { elapsedMs: tree.elapsedMs, harnessElapsedMs: treeHarnessMs,
+      count: tree.result.revisions.length });
   const selected = await helpers.rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
     logic: "and", filters: [{ field: "relativePath", operator: "eq",
       value: fixture.selectedMultiRelativePath }],
