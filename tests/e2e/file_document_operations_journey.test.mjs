@@ -17,7 +17,7 @@ function pagesFixture() {
   }));
   const order = documentOrderOracle(documents);
   const entries = order.map(id => ({ ...documents.find(item => item.documentId === id), entryHandle: id }));
-  const query = { cursor: null, filters: [], limit: 100,
+  const query = { cursor: null, filters: [{ field: "status", operator: "eq", value: "active" }], limit: 100,
     sort: [{ field: "effectiveRevisionCreatedAt", direction: "desc" }] };
   const pages = [
     { query, payload: { entries: entries.slice(0, 100), nextCursor: "next", topologyRevision: 10 } },
@@ -45,6 +45,7 @@ test("duplicate, omitted, reordered and drifted Host pages cannot be hidden by s
     value => { value.pages[1].payload.entries = []; },
     value => { value.pages[0].payload.entries.reverse(); },
     value => { value.pages[1].query.cursor = "wrong"; },
+    value => { value.pages[1].query = { ...value.pages[1].query, filters: [] }; },
     value => { value.pages[1].payload.topologyRevision++; },
     value => { value.pages[1].payload.nextCursor = "extra"; },
     value => { value.documents[0].sizeBytes++; },

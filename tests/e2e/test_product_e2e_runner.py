@@ -5535,3 +5535,41 @@ def test_capacity_producer_cleanup_failure_never_passes(
     assert producer["lifecycle"]["status"] == "failed"
     assert "close failed" in producer["error"]
     assert scope.close_calls == 1
+
+
+@pytest.mark.parametrize("mode", ["already", "async", "denied", "hung", "changed", "owner"])
+def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed(mode: str) -> None:
+    calls: list[str] = []
+    current = 10 if mode == "already" else 20
+
+    def activate(_hwnd: int) -> bool:
+        calls.append("activate")
+        return mode != "denied"
+
+    def synchronize(*_args: object) -> bool:
+        nonlocal current
+        calls.append("synchronize")
+        if mode != "changed":
+            current = 10
+        return mode != "hung"
+
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    native.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: current,
+        SetForegroundWindow=activate,
+        SendMessageTimeoutW=synchronize,
+    )
+    native.owner = lambda _hwnd: 200 if mode == "owner" else 100
+    if mode in {"already", "async"}:
+        native.foreground(10, 100)
+        assert native.foreground_observation["afterHwnd"] == 10
+    else:
+        with pytest.raises((OSError, ValueError)):
+            native.foreground(10, 100)
+    assert calls == (
+        []
+        if mode in {"already", "owner"}
+        else ["activate"]
+        if mode == "denied"
+        else ["activate", "synchronize"]
+    )

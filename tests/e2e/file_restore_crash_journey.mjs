@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readBridgeDiagnosticsInPage } from "./bridge_diagnostics_instrumentation.mjs";
+import { historyUi } from "./file_document_operations_journey.mjs";
 
 const name = "restore-crash-44.txt";
 const originalText = "S44 historical formal revision, restored after real sidecar death\n";
@@ -127,20 +128,6 @@ async function tree(page, helpers, documentId) {
   return (await helpers.rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId })).result;
 }
 
-async function history(page) {
-  await page.getByTestId("nav-files").click();
-  const workspace = page.getByTestId("file-workspace");
-  await workspace.waitFor({ state: "visible", timeout: 30000 });
-  await workspace.getByRole("textbox").first().fill(name);
-  const row = page.locator('[data-testid^="document-row-"]').filter({ hasText: name });
-  await row.waitFor({ state: "visible", timeout: 30000 });
-  await row.click();
-  await workspace.locator(".inspector-tabs button").nth(1).click();
-  const revisions = page.getByTestId("file-revision-tree");
-  await revisions.waitFor({ state: "visible", timeout: 30000 });
-  return revisions;
-}
-
 // Root integrates these two functions into the existing persistent-phase
 // dispatch. This file itself neither registers nor launches an E2E scenario.
 export async function seedFileRestoreCrash(page, recorder, runtime, helpers) {
@@ -170,15 +157,19 @@ export async function seedFileRestoreCrash(page, recorder, runtime, helpers) {
     const initial = await tree(page, helpers, documentId);
     assert.equal(initial.revisions.length, 1);
     const targetId = initial.effectiveRevisionId;
-    const revisionUi = await history(page);
     const upgradeSource = path.join(runtime.controlsDir, "44-formal-upgrade.txt");
     await fs.writeFile(upgradeSource, changedText, "utf8");
     await fs.writeFile(path.join(runtime.controlsDir, "file-upgrade-source.txt"), `${upgradeSource}\n`, "utf8");
-    await helpers.replicaUiMethod(page, recorder, "fileHistory.upgrade", () =>
-      revisionUi.locator(`[data-revision-id="${targetId}"]`).getByRole("button", { name: /^(从此升级|Upgrade from here)$/ }).click());
+    // Seed through the existing picker contract; a sole current leaf has no
+    // ancestor-upgrade UI. S43 separately exercises that real branch action.
+    const upgraded = await helpers.rawWorkspaceV2Request(page, "fileHistory.upgrade", {
+      documentId, revisionId: targetId, pathGrant: "host-picker://file-upgrade",
+    });
+    assert.ok(upgraded.result.revisionId && upgraded.result.revisionId !== targetId);
     const before = await tree(page, helpers, documentId);
     assert.equal(before.revisions.length, 2);
     assert.equal(await fs.readFile(path.join(root, "files", name), "utf8"), changedText);
+    const revisionUi = await historyUi(page, name, before.effectiveRevisionId);
     await page.evaluate(pauseRestoreInPage, { documentId, historicalRevisionId: targetId, expectedEffectiveRevisionId: before.effectiveRevisionId });
     await revisionUi.locator(`[data-revision-id="${targetId}"]`).getByRole("button", { name: /^(恢复为新版本|Restore as new version)$/ }).click();
     await page.waitForFunction(() => window.__s44Restore?.message !== null, null, { timeout: 30000 });
@@ -275,7 +266,8 @@ export async function resumeFileRestoreCrash(page, recorder, statePath, runtime,
   const second = await control(runtime, "observe-restore-storage", binding);
   assert.deepEqual(second.proof, first.proof);
   recorder.check("the identical old Restore request is rejected and cannot append a second revision or receipt", true, { rejection });
-  await history(page);
+  await page.getByTestId("nav-files").click();
+  await historyUi(page, name, restored.effectiveRevisionId);
   await page.screenshot({ path: path.join(runtime.evidenceDir, "44-file-restore-crash.png") });
   return { workspaceId: seed.workspaceId, restoreCrash: state };
 }

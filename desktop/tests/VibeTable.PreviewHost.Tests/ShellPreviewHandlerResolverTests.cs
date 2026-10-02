@@ -218,6 +218,155 @@ public sealed class ShellPreviewHandlerResolverTests
         Assert.AreEqual(400, rect.Bottom);
     }
 
+    [TestMethod]
+    public void PreviewEvidence_NormalLaunchDoesNotWriteAControlRecord()
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        var arguments = new PreviewHostArguments(fixture.Source, PreviewClsid);
+
+        PreviewHostEntry.WriteEvidence(arguments, "do-preview-returned", new IntPtr(123));
+
+        Assert.HasCount(0, Directory.GetFiles(fixture.Controls));
+        Assert.AreEqual("synthetic preview evidence source", File.ReadAllText(fixture.Source));
+    }
+
+    [TestMethod]
+    public void PreviewEvidence_ReplacesACompleteBoundRecordWithoutLeavingTemporaryFile()
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        var arguments = new PreviewHostArguments(fixture.Source, PreviewClsid, fixture.Controls);
+        string result = Path.Combine(fixture.Controls, "document-native-preview-result.json");
+        PreviewHostEntry.WriteEvidence(arguments, "failed");
+        using (var failure = System.Text.Json.JsonDocument.Parse(File.ReadAllText(result)))
+        {
+            Assert.AreEqual("failed", failure.RootElement.GetProperty("outcome").GetString());
+            Assert.AreEqual(0L, failure.RootElement.GetProperty("hwnd").GetInt64());
+        }
+
+        PreviewHostEntry.WriteEvidence(arguments, "do-preview-returned", new IntPtr(123));
+
+        using var success = System.Text.Json.JsonDocument.Parse(File.ReadAllText(result));
+        var record = success.RootElement;
+        CollectionAssert.AreEqual(
+            new[] { "outcome", "source", "handlerClsid", "processId", "hwnd" },
+            record.EnumerateObject().Select(property => property.Name).ToArray());
+        Assert.AreEqual("do-preview-returned", record.GetProperty("outcome").GetString());
+        Assert.AreEqual(fixture.Source, record.GetProperty("source").GetString());
+        Assert.AreEqual(PreviewClsid, record.GetProperty("handlerClsid").GetGuid());
+        Assert.AreEqual(Environment.ProcessId, record.GetProperty("processId").GetInt32());
+        Assert.AreEqual(123L, record.GetProperty("hwnd").GetInt64());
+        CollectionAssert.AreEqual(new[] { result }, Directory.GetFiles(fixture.Controls));
+        Assert.AreEqual("synthetic preview evidence source", File.ReadAllText(fixture.Source));
+    }
+
+    [TestMethod]
+    public void PreviewEvidence_MissingControlDirectoryCannotPublishSuccess()
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        string missing = Path.Combine(fixture.Controls, "missing");
+        var arguments = new PreviewHostArguments(fixture.Source, PreviewClsid, missing);
+
+        Assert.Throws<DirectoryNotFoundException>(() =>
+            PreviewHostEntry.WriteEvidence(arguments, "do-preview-returned", new IntPtr(123)));
+
+        Assert.IsFalse(Directory.Exists(missing));
+        Assert.HasCount(0, Directory.GetFiles(fixture.Controls));
+        Assert.AreEqual("synthetic preview evidence source", File.ReadAllText(fixture.Source));
+    }
+
+    [TestMethod]
+    public void PreviewEvidence_RejectsAReparseAncestorWithoutTouchingItsSyntheticTarget()
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        string outside = Path.Combine(Path.GetDirectoryName(fixture.Controls)!, "outside");
+        string actual = Path.Combine(outside, "nested");
+        Directory.CreateDirectory(actual);
+        string sentinel = Path.Combine(actual, "document-native-preview-result.json");
+        File.WriteAllText(sentinel, "synthetic outside sentinel");
+        string junction = Path.Combine(fixture.Controls, "redirected");
+        CreatePreviewEvidenceJunction(junction, outside);
+        try
+        {
+            var arguments = new PreviewHostArguments(
+                fixture.Source, PreviewClsid, Path.Combine(junction, "nested"));
+
+            Assert.Throws<IOException>(() =>
+                PreviewHostEntry.WriteEvidence(arguments, "do-preview-returned", new IntPtr(123)));
+
+            Assert.AreEqual("synthetic outside sentinel", File.ReadAllText(sentinel));
+            CollectionAssert.AreEqual(new[] { sentinel }, Directory.GetFiles(actual));
+        }
+        finally
+        {
+            Directory.Delete(junction);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("document-native-preview-result.json")]
+    [DataRow("document-native-preview-result.json.tmp")]
+    public void PreviewEvidence_RejectsAReparseResultOrTemporaryFile(string name)
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        string sentinel = Path.Combine(Path.GetDirectoryName(fixture.Controls)!, "sentinel.json");
+        File.WriteAllText(sentinel, "synthetic outside sentinel");
+        string link = Path.Combine(fixture.Controls, name);
+        File.CreateSymbolicLink(link, sentinel);
+        try
+        {
+            var arguments = new PreviewHostArguments(fixture.Source, PreviewClsid, fixture.Controls);
+
+            Assert.Throws<IOException>(() =>
+                PreviewHostEntry.WriteEvidence(arguments, "do-preview-returned", new IntPtr(123)));
+
+            Assert.AreEqual("synthetic outside sentinel", File.ReadAllText(sentinel));
+            CollectionAssert.AreEqual(new[] { link }, Directory.GetFiles(fixture.Controls));
+        }
+        finally
+        {
+            File.Delete(link);
+        }
+    }
+
+    private static (string Controls, string Source) CreatePreviewEvidenceFixture()
+    {
+        DirectoryInfo? repository = new(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "qa", "next.py")))
+            repository = repository.Parent;
+        Assert.IsNotNull(repository, "Preview evidence tests must stay inside the repository build tree.");
+        string root = Path.Combine(repository.FullName, "build", "qa", "415-preview-evidence-fix", Guid.NewGuid().ToString("N"));
+        string controls = Path.Combine(root, "controls");
+        Directory.CreateDirectory(controls);
+        string source = Path.Combine(root, "synthetic.txt");
+        File.WriteAllText(source, "synthetic preview evidence source");
+        return (controls, source);
+    }
+
+    private static void CreatePreviewEvidenceJunction(string junction, string target)
+    {
+        // Reuse the existing Windows test junction pattern; both paths belong
+        // to this test's synthetic fixture, and only the junction is unlinked.
+        var start = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (string argument in new[] { "/d", "/c", "mklink", "/J", junction, target })
+            start.ArgumentList.Add(argument);
+        using var process = System.Diagnostics.Process.Start(start);
+        Assert.IsNotNull(process);
+        if (!process.WaitForExit(5000))
+        {
+            process.Kill();
+            process.WaitForExit();
+            Assert.Fail("The synthetic fixture junction command did not finish.");
+        }
+        Assert.AreEqual(0, process.ExitCode, process.StandardError.ReadToEnd());
+    }
+
     [STATestMethod]
     public void PreviewHostEntry_RejectsInvalidArgumentsBeforeCreatingAWindow()
     {

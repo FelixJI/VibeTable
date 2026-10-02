@@ -1429,6 +1429,18 @@ class _DocumentNativeWindows:
             "GetDpiForWindow": ([wintypes.HWND], wintypes.UINT),
             "SetForegroundWindow": ([wintypes.HWND], wintypes.BOOL),
             "GetForegroundWindow": ([], wintypes.HWND),
+            "SendMessageTimeoutW": (
+                [
+                    wintypes.HWND,
+                    wintypes.UINT,
+                    wintypes.WPARAM,
+                    wintypes.LPARAM,
+                    wintypes.UINT,
+                    wintypes.UINT,
+                    ctypes.POINTER(ctypes.c_size_t),
+                ],
+                ctypes.c_ssize_t,
+            ),
             "SetThreadDpiAwarenessContext": ([wintypes.HANDLE], wintypes.HANDLE),
             "PostMessageW": (
                 [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM],
@@ -1484,6 +1496,28 @@ class _DocumentNativeWindows:
         hwnd = self.user32.WindowFromPoint(wintypes.POINT(round(x), round(y)))
         return int(self.user32.GetAncestor(hwnd, 2) or 0)
 
+    def foreground(self, root: int, host_pid: int) -> None:
+        if self.owner(root) != host_pid:
+            raise ValueError("native document foreground HWND owner changed")
+        before = int(self.user32.GetForegroundWindow() or 0)
+        observation = {"beforeHwnd": before, "hostHwnd": root, "hostPid": host_pid}
+        self.foreground_observation = observation
+        if before != root:
+            observation["activationAccepted"] = bool(self.user32.SetForegroundWindow(root))
+            if not observation["activationAccepted"]:
+                raise OSError("packaged Host foreground activation was denied")
+            # Cross-input-queue activation is asynchronous. WM_NULL synchronizes
+            # one accepted activation; it does not retry or grant foreground rights.
+            result = ctypes.c_size_t()
+            observation["activationSynchronized"] = bool(
+                self.user32.SendMessageTimeoutW(root, 0, 0, 0, 0x22, 2000, ctypes.byref(result))
+            )
+            if not observation["activationSynchronized"]:
+                raise OSError("packaged Host foreground activation did not synchronize")
+        observation["afterHwnd"] = int(self.user32.GetForegroundWindow() or 0)
+        if observation["afterHwnd"] != root or self.owner(root) != host_pid:
+            raise OSError("packaged Host cannot become the foreground input owner")
+
     def drag(
         self, request: Mapping[str, Any], target: Mapping[str, Any], controls: Path, host_pid: int
     ) -> None:
@@ -1509,7 +1543,7 @@ class _DocumentNativeWindows:
             ]
 
         class Payload(ctypes.Union):
-            _fields_ = [("mouse", Mouse), ("keyboard", Keyboard)]
+            _fields_ = (("mouse", Mouse), ("keyboard", Keyboard))
 
         class Input(ctypes.Structure):
             _fields_ = [("kind", wintypes.DWORD), ("payload", Payload)]
@@ -1567,8 +1601,9 @@ class _DocumentNativeWindows:
             raise ValueError("native document point does not match the observed WebView DPI/bounds")
         x, y = target["webviewX"] + x * scale, target["webviewY"] + y * scale
         tx, ty = target["targetX"], target["targetY"]
-        if not self.user32.SetForegroundWindow(root) or self.user32.GetForegroundWindow() != root:
-            raise OSError("packaged Host cannot become the foreground input owner")
+        self.foreground(root, host_pid)
+        if self.owner(receiver) != host_pid:
+            raise ValueError("native document receiver HWND owner changed")
         if self._root_at(x, y) != root or self._root_at(tx, ty) != receiver:
             raise OSError("native document source/target is obscured by another window")
         down = True
@@ -1684,7 +1719,12 @@ def _handle_document_native_request(
             ):
                 raise ValueError("native document target does not match this operation/source")
             native.drag(request, target, controls, host_scope.root.pid)
-            return {"requestId": request["requestId"], "status": "injected", "action": action}
+            return {
+                "requestId": request["requestId"],
+                "status": "injected",
+                "action": action,
+                "foreground": native.foreground_observation,
+            }
         if action == "preview-observe":
             evidence = _read_json(controls / "document-native-preview-result.json")
             if (
@@ -1770,6 +1810,7 @@ def _handle_document_native_request(
             "status": "unverified",
             "action": request.get("action"),
             "error": str(exception),
+            "foreground": getattr(native, "foreground_observation", None),
         }
     finally:
         if native is not None:

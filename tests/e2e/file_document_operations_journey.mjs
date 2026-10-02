@@ -38,7 +38,7 @@ export function requireDocumentPages(pages, documents, fixtures) {
   assert.equal(pages[0].payload.topologyRevision, pages[1].payload.topologyRevision);
   for (const page of pages) {
     assert.equal(page.query.limit, 100);
-    assert.deepEqual(page.query.filters, []);
+    assert.deepEqual(page.query.filters, [{ field: "status", operator: "eq", value: "active" }]);
     assert.deepEqual(page.query.sort, [{ field: "effectiveRevisionCreatedAt", direction: "desc" }]);
   }
   const entries = pages.flatMap(item => item.payload.entries);
@@ -369,7 +369,7 @@ export async function runFileDocumentOperationsJourney(page, recorder, runtime, 
   return { workspaceId: fixture.workspaceId, documents: final.documents.length };
 }
 
-async function historyUi(page, relativePath, effectiveRevisionId) {
+export async function historyUi(page, relativePath, effectiveRevisionId) {
   await refreshRow(page, relativePath);
   await page.getByTestId("file-workspace").locator(".inspector-tabs button").nth(1).click();
   const treeUi = page.getByTestId("file-revision-tree");

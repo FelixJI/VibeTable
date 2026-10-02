@@ -119,6 +119,9 @@ public partial class MainWindow
                         });
                     }
                 };
+                // Only the verified synthetic arm asks this Host to activate itself.
+                // Windows may refuse; the input observer still requires this exact HWND.
+                bool hostActivationAccepted = Activate();
                 target.ContentRendered += (_, _) =>
                 {
                     Point origin = AppWebView.PointToScreen(new Point());
@@ -129,6 +132,7 @@ public partial class MainWindow
                     {
                         operationId, workspaceId, source, mode,
                         hostProcessId = Environment.ProcessId,
+                        hostActivationAccepted,
                         hostHwnd = new WindowInteropHelper(this).Handle.ToInt64(),
                         targetHwnd = new WindowInteropHelper(target).Handle.ToInt64(),
                         targetX = center.X, targetY = center.Y,
