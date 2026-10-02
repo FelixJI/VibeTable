@@ -5790,6 +5790,7 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
     control_type: str,
 ) -> None:
     import base64
+    from concurrent.futures import ThreadPoolExecutor
 
     captured: dict[str, object] = {}
 
@@ -5819,7 +5820,6 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
     harness = (
         """
 $ErrorActionPreference = 'Stop'
-$clock = [System.Diagnostics.Stopwatch]::StartNew()
 $script:counts = @(COUNTS)
 $script:call = 0
 $root = [pscustomobject]@{}
@@ -5837,6 +5837,9 @@ $root | Add-Member ScriptMethod FindAll {
             ControlType=@{ProgrammaticName="ControlType.Edit"}}}
     }
 }
+[Console]::Out.WriteLine("TEST_PROVIDER_READY")
+if ([Console]::ReadLine() -ne "query") { throw "query start was not requested" }
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
 """.replace("COUNTS", ",".join(map(str, counts)))
         .replace("STATUS_PANES", str(status_panes))
         .replace("CONTROL_TYPE", control_type)
@@ -5848,17 +5851,44 @@ $root | Add-Member ScriptMethod FindAll {
         "-EncodedCommand",
         base64.b64encode((harness + query).encode("utf-16-le")).decode("ascii"),
     ]
-    if counts == (0,):
-        with pytest.raises(subprocess.TimeoutExpired):
-            subprocess.run(command, capture_output=True, timeout=5, check=False)
-    else:
+    # This test times the query, not cold PowerShell startup or installation of
+    # the fake provider. The complete production process still has the 5s
+    # deadline asserted above and exercised by the owned-provider integration.
+    with subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
-        except subprocess.TimeoutExpired as error:
-            pytest.fail(f"UIA query exceeded its original 5s budget; stderr={error.stderr!r}")
-        assert result.returncode == (0 if counts[-1] == 1 else 1), result.stderr
-        if counts == (2,):
-            assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in result.stderr
+            assert process.stdout is not None
+            with ThreadPoolExecutor(max_workers=1) as reader:
+                ready = reader.submit(process.stdout.readline)
+                try:
+                    assert ready.result(timeout=30) == "TEST_PROVIDER_READY\n"
+                except BaseException:
+                    process.kill()
+                    raise
+            timed_out = False
+            try:
+                _, stderr = process.communicate("query\n", timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _, stderr = process.communicate(timeout=5)
+                timed_out = True
+            assert "UIA_STAGE document-query begin" in stderr, stderr
+            assert timed_out == (counts == (0,)), stderr
+            if timed_out:
+                assert "UIA_STAGE document-query end" not in stderr
+            else:
+                assert process.returncode == (0 if counts[-1] == 1 else 1), stderr
+                if counts == (2,):
+                    assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in stderr
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
 
 
 @pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA metadata contract")
