@@ -564,7 +564,16 @@ def test_native_document_boundary_rejects_invalid_requests_before_windows(
 
 
 @pytest.mark.parametrize(
-    "observation", ["exact-new", "existing", "wrong-text", "multiple-documents", "multiple-tabs"]
+    "observation",
+    [
+        "exact-new",
+        "existing",
+        "wrong-text",
+        "multiple-documents",
+        "multiple-tabs",
+        "timeout-str",
+        "timeout-bytes",
+    ],
 )
 def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observation: str
@@ -578,6 +587,13 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
             return windows
 
         def document_text(self, _hwnd):
+            if observation in {"timeout-str", "timeout-bytes"}:
+                stderr = "UIA_STAGE document-query begin elapsedMs=12\n" + "x" * 5000
+                raise subprocess.TimeoutExpired(
+                    ["powershell.exe", "-EncodedCommand", "encoded-script"],
+                    5,
+                    stderr=stderr.encode("utf-8") if observation == "timeout-bytes" else stderr,
+                )
             if observation == "multiple-tabs":
                 raise subprocess.CalledProcessError(
                     1,
@@ -621,6 +637,81 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         assert result["uiaFailure"]["stderr"].startswith("UIA_TAB_COUNT maximum=1 actual=2")
         assert len(result["uiaFailure"]["stderr"]) == 4096
         assert "encoded-script" not in result["error"]
+    if observation in {"timeout-str", "timeout-bytes"}:
+        assert result["window"] == windows[-1]
+        assert result["uiaFailure"]["returnCode"] is None
+        assert result["uiaFailure"]["timeoutSeconds"] == 5
+        assert result["uiaFailure"]["stderr"].startswith(
+            "UIA_STAGE document-query begin elapsedMs=12"
+        )
+        assert len(result["uiaFailure"]["stderr"]) == 4096
+        assert result["error"] == "Shell UIA observation timed out after 5 seconds"
+        assert "EncodedCommand" not in json.dumps(result)
+        assert "encoded-script" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("case", ["zero", "multiple", "stem-only"])
+def test_native_window_failure_records_only_bounded_fixture_metadata_without_relaxing_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    request["action"] = "open-observe"
+    existing = {"hwnd": 10, "pid": 20, "title": source.name, "visible": True}
+    windows = [
+        existing,
+        {"hwnd": 99, "pid": 98, "title": "unrelated-private-window", "visible": True},
+    ]
+    if case == "multiple":
+        windows.extend(
+            {"hwnd": 30 + index, "pid": 40 + index, "title": source.name, "visible": True}
+            for index in range(10)
+        )
+    elif case == "stem-only":
+        windows.append(
+            {"hwnd": 30, "pid": 40, "title": source.stem + " - Notepad", "visible": True}
+        )
+    (controls / "document-native-open-baseline.json").write_text(
+        json.dumps(
+            {
+                "operationId": request["operationId"],
+                "source": str(source.resolve()),
+                "windows": [{"hwnd": 10, "pid": 20}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class NativeObserverStub:
+        def windows(self):
+            return windows
+
+        def document_text(self, _hwnd):
+            pytest.fail("an unverified window must never be read through UIA")
+
+        def close_new_document(self, _hwnd, _pid):
+            pytest.fail("an unverified window must never be closed")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", NativeObserverStub)
+    result = runner._handle_document_native_request(
+        request, host_scope=_FakeScope(), local_data=data, controls=controls
+    )
+    assert result["status"] == "unverified"
+    assert result["window"] is None
+    observation = result["windowObservation"]
+    assert observation["candidateCount"] == (10 if case == "multiple" else 0)
+    assert observation["matchingStemWindowCount"] == len(windows) - 1
+    assert observation["truncated"] is (case == "multiple")
+    assert len(observation["windows"]) == min(len(windows) - 1, 8)
+    assert observation["windows"][0]["newWindow"] is False
+    assert observation["windows"][0]["baselineHwnd"] is True
+    assert all(item["stemMatch"] is True for item in observation["windows"])
+    assert "unrelated-private-window" not in json.dumps(result)
+    if case == "stem-only":
+        assert observation["windows"][1]["newWindow"] is True
+        assert observation["windows"][1]["fullNameMatch"] is False
 
 
 def test_native_drag_input_short_write_fails_without_retry_and_releases_buttons(

@@ -1646,12 +1646,18 @@ class _DocumentNativeWindows:
         # Only a newly observed HWND is inspected. Windows' own UIA avoids a
         # Python COM dependency and does not launch or control an editor.
         script = """
+[Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState())")
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+[Console]::Error.WriteLine("UIA_STAGE assemblies end elapsedMs=$($clock.ElapsedMilliseconds)")
+[Console]::Error.WriteLine("UIA_STAGE root begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $root = [System.Windows.Automation.AutomationElement]::FromHandle(
     [IntPtr]::new([int64]$env:VIBETABLE_QA_NATIVE_HWND))
+[Console]::Error.WriteLine("UIA_STAGE root end elapsedMs=$($clock.ElapsedMilliseconds)")
 $documentCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Document)
@@ -1659,20 +1665,32 @@ $editCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Edit)
 $condition = [System.Windows.Automation.OrCondition]::new($documentCondition, $editCondition)
+[Console]::Error.WriteLine("UIA_STAGE document-query begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $documents = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+[Console]::Error.WriteLine("UIA_STAGE document-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($documents.Count)")
 if ($documents.Count -ne 1) { throw "UIA_DOCUMENT_COUNT expected=1 actual=$($documents.Count)" }
 $tabCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::TabItem)
+[Console]::Error.WriteLine("UIA_STAGE tab-query begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $tabs = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
+[Console]::Error.WriteLine("UIA_STAGE tab-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($tabs.Count)")
 if ($tabs.Count -gt 1) { throw "UIA_TAB_COUNT maximum=1 actual=$($tabs.Count)" }
 $items = @(foreach ($document in $documents) {
     $pattern = $null
+    [Console]::Error.WriteLine("UIA_STAGE pattern begin elapsedMs=$($clock.ElapsedMilliseconds)")
     if ($document.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+        [Console]::Error.WriteLine("UIA_STAGE pattern end elapsedMs=$($clock.ElapsedMilliseconds) kind=text")
+        [Console]::Error.WriteLine("UIA_STAGE read-text begin elapsedMs=$($clock.ElapsedMilliseconds)")
         @{ name = $document.Current.Name; text = $pattern.DocumentRange.GetText(4096) }
+        [Console]::Error.WriteLine("UIA_STAGE read-text end elapsedMs=$($clock.ElapsedMilliseconds)")
     } elseif ($document.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+        [Console]::Error.WriteLine("UIA_STAGE pattern end elapsedMs=$($clock.ElapsedMilliseconds) kind=value")
+        [Console]::Error.WriteLine("UIA_STAGE read-text begin elapsedMs=$($clock.ElapsedMilliseconds)")
         @{ name = $document.Current.Name; text = $pattern.Current.Value }
+        [Console]::Error.WriteLine("UIA_STAGE read-text end elapsedMs=$($clock.ElapsedMilliseconds)")
     } else {
+        [Console]::Error.WriteLine("UIA_STAGE pattern end elapsedMs=$($clock.ElapsedMilliseconds) kind=unavailable")
         throw 'UIA_TEXT_PATTERN unavailable'
     }
 })
@@ -1717,6 +1735,7 @@ def _handle_document_native_request(
 ) -> dict[str, Any]:
     native: _DocumentNativeWindows | None = None
     window: dict[str, Any] | None = None
+    window_observation: dict[str, Any] | None = None
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
@@ -1786,15 +1805,35 @@ def _handle_document_native_request(
         previous = {item["hwnd"] for item in baseline["windows"]}
         deadline = time.monotonic() + 2
         while True:
+            windows = native.windows()
             candidates = [
                 item
-                for item in native.windows()
+                for item in windows
                 if item["hwnd"] not in previous and item["visible"] and source.name in item["title"]
             ]
             if candidates or time.monotonic() >= deadline:
                 break
             time.sleep(0.025)
         if len(candidates) != 1:
+            related = [item for item in windows if source.stem in item["title"]]
+            window_observation = {
+                "candidateCount": len(candidates),
+                "matchingStemWindowCount": len(related),
+                "truncated": len(related) > 8,
+                "windows": [
+                    {
+                        "hwnd": item["hwnd"],
+                        "pid": item["pid"],
+                        "title": item["title"][:1024],
+                        "visible": item["visible"],
+                        "baselineHwnd": item["hwnd"] in previous,
+                        "newWindow": item["hwnd"] not in previous,
+                        "fullNameMatch": source.name in item["title"],
+                        "stemMatch": True,
+                    }
+                    for item in related[:8]
+                ],
+            }
             raise OSError("Shell Open has no unique newly created window for the synthetic TXT")
         window = candidates[0]
         documents = native.document_text(window["hwnd"])
@@ -1816,21 +1855,30 @@ def _handle_document_native_request(
             "newWindowClosed": True,
         }
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exception:
-        uia_failure = (
-            {"returnCode": exception.returncode, "stderr": (exception.stderr or "")[:4096]}
-            if isinstance(exception, subprocess.CalledProcessError)
-            else None
-        )
+        uia_failure: dict[str, str | int | float | None] | None = None
+        error = str(exception)
+        if isinstance(exception, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            stderr = exception.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            uia_failure = {
+                "returnCode": exception.returncode
+                if isinstance(exception, subprocess.CalledProcessError)
+                else None,
+                "stderr": stderr[:4096],
+            }
+            if isinstance(exception, subprocess.TimeoutExpired):
+                uia_failure["timeoutSeconds"] = exception.timeout
+                error = f"Shell UIA observation timed out after {exception.timeout} seconds"
+            else:
+                error = f"Shell UIA observation failed (exit {exception.returncode})"
         return {
             "requestId": request.get("requestId"),
             "status": "unverified",
             "action": request.get("action"),
-            "error": (
-                f"Shell UIA observation failed (exit {exception.returncode})"
-                if isinstance(exception, subprocess.CalledProcessError)
-                else str(exception)
-            ),
+            "error": error,
             "window": window,
+            "windowObservation": window_observation,
             "uiaFailure": uia_failure,
             "foreground": getattr(native, "foreground_observation", None),
         }
