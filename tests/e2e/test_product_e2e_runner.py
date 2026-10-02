@@ -5798,16 +5798,11 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
         "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
         "$document.Parent",
     )
-    # Execute the production query with a deterministic provider transition.
-    # No desktop/window is inspected and no UI input is generated.
-    assemblies = script[: script.index(' [Console]::Error.WriteLine("UIA_STAGE root begin'.strip())]
-    harness = (
-        assemblies
-        + """
+    # This provider stub exercises the query loop, so it needs no UIA assembly
+    # compilation or real provider registration inside the production deadline.
+    query = query.replace("[System.Windows.Automation.TreeScope]::Descendants", "4")
+    harness = """
 $ErrorActionPreference = 'Stop'
-$provider = [System.Windows.Automation.AutomationElement].Assembly.GetName()
-$provider.Name = "UIAutomationClientsideProviders"
-[System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly($provider)
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $script:counts = @(COUNTS)
 $script:call = 0
@@ -5818,7 +5813,6 @@ $root | Add-Member ScriptMethod FindAll {
     return [pscustomobject]@{Count=$count}
 }
 """.replace("COUNTS", ",".join(map(str, counts)))
-    )
     command = [
         "powershell.exe",
         "-NoProfile",
@@ -5896,3 +5890,66 @@ $documents = @(1..12 | ForEach-Object {
     assert all(item["offscreen"] is True and item["content"] is False for item in items)
     assert "PRIVATE_" not in result.stderr
     assert len(line) < 4096
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows UIA provider initialization")
+def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+
+    captured: dict[str, str] = {}
+
+    def capture(command, **_kwargs):
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="[]")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    script = captured["script"]
+    initialization = script[: script.index('[Console]::Error.WriteLine("UIA_STAGE root begin')]
+    harness = (
+        r"""
+# An observation must not need a compiler to initialize the system provider.
+function Add-Type {
+    param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
+    if ($TypeDefinition) { throw 'runtime C# compilation is unavailable' }
+    Microsoft.PowerShell.Utility\Add-Type -AssemblyName $AssemblyName
+}
+"""
+        + initialization
+        + r"""
+Add-Type -AssemblyName System.Windows.Forms
+$form = [Windows.Forms.Form]::new()
+$edit = [Windows.Forms.TextBox]::new()
+$edit.Text = 'owned-provider-regression'
+$form.Controls.Add($edit)
+try {
+    $form.Show()
+    [Windows.Forms.Application]::DoEvents()
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($form.Handle)
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit)
+    $items = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($items.Count -ne 1) { throw "owned Edit count=$($items.Count)" }
+    $pattern = $items[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($pattern.Current.Value -ne 'owned-provider-regression') { throw 'owned text mismatch' }
+} finally { $form.Close(); $form.Dispose() }
+"""
+    )
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode(harness.encode("utf-16-le")).decode("ascii"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

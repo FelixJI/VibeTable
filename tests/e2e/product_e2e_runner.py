@@ -1653,22 +1653,12 @@ $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-# .NET Framework's default-proxy loader inspects ReflectedType on caller
-# stack frames. Keep a named, non-inlined frame before PowerShell's dynamic
-# call site; otherwise standard EDIT controls degrade to generic Panes.
-Add-Type -ReferencedAssemblies ([System.Windows.Automation.AutomationElement].Assembly.Location) -TypeDefinition @"
-using System.Windows.Automation;
-public static class NativeDocumentUia {
-    [System.Runtime.CompilerServices.MethodImpl(
-        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-    public static void Initialize() {
-        var assembly = typeof(AutomationElement).Assembly.GetName();
-        assembly.Name = "UIAutomationClientsideProviders";
-        ClientSettings.RegisterClientSideProviderAssembly(assembly);
-    }
-}
-"@
-[NativeDocumentUia]::Initialize()
+# The default-proxy loader scans callers' ReflectedType. Public MethodInfo.Invoke
+# supplies a named framework frame without compiling C# inside the 5s budget.
+$assembly = [System.Windows.Automation.AutomationElement].Assembly.GetName()
+$assembly.Name = "UIAutomationClientsideProviders"
+[System.Windows.Automation.ClientSettings].GetMethod(
+    "RegisterClientSideProviderAssembly").Invoke($null, @($assembly))
 [Console]::Error.WriteLine("UIA_STAGE assemblies end elapsedMs=$($clock.ElapsedMilliseconds)")
 [Console]::Error.WriteLine("UIA_STAGE root begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $root = [System.Windows.Automation.AutomationElement]::FromHandle(
