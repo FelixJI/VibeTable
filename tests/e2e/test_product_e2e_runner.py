@@ -485,7 +485,9 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         def document_text(self, _hwnd):
             if observation == "multiple-tabs":
                 raise subprocess.CalledProcessError(
-                    1, ["powershell.exe"], stderr="New editor window cannot be uniquely verified"
+                    1,
+                    ["powershell.exe", "-EncodedCommand", "encoded-script"],
+                    stderr="UIA_TAB_COUNT maximum=1 actual=2\n" + "x" * 5000,
                 )
             text = source.read_text() if observation != "wrong-text" else "unrelated user text"
             documents = [{"name": source.name, "text": text}]
@@ -518,6 +520,12 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
     )
     assert result["status"] == ("observed" if observation == "exact-new" else "unverified")
     assert closed == ([(30, 40)] if observation == "exact-new" else [])
+    if observation == "multiple-tabs":
+        assert result["window"] == windows[-1]
+        assert result["uiaFailure"]["returnCode"] == 1
+        assert result["uiaFailure"]["stderr"].startswith("UIA_TAB_COUNT maximum=1 actual=2")
+        assert len(result["uiaFailure"]["stderr"]) == 4096
+        assert "encoded-script" not in result["error"]
 
 
 def test_native_drag_input_short_write_fails_without_retry_and_releases_buttons(

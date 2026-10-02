@@ -308,7 +308,7 @@ export async function runFileDocumentOperationsJourney(page, recorder, runtime, 
   const rejected = await helpers.waitForCapturedBridgeMessage(page, 30000);
   recorder.check("old missing confirmation is rejected after a same-effective rename",
     rejected.payload?.ok === false && rejected.payload?.error?.code === "file_history.pending_change_stale", { rejected });
-  await helpers.acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "file_history.pending_change_stale");
+  await helpers.acknowledgeExpectedBridgeFailure(page, rejected);
   await page.keyboard.press("Escape");
   assert.deepEqual(await tree(page, helpers, imported.documentId), originalTree);
   const preserved = (await query(page, helpers)).documents.find(item => item.documentId === imported.documentId);
@@ -335,14 +335,25 @@ export async function runFileDocumentOperationsJourney(page, recorder, runtime, 
 
   const missing = at("page-002.txt");
   const missingTree = await tree(page, helpers, missing.documentId);
+  // Confirmed transactions rematerialize active leaves, so create fresh missing state afterwards.
+  await bytes(recorder, fixture, missing.relativePath, fixtures[3].text);
+  await closeWorkspace(page, recorder, helpers);
+  const missingMaterializedSource = path.join(runtime.controlsDir, "41-missing-materialized-source.txt");
+  await assert.rejects(fs.stat(missingMaterializedSource), { code: "ENOENT" });
+  await fs.rename(path.join(fixture.files, missing.relativePath), missingMaterializedSource);
+  await assert.rejects(fs.stat(path.join(fixture.files, missing.relativePath)), { code: "ENOENT" });
+  recorder.check("fresh missing fixture preserves both independently moved sources",
+    await fs.readFile(missingMaterializedSource, "utf8") === fixtures[3].text
+      && await fs.readFile(path.join(runtime.controlsDir, "41-missing-source.txt"), "utf8") === fixtures[3].text);
+  await reopen(page, recorder, helpers, fixture);
   await refreshRow(page, missing.relativePath);
   await helpers.beginBridgeMessageCapture(page, ["document.listLoaded"]);
   await page.getByTestId("document-refresh").click();
   const missingList = await helpers.waitForCapturedBridgeMessage(page, 30000);
   const missingEntry = missingList.payload.entries.find(item => item.documentId === missing.documentId);
   recorder.check("missing state exposes only the supported picker reconnection capability",
-    missingEntry.availability === "missing" && missingEntry.capabilities.includes("relink")
-      && !missingEntry.capabilities.includes("open"));
+    missingEntry?.availability === "missing" && missingEntry.capabilities.includes("relink")
+      && !missingEntry.capabilities.includes("open"), { missingEntry, missingList });
   await refreshRow(page, missing.relativePath);
   const replacement = "S41 replacement chosen through the Host picker\n";
   const replacementSource = path.join(runtime.controlsDir, "41-relink-source.txt");
@@ -362,7 +373,8 @@ export async function runFileDocumentOperationsJourney(page, recorder, runtime, 
   await bytes(recorder, fixture, missing.relativePath, replacement);
   recorder.check("relink reads the selected synthetic source without rewriting it",
     await fs.readFile(replacementSource, "utf8") === replacement
-      && await fs.readFile(path.join(runtime.controlsDir, "41-missing-source.txt"), "utf8") === fixtures[3].text);
+      && await fs.readFile(path.join(runtime.controlsDir, "41-missing-source.txt"), "utf8") === fixtures[3].text
+      && await fs.readFile(missingMaterializedSource, "utf8") === fixtures[3].text);
   const final = await query(page, helpers);
   recorder.check("all confirmed operations preserve the expected document set", final.documents.length === 102);
   await page.screenshot({ path: path.join(runtime.evidenceDir, "41-file-identity-confirmations.png") });

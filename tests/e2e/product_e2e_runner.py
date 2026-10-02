@@ -1650,12 +1650,12 @@ $editCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.ControlType]::Edit)
 $condition = [System.Windows.Automation.OrCondition]::new($documentCondition, $editCondition)
 $documents = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-if ($documents.Count -ne 1) { throw 'New editor window cannot be uniquely verified' }
+if ($documents.Count -ne 1) { throw "UIA_DOCUMENT_COUNT expected=1 actual=$($documents.Count)" }
 $tabCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::TabItem)
 $tabs = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
-if ($tabs.Count -gt 1) { throw 'New editor window cannot be uniquely verified' }
+if ($tabs.Count -gt 1) { throw "UIA_TAB_COUNT maximum=1 actual=$($tabs.Count)" }
 $items = @(foreach ($document in $documents) {
     $pattern = $null
     if ($document.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
@@ -1663,7 +1663,7 @@ $items = @(foreach ($document in $documents) {
     } elseif ($document.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
         @{ name = $document.Current.Name; text = $pattern.Current.Value }
     } else {
-        throw 'New editor document does not expose readable UIA text'
+        throw 'UIA_TEXT_PATTERN unavailable'
     }
 })
 ConvertTo-Json -InputObject $items -Compress
@@ -1706,6 +1706,7 @@ def _handle_document_native_request(
     controls: Path,
 ) -> dict[str, Any]:
     native: _DocumentNativeWindows | None = None
+    window: dict[str, Any] | None = None
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
@@ -1805,11 +1806,22 @@ def _handle_document_native_request(
             "newWindowClosed": True,
         }
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exception:
+        uia_failure = (
+            {"returnCode": exception.returncode, "stderr": (exception.stderr or "")[:4096]}
+            if isinstance(exception, subprocess.CalledProcessError)
+            else None
+        )
         return {
             "requestId": request.get("requestId"),
             "status": "unverified",
             "action": request.get("action"),
-            "error": str(exception),
+            "error": (
+                f"Shell UIA observation failed (exit {exception.returncode})"
+                if isinstance(exception, subprocess.CalledProcessError)
+                else str(exception)
+            ),
+            "window": window,
+            "uiaFailure": uia_failure,
             "foreground": getattr(native, "foreground_observation", None),
         }
     finally:

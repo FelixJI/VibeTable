@@ -11364,7 +11364,7 @@ const scenarios = {
     runFileDocumentOperationsJourney(page, recorder, runtime, {
       waitForShell, openWorkspaceCenterFromSwitcher, replicaUiMethod, activateWorkspaceThroughUi,
       rawWorkspaceV2Request, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
-      beginWorkspaceV2MethodCapture, acknowledgeExpectedBridgeFailureByCodeIfPresent,
+      beginWorkspaceV2MethodCapture, acknowledgeExpectedBridgeFailure,
     }),
   "42-file-document-native-operations": async (page, recorder, _network, runtime) => {
     await waitForShell(page, recorder, { requireDatabaseOpened: true });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import { test } from "node:test";
-import { hasRestoreWorkspaceSessionInPage, pauseRestoreInPage, requireRestorePublication, requireRecoveredRestore, requireRestoreCrashCheckpoint } from "./file_restore_crash_journey.mjs";
+import { resumeFileRestoreCrash, pauseRestoreInPage, requireRestorePublication, requireRecoveredRestore, requireRestoreCrashCheckpoint } from "./file_restore_crash_journey.mjs";
 
 test("only the exact pending Restore has an intentional crash exception", () => {
   const request = { requestId: "restore" };
@@ -85,23 +86,50 @@ test("recovery binds the seed Restore intent even when startup publishes a later
 });
 
 
-test("reopen waits for the exact new workspace bootstrap instead of a switch terminal", t => {
+test("reopen reads the exact live session once when diagnostics missed startup bootstrap", async t => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   t.after(() => {
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
     else delete globalThis.window;
   });
   const diagnostics = { workspaceSession: null };
-  Object.defineProperty(globalThis, "window", { configurable: true,
-    value: { __vibetableE2EBridgeDiagnostics: diagnostics } });
   const expected = { workspaceId: "restored-workspace", sessionEpoch: 8 };
-  assert.equal(hasRestoreWorkspaceSessionInPage(expected), false);
-  for (const workspaceSession of [
+  const seed = { workspaceId: expected.workspaceId, restoreCrash: {
+    request: { payload: { wire: { sessionEpoch: 7 } } }, before: { documentId: "doc" },
+    publication: { head: {} },
+  } };
+  t.mock.method(fs, "readFile", async () => JSON.stringify(seed));
+  const reachedTree = new Error("reached authoritative tree");
+  for (const session of [expected, null,
     { ...expected, workspaceId: "other-workspace" }, { ...expected, sessionEpoch: 7 },
   ]) {
-    diagnostics.workspaceSession = workspaceSession;
-    assert.equal(hasRestoreWorkspaceSessionInPage(expected), false);
+    let reservations = 0;
+    let treeReads = 0;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      __vibetableE2EBridgeDiagnostics: diagnostics,
+      __vibetableE2EWorkspaceWirePort: { reserve(operationId) {
+        reservations += 1;
+        assert.match(operationId, /^[0-9a-f-]{36}$/);
+        if (!session) throw new Error("workspace wire allocator has no active session");
+        return { scope: "workspace", operationId, sequence: 1024, ...session };
+      } },
+    } });
+    const run = resumeFileRestoreCrash({ evaluate: callback => callback() }, { check() {} },
+      "seed-state.json", {}, {
+        activateRestartedWorkspace: async () => ({ start: "home",
+          switched: { result: { ...expected, state: "openedWritable" } } }),
+        rawWorkspaceV2Request: async (_page, method, params) => {
+          treeReads += 1;
+          assert.equal(method, "fileHistory.readTree");
+          assert.deepEqual(params, { documentId: "doc" });
+          throw reachedTree;
+        },
+      });
+    await assert.rejects(run, session === expected
+      ? error => error === reachedTree
+      : session === null ? /no active session/ : { code: "ERR_ASSERTION" });
+    assert.equal(reservations, 1);
+    assert.equal(treeReads, session === expected ? 1 : 0);
+    assert.equal(diagnostics.workspaceSession, null);
   }
-  diagnostics.workspaceSession = expected;
-  assert.equal(hasRestoreWorkspaceSessionInPage(expected), true);
 });

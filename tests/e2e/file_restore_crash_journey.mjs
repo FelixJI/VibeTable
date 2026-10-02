@@ -229,11 +229,6 @@ export async function seedFileRestoreCrash(page, recorder, runtime, helpers) {
   }
 }
 
-export function hasRestoreWorkspaceSessionInPage({ workspaceId, sessionEpoch }) {
-  const session = window.__vibetableE2EBridgeDiagnostics?.workspaceSession;
-  return session?.workspaceId === workspaceId && session.sessionEpoch === sessionEpoch;
-}
-
 export async function resumeFileRestoreCrash(page, recorder, statePath, runtime, helpers) {
   const seed = JSON.parse(await fs.readFile(statePath, "utf8"));
   const { start, switched } = await helpers.activateRestartedWorkspace(page, seed.workspaceId);
@@ -243,12 +238,12 @@ export async function resumeFileRestoreCrash(page, recorder, statePath, runtime,
   assert.ok(switched.result.sessionEpoch > seed.restoreCrash.request.payload.wire.sessionEpoch);
   recorder.check("second normal Host activates the exact seeded UUID in a newer writable session", true,
     { start, switched: switched.result });
-  // The switch terminal precedes the asynchronously delivered bootstrap.
-  await page.waitForFunction(hasRestoreWorkspaceSessionInPage, {
-    workspaceId: seed.workspaceId, sessionEpoch: switched.result.sessionEpoch,
-  }, { timeout: 30000 });
-  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  // A same-UUID switch is idempotent; startup bootstrap may predate diagnostics.
+  // Reserve once through the formal renderer session, never poll the allocator.
+  const session = await page.evaluate(() =>
+    window.__vibetableE2EWorkspaceWirePort.reserve(crypto.randomUUID()));
   assert.equal(session.workspaceId, seed.workspaceId);
+  assert.equal(session.sessionEpoch, switched.result.sessionEpoch);
   const state = seed.restoreCrash;
   const binding = { workspaceId: seed.workspaceId, operationId: state.operationId,
     restoreIntent: state.publication.head };
