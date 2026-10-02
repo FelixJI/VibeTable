@@ -499,6 +499,7 @@ public partial class MainWindow : Window
                 _applicationRequests.CurrentPreferences.MinimizeToTrayOnClose);
         if (_e2eControlsDir is not null)
         {
+            StartDocumentNativeObservation();
             _testModeHost = new TestModeHostController(
                 _e2eControlsDir,
                 new TestModeHost(
@@ -685,7 +686,8 @@ public partial class MainWindow : Window
             CurrentWorkspaceDocumentBinding,
             new DocumentCapabilityStore(),
             new WindowsLocalDocumentActions(),
-            new ShellDocumentPreview(),
+            new ShellDocumentPreview(new ShellPreviewHandlerResolver(), AppContext.BaseDirectory,
+                _e2eControlsDir),
             _e2eControlsDir is null
                 ? new WindowsLocalDocumentFilePicker()
                 : new TestModeLocalDocumentFilePicker(_e2eControlsDir),
@@ -1002,7 +1004,9 @@ public partial class MainWindow : Window
     {
         var data = new DataObject();
         data.SetData(DataFormats.FileDrop, new[] { path });
-        DragDrop.DoDragDrop(AppWebView, data, DragDropEffects.Copy);
+        RecordDocumentNativeDrag(path, "started", null);
+        DragDropEffects effect = DragDrop.DoDragDrop(AppWebView, data, DragDropEffects.Copy);
+        RecordDocumentNativeDrag(path, "completed", effect);
     }
 
     private void OnViewModelPropertyChanged(
@@ -1104,6 +1108,7 @@ public partial class MainWindow : Window
         _productRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _productSidecarGatewayLifecycle.Dispose();
         _testModeHost?.Dispose();
+        StopDocumentNativeObservation();
         Application.Current.SessionEnding -= OnSessionEnding;
         _trayIcon?.Dispose();
         _session.Cancel();

@@ -16,15 +16,31 @@
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@0bdbc1b29ba237dd17f5d6f85be90bd99a2d1268`
-- GitHub run：[main CI 36333755042](https://github.com/FelixJI/VibeTable/actions/runs/36333755042)
+- source SHA：`GitHub/main@b17c7a6b7d0c9a22049ae664b7e678a10cc7518c`
+- GitHub run：[main CI 36963790989](https://github.com/FelixJI/VibeTable/actions/runs/36963790989)
 - 报告契约：`contractVersion=2.0`
-- 结果：35/35 passed、0 failed、0 skipped。
-- 当前 manifest gap：4（`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`）。
+- 结果：39/39 passed、0 failed、0 skipped。
+- 当前 manifest gap：4（`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：3（`05-formula-lifecycle`、`14-document-diff`、`18-workspace-search`）。
+- 当前 manifest changed：无。
 
-新增登记的 39、40 两个场景尚未取得任何真实运行资格，不能引用本节历史样本作为其证据；分区随当前 manifest 生效：39 随计算链族进入 data-io lane，40 默认进入 resilience lane（该 lane 提供 Go，test-only producer 可在同一 lane 内运行），两 lane 的 1800 秒上限不变。
+同一 main 候选的 data-io 7 场与 resilience 32 场精确覆盖当时 manifest 的 39 场，两 lane 的原报告全部通过，六 lane 的 commit/source/candidate/资产绑定一致，required 成功。报告内部路径分别为 `lane-evidence/data-io/20261002T043152Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261002T043620Z/product-e2e-report.json`。普通 CD36970691192 成功，正式 Publish 与 attestation 均 skipped；[PR423 合并后证据](https://github.com/FelixJI/VibeTable/pull/423#issuecomment-5946519425)保留核验范围。此样本不代表 #415/#409 全部 AC/GAC 已通过。
+
+覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`、`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`。
+
+S41–44 尚未取得新最终包的真实 Host 资格：分别补文件排序分页/身份确认/丢失重连、真实 Windows 打开预览拖出、多 autosave/正式分支/非当前叶子恢复激活、真实 Restore 崩溃后的同 UUID 冷恢复。聚焦契约与静态审阅不替代实跑；沿既有 180 秒 driver 和分片 1800 秒预算，能力缺失或证据不足均失败。
+
+## 前一完整样本 2026-09-27（0b，历史）
+
+- 历史 source：main `0bdbc1b`
+- 历史 main CI run：36333755042
+- 历史报告契约：2.0
+- 历史结果：35 场全部通过，失败与跳过均为 0。
+- 当时 manifest gap：4（`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`）。
+- 当时 manifest surplus：无。
+- 当时 manifest changed：3（`05-formula-lifecycle`、`14-document-diff`、`18-workspace-search`）。
+
+在本节历史时点，新增登记的 39、40 尚未取得真实运行资格，不能引用本节历史样本作为其证据；分区随当前 manifest 生效：39 随计算链族进入 data-io lane，40 默认进入 resilience lane（该 lane 提供 Go，test-only producer 可在同一 lane 内运行），两 lane 的 1800 秒上限不变。
 
 本次 S05 扩展的局部候选验证与截图见 [PR #397](https://github.com/FelixJI/VibeTable/pull/397)。局部验证仅覆盖新增断言，不替代完整 PR 门禁，也不计入本节的历史主干样本。
 

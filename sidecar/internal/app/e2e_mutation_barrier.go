@@ -84,6 +84,10 @@ func runE2EMutationBarrier(directory string, armPath string) error {
 	}
 
 	releasePath := filepath.Join(directory, e2eMutationBarrierReleaseFile)
+	return waitForE2EMutationBarrierRelease(releasePath)
+}
+
+func waitForE2EMutationBarrierRelease(releasePath string) error {
 	deadline := time.Now().Add(e2eMutationBarrierTimeout)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(releasePath); err == nil {

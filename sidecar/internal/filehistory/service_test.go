@@ -703,3 +703,36 @@ func TestOpenRejectsTamperedRevisionSizeMetadata(t *testing.T) {
 		t.Fatalf("tampered size accepted: %v", err)
 	}
 }
+
+func TestDeleteExpectedPathValidation(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ctx := context.Background()
+	first, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne, Path: "drafts/a.txt",
+		Kind: RevisionFormal, Content: []byte("path-bound delete"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRoot := fixture.service.Root()
+	beforeRecovery := fixture.coordinator.RecoveryState()
+	for _, expected := range [][]string{{""}, {"drafts/../drafts/a.txt"}, {"drafts/a.txt", "other.txt"}} {
+		if _, err := fixture.service.Delete(ctx, fixture.token, testDocumentOne,
+			stringRef(first.Revision.RevisionID), expected...); !errors.Is(err, ErrPathInvalid) {
+			t.Fatalf("delete expected paths %q error = %v", expected, err)
+		}
+		after, err := fixture.service.Inspect(testDocumentOne)
+		if err != nil || !reflect.DeepEqual(after, first.Document) ||
+			fixture.service.Root() != beforeRoot || fixture.coordinator.RecoveryState() != beforeRecovery {
+			t.Fatalf("invalid expected paths changed authority: %q, %#v, %v", expected, after, err)
+		}
+	}
+	deleted, err := fixture.service.Delete(ctx, fixture.token, testDocumentOne,
+		stringRef(first.Revision.RevisionID), "drafts/a.txt")
+	if err != nil || deleted.Document.Status != DocumentDeleted ||
+		deleted.Document.RelativePath != first.Document.RelativePath ||
+		deleted.Document.EffectiveRevisionID != first.Document.EffectiveRevisionID ||
+		!reflect.DeepEqual(deleted.Document.Revisions, first.Document.Revisions) {
+		t.Fatalf("matching path-bound delete = %#v, %v", deleted, err)
+	}
+}

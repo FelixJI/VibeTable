@@ -345,9 +345,8 @@ func (watcher *Watcher) ReadStable(
 		watcher.filesRoot,
 		filepath.FromSlash(normalized),
 	)
-	if !pathWithin(watcher.filesRoot, target) ||
-		pathHasReparsePoint(target) {
-		return nil, ErrUnsafeFilePath
+	if _, err := safeLstat(target, watcher.filesRoot); err != nil {
+		return nil, err
 	}
 	return watcher.stableRead(ctx, target)
 }

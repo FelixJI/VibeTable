@@ -301,6 +301,38 @@ describe("workspace v2 pending external file changes", () => {
     }
   });
 
+  it("parses missing-file observations without a content hash", () => {
+    const change = {
+      ...pendingReply.result.changes[0],
+      missing: true,
+      observedHash: "",
+      observedSize: 0,
+    };
+    const parsed = parseWorkspaceV2Reply({
+      ...pendingReply,
+      result: { changes: [change] },
+    });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.method === "fileHistory.listPendingChanges") {
+      expect(parsed.result.changes).toEqual([change]);
+    }
+  });
+
+  it.each([
+    { missing: false, observedHash: "" },
+    { missing: true, observedHash: null },
+    { missing: true, observedHash: 0 },
+    { missing: true, observedHash: false },
+    { missing: "true", observedHash: "" },
+    { missing: true, observedHash: "", relativePath: "" },
+    { missing: true, observedHash: "", observedSize: -1 },
+  ])("rejects invalid pending observations: %j", (invalid) => {
+    expect(() => parseWorkspaceV2Reply({
+      ...pendingReply,
+      result: { changes: [{ ...pendingReply.result.changes[0], ...invalid }] },
+    })).toThrow();
+  });
+
   it("rejects unknown pending-change fields", () => {
     const invalid = structuredClone(pendingReply) as unknown as {
       result: { changes: Array<Record<string, unknown>> };

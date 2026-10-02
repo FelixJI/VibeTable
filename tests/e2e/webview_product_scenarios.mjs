@@ -47,6 +47,11 @@ import { runDataIoInteroperability } from "./data_io_interoperability.mjs";
 import { runCollectionFormulaJourney } from "./collection_formula_journey.mjs";
 import { runCalculationChainJourney } from "./calculation_chain_journey.mjs";
 import { runFileHistoryCapacityJourney } from "./file_history_capacity_journey.mjs";
+import { runFileDocumentOperationsJourney, runFileRevisionLeavesJourney }
+  from "./file_document_operations_journey.mjs";
+import { runFileDocumentNativeOperationsJourney } from "./file_document_native_operations_journey.mjs";
+import { seedFileRestoreCrash, resumeFileRestoreCrash, requireRestoreCrashCheckpoint }
+  from "./file_restore_crash_journey.mjs";
 import { COMBINATION_DOCX, COMBINATION_XLSX, FILE_WORKFLOW_FINAL_CALCULATION_ORACLE,
   fileWorkflowCombinationBeforeCorpus, fileWorkflowCombinationSources, fileWorkflowHasCurrentBinding } from "./file_workflow_combination.mjs";
 import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
@@ -11355,6 +11360,26 @@ const scenarios = {
       replicaUiMethod,
       activateWorkspaceThroughUi,
     }),
+  "41-file-document-operations": (page, recorder, _network, runtime) =>
+    runFileDocumentOperationsJourney(page, recorder, runtime, {
+      waitForShell, openWorkspaceCenterFromSwitcher, replicaUiMethod, activateWorkspaceThroughUi,
+      rawWorkspaceV2Request, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+      beginWorkspaceV2MethodCapture, acknowledgeExpectedBridgeFailure,
+    }),
+  "42-file-document-native-operations": async (page, recorder, _network, runtime) => {
+    await waitForShell(page, recorder, { requireDatabaseOpened: true });
+    return runFileDocumentNativeOperationsJourney(page, recorder, runtime, {
+      beginBridgeMessageCapture, waitForCapturedBridgeMessage, rawWorkspaceV2Request,
+    });
+  },
+  "43-file-revision-leaves": (page, recorder, _network, runtime) =>
+    runFileRevisionLeavesJourney(page, recorder, runtime, {
+      waitForShell, openWorkspaceCenterFromSwitcher, replicaUiMethod, activateWorkspaceThroughUi,
+      rawWorkspaceV2Request, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    }),
+  "44-file-restore-crash": () => {
+    throw new Error("Restore crash requires the owned seed and normal cold-Host resume phases");
+  },
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {
@@ -11643,6 +11668,12 @@ async function main() {
         if (args.scenario === "39-file-workflow-combination") {
           return scenario39Seed(candidate, checks, runtime);
         }
+        if (args.scenario === "44-file-restore-crash") {
+          return seedFileRestoreCrash(candidate, checks, runtime, {
+            waitForShell, rawWorkspaceV2Request, replicaUiMethod, beginBridgeMessageCapture,
+            waitForCapturedBridgeMessage, captureRestoreCrashCheckpoint: runtime.captureRestoreCrashCheckpoint,
+          });
+        }
         return seedNaturalRetentionAging(candidate, checks);
       }
       : args["persistent-phase"] === "resume"
@@ -11656,6 +11687,11 @@ async function main() {
           if (args.scenario === "39-file-workflow-combination") {
             return scenario39Resume(candidate, checks, args.state, runtime);
           }
+          if (args.scenario === "44-file-restore-crash") {
+            return resumeFileRestoreCrash(candidate, checks, args.state, runtime, {
+              activateRestartedWorkspace, rawWorkspaceV2Request, acknowledgeExpectedBridgeFailure,
+            });
+          }
           return resumeNaturalRetentionAging(candidate, checks, args.state);
         }
         : scenarios[args.scenario];
@@ -11667,6 +11703,22 @@ async function main() {
         dataRoot: path.resolve(args["data-root"]),
         replicaStage: args["replica-stage"],
         replicaState: args["replica-state"],
+        async captureRestoreCrashCheckpoint(candidate, checks, request) {
+          if (args.scenario !== "44-file-restore-crash" || args["persistent-phase"] !== "seed") {
+            throw new Error("Restore crash checkpoint is restricted to the 44 seed phase");
+          }
+          assertCleanRendererDiagnostics(checks, consoleEntries, pageErrors, network);
+          requireRestoreCrashCheckpoint(await readBridgeDiagnostics(candidate), request);
+          const screenshot = path.join(evidenceDir, "44-file-restore-crash-before-kill.png");
+          const trace = path.join(evidenceDir, "44-file-restore-crash-before-kill-trace.zip");
+          await candidate.screenshot({ path: screenshot, fullPage: true });
+          await context.tracing.stop({ path: trace });
+          result.restoreCrashTraceClosed = true;
+          const bridgeDiagnostics = await readBridgeDiagnostics(candidate);
+          requireRestoreCrashCheckpoint(bridgeDiagnostics, request);
+          assertCleanRendererDiagnostics(checks, consoleEntries, pageErrors, network);
+          return { bridgeDiagnostics, rendererDiagnosticsClean: true, screenshot, trace };
+        },
         recordUiTiming(name, durationMs, details = {}) {
           result.uiTimings.push({
             name,
@@ -11684,9 +11736,18 @@ async function main() {
       }
     }
     else throw new Error(`unknown product scenario: ${args.scenario}`);
-    result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);
-    assertCleanBridgeDiagnostics(recorder, result.bridgeDiagnostics);
-    assertCleanRendererDiagnostics(recorder, consoleEntries, pageErrors, network);
+    if (args.scenario === "44-file-restore-crash" && args["persistent-phase"] === "seed"
+      && result.intentionalRestoreCrash?.status === "completed") {
+      result.bridgeDiagnostics = result.restoreCrash.checkpoint.bridgeDiagnostics;
+      requireRestoreCrashCheckpoint(result.bridgeDiagnostics, result.restoreCrash.request);
+      recorder.check("only the bound Restore lacks a terminal after its own Host scope intentionally crashed",
+        result.restoreCrash.checkpoint.rendererDiagnosticsClean === true
+          && result.restoreCrashTraceClosed === true, { checkpoint: result.restoreCrash.checkpoint });
+    } else {
+      result.bridgeDiagnostics = await waitForBridgeDiagnosticsToSettle(page);
+      assertCleanBridgeDiagnostics(recorder, result.bridgeDiagnostics);
+      assertCleanRendererDiagnostics(recorder, consoleEntries, pageErrors, network);
+    }
     result.status = "passed";
   } catch (error) {
     result.error = {
@@ -11701,7 +11762,8 @@ async function main() {
   } finally {
     result.finishedAt = new Date().toISOString();
     result.durationMs = Date.parse(result.finishedAt) - Date.parse(result.startedAt);
-    if (page) {
+    if (page && !(args.scenario === "44-file-restore-crash"
+      && args["persistent-phase"] === "seed" && result.intentionalRestoreCrash?.status === "completed")) {
       if (!result.bridgeDiagnostics) {
         try {
           result.bridgeDiagnostics = await readBridgeDiagnostics(page);
@@ -11718,7 +11780,7 @@ async function main() {
         result.screenshotError = String(error);
       }
     }
-    if (context) {
+    if (context && !result.restoreCrashTraceClosed) {
       try {
         await context.tracing.stop({
           path: path.join(evidenceDir, `${args.scenario}-trace.zip`),

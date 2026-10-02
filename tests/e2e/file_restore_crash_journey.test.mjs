@@ -1,0 +1,135 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { test } from "node:test";
+import { resumeFileRestoreCrash, pauseRestoreInPage, requireRestorePublication, requireRecoveredRestore, requireRestoreCrashCheckpoint } from "./file_restore_crash_journey.mjs";
+
+test("only the exact pending Restore has an intentional crash exception", () => {
+  const request = { requestId: "restore" };
+  const diagnostics = { failures: [], pending: [{ requestId: "restore", requestType: "fileHistory.restore" }], roundTrips: [] };
+  requireRestoreCrashCheckpoint(diagnostics, request);
+  assert.throws(() => requireRestoreCrashCheckpoint({ ...diagnostics, failures: [{ requestId: "other" }] }, request));
+  assert.throws(() => requireRestoreCrashCheckpoint({ ...diagnostics, pending: [...diagnostics.pending, { requestId: "other" }] }, request));
+  assert.throws(() => requireRestoreCrashCheckpoint({ ...diagnostics, roundTrips: [{ requestId: "restore" }] }, request));
+});
+
+test("the UI seam releases the identical Restore message exactly once", () => {
+  const sent = [];
+  const listeners = new Set();
+  const webview = { postMessage: raw => sent.push(raw), addEventListener: (_, listener) => listeners.add(listener),
+    removeEventListener: (_, listener) => listeners.delete(listener) };
+  globalThis.window = { chrome: { webview } };
+  const params = { documentId: "doc", historicalRevisionId: "old", expectedEffectiveRevisionId: "current" };
+  try {
+    pauseRestoreInPage(params);
+    for (const listener of listeners) listener({ data: { type: "workspace.changed" } });
+    assert.equal(window.__s44Restore.terminal, null);
+    const raw = JSON.stringify({ type: "workspace.v2.request", requestId: "actual", payload: {
+      method: "fileHistory.restore", params, wire: { operationId: "actual-operation", sequence: 8 } } });
+    webview.postMessage(raw);
+    assert.deepEqual(sent, []);
+    assert.equal(window.__s44Restore.message.payload.wire.operationId, "actual-operation");
+    window.__s44Restore.release();
+    assert.equal(sent[0], raw);
+    assert.throws(() => window.__s44Restore.release(), /cannot be released/);
+    window.__s44Restore.dispose();
+    assert.equal(listeners.size, 0);
+    pauseRestoreInPage(params);
+    assert.throws(() => webview.postMessage({ type: "workspace.v2.request", payload: {
+      method: "fileHistory.restore", params: { ...params, historicalRevisionId: "wrong" } } }), /different immutable source/);
+  } finally { window.__s44Restore.dispose(); delete globalThis.window; }
+});
+
+function fixture() {
+  const old = { revisionId: "old", documentId: "doc", revisionOrdinal: 1, formalVersion: 1,
+    objectId: "original-object", contentHash: "existing-contract", size: 4, mimeType: "text/plain" };
+  const current = { ...old, revisionId: "current", revisionOrdinal: 2, formalVersion: 2 };
+  const before = { documentId: "doc", effectiveRevisionId: "current", revisions: [old, current] };
+  const result = { revisionId: "restore", revisionOrdinal: 3, formalVersion: 3 };
+  const head = { mutationRevision: 4, sessionEpoch: 7, fenceEpoch: 3, claimId: "claim" };
+  const receipt = { method: "fileHistory.restore", result };
+  const proof = { head, intent: { ...head, state: "prepared" }, committedMutationRevision: 3, receipt, cachedReceipt: null,
+    journal: { ...head, workspaceId: "workspace", state: "applied", operations: [{ path: "restore-crash-44.txt", desired: true, objectId: old.objectId }] },
+    bytes: "S44 historical formal revision, restored after real sidecar death\n" };
+  const ready = { ...head, workspaceId: "workspace", point: "before-finish-committed-mutation", result };
+  const after = { documentId: "doc", effectiveRevisionId: "restore", revisions: [...before.revisions, {
+    ...old, ...result, kind: "restore", parentRevisionId: "current", restoredFromRevisionId: "old" }] };
+  return { before, after, ready, proof, result };
+}
+
+test("the publication oracle rejects wrong lineage, unfinished recovery and repeated Restore", () => {
+  const { before, after, ready, proof, result } = fixture();
+  requireRestorePublication(before, "old", ready, proof);
+  assert.throws(() => requireRestorePublication(before, "old", ready, { ...proof, cachedReceipt: proof.receipt }));
+  assert.throws(() => requireRestorePublication(before, "old", ready, { ...proof, journal: { ...proof.journal, state: "prepared" } }));
+  const recovered = { ...proof, intent: { ...proof.head, state: "committed" },
+    restoreIntent: { ...proof.head, state: "committed" }, committedMutationRevision: 4, journal: null };
+  requireRecoveredRestore(before, after, "old", result, recovered, proof.head);
+  assert.throws(() => requireRecoveredRestore(before, after, "old", result, proof, proof.head));
+  assert.throws(() => requireRecoveredRestore(before, { ...after, revisions: [...after.revisions, after.revisions[2]] }, "old", result, recovered, proof.head));
+  assert.throws(() => requireRecoveredRestore(before, { ...after, revisions: [{ ...before.revisions[0], size: 9 }, ...after.revisions.slice(1)] }, "old", result, recovered, proof.head));
+  assert.throws(() => requireRecoveredRestore(before, { ...after, revisions: [...before.revisions, { ...after.revisions[2], restoredFromRevisionId: "current" }] }, "old", result, recovered, proof.head));
+});
+
+test("recovery binds the seed Restore intent even when startup publishes a later head", () => {
+  const { before, after, proof, result } = fixture();
+  const laterHead = { mutationRevision: 5, sessionEpoch: 8, fenceEpoch: 4, claimId: "later-claim" };
+  const recovered = { ...proof, head: laterHead, intent: { ...laterHead, state: "committed" },
+    restoreIntent: { ...proof.head, state: "committed" }, committedMutationRevision: 5, journal: null };
+  requireRecoveredRestore(before, after, "old", result, recovered, proof.head);
+  assert.throws(() => requireRecoveredRestore(before, after, "old", result, {
+    ...recovered, restoreIntent: { ...proof.head, state: "prepared" },
+  }, proof.head));
+  for (const field of ["mutationRevision", "sessionEpoch", "fenceEpoch", "claimId"]) {
+    const wrong = { ...proof.head, [field]: typeof proof.head[field] === "number" ? proof.head[field] + 1 : "wrong-claim" };
+    assert.throws(() => requireRecoveredRestore(before, after, "old", result, recovered, wrong));
+  }
+});
+
+
+test("reopen reads the exact live session once when diagnostics missed startup bootstrap", async t => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  t.after(() => {
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else delete globalThis.window;
+  });
+  const diagnostics = { workspaceSession: null };
+  const expected = { workspaceId: "restored-workspace", sessionEpoch: 8 };
+  const seed = { workspaceId: expected.workspaceId, restoreCrash: {
+    request: { payload: { wire: { sessionEpoch: 7 } } }, before: { documentId: "doc" },
+    publication: { head: {} },
+  } };
+  t.mock.method(fs, "readFile", async () => JSON.stringify(seed));
+  const reachedTree = new Error("reached authoritative tree");
+  for (const session of [expected, null,
+    { ...expected, workspaceId: "other-workspace" }, { ...expected, sessionEpoch: 7 },
+  ]) {
+    let reservations = 0;
+    let treeReads = 0;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      __vibetableE2EBridgeDiagnostics: diagnostics,
+      __vibetableE2EWorkspaceWirePort: { reserve(operationId) {
+        reservations += 1;
+        assert.match(operationId, /^[0-9a-f-]{36}$/);
+        if (!session) throw new Error("workspace wire allocator has no active session");
+        return { scope: "workspace", operationId, sequence: 1024, ...session };
+      } },
+    } });
+    const run = resumeFileRestoreCrash({ evaluate: callback => callback() }, { check() {} },
+      "seed-state.json", {}, {
+        activateRestartedWorkspace: async () => ({ start: "home",
+          switched: { result: { ...expected, state: "openedWritable" } } }),
+        rawWorkspaceV2Request: async (_page, method, params) => {
+          treeReads += 1;
+          assert.equal(method, "fileHistory.readTree");
+          assert.deepEqual(params, { documentId: "doc" });
+          throw reachedTree;
+        },
+      });
+    await assert.rejects(run, session === expected
+      ? error => error === reachedTree
+      : session === null ? /no active session/ : { code: "ERR_ASSERTION" });
+    assert.equal(reservations, 1);
+    assert.equal(treeReads, session === expected ? 1 : 0);
+    assert.equal(diagnostics.workspaceSession, null);
+  }
+});

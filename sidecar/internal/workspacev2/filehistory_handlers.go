@@ -233,6 +233,7 @@ func (runtime *Runtime) applyPendingFileChange(
 			if !pending.Missing {
 				return nil, errors.New("file_history.request_invalid")
 			}
+
 			mutationContext, bindErr := pendingChangeReceiptContext(
 				ctx,
 				params.ChangeID,
@@ -246,7 +247,11 @@ func (runtime *Runtime) applyPendingFileChange(
 				token,
 				source.DocumentID,
 				params.ExpectedEffectiveRevision,
+				pending.RelativePath,
 			)
+			if errors.Is(applyErr, filehistory.ErrPathStale) {
+				return nil, errors.New("file_history.pending_change_stale")
+			}
 			if applyErr != nil {
 				return nil, applyErr
 			}

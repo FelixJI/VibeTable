@@ -7,6 +7,7 @@ import json
 import sqlite3
 import subprocess
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import IO, Any
@@ -30,6 +31,732 @@ from tests.e2e.windows_tcp_listener_owner import (
     WindowsTcpListenerOwnerLease,
     _capture_with_adapter,
 )
+
+
+def _restore_crash_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    request = {
+        "requestId": "restore",
+        "action": "kill-restore-sidecar",
+        "workspaceId": "11111111-1111-4111-8111-111111111111",
+        "operationId": "22222222-2222-4222-8222-222222222222",
+    }
+    local_data = tmp_path / "host" / "local-data"
+    root = local_data / "workspaces" / request["workspaceId"]
+    metadata = root / ".vibetable"
+    registry = local_data / "VibeTable" / "shell"
+    registry.mkdir(parents=True)
+    (registry / "workspace-registry-v2.json").write_text(
+        json.dumps(
+            {"workspaces": [{"workspaceId": request["workspaceId"], "selectedRoot": str(root)}]}
+        ),
+        encoding="utf-8",
+    )
+    for folder in ("topology", "coordination"):
+        (metadata / folder).mkdir(parents=True)
+    (metadata / "workspace.json").write_text(
+        json.dumps({"workspaceId": request["workspaceId"]}), encoding="utf-8"
+    )
+    head = {"mutationRevision": 3, "sessionEpoch": 7, "fenceEpoch": 2, "claimId": "claim"}
+    result = {"revisionId": "restore", "revisionOrdinal": 3, "formalVersion": 3}
+    with closing(sqlite3.connect(metadata / "topology" / "filehistory-head.db")) as db, db:
+        db.executescript(
+            "CREATE TABLE filehistory_heads(workspace_id, mutation_revision, session_epoch, fence_epoch, claim_id);"
+            "CREATE TABLE filehistory_operation_receipts(workspace_id, operation_id, method, scope, request_hash, result_json);"
+        )
+        db.execute(
+            "INSERT INTO filehistory_heads VALUES(?,?,?,?,?)",
+            (request["workspaceId"], *head.values()),
+        )
+        db.execute(
+            "INSERT INTO filehistory_operation_receipts VALUES(?,?,?,?,?,?)",
+            (
+                request["workspaceId"],
+                request["operationId"],
+                "fileHistory.restore",
+                "workspace",
+                "existing-contract",
+                json.dumps(result),
+            ),
+        )
+    with closing(sqlite3.connect(metadata / "coordination" / "write-coordinator.db")) as db, db:
+        db.executescript(
+            "CREATE TABLE mutation_intents(workspace_id, mutation_revision, session_epoch, fence_epoch, claim_id, state);"
+            "CREATE TABLE coordination_state(singleton, workspace_id, mutation_revision);"
+        )
+        db.execute(
+            "INSERT INTO mutation_intents VALUES(?,?,?,?,?,?)",
+            (request["workspaceId"], *head.values(), "prepared"),
+        )
+        db.execute("INSERT INTO coordination_state VALUES(1,?,2)", (request["workspaceId"],))
+    with closing(sqlite3.connect(metadata / "coordination" / "workspace-v2.db")) as db, db:
+        db.execute(
+            "CREATE TABLE rpc_operation_receipts(workspace_id, operation_id, method, result_json)"
+        )
+    journal_dir = metadata / "coordination" / "file-materializer"
+    journal_dir.mkdir()
+    (journal_dir / "journal.json").write_text(
+        json.dumps({**head, "workspaceId": request["workspaceId"], "state": "applied"}),
+        encoding="utf-8",
+    )
+    (root / "files").mkdir()
+    (root / "files" / "restore-crash-44.txt").write_text("historical", encoding="utf-8")
+    controls = tmp_path / "evidence" / "_runtime" / "controls"
+    controls.mkdir(parents=True)
+    (controls / "file-restore-barrier.ready.json").write_text(
+        json.dumps(
+            {
+                **head,
+                "pid": 43,
+                "point": "before-finish-committed-mutation",
+                "workspaceId": request["workspaceId"],
+                "operationId": request["operationId"],
+                "result": result,
+            }
+        ),
+        encoding="utf-8",
+    )
+    evidence = controls.parent.parent
+    for name in ("seed.png", "seed-trace.zip"):
+        (evidence / name).write_bytes(b"fixture")
+    (evidence / "44-restore-crash-checkpoint.json").write_text(
+        json.dumps(
+            {
+                "workspaceId": request["workspaceId"],
+                "restoreCrash": {
+                    "request": {
+                        "type": "workspace.v2.request",
+                        "requestId": "actual-ui-restore",
+                        "payload": {
+                            "method": "fileHistory.restore",
+                            "wire": {"operationId": request["operationId"]},
+                        },
+                    },
+                    "checkpoint": {
+                        "bridgeDiagnostics": {
+                            "failures": [],
+                            "pending": [
+                                {
+                                    "requestId": "actual-ui-restore",
+                                    "requestType": "fileHistory.restore",
+                                }
+                            ],
+                        },
+                        "rendererDiagnosticsClean": True,
+                        "screenshot": str(evidence / "seed.png"),
+                        "trace": str(evidence / "seed-trace.zip"),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return request, local_data, controls
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "exact",
+        "wrong-pid",
+        "unverified",
+        "ambiguous",
+        "unapplied",
+        "finished",
+        "unexpected-field",
+        "no-checkpoint",
+        "not-44-seed",
+        "first-host-recovered",
+        "scope-not-empty",
+    ],
+)
+def test_restore_crash_kill_requires_independent_publication_and_exact_job_pid(
+    tmp_path: Path, case: str
+) -> None:
+    request, local_data, controls = _restore_crash_fixture(tmp_path)
+    members = [
+        ProcessScopeMember(42, "VibeTable.Next.exe", True),
+        ProcessScopeMember(
+            43 if case != "wrong-pid" else 44, "vibetable-pb.exe", case != "unverified"
+        ),
+    ]
+    if case == "ambiguous":
+        members.append(ProcessScopeMember(44, "vibetable-pb.exe", True))
+    metadata = local_data / "workspaces" / request["workspaceId"] / ".vibetable"
+    if case == "unapplied":
+        journal_path = metadata / "coordination" / "file-materializer" / "journal.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        journal["state"] = "prepared"
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+    if case == "finished":
+        with closing(sqlite3.connect(metadata / "coordination" / "write-coordinator.db")) as db, db:
+            db.execute("UPDATE mutation_intents SET state = 'committed'")
+    if case == "unexpected-field":
+        request["pid"] = "43"
+    if case == "no-checkpoint":
+        (controls.parent.parent / "44-restore-crash-checkpoint.json").unlink()
+    terminated: list[str] = []
+
+    class Scope:
+        root = _FakeRoot()
+
+        @staticmethod
+        def snapshot() -> ProcessScopeSnapshot:
+            return ProcessScopeSnapshot(members=tuple(members))
+
+        @staticmethod
+        def terminate_unique(executable_name: str) -> runner.TargetTerminationResult:
+            terminated.append(executable_name)
+            return runner.TargetTerminationResult(
+                "terminated", terminated_pid=43, matched_pids=(43,)
+            )
+
+        @staticmethod
+        def terminate_all() -> runner.ScopeTerminationResult:
+            terminated.append("owned-host-scope")
+            if case == "first-host-recovered":
+                with (
+                    closing(
+                        sqlite3.connect(metadata / "coordination" / "write-coordinator.db")
+                    ) as db,
+                    db,
+                ):
+                    db.execute("UPDATE mutation_intents SET state = 'committed'")
+            return runner.ScopeTerminationResult(True, remaining_pids=())
+
+        @staticmethod
+        def wait_empty(*, timeout: float = 5.0) -> runner.ScopeWaitResult:
+            assert timeout == 5.0
+            return runner.ScopeWaitResult((42,) if case == "scope-not-empty" else ())
+
+        @staticmethod
+        def working_set_snapshot() -> ProcessWorkingSetSnapshot:
+            return ProcessWorkingSetSnapshot(())
+
+    result = runner._handle_restore_crash_request(
+        request,
+        host_scope=Scope(),
+        local_data=local_data,
+        controls=controls,
+        allow_owned_host_crash=case != "not-44-seed",
+    )
+    assert result["status"] == ("completed" if case == "exact" else "failed")
+    assert terminated == (
+        ["vibetable-pb.exe", "owned-host-scope"]
+        if case in {"exact", "first-host-recovered", "scope-not-empty"}
+        else []
+    )
+
+
+def test_restore_storage_proof_is_bound_to_the_registered_uuid(tmp_path: Path) -> None:
+    request, local_data, _ = _restore_crash_fixture(tmp_path)
+    proof = runner._file_restore_storage_proof(request, local_data)
+    assert proof["receipt"]["method"] == "fileHistory.restore"
+    assert proof["intent"]["state"] == "prepared"
+    assert proof["bytes"] == "historical"
+    request["workspaceId"] = "33333333-3333-4333-8333-333333333333"
+    with pytest.raises(ValueError, match="registered synthetic root"):
+        runner._file_restore_storage_proof(request, local_data)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "later-head",
+        "seed-still-prepared",
+        "wrong-mutation",
+        "wrong-session",
+        "wrong-fence",
+        "wrong-claim",
+        "unknown-binding-field",
+        "zero",
+        "negative",
+        "boolean",
+        "overflow",
+        "invalid-claim",
+        "missing-binding",
+        "extra-request-field",
+        "kill-with-binding",
+    ],
+)
+def test_restore_observation_requires_the_exact_seed_intent_after_head_changes(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    request, local_data, controls = _restore_crash_fixture(tmp_path)
+    metadata = local_data / "workspaces" / request["workspaceId"] / ".vibetable"
+    binding: dict[str, object] = {
+        "mutationRevision": 3,
+        "sessionEpoch": 7,
+        "fenceEpoch": 2,
+        "claimId": "33333333-3333-4333-8333-333333333333",
+    }
+    later = {
+        "mutationRevision": 4,
+        "sessionEpoch": 8,
+        "fenceEpoch": 3,
+        "claimId": "44444444-4444-4444-8444-444444444444",
+    }
+    with closing(sqlite3.connect(metadata / "coordination" / "write-coordinator.db")) as db, db:
+        db.execute(
+            "UPDATE mutation_intents SET claim_id = ?, state = ? WHERE mutation_revision = 3",
+            (binding["claimId"], "prepared" if case == "seed-still-prepared" else "committed"),
+        )
+        db.execute(
+            "INSERT INTO mutation_intents VALUES(?,?,?,?,?,?)",
+            (request["workspaceId"], *later.values(), "committed"),
+        )
+        db.execute("UPDATE coordination_state SET mutation_revision = 4")
+    with closing(sqlite3.connect(metadata / "topology" / "filehistory-head.db")) as db, db:
+        db.execute(
+            "UPDATE filehistory_heads SET mutation_revision = ?, session_epoch = ?, "
+            "fence_epoch = ?, claim_id = ?",
+            tuple(later.values()),
+        )
+    (metadata / "coordination" / "file-materializer" / "journal.json").unlink()
+    fields = {
+        "wrong-mutation": "mutationRevision",
+        "wrong-session": "sessionEpoch",
+        "wrong-fence": "fenceEpoch",
+    }
+    if case in fields:
+        field = fields[case]
+        binding[field] = later[field]
+    if case == "wrong-claim":
+        binding["claimId"] = later["claimId"]
+    if case == "unknown-binding-field":
+        binding["unknown"] = 1
+    invalid_counters = {"zero": 0, "negative": -1, "boolean": True, "overflow": 1 << 63}
+    if case in invalid_counters:
+        binding["mutationRevision"] = invalid_counters[case]
+    if case == "invalid-claim":
+        binding["claimId"] = "claim"
+    observation: dict[str, object] = {
+        **request,
+        "action": "observe-restore-storage",
+        "restoreIntent": binding,
+    }
+    if case == "missing-binding":
+        del observation["restoreIntent"]
+    if case == "extra-request-field":
+        observation["unknown"] = 1
+    if case == "kill-with-binding":
+        observation["action"] = "kill-restore-sidecar"
+
+    class ReadOnlyScope(_FakeScope):
+        def snapshot(self) -> ProcessScopeSnapshot:
+            raise AssertionError(
+                "Restore storage observation must not query or terminate a process"
+            )
+
+        def terminate_unique(self, executable_name: str) -> runner.TargetTerminationResult:
+            raise AssertionError(
+                "Restore storage observation must not query or terminate a process"
+            )
+
+        def terminate_all(self) -> runner.ScopeTerminationResult:
+            raise AssertionError(
+                "Restore storage observation must not query or terminate a process"
+            )
+
+    response = runner._handle_restore_crash_request(
+        observation,
+        host_scope=ReadOnlyScope(),
+        local_data=local_data,
+        controls=controls,
+    )
+    if case == "later-head":
+        assert response["status"] == "completed"
+        assert response["proof"]["head"] == later
+        assert response["proof"]["restoreIntent"] == binding | {"state": "committed"}
+    else:
+        assert response["status"] == "failed"
+        assert response["code"] == "RESTORE_CRASH_PROOF_FAILED"
+        if case == "seed-still-prepared":
+            assert "seed Restore intent did not finish" in response["message"]
+
+
+@pytest.mark.parametrize(
+    "case", ["exact", "wrong-root", "remaining-child", "port-owned", "owner-close-failed"]
+)
+def test_restore_crash_lifecycle_is_a_separate_owned_scope_contract(case: str) -> None:
+    scope = _FakeScope(exit_code=-9, members=(43,) if case == "remaining-child" else ())
+    owner = _FakePortOwnerLease(
+        released=case != "port-owned",
+        close_error=OSError("closed") if case == "owner-close-failed" else None,
+    )
+    crash = {
+        "ownedHost": {
+            "rootPid": 43 if case == "wrong-root" else scope.root.pid,
+            "termination": {
+                "status": "passed",
+                "terminationRequested": True,
+                "remainingPids": [],
+                "errors": [],
+            },
+            "remainingPids": [],
+            "errors": [],
+        }
+    }
+    report = runner._observe_restore_crash_exit(scope, crash, owner)
+    assert report["status"] == ("passed" if case == "exact" else "failed")
+    assert report["normalExitRequested"] is False
+    assert report["mode"] == "intentional-restore-crash"
+    assert owner.closed
+    assert (
+        runner._lifecycle_exit_report(
+            normal_exit_requested=False,
+            host_exit_code=-9,
+            members_after_exit=[],
+            ports_released=True,
+        )["status"]
+        == "failed"
+    )
+
+
+def _native_document_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path, Path, Path]:
+    request = {
+        "requestId": "11111111-1111-4111-8111-111111111111",
+        "operationId": "22222222-2222-4222-8222-222222222222",
+        "workspaceId": "33333333-3333-4333-8333-333333333333",
+        "relativePath": "document-native-44444444-4444-4444-8444-444444444444.txt",
+        "action": "open-baseline",
+    }
+    data, controls = tmp_path / "local-data", tmp_path / "controls"
+    workspace = data / "workspaces" / request["workspaceId"]
+    (workspace / ".vibetable").mkdir(parents=True)
+    (workspace / "files").mkdir()
+    controls.mkdir()
+    (workspace / ".vibetable/workspace.json").write_text(
+        json.dumps({"workspaceId": request["workspaceId"]}), encoding="utf-8"
+    )
+    source = workspace / "files" / request["relativePath"]
+    source.write_bytes(
+        f"VibeTable Task 415 native FileDocument\n{request['relativePath']}\n".encode()
+    )
+    return request, data, controls, source
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "exact",
+        "copy",
+        "cancel",
+        "open-baseline",
+        "open-observe",
+        "uuid",
+        "bytes",
+        "script",
+        "manifest",
+    ],
+)
+def test_native_html_preview_source_has_a_closed_action_and_literal_bytes_boundary(
+    tmp_path: Path, case: str
+) -> None:
+    request, data, controls, txt_source = _native_document_fixture(tmp_path)
+    relative = "document-native-preview-44444444-4444-4444-8444-444444444444.html"
+    if case == "uuid":
+        relative = relative.replace(
+            "44444444-4444-4444-8444-444444444444", "44444444444444444444444444444444444444"
+        )
+    request |= {"action": "preview-observe", "relativePath": relative}
+    source = txt_source.parent / relative
+    expected = (
+        "<!doctype html><html><body><pre>VibeTable Task 415 native preview\n"
+        f"{relative}\n</pre></body></html>\n"
+    )
+    source.write_bytes(expected.encode("utf-8"))
+    if case in {"copy", "cancel", "open-baseline", "open-observe"}:
+        request["action"] = case
+        if case in {"copy", "cancel"}:
+            request |= {"cssX": 1, "cssY": 1, "devicePixelRatio": 1}
+    elif case == "bytes":
+        source.write_bytes(expected.encode("utf-8") + b"changed")
+    elif case == "script":
+        source.write_bytes(expected.replace("</pre>", "</pre><script>1</script>").encode("utf-8"))
+    elif case == "manifest":
+        (source.parent.parent / ".vibetable/workspace.json").write_text(
+            json.dumps({"workspaceId": "other"}), encoding="utf-8"
+        )
+    if case == "exact":
+        assert runner._document_native_source(request, data, controls) == source.resolve()
+    else:
+        expected_error = {
+            "uuid": "unique synthetic file",
+            "manifest": "workspace manifest UUID changed",
+            "bytes": "source is not the exact synthetic fixture",
+            "script": "source is not the exact synthetic fixture",
+        }.get(case, "unique synthetic file")
+        with pytest.raises(ValueError, match=expected_error):
+            runner._document_native_source(request, data, controls)
+
+
+@pytest.mark.parametrize(
+    "case", ["exact", "source", "outcome", "unverified", "missing-child", "root", "owner", "hidden"]
+)
+def test_native_preview_requires_real_success_from_a_verified_owned_visible_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    request["action"] = "preview-observe"
+    pid = 42 if case == "root" else 43
+    evidence = {
+        "source": str(source.resolve()) if case != "source" else str(controls / "other.txt"),
+        "outcome": "do-preview-returned" if case != "outcome" else "failed",
+        "processId": pid,
+        "hwnd": 100,
+    }
+    (controls / "document-native-preview-result.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    member = SimpleNamespace(
+        pid=pid, identity_verified=case != "unverified", executable_name="VibeTable.Next.exe"
+    )
+    scope = SimpleNamespace(
+        root=SimpleNamespace(pid=42),
+        snapshot=lambda: SimpleNamespace(members=() if case == "missing-child" else (member,)),
+    )
+    native = SimpleNamespace(
+        owner=lambda _hwnd: pid if case != "owner" else 99,
+        user32=SimpleNamespace(IsWindowVisible=lambda _hwnd: case != "hidden"),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: native)
+    result = runner._handle_document_native_request(
+        request, host_scope=scope, local_data=data, controls=controls
+    )
+    assert result["status"] == ("observed" if case == "exact" else "unverified")
+    if case == "exact":
+        assert result["preview"] == evidence
+        assert result["helperIdentityVerified"] is True
+
+
+@pytest.mark.parametrize("invalid", ["action", "fields", "identity", "bytes", "path"])
+def test_native_document_boundary_rejects_invalid_requests_before_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    if invalid == "action":
+        request["action"] = "run-command"
+    elif invalid == "fields":
+        request["command"] = "unrelated"
+    elif invalid == "identity":
+        (source.parent.parent / ".vibetable/workspace.json").write_text(
+            json.dumps({"workspaceId": "other"}), encoding="utf-8"
+        )
+    elif invalid == "bytes":
+        source.write_text("user contents", encoding="utf-8")
+    else:
+        request["relativePath"] = "../user.txt"
+
+    def no_windows() -> None:
+        pytest.fail("invalid native requests must never access Windows")
+
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", no_windows)
+    result = runner._handle_document_native_request(
+        request,
+        host_scope=_FakeScope(),
+        local_data=data,
+        controls=controls,
+    )
+    assert result["status"] == "unverified"
+    assert result["error"]
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        "exact-new",
+        "existing",
+        "wrong-text",
+        "multiple-documents",
+        "multiple-tabs",
+        "timeout-str",
+        "timeout-bytes",
+    ],
+)
+def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, observation: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    closed: list[tuple[int, int]] = []
+    windows = [{"hwnd": 10, "pid": 20, "title": source.name, "visible": True}]
+
+    class NativeObserverStub:
+        def windows(self):
+            return windows
+
+        def document_text(self, _hwnd):
+            if observation in {"timeout-str", "timeout-bytes"}:
+                stderr = "UIA_STAGE document-query begin elapsedMs=12\n" + "x" * 5000
+                raise subprocess.TimeoutExpired(
+                    ["powershell.exe", "-EncodedCommand", "encoded-script"],
+                    5,
+                    stderr=stderr.encode("utf-8") if observation == "timeout-bytes" else stderr,
+                )
+            if observation == "multiple-tabs":
+                raise subprocess.CalledProcessError(
+                    1,
+                    ["powershell.exe", "-EncodedCommand", "encoded-script"],
+                    stderr="UIA_TAB_COUNT maximum=1 actual=2\n" + "x" * 5000,
+                )
+            text = source.read_text() if observation != "wrong-text" else "unrelated user text"
+            documents = [{"name": source.name, "text": text}]
+            return documents * 2 if observation == "multiple-documents" else documents
+
+        def close_new_document(self, hwnd, pid):
+            closed.append((hwnd, pid))
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", NativeObserverStub)
+    scope = _FakeScope()
+    baseline = runner._handle_document_native_request(
+        request,
+        host_scope=scope,
+        local_data=data,
+        controls=controls,
+    )
+    assert baseline["status"] == "observed"
+    if observation != "existing":
+        windows.append({"hwnd": 30, "pid": 40, "title": source.name, "visible": True})
+    request = {**request, "action": "open-observe"}
+    result = runner._handle_document_native_request(
+        request,
+        host_scope=scope,
+        local_data=data,
+        controls=controls,
+    )
+    assert result["status"] == ("observed" if observation == "exact-new" else "unverified")
+    assert closed == ([(30, 40)] if observation == "exact-new" else [])
+    if observation == "multiple-tabs":
+        assert result["window"] == windows[-1]
+        assert result["uiaFailure"]["returnCode"] == 1
+        assert result["uiaFailure"]["stderr"].startswith("UIA_TAB_COUNT maximum=1 actual=2")
+        assert len(result["uiaFailure"]["stderr"]) == 4096
+        assert "encoded-script" not in result["error"]
+    if observation in {"timeout-str", "timeout-bytes"}:
+        assert result["window"] == windows[-1]
+        assert result["uiaFailure"]["returnCode"] is None
+        assert result["uiaFailure"]["timeoutSeconds"] == 5
+        assert result["uiaFailure"]["stderr"].startswith(
+            "UIA_STAGE document-query begin elapsedMs=12"
+        )
+        assert len(result["uiaFailure"]["stderr"]) == 4096
+        assert result["error"] == "Shell UIA observation timed out after 5 seconds"
+        assert "EncodedCommand" not in json.dumps(result)
+        assert "encoded-script" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("case", ["zero", "multiple", "stem-only"])
+def test_native_window_failure_records_only_bounded_fixture_metadata_without_relaxing_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    request["action"] = "open-observe"
+    existing = {"hwnd": 10, "pid": 20, "title": source.name, "visible": True}
+    windows = [
+        existing,
+        {"hwnd": 99, "pid": 98, "title": "unrelated-private-window", "visible": True},
+    ]
+    if case == "multiple":
+        windows.extend(
+            {"hwnd": 30 + index, "pid": 40 + index, "title": source.name, "visible": True}
+            for index in range(10)
+        )
+    elif case == "stem-only":
+        windows.append(
+            {"hwnd": 30, "pid": 40, "title": source.stem + " - Notepad", "visible": True}
+        )
+    (controls / "document-native-open-baseline.json").write_text(
+        json.dumps(
+            {
+                "operationId": request["operationId"],
+                "source": str(source.resolve()),
+                "windows": [{"hwnd": 10, "pid": 20}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class NativeObserverStub:
+        def windows(self):
+            return windows
+
+        def document_text(self, _hwnd):
+            pytest.fail("an unverified window must never be read through UIA")
+
+        def close_new_document(self, _hwnd, _pid):
+            pytest.fail("an unverified window must never be closed")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", NativeObserverStub)
+    result = runner._handle_document_native_request(
+        request, host_scope=_FakeScope(), local_data=data, controls=controls
+    )
+    assert result["status"] == "unverified"
+    assert result["window"] is None
+    observation = result["windowObservation"]
+    assert observation["candidateCount"] == (10 if case == "multiple" else 0)
+    assert observation["matchingStemWindowCount"] == len(windows) - 1
+    assert observation["truncated"] is (case == "multiple")
+    assert len(observation["windows"]) == min(len(windows) - 1, 8)
+    assert observation["windows"][0]["newWindow"] is False
+    assert observation["windows"][0]["baselineHwnd"] is True
+    assert all(item["stemMatch"] is True for item in observation["windows"])
+    assert "unrelated-private-window" not in json.dumps(result)
+    if case == "stem-only":
+        assert observation["windows"][1]["newWindow"] is True
+        assert observation["windows"][1]["fullNameMatch"] is False
+
+
+def test_native_drag_input_short_write_fails_without_retry_and_releases_buttons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    class ShortSendInput:
+        def __call__(self, count, _events, _size):
+            calls.append(count)
+            return count - 1 if len(calls) == 1 else count
+
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    monkeypatch.setattr(
+        native,
+        "user32",
+        SimpleNamespace(
+            SendInput=ShortSendInput(),
+            GetDpiForWindow=lambda _hwnd: 96,
+            SetForegroundWindow=lambda _hwnd: True,
+            GetForegroundWindow=lambda: 10,
+            GetSystemMetrics=lambda number: {76: 0, 77: 0, 78: 1920, 79: 1080}[number],
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(native, "owner", lambda _hwnd: 100)
+    monkeypatch.setattr(native, "_root_at", lambda x, _y: 10 if x < 200 else 20)
+    request = {"cssX": 50, "cssY": 50, "devicePixelRatio": 1, "action": "copy"}
+    target = {
+        "hostProcessId": 100,
+        "hostHwnd": 10,
+        "targetHwnd": 20,
+        "webviewX": 0,
+        "webviewY": 0,
+        "webviewWidth": 1000,
+        "webviewHeight": 700,
+        "scaleX": 1,
+        "scaleY": 1,
+        "targetX": 300,
+        "targetY": 50,
+    }
+    with pytest.raises(OSError, match="fewer events"):
+        native.drag(request, target, tmp_path, 100)
+    assert calls == [3, 3]  # One rejected injection, then only Escape/up cleanup.
 
 
 def _deny_final_replica_report(monkeypatch: pytest.MonkeyPatch, evidence_root: Path) -> None:
@@ -3766,6 +4493,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("restored_search_diagnostics.test.mjs"),
         runner.NODE_RUNNER.with_name("data_io_interoperability.test.mjs"),
         runner.NODE_RUNNER.with_name("calculation_chain_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_history_capacity_journey.test.mjs"),
     ]
     try:
         completed = subprocess.run(
@@ -5002,3 +5730,287 @@ def test_capacity_producer_cleanup_failure_never_passes(
     assert producer["lifecycle"]["status"] == "failed"
     assert "close failed" in producer["error"]
     assert scope.close_calls == 1
+
+
+@pytest.mark.parametrize("mode", ["already", "async", "denied", "hung", "changed", "owner"])
+def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed(mode: str) -> None:
+    calls: list[str] = []
+    current = 10 if mode == "already" else 20
+
+    def activate(_hwnd: int) -> bool:
+        calls.append("activate")
+        return mode != "denied"
+
+    def synchronize(*_args: object) -> bool:
+        nonlocal current
+        calls.append("synchronize")
+        if mode != "changed":
+            current = 10
+        return mode != "hung"
+
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    native.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: current,
+        SetForegroundWindow=activate,
+        SendMessageTimeoutW=synchronize,
+    )
+    native.owner = lambda _hwnd: 200 if mode == "owner" else 100
+    if mode in {"already", "async"}:
+        native.foreground(10, 100)
+        assert native.foreground_observation["afterHwnd"] == 10
+    else:
+        with pytest.raises((OSError, ValueError)):
+            native.foreground(10, 100)
+    assert calls == (
+        []
+        if mode in {"already", "owner"}
+        else ["activate"]
+        if mode == "denied"
+        else ["activate", "synchronize"]
+    )
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA query contract")
+@pytest.mark.parametrize(
+    ("counts", "status_panes", "control_type"),
+    [
+        ((0, 0, 1), 0, "Document"),
+        ((2,), 0, "Document"),
+        ((0,), 0, "Document"),
+        ((1,), 5, "Document"),
+        ((1,), 5, "Edit"),
+        ((2,), 5, "Document"),
+        ((0,), 5, "Document"),
+    ],
+)
+def test_native_document_query_waits_only_for_absent_provider_with_original_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    counts: tuple[int, ...],
+    status_panes: int,
+    control_type: str,
+) -> None:
+    import base64
+    from concurrent.futures import ThreadPoolExecutor
+
+    captured: dict[str, object] = {}
+
+    def capture(command, **kwargs):
+        captured.update(kwargs)
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="[]")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    assert captured["timeout"] == 5
+    script = str(captured["script"])
+    query = script[
+        script.index('[Console]::Error.WriteLine("UIA_STAGE document-query begin') : script.index(
+            "$tabCondition ="
+        )
+    ]
+    # The deterministic provider stub has no real UIA parent.
+    query = query.replace(
+        "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
+        "$document.Parent",
+    )
+    # This provider stub exercises the query loop, so it needs no UIA assembly
+    # compilation or real provider registration inside the production deadline.
+    query = query.replace("[System.Windows.Automation.TreeScope]::Descendants", "4")
+    harness = (
+        """
+$ErrorActionPreference = 'Stop'
+$script:counts = @(COUNTS)
+$script:call = 0
+$root = [pscustomobject]@{}
+$root | Add-Member ScriptMethod FindAll {
+    $count = $script:counts[[Math]::Min($script:call, $script:counts.Count - 1)]
+    $script:call++
+    $window = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.Window"}}}
+    $status = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.StatusBar"}}}
+    for ($index=0; $index -lt $count; $index++) {
+        [pscustomobject]@{Count=1; Parent=$window; Current=@{
+            ControlType=@{ProgrammaticName="ControlType.CONTROL_TYPE"}}}
+    }
+    for ($index=0; $index -lt STATUS_PANES; $index++) {
+        [pscustomobject]@{Count=1; Parent=$status; Current=@{
+            ControlType=@{ProgrammaticName="ControlType.Edit"}}}
+    }
+}
+[Console]::Out.WriteLine("TEST_PROVIDER_READY")
+if ([Console]::ReadLine() -ne "query") { throw "query start was not requested" }
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
+""".replace("COUNTS", ",".join(map(str, counts)))
+        .replace("STATUS_PANES", str(status_panes))
+        .replace("CONTROL_TYPE", control_type)
+    )
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        base64.b64encode((harness + query).encode("utf-16-le")).decode("ascii"),
+    ]
+    # This test times the query, not cold PowerShell startup or installation of
+    # the fake provider. The complete production process still has the 5s
+    # deadline asserted above and exercised by the owned-provider integration.
+    with subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as process:
+        try:
+            assert process.stdout is not None
+            with ThreadPoolExecutor(max_workers=1) as reader:
+                ready = reader.submit(process.stdout.readline)
+                try:
+                    assert ready.result(timeout=30) == "TEST_PROVIDER_READY\n"
+                except BaseException:
+                    process.kill()
+                    raise
+            timed_out = False
+            try:
+                _, stderr = process.communicate("query\n", timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _, stderr = process.communicate(timeout=5)
+                timed_out = True
+            assert "UIA_STAGE document-query begin" in stderr, stderr
+            assert timed_out == (counts == (0,)), stderr
+            if timed_out:
+                assert "UIA_STAGE document-query end" not in stderr
+            else:
+                assert process.returncode == (0 if counts[-1] == 1 else 1), stderr
+                if counts == (2,):
+                    assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in stderr
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA metadata contract")
+def test_native_document_failure_metadata_is_bounded_and_excludes_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+
+    captured: dict[str, str] = {}
+
+    def capture(command, **_kwargs):
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="[]")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    script = captured["script"]
+    metadata = script[
+        script.index("    $metadata = @(") : script.index('    throw "UIA_DOCUMENT_COUNT')
+    ].replace(
+        "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
+        "$document.Parent",
+    )
+    harness = """
+$ErrorActionPreference = 'Stop'
+$documents = @(1..12 | ForEach-Object {
+    [pscustomobject]@{
+        Current = [pscustomobject]@{
+            ControlType = [pscustomobject]@{ProgrammaticName='ControlType.Edit'}
+            ClassName = ('c' * 100); AutomationId = ('i' * 100)
+            IsOffscreen = $true; IsContentElement = $false; NativeWindowHandle = $_
+            Name = 'PRIVATE_CONTENT_MUST_NOT_BE_READ'
+        }
+        Parent = [pscustomobject]@{Current=[pscustomobject]@{
+            ControlType=[pscustomobject]@{ProgrammaticName='ControlType.Window'}
+            ClassName=('p' * 100); Name='PRIVATE_PARENT_MUST_NOT_BE_READ'
+        }}
+    }
+})
+"""
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode((harness + metadata).encode("utf-16-le")).decode("ascii"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
+    )
+    line = next(line for line in result.stderr.splitlines() if "UIA_DOCUMENT_METADATA" in line)
+    assert "count=12" in line
+    items = json.loads(line.split("items=", 1)[1])
+    assert len(items) == 8
+    assert all(len(item[field]) == 80 for item in items for field in ("class", "id", "parentClass"))
+    assert all(item["offscreen"] is True and item["content"] is False for item in items)
+    assert "PRIVATE_" not in result.stderr
+    assert len(line) < 4096
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows UIA provider initialization")
+def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import base64
+
+    captured: dict[str, str] = {}
+
+    def capture(command, **_kwargs):
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="[]")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    script = captured["script"]
+    initialization = script[: script.index('[Console]::Error.WriteLine("UIA_STAGE root begin')]
+    harness = (
+        r"""
+# An observation must not need a compiler to initialize the system provider.
+function Add-Type {
+    param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
+    if ($TypeDefinition) { throw 'runtime C# compilation is unavailable' }
+    Microsoft.PowerShell.Utility\Add-Type -AssemblyName $AssemblyName
+}
+"""
+        + initialization
+        + r"""
+Add-Type -AssemblyName System.Windows.Forms
+$form = [Windows.Forms.Form]::new()
+$edit = [Windows.Forms.TextBox]::new()
+$edit.Text = 'owned-provider-regression'
+$form.Controls.Add($edit)
+try {
+    $form.Show()
+    [Windows.Forms.Application]::DoEvents()
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($form.Handle)
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit)
+    $items = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($items.Count -ne 1) { throw "owned Edit count=$($items.Count)" }
+    $pattern = $items[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($pattern.Current.Value -ne 'owned-provider-regression') { throw 'owned text mismatch' }
+} finally { $form.Close(); $form.Dispose() }
+"""
+    )
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            base64.b64encode(harness.encode("utf-16-le")).decode("ascii"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
