@@ -88,6 +88,21 @@ public sealed class ShellPreviewHandlerResolverTests
     }
 
     [TestMethod]
+    public void PreviewEvidence_RequiresTheClosedTestModeArgumentPair()
+    {
+        string controls = @"C:\VibeTable\build\qa\controls";
+        var launch = PreviewHostLaunchSpec.Create(
+            @"C:\VibeTable", @"C:\VibeTable\files\native.txt", PreviewClsid, controls);
+        string[] arguments = launch.CreateStartInfo().ArgumentList.Skip(1).ToArray();
+        Assert.IsTrue(PreviewHostArguments.TryParse(arguments, out var parsed));
+        Assert.AreEqual(controls, parsed.TestEvidenceDirectory);
+        Assert.IsFalse(PreviewHostArguments.TryParse(
+            arguments.Take(4).Concat(["--e2e-controls-dir", controls]).ToArray(), out _));
+        Assert.IsFalse(PreviewHostArguments.TryParse(
+            arguments.Take(4).Concat(["--test-mode", "--e2e-controls-dir", "relative"]).ToArray(), out _));
+    }
+
+    [TestMethod]
     public void CanPreview_RequiresExistingFileAndRegisteredHandler()
     {
         string temp = Path.Combine(

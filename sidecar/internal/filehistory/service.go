@@ -53,6 +53,7 @@ var (
 	ErrDocumentDeleted = errors.New("filehistory.document_deleted")
 	ErrPathInvalid     = errors.New("filehistory.path_invalid")
 	ErrPathConflict    = errors.New("filehistory.path_conflict")
+	ErrPathStale       = errors.New("filehistory.path_stale")
 	ErrStateCorrupt    = errors.New("filehistory.state_corrupt")
 	ErrResourceLimit   = errors.New("filehistory.resource_limit")
 	errNoOp            = errors.New("filehistory.no_op")
@@ -1161,13 +1162,29 @@ func (service *Service) Delete(
 	token writecoordinator.Token,
 	documentID string,
 	expectedEffective *string,
+	expectedPath ...string,
 ) (MutationResult, error) {
 	if !validUUID(documentID) {
 		return MutationResult{}, ErrDocumentNotFound
 	}
+	if len(expectedPath) > 1 {
+		return MutationResult{}, ErrPathInvalid
+	}
+	hasExpectedPath := len(expectedPath) == 1
+	var boundPath string
+	if hasExpectedPath {
+		var err error
+		boundPath, err = normalizePath(expectedPath[0])
+		if err != nil {
+			return MutationResult{}, err
+		}
+	}
 	return service.mutateDocument(
 		ctx, token, documentID, expectedEffective, true,
 		func(document *Document, _ map[string]Document) (bool, error) {
+			if hasExpectedPath && document.RelativePath != boundPath {
+				return false, ErrPathStale
+			}
 			if document.Status == DocumentDeleted {
 				return false, nil
 			}

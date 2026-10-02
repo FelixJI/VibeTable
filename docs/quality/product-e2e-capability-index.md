@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：39
-- 唯一能力：60
-- 场景—能力关联：93
+- 场景：43
+- 唯一能力：64
+- 场景—能力关联：101
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -32,15 +32,18 @@
 | `data-io.interop` | <code>35-data-io-interoperability</code>（数据互操作代表矩阵） |
 | `data-io.round-trip` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
 | `data.json` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
+| `file-document.identity` | <code>41-file-document-operations</code>（文件排序分页与外部身份确认） |
+| `file-document.native-operations` | <code>42-file-document-native-operations</code>（FileDocument真实Windows打开预览与拖出） |
+| `file-history.branches` | <code>43-file-revision-leaves</code>（文件autosave正式分支与叶子恢复激活）、<code>44-file-restore-crash</code>（真实Restore提交断点崩溃与同UUID冷恢复） |
 | `file-history.capacity` | <code>40-file-history-capacity</code>（合法容量边界真实冷打开资格） |
 | `file-history.diff` | <code>14-document-diff</code>（真实文件历史版本比较）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
-| `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
+| `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合）、<code>41-file-document-operations</code>（文件排序分页与外部身份确认） |
 | `formula.collections` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `formula.lifecycle` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（常用公式界面、重算重开与迁移回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
-| `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
+| `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合）、<code>43-file-revision-leaves</code>（文件autosave正式分支与叶子恢复激活）、<code>44-file-restore-crash</code>（真实Restore提交断点崩溃与同UUID冷恢复） |
 | `host.commands` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
@@ -76,6 +79,7 @@
 | `workspace.calendar` | <code>32-shared-work-calendar</code>（工作区共享工作日历） |
 | `workspace.lifecycle` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>10-sse-reconnect</code>（SSE 断线重连且不重复应用）、<code>15-workspace-snapshot-package</code>（工作区切换与快照包）、<code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复） |
 | `workspace.protection` | <code>13-protection-policy</code>（工作区保护策略与仓库验证）、<code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复）、<code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
+| `workspace.recovery` | <code>44-file-restore-crash</code>（真实Restore提交断点崩溃与同UUID冷恢复） |
 
 ## 场景到能力
 
@@ -120,3 +124,7 @@
 | <code>38-calculation-chain-journey</code> | 三表计算链的查询、来源和导出一致性 | 201条纯合成来源经真实CSV导入，覆盖199/1/0匹配；从可见编辑器创建条件SUM Lookup、第二层Formula及第三表集合Formula，编辑来源值和已保存公式后对照独立oracle；通过可见字段编辑器创建跨表Relation、关系SUM Lookup及依赖Formula，目标字段重命名后保持稳定身份和链值。对第三表计算值真实筛选排序，核对完整结果计数与网格顺序；条件Lookup来源面板翻页逐条核对全部199项；CSV/XLSX与同快照oracle逐值及顺序一致且公式样文本不可执行，计算列保持只读。经WorkspaceCenter关闭重开后恢复同一身份、计算值和视图；沿用runner无外网与进程清理门禁。 | `formula.collections`、`formula.lifecycle`、`lookup.aggregation`、`lookup.source-pagination`、`lookup.export` |
 | <code>39-file-workflow-combination</code> | 同包同UUID计算链与文件全流程组合 | 同一发布包内同一workspace UUID先跑完整S38三表计算链与完整S14真实文件比较，再经真实内容UI把DOCX/XLSX两个合格文档链接到计算主表合同甲记录，并从关联卡真实点击查看文件版本进入对应文档版本树；中文当前/历史内容搜索真实点击并按目标文档与修订定位；从真实版本树祖先节点“恢复为新版本”，恢复后文件列表、有效指针、物化字节与不可变历史一致，两文档全部当前命中只能绑定新恢复修订且必须保留正文正向命中，无需手工重建索引；恢复前后对比0组差异，恢复前打开的有效修订比较以sessionExpired拒绝继续；首Host正常退出后第二真实Host同manifest UUID冷重开，独立字面oracle（甲199/994/2982/2983、乙1/7/21/22、丙0/0/0/1、首行金额4）与稳定字段身份、持久筛选两行降序、同两文件当前/物化及记录链接全部对齐，再核对两文档当前正文命中绑定恢复修订且升级时旧词不再冒充当前。 | `formula.collections`、`lookup.aggregation`、`file-history.diff`、`file-history.query`、`workspace-search.query`、`workspace-search.rebuild`、`content.record`、`record-document-link.lifecycle`、`history.restore` |
 | <code>40-file-history-capacity</code> | 合法容量边界真实冷打开资格 | test-only Go producer 在全新合成root下生成近限（9,980文档/9,990修订）与最大链深4096两个合法FileHistory工作区（绑定真实claim/fence/LastSessionEpoch的desktop-runtime-authority）；每个scale由独立真实Host冷启动经正常连接/注册/打开UI路径接入同UUID工作区，无手改registry/SQL；真实RPC queryDocuments首页与readTree全链各≤2s、冷打开≤30s冻结预算，全部formal链在真实WebView完整绘制first/effective行且aria-current成功、无栈错误；producer分别测量Go TotalAlloc，UI仅记录耗时不宣称内核峰值；两scale均status与lifecycle通过才组合通过。 | `file-history.capacity` |
+| <code>41-file-document-operations</code> | 文件排序分页与外部身份确认 | 真实Host picker导入一项，再由同UUID工作区正常启动watcher扫描100项不同内容合成文件；真实文件UI100/后页的原始document.listLoaded与独立纳秒时间降序/documentId并列顺序、101项路径全集及字面bytes对齐，不靠store去重掩盖漏重。同名不同内容保留不同身份；外部rename/move/copy须经真实pending用户确认，移动保持documentId/effective/history，复制生成新身份且源不变；旧missing删除确认以稳定stale码原子拒绝并保留当前路径/内容/pending。丢失状态经Host picker重连后保持身份/路径、追加formal、不可变历史与新字面bytes一致。不包含OS打开/预览/拖出。 | `file-history.query`、`file-document.identity` |
+| <code>42-file-document-native-operations</code> | FileDocument真实Windows打开预览与拖出 | 真实FileDocument picker导入合成TXT并核manifest UUID/documentId/path/effective与字面bytes；真实UI拖出由生产DoDragDrop与FileDrop到本次合成drop目标，Copy核相关operationId/source/path及实际目标bytes，Escape取消不冒充Copy；真实默认打开观察对应新进程/窗口，实际系统Preview Handler预览观察独立host结果。无默认打开或预览handler时明确能力失败，禁止Fake成功或修改系统关联/COM注册；原文件、字节及有效修订保持。不覆盖排序分页/版本叶子。 | `file-document.native-operations` |
+| <code>43-file-revision-leaves</code> | 文件autosave正式分支与叶子恢复激活 | 真实Host picker导入formal V1，同UUID正常关闭/外部保存/重开两次由真实startup watcher追加autosave；真实树从首autosave升级formal V2生成兄弟分支，分别从非当前叶子恢复为新formal V3与设为当前分支，核parent/effective/ordinal/formal/source、旧修订全对象不变及独立字面物化bytes；再次同UUID重开核权威树和列表有效指针。不用上传替代叶子恢复，不声称覆盖Restore异常或崩溃。 | `history.restore`、`file-history.branches` |
+| <code>44-file-restore-crash</code> | 真实Restore提交断点崩溃与同UUID冷恢复 | 合成TXT经真实picker导入及UI升级后，从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。 | `history.restore`、`file-history.branches`、`workspace.recovery` |

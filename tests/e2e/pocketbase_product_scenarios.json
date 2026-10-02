@@ -239,5 +239,33 @@
     "title": "合法容量边界真实冷打开资格",
     "requirement": "test-only Go producer 在全新合成root下生成近限（9,980文档/9,990修订）与最大链深4096两个合法FileHistory工作区（绑定真实claim/fence/LastSessionEpoch的desktop-runtime-authority）；每个scale由独立真实Host冷启动经正常连接/注册/打开UI路径接入同UUID工作区，无手改registry/SQL；真实RPC queryDocuments首页与readTree全链各≤2s、冷打开≤30s冻结预算，全部formal链在真实WebView完整绘制first/effective行且aria-current成功、无栈错误；producer分别测量Go TotalAlloc，UI仅记录耗时不宣称内核峰值；两scale均status与lifecycle通过才组合通过。",
     "capabilities": ["file-history.capacity"]
-  }
+  },
+  {
+    "id": "41-file-document-operations",
+    "title": "文件排序分页与外部身份确认",
+    "requirement": "真实Host picker导入一项，再由同UUID工作区正常启动watcher扫描100项不同内容合成文件；真实文件UI100/后页的原始document.listLoaded与独立纳秒时间降序/documentId并列顺序、101项路径全集及字面bytes对齐，不靠store去重掩盖漏重。同名不同内容保留不同身份；外部rename/move/copy须经真实pending用户确认，移动保持documentId/effective/history，复制生成新身份且源不变；旧missing删除确认以稳定stale码原子拒绝并保留当前路径/内容/pending。丢失状态经Host picker重连后保持身份/路径、追加formal、不可变历史与新字面bytes一致。不包含OS打开/预览/拖出。",
+    "capabilities": ["file-history.query", "file-document.identity"]
+  },
+  {
+    "id": "42-file-document-native-operations",
+    "title": "FileDocument真实Windows打开预览与拖出",
+    "requirement": "真实FileDocument picker导入合成TXT并核manifest UUID/documentId/path/effective与字面bytes；真实UI拖出由生产DoDragDrop与FileDrop到本次合成drop目标，Copy核相关operationId/source/path及实际目标bytes，Escape取消不冒充Copy；真实默认打开观察对应新进程/窗口，实际系统Preview Handler预览观察独立host结果。无默认打开或预览handler时明确能力失败，禁止Fake成功或修改系统关联/COM注册；原文件、字节及有效修订保持。不覆盖排序分页/版本叶子。",
+    "capabilities": ["file-document.native-operations"]
+  },
+  {
+    "id": "43-file-revision-leaves",
+    "title": "文件autosave正式分支与叶子恢复激活",
+    "requirement": "真实Host picker导入formal V1，同UUID正常关闭/外部保存/重开两次由真实startup watcher追加autosave；真实树从首autosave升级formal V2生成兄弟分支，分别从非当前叶子恢复为新formal V3与设为当前分支，核parent/effective/ordinal/formal/source、旧修订全对象不变及独立字面物化bytes；再次同UUID重开核权威树和列表有效指针。不用上传替代叶子恢复，不声称覆盖Restore异常或崩溃。",
+    "capabilities": ["history.restore", "file-history.branches"]
+  },
+{
+  "id": "44-file-restore-crash",
+  "title": "真实Restore提交断点崩溃与同UUID冷恢复",
+  "requirement": "合成TXT经真实picker导入及UI升级后，从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。",
+  "capabilities": [
+    "history.restore",
+    "file-history.branches",
+    "workspace.recovery"
+  ]
+}
 ]

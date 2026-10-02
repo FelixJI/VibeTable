@@ -68,6 +68,7 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
     private readonly object _gate = new();
     private readonly ShellPreviewHandlerResolver _resolver;
     private readonly string _appBaseDirectory;
+    private readonly string? _testEvidenceDirectory;
     private Process? _process;
     private bool _disposed;
 
@@ -78,11 +79,14 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
 
     internal ShellDocumentPreview(
         ShellPreviewHandlerResolver resolver,
-        string appBaseDirectory)
+        string appBaseDirectory,
+        string? testEvidenceDirectory = null)
     {
         _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
         ArgumentException.ThrowIfNullOrWhiteSpace(appBaseDirectory);
         _appBaseDirectory = Path.GetFullPath(appBaseDirectory);
+        _testEvidenceDirectory = testEvidenceDirectory is null
+            ? null : Path.GetFullPath(testEvidenceDirectory);
     }
 
     public bool CanPreview(string fullPath)
@@ -127,7 +131,8 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
         var launchSpec = PreviewHostLaunchSpec.Create(
             _appBaseDirectory,
             normalizedPath,
-            handlerClsid.Value);
+            handlerClsid.Value,
+            _testEvidenceDirectory);
         Process next = StartHelper(launchSpec);
         Process? previous;
         lock (_gate)
@@ -230,7 +235,8 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
 internal sealed record PreviewHostLaunchSpec(
     string ExecutablePath,
     string FullPath,
-    Guid HandlerClsid)
+    Guid HandlerClsid,
+    string? TestEvidenceDirectory = null)
 {
     public const string ExecutableName = "VibeTable.Next.exe";
     public const string ModeArgument = "--preview-host";
@@ -238,7 +244,8 @@ internal sealed record PreviewHostLaunchSpec(
     public static PreviewHostLaunchSpec Create(
         string appBaseDirectory,
         string fullPath,
-        Guid handlerClsid)
+        Guid handlerClsid,
+        string? testEvidenceDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(appBaseDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(fullPath);
@@ -251,7 +258,8 @@ internal sealed record PreviewHostLaunchSpec(
         return new PreviewHostLaunchSpec(
             executablePath,
             Path.GetFullPath(fullPath),
-            handlerClsid);
+            handlerClsid,
+            testEvidenceDirectory is null ? null : Path.GetFullPath(testEvidenceDirectory));
     }
 
     public ProcessStartInfo CreateStartInfo()
@@ -268,6 +276,12 @@ internal sealed record PreviewHostLaunchSpec(
         startInfo.ArgumentList.Add(FullPath);
         startInfo.ArgumentList.Add("--handler");
         startInfo.ArgumentList.Add(HandlerClsid.ToString("D"));
+        if (TestEvidenceDirectory is not null)
+        {
+            startInfo.ArgumentList.Add("--test-mode");
+            startInfo.ArgumentList.Add("--e2e-controls-dir");
+            startInfo.ArgumentList.Add(TestEvidenceDirectory);
+        }
         return startInfo;
     }
 }

@@ -1701,6 +1701,13 @@ def _prepare_complete_product_reports(
                 phase_root.mkdir(parents=True)
                 for filename in filenames:
                     (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
+        for scenario_id, filenames in NATIVE_RESTORE_PASS_EVIDENCE.items():
+            if scenario_id not in selected[stage]:
+                continue
+            for filename in filenames:
+                target = run_root / scenario_id / filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"synthetic unit-test image/trace payload")
         if "40-file-history-capacity" in selected[stage]:
             persistent = run_root / "40-file-history-capacity" / "persistent"
             (persistent / "fixtures").mkdir(parents=True)
@@ -2637,6 +2644,168 @@ def test_s39_screenshots_failed_report_keeps_only_images_produced_in_current_pha
     assert retained is not None
     images = {path.relative_to(retained).as_posix() for path in retained.rglob("*.png")}
     assert images == {"39-file-workflow-combination/seed/20261001T231002Z/39-record-file-entry.png"}
+
+
+NATIVE_RESTORE_PASS_EVIDENCE = {
+    "42-file-document-native-operations": (
+        "415-native-file-document.png",
+        "42-file-document-native-operations-trace.zip",
+    ),
+    "44-file-restore-crash": (
+        "seed/20261002T010002Z/44-file-restore-crash-before-kill.png",
+        "seed/20261002T010002Z/44-file-restore-crash-before-kill-trace.zip",
+        "resume/20261002T010002Z/44-file-restore-crash.png",
+        "resume/20261002T010002Z/44-file-restore-crash-trace.zip",
+    ),
+}
+
+
+def _native_restore_evidence_run(tmp_path: Path, scenario_id: str, status: str) -> Path:
+    run = tmp_path / "source" / "20261002T010000Z"
+    scenario = run / scenario_id
+    scenario.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps({"status": status, "scenarios": [{"scenario": scenario_id, "status": status}]}),
+        encoding="utf-8",
+    )
+    for relative in NATIVE_RESTORE_PASS_EVIDENCE[scenario_id]:
+        target = scenario / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"raw:{relative}".encode())
+        if scenario_id == "44-file-restore-crash":
+            for timestamp in ("20261002T010001Z", "20261399T235959Z"):
+                old = scenario / relative.replace("20261002T010002Z", timestamp)
+                old.parent.mkdir(parents=True, exist_ok=True)
+                old.write_bytes(b"must not replace current evidence")
+        (target.parent / "unrelated.png").write_bytes(b"unrelated")
+        (target.parent / "workspace.db").write_bytes(b"private")
+    return run
+
+
+@pytest.mark.parametrize("scenario_id", list(NATIVE_RESTORE_PASS_EVIDENCE))
+def test_native_restore_passing_evidence_retains_only_current_fixed_images_and_traces(
+    tmp_path: Path, scenario_id: str
+) -> None:
+    run = _native_restore_evidence_run(tmp_path, scenario_id, "passed")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    expected = {"product-e2e-report.json"}
+    for relative in NATIVE_RESTORE_PASS_EVIDENCE[scenario_id]:
+        archived = retained / scenario_id / relative
+        (run / scenario_id / relative).unlink()
+        assert archived.read_bytes() == f"raw:{relative}".encode()
+        expected.add(f"{scenario_id}/{relative}")
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == expected
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "missing"),
+    [
+        (scenario, name)
+        for scenario, names in NATIVE_RESTORE_PASS_EVIDENCE.items()
+        for name in names
+    ],
+)
+def test_native_restore_passing_evidence_rejects_each_missing_current_image_or_trace(
+    tmp_path: Path, scenario_id: str, missing: str
+) -> None:
+    run = _native_restore_evidence_run(tmp_path, scenario_id, "passed")
+    (run / scenario_id / missing).unlink()
+    with pytest.raises(ValueError, match=Path(missing).name):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_restore_crash_failure_retains_bounded_phase_protocol_evidence(tmp_path: Path) -> None:
+    scenario_id = "44-file-restore-crash"
+    run = tmp_path / "source" / "20261002T020000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": scenario_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    expected = {"product-e2e-report.json"}
+    for phase in ("seed", "resume"):
+        phase_run = run / scenario_id / phase / "20261002T020001Z"
+        phase_run.mkdir(parents=True)
+        names = (
+            "host-stderr.log",
+            f"{scenario_id}-result.json",
+            "fault-request.json",
+            "fault-result.json",
+            *(
+                (
+                    "44-restore-crash-checkpoint.json",
+                    "44-file-restore-crash-before-kill.png",
+                    "44-file-restore-crash-before-kill-trace.zip",
+                )
+                if phase == "seed"
+                else ("44-file-restore-crash.png", "44-file-restore-crash-trace.zip")
+            ),
+        )
+        for name in names:
+            (phase_run / name).write_bytes(f"{phase}:{name}".encode())
+            expected.add(f"{scenario_id}/{phase}/{phase_run.name}/{name}")
+        (phase_run / "workspace.db").write_bytes(b"private")
+        (phase_run / "unrelated.json").write_bytes(b"unrelated")
+        invalid = run / scenario_id / phase / "not-a-phase-run"
+        invalid.mkdir()
+        (invalid / "fault-result.json").write_bytes(b"outside phase layout")
+    private = run / scenario_id / "persistent" / "workspace"
+    private.mkdir(parents=True)
+    (private / "workspace.db").write_bytes(b"private")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == expected
+    for relative in expected - {"product-e2e-report.json"}:
+        assert (retained / relative).read_bytes() == (run / relative).read_bytes()
+
+
+def test_native_failure_retains_only_current_request_and_fixed_control_records(
+    tmp_path: Path,
+) -> None:
+    scenario_id = "42-file-document-native-operations"
+    run = tmp_path / "source" / "20261002T030000Z"
+    scenario = run / scenario_id
+    controls = run / "_runtime" / "42" / "controls"
+    scenario.mkdir(parents=True)
+    controls.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": scenario_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    evidence = {
+        f"{scenario_id}/file-document-native-request.json": b'{"action":"copy"}',
+        f"{scenario_id}/file-document-native-result.json": b'{"status":"unverified"}',
+        "_runtime/42/controls/document-native-arm.json": b'{"mode":"copy"}',
+        "_runtime/42/controls/document-native-target.json": b'{"hwnd":123}',
+        "_runtime/42/controls/document-native-drag-started.json": b'{"source":"synthetic"}',
+        "_runtime/42/controls/document-native-drag-completed.json": b'{"effect":"Copy"}',
+        "_runtime/42/controls/document-native-drop-result.json": b'{"received":["synthetic"]}',
+        "_runtime/42/controls/document-native-preview-result.json": b'{"outcome":"do-preview-returned"}',
+        "_runtime/42/controls/document-native-open-baseline.json": b'{"windows":[]}',
+    }
+    for relative, raw in evidence.items():
+        (run / relative).write_bytes(raw)
+    (controls / "document-native-unrelated.json").write_bytes(b"unrelated")
+    private = controls / "document-drop"
+    private.mkdir()
+    (private / "synthetic.txt").write_bytes(b"do not copy source/destination trees")
+    (scenario / "workspace.db").write_bytes(b"private")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == {"product-e2e-report.json", *evidence}
+    for relative, raw in evidence.items():
+        assert (retained / relative).read_bytes() == raw
 
 
 @pytest.mark.parametrize(

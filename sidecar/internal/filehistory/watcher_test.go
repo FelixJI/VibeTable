@@ -2,8 +2,12 @@ package filehistory
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
@@ -111,4 +115,68 @@ func TestWatcherInitialAndReconnectRescanIngestsStableFilesConservatively(
 	if !foundMissingConfirmation {
 		t.Fatalf("missing confirmation events = %#v", events)
 	}
+}
+
+func TestWatcherReadStablePreservesMissingAndRejectsUnsafePaths(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ingestor, err := NewIngestor(fixture.service, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	filesRoot := filepath.Join(root, "files")
+	watcher, err := NewWatcher(filesRoot, ingestor, func() writecoordinator.Token { return fixture.token }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"missing.txt", "missing-parent/missing.txt"} {
+		t.Run(relative, func(t *testing.T) {
+			content, err := watcher.ReadStable(context.Background(), relative)
+			if content != nil || !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing read must preserve os.ErrNotExist: %q, %v", content, err)
+			}
+		})
+	}
+	t.Run("escape", func(t *testing.T) {
+		if content, err := watcher.ReadStable(context.Background(), "../outside.txt"); content != nil ||
+			!errors.Is(err, ErrUnsafeFilePath) {
+			t.Fatalf("escape read = %q, %v", content, err)
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		outside := filepath.Join(root, "outside")
+		if err := os.MkdirAll(outside, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		secret := filepath.Join(outside, "secret.txt")
+		if err := os.WriteFile(secret, []byte("synthetic outside bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(filesRoot, "linked-parent")
+		for _, fixturePath := range []string{link, outside} {
+			relative, err := filepath.Rel(root, fixturePath)
+			if err != nil || !filepath.IsAbs(fixturePath) || filepath.IsAbs(relative) ||
+				relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				t.Fatalf("link fixture escapes the synthetic root: %s, %v", fixturePath, err)
+			}
+		}
+		if runtime.GOOS == "windows" {
+			if output, err := exec.Command("cmd.exe", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+				t.Fatalf("create synthetic junction: %s, %v", output, err)
+			}
+		} else if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Remove(link); err != nil {
+				t.Errorf("remove only the synthetic link: %v", err)
+			}
+		})
+		for _, relative := range []string{"linked-parent", "linked-parent/secret.txt", "linked-parent/missing.txt"} {
+			content, err := watcher.ReadStable(context.Background(), relative)
+			if content != nil || !errors.Is(err, ErrUnsafeFilePath) {
+				t.Errorf("unsafe read %s = %q, %v", relative, content, err)
+			}
+		}
+	})
 }

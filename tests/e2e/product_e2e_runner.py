@@ -8,6 +8,8 @@ Chromium/Edge process itself.
 from __future__ import annotations
 
 import argparse
+import base64
+import ctypes
 import hashlib
 import ipaddress
 import json
@@ -22,6 +24,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
@@ -129,6 +132,7 @@ _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
         "files",
         "recordId",
     ),
+    "44-file-restore-crash": ("workspaceId", "restoreCrash"),
 }
 
 
@@ -171,7 +175,7 @@ class _ManagedScope(_LifecycleScope, _CloseScope, Protocol):
     pass
 
 
-class _HostObservationScope(_SnapshotScope, _FaultScope, Protocol):
+class _HostObservationScope(_LifecycleScope, _FaultScope, Protocol):
     def working_set_snapshot(self) -> ProcessWorkingSetSnapshot: ...
 
 
@@ -1095,6 +1099,683 @@ def _handle_fault_request(request: dict[str, Any], host_scope: _FaultScope) -> d
     }
 
 
+def _file_restore_storage_proof(request: Mapping[str, Any], local_data: Path) -> dict[str, Any]:
+    workspace_id, operation_id = request["workspaceId"], request["operationId"]
+    for value in (workspace_id, operation_id):
+        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+            raise ValueError("Restore crash proof requires canonical UUIDs")
+    root = local_data / "workspaces" / workspace_id
+    if _resolve_persistent_workspace_root(root, local_data.parent, workspace_id) != root.resolve():
+        raise ValueError("Restore crash proof requires this Host's registered synthetic root")
+    metadata = root / ".vibetable"
+    paths = (
+        metadata / "topology" / "filehistory-head.db",
+        metadata / "coordination" / "write-coordinator.db",
+        metadata / "coordination" / "workspace-v2.db",
+        metadata / "coordination" / "file-materializer" / "journal.json",
+        root / "files" / "restore-crash-44.txt",
+    )
+    for path in paths:
+        for item in (path, *path.parents):
+            if item == local_data.parent:
+                break
+            if item.exists() and getattr(item.lstat(), "st_file_attributes", 0) & 0x400:
+                raise ValueError("Restore crash proof path contains a reparse point")
+
+    def read_rows(
+        database: Path, statement: str, parameters: tuple[object, ...]
+    ) -> list[tuple[object, ...]]:
+        db = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+        try:
+            db.execute("PRAGMA query_only=ON")
+            return db.execute(statement, parameters).fetchall()
+        finally:
+            db.close()
+
+    heads = read_rows(
+        paths[0],
+        "SELECT mutation_revision, session_epoch, fence_epoch, claim_id "
+        "FROM filehistory_heads WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    receipts = read_rows(
+        paths[0],
+        "SELECT method, scope, request_hash, result_json "
+        "FROM filehistory_operation_receipts WHERE workspace_id = ? "
+        "AND operation_id = ?",
+        (workspace_id, operation_id),
+    )
+    if len(heads) != 1 or len(receipts) != 1 or receipts[0][0] != "fileHistory.restore":
+        raise ValueError("Restore crash proof has no unique actual Restore publication")
+    intents = read_rows(
+        paths[1],
+        "SELECT mutation_revision, session_epoch, fence_epoch, claim_id, "
+        "state FROM mutation_intents WHERE workspace_id = ? AND mutation_revision = ?",
+        (workspace_id, heads[0][0]),
+    )
+    counters = read_rows(
+        paths[1],
+        "SELECT mutation_revision FROM coordination_state WHERE singleton = 1 AND workspace_id = ?",
+        (workspace_id,),
+    )
+    cached = read_rows(
+        paths[2],
+        "SELECT method, result_json FROM rpc_operation_receipts "
+        "WHERE workspace_id = ? AND operation_id = ?",
+        (workspace_id, operation_id),
+    )
+    if len(intents) != 1 or len(counters) != 1 or len(cached) > 1:
+        raise ValueError("Restore crash proof has inconsistent durable coordination")
+    journal = _read_json(paths[3])
+    if paths[3].exists() and journal is None:
+        raise ValueError("Restore crash materializer journal is invalid")
+    receipt_result = receipts[0][3]
+    if not isinstance(receipt_result, (str, bytes, bytearray)):
+        raise ValueError("Restore authority receipt result is not JSON storage")
+    cached_receipt = None
+    if cached:
+        cached_result = cached[0][1]
+        if not isinstance(cached_result, (str, bytes, bytearray)):
+            raise ValueError("Restore cached receipt result is not JSON storage")
+        cached_receipt = {"method": cached[0][0], "result": json.loads(cached_result)}
+    proof = {
+        "head": dict(
+            zip(
+                ("mutationRevision", "sessionEpoch", "fenceEpoch", "claimId"), heads[0], strict=True
+            )
+        ),
+        "intent": dict(
+            zip(
+                ("mutationRevision", "sessionEpoch", "fenceEpoch", "claimId", "state"),
+                intents[0],
+                strict=True,
+            )
+        ),
+        "committedMutationRevision": counters[0][0],
+        "receipt": {
+            "method": receipts[0][0],
+            "scope": receipts[0][1],
+            "requestHash": receipts[0][2],
+            "result": json.loads(receipt_result),
+        },
+        "cachedReceipt": cached_receipt,
+        "journal": journal,
+        "bytes": paths[4].read_bytes().decode("utf-8"),
+    }
+    if "restoreIntent" in request:
+        binding = request["restoreIntent"]
+        fields = {"mutationRevision", "sessionEpoch", "fenceEpoch", "claimId"}
+        if not isinstance(binding, dict) or set(binding) != fields:
+            raise ValueError("Restore intent binding has unknown or missing fields")
+        for field in ("mutationRevision", "sessionEpoch", "fenceEpoch"):
+            value = binding[field]
+            if type(value) is not int or not 1 <= value <= (1 << 63) - 1:
+                raise ValueError("Restore intent counters must be positive SQLite uint values")
+        claim_id = binding["claimId"]
+        if not isinstance(claim_id, str) or str(uuid.UUID(claim_id)) != claim_id:
+            raise ValueError("Restore intent claim must be a canonical UUID")
+        restored_intents = read_rows(
+            paths[1],
+            "SELECT mutation_revision, session_epoch, fence_epoch, claim_id, state "
+            "FROM mutation_intents WHERE workspace_id = ? AND mutation_revision = ? "
+            "AND session_epoch = ? AND fence_epoch = ? AND claim_id = ?",
+            (
+                workspace_id,
+                binding["mutationRevision"],
+                binding["sessionEpoch"],
+                binding["fenceEpoch"],
+                claim_id,
+            ),
+        )
+        if len(restored_intents) != 1:
+            raise ValueError("seed Restore intent does not match its exact persisted binding")
+        proof["restoreIntent"] = dict(
+            zip(
+                ("mutationRevision", "sessionEpoch", "fenceEpoch", "claimId", "state"),
+                restored_intents[0],
+                strict=True,
+            )
+        )
+    return proof
+
+
+def _handle_restore_crash_request(
+    request: Mapping[str, Any],
+    *,
+    host_scope: _HostObservationScope,
+    local_data: Path,
+    controls: Path,
+    allow_owned_host_crash: bool = False,
+) -> dict[str, Any]:
+    try:
+        fields = {"requestId", "action", "workspaceId", "operationId"}
+        if request.get("action") == "observe-restore-storage":
+            fields.add("restoreIntent")
+        if set(request) != fields:
+            raise ValueError("Restore crash request has unknown or missing fields")
+        if request["action"] not in {"kill-restore-sidecar", "observe-restore-storage"}:
+            raise ValueError("unknown Restore crash action")
+        if request["action"] == "kill-restore-sidecar" and not allow_owned_host_crash:
+            raise ValueError("owned Host crash is restricted to the 44 seed phase")
+        proof = _file_restore_storage_proof(request, local_data)
+        if request["action"] == "observe-restore-storage":
+            if proof["restoreIntent"]["state"] != "committed":
+                raise ValueError("seed Restore intent did not finish its committed mutation")
+            return {"status": "completed", "proof": proof}
+        evidence_dir = controls.parent.parent
+        checkpoint = _read_json(evidence_dir / "44-restore-crash-checkpoint.json")
+        if checkpoint is None or checkpoint.get("workspaceId") != request["workspaceId"]:
+            raise ValueError("Restore crash has no pre-kill live checkpoint")
+        seed = checkpoint.get("restoreCrash") or {}
+        outbound = seed.get("request") or {}
+        if (
+            outbound.get("type") != "workspace.v2.request"
+            or (outbound.get("payload") or {}).get("method") != "fileHistory.restore"
+            or ((outbound.get("payload") or {}).get("wire") or {}).get("operationId")
+            != request["operationId"]
+        ):
+            raise ValueError("Restore crash checkpoint has a different actual outbound request")
+        observation = seed.get("checkpoint") or {}
+        diagnostics = observation.get("bridgeDiagnostics") or {}
+        pending = diagnostics.get("pending")
+        if (
+            diagnostics.get("failures") != []
+            or not isinstance(pending, list)
+            or len(pending) != 1
+            or pending[0].get("requestId") != outbound.get("requestId")
+            or pending[0].get("requestType") != "fileHistory.restore"
+            or observation.get("rendererDiagnosticsClean") is not True
+        ):
+            raise ValueError(
+                "Restore crash checkpoint does not have exactly one clean bound pending Restore"
+            )
+        for field in ("screenshot", "trace"):
+            asset = Path(observation.get(field, ""))
+            if (
+                not asset.is_absolute()
+                or asset.resolve().parent != evidence_dir.resolve()
+                or not asset.is_file()
+            ):
+                raise ValueError(
+                    "Restore crash checkpoint is missing its live screenshot or completed trace"
+                )
+        ready = _read_json(controls / "file-restore-barrier.ready.json")
+        if ready is None or any(
+            ready.get(key) != request[key] for key in ("workspaceId", "operationId")
+        ):
+            raise ValueError("Restore crash barrier does not bind the requested operation")
+        if ready.get("point") != "before-finish-committed-mutation":
+            raise ValueError("Restore crash barrier has the wrong persistence point")
+        head, intent, journal = proof["head"], proof["intent"], proof["journal"]
+        if (
+            intent != head | {"state": "prepared"}
+            or proof["committedMutationRevision"] >= head["mutationRevision"]
+            or proof["cachedReceipt"] is not None
+            or not isinstance(journal, dict)
+            or journal.get("state") != "applied"
+            or journal.get("workspaceId") != request["workspaceId"]
+            or any(
+                journal.get(key) != value or ready.get(key) != value for key, value in head.items()
+            )
+            or ready.get("result") != proof["receipt"]["result"]
+        ):
+            raise ValueError("Restore crash independent receipt/head/journal proof is incomplete")
+        snapshot = host_scope.snapshot()
+        roots = [member for member in snapshot.members if member.pid == host_scope.root.pid]
+        if len(roots) != 1 or not roots[0].identity_verified:
+            raise ValueError("Restore crash Host root is not identity-verified in its owned scope")
+        members = [
+            member
+            for member in snapshot.members
+            if member.executable_name.casefold() == "vibetable-pb.exe"
+        ]
+        if (
+            len(members) != 1
+            or not members[0].identity_verified
+            or members[0].pid != ready.get("pid")
+        ):
+            raise ValueError("Restore crash barrier PID is not this Host's unique verified sidecar")
+        result = host_scope.terminate_unique("vibetable-pb.exe")
+        if result.status != "terminated" or result.terminated_pid != members[0].pid:
+            raise RuntimeError("Restore crash sidecar termination was not identity-verified")
+        # Stop the entire same owned Job immediately: the supervisor otherwise
+        # restarts the sidecar and could recover in the first Host. No foreign
+        # process/window scope is consulted or terminated.
+        termination = _terminate_scope(host_scope)
+        wait = host_scope.wait_empty(timeout=5.0)
+        owned_host = {
+            "rootPid": host_scope.root.pid,
+            "termination": termination,
+            "remainingPids": list(wait.remaining_pids) if wait.remaining_pids is not None else None,
+            "errors": list(wait.errors),
+        }
+        if termination["status"] != "passed" or not wait.success:
+            return {
+                "status": "failed",
+                "code": "RESTORE_CRASH_HOST_SCOPE_NOT_EMPTY",
+                "ownedHost": owned_host,
+            }
+        after_crash = _file_restore_storage_proof(request, local_data)
+        if after_crash != proof:
+            raise RuntimeError("the first Host changed Restore persistence before its scope exited")
+        return {
+            "status": "completed",
+            "pid": result.terminated_pid,
+            "proof": proof,
+            "afterCrashProof": after_crash,
+            "ownedHost": owned_host,
+        }
+    except (OSError, ValueError, RuntimeError, sqlite3.Error, KeyError, TypeError) as exc:
+        return {"status": "failed", "code": "RESTORE_CRASH_PROOF_FAILED", "message": str(exc)}
+
+
+def _document_native_source(request: Mapping[str, Any], local_data: Path, controls: Path) -> Path:
+    action = request.get("action")
+    fields = {"requestId", "operationId", "action", "workspaceId", "relativePath"}
+    if action in {"copy", "cancel"}:
+        fields |= {"cssX", "cssY", "devicePixelRatio"}
+    elif action not in {"open-baseline", "open-observe", "preview-observe"}:
+        raise ValueError("native document action is outside the closed allowlist")
+    if set(request) != fields:
+        raise ValueError("native document request has unknown or missing fields")
+    for key in ("requestId", "operationId", "workspaceId"):
+        value = request[key]
+        if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+            raise ValueError(f"native document {key} must be a canonical UUID")
+    relative = request["relativePath"]
+    if (
+        not isinstance(relative, str)
+        or not re.fullmatch(r"document-native-[0-9a-f-]{36}\.txt", relative)
+        or str(uuid.UUID(relative[16:-4])) != relative[16:-4]
+    ):
+        raise ValueError("native observation only accepts its unique synthetic TXT")
+    workspace = local_data / "workspaces" / request["workspaceId"]
+    source = workspace / "files" / relative
+    for path in (source, workspace / ".vibetable/workspace.json", controls / "document-drop"):
+        for entry in (path, *path.parents):
+            if entry.exists() and (
+                entry.is_symlink() or getattr(entry.lstat(), "st_file_attributes", 0) & 0x400
+            ):
+                raise ValueError("native document path contains a reparse point")
+    manifest = _read_json(workspace / ".vibetable/workspace.json")
+    expected = f"VibeTable Task 415 native FileDocument\n{relative}\n"
+    if manifest is None or manifest.get("workspaceId") != request["workspaceId"]:
+        raise ValueError("native document workspace manifest UUID changed")
+    if source.read_bytes() != expected.encode("utf-8"):
+        raise ValueError("native document source is not the exact synthetic fixture")
+    return source.resolve()
+
+
+class _DocumentNativeWindows:
+    """Bounded Win32 input/window observation for the one synthetic FileDocument."""
+
+    def __init__(self) -> None:
+        if os.name != "nt":
+            raise OSError("native document observation requires Windows")
+        from ctypes import wintypes
+
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self.callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        signatures = {
+            "EnumWindows": ([self.callback_type, wintypes.LPARAM], wintypes.BOOL),
+            "GetWindowThreadProcessId": (
+                [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)],
+                wintypes.DWORD,
+            ),
+            "IsWindowVisible": ([wintypes.HWND], wintypes.BOOL),
+            "GetWindowTextW": ([wintypes.HWND, wintypes.LPWSTR, ctypes.c_int], ctypes.c_int),
+            "GetAncestor": ([wintypes.HWND, wintypes.UINT], wintypes.HWND),
+            "WindowFromPoint": ([wintypes.POINT], wintypes.HWND),
+            "GetDpiForWindow": ([wintypes.HWND], wintypes.UINT),
+            "SetForegroundWindow": ([wintypes.HWND], wintypes.BOOL),
+            "GetForegroundWindow": ([], wintypes.HWND),
+            "SetThreadDpiAwarenessContext": ([wintypes.HANDLE], wintypes.HANDLE),
+            "PostMessageW": (
+                [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM],
+                wintypes.BOOL,
+            ),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self.user32, name)
+            function.argtypes, function.restype = arguments, result
+        self.previous_dpi = self.user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+        if not self.previous_dpi:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self) -> None:
+        self.user32.SetThreadDpiAwarenessContext(self.previous_dpi)
+
+    def owner(self, hwnd: int) -> int:
+        from ctypes import wintypes
+
+        pid = wintypes.DWORD()
+        if not self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
+            raise OSError("native document HWND no longer exists")
+        return int(pid.value)
+
+    def windows(self) -> list[dict[str, Any]]:
+        windows: list[dict[str, Any]] = []
+
+        @self.callback_type
+        def collect(hwnd: int, _parameter: int) -> bool:
+            from ctypes import wintypes
+
+            pid = wintypes.DWORD()
+            if self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
+                title = ctypes.create_unicode_buffer(1024)
+                self.user32.GetWindowTextW(hwnd, title, len(title))
+                windows.append(
+                    {
+                        "hwnd": int(hwnd),
+                        "pid": int(pid.value),
+                        "title": title.value,
+                        "visible": bool(self.user32.IsWindowVisible(hwnd)),
+                    }
+                )
+            return True
+
+        if not self.user32.EnumWindows(collect, 0):
+            raise OSError("native document window enumeration failed")
+        return windows
+
+    def _root_at(self, x: float, y: float) -> int:
+        from ctypes import wintypes
+
+        hwnd = self.user32.WindowFromPoint(wintypes.POINT(round(x), round(y)))
+        return int(self.user32.GetAncestor(hwnd, 2) or 0)
+
+    def drag(
+        self, request: Mapping[str, Any], target: Mapping[str, Any], controls: Path, host_pid: int
+    ) -> None:
+        from ctypes import wintypes
+
+        class Mouse(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("data", wintypes.DWORD),
+                ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("extra", ctypes.c_size_t),
+            ]
+
+        class Keyboard(ctypes.Structure):
+            _fields_ = [
+                ("vk", wintypes.WORD),
+                ("scan", wintypes.WORD),
+                ("flags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("extra", ctypes.c_size_t),
+            ]
+
+        class Payload(ctypes.Union):
+            _fields_ = [("mouse", Mouse), ("keyboard", Keyboard)]
+
+        class Input(ctypes.Structure):
+            _fields_ = [("kind", wintypes.DWORD), ("payload", Payload)]
+
+        send = self.user32.SendInput
+        send.argtypes = [wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int]
+        send.restype = wintypes.UINT
+
+        def inject(*events: Input) -> None:
+            inputs = (Input * len(events))(*events)
+            if send(len(events), inputs, ctypes.sizeof(Input)) != len(events):
+                raise OSError("SendInput inserted fewer events than requested (possibly UIPI)")
+
+        def mouse(flags: int, x: float = 0, y: float = 0) -> Input:
+            if flags & 1:
+                left, top = self.user32.GetSystemMetrics(76), self.user32.GetSystemMetrics(77)
+                width, height = self.user32.GetSystemMetrics(78), self.user32.GetSystemMetrics(79)
+                if not (left <= x < left + width and top <= y < top + height):
+                    raise ValueError("native document point is outside the virtual desktop")
+                x, y = (
+                    round((x - left) * 65535 / (width - 1)),
+                    round((y - top) * 65535 / (height - 1)),
+                )
+                flags |= 0xC000  # ABSOLUTE | VIRTUALDESK
+            return Input(0, Payload(mouse=Mouse(round(x), round(y), 0, flags, 0, 0)))
+
+        def escape() -> tuple[Input, Input]:
+            return (
+                Input(1, Payload(keyboard=Keyboard(0x1B, 0, 0, 0, 0))),
+                Input(1, Payload(keyboard=Keyboard(0x1B, 0, 2, 0, 0))),
+            )
+
+        if target.get("hostProcessId") != host_pid:
+            raise ValueError("native document target is not owned by the packaged Host")
+        root, receiver = target["hostHwnd"], target["targetHwnd"]
+        if self.owner(root) != host_pid or self.owner(receiver) != host_pid:
+            raise ValueError("native document HWND owner changed")
+        for field in ("cssX", "cssY", "devicePixelRatio"):
+            value = request[field]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                raise ValueError("native document point/DPI is invalid")
+        x, y = request["cssX"], request["cssY"]
+        scale = target["scaleX"]
+        if (
+            not 0 <= x < target["webviewWidth"] - 20
+            or not 0 <= y < target["webviewHeight"]
+            or abs(request["devicePixelRatio"] - scale) > 0.01
+            or abs(self.user32.GetDpiForWindow(root) / 96 - scale) > 0.01
+            or abs(scale - target["scaleY"]) > 0.01
+        ):
+            raise ValueError("native document point does not match the observed WebView DPI/bounds")
+        x, y = target["webviewX"] + x * scale, target["webviewY"] + y * scale
+        tx, ty = target["targetX"], target["targetY"]
+        if not self.user32.SetForegroundWindow(root) or self.user32.GetForegroundWindow() != root:
+            raise OSError("packaged Host cannot become the foreground input owner")
+        if self._root_at(x, y) != root or self._root_at(tx, ty) != receiver:
+            raise OSError("native document source/target is obscured by another window")
+        down = True
+        try:
+            inject(mouse(1, x, y), mouse(2), mouse(1, x + 16 * scale, y))
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                started = _read_json(controls / "document-native-drag-started.json")
+                if started is not None and started.get("operationId") == request["operationId"]:
+                    break
+                time.sleep(0.025)
+            else:
+                raise OSError("real HTML dragstart did not enter the production DoDragDrop")
+            if request["action"] == "cancel":
+                inject(*escape(), mouse(4))
+            else:
+                if (
+                    self.owner(receiver) != host_pid
+                    or self._root_at(tx, ty) != receiver
+                    or (self.user32.GetForegroundWindow() not in (root, receiver))
+                ):
+                    raise OSError("native FileDrop receiver ownership changed before release")
+                inject(mouse(1, tx, ty), mouse(4))
+            down = False
+        finally:
+            if down:
+                inject(*escape(), mouse(4))
+
+    def document_text(self, hwnd: int) -> list[dict[str, str]]:
+        # Only a newly observed HWND is inspected. Windows' own UIA avoids a
+        # Python COM dependency and does not launch or control an editor.
+        script = """
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+$root = [System.Windows.Automation.AutomationElement]::FromHandle(
+    [IntPtr]::new([int64]$env:VIBETABLE_QA_NATIVE_HWND))
+$documentCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Document)
+$editCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Edit)
+$condition = [System.Windows.Automation.OrCondition]::new($documentCondition, $editCondition)
+$documents = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+if ($documents.Count -ne 1) { throw 'New editor window cannot be uniquely verified' }
+$tabCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::TabItem)
+$tabs = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
+if ($tabs.Count -gt 1) { throw 'New editor window cannot be uniquely verified' }
+$items = @(foreach ($document in $documents) {
+    $pattern = $null
+    if ($document.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+        @{ name = $document.Current.Name; text = $pattern.DocumentRange.GetText(4096) }
+    } elseif ($document.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+        @{ name = $document.Current.Name; text = $pattern.Current.Value }
+    } else {
+        throw 'New editor document does not expose readable UIA text'
+    }
+})
+ConvertTo-Json -InputObject $items -Compress
+"""
+        environment = os.environ.copy()
+        environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=5,
+        )
+        documents = json.loads(result.stdout)
+        if not isinstance(documents, list):
+            raise ValueError("new editor UIA document result is not an array")
+        return documents
+
+    def close_new_document(self, hwnd: int, pid: int) -> bool:
+        if self.owner(hwnd) != pid:
+            raise OSError("new synthetic editor window ownership changed before WM_CLOSE")
+        if not self.user32.PostMessageW(hwnd, 0x0010, 0, 0):
+            raise OSError("new synthetic editor window rejected WM_CLOSE")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if not self.user32.IsWindowVisible(hwnd):
+                return True
+            time.sleep(0.025)
+        return False
+
+
+def _handle_document_native_request(
+    request: Mapping[str, Any],
+    *,
+    host_scope: _SnapshotScope,
+    local_data: Path,
+    controls: Path,
+) -> dict[str, Any]:
+    native: _DocumentNativeWindows | None = None
+    try:
+        source = _document_native_source(request, local_data, controls)
+        native = _DocumentNativeWindows()
+        action = request["action"]
+        if action in {"copy", "cancel"}:
+            target = _read_json(controls / "document-native-target.json")
+            if (
+                target is None
+                or any(target.get(key) != request[key] for key in ("operationId", "workspaceId"))
+                or (target.get("mode") != action or target.get("source") != str(source))
+            ):
+                raise ValueError("native document target does not match this operation/source")
+            native.drag(request, target, controls, host_scope.root.pid)
+            return {"requestId": request["requestId"], "status": "injected", "action": action}
+        if action == "preview-observe":
+            evidence = _read_json(controls / "document-native-preview-result.json")
+            if (
+                evidence is None
+                or evidence.get("outcome") != "do-preview-returned"
+                or (evidence.get("source") != str(source))
+            ):
+                raise OSError("real FileDocument COM DoPreview did not produce a success record")
+            pid, hwnd = evidence["processId"], evidence["hwnd"]
+            members = host_scope.snapshot().members
+            if (
+                not any(
+                    member.pid == pid
+                    and member.identity_verified
+                    and member.executable_name.casefold() == "vibetable.next.exe"
+                    for member in members
+                )
+                or pid == host_scope.root.pid
+            ):
+                raise OSError("preview helper is not a verified child in the packaged Host Job")
+            if native.owner(hwnd) != pid or not native.user32.IsWindowVisible(hwnd):
+                raise OSError("real preview COM host HWND is missing or has another owner")
+            return {
+                "requestId": request["requestId"],
+                "status": "observed",
+                "action": action,
+                "preview": evidence,
+                "helperIdentityVerified": True,
+            }
+        baseline_path = controls / "document-native-open-baseline.json"
+        if action == "open-baseline":
+            baseline = {
+                "operationId": request["operationId"],
+                "source": str(source),
+                "windows": [
+                    {"hwnd": item["hwnd"], "pid": item["pid"]} for item in native.windows()
+                ],
+            }
+            _write_json_atomic(baseline_path, baseline)
+            return {"requestId": request["requestId"], "status": "observed", "action": action}
+        baseline = _read_json(baseline_path)
+        if (
+            baseline is None
+            or baseline.get("operationId") != request["operationId"]
+            or (baseline.get("source") != str(source))
+        ):
+            raise ValueError("native Shell Open baseline is missing or belongs to another file")
+        previous = {item["hwnd"] for item in baseline["windows"]}
+        deadline = time.monotonic() + 2
+        while True:
+            candidates = [
+                item
+                for item in native.windows()
+                if item["hwnd"] not in previous and item["visible"] and source.name in item["title"]
+            ]
+            if candidates or time.monotonic() >= deadline:
+                break
+            time.sleep(0.025)
+        if len(candidates) != 1:
+            raise OSError("Shell Open has no unique newly created window for the synthetic TXT")
+        window = candidates[0]
+        documents = native.document_text(window["hwnd"])
+        expected = source.read_text(encoding="utf-8").rstrip("\n")
+        if (
+            len(documents) != 1
+            or documents[0].get("text", "").replace("\r\n", "\n").rstrip("\n") != expected
+        ):
+            raise OSError("new Shell window does not expose the exact sole synthetic document")
+        if not native.close_new_document(window["hwnd"], window["pid"]):
+            raise OSError("verified new synthetic editor window did not close after WM_CLOSE")
+        return {
+            "requestId": request["requestId"],
+            "status": "observed",
+            "action": action,
+            "source": str(source),
+            "window": window,
+            "document": documents[0],
+            "newWindowClosed": True,
+        }
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exception:
+        return {
+            "requestId": request.get("requestId"),
+            "status": "unverified",
+            "action": request.get("action"),
+            "error": str(exception),
+        }
+    finally:
+        if native is not None:
+            native.close()
+
+
 def _run_node_runner(
     command: list[str],
     *,
@@ -1121,6 +1802,10 @@ def _run_node_runner(
     handled_fault_ids: set[str] = set()
     invalid_fault_reported = False
     handled_storage_proof_ids: set[str] = set()
+    handled_document_native_ids: set[str] = set()
+    controls = (
+        Path(command[command.index("--controls-dir") + 1]) if "--controls-dir" in command else None
+    )
     worker_memory: dict[str, Any] = {
         "method": "identity-verified Job members, sampled working set every driver loop (nominal 50 ms)",
         "blindSpots": "Short-lived workers and allocations between samples can be missed; this is an observed peak, not the Job memory limit or a kernel peak counter.",
@@ -1141,11 +1826,34 @@ def _run_node_runner(
             if isinstance(fault_request_id, str) and fault_request_id:
                 if fault_request_id not in handled_fault_ids:
                     handled_fault_ids.add(fault_request_id)
+                    response = (
+                        _handle_restore_crash_request(
+                            request,
+                            host_scope=host_scope,
+                            local_data=local_data,
+                            controls=controls,
+                            allow_owned_host_crash=(
+                                "--scenario" in command
+                                and command[command.index("--scenario") + 1]
+                                == "44-file-restore-crash"
+                                and "--persistent-phase" in command
+                                and command[command.index("--persistent-phase") + 1] == "seed"
+                            ),
+                        )
+                        if request.get("action")
+                        in {"kill-restore-sidecar", "observe-restore-storage"}
+                        and controls is not None
+                        else _handle_fault_request(request, host_scope)
+                    )
+                    if time.monotonic() >= deadline:
+                        node_process.kill()
+                        stdout, stderr = node_process.communicate(timeout=10)
+                        raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
                     _write_json_atomic(
                         fault_result,
                         {
                             "requestId": fault_request_id,
-                            **_handle_fault_request(request, host_scope),
+                            **response,
                         },
                     )
             elif not invalid_fault_reported:
@@ -1170,6 +1878,25 @@ def _run_node_runner(
                     storage_result,
                     _handle_storage_proof(request, local_data),
                 )
+        native_request = _read_json(scenario_dir / "file-document-native-request.json")
+        if native_request is not None and controls is not None:
+            native_request_id = native_request.get("requestId")
+            if (
+                isinstance(native_request_id, str)
+                and native_request_id not in handled_document_native_ids
+            ):
+                handled_document_native_ids.add(native_request_id)
+                native_result = _handle_document_native_request(
+                    native_request,
+                    host_scope=host_scope,
+                    local_data=local_data,
+                    controls=controls,
+                )
+                if time.monotonic() >= deadline:
+                    node_process.kill()
+                    stdout, stderr = node_process.communicate(timeout=10)
+                    raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
+                _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
         if process_network is not None and time.monotonic() >= next_network_sample:
             _record_process_network(host_scope, process_network)
             _write_json_atomic(
@@ -1630,6 +2357,12 @@ def run_scenario(
             (controls_dir / "migration-fault.phase").resolve()
         )
     mutation_barrier = None
+    if (
+        scenario.id == "44-file-restore-crash"
+        and persistent_run is not None
+        and persistent_run.phase == "seed"
+    ):
+        environment["VIBETABLE_E2E_FILE_RESTORE_BARRIER_DIR"] = str(controls_dir)
     if scenario.id in {"09-atomic-import-scale", "36-backend-import-exit"}:
         barrier_arm = controls_dir / "mutation-barrier.arm"
         barrier_arm.write_text("armed\n", encoding="utf-8")
@@ -1769,6 +2502,7 @@ def run_scenario(
                     "requirement": scenario.requirement,
                     "readiness": readiness,
                     "hostExitCodeBeforeCleanup": scope.root.poll(),
+                    "hostRootPid": scope.root.pid,
                     "nodeExitCode": node_returncode,
                     "evidenceDirectory": str(scenario_dir),
                     "processNetwork": process_network_report,
@@ -1840,7 +2574,21 @@ def run_scenario(
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
         exit_started = time.monotonic()
-        if normal_exit_allowed and cdp_owner is not None:
+        restore_crash = _read_json(scenario_dir / "fault-result.json")
+        intentional_restore_crash = (
+            scenario.id == "44-file-restore-crash"
+            and persistent_run is not None
+            and persistent_run.phase == "seed"
+            and restore_crash is not None
+            and restore_crash.get("status") == "completed"
+            and result.get("intentionalRestoreCrash") == restore_crash
+            and cdp_owner is not None
+        )
+        if intentional_restore_crash:
+            assert restore_crash is not None
+            assert cdp_owner is not None
+            lifecycle = _observe_restore_crash_exit(scope, restore_crash, cdp_owner)
+        elif normal_exit_allowed and cdp_owner is not None:
             try:
                 lifecycle = _request_normal_exit(
                     scope,
@@ -1886,6 +2634,51 @@ def run_scenario(
             }
         cleanup_state["result"] = result
         return result
+
+
+def _observe_restore_crash_exit(
+    scope: _LifecycleScope,
+    crash: Mapping[str, Any],
+    cdp_owner: _PortOwnerLease,
+) -> dict[str, Any]:
+    """The 44 seed's explicit owned Job crash has a separate exit contract."""
+    errors: list[str] = []
+    release: PortReleaseReport | None = None
+    try:
+        members = _scope_members(scope)
+        exit_code = scope.root.poll()
+        release = cdp_owner.observe_release(timeout=LIFECYCLE_EXIT_TIMEOUT_SECONDS)
+        errors.extend(release.errors)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        members, exit_code = [], None
+        errors.append(str(exc))
+    owner_cleanup = _close_owner_lease(cdp_owner)
+    errors.extend(owner_cleanup.errors)
+    owned_host = crash.get("ownedHost") or {}
+    passed = (
+        owned_host.get("rootPid") == scope.root.pid
+        and (owned_host.get("termination") or {}).get("status") == "passed"
+        and owned_host.get("remainingPids") == []
+        and not owned_host.get("errors")
+        and exit_code is not None
+        and not members
+        and release is not None
+        and release.released
+        and not errors
+    )
+    return {
+        "mode": "intentional-restore-crash",
+        "normalExitRequested": False,
+        "hostExitCode": exit_code,
+        "membersAfterExit": members,
+        "portsReleased": release is not None and release.released,
+        "portRelease": None if release is None else release.as_artifact(),
+        "ownerLeaseCleanup": owner_cleanup.as_artifact(),
+        "ownedHost": owned_host,
+        "errors": errors,
+        "cleanup": owned_host.get("termination"),
+        "status": "passed" if passed else "failed",
+    }
 
 
 def write_aggregate(
@@ -2113,6 +2906,17 @@ def _run_host_presentation_restart_acceptance(
     if resume.get("status") != "passed" or resume.get("lifecycle", {}).get("status") != "passed":
         return _host_presentation_phase_failure(
             scenario, phase_results, "HOST_PRESENTATION_RESUME_FAILED"
+        )
+    if scenario.id == "44-file-restore-crash" and (
+        seed.get("lifecycle", {}).get("mode") != "intentional-restore-crash"
+        or type(seed.get("hostRootPid")) is not int
+        or type(resume.get("hostRootPid")) is not int
+        or seed.get("lifecycle", {}).get("ownedHost", {}).get("rootPid") != seed.get("hostRootPid")
+        or seed.get("hostRootPid") == resume.get("hostRootPid")
+        or resume.get("lifecycle", {}).get("normalExitRequested") is not True
+    ):
+        return _host_presentation_phase_failure(
+            scenario, phase_results, "RESTORE_CRASH_COLD_HOST_UNVERIFIED"
         )
     return {
         **resume,
