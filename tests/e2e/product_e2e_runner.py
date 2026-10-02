@@ -1383,12 +1383,23 @@ def _document_native_source(request: Mapping[str, Any], local_data: Path, contro
         if not isinstance(value, str) or str(uuid.UUID(value)) != value:
             raise ValueError(f"native document {key} must be a canonical UUID")
     relative = request["relativePath"]
-    if (
-        not isinstance(relative, str)
-        or not re.fullmatch(r"document-native-[0-9a-f-]{36}\.txt", relative)
-        or str(uuid.UUID(relative[16:-4])) != relative[16:-4]
+    if not isinstance(relative, str):
+        raise ValueError("native observation requires its synthetic filename")
+    if action == "preview-observe" and re.fullmatch(
+        r"document-native-preview-[0-9a-f-]{36}\.html", relative
     ):
-        raise ValueError("native observation only accepts its unique synthetic TXT")
+        fixture_id = relative[24:-5]
+        expected = (
+            "<!doctype html><html><body><pre>VibeTable Task 415 native preview\n"
+            f"{relative}\n</pre></body></html>\n"
+        )
+    else:
+        if not re.fullmatch(r"document-native-[0-9a-f-]{36}\.txt", relative):
+            raise ValueError("native observation only accepts its action's unique synthetic file")
+        fixture_id = relative[16:-4]
+        expected = f"VibeTable Task 415 native FileDocument\n{relative}\n"
+    if str(uuid.UUID(fixture_id)) != fixture_id:
+        raise ValueError("native observation fixture UUID must be canonical")
     workspace = local_data / "workspaces" / request["workspaceId"]
     source = workspace / "files" / relative
     for path in (source, workspace / ".vibetable/workspace.json", controls / "document-drop"):
@@ -1398,7 +1409,6 @@ def _document_native_source(request: Mapping[str, Any], local_data: Path, contro
             ):
                 raise ValueError("native document path contains a reparse point")
     manifest = _read_json(workspace / ".vibetable/workspace.json")
-    expected = f"VibeTable Task 415 native FileDocument\n{relative}\n"
     if manifest is None or manifest.get("workspaceId") != request["workspaceId"]:
         raise ValueError("native document workspace manifest UUID changed")
     if source.read_bytes() != expected.encode("utf-8"):

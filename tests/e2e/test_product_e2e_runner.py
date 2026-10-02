@@ -436,6 +436,101 @@ def _native_document_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path, Path
     return request, data, controls, source
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "exact",
+        "copy",
+        "cancel",
+        "open-baseline",
+        "open-observe",
+        "uuid",
+        "bytes",
+        "script",
+        "manifest",
+    ],
+)
+def test_native_html_preview_source_has_a_closed_action_and_literal_bytes_boundary(
+    tmp_path: Path, case: str
+) -> None:
+    request, data, controls, txt_source = _native_document_fixture(tmp_path)
+    relative = "document-native-preview-44444444-4444-4444-8444-444444444444.html"
+    if case == "uuid":
+        relative = relative.replace(
+            "44444444-4444-4444-8444-444444444444", "44444444444444444444444444444444444444"
+        )
+    request |= {"action": "preview-observe", "relativePath": relative}
+    source = txt_source.parent / relative
+    expected = (
+        "<!doctype html><html><body><pre>VibeTable Task 415 native preview\n"
+        f"{relative}\n</pre></body></html>\n"
+    )
+    source.write_bytes(expected.encode("utf-8"))
+    if case in {"copy", "cancel", "open-baseline", "open-observe"}:
+        request["action"] = case
+        if case in {"copy", "cancel"}:
+            request |= {"cssX": 1, "cssY": 1, "devicePixelRatio": 1}
+    elif case == "bytes":
+        source.write_bytes(expected.encode("utf-8") + b"changed")
+    elif case == "script":
+        source.write_bytes(expected.replace("</pre>", "</pre><script>1</script>").encode("utf-8"))
+    elif case == "manifest":
+        (source.parent.parent / ".vibetable/workspace.json").write_text(
+            json.dumps({"workspaceId": "other"}), encoding="utf-8"
+        )
+    if case == "exact":
+        assert runner._document_native_source(request, data, controls) == source.resolve()
+    else:
+        expected_error = {
+            "uuid": "unique synthetic file",
+            "manifest": "workspace manifest UUID changed",
+            "bytes": "source is not the exact synthetic fixture",
+            "script": "source is not the exact synthetic fixture",
+        }.get(case, "unique synthetic file")
+        with pytest.raises(ValueError, match=expected_error):
+            runner._document_native_source(request, data, controls)
+
+
+@pytest.mark.parametrize(
+    "case", ["exact", "source", "outcome", "unverified", "missing-child", "root", "owner", "hidden"]
+)
+def test_native_preview_requires_real_success_from_a_verified_owned_visible_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    request["action"] = "preview-observe"
+    pid = 42 if case == "root" else 43
+    evidence = {
+        "source": str(source.resolve()) if case != "source" else str(controls / "other.txt"),
+        "outcome": "do-preview-returned" if case != "outcome" else "failed",
+        "processId": pid,
+        "hwnd": 100,
+    }
+    (controls / "document-native-preview-result.json").write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    member = SimpleNamespace(
+        pid=pid, identity_verified=case != "unverified", executable_name="VibeTable.Next.exe"
+    )
+    scope = SimpleNamespace(
+        root=SimpleNamespace(pid=42),
+        snapshot=lambda: SimpleNamespace(members=() if case == "missing-child" else (member,)),
+    )
+    native = SimpleNamespace(
+        owner=lambda _hwnd: pid if case != "owner" else 99,
+        user32=SimpleNamespace(IsWindowVisible=lambda _hwnd: case != "hidden"),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: native)
+    result = runner._handle_document_native_request(
+        request, host_scope=scope, local_data=data, controls=controls
+    )
+    assert result["status"] == ("observed" if case == "exact" else "unverified")
+    if case == "exact":
+        assert result["preview"] == evidence
+        assert result["helperIdentityVerified"] is True
+
+
 @pytest.mark.parametrize("invalid", ["action", "fields", "identity", "bytes", "path"])
 def test_native_document_boundary_rejects_invalid_requests_before_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str

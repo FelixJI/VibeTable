@@ -96,21 +96,22 @@ export async function runFileDocumentNativeOperationsJourney(page, recorder, run
   const source = path.join(workspaceRoot, "files", fixture.name);
   const sourceBytes = Buffer.from(fixture.text, "utf8");
   assert.ok((await fs.readFile(source)).equals(sourceBytes));
-  async function nativeDocumentState() {
+  async function nativeDocumentState(documentEntry = entry, importPath = original) {
     const query = await helpers.rawWorkspaceV2Request(page, "fileHistory.queryDocuments", {
-      logic: "and", filters: [{ field: "relativePath", operator: "eq", value: fixture.name }],
+      logic: "and", filters: [{ field: "relativePath", operator: "eq", value: documentEntry.relativePath }],
       sort: [{ field: "relativePath", direction: "asc" }], limit: 100, cursor: null,
     });
     assert.equal(query.result.documents.length, 1);
     const document = query.result.documents[0];
-    assert.equal(document.documentId, entry.documentId);
-    assert.equal(document.relativePath, fixture.name);
+    assert.equal(document.documentId, documentEntry.documentId);
+    assert.equal(document.relativePath, documentEntry.relativePath);
     const tree = (await helpers.rawWorkspaceV2Request(page, "fileHistory.readTree", {
       documentId: document.documentId,
     })).result;
     return { document, tree,
       workspaceId: (await readJson(path.join(workspaceRoot, ".vibetable", "workspace.json"))).workspaceId,
-      importBytes: await fs.readFile(original), managedBytes: await fs.readFile(source) };
+      importBytes: await fs.readFile(importPath),
+      managedBytes: await fs.readFile(path.join(workspaceRoot, "files", documentEntry.relativePath)) };
   }
   const nativeBefore = await nativeDocumentState();
   assert.equal(nativeBefore.document.effectiveRevisionId, entry.effectiveRevisionId);
@@ -178,25 +179,49 @@ export async function runFileDocumentNativeOperationsJourney(page, recorder, run
   const opened = await nativeRequest("open-observe", openOperationId);
   await verifyNativeDocument("open");
 
-  await row.click();
-  if (!entry.capabilities.includes("preview")) {
-    recorder.check("real handler absence is represented by unavailable FileDocument preview",
-      entry.previewKind === "none"
-        && await page.locator(".preview-stage").getByRole("button").count() === 0, { entry });
-    recorder.check("actual FileDocument preview requires an installed system handler", false,
-      { outcome: "unavailable-capability", qualified: false, entry });
+  const previewName = `document-native-preview-${randomUUID()}.html`;
+  const previewText = "<!doctype html><html><body><pre>VibeTable Task 415 native preview\n"
+    + `${previewName}\n</pre></body></html>\n`;
+  const previewBytes = Buffer.from(previewText, "utf8");
+  const previewOriginal = path.join(runtime.controlsDir, previewName);
+  await fs.writeFile(previewOriginal, previewBytes, { flag: "wx" });
+  try {
+    await fs.writeFile(picker, `${previewOriginal}\n`, "utf8");
+    await page.getByTestId("document-import").click();
+    await page.locator('[data-testid^="document-row-"]').filter({ hasText: previewName })
+      .waitFor({ state: "visible", timeout: 30000 });
+  } finally {
+    await fs.writeFile(picker, previousPicker, "utf8");
   }
+  await helpers.beginBridgeMessageCapture(page, ["document.listLoaded", "operation.failed"]);
+  await page.getByTestId("document-refresh").click();
+  const previewListed = await helpers.waitForCapturedBridgeMessage(page);
+  const previewEntry = previewListed.payload?.entries?.find(item => item.relativePath === previewName);
+  recorder.check("actual synthetic HTML FileDocument requires a registered system preview handler",
+    previewListed.type === "document.listLoaded" && previewEntry?.previewKind === "system"
+      && previewEntry.capabilities.includes("preview"),
+    { entry: previewEntry });
+  const previewSource = path.join(workspaceRoot, "files", previewName);
+  const previewBefore = await nativeDocumentState(previewEntry, previewOriginal);
+  assert.equal(previewBefore.document.effectiveRevisionId, previewEntry.effectiveRevisionId);
+  requireNativeDocumentUnchanged(previewBefore, previewBefore, previewBytes);
+  await page.getByTestId(`document-row-${previewEntry.entryHandle}`).click();
   await fs.rm(path.join(runtime.controlsDir, "document-native-preview-result.json"), { force: true });
   await helpers.beginBridgeMessageCapture(page, ["document.actionCompleted", "operation.failed"]);
   await page.locator(".preview-stage").getByRole("button").click();
   const previewReply = await helpers.waitForCapturedBridgeMessage(page);
   recorder.check("production FileDocument preview reaches its actual handler",
     previewReply.type === "document.actionCompleted" && previewReply.payload?.action === "preview"
-      && previewReply.payload.entryHandle === entry.entryHandle, { previewReply });
+      && previewReply.payload.entryHandle === previewEntry.entryHandle, { previewReply });
   await waitJson(path.join(runtime.controlsDir, "document-native-preview-result.json"),
-    value => value.source === source);
-  const preview = await nativeRequest("preview-observe", randomUUID());
-  await verifyNativeDocument("preview");
+    value => value.source === previewSource);
+  const preview = await nativeRequest("preview-observe", randomUUID(), { relativePath: previewName });
+  const previewAfter = await nativeDocumentState(previewEntry, previewOriginal);
+  requireNativeDocumentUnchanged(previewBefore, previewAfter, previewBytes);
+  recorder.check("real HTML preview preserves document identity, immutable history and exact source bytes",
+    true, { document: previewAfter.document, tree: previewAfter.tree, workspaceId: previewAfter.workspaceId });
+  await verifyNativeDocument("preview of a separate HTML document");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "415-native-file-document.png") });
-  return { workspaceId, documentId: entry.documentId, source, dragResults, opened, preview };
+  return { workspaceId, documentId: entry.documentId, source, dragResults, opened,
+    previewDocumentId: previewEntry.documentId, previewSource, preview };
 }

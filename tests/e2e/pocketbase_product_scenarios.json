@@ -249,7 +249,7 @@
   {
     "id": "42-file-document-native-operations",
     "title": "FileDocument真实Windows打开预览与拖出",
-    "requirement": "真实FileDocument picker导入合成TXT并核manifest UUID/documentId/path/effective与字面bytes；真实UI拖出由生产DoDragDrop与FileDrop到本次合成drop目标，Copy核相关operationId/source/path及实际目标bytes，Escape取消不冒充Copy；真实默认打开观察对应新进程/窗口，实际系统Preview Handler预览观察独立host结果。无默认打开或预览handler时明确能力失败，禁止Fake成功或修改系统关联/COM注册；原文件、字节及有效修订保持。不覆盖排序分页/版本叶子。",
+    "requirement": "真实FileDocument picker导入合成TXT并核manifest UUID/documentId/path/effective与字面bytes；真实UI拖出由生产DoDragDrop与FileDrop到本次合成drop目标，Copy核相关operationId/source/path及实际目标bytes，Escape取消不冒充Copy；真实默认打开观察TXT对应新进程/窗口；独立固定纯文本、无脚本/外联的合成HTML经真实picker导入，按真实capability调用系统Preview Handler并观察独立host的COM DoPreview结果。无默认打开或HTML预览handler时明确能力失败，禁止Fake成功或修改系统关联/COM注册；TXT与HTML的原导入源、物化字节、完整元数据与有效修订均保持。不覆盖排序分页/版本叶子。",
     "capabilities": ["file-document.native-operations"]
   },
   {
