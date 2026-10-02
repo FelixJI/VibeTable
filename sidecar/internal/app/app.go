@@ -400,6 +400,9 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 					RequestShutdown:        requestShutdown,
 					ReplicaRoot:            options.WorkspaceV2.ReplicaRoot,
 					DeferBackgroundWorkers: true,
+					PersistenceFaultInjector: newE2EFileRestoreBarrierFromEnvironment(
+						options.DataDir, options.WorkspaceV2.WorkspaceID,
+					),
 				},
 			)
 			if err != nil {

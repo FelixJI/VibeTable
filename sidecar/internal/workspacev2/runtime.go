@@ -51,7 +51,8 @@ type Options struct {
 	DisableReplicaWorker     bool
 	// DeferBackgroundWorkers keeps every mutable background owner stopped
 	// until StartBackgroundWorkers is called after pending restore finalization.
-	DeferBackgroundWorkers bool
+	DeferBackgroundWorkers   bool
+	PersistenceFaultInjector writecoordinator.PersistenceFaultInjector
 }
 
 // WorkspaceRepository is the workspace-owned capability contract. Storage
@@ -1103,6 +1104,7 @@ func openCoordinator(
 	if err != nil {
 		return nil, 0, err
 	}
+	coordinator.WithPersistenceFaultInjector(options.PersistenceFaultInjector)
 	return coordinator, sessionEpoch, nil
 }
 

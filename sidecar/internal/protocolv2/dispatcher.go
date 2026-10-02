@@ -24,7 +24,7 @@ var (
 	ErrOperationConflict = errors.New("workspace.operation_conflict")
 )
 
-var publicErrorCode = regexp.MustCompile(`^[a-z][a-z0-9]*(?:\.[a-z0-9_]+)+$`)
+var publicErrorCode = regexp.MustCompile(`^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$`)
 
 type ScopeKind string
 

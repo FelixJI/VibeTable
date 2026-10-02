@@ -1438,7 +1438,9 @@ function parseResult<M extends WorkspaceV2RpcMethod>(
           changeId: text(change.changeId, "changeId"),
           relativePath: text(change.relativePath, "relativePath"),
           missing: bool(change.missing, "missing"),
-          observedHash: text(change.observedHash, "observedHash"),
+          observedHash: change.missing === true && change.observedHash === ""
+            ? ""
+            : text(change.observedHash, "observedHash"),
           observedSize: integer(change.observedSize, "observedSize"),
           reason: text(change.reason, "reason"),
           candidateDocumentIds: stringList(

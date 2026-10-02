@@ -1301,17 +1301,38 @@ def persist_product_e2e_evidence(
                 raise ValueError(f"passing capacity report lacks raw evidence: {filename}")
 
     for item in scenarios:
-        if item["scenario"] != "39-file-workflow-combination":
+        scenario_id = item["scenario"]
+        if scenario_id == "42-file-document-native-operations":
+            for filename in (
+                "415-native-file-document.png",
+                "42-file-document-native-operations-trace.zip",
+            ):
+                copied = _copy_if_file(
+                    run_source / scenario_id / filename, run_destination / scenario_id / filename
+                )
+                if not copied and item["status"] == "passed":
+                    raise ValueError(f"passing S42 report lacks native evidence: {filename}")
+        phase_evidence = {
+            "39-file-workflow-combination": {
+                "seed": (
+                    "39-record-file-entry.png",
+                    "39-restored-revision-tree.png",
+                    "39-restored-search.png",
+                ),
+                "resume": ("39-resumed.png",),
+            },
+            "44-file-restore-crash": {
+                "seed": (
+                    "44-file-restore-crash-before-kill.png",
+                    "44-file-restore-crash-before-kill-trace.zip",
+                ),
+                "resume": ("44-file-restore-crash.png", "44-file-restore-crash-trace.zip"),
+            },
+        }.get(scenario_id)
+        if phase_evidence is None:
             continue
-        for phase, filenames in {
-            "seed": (
-                "39-record-file-entry.png",
-                "39-restored-revision-tree.png",
-                "39-restored-search.png",
-            ),
-            "resume": ("39-resumed.png",),
-        }.items():
-            phase_root = run_source / "39-file-workflow-combination" / phase
+        for phase, filenames in phase_evidence.items():
+            phase_root = run_source / scenario_id / phase
             phase_runs = []
             if phase_root.is_dir():
                 for phase_run in phase_root.iterdir():
@@ -1329,14 +1350,12 @@ def persist_product_e2e_evidence(
             for filename in filenames:
                 copied = latest is not None and _copy_if_file(
                     latest / filename,
-                    run_destination
-                    / "39-file-workflow-combination"
-                    / phase
-                    / latest.name
-                    / filename,
+                    run_destination / scenario_id / phase / latest.name / filename,
                 )
                 if not copied and item["status"] == "passed":
-                    raise ValueError(f"passing S39 report lacks screenshot evidence: {filename}")
+                    raise ValueError(
+                        f"passing {scenario_id} report lacks image/trace evidence: {filename}"
+                    )
     for item in failed_scenarios:
         scenario_id = item.get("scenario")
         if (
@@ -1359,6 +1378,25 @@ def persist_product_e2e_evidence(
 
         scenario_number = scenario_id.partition("-")[0]
         runtime_root = run_source / "_runtime" / scenario_number
+        if scenario_id == "42-file-document-native-operations":
+            for filename in (
+                "file-document-native-request.json",
+                "file-document-native-result.json",
+            ):
+                _copy_if_file(scenario_source / filename, scenario_destination / filename)
+            for filename in (
+                "document-native-arm.json",
+                "document-native-target.json",
+                "document-native-drag-started.json",
+                "document-native-drag-completed.json",
+                "document-native-drop-result.json",
+                "document-native-preview-result.json",
+                "document-native-open-baseline.json",
+            ):
+                _copy_if_file(
+                    runtime_root / "controls" / filename,
+                    run_destination / "_runtime" / scenario_number / "controls" / filename,
+                )
 
         def copy_runtime_diagnostics(runtime_source: Path, runtime_destination: Path) -> None:
             _copy_if_file(
@@ -1382,6 +1420,7 @@ def persist_product_e2e_evidence(
             "11-plugin-mutation",
             "33-host-grid-presentation",
             "39-file-workflow-combination",
+            "44-file-restore-crash",
         }:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase
@@ -1401,6 +1440,15 @@ def persist_product_e2e_evidence(
                         f"{scenario_id}.png",
                     ):
                         _copy_if_file(phase_run / filename, retained / filename)
+                    if scenario_id == "44-file-restore-crash":
+                        for filename in (
+                            "fault-request.json",
+                            "fault-result.json",
+                            "44-restore-crash-checkpoint.json",
+                            "44-file-restore-crash-before-kill.png",
+                            "44-file-restore-crash-before-kill-trace.zip",
+                        ):
+                            _copy_if_file(phase_run / filename, retained / filename)
             copy_runtime_diagnostics(
                 scenario_source / "persistent" / "host",
                 scenario_destination / "persistent" / "host",

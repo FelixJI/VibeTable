@@ -327,3 +327,27 @@ func TestGlobalAuthorityReceiptFingerprintDoesNotBindWorkspaceSessionEpoch(
 		t.Fatalf("global authority replay = %v", err)
 	}
 }
+
+func TestErrorBodyPreservesContractNamespacesAndRedactsRawErrors(t *testing.T) {
+	for _, item := range []struct {
+		raw, code string
+		retryable bool
+	}{
+		{"file_history.request_invalid", "file_history.request_invalid", false},
+		{"file_history.pending_change_stale", "file_history.pending_change_stale", false},
+		{"workspace_search.request_invalid", "workspace_search.request_invalid", false},
+		{"filehistory.unsafe_file_path", "filehistory.unsafe_file_path", false},
+		{`open C:\synthetic\secret.txt: access denied`, "workspace.internal_failed", true},
+		{"file_history.pending_change_stale\nC:\\synthetic\\secret.txt", "workspace.internal_failed", true},
+		{"file_history.pending_change_stale: C:\\synthetic\\secret.txt", "workspace.internal_failed", true},
+		{"_private.error", "workspace.internal_failed", true},
+	} {
+		t.Run(item.raw, func(t *testing.T) {
+			body := errorBody(errors.New(item.raw))
+			if body.Code != item.code || body.Retryable != item.retryable ||
+				body.Message != "workspace v2 request failed" || len(body.Details) != 0 {
+				t.Fatalf("public error body = %+v, want code=%s retryable=%v", body, item.code, item.retryable)
+			}
+		})
+	}
+}

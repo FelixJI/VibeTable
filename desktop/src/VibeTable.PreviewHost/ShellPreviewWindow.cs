@@ -8,7 +8,7 @@ namespace VibeTable.PreviewHost;
 
 internal sealed class ShellPreviewWindow : Window
 {
-    public ShellPreviewWindow(string fullPath, Guid handlerClsid)
+    public ShellPreviewWindow(string fullPath, Guid handlerClsid, Action<IntPtr>? onPreviewStarted = null)
     {
         Title = $"预览 · {Path.GetFileName(fullPath)}";
         Width = 880;
@@ -16,7 +16,7 @@ internal sealed class ShellPreviewWindow : Window
         MinWidth = 520;
         MinHeight = 360;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        Content = new ShellPreviewHost(fullPath, handlerClsid);
+        Content = new ShellPreviewHost(fullPath, handlerClsid, onPreviewStarted);
     }
 }
 
@@ -29,13 +29,15 @@ internal sealed class ShellPreviewHost : HwndHost
 
     private readonly string _fullPath;
     private readonly Guid _handlerClsid;
+    private readonly Action<IntPtr>? _onPreviewStarted;
     private IntPtr _hostHandle;
     private ShellPreviewSession? _session;
 
-    public ShellPreviewHost(string fullPath, Guid handlerClsid)
+    public ShellPreviewHost(string fullPath, Guid handlerClsid, Action<IntPtr>? onPreviewStarted = null)
     {
         _fullPath = fullPath;
         _handlerClsid = handlerClsid;
+        _onPreviewStarted = onPreviewStarted;
     }
 
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
@@ -58,6 +60,7 @@ internal sealed class ShellPreviewHost : HwndHost
 
         _session = new ShellPreviewSession(_fullPath, _handlerClsid);
         _session.Start(_hostHandle, WidthPixels, HeightPixels);
+        _onPreviewStarted?.Invoke(_hostHandle);
         return new HandleRef(this, _hostHandle);
     }
 
