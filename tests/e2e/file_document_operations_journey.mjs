@@ -156,17 +156,22 @@ async function tree(page, helpers, documentId) {
   return (await helpers.rawWorkspaceV2Request(page, "fileHistory.readTree", { documentId })).result;
 }
 
-export function documentRefreshReadyInPage({ priorRequestIds, relativePath, previousHandle }) {
+export function documentRefreshReadyInPage({ priorRequestIds, relativePath, previousHandle, search }) {
   const diagnostics = window.__vibetableE2EBridgeDiagnostics;
-  const loaded = (diagnostics?.roundTrips ?? []).some(item =>
-    typeof item.requestId === "string" && !priorRequestIds.includes(item.requestId)
-    && item.requestType === "document.listRequested"
-    && item.responseType === "document.listLoaded" && item.code === null);
+  const loaded = (window.__s41DocumentPages?.pages ?? []).filter(page =>
+    page.query.filters.some(filter => filter.field === "displayName"
+      && filter.operator === "contains" && filter.value === search)
+    && (diagnostics?.roundTrips ?? []).some(item =>
+      item.requestId === page.requestId && !priorRequestIds.includes(item.requestId)
+      && item.requestType === "document.listRequested"
+      && item.responseType === "document.listLoaded" && item.code === null));
   const settled = Object.values(diagnostics?.pending ?? {}).every(item =>
     item.requestType !== "document.listRequested");
-  return loaded && settled && [...document.querySelectorAll('[data-testid^="document-row-"]')]
+  return settled && loaded.some(page => [...document.querySelectorAll('[data-testid^="document-row-"]')]
     .some(row => row instanceof HTMLElement && row.getAttribute("data-testid") !== previousHandle
-      && row.querySelector("small")?.textContent?.trim().startsWith(`${relativePath} · `));
+      && row.querySelector("small")?.textContent?.trim().startsWith(`${relativePath} · `)
+      && page.payload.entries.some(entry => entry.relativePath === relativePath
+        && row.getAttribute("data-testid") === `document-row-${entry.entryHandle}`)));
 }
 
 async function refreshRow(page, relativePath) {
@@ -177,17 +182,22 @@ async function refreshRow(page, relativePath) {
   const priorRequestIds = await page.evaluate(() =>
     (window.__vibetableE2EBridgeDiagnostics?.roundTrips ?? []).map(item => item.requestId));
   const search = page.getByTestId("file-workspace").getByRole("textbox").first();
-  if (await search.inputValue() === name) await page.getByTestId("document-refresh").click();
-  else await search.fill(name);
-  await page.waitForFunction(documentRefreshReadyInPage,
-    { priorRequestIds, relativePath, previousHandle }, { timeout: 30000 });
-  const row = page.locator('[data-testid^="document-row-"]').filter({
-    has: page.locator("small", { hasText: new RegExp(`^\\s*${relativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} · `) }),
-  });
-  await row.waitFor({ state: "visible", timeout: 30000 });
-  await row.click();
-  await row.and(page.locator('button[aria-selected="true"]')).waitFor({ state: "visible", timeout: 30000 });
-  return row;
+  await page.evaluate(installDocumentPageCaptureInPage);
+  try {
+    if (await search.inputValue() === name) await page.getByTestId("document-refresh").click();
+    else await search.fill(name);
+    await page.waitForFunction(documentRefreshReadyInPage,
+      { priorRequestIds, relativePath, previousHandle, search: name }, { timeout: 30000 });
+    const row = page.locator('[data-testid^="document-row-"]').filter({
+      has: page.locator("small", { hasText: new RegExp(`^\\s*${relativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} · `) }),
+    });
+    await row.waitFor({ state: "visible", timeout: 30000 });
+    await row.click();
+    await row.and(page.locator('button[aria-selected="true"]')).waitFor({ state: "visible", timeout: 30000 });
+    return row;
+  } finally {
+    await page.evaluate(() => { window.__s41DocumentPages.release(); delete window.__s41DocumentPages; });
+  }
 }
 
 async function importFile(page, recorder, runtime, helpers, name, text) {

@@ -143,7 +143,7 @@ test("wrong restore source/parent/number/content, history rewrite or activation 
   assert.throws(() => requireActivatedLeaf(before, tree([...before.revisions, restored], "leaf"), "leaf"));
 });
 
-test("refresh requires a new successful requestId, settled list and fresh path-bound handle", t => {
+test("refresh requires its search terminal, settled list and the response path-bound handle", t => {
   const saved = ["window", "document", "HTMLElement"].map(name => [name,
     Object.getOwnPropertyDescriptor(globalThis, name)]);
   t.after(() => {
@@ -155,22 +155,30 @@ test("refresh requires a new successful requestId, settled list and fresh path-b
   let handle = "new";
   let rowPath = "file.txt · Workspace";
   class Element {
-    getAttribute() { return handle; }
+    getAttribute() { return `document-row-${handle}`; }
     querySelector() { return { textContent: rowPath }; }
   }
   const roundTrip = { requestId: "old", requestType: "document.listRequested",
     responseType: "document.listLoaded", code: null, startedAt: "same-millisecond" };
   const diagnostics = { roundTrips: [roundTrip], pending: {} };
+  const capturedPage = { requestId: "new", query: { filters: [] },
+    payload: { entries: [{ relativePath: "file.txt", entryHandle: "new" }] } };
   Object.defineProperty(globalThis, "window", { configurable: true,
-    value: { __vibetableE2EBridgeDiagnostics: diagnostics } });
+    value: { __vibetableE2EBridgeDiagnostics: diagnostics,
+      __s41DocumentPages: { pages: [capturedPage] } } });
   Object.defineProperty(globalThis, "document", { configurable: true,
     value: { querySelectorAll: () => [new Element()] } });
   Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: Element });
   const ready = () => documentRefreshReadyInPage({ priorRequestIds: ["old"],
-    relativePath: "file.txt", previousHandle: "old-handle" });
+    relativePath: "file.txt", previousHandle: "document-row-old-handle", search: "file.txt" });
   assert.equal(ready(), false);
   diagnostics.roundTrips.push({ ...roundTrip, requestId: "new" });
-  assert.equal(ready(), true, "a new terminal qualifies even with identical wall-clock timestamps");
+  assert.equal(ready(), false, "the mount response cannot satisfy a debounced search");
+  capturedPage.query.filters = [{ field: "displayName", operator: "contains", value: "file.txt" }];
+  assert.equal(ready(), true, "the search terminal qualifies even with identical wall-clock timestamps");
+  capturedPage.payload.entries[0].entryHandle = "previous-query-handle";
+  assert.equal(ready(), false, "a rendered row from another response is not ready");
+  capturedPage.payload.entries[0].entryHandle = "new";
   diagnostics.pending.list = { requestType: "document.listRequested" };
   assert.equal(ready(), false);
   delete diagnostics.pending.list;

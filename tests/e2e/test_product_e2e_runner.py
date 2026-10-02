@@ -5767,3 +5767,65 @@ def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed
         if mode == "denied"
         else ["activate", "synchronize"]
     )
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA query contract")
+@pytest.mark.parametrize("counts", [(0, 0, 1), (2,), (0,)])
+def test_native_document_query_waits_only_for_absent_provider_with_original_budget(
+    monkeypatch: pytest.MonkeyPatch, counts: tuple[int, ...]
+) -> None:
+    import base64
+
+    captured: dict[str, object] = {}
+
+    def capture(command, **kwargs):
+        captured.update(kwargs)
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="[]")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    assert captured["timeout"] == 5
+    script = str(captured["script"])
+    query = script[
+        script.index('[Console]::Error.WriteLine("UIA_STAGE document-query begin') : script.index(
+            "$tabCondition ="
+        )
+    ]
+    # Execute the production query with a deterministic provider transition.
+    # No desktop/window is inspected and no UI input is generated.
+    assemblies = script[: script.index(' [Console]::Error.WriteLine("UIA_STAGE root begin'.strip())]
+    harness = (
+        assemblies
+        + """
+$ErrorActionPreference = 'Stop'
+$provider = [System.Windows.Automation.AutomationElement].Assembly.GetName()
+$provider.Name = "UIAutomationClientsideProviders"
+[System.Windows.Automation.ClientSettings]::RegisterClientSideProviderAssembly($provider)
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
+$script:counts = @(COUNTS)
+$script:call = 0
+$root = [pscustomobject]@{}
+$root | Add-Member ScriptMethod FindAll {
+    $count = $script:counts[[Math]::Min($script:call, $script:counts.Count - 1)]
+    $script:call++
+    return [pscustomobject]@{Count=$count}
+}
+""".replace("COUNTS", ",".join(map(str, counts)))
+    )
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        base64.b64encode((harness + query).encode("utf-16-le")).decode("ascii"),
+    ]
+    if counts == (0,):
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess.run(command, capture_output=True, timeout=5, check=False)
+    else:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
+        assert result.returncode == (0 if counts[-1] == 1 else 1), result.stderr
+        if counts == (2,):
+            assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in result.stderr

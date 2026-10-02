@@ -1653,6 +1653,22 @@ $ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+# .NET Framework's default-proxy loader inspects ReflectedType on caller
+# stack frames. Keep a named, non-inlined frame before PowerShell's dynamic
+# call site; otherwise standard EDIT controls degrade to generic Panes.
+Add-Type -ReferencedAssemblies ([System.Windows.Automation.AutomationElement].Assembly.Location) -TypeDefinition @"
+using System.Windows.Automation;
+public static class NativeDocumentUia {
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static void Initialize() {
+        var assembly = typeof(AutomationElement).Assembly.GetName();
+        assembly.Name = "UIAutomationClientsideProviders";
+        ClientSettings.RegisterClientSideProviderAssembly(assembly);
+    }
+}
+"@
+[NativeDocumentUia]::Initialize()
 [Console]::Error.WriteLine("UIA_STAGE assemblies end elapsedMs=$($clock.ElapsedMilliseconds)")
 [Console]::Error.WriteLine("UIA_STAGE root begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $root = [System.Windows.Automation.AutomationElement]::FromHandle(
@@ -1666,7 +1682,12 @@ $editCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.ControlType]::Edit)
 $condition = [System.Windows.Automation.OrCondition]::new($documentCondition, $editCondition)
 [Console]::Error.WriteLine("UIA_STAGE document-query begin elapsedMs=$($clock.ElapsedMilliseconds)")
-$documents = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+# A visible Shell window can precede its UIA document provider. Wait only
+# for absence; the enclosing subprocess still enforces the original 5s budget.
+do {
+    $documents = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($documents.Count -eq 0) { Start-Sleep -Milliseconds 25 }
+} while ($documents.Count -eq 0)
 [Console]::Error.WriteLine("UIA_STAGE document-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($documents.Count)")
 if ($documents.Count -ne 1) { throw "UIA_DOCUMENT_COUNT expected=1 actual=$($documents.Count)" }
 $tabCondition = [System.Windows.Automation.PropertyCondition]::new(
