@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/google/cel-go/cel"
+	"cel.dev/cel-go/cel"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"

@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
 
 	// Embed the standard zone database so time.LoadLocation resolves IANA
 	// zones on offline Windows builds without the OS timezone data.

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/fatih/color"
+
 	sidecarapp "github.com/vibetable/vibetable/sidecar/internal/app"
 	"github.com/vibetable/vibetable/sidecar/internal/buildinfo"
 	"github.com/vibetable/vibetable/sidecar/internal/config"
@@ -23,6 +25,9 @@ func main() {
 }
 
 func run(args []string) int {
+	// PocketBase console warnings must not precede the stdout JSON handshake.
+	color.Output = os.Stderr
+
 	cfg, err := config.Parse(args, os.Getenv)
 	if err != nil {
 		logError("invalid sidecar configuration", err)

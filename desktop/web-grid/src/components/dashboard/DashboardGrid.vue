@@ -39,7 +39,7 @@ function initialize(): void {
     column: 12,
     cellHeight: 72,
     margin: 8,
-    float: false,
+    mode: "top",
     animate: true,
     disableDrag: !props.editing,
     disableResize: !props.editing,

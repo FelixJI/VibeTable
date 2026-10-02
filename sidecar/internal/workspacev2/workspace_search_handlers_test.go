@@ -282,7 +282,11 @@ func openSearchTestRuntime(
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ledger.Close() })
+	t.Cleanup(func() {
+		if err := ledger.Close(); err != nil {
+			t.Errorf("ledger.Close(): %v", err)
+		}
+	})
 	runtime, err := Open(ctx, Options{
 		App: app, DataDir: dataDir, WorkspaceID: testWorkspaceID,
 		SessionEpoch: 7, FenceEpoch: 3, ClaimID: testClaimID, Ledger: ledger,
@@ -291,7 +295,11 @@ func openSearchTestRuntime(
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	t.Cleanup(func() {
+		if err := runtime.Close(context.Background()); err != nil {
+			t.Errorf("runtime.Close(): %v", err)
+		}
+	})
 	return ctx, app, runtime
 }
 

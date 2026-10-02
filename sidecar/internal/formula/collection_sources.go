@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/google/cel-go/cel"
+	"cel.dev/cel-go/cel"
 	"github.com/pocketbase/pocketbase/core"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 

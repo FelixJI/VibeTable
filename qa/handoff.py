@@ -191,7 +191,7 @@ def _gate_summary() -> dict[str, Any] | None:
         return None
     try:
         value = json.loads(GATE_SUMMARY_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 

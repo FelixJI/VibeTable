@@ -108,7 +108,7 @@ def _scan_retired_provider_references(root: Path, retired: str) -> list[str]:
                 continue
             try:
                 content = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            except OSError, UnicodeDecodeError:
                 continue
             if retired in content.casefold():
                 violations.append(relative.as_posix())
@@ -148,10 +148,10 @@ class TestLayerDependencies:
             "application imports outer adapter or infrastructure layers:\n" + "\n".join(violations)
         )
 
-    def test_nvmrc_pins_node_24(self):
+    def test_nvmrc_pins_node_26(self):
         nvmrc = ROOT / ".nvmrc"
         assert nvmrc.is_file(), ".nvmrc must exist"
-        assert nvmrc.read_text(encoding="utf-8").strip() == "24.19.0"
+        assert nvmrc.read_text(encoding="utf-8").strip() == "26.10.0"
 
     def test_product_renderer_csp_forbids_direct_network_access(self):
         index = ROOT / "desktop" / "web-grid" / "index.html"

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
+	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"

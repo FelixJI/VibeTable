@@ -124,7 +124,7 @@ def select_checks_interactively() -> list[str]:
     while True:
         try:
             user_input = input("请选择检查项 (输入数字/字母，用空格分隔，回车确认): ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             print("\n已取消")
             sys.exit(0)
 

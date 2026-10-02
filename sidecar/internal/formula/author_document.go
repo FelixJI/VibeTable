@@ -6,9 +6,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/parser/gen"
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/parser/gen"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )

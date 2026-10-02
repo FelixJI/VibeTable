@@ -129,7 +129,7 @@ def _go_executable_version(executable: str) -> str | None:
             errors="replace",
             timeout=10,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if completed.returncode:
         return None
@@ -344,7 +344,7 @@ def _run_dotnet(run_root: Path) -> CaseResult:
                     name: int(counters.attrib.get(name, "0"))
                     for name in ("total", "executed", "passed", "failed", "error")
                 }
-        except (ET.ParseError, OSError, ValueError):
+        except ET.ParseError, OSError, ValueError:
             counts = None
     error = None
     if completed.returncode:
@@ -402,7 +402,7 @@ def _run_product(run_root: Path, package_root: Path | None = None) -> CaseResult
                 and scenarios[0].get("scenario") == PRODUCT_SCENARIO
                 and scenarios[0].get("status") == "passed"
             )
-        except (OSError, json.JSONDecodeError, AttributeError):
+        except OSError, json.JSONDecodeError, AttributeError:
             observed = False
     error = None
     if completed.returncode:

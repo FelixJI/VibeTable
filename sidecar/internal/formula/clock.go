@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
-	"github.com/google/cel-go/interpreter"
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/interpreter"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )

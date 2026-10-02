@@ -50,7 +50,7 @@ class ProductParams(RootModel[JsonObject]):
                 allow_nan=False,
                 separators=(",", ":"),
             ).encode()
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             raise ValueError("product params must contain JSON values") from None
         if len(encoded) > _MAX_PARAMS_BYTES:
             raise ValueError("product params exceed the safe size limit")

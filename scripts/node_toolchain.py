@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 import zipfile
@@ -29,9 +31,11 @@ class NodeDistribution:
         return f"https://nodejs.org/dist/v{self.version}/{self.archive_name}"
 
 
+NPM_VERSION = "12.2.0"
+
 NODE_DISTRIBUTION = NodeDistribution(
-    version="24.19.0",
-    archive_sha256="57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73",
+    version="26.10.0",
+    archive_sha256="9fef7eca6743a6b910989cd8e78712376b394fcb9b6e1e9c44a0799a287f90c5",
 )
 
 
@@ -117,3 +121,32 @@ def ensure_node(
     if not executable.is_file():
         raise RuntimeError("Node.js archive did not produce node.exe")
     return executable
+
+
+def ensure_npm(repo_root: Path) -> Path:
+    """Restore the pinned npm locally, using npm's existing integrity checks."""
+    node = ensure_node(repo_root)
+    prefix = repo_root / ".tools" / "npm"
+    package = prefix / "node_modules" / "npm" / "package.json"
+    if (
+        not package.is_file()
+        or json.loads(package.read_text(encoding="utf-8"))["version"] != NPM_VERSION
+    ):
+        subprocess.run(
+            [
+                str(node),
+                str(node.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"),
+                "install",
+                "--prefix",
+                str(prefix),
+                f"npm@{NPM_VERSION}",
+                "--no-save",
+                "--package-lock=false",
+                "--no-audit",
+                "--no-fund",
+            ],
+            check=True,
+        )
+    if json.loads(package.read_text(encoding="utf-8"))["version"] != NPM_VERSION:
+        raise RuntimeError(f"npm restore did not produce version {NPM_VERSION}")
+    return prefix / "node_modules" / ".bin"

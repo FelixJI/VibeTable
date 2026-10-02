@@ -158,7 +158,7 @@ class SidecarProcessOutput:
             while chunk := self._stdout.read(_READ_CHUNK_CHARS):
                 with self._lock:
                     self._stdout_discarded_chars += len(chunk)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             with self._lock:
                 self._reader_errors += 1
                 if not self._readiness_available.is_set():
@@ -177,7 +177,7 @@ class SidecarProcessOutput:
                             self._stderr_overlong += 1
                     continue
                 self._capture_stderr_line(line)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             with self._lock:
                 self._reader_errors += 1
 
@@ -212,7 +212,7 @@ class SidecarProcessOutput:
 def _project_safe_event(line: str) -> str | None:
     try:
         payload = json.loads(line)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return None
     if not isinstance(payload, dict) or set(payload) != _EXPECTED_LOG_FIELDS:
         return None

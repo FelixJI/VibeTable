@@ -709,7 +709,7 @@ class ImportService:
         )
         try:
             await self._bind_prefix(params.token, requested_prefix, staged.attempt)
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             # Bind precedes any business submission, so a transport failure or
             # hard cancellation here is a clean rejection, never an unknown
             # outcome: release the claim and re-raise unchanged.

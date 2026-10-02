@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/google/cel-go/cel"
+	"cel.dev/cel-go/cel"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )

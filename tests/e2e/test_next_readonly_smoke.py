@@ -133,7 +133,7 @@ def _read_report(readiness_dir: Path) -> dict[str, object] | None:
         return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         return None
     return value if isinstance(value, dict) else None
 

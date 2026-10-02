@@ -14,7 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_CONFIG = REPO_ROOT / ".ci/project.json"
 DESKTOP_SLN = REPO_ROOT / "desktop/VibeTable.Desktop.sln"
-COLLECTOR_VERSION = "10.0.1"
+COLLECTOR_VERSION = "10.1.0"
 SETTINGS_CONDITION = "'$(VibeTableCoverageSettingsDirectory)' != ''"
 PROJECT_SETTINGS = {
     "RunSettingsFilePath": "$(VibeTableCoverageSettingsDirectory)/$(MSBuildProjectName).runsettings",

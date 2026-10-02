@@ -12,6 +12,10 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "typescript": "7.0.2"
+  },
+  "packageManager": "npm@12.2.0",
+  "engines": {
+    "node": ">=26 <27"
   }
 }

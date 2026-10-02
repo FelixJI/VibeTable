@@ -251,7 +251,8 @@ class Sidecar:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = Response(response.status, response.read(), response.headers)
         except urllib.error.HTTPError as error:
-            result = Response(error.code, error.read(), error.headers)
+            with error:
+                result = Response(error.code, error.read(), error.headers)
         except OSError as error:
             safe_path = _diagnostic_path(path)
             details = [f"transport={type(error).__name__}"]
@@ -1110,9 +1111,11 @@ def run_matrix(binary: Path, data_dir: Path) -> dict[str, str]:
         )
         unauthenticated_status = 200
         try:
-            urllib.request.urlopen(unauthenticated, timeout=5)
+            with urllib.request.urlopen(unauthenticated, timeout=5) as response:
+                unauthenticated_status = response.status
         except urllib.error.HTTPError as error:
-            unauthenticated_status = error.code
+            with error:
+                unauthenticated_status = error.code
         assert unauthenticated_status == 401
         stored_name = refs[0]["storedName"]
         _apply(
