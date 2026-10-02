@@ -106,16 +106,20 @@ export async function runFileHistoryCapacityJourney(page, recorder, runtime, hel
   const firstRevision = revisionTree.locator(
     `.tree-row[data-revision-id="${fixture.selectedMultiFirstRevisionId}"]`);
   const effective = revisionTree.locator(
-    `.tree-row[data-revision-id="${fixture.selectedMultiEffectiveRevisionId}"]`);
+    `.tree-row[data-revision-id="${fixture.selectedMultiEffectiveRevisionId}"][aria-current="true"]`);
   await firstRevision.waitFor({ state: "visible", timeout: 30000 });
   await effective.waitFor({ state: "visible", timeout: 30000 });
+  // Seal readiness before attribute evidence and its CDP trace snapshots.
+  const treeUiMs = performance.now() - treeUiStarted;
   recorder.check("the legal all-formal chain renders its first and effective revisions",
     await firstRevision.getAttribute("data-revision-id") === fixture.selectedMultiFirstRevisionId
       && await effective.getAttribute("aria-current") === "true");
+  const treeUiHarnessMs = performance.now() - treeUiStarted;
   recorder.check("full legal tree first screen stays within the existing 30s UI wait",
-    performance.now() - treeUiStarted <= 30000, { elapsedMs: performance.now() - treeUiStarted });
-  runtime.recordUiTiming("file-history-capacity-tree-first-screen", performance.now() - treeUiStarted,
-    { scale: fixture.name, revisions: fixture.selectedMultiRevisionCount });
+    treeUiMs <= 30000, { elapsedMs: treeUiMs, harnessElapsedMs: treeUiHarnessMs });
+  runtime.recordUiTiming("file-history-capacity-tree-first-screen", treeUiMs,
+    { scale: fixture.name, revisions: fixture.selectedMultiRevisionCount,
+      harnessElapsedMs: treeUiHarnessMs });
   await page.screenshot({ path: path.join(runtime.evidenceDir, `${fixture.name}-file-history.png`) });
   return { workspaceId: identity.workspaceId, capacityScale: fixture.name,
     documents: fixture.documents, revisions: fixture.revisions };
