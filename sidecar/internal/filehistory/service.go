@@ -2514,12 +2514,8 @@ func encodeRootPayload(payload rootPayload) ([]byte, error) {
 	}
 	var buffer bytes.Buffer
 	buffer.Grow(length + (length+3)/4)
-	if err := jsonv2.MarshalWrite(
-		&buffer, payload, json.DefaultOptionsV1(),
-	); err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
+	err := jsonv2.MarshalWrite(&buffer, payload, json.DefaultOptionsV1())
+	return buffer.Bytes(), err
 }
 
 func cloneDocuments(source map[string]Document) map[string]Document {

@@ -2,7 +2,9 @@ package filehistory
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -112,5 +114,39 @@ func TestEncodeRootPayloadMatchesLegacyMarshalBytes(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestSaveRejectsInvalidRootTimestampWithoutPublishing(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ctx := context.Background()
+	first, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne, Path: "report.txt",
+		Kind: RevisionAutosave, Content: []byte("before"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotCapacityState(t, ctx, fixture, fixture.service)
+	documents := fixture.service.List()
+	_, counters := fixture.coordinator.Current()
+	WithClock(func() time.Time {
+		return time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	})(fixture.service)
+
+	result, err := fixture.save(ctx, SaveRequest{
+		Token: fixture.token, DocumentID: testDocumentOne,
+		ExpectedEffectiveRevision: stringRef(first.Revision.RevisionID),
+		Kind:                      RevisionAutosave, Content: []byte("after"),
+	})
+	var marshalError *json.MarshalerError
+	if !errors.As(err, &marshalError) || result.Root != "" || result.MutationRevision != 0 {
+		t.Fatalf("invalid timestamp save = %#v, %v", result, err)
+	}
+	after := snapshotCapacityState(t, ctx, fixture, fixture.service)
+	_, afterCounters := fixture.coordinator.Current()
+	if !reflect.DeepEqual(before, after) ||
+		!reflect.DeepEqual(documents, fixture.service.List()) || counters != afterCounters {
+		t.Fatal("failed root encoding published repository, document, or coordinator state")
 	}
 }
