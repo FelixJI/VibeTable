@@ -314,6 +314,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "35-data-io-interoperability",
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
+        "39-file-workflow-combination",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
@@ -1198,7 +1199,10 @@ def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     assert (copied_runtime / "workspace-logs" / "workspace-id" / "pocketbase.log").is_file()
 
 
-@pytest.mark.parametrize("scenario", ["11-plugin-mutation", "33-host-grid-presentation"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["11-plugin-mutation", "33-host-grid-presentation", "39-file-workflow-combination"],
+)
 @pytest.mark.parametrize("failed_phase", ["seed", "resume"])
 def test_product_e2e_failure_evidence_retains_host_restart_phases(
     tmp_path: Path,
@@ -1691,6 +1695,21 @@ def _prepare_complete_product_reports(
             ),
             encoding="utf-8",
         )
+        if "39-file-workflow-combination" in selected[stage]:
+            for phase, filenames in S39_SCREENSHOTS.items():
+                phase_root = run_root / "39-file-workflow-combination" / phase / "20260817T010204Z"
+                phase_root.mkdir(parents=True)
+                for filename in filenames:
+                    (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
+        if "40-file-history-capacity" in selected[stage]:
+            persistent = run_root / "40-file-history-capacity" / "persistent"
+            (persistent / "fixtures").mkdir(parents=True)
+            for filename in ("producer-stdout.log", "producer-stderr.log"):
+                (persistent / filename).write_text("synthetic unit-test log", encoding="utf-8")
+            for scale in ("near-limit-9980x9990", "depth-4096"):
+                (persistent / "fixtures" / f"{scale}.json").write_text(
+                    '{"operations": []}', encoding="utf-8"
+                )
     return selected
 
 
@@ -2461,3 +2480,228 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         len(next_gate.load_scenarios()) - len(release_eligibility.DATA_IO_SCENARIO_IDS)
     )
     assert Path(product_cwd) == next_gate.REPO_ROOT
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+@pytest.mark.parametrize("missing_measurement", [False, True])
+def test_capacity_evidence_retains_measurements_and_producer_logs(
+    tmp_path: Path, status: str, missing_measurement: bool
+) -> None:
+    source_root = tmp_path / "source"
+    run = source_root / "20261001T210000Z"
+    scenario_id = "40-file-history-capacity"
+    persistent = run / scenario_id / "persistent"
+    (persistent / "fixtures").mkdir(parents=True)
+    report = {"status": status, "scenarios": [{"scenario": scenario_id, "status": status}]}
+    (run / "product-e2e-report.json").write_text(json.dumps(report), encoding="utf-8")
+    evidence = {
+        "producer-stdout.log": b"real producer partial stdout\n",
+        "producer-stderr.log": b"real producer partial stderr\n",
+        "fixtures/near-limit-9980x9990.json": b'{"operations":[{"totalAllocBytes":123456}]}',
+        "fixtures/depth-4096.json": b'{"operations":[{"totalAllocBytes":654321}]}',
+    }
+    for name, raw in evidence.items():
+        (persistent / name).write_bytes(raw)
+    (persistent / "workspace.db").write_bytes(b"must not be archived")
+    if missing_measurement:
+        missing_name = "fixtures/depth-4096.json"
+        (persistent / missing_name).unlink()
+        evidence.pop(missing_name)
+        if status == "passed":
+            with pytest.raises(ValueError, match=r"depth-4096\.json"):
+                next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+            return
+
+    retained = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert retained is not None
+    for name, raw in evidence.items():
+        (persistent / name).unlink()
+        assert (retained / scenario_id / "persistent" / name).read_bytes() == raw
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == {
+        "product-e2e-report.json",
+        *(f"{scenario_id}/persistent/{name}" for name in evidence),
+    }
+
+
+S39_SCREENSHOTS = {
+    "seed": ("39-record-file-entry.png", "39-restored-revision-tree.png", "39-restored-search.png"),
+    "resume": ("39-resumed.png",),
+}
+
+
+def _s39_screenshot_run(tmp_path: Path, status: str) -> Path:
+    run = tmp_path / "source" / "20261001T231000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "scenarios": [
+                    {
+                        "scenario": "39-file-workflow-combination",
+                        "status": status,
+                        "screenshot": str(tmp_path / "outside.png"),
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for phase, filenames in S39_SCREENSHOTS.items():
+        for timestamp in ("20261001T231001Z", "20261001T231002Z", "20261399T235959Z"):
+            directory = run / "39-file-workflow-combination" / phase / timestamp
+            directory.mkdir(parents=True)
+            for filename in filenames:
+                (directory / filename).write_bytes(f"{timestamp}:{filename}".encode())
+            (directory / "unrelated.png").write_bytes(b"not requested")
+            (directory / "workspace.db").write_bytes(b"private")
+            (directory / "seed-state.json").write_bytes(b"private")
+    (tmp_path / "outside.png").write_bytes(b"outside")
+    return run
+
+
+def test_s39_screenshots_archive_only_the_four_current_phase_images(tmp_path: Path) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    expected = {"product-e2e-report.json"}
+    for phase, filenames in S39_SCREENSHOTS.items():
+        for filename in filenames:
+            relative = f"39-file-workflow-combination/{phase}/20261001T231002Z/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == f"20261001T231002Z:{filename}".encode()
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == expected
+
+
+@pytest.mark.parametrize("phase", ["seed", "resume"])
+def test_s39_screenshots_missing_current_image_cannot_fall_back_to_old_phase(
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    filename = S39_SCREENSHOTS[phase][0]
+    (run / "39-file-workflow-combination" / phase / "20261001T231002Z" / filename).unlink()
+    with pytest.raises(ValueError, match=filename):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_s39_screenshots_missing_resume_phase_rejects_passing_report(tmp_path: Path) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    for filename in S39_SCREENSHOTS["resume"]:
+        for source in (run / "39-file-workflow-combination" / "resume").glob(f"*/{filename}"):
+            source.unlink()
+    with pytest.raises(ValueError, match=r"39-resumed\.png"):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_s39_screenshots_copy_failure_rejects_passing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raises: bool,
+) -> None:
+    run = _s39_screenshot_run(tmp_path, "passed")
+    copy = next_gate._copy_if_file
+
+    def fail_image(source: Path, destination: Path) -> bool:
+        if source.name == "39-restored-search.png":
+            if raises:
+                raise OSError("synthetic screenshot copy failure")
+            return False
+        return copy(source, destination)
+
+    monkeypatch.setattr(next_gate, "_copy_if_file", fail_image)
+    with pytest.raises(
+        OSError if raises else ValueError,
+        match="copy failure" if raises else "39-restored-search.png",
+    ):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_s39_screenshots_failed_report_keeps_only_images_produced_in_current_phase(
+    tmp_path: Path,
+) -> None:
+    run = _s39_screenshot_run(tmp_path, "failed")
+    for phase, filenames in S39_SCREENSHOTS.items():
+        for filename in filenames:
+            if filename != "39-record-file-entry.png":
+                (
+                    run / "39-file-workflow-combination" / phase / "20261001T231002Z" / filename
+                ).unlink()
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    images = {path.relative_to(retained).as_posix() for path in retained.rglob("*.png")}
+    assert images == {"39-file-workflow-combination/seed/20261001T231002Z/39-record-file-entry.png"}
+
+
+@pytest.mark.parametrize(
+    ("coverage_code", "evidence", "expected"),
+    [
+        (0, "present", 0),
+        (0, "missing", 1),
+        (0, "copy-false", 1),
+        (0, "copy-error", 1),
+        (1, "present", 1),
+        (None, "present", 0),
+    ],
+)
+def test_core_lane_retains_capacity_record_only_after_passing_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    coverage_code: int | None,
+    evidence: str,
+    expected: int,
+) -> None:
+    monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path / "repo")
+    qa_temp = tmp_path / "qa-temp"
+    qa_temp.mkdir()
+    monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
+    monkeypatch.setattr(next_gate.handoff_gate, "git_head_sha", lambda: "c" * 40)
+    monkeypatch.setattr(next_gate.handoff_gate, "load_dependencies", lambda: {})
+    monkeypatch.setattr(next_gate.handoff_gate, "artifact_hashes", lambda _deps: {})
+    monkeypatch.setattr(next_gate.handoff_gate, "release_source_hash", lambda _deps: "s" * 64)
+    results = (
+        []
+        if coverage_code is None
+        else [next_gate.StageResult("go-coverage", ["test"], coverage_code, 0.01, "", "", "repo")]
+    )
+    monkeypatch.setattr(next_gate, "run_lane", lambda *_args: (coverage_code or 0, results))
+    source = next_gate.REPO_ROOT / "build/qa/415-capacity/capacity-qualification.json"
+    source.parent.mkdir(parents=True)
+    raw = b'{"operations":[{"scale":"s32","elapsedMillis":12}]}'
+    if evidence != "missing":
+        source.write_bytes(raw)
+    if evidence in {"copy-false", "copy-error"}:
+
+        def failed_copy(_source: Path, _destination: Path) -> bool:
+            if evidence == "copy-error":
+                raise OSError("synthetic capacity copy failure")
+            return False
+
+        monkeypatch.setattr(next_gate, "_copy_if_file", failed_copy)
+    report = tmp_path / "lane.json"
+    assert (
+        next_gate.main(
+            [
+                "--lane",
+                "core",
+                *_candidate_args(tmp_path),
+                "--json-report",
+                str(report),
+            ]
+        )
+        == expected
+    )
+    assert json.loads(report.read_text(encoding="utf-8"))["ok"] is (expected == 0)
+    retained = next_gate.REPO_ROOT / (
+        "build/automation/lane-evidence/core/415-capacity/capacity-qualification.json"
+    )
+    if coverage_code == 0 and evidence == "present":
+        assert retained.read_bytes() == raw
+    else:
+        assert not retained.exists()

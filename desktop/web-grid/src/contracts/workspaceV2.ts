@@ -137,7 +137,7 @@ export function ensureCurrentWorkspaceScope(
 
 export interface WorkspaceManifestV2 {
   readonly contractVersion: "2.0";
-  readonly formatVersion: 2;
+  readonly formatVersion: 3;
   readonly workspaceId: string;
   readonly displayName: string;
   readonly createdAt: string;
@@ -157,10 +157,10 @@ export function parseWorkspaceManifestV2(value: unknown): WorkspaceManifestV2 {
     "storageMode", "encryptionMode", "repositoryFormat", "topologySchemaVersion",
     "businessSchemaVersion", "importedFromWorkspaceId", "sourceSnapshotId",
   ], "workspace manifest");
-  if (source.formatVersion !== 2) throw new Error("workspace.format_unsupported");
+  if (source.formatVersion !== 3) throw new Error("workspace.format_unsupported");
   return {
     contractVersion: contractVersion(source.contractVersion),
-    formatVersion: 2,
+    formatVersion: 3,
     workspaceId: uuid(source.workspaceId, "workspaceId"),
     displayName: string(source.displayName, "displayName"),
     createdAt: string(source.createdAt, "createdAt"),

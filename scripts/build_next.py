@@ -467,8 +467,8 @@ def render_manifest(
             },
         },
         "formats": {
-            "workspace": 2,
-            "repository": "kopia-v3",
+            "workspace": 3,
+            "repository": "kopia-v4",
             "snapshot": 2,
             "package": 2,
             "contracts": "2.0",
@@ -1022,8 +1022,8 @@ def verify_sidecar_package(paths: RepoPaths) -> None:
         "schemaVersion": versions.schema,
         "migrationHash": versions.migration_hash,
         "protocolV2Version": "2.0",
-        "workspaceFormat": "2",
-        "repositoryFormat": "kopia-v3",
+        "workspaceFormat": "3",
+        "repositoryFormat": "kopia-v4",
         "snapshotFormat": "2",
         "packageFormat": "2",
         "kopiaVersion": KOPIA_VERSION,
@@ -1335,7 +1335,12 @@ def _build_desktop(paths: RepoPaths, *, skip: bool) -> None:
 
 
 def _write_document_diff_metadata(paths: RepoPaths, project: Path, output: Path) -> None:
-    assets = json.loads((project.parent / "obj/project.assets.json").read_text(encoding="utf-8"))
+    assets_path = _run(
+        ["dotnet", "msbuild", str(project), "-getProperty:ProjectAssetsFile"],
+        cwd=paths.repo_root,
+        capture=True,
+    ).stdout.strip()
+    assets = json.loads(Path(assets_path).read_text(encoding="utf-8"))
     package_roots = [Path(root) for root in assets["packageFolders"]]
     runtime_target = assets["targets"].get("net10.0/win-x64")
     if not isinstance(runtime_target, dict):

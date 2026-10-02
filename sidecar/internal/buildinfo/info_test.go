@@ -22,8 +22,8 @@ func TestCurrentContainsPinnedDependencies(t *testing.T) {
 		t.Fatalf("migration hash = %q", info.MigrationHash)
 	}
 	if info.ProtocolV2Version != "2.0" ||
-		info.WorkspaceFormat != "2" ||
-		info.RepositoryFormat != "kopia-v3" ||
+		info.WorkspaceFormat != "3" ||
+		info.RepositoryFormat != "kopia-v4" ||
 		info.SnapshotFormat != "2" ||
 		info.PackageFormat != "2" ||
 		info.KopiaVersion != "v0.23.1" ||

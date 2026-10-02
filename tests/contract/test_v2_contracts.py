@@ -42,7 +42,7 @@ def test_v2_is_the_only_language_neutral_contract_seam() -> None:
 
 
 FIXTURE_DEFINITIONS = {
-    "workspace-manifest.json": "WorkspaceManifest",
+    "workspace-manifest-current.json": "WorkspaceManifest",
     "workspace-registry-entry.json": "WorkspaceRegistryEntry",
     "workspace-session.json": "WorkspaceSession",
     "file-document.json": "FileDocument",

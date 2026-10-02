@@ -445,6 +445,7 @@ public sealed class WorkspaceProductController : IAsyncDisposable
                             error = (object?)null,
                         },
                         forwarded.Wire);
+                    PostFileChangeNotification(request.V2Method!, forwarded.Result);
                     if (request.V2Method == "replica.forceTakeover" &&
                         request.Scope is not null)
                     {
@@ -579,6 +580,30 @@ public sealed class WorkspaceProductController : IAsyncDisposable
                 retryable = false,
             },
         }, request.Wire);
+    }
+
+    private void PostFileChangeNotification(string method, JsonElement? result)
+    {
+        // The renderer refreshes only the revision tree from a successful
+        // file-change reply. Its document list follows the shared workspace
+        // changed notification the native import/relink path already posts;
+        // failed and retired forwards must never reach this point. Applying
+        // a pending external change counts only when it actually settled a
+        // document mutation; a dismissed observation does not.
+        string? reason = method switch
+        {
+            "fileHistory.restore" => "restore",
+            "fileHistory.upgrade" => "upgrade",
+            "fileHistory.activateLeaf" => "activate",
+            "fileHistory.unlink" => "unlink",
+            "fileHistory.applyPendingChange"
+                when IsResultState(result, "applied") => "pendingChange",
+            _ => null,
+        };
+        if (reason is null) return;
+        _reply.PostNotification(
+            "document.workspaceChanged",
+            new { reason, affectedCount = 1 });
     }
 
     public static bool Handles(string requestType) =>

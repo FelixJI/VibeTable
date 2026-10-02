@@ -66,7 +66,7 @@ def ensure_current_workspace_scope(
 
 class WorkspaceManifest(V2Model):
     contract_version: ContractVersion
-    format_version: Literal[2]
+    format_version: Literal[3]
     workspace_id: UUID
     display_name: str = Field(min_length=1)
     created_at: datetime

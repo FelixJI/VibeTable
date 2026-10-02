@@ -18,6 +18,13 @@
   method/topic、scope、audience 和 capabilityId；生成器与 Product catalog、runtime inventory
   join 后派生当前 owner/effect，供四端查询，L1 不改变生产 route。
 
+当前新建 workspace 使用 manifest format 3 / repository `kopia-v4`。Kopia 私有 state
+format 3 保持原 manifest type，较大 Payload 可使用有解压上限的 gzip envelope；公共
+Payload、canonical identity 与 snapshot/package format 2 不变。开发阶段仅支持当前版本
+新建和重开，workspace format 2 明确拒绝且不自动迁移。当前正例为
+`fixtures/workspace-manifest-current.json`；`fixtures/workspace-manifest.json` 仅为不可变
+历史证据，冻结历史 corpus 保持原件。
+
 规则：
 
 - 所有 wire object 均 closed；未知字段、缺少 required、非法 enum、尾随 JSON 必须失败。

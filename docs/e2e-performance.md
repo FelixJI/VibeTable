@@ -20,9 +20,11 @@
 - GitHub run：[main CI 36333755042](https://github.com/FelixJI/VibeTable/actions/runs/36333755042)
 - 报告契约：`contractVersion=2.0`
 - 结果：35/35 passed、0 failed、0 skipped。
-- 当前 manifest gap：2（`37-collection-formula-journey`、`38-calculation-chain-journey`）。
+- 当前 manifest gap：4（`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：3（`05-formula-lifecycle`、`14-document-diff`、`18-workspace-search`）。
+
+新增登记的 39、40 两个场景尚未取得任何真实运行资格，不能引用本节历史样本作为其证据；分区随当前 manifest 生效：39 随计算链族进入 data-io lane，40 默认进入 resilience lane（该 lane 提供 Go，test-only producer 可在同一 lane 内运行），两 lane 的 1800 秒上限不变。
 
 本次 S05 扩展的局部候选验证与截图见 [PR #397](https://github.com/FelixJI/VibeTable/pull/397)。局部验证仅覆盖新增断言，不替代完整 PR 门禁，也不计入本节的历史主干样本。
 

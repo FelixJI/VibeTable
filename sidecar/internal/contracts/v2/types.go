@@ -16,7 +16,7 @@ import (
 
 const (
 	ContractVersion        = "2.0"
-	WorkspaceFormatVersion = uint64(2)
+	WorkspaceFormatVersion = uint64(3)
 )
 
 var (

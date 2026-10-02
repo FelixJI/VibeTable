@@ -129,7 +129,11 @@ const hasBranch = computed(() =>
 
 const rows = computed<TreeRow[]>(() => {
   const result: TreeRow[] = [];
-  const walk = (revision: FileRevisionV2, level: number): void => {
+  const pending = [...(childMap.value.get(null) ?? [])]
+    .reverse().map((revision) => ({ revision, level: 1 }));
+  while (pending.length > 0) {
+    const { revision, level } = pending.pop()!;
+    let childLevel = level;
     const children = childMap.value.get(revision.revisionId) ?? [];
     const forceVisible = isProvisional(revision)
       || revision.kind !== "autosave"
@@ -151,14 +155,13 @@ const rows = computed<TreeRow[]>(() => {
         effective: revision.revisionId === props.tree?.effectiveRevisionId,
         onEffectivePath: effectivePath.value.has(revision.revisionId),
       });
-      if (visibleExpanded) {
-        for (const child of children) walk(child, level + 1);
-      }
-      return;
+      if (!visibleExpanded) continue;
+      childLevel += 1;
     }
-    for (const child of children) walk(child, level);
-  };
-  for (const root of childMap.value.get(null) ?? []) walk(root, 1);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push({ revision: children[index]!, level: childLevel });
+    }
+  }
   return result;
 });
 
@@ -411,7 +414,7 @@ const diffMessage = computed(() => {
             {{ t("workspaceV2.fileTree.upgrade") }}
           </NButton>
           <NButton
-            v-else-if="!isProvisional(row.revision) && !row.effective"
+            v-if="!isProvisional(row.revision) && !row.effective"
             size="tiny"
             quaternary
             type="warning"

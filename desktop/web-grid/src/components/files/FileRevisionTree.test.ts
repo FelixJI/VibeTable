@@ -250,4 +250,58 @@ describe("FileRevisionTree", () => {
     });
     expect(wrapper.findAll('[data-testid="compare-revision"]')).toHaveLength(1);
   });
+
+  it("walks the supported 4096-deep autosave chain and keeps its effective revision visible", () => {
+    const chain = Array.from({ length: 4096 }, (_, index) => ({
+      ...revisions[0]!,
+      revisionId: `revision-${index}`,
+      parentRevisionId: index === 0 ? null : `revision-${index - 1}`,
+      revisionOrdinal: index + 1,
+      formalVersion: null,
+      localSequence: index + 1,
+      kind: "autosave" as const,
+    }));
+    const wrapper = mount(FileRevisionTree, {
+      props: {
+        tree: { documentId, effectiveRevisionId: "revision-4095", revisions: chain },
+        busy: false,
+      },
+    });
+    expect(wrapper.findAll('[role="treeitem"]')).toHaveLength(1);
+    expect(wrapper.get('[data-revision-id="revision-4095"]').attributes("aria-current")).toBe("true");
+    wrapper.unmount();
+  });
+  it("keeps a real restore entry for non-effective ancestors next to upgrade", async () => {
+    const wrapper = mount(FileRevisionTree, {
+      props: {
+        tree: {
+          documentId: "opaque-document",
+          effectiveRevisionId: revisions[2]!.revisionId,
+          revisions,
+        },
+        busy: false,
+      },
+    });
+    const actions = wrapper.get(
+      `[data-revision-id="${revisions[0]!.revisionId}"] .tree-actions`,
+    );
+    const restore = actions.findAll("button").find((button) => button.text() === "恢复为新版本");
+    const upgrade = actions.findAll("button").find((button) => button.text() === "从此升级");
+    expect(restore).toBeDefined();
+    expect(upgrade).toBeDefined();
+    await restore!.trigger("click");
+    expect(wrapper.emitted("restore")?.[0]?.[0]).toMatchObject({
+      revisionId: revisions[0]!.revisionId,
+    });
+    await upgrade!.trigger("click");
+    expect(wrapper.emitted("upgrade")?.[0]?.[0]).toMatchObject({
+      revisionId: revisions[0]!.revisionId,
+    });
+    expect(wrapper.emitted("restore")).toHaveLength(1);
+    expect(wrapper.emitted("upgrade")).toHaveLength(1);
+    // 恢复入口只属于非当前有效修订；有效修订仍不得自我恢复。
+    expect(wrapper.get(
+      `[data-revision-id="${revisions[2]!.revisionId}"] .tree-actions`,
+    ).findAll("button")).toHaveLength(0);
+  });
 });

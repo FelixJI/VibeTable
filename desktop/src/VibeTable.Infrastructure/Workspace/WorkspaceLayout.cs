@@ -64,7 +64,7 @@ public static class WorkspaceLayout
             CreatedAt = createdAt ?? DateTimeOffset.UtcNow,
             StorageMode = storageMode,
             EncryptionMode = encryptionMode,
-            RepositoryFormat = "kopia-v3",
+            RepositoryFormat = "kopia-v4",
             TopologySchemaVersion = 1,
             BusinessSchemaVersion = 1,
             ImportedFromWorkspaceId = null,

@@ -11,7 +11,7 @@ public interface IWorkspaceV2Contract
 public static class WorkspaceV2Json
 {
     public const string ContractVersion = "2.0";
-    public const ulong WorkspaceFormatVersion = 2;
+    public const ulong WorkspaceFormatVersion = 3;
 
     public static JsonSerializerOptions StrictOptions { get; } = CreateOptions();
 

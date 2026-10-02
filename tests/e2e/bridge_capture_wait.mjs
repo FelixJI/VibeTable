@@ -90,6 +90,7 @@ function installWorkspaceActivationCaptureInPage(configuration) {
     terminal: null,
     session: null,
     databaseOpened: null,
+    hydrationMethod: "conflict.list",
     hydrationOwner: null,
     hydrationCompleted: false,
     released: false,
@@ -261,11 +262,25 @@ function installWorkspaceActivationCaptureInPage(configuration) {
       return;
     }
     capture.session = observed;
-    if (configuration.waitForHydration
-      && (!Array.isArray(message.payload?.capabilities)
-        || !message.payload.capabilities.includes("conflict.center.v2"))) {
-      fail("CAPTURE_HYDRATION_UNAVAILABLE", "activation requires conflict hydration capability");
-      return;
+    if (configuration.waitForHydration) {
+      const capabilities = message.payload?.capabilities;
+      if (!Array.isArray(capabilities)
+        || (!capabilities.includes("conflict.center.v2")
+          && !capabilities.includes("fileHistory.tree.v2"))) {
+        fail("CAPTURE_HYDRATION_UNAVAILABLE", "activation requires supported hydration capability");
+        return;
+      }
+      // Match the last enabled action in workspaceV2HostAdapter.hydrateWorkspace.
+      capture.hydrationMethod = capabilities.includes("conflict.center.v2") ? "conflict.list"
+        : capabilities.includes("repository.settings.v2")
+          && message.payload.storage?.mode === "mirrored" ? "replica.status"
+        : capabilities.includes("retention.policy.v2")
+          && capabilities.includes("repository.settings.v2") ? "retention.status"
+        : "fileHistory.listPendingChanges";
+      if (capture.hydrationOwner && capture.hydrationOwner.method !== capture.hydrationMethod) {
+        fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration request contradicts capabilities");
+        return;
+      }
     }
     tryComplete();
   };
@@ -307,7 +322,7 @@ function installWorkspaceActivationCaptureInPage(configuration) {
       && message?.requestId === capture.hydrationOwner.requestId) {
       if (message.type === "operation.failed") {
         const payload = message.payload;
-        if ((payload?.operation != null && payload.operation !== "conflict.list")
+        if ((payload?.operation != null && payload.operation !== capture.hydrationMethod)
           || (payload?.operationId != null
             && payload.operationId !== capture.hydrationOwner.wire.operationId)
           || [message.wire, payload?.wire].some((wire) =>
@@ -319,7 +334,7 @@ function installWorkspaceActivationCaptureInPage(configuration) {
         return;
       }
       if (message.type !== "workspace.v2.response") return;
-      if (message.payload?.method !== "conflict.list"
+      if (message.payload?.method !== capture.hydrationMethod
         || !sameWire(message.wire, capture.hydrationOwner.wire)
         || !sameWire(message.wire, message.payload?.wire)) {
         fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration terminal identity differs");
@@ -340,13 +355,13 @@ function installWorkspaceActivationCaptureInPage(configuration) {
     const message = parseMessage(args[0]);
     const isWorkspaceRequest = message?.type === "workspace.v2.request";
     if (capture.hydrationOwner && message?.requestId === capture.hydrationOwner.requestId
-      && (!isWorkspaceRequest || message.payload?.method !== "conflict.list"
+      && (!isWorkspaceRequest || message.payload?.method !== capture.hydrationMethod
         || !sameWire(message.wire, capture.hydrationOwner.wire)
         || !sameWire(message.wire, message.payload?.wire))) {
       fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration request identity changed");
     }
     if (configuration.waitForHydration && capture.owner && !capture.hydrationOwner
-      && isWorkspaceRequest && message.payload?.method === "conflict.list") {
+      && isWorkspaceRequest && message.payload?.method === capture.hydrationMethod) {
       const wire = message.wire;
       if (typeof message.requestId !== "string" || !message.requestId.trim()
         || message.requestId === capture.owner.requestId
@@ -359,7 +374,7 @@ function installWorkspaceActivationCaptureInPage(configuration) {
         || !Number.isSafeInteger(wire.sequence) || wire.sequence < 0) {
         fail("CAPTURE_HYDRATION_IDENTITY_MISMATCH", "hydration request identity is invalid");
       } else {
-        capture.hydrationOwner = { requestId: message.requestId, wire: { ...wire } };
+        capture.hydrationOwner = { requestId: message.requestId, method: message.payload.method, wire: { ...wire } };
       }
     }
     if (
@@ -434,7 +449,7 @@ function installWorkspaceActivationCaptureInPage(configuration) {
 
 export async function beginWorkspaceActivationCapture(page, { method, waitForHydration = false }) {
   // Opt-in for callers that keep the new session idle: the adapter's capability-
-  // gated hydration ends with conflict.list, as pinned by its public-port tests.
+  // gated hydration ends with the last declared action, pinned by public-port tests.
   if (typeof method !== "string" || !method) {
     throw new Error("workspace activation capture requires a method");
   }

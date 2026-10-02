@@ -118,11 +118,10 @@ func (repository *FilesystemRepository) Commit(
 		receipt.Objects[input.Name] = id
 	}
 	for _, input := range request.Manifests {
-		raw, err := canonicalManifest(input)
+		id, err := canonicalManifestID(input)
 		if err != nil {
 			return DurableCommitReceipt{}, err
 		}
-		id := manifestID(raw)
 		record, err := json.Marshal(ManifestRecord{
 			ID: id, Name: input.Name, Labels: input.Labels, Payload: input.Payload,
 		})
@@ -179,10 +178,10 @@ func (repository *FilesystemRepository) GetManifest(
 	if err := decoder.Decode(&record); err != nil || record.ID != id {
 		return ManifestRecord{}, ErrCorrupt
 	}
-	canonical, err := canonicalManifest(ManifestInput{
+	canonicalID, err := canonicalManifestID(ManifestInput{
 		Name: record.Name, Labels: record.Labels, Payload: record.Payload,
 	})
-	if err != nil || manifestID(canonical) != id {
+	if err != nil || canonicalID != id {
 		return ManifestRecord{}, ErrCorrupt
 	}
 	return record, nil

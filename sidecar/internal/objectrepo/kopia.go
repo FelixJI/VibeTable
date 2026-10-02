@@ -132,7 +132,7 @@ func OpenKopia(ctx context.Context, configFile string, password string) (*KopiaR
 		repository: repository,
 		lockPath:   normalizedConfig + ".vibetable.lock",
 		state: kopiaState{
-			FormatVersion: 2,
+			FormatVersion: 3,
 			Objects:       map[string]string{},
 			Manifests:     map[string]string{},
 			Pins:          []RootPin{},
@@ -187,6 +187,15 @@ func (repository *KopiaRepository) AcceptAuthority(
 		next.FenceEpoch < current.FenceEpoch ||
 		(next.FenceEpoch == current.FenceEpoch && next.ClaimID != current.ClaimID)) {
 		return ErrStaleAuthority
+	}
+	if current != nil && authorityEqual(*current, next) {
+		// Runtime.Open re-accepts the already-published lease authority on
+		// every open. The durable state is exactly `next`, so republishing
+		// would only replace the identical state manifest under a new
+		// internal ID (writer manifest scan plus flush per open). Every
+		// lease check above still ran; a genuinely advanced authority keeps
+		// going through the publish path below.
+		return nil
 	}
 	nextState := cloneKopiaState(repository.state)
 	copy := next
@@ -257,19 +266,21 @@ func (repository *KopiaRepository) Commit(
 		receipt.Objects[input.Name] = publicID
 	}
 	for _, input := range request.Manifests {
-		canonical, err := canonicalManifest(input)
+		publicID, err := canonicalManifestID(input)
 		if err != nil {
 			return DurableCommitReceipt{}, err
 		}
-		publicID := manifestID(canonical)
 		if _, exists := next.Manifests[string(publicID)]; !exists {
 			labels := cloneLabels(input.Labels)
 			labels["type"] = "vibetable-manifest"
 			labels["vibetable.publicId"] = string(publicID)
-			internalID, err := writer.PutManifest(sessionCtx, labels, ManifestRecord{
-				ID: publicID, Name: input.Name, Labels: cloneLabels(input.Labels),
-				Payload: append(json.RawMessage(nil), input.Payload...),
+			wire, wireErr := encodeKopiaManifest(ManifestRecord{
+				ID: publicID, Name: input.Name, Labels: cloneLabels(input.Labels), Payload: input.Payload,
 			})
+			if wireErr != nil {
+				return DurableCommitReceipt{}, wireErr
+			}
+			internalID, err := writer.PutManifest(sessionCtx, labels, wire)
 			if err != nil {
 				return DurableCommitReceipt{}, err
 			}
@@ -321,14 +332,18 @@ func (repository *KopiaRepository) GetManifest(
 	if !ok || kopia == nil {
 		return ManifestRecord{}, ErrNotFound
 	}
-	var record ManifestRecord
-	if _, err := kopia.GetManifest(ctx, kopiamanifest.ID(internal), &record); err != nil {
+	var wire kopiaManifestEnvelope
+	if _, err := kopia.GetManifest(ctx, kopiamanifest.ID(internal), &wire); err != nil {
 		return ManifestRecord{}, errors.Join(ErrCorrupt, err)
 	}
-	canonical, err := canonicalManifest(ManifestInput{
+	record, err := decodeKopiaManifest(wire)
+	if err != nil {
+		return ManifestRecord{}, errors.Join(ErrCorrupt, err)
+	}
+	canonicalID, err := canonicalManifestID(ManifestInput{
 		Name: record.Name, Labels: record.Labels, Payload: record.Payload,
 	})
-	if err != nil || record.ID != id || manifestID(canonical) != id {
+	if err != nil || record.ID != id || canonicalID != id {
 		return ManifestRecord{}, ErrCorrupt
 	}
 	return record, nil
@@ -634,7 +649,10 @@ func (repository *KopiaRepository) loadState(ctx context.Context) error {
 	if _, err := repository.repository.GetManifest(ctx, entries[0].ID, &state); err != nil {
 		return errors.Join(ErrCorrupt, err)
 	}
-	if state.FormatVersion != 2 || state.Objects == nil || state.Manifests == nil {
+	if state.FormatVersion != 3 {
+		return errors.Join(ErrCorrupt, errors.New("workspace.format_unsupported"))
+	}
+	if state.Objects == nil || state.Manifests == nil {
 		return errors.Join(
 			ErrCorrupt,
 			fmt.Errorf(

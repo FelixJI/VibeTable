@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"sort"
 	"strings"
@@ -38,13 +39,20 @@ func validateObjectID(id ObjectID) bool {
 	return err == nil
 }
 
-func canonicalManifest(input ManifestInput) ([]byte, error) {
+// canonicalManifestID derives the public manifest identity. The Name/Payload
+// validation, the payload round-trip through `any`, and the sorted-labels
+// with empty-slice semantics are unchanged from the historical canonical
+// encoding; the same wrapper is now streamed straight into the SHA-256
+// identity digest via encoding/json v2 under DefaultOptionsV1 semantics
+// (identical escaping, key ordering, and no trailing newline as the previous
+// json.Marshal) instead of materializing the full canonical []byte copy.
+func canonicalManifestID(input ManifestInput) (ManifestID, error) {
 	if strings.TrimSpace(input.Name) == "" || len(input.Payload) == 0 {
-		return nil, errors.New("repository.manifest_invalid")
+		return "", errors.New("repository.manifest_invalid")
 	}
 	var payload any
 	if err := json.Unmarshal(input.Payload, &payload); err != nil {
-		return nil, errors.New("repository.manifest_invalid")
+		return "", errors.New("repository.manifest_invalid")
 	}
 	keys := make([]string, 0, len(input.Labels))
 	for key := range input.Labels {
@@ -55,27 +63,26 @@ func canonicalManifest(input ManifestInput) ([]byte, error) {
 	for _, key := range keys {
 		labels = append(labels, [2]string{key, input.Labels[key]})
 	}
-	return json.Marshal(struct {
+	digest := sha256.New()
+	if err := jsonv2.MarshalWrite(digest, struct {
 		Labels  [][2]string `json:"labels"`
 		Payload any         `json:"payload"`
-	}{Labels: labels, Payload: payload})
-}
-
-func manifestID(content []byte) ManifestID {
-	sum := sha256.Sum256(content)
-	return ManifestID("manifest_" + hex.EncodeToString(sum[:]))
+	}{Labels: labels, Payload: payload}, json.DefaultOptionsV1()); err != nil {
+		return "", err
+	}
+	return ManifestID("manifest_" + hex.EncodeToString(digest.Sum(nil))), nil
 }
 
 // VerifyManifestRecord validates a public manifest without requiring access to
 // the repository that originally stored it. Replica and export adapters use it
 // to independently attest copied manifest artifacts.
 func VerifyManifestRecord(record ManifestRecord) error {
-	canonical, err := canonicalManifest(ManifestInput{
+	id, err := canonicalManifestID(ManifestInput{
 		Name:    record.Name,
 		Labels:  record.Labels,
 		Payload: record.Payload,
 	})
-	if err != nil || manifestID(canonical) != record.ID {
+	if err != nil || id != record.ID {
 		return ErrCorrupt
 	}
 	return nil

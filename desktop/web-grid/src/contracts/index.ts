@@ -2527,7 +2527,14 @@ export interface DocumentOperationFailedPayload {
 }
 
 export interface DocumentWorkspaceChangedPayload {
-  readonly reason: "import" | "relink" | "unlink";
+  readonly reason:
+    | "import"
+    | "relink"
+    | "unlink"
+    | "restore"
+    | "upgrade"
+    | "activate"
+    | "pendingChange";
   readonly affectedCount: number;
 }
 export * from "./schemaV2";

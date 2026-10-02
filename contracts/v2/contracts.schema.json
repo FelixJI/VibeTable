@@ -78,7 +78,7 @@
       ],
       "properties": {
         "contractVersion": {"$ref": "#/$defs/ContractVersion"},
-        "formatVersion": {"const": 2},
+        "formatVersion": {"const": 3},
         "workspaceId": {"$ref": "#/$defs/Uuid"},
         "displayName": {"type": "string", "minLength": 1},
         "createdAt": {"$ref": "#/$defs/Timestamp"},

@@ -46,7 +46,7 @@ func newDashboardRuntimeFixture(t *testing.T) *dashboardRuntimeFixture {
 			t.Fatal(err)
 		}
 	}
-	manifest := `{"contractVersion":"2.0","formatVersion":2,"workspaceId":"11111111-1111-4111-8111-111111111111","displayName":"Dashboard Replay","createdAt":"2026-07-28T08:00:00Z","storageMode":"direct","encryptionMode":"convenient","repositoryFormat":"kopia-v3","topologySchemaVersion":1,"businessSchemaVersion":1,"importedFromWorkspaceId":null,"sourceSnapshotId":null}`
+	manifest := `{"contractVersion":"2.0","formatVersion":3,"workspaceId":"11111111-1111-4111-8111-111111111111","displayName":"Dashboard Replay","createdAt":"2026-07-28T08:00:00Z","storageMode":"direct","encryptionMode":"convenient","repositoryFormat":"kopia-v4","topologySchemaVersion":1,"businessSchemaVersion":1,"importedFromWorkspaceId":null,"sourceSnapshotId":null}`
 	if err := os.WriteFile(filepath.Join(root, "workspace.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

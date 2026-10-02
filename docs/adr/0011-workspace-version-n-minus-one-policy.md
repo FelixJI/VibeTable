@@ -17,7 +17,7 @@
 ## 背景
 
 Workspace manifest、可交换的 SnapshotPackage 和 Snapshot 内部对象各自携带版本字段，但它们不是
-同一个格式。现有运行时精确读写 workspace manifest format 2；SnapshotPackage 的 `Export` 与
+同一个格式。现有运行时精确读写 workspace manifest format 3；SnapshotPackage 的 `Export` 与
 `Inspect` 也精确要求 package `formatVersion: 2`。内部 snapshot manifest 当前格式也是 2：sidecar
 coordinator 以 format 2 构造它，bundle parser 也只接受 format 2，Export path 将该 payload 放入
 `snapshot/manifest.json`。内部 snapshot manifest 与 SnapshotPackage 是独立版本轴；当前数值相同不代表
@@ -64,7 +64,7 @@ C#/Go writer/reader source contract 独立绑定，不因当前数值相同而�
 本 revision 冻结以下事实：
 
 - current writer 是 VibeTable 0.5.1；
-- workspace manifest 当前且唯一支持 format 2；
+- workspace manifest 当前且唯一支持 format 3；
 - WorkspaceManifest current writer 的 topology schema 与 business schema version 均为 1；
 - SnapshotPackage 当前格式与最低支持格式均为 2；
 - SnapshotPackage 内部 snapshot manifest 当前格式为 2，但独立于 package format 演进；
@@ -101,8 +101,8 @@ artifact checksum 全部通过，当前 disabled gate 仍不得授权 promotion�
 
 ### 3. 旧格式 fail closed
 
-workspace manifest format 小于 2 时，当前产品明确拒绝，执行零写入，也不提供未经验证的自动迁移。
-format 大于 2 时按 newer-format 路径拒绝并保持零写入。拒绝不能创建同名空工作区、修改原 manifest、
+workspace manifest format 小于 3 时，当前产品明确拒绝，执行零写入，也不提供未经验证的自动迁移。
+format 大于 3 时按 newer-format 路径拒绝并保持零写入。拒绝不能创建同名空工作区、修改原 manifest、
 数据库、repository 或 Snapshot。
 
 SnapshotPackage 只接受 format 2；小于或大于 2 的 package 均拒绝并保持零写入。package metadata 中的

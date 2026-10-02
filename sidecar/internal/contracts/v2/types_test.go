@@ -11,7 +11,7 @@ import (
 
 func TestGoldenFixturesDecodeStrictly(t *testing.T) {
 	tests := map[string]func([]byte) error{
-		"workspace-manifest.json": func(raw []byte) error {
+		"workspace-manifest-current.json": func(raw []byte) error {
 			_, err := DecodeStrict[WorkspaceManifest](raw)
 			return err
 		},
@@ -74,7 +74,7 @@ func TestGoldenFixturesDecodeStrictly(t *testing.T) {
 }
 
 func TestWorkspaceManifestRejectsEveryUnsupportedFormat(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(fixturesDir(t), "workspace-manifest.json"))
+	raw, err := os.ReadFile(filepath.Join(fixturesDir(t), "workspace-manifest-current.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestWorkspaceManifestRejectsEveryUnsupportedFormat(t *testing.T) {
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range []float64{1, 3} {
+	for _, version := range []float64{1, 2, 4} {
 		manifest["formatVersion"] = version
 		encoded, marshalErr := json.Marshal(manifest)
 		if marshalErr != nil {
@@ -238,7 +238,7 @@ func TestSharedNegativeFixtureCorpusFailsClosed(t *testing.T) {
 		t.Fatalf("invalid negative corpus: %v", err)
 	}
 	decoders := map[string]func([]byte) error{
-		"workspace-manifest.json": func(raw []byte) error {
+		"workspace-manifest-current.json": func(raw []byte) error {
 			_, err := DecodeStrict[WorkspaceManifest](raw)
 			return err
 		},
@@ -296,7 +296,7 @@ func TestSharedNegativeFixtureCorpusFailsClosed(t *testing.T) {
 }
 
 func TestDecodeStrictRejectsUnknownMissingInvalidAndTrailing(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(fixturesDir(t), "workspace-manifest.json"))
+	raw, err := os.ReadFile(filepath.Join(fixturesDir(t), "workspace-manifest-current.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestDecodeStrictRejectsUnknownMissingInvalidAndTrailing(t *testing.T) {
 	if _, err := DecodeStrict[WorkspaceManifest]([]byte(unknown)); err == nil {
 		t.Fatal("unknown field was accepted")
 	}
-	missing := strings.Replace(string(raw), `"formatVersion": 2,`, "", 1)
+	missing := strings.Replace(string(raw), `"formatVersion": 3,`, "", 1)
 	if _, err := DecodeStrict[WorkspaceManifest]([]byte(missing)); err == nil {
 		t.Fatal("missing formatVersion was accepted")
 	}

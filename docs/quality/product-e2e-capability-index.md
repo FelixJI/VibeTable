@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：37
-- 唯一能力：59
-- 场景—能力关联：83
+- 场景：39
+- 唯一能力：60
+- 场景—能力关联：93
 - `release.smoke` 场景：4
 
 ## 能力到场景
@@ -21,7 +21,7 @@
 | `audit.ledger` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `calendar.lifecycle` | <code>21-calendar-date-move</code>（Calendar 日期拖动持久化） |
 | `content.named-revision` | <code>07-attachment-history</code>（附件全生命周期与历史恢复） |
-| `content.record` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `content.record` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `contract.diagnostics` | <code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `dashboard.conflict` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.drilldown` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
@@ -32,19 +32,20 @@
 | `data-io.interop` | <code>35-data-io-interoperability</code>（数据互操作代表矩阵） |
 | `data-io.round-trip` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
 | `data.json` | <code>04-json-round-trip</code>（JSON 编辑、筛选、粘贴、导入与导出不变） |
-| `file-history.diff` | <code>14-document-diff</code>（真实文件历史版本比较） |
-| `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
-| `formula.collections` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
+| `file-history.capacity` | <code>40-file-history-capacity</code>（合法容量边界真实冷打开资格） |
+| `file-history.diff` | <code>14-document-diff</code>（真实文件历史版本比较）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
+| `file-history.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
+| `formula.collections` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `formula.lifecycle` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
 | `formula.recalculation` | <code>05-formula-lifecycle</code>（常用公式界面、重算重开与迁移回滚） |
 | `gallery.lifecycle` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `grid.state` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
-| `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性） |
+| `history.restore` | <code>07-attachment-history</code>（附件全生命周期与历史恢复）、<code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `host.commands` | <code>33-host-grid-presentation</code>（Host 网格呈现与命令快捷方式保存和恢复） |
 | `interface.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `interface.runtime` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `kanban.lifecycle` | <code>20-kanban-lane-drag</code>（Kanban 单选泳道拖拽持久化） |
-| `lookup.aggregation` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
+| `lookup.aggregation` | <code>37-collection-formula-journey</code>（集合公式完整来源与独立值对照）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `lookup.definition-read` | <code>26-lookup-definition-read</code>（Lookup 持久定义读取） |
 | `lookup.export` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
 | `lookup.source-pagination` | <code>29-lookup-source-pagination</code>（Lookup 来源分页读取）、<code>38-calculation-chain-journey</code>（三表计算链的查询、来源和导出一致性） |
@@ -55,7 +56,7 @@
 | `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
-| `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `relation.import` | <code>34-relation-lookup-data-io</code>（Relation 导入与 Lookup 文本导出） |
 | `relation.integrity-inspection` | <code>31-relation-pair-inspection</code>（关系完整性只读分页检查） |
 | `relation.pair-edit` | <code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
@@ -70,8 +71,8 @@
 | `snapshot.package` | <code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
 | `snapshot.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `timeline.lifecycle` | <code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
-| `workspace-search.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
-| `workspace-search.rebuild` | <code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>18-workspace-search</code>（内容、文件关联与统一搜索闭环） |
+| `workspace-search.query` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
+| `workspace-search.rebuild` | <code>12-backup-consistency</code>（工作区快照恢复一致性）、<code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
 | `workspace.calendar` | <code>32-shared-work-calendar</code>（工作区共享工作日历） |
 | `workspace.lifecycle` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>10-sse-reconnect</code>（SSE 断线重连且不重复应用）、<code>15-workspace-snapshot-package</code>（工作区切换与快照包）、<code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复） |
 | `workspace.protection` | <code>13-protection-policy</code>（工作区保护策略与仓库验证）、<code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复）、<code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
@@ -117,3 +118,5 @@
 | <code>36-backend-import-exit</code> | 运行中导入遇 Python 退出仍保留 Host 状态 | 真实 1,000 行导入在 Go 首条未提交记录后精确终止 Python，Host 仍可查询 aborted/业务结果待核实快照，不伪报零写入或自动重放，UI 离开忙碌状态。 | `data-import.atomic` |
 | <code>37-collection-formula-journey</code> | 集合公式完整来源与独立值对照 | 真实公式工作台选择来源表与字段，创建 SUMIF、COUNTIF、去重拼接和日期区间公式；165 条合成来源覆盖 0/1/160 匹配，与独立 JavaScript oracle 及同条件 Lookup 对照，验证来源进入退出、删除、金额与日期窗口变化、稳定身份重命名、CSV 导出和工作区重开。 | `formula.collections`、`formula.lifecycle`、`lookup.aggregation` |
 | <code>38-calculation-chain-journey</code> | 三表计算链的查询、来源和导出一致性 | 201条纯合成来源经真实CSV导入，覆盖199/1/0匹配；从可见编辑器创建条件SUM Lookup、第二层Formula及第三表集合Formula，编辑来源值和已保存公式后对照独立oracle；通过可见字段编辑器创建跨表Relation、关系SUM Lookup及依赖Formula，目标字段重命名后保持稳定身份和链值。对第三表计算值真实筛选排序，核对完整结果计数与网格顺序；条件Lookup来源面板翻页逐条核对全部199项；CSV/XLSX与同快照oracle逐值及顺序一致且公式样文本不可执行，计算列保持只读。经WorkspaceCenter关闭重开后恢复同一身份、计算值和视图；沿用runner无外网与进程清理门禁。 | `formula.collections`、`formula.lifecycle`、`lookup.aggregation`、`lookup.source-pagination`、`lookup.export` |
+| <code>39-file-workflow-combination</code> | 同包同UUID计算链与文件全流程组合 | 同一发布包内同一workspace UUID先跑完整S38三表计算链与完整S14真实文件比较，再经真实内容UI把DOCX/XLSX两个合格文档链接到计算主表合同甲记录，并从关联卡真实点击查看文件版本进入对应文档版本树；中文当前/历史内容搜索真实点击并按目标文档与修订定位；从真实版本树祖先节点“恢复为新版本”，恢复后文件列表、有效指针、物化字节与不可变历史一致，两文档全部当前命中只能绑定新恢复修订且必须保留正文正向命中，无需手工重建索引；恢复前后对比0组差异，恢复前打开的有效修订比较以sessionExpired拒绝继续；首Host正常退出后第二真实Host同manifest UUID冷重开，独立字面oracle（甲199/994/2982/2983、乙1/7/21/22、丙0/0/0/1、首行金额4）与稳定字段身份、持久筛选两行降序、同两文件当前/物化及记录链接全部对齐，再核对两文档当前正文命中绑定恢复修订且升级时旧词不再冒充当前。 | `formula.collections`、`lookup.aggregation`、`file-history.diff`、`file-history.query`、`workspace-search.query`、`workspace-search.rebuild`、`content.record`、`record-document-link.lifecycle`、`history.restore` |
+| <code>40-file-history-capacity</code> | 合法容量边界真实冷打开资格 | test-only Go producer 在全新合成root下生成近限（9,980文档/9,990修订）与最大链深4096两个合法FileHistory工作区（绑定真实claim/fence/LastSessionEpoch的desktop-runtime-authority）；每个scale由独立真实Host冷启动经正常连接/注册/打开UI路径接入同UUID工作区，无手改registry/SQL；真实RPC queryDocuments首页与readTree全链各≤2s、冷打开≤30s冻结预算，全部formal链在真实WebView完整绘制first/effective行且aria-current成功、无栈错误；producer分别测量Go TotalAlloc，UI仅记录耗时不宣称内核峰值；两scale均status与lifecycle通过才组合通过。 | `file-history.capacity` |

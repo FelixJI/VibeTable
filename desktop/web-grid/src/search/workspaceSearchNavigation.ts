@@ -1,4 +1,4 @@
-import { ref, watch, type Ref } from "vue";
+import { nextTick, ref, watch, type Ref } from "vue";
 import type { SearchHit } from "@/contracts/generated/workbench";
 import type {
   DocumentEntry,
@@ -39,10 +39,11 @@ export function createWorkspaceSearchNavigation(
 ): {
   readonly requestedRevisionId: Ref<string | null>;
   open(hit: SearchHit): Promise<void>;
+  openDocument(documentId: string, sourceRevision?: string | null): void;
 } {
   const pendingDocument = ref<{
     readonly documentId: string;
-    readonly sourceRevision: string;
+    readonly sourceRevision: string | null;
   } | null>(null);
   const requestedRevisionId = ref<string | null>(null);
   let openEpoch = 0;
@@ -51,7 +52,7 @@ export function createWorkspaceSearchNavigation(
     () => [ports.getDocuments(), ports.getDocumentPhase()] as const,
     ([entries, phase]) => {
       const pending = pendingDocument.value;
-      if (!pending) return;
+      if (!pending || phase !== "ready") return;
       const index = entries.findIndex((entry) => entry.documentId === pending.documentId);
       if (index < 0) {
         if (phase === "ready") {
@@ -63,7 +64,7 @@ export function createWorkspaceSearchNavigation(
       }
       ports.selectDocument(index);
       const entry = entries[index];
-      if (entry && pending.sourceRevision !== entry.effectiveRevisionId) {
+      if (entry && (pending.sourceRevision === null || pending.sourceRevision !== entry.effectiveRevisionId)) {
         requestedRevisionId.value = pending.sourceRevision;
         ports.showDocumentHistory();
         ports.readDocumentHistory(pending.documentId);
@@ -74,6 +75,8 @@ export function createWorkspaceSearchNavigation(
 
   async function open(indexedHit: SearchHit): Promise<void> {
     const epoch = ++openEpoch;
+    pendingDocument.value = null;
+    requestedRevisionId.value = null;
     const hit = await ports.resolveHit(indexedHit);
     if (epoch !== openEpoch) return;
     if (!hit) {
@@ -86,24 +89,7 @@ export function createWorkspaceSearchNavigation(
         ports.reportInvalid();
         return;
       }
-      pendingDocument.value = {
-        documentId: target.documentId,
-        sourceRevision: hit.sourceRevision,
-      };
-      requestedRevisionId.value = null;
-      ports.navigate("files");
-      ports.dispatchDocument({
-        type: "document.listRequested",
-        scope: { kind: "global" },
-        authority: "workspace",
-        query: {
-          logic: "and",
-          filters: [{ field: "documentId", operator: "eq", value: target.documentId }],
-          sort: [{ field: "documentId", direction: "asc" }],
-          limit: 1,
-          cursor: null,
-        },
-      });
+      openDocument(target.documentId, hit.sourceRevision);
       return;
     }
     if (!target.tableId || !target.recordId ||
@@ -129,5 +115,28 @@ export function createWorkspaceSearchNavigation(
     ports.navigate("tables");
   }
 
-  return { requestedRevisionId, open };
+  function openDocument(documentId: string, sourceRevision: string | null = null): void {
+    const epoch = ++openEpoch;
+    pendingDocument.value = null;
+    requestedRevisionId.value = null;
+    ports.navigate("files");
+    void nextTick(() => {
+      if (epoch !== openEpoch) return;
+      pendingDocument.value = { documentId, sourceRevision };
+      ports.dispatchDocument({
+        type: "document.listRequested",
+        scope: { kind: "global" },
+        authority: "workspace",
+        query: {
+          logic: "and",
+          filters: [{ field: "documentId", operator: "eq", value: documentId }],
+          sort: [{ field: "documentId", direction: "asc" }],
+          limit: 1,
+          cursor: null,
+        },
+      });
+    });
+  }
+
+  return { requestedRevisionId, open, openDocument };
 }

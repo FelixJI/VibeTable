@@ -422,6 +422,195 @@ public sealed class WorkspaceProductControllerInterfaceTests
     }
 
     [TestMethod]
+    [DataRow("fileHistory.restore", "restore")]
+    [DataRow("fileHistory.upgrade", "upgrade")]
+    [DataRow("fileHistory.activateLeaf", "activate")]
+    [DataRow("fileHistory.unlink", "unlink")]
+    [DataRow("fileHistory.applyPendingChange", "pendingChange")]
+    public async Task SuccessfulFileChangeForwardsNotifyTheDocumentList(
+        string method,
+        string expectedReason)
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 session = OpenSession(Guid.NewGuid(), 51);
+        WorkspaceWireScope scope = ScopeFor(session, sequence: 21);
+        fixture.Session.CurrentSession = session;
+        fixture.Session.Capabilities = Capabilities(session, method);
+        fixture.Session.Gateway = Gateway(new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            string result = method == "fileHistory.applyPendingChange"
+                ? "{\"changeId\":\"c-1\",\"state\":\"applied\",\"document\":null}"
+                : "{\"revisionId\":\"33333333-3333-4333-8333-333333333333\"}";
+            return JsonResponse(
+                $"{expectedReason}-1",
+                body.RootElement.GetProperty("wire"),
+                result);
+        }));
+
+        await fixture.Controller.DispatchAsync(Request(method, $"{expectedReason}-1", new { }, scope));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsTrue(response.GetProperty("ok").GetBoolean(), response.GetRawText());
+        (string type, JsonElement payload) = fixture.Reply.Notifications.Single();
+        Assert.AreEqual("document.workspaceChanged", type);
+        Assert.AreEqual(expectedReason, payload.GetProperty("reason").GetString());
+        Assert.AreEqual(1, payload.GetProperty("affectedCount").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task ReadForwardsAndFailedFileChangesNeverNotifyTheDocumentList()
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 session = OpenSession(Guid.NewGuid(), 52);
+        WorkspaceWireScope scope = ScopeFor(session, sequence: 22);
+        fixture.Session.CurrentSession = session;
+        fixture.Session.Capabilities = Capabilities(
+            session, "fileHistory.readTree", "fileHistory.restore");
+        fixture.Session.Gateway = Gateway(new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return body.RootElement.GetProperty("method").GetString() == "fileHistory.restore"
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new
+                    {
+                        jsonrpc = "2.0",
+                        id = body.RootElement.GetProperty("id").GetString(),
+                        wire = body.RootElement.GetProperty("wire"),
+                        error = new
+                        {
+                            code = "filehistory.revision_conflict",
+                            message = "stale",
+                            retryable = false,
+                        },
+                    }), Encoding.UTF8, "application/json"),
+                }
+                : JsonResponse(
+                    "read-1",
+                    body.RootElement.GetProperty("wire"),
+                    "{\"revisions\":[]}");
+        }));
+
+        await fixture.Controller.DispatchAsync(Request(
+            "fileHistory.readTree",
+            "read-1",
+            new { documentId = "22222222-2222-4222-8222-222222222222" },
+            scope));
+        await fixture.Controller.DispatchAsync(Request(
+            "fileHistory.restore", "conflict-1", new { }, scope));
+
+        Assert.AreEqual(2, fixture.Reply.Responses.Count);
+        Assert.IsTrue(fixture.Reply.Responses[0].GetProperty("ok").GetBoolean());
+        Assert.IsFalse(fixture.Reply.Responses[1].GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            "filehistory.revision_conflict",
+            fixture.Reply.Responses[1].GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(0, fixture.Reply.Notifications.Count);
+    }
+
+    [TestMethod]
+    public async Task PendingChangeApplicationNotifiesOnlyAppliedResults()
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 session = OpenSession(Guid.NewGuid(), 54);
+        WorkspaceWireScope scope = ScopeFor(session, sequence: 24);
+        fixture.Session.CurrentSession = session;
+        fixture.Session.Capabilities = Capabilities(
+            session, "fileHistory.applyPendingChange");
+        fixture.Session.Gateway = Gateway(new RecordingHandler(request =>
+        {
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            string requestId = body.RootElement.GetProperty("id").GetString()!;
+            JsonElement wire = body.RootElement.GetProperty("wire");
+            // A dismissed observation never touches documents; only the
+            // applied settlement of a real external change refreshes lists.
+            return requestId switch
+            {
+                "dismissed-1" => JsonResponse(requestId, wire,
+                    "{\"changeId\":\"c-1\",\"state\":\"dismissed\",\"document\":null}"),
+                "failed-1" => new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new
+                    {
+                        jsonrpc = "2.0",
+                        id = requestId,
+                        wire,
+                        error = new
+                        {
+                            code = "file_history.pending_change_apply_failed",
+                            message = "apply failed",
+                            retryable = false,
+                        },
+                    }), Encoding.UTF8, "application/json"),
+                },
+                _ => JsonResponse(requestId, wire,
+                    "{\"changeId\":\"c-1\",\"state\":\"applied\",\"document\":null}"),
+            };
+        }));
+
+        await fixture.Controller.DispatchAsync(Request(
+            "fileHistory.applyPendingChange", "applied-1", new { }, scope));
+        await fixture.Controller.DispatchAsync(Request(
+            "fileHistory.applyPendingChange", "dismissed-1", new { }, scope));
+        await fixture.Controller.DispatchAsync(Request(
+            "fileHistory.applyPendingChange", "failed-1", new { }, scope));
+
+        Assert.AreEqual(3, fixture.Reply.Responses.Count);
+        Assert.IsTrue(fixture.Reply.Responses[0].GetProperty("ok").GetBoolean());
+        Assert.IsTrue(fixture.Reply.Responses[1].GetProperty("ok").GetBoolean());
+        Assert.IsFalse(fixture.Reply.Responses[2].GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            "file_history.pending_change_apply_failed",
+            fixture.Reply.Responses[2].GetProperty("error").GetProperty("code").GetString());
+        (string type, JsonElement payload) = fixture.Reply.Notifications.Single();
+        Assert.AreEqual("document.workspaceChanged", type);
+        Assert.AreEqual("pendingChange", payload.GetProperty("reason").GetString());
+        Assert.AreEqual(1, payload.GetProperty("affectedCount").GetInt32());
+    }
+
+    [TestMethod]
+    [DataRow("fileHistory.restore")]
+    [DataRow("fileHistory.applyPendingChange")]
+    public async Task RetiredFileChangeForwardNeverNotifiesTheDocumentList(string method)
+    {
+        using var fixture = new Fixture();
+        fixture.Session.CaptureCurrentSession = true;
+        WorkspaceSessionV2 session = OpenSession(Guid.NewGuid(), 53);
+        WorkspaceWireScope scope = ScopeFor(session, sequence: 23);
+        fixture.Session.CurrentSession = session;
+        fixture.Session.Capabilities = Capabilities(session, method);
+        fixture.Session.Gateway = Gateway(new RecordingHandler(request =>
+        {
+            fixture.Session.LeaseCurrent = false;
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            string result = method == "fileHistory.applyPendingChange"
+                ? "{\"changeId\":\"c-1\",\"state\":\"applied\",\"document\":null}"
+                : "{\"revisionId\":\"33333333-3333-4333-8333-333333333333\"}";
+            return JsonResponse(
+                "retired-forward",
+                body.RootElement.GetProperty("wire"),
+                result);
+        }));
+
+        await fixture.Controller.DispatchAsync(Request(method, "retired-forward", new { }, scope));
+
+        JsonElement response = fixture.Reply.Responses.Single();
+        Assert.IsFalse(response.GetProperty("ok").GetBoolean());
+        Assert.AreEqual(
+            "workspace.session_stale",
+            response.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(0, fixture.Reply.Notifications.Count);
+    }
+
+    [TestMethod]
     [DataRow("replica.forceTakeover", "readOnly", "workspace.read_only")]
     [DataRow("replica.forceTakeover", "transition", "workspace.session_stale")]
     [DataRow("replica.forceTakeover", "stale", "workspace.session_stale")]

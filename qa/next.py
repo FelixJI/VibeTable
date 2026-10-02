@@ -1287,6 +1287,58 @@ def persist_product_e2e_evidence(
                 f"found {actual_scenarios} in {report_path}"
             )
 
+    for item in scenarios:
+        if item["scenario"] != "40-file-history-capacity":
+            continue
+        persistent = run_source / item["scenario"] / "persistent"
+        retained = run_destination / item["scenario"] / "persistent"
+        for filename in (
+            "producer-stdout.log",
+            "producer-stderr.log",
+            "fixtures/near-limit-9980x9990.json",
+            "fixtures/depth-4096.json",
+        ):
+            copied = _copy_if_file(persistent / filename, retained / filename)
+            if not copied and item["status"] == "passed":
+                raise ValueError(f"passing capacity report lacks raw evidence: {filename}")
+
+    for item in scenarios:
+        if item["scenario"] != "39-file-workflow-combination":
+            continue
+        for phase, filenames in {
+            "seed": (
+                "39-record-file-entry.png",
+                "39-restored-revision-tree.png",
+                "39-restored-search.png",
+            ),
+            "resume": ("39-resumed.png",),
+        }.items():
+            phase_root = run_source / "39-file-workflow-combination" / phase
+            phase_runs = []
+            if phase_root.is_dir():
+                for phase_run in phase_root.iterdir():
+                    if (
+                        not phase_run.is_dir()
+                        or re.fullmatch(r"\d{8}T\d{6}Z", phase_run.name) is None
+                    ):
+                        continue
+                    try:
+                        datetime.strptime(phase_run.name, "%Y%m%dT%H%M%SZ")
+                    except ValueError:
+                        continue
+                    phase_runs.append(phase_run)
+            latest = max(phase_runs, key=lambda path: path.name, default=None)
+            for filename in filenames:
+                copied = latest is not None and _copy_if_file(
+                    latest / filename,
+                    run_destination
+                    / "39-file-workflow-combination"
+                    / phase
+                    / latest.name
+                    / filename,
+                )
+                if not copied and item["status"] == "passed":
+                    raise ValueError(f"passing S39 report lacks screenshot evidence: {filename}")
     for item in failed_scenarios:
         scenario_id = item.get("scenario")
         if (
@@ -1328,7 +1380,11 @@ def persist_product_e2e_evidence(
             runtime_root / "host",
             run_destination / "_runtime" / scenario_number / "host",
         )
-        if scenario_id in {"11-plugin-mutation", "33-host-grid-presentation"}:
+        if scenario_id in {
+            "11-plugin-mutation",
+            "33-host-grid-presentation",
+            "39-file-workflow-combination",
+        }:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase
                 if not phase_root.is_dir():
@@ -1351,6 +1407,28 @@ def persist_product_e2e_evidence(
                 scenario_source / "persistent" / "host",
                 scenario_destination / "persistent" / "host",
             )
+        if scenario_id == "40-file-history-capacity":
+            for scale in ("near-limit-9980x9990", "depth-4096"):
+                scale_root = scenario_source / "scales" / scale
+                if scale_root.is_dir():
+                    for scale_run in sorted(scale_root.iterdir()):
+                        if (
+                            not scale_run.is_dir()
+                            or re.fullmatch(r"\d{8}T\d{6}Z", scale_run.name) is None
+                        ):
+                            continue
+                        retained = scenario_destination / "scales" / scale / scale_run.name
+                        for filename in (
+                            *PRODUCT_E2E_EVIDENCE_FILES,
+                            f"{scenario_id}-result.json",
+                            f"{scenario_id}-trace.zip",
+                            f"{scenario_id}.png",
+                        ):
+                            _copy_if_file(scale_run / filename, retained / filename)
+                copy_runtime_diagnostics(
+                    scenario_source / "persistent" / "host" / scale,
+                    scenario_destination / "persistent" / "host" / scale,
+                )
         if scenario_id == "24-directory-replica-conflict":
             for phase in REPLICA_E2E_PHASES:
                 for host in REPLICA_E2E_HOSTS:
@@ -1577,6 +1655,24 @@ def _main(argv: list[str] | None = None) -> int:
                 if required:
                     code = code or 1
     if args.lane:
+        if any(result.stage == "go-coverage" and result.returncode == 0 for result in results):
+            filename = "capacity-qualification.json"
+            source = REPO_ROOT / "build" / "qa" / "415-capacity" / filename
+            destination = (
+                REPO_ROOT
+                / "build"
+                / "automation"
+                / "lane-evidence"
+                / args.lane
+                / "415-capacity"
+                / filename
+            )
+            try:
+                if not _copy_if_file(source, destination):
+                    raise ValueError(f"passing Go coverage lacks capacity evidence: {filename}")
+            except (OSError, ValueError) as exc:
+                print(f"could not persist capacity evidence: {exc}", file=sys.stderr)
+                code = code or 1
         runtime_baseline_result = next(
             (result for result in results if result.stage == "runtime-baseline"),
             None,

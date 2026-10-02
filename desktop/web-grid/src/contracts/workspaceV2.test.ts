@@ -24,7 +24,7 @@ function fixturesDirectory(): string {
     while (true) {
       const candidate = join(current, "contracts", "v2", "fixtures");
       try {
-        if (readdirSync(candidate).includes("workspace-manifest.json")) return candidate;
+        if (readdirSync(candidate).includes("workspace-manifest-current.json")) return candidate;
       } catch {
         // Walk towards the root.
       }
@@ -53,7 +53,7 @@ const negativeCorpus = JSON.parse(
 };
 
 const readers = new Map<string, (value: unknown) => unknown>([
-  ["workspace-manifest.json", parseWorkspaceManifestV2],
+  ["workspace-manifest-current.json", parseWorkspaceManifestV2],
   ["workspace-registry-entry.json", parseWorkspaceRegistryEntryV2],
   ["workspace-session.json", parseWorkspaceSessionV2],
   ["file-document.json", parseFileDocumentV2],
@@ -76,7 +76,7 @@ describe("workspace v2 strict contracts", () => {
   });
 
   it("rejects top-level and nested unknown fields, missing fields, and invalid enums", () => {
-    const manifest = fixture("workspace-manifest.json") as Record<string, unknown>;
+    const manifest = fixture("workspace-manifest-current.json") as Record<string, unknown>;
     expect(() => parseWorkspaceManifestV2({ ...manifest, unknown: true })).toThrow();
     const { formatVersion: _, ...missing } = manifest;
     expect(() => parseWorkspaceManifestV2(missing)).toThrow();
@@ -89,8 +89,8 @@ describe("workspace v2 strict contracts", () => {
     })).toThrow();
   });
 
-  it.each([1, 3])("rejects unsupported workspace format %s explicitly", (formatVersion) => {
-    const manifest = fixture("workspace-manifest.json") as Record<string, unknown>;
+  it.each([1, 2, 4])("rejects unsupported workspace format %s explicitly", (formatVersion) => {
+    const manifest = fixture("workspace-manifest-current.json") as Record<string, unknown>;
 
     expect(() => parseWorkspaceManifestV2({ ...manifest, formatVersion }))
       .toThrow("workspace.format_unsupported");

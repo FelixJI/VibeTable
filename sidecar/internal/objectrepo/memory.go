@@ -128,11 +128,10 @@ func (repository *MemoryRepository) Commit(
 		if err := repository.inject(FaultBeforeManifestWrite); err != nil {
 			return DurableCommitReceipt{}, err
 		}
-		raw, err := canonicalManifest(input)
+		id, err := canonicalManifestID(input)
 		if err != nil {
 			return DurableCommitReceipt{}, err
 		}
-		id := manifestID(raw)
 		manifests[id] = ManifestRecord{
 			ID: id, Name: input.Name, Labels: cloneLabels(input.Labels), Payload: bytes.Clone(input.Payload),
 		}
@@ -173,10 +172,10 @@ func (repository *MemoryRepository) GetManifest(
 	if !ok {
 		return ManifestRecord{}, ErrNotFound
 	}
-	raw, err := canonicalManifest(ManifestInput{
+	canonicalID, err := canonicalManifestID(ManifestInput{
 		Name: record.Name, Labels: record.Labels, Payload: record.Payload,
 	})
-	if err != nil || manifestID(raw) != id {
+	if err != nil || canonicalID != id {
 		return ManifestRecord{}, ErrCorrupt
 	}
 	record.Labels = cloneLabels(record.Labels)

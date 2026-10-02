@@ -597,6 +597,148 @@ public sealed class WorkspaceDocumentOsAdapterTests
     }
 
     [TestMethod]
+    public async Task ConcurrentFirstPagesSerializeReadAndCapabilityPublication()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        string materialized = Path.Combine(workspaceRoot, "files", "report.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(materialized)!);
+        await File.WriteAllTextAsync(materialized, "current leaf");
+        int requests = 0;
+        var handler = new RecordingHandler(request =>
+        {
+            Interlocked.Increment(ref requests);
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return RpcSuccess(body.RootElement,
+                DocumentQueryResult(FileDocumentSummary("report.txt", 1)));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        var binding = new WorkspaceDocumentBinding(WorkspaceId, 7, true,
+            workspaceRoot, gateway, [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using var preview = new BlockingListPreview();
+        using var adapter = new WorkspaceDocumentOsAdapter(() => binding,
+            new DocumentCapabilityStore(), new NoopActions(), preview, new NoopPicker());
+        Task<DocumentListPayload> first = Task.Run(() => adapter.ListGlobalAsync(CancellationToken.None));
+        Task<DocumentListPayload>? target = null;
+        try
+        {
+            await preview.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            target = adapter.ListGlobalAsync(CancellationToken.None,
+                DocumentQueryInput.Default with
+                {
+                    Filters = [new DocumentFilterInput
+                    {
+                        Field = "documentId", Operator = "eq",
+                        Value = JsonSerializer.SerializeToElement(DocumentId.ToString("D")),
+                    }],
+                    Limit = 1,
+                });
+            Assert.AreEqual(1, Volatile.Read(ref requests),
+                "The target HTTP request must wait until the preceding list publishes its handles.");
+            Assert.IsFalse(target.IsCompleted);
+        }
+        finally
+        {
+            preview.Release.TrySetResult();
+            await first.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        DocumentListPayload firstPage = await first.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsNotNull(target);
+        DocumentListPayload targetPage = await target.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(2, requests);
+        adapter.Open(targetPage.Entries.Single().EntryHandle);
+        DocumentCapabilityException expired = Assert.ThrowsExactly<DocumentCapabilityException>(
+            () => adapter.Open(firstPage.Entries.Single().EntryHandle));
+        Assert.AreEqual("DOCUMENT_HANDLE_INVALID", expired.Code);
+    }
+
+    [TestMethod]
+    public async Task CancellingAQueuedListDoesNotReleaseTheActivePublication()
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        string materialized = Path.Combine(workspaceRoot, "files", "report.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(materialized)!);
+        await File.WriteAllTextAsync(materialized, "current leaf");
+        int requests = 0;
+        var handler = new RecordingHandler(request =>
+        {
+            Interlocked.Increment(ref requests);
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return RpcSuccess(body.RootElement,
+                DocumentQueryResult(FileDocumentSummary("report.txt", 1)));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        var binding = new WorkspaceDocumentBinding(WorkspaceId, 7, true,
+            workspaceRoot, gateway, [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using var preview = new BlockingListPreview();
+        using var adapter = new WorkspaceDocumentOsAdapter(() => binding,
+            new DocumentCapabilityStore(), new NoopActions(), preview, new NoopPicker());
+        Task<DocumentListPayload> first = Task.Run(() => adapter.ListGlobalAsync(CancellationToken.None));
+        Task<DocumentListPayload>? successor = null;
+        try
+        {
+            await preview.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            using var cancellation = new CancellationTokenSource();
+            Task<DocumentListPayload> cancelled = adapter.ListGlobalAsync(cancellation.Token);
+            cancellation.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => cancelled);
+            successor = adapter.ListGlobalAsync(CancellationToken.None);
+            Assert.AreEqual(1, Volatile.Read(ref requests));
+            Assert.IsFalse(successor.IsCompleted,
+                "Cancelling a waiter must not release the active list publication.");
+        }
+        finally
+        {
+            preview.Release.TrySetResult();
+            await first.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        await first.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsNotNull(successor);
+        DocumentListPayload page = await successor.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(2, requests);
+        adapter.Open(page.Entries.Single().EntryHandle);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FailedListReleasesThePublicationGate(bool invalidResponse)
+    {
+        using var directory = new TemporaryDirectory();
+        string workspaceRoot = Path.Combine(directory.Path, "workspace");
+        string materialized = Path.Combine(workspaceRoot, "files", "report.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(materialized)!);
+        await File.WriteAllTextAsync(materialized, "current leaf");
+        int requests = 0;
+        var handler = new RecordingHandler(request =>
+        {
+            requests++;
+            using JsonDocument body = JsonDocument.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            return RpcSuccess(body.RootElement, invalidResponse && requests == 1
+                ? "{}" : DocumentQueryResult(FileDocumentSummary("report.txt", 1)));
+        });
+        using WorkspaceV2HttpGateway gateway = Gateway(handler);
+        var binding = new WorkspaceDocumentBinding(WorkspaceId, 7, true,
+            workspaceRoot, gateway, [WorkspaceDocumentOsAdapter.QueryDocumentsMethod]);
+        using var preview = new BlockingListPreview(failFirst: !invalidResponse);
+        preview.Release.TrySetResult();
+        using var adapter = new WorkspaceDocumentOsAdapter(() => binding,
+            new DocumentCapabilityStore(), new NoopActions(), preview, new NoopPicker());
+        Task<DocumentListPayload> failed = adapter.ListGlobalAsync(CancellationToken.None);
+        if (invalidResponse)
+            await Assert.ThrowsExactlyAsync<DocumentFileOperationException>(() => failed);
+        else
+            await Assert.ThrowsExactlyAsync<IOException>(() => failed);
+        DocumentListPayload page = await adapter.ListGlobalAsync(CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        adapter.Open(page.Entries.Single().EntryHandle);
+        Assert.AreEqual(2, requests);
+    }
+    [TestMethod]
     public async Task CursorPageKeepsCapabilitiesIssuedForEarlierPages()
     {
         using var directory = new TemporaryDirectory();
@@ -1504,6 +1646,27 @@ public sealed class WorkspaceDocumentOsAdapterTests
         public void Dispose() { }
     }
 
+    private sealed class BlockingListPreview(bool failFirst = false) : ILocalDocumentPreview
+    {
+        private int _calls;
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool CanPreview(string fullPath)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                Started.TrySetResult();
+                Release.Task.GetAwaiter().GetResult();
+                if (failFirst)
+                    throw new IOException("Synthetic preview failure.");
+            }
+            return false;
+        }
+
+        public void Show(string fullPath) { }
+        public void Dispose() => Release.TrySetResult();
+    }
     private sealed class NoopPicker : ILocalDocumentFilePicker
     {
         public Task<string?> PickFileAsync(

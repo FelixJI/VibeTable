@@ -1,8 +1,9 @@
-import { watch } from "vue";
+import { getCurrentScope, onScopeDispose, watch } from "vue";
 import type { DocumentAuthority } from "@/stores/documentWorkspaceStore";
 import { parseDocumentDiffSessionResult, parseDocumentDiffChangePageResult } from "@/contracts/documentDiffV2";
 import type { DocumentCapability, DocumentEntry } from "@/stores/documentWorkspaceStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
+import { registerWorkspaceEpochReset } from "@/stores/workspaceSessionStore";
 import type {
   DocumentListLoadedPayload,
   FileDocumentQuery,
@@ -111,7 +112,13 @@ export function useDocumentWorkspaceService(): {
   const bridge = useHostBridge();
   const store = useDocumentWorkspaceStore();
   let lastScope: DocumentWorkspaceScope = { kind: "global" };
+  let lastListQuery: FileDocumentQuery | null = null;
   let listGeneration = 0;
+  const unregisterEpochReset = registerWorkspaceEpochReset("document-workspace-service", () => {
+    listGeneration += 1;
+    lastScope = { kind: "global" };
+    lastListQuery = null;
+  });
   watch(() => store.diffResult?.session?.sessionId, (next, old) => {
     if (old && old !== next) void bridge.request("document.diffCloseRequested", { sessionId: old })
       .catch(error => store.setFailed(error instanceof Error ? error.message : String(error)));
@@ -133,12 +140,13 @@ export function useDocumentWorkspaceService(): {
     }
   }
 
-  async function execute(intent: DocumentWorkspaceIntent): Promise<void> {
+  async function execute(intent: DocumentWorkspaceIntent, preserveSelection = false): Promise<void> {
     try {
       switch (intent.type) {
         case "document.listRequested": {
           const generation = ++listGeneration;
           lastScope = intent.scope;
+          lastListQuery = intent.query;
           store.beginLoad();
           let payload: DocumentListLoadedPayload;
           try {
@@ -159,6 +167,7 @@ export function useDocumentWorkspaceService(): {
             payload.nextCursor,
             payload.topologyRevision,
             intent.query.cursor !== null,
+            preserveSelection,
           );
           return;
         }
@@ -232,17 +241,32 @@ export function useDocumentWorkspaceService(): {
     }
   }
 
-  bridge.on("document.workspaceChanged", () => {
+  const unsubscribeChanged = bridge.on("document.workspaceChanged", () => {
     void execute({
       type: "document.listRequested",
       scope: lastScope,
       authority: store.authorityFilter,
-      query: defaultDocumentQuery(store.query),
-    });
+      // A change notice only resets pagination to the first page. It reuses
+      // the last real list intent's complete query so a successful change
+      // never silently drops the user's active filters, and it creates no
+      // second query authority of its own.
+      query: lastListQuery === null
+        ? defaultDocumentQuery(store.query)
+        : { ...lastListQuery, cursor: null },
+    }, true);
   });
-  bridge.on("document.operationFailed", (payload) => {
+  const unsubscribeFailed = bridge.on("document.operationFailed", (payload) => {
     store.setFailed(payload.message, payload.code ?? null);
   });
+
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      listGeneration += 1;
+      unregisterEpochReset();
+      unsubscribeChanged();
+      unsubscribeFailed();
+    });
+  }
 
   return {
     dispatch: (intent) => { void execute(intent); },

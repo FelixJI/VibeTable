@@ -1293,6 +1293,7 @@ useKeyboard({
       :document-labels="documentWorkspace.documentLabels"
       @close="contentPanelOpen = false"
       @saved="refreshTable"
+      @open-document="contentPanelOpen = false; workspaceSearchNavigation.openDocument($event)"
     />
     <RelationEditorPanel
       v-if="relationEditor.show"

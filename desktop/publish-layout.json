@@ -57,8 +57,8 @@
     }
   },
   "formats": {
-    "workspace": 2,
-    "repository": "kopia-v3",
+    "workspace": 3,
+    "repository": "kopia-v4",
     "snapshot": 2,
     "package": 2,
     "contracts": "2.0"

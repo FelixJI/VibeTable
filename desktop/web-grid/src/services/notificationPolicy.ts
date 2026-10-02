@@ -5,6 +5,7 @@ import {
 } from "@/bridge/hostBridge";
 import type { MutationErrorPayload } from "@/contracts";
 import { t } from "@/i18n";
+import { WorkspaceV2RequestError } from "./workspaceV2HostAdapter";
 
 /**
  * Keep bursty background failures from producing a stack of identical
@@ -53,6 +54,10 @@ export function relationLookupErrorMessage(error: unknown): string | null {
 
 /** Map workspace topology/provider failures to stable, actionable UI copy. */
 export function workspaceV2ErrorMessage(error: unknown): string {
+  if ((error instanceof BridgeOperationError || error instanceof WorkspaceV2RequestError)
+    && error.code === "filehistory.resource_limit") {
+    return t("workspaceV2.error.fileHistoryResourceLimit");
+  }
   if (error instanceof BridgeOperationError) {
     if (error.code === "workspace.storage_requires_mirrored") {
       return t("workspaceV2.error.storageRequiresMirrored");

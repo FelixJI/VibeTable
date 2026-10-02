@@ -135,6 +135,7 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     cursor: string | null,
     revision: number,
     append: boolean,
+    preserveSelection = false,
   ): void {
     const labels = { ...documentLabels.value };
     for (const entry of next) {
@@ -145,6 +146,19 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
       ? [...entries.value.filter((current) =>
           !next.some((candidate) => candidate.documentId === current.documentId)), ...next]
       : next;
+    const rebindHandle = (handle: string | null): string | null => {
+      const previous = entries.value.find((entry) => entry.entryHandle === handle);
+      if (!previous) return null;
+      return merged.find((entry) => entry.documentId === previous.documentId
+        && entry.authority === previous.authority)?.entryHandle ?? null;
+    };
+    const selected = preserveSelection
+      ? selectedHandles.value.map(rebindHandle).filter((handle): handle is string => handle !== null)
+      : selectedHandles.value;
+    const primary = preserveSelection ? rebindHandle(primaryHandle.value) : primaryHandle.value;
+    const anchor = preserveSelection && selectionAnchor.value !== null
+      ? rebindHandle(visibleEntries.value[selectionAnchor.value]?.entryHandle ?? null)
+      : null;
     const target = diffTarget.value;
     if (target) {
       const current = merged.find((entry) => entry.entryHandle === target.entryHandle);
@@ -159,7 +173,12 @@ export const useDocumentWorkspaceStore = defineStore("documentWorkspace", () => 
     lastError.value = null;
     lastErrorCode.value = null;
     const handles = new Set(merged.map((entry) => entry.entryHandle));
-    selectedHandles.value = selectedHandles.value.filter((handle) => handles.has(handle));
+    selectedHandles.value = selected.filter((handle) => handles.has(handle));
+    primaryHandle.value = primary;
+    if (preserveSelection) {
+      const index = visibleEntries.value.findIndex((entry) => entry.entryHandle === anchor);
+      selectionAnchor.value = index < 0 ? null : index;
+    }
     if (!primaryHandle.value || !handles.has(primaryHandle.value)) {
       primaryHandle.value = null;
       selectionAnchor.value = null;

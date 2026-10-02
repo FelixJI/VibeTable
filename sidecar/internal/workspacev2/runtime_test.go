@@ -1194,11 +1194,11 @@ func TestValidateStartupBindingRejectsMismatchBeforeCreatingLayout(t *testing.T)
 		t.Fatal(err)
 	}
 	raw := `{
-		"contractVersion":"2.0","formatVersion":2,
+		"contractVersion":"2.0","formatVersion":3,
 		"workspaceId":"11111111-1111-4111-8111-111111111111",
 		"displayName":"Identity","createdAt":"2026-07-28T08:00:00Z",
 		"storageMode":"direct","encryptionMode":"convenient",
-		"repositoryFormat":"kopia-v3","topologySchemaVersion":1,
+		"repositoryFormat":"kopia-v4","topologySchemaVersion":1,
 		"businessSchemaVersion":1,"importedFromWorkspaceId":null,
 		"sourceSnapshotId":null
 	}`
@@ -1218,6 +1218,16 @@ func TestValidateStartupBindingRejectsMismatchBeforeCreatingLayout(t *testing.T)
 	)
 	if err == nil || err.Error() != "workspace.identity_mismatch" {
 		t.Fatalf("identity mismatch error = %v", err)
+	}
+	for _, format := range []string{"2", "4"} {
+		unsupported := strings.Replace(raw, `"formatVersion":3`, `"formatVersion":`+format, 1)
+		if err := os.WriteFile(filepath.Join(metadata, "workspace.json"), []byte(unsupported), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := ValidateStartupBinding(dataDir, "11111111-1111-4111-8111-111111111111", 7, 3, testClaimID)
+		if err == nil || !strings.Contains(err.Error(), "workspace.format_unsupported") {
+			t.Fatalf("format %s was not rejected before layout: %v", format, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(metadata, "coordination")); !errors.Is(
 		err,
@@ -1241,13 +1251,13 @@ func createWorkspace(t *testing.T, workspaceID string) string {
 	}
 	manifest := map[string]any{
 		"contractVersion":         "2.0",
-		"formatVersion":           2,
+		"formatVersion":           3,
 		"workspaceId":             workspaceID,
 		"displayName":             "测试工作区",
 		"createdAt":               time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC).Format(time.RFC3339),
 		"storageMode":             "direct",
 		"encryptionMode":          "convenient",
-		"repositoryFormat":        "kopia-v3",
+		"repositoryFormat":        "kopia-v4",
 		"topologySchemaVersion":   1,
 		"businessSchemaVersion":   1,
 		"importedFromWorkspaceId": nil,

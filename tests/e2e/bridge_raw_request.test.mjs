@@ -219,24 +219,57 @@ test("raw bridge request setup releases ownership when postMessage throws", () =
   }
 });
 
-test("workspace v2 probes use the formal serialized UI port", async () => {
+test("workspace v2 probes time the complete serialized UI request before delayed observation", async (t) => {
+  let now = 10;
+  let completed = false;
   const requested = [];
+  const result = { policyRevision: 7 };
+  const deferred = Promise.withResolvers();
+  t.mock.method(performance, "now", () => now);
   globalThis.window = {
     __vibetableE2EWorkspaceWirePort: {
-      async request(action) {
+      request(action) {
         requested.push(action);
-        return { policyRevision: 7 };
+        return deferred.promise;
       },
     },
   };
   try {
-    const reply = await requestWorkspaceV2InPage({
+    const pending = requestWorkspaceV2InPage({
       method: "retention.get",
       params: {},
     });
+    pending.then(() => { completed = true; });
+    now = 12;
+    await Promise.resolve();
+    assert.equal(completed, false);
+    now = 14;
+    deferred.resolve(result);
+    const reply = await pending;
+    now = 100;
 
     assert.deepEqual(requested, [{ method: "retention.get", params: {} }]);
-    assert.deepEqual(reply, { result: { policyRevision: 7 } });
+    assert.equal(reply.result, result);
+    assert.equal(reply.elapsedMs, 4);
+  } finally {
+    delete globalThis.window;
+  }
+});
+
+test("workspace v2 timed probes preserve the formal port failure", async () => {
+  globalThis.window = {
+    __vibetableE2EWorkspaceWirePort: {
+      async request() {
+        throw { code: "workspace.read_failed", message: "authority unavailable" };
+      },
+    },
+  };
+  try {
+    await assert.rejects(requestWorkspaceV2InPage({
+      method: "fileHistory.readTree", params: { documentId: "document-1" },
+    }), {
+      message: 'fileHistory.readTree failed closed: {"code":"workspace.read_failed","message":"authority unavailable"}',
+    });
   } finally {
     delete globalThis.window;
   }

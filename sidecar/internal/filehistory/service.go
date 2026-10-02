@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -1521,7 +1522,7 @@ func (service *Service) StageSnapshotRestore(
 	}
 	var root objectrepo.ManifestID
 	if len(documents) != 0 {
-		raw, err := json.Marshal(payload)
+		raw, err := encodeRootPayload(payload)
 		if err != nil {
 			return StagedSnapshotRestore{}, err
 		}
@@ -1906,7 +1907,7 @@ func (service *Service) commit(
 	if err := validateRootResourceLimits(payload); err != nil {
 		return CurrentHead{}, err
 	}
-	raw, err := json.Marshal(payload)
+	raw, err := encodeRootPayload(payload)
 	if err != nil {
 		return CurrentHead{}, fmt.Errorf(
 			"encode file history root: %w", err,
@@ -2485,6 +2486,36 @@ func reachableObjects(documents map[string]Document) []objectrepo.ObjectID {
 		return result[left] < result[right]
 	})
 	return result
+}
+
+// rootPayloadCounter counts the exact encoded length without retaining any
+// of the encoded bytes.
+type rootPayloadCounter struct{ total int }
+
+func (counter *rootPayloadCounter) Write(chunk []byte) (int, error) {
+	counter.total += len(chunk)
+	return len(chunk), nil
+}
+
+// encodeRootPayload preserves json.Marshal bytes while counting before
+// allocating the output. The Go 1.27 bytes.Buffer encoder also requires
+// 25% spare capacity after Flush.
+func encodeRootPayload(payload rootPayload) ([]byte, error) {
+	counter := &rootPayloadCounter{}
+	if err := jsonv2.MarshalWrite(
+		counter, payload, json.DefaultOptionsV1(),
+	); err != nil {
+		return nil, err
+	}
+	length := counter.total
+	// Avoid overflowing the output capacity calculation.
+	if length > (math.MaxInt-1)*4/5 {
+		return nil, errors.New("filehistory.root_payload_too_large")
+	}
+	var buffer bytes.Buffer
+	buffer.Grow(length + (length+3)/4)
+	err := jsonv2.MarshalWrite(&buffer, payload, json.DefaultOptionsV1())
+	return buffer.Bytes(), err
 }
 
 func cloneDocuments(source map[string]Document) map[string]Document {

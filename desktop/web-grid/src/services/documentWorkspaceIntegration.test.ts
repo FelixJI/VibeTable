@@ -1,8 +1,11 @@
 import { flushPromises } from "@vue/test-utils";
+import { effectScope } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HostBridge } from "@/bridge/hostBridge";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
+import type { FileDocumentQuery } from "@/contracts";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import {
@@ -113,6 +116,172 @@ describe("document workspace bridge integration", () => {
     });
   });
 
+  it("refreshes from a workspace-changed notice with the last full query and a reset cursor", async () => {
+    const handlers = new Map<string, (payload: never) => void>();
+    const request = vi.fn(async (_type: string, _payload: Record<string, unknown>) => ({
+      entries: [entry()],
+      nextCursor: "cursor-2",
+      topologyRevision: 2,
+    }));
+    setHostBridgeForTesting({
+      request,
+      notify: vi.fn(),
+      notifyWithAdditionalObjects: vi.fn(() => false),
+      on: vi.fn((type: string, handler: (payload: never) => void) => {
+        handlers.set(type, handler);
+        return () => handlers.delete(type);
+      }),
+    } as unknown as HostBridge);
+    const service = useDocumentWorkspaceService();
+
+    const filteredQuery: FileDocumentQuery = {
+      logic: "or",
+      filters: [
+        { field: "extension", operator: "eq", value: ".pdf" },
+        { field: "sizeBytes", operator: "gt", value: 1024 },
+      ],
+      sort: [{ field: "relativePath", direction: "asc" }],
+      limit: 25,
+      cursor: null,
+    };
+    service.dispatch({
+      type: "document.listRequested",
+      scope: { kind: "global" },
+      authority: "workspace",
+      query: filteredQuery,
+    });
+    await flushPromises();
+    service.dispatch({
+      type: "document.listRequested",
+      scope: { kind: "global" },
+      authority: "workspace",
+      query: { ...filteredQuery, cursor: "cursor-2" },
+    });
+    await flushPromises();
+
+    const store = useDocumentWorkspaceStore();
+    store.selectAt(0);
+    store.showInspector("history");
+    const restoredRevisionId = "33333333-3333-4333-8333-333333333333";
+    request.mockResolvedValueOnce({
+      entries: [entry({ entryHandle: "restored-handle", effectiveRevisionId: restoredRevisionId })],
+      nextCursor: "cursor-2", topologyRevision: 3,
+    });
+    handlers.get("document.workspaceChanged")?.({ reason: "restore", affectedCount: 1 } as never);
+    await flushPromises();
+
+    // A successful change notice may only reset pagination to the first
+    // page; silently dropping the user's active filters is a stale refresh.
+    const refresh = request.mock.calls.at(-1)?.[1] as { query: FileDocumentQuery };
+    expect(refresh.query).toEqual({ ...filteredQuery, cursor: null });
+    expect(store.selectedHandles).toEqual(["restored-handle"]);
+    expect(store.primaryEntry).toMatchObject({
+      entryHandle: "restored-handle", effectiveRevisionId: restoredRevisionId,
+    });
+    expect(store.inspectorTab).toBe("history");
+    service.dispatch({
+      type: "document.listRequested", scope: { kind: "record", collection: "orders", itemId: 7 },
+      authority: "workspace", query: defaultDocumentQuery(),
+    });
+    await flushPromises();
+    expect(store.selectedHandles).toEqual([]);
+    expect(store.primaryHandle).toBeNull();
+    expect(store.inspectorTab).toBe("preview");
+  });
+
+  it.each([
+    ["success", false], ["failure", false], ["success", true], ["failure", true],
+  ] as const)(
+    "ignores an old restore refresh %s after the workspace epoch resets (new page loaded: %s)",
+    async (outcome, loadCurrent) => {
+      const session = useWorkspaceSessionStore();
+      session.configureCapabilities(["workspace.session.v2"]);
+      const applySession = (workspaceId: string, sessionEpoch: number) => session.applySession({
+        contractVersion: "2.0", workspaceId, sessionEpoch,
+        state: "openedWritable", openMode: "writable", writable: true,
+        provisional: false, phase: "idle", errorCode: null,
+      });
+      applySession("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 1);
+      const handlers = new Map<string, (payload: never) => void>();
+      let finishRefresh!: (payload: unknown) => void;
+      let rejectRefresh!: (reason: unknown) => void;
+      const request = vi.fn()
+        .mockResolvedValueOnce({ entries: [entry()], nextCursor: null, topologyRevision: 1 })
+        .mockImplementationOnce(() => new Promise((resolve, reject) => {
+          finishRefresh = resolve;
+          rejectRefresh = reject;
+        }));
+      setHostBridgeForTesting({
+        request,
+        on: vi.fn((type: string, handler: (payload: never) => void) => {
+          handlers.set(type, handler);
+          return () => handlers.delete(type);
+        }),
+      } as unknown as HostBridge);
+      const service = useDocumentWorkspaceService();
+      service.dispatch({ type: "document.listRequested", scope: { kind: "global" },
+        authority: "workspace", query: defaultDocumentQuery() });
+      await flushPromises();
+      const store = useDocumentWorkspaceStore();
+      store.selectAt(0);
+      store.showInspector("history");
+      handlers.get("document.workspaceChanged")?.({ reason: "restore", affectedCount: 1 } as never);
+      applySession("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", 2);
+      expect(store.entries).toEqual([]);
+      if (loadCurrent) {
+        request.mockResolvedValueOnce({
+          entries: [entry({ entryHandle: "current-workspace-handle" })],
+          nextCursor: null, topologyRevision: 3,
+        });
+        service.dispatch({ type: "document.listRequested", scope: { kind: "global" },
+          authority: "workspace", query: defaultDocumentQuery() });
+        await flushPromises();
+        store.selectAt(0);
+        store.showInspector("history");
+      }
+      if (outcome === "success") finishRefresh({
+        entries: [entry({ entryHandle: "retired-workspace-handle" })],
+        nextCursor: null, topologyRevision: 2,
+      });
+      else rejectRefresh(new Error("retired-workspace-failure"));
+      await flushPromises();
+      if (loadCurrent) {
+        expect(store.entries[0]?.entryHandle).toBe("current-workspace-handle");
+        expect(store.selectedHandles).toEqual(["current-workspace-handle"]);
+        expect(store.primaryHandle).toBe("current-workspace-handle");
+        expect(store.inspectorTab).toBe("history");
+        expect(store.phase).toBe("ready");
+      } else {
+        expect(store.entries).toEqual([]);
+        expect(store.selectedHandles).toEqual([]);
+        expect(store.primaryHandle).toBeNull();
+        expect(store.inspectorTab).toBe("preview");
+        expect(store.phase).toBe("idle");
+      }
+      expect(store.lastError).toBeNull();
+    },
+  );
+
+  it("retires a pending list and removes notifications when its Vue scope is disposed", async () => {
+    const handlers = new Map<string, (payload: never) => void>();
+    let finishList!: (payload: unknown) => void;
+    setHostBridgeForTesting({
+      request: vi.fn(() => new Promise(resolve => { finishList = resolve; })),
+      on: vi.fn((type: string, handler: (payload: never) => void) => {
+        handlers.set(type, handler);
+        return () => handlers.delete(type);
+      }),
+    } as unknown as HostBridge);
+    const scope = effectScope();
+    const service = scope.run(() => useDocumentWorkspaceService())!;
+    service.dispatch({ type: "document.listRequested", scope: { kind: "global" },
+      authority: "workspace", query: defaultDocumentQuery() });
+    scope.stop();
+    finishList({ entries: [entry()], nextCursor: null, topologyRevision: 1 });
+    await flushPromises();
+    expect(handlers.size).toBe(0);
+    expect(useDocumentWorkspaceStore().entries).toEqual([]);
+  });
   it("ignores an older file-list response that completes after a newer query", async () => {
     let resolveOlder!: (value: unknown) => void;
     const older = new Promise((resolve) => { resolveOlder = resolve; });

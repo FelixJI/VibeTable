@@ -73,7 +73,7 @@ def _payload(root: Path) -> _Payload:
     _reject_link(root)
     _reject_link(root / ".vibetable")
     manifest_path = root / ".vibetable/workspace.json"
-    manifest = _identity(manifest_path, 2)
+    manifest = _identity(manifest_path, 3)
     if manifest.get("storageMode") != "mirrored":
         raise ValueError("replica seed requires a mirrored workspace")
     workspace_id = _canonical_uuid(manifest.get("workspaceId"))

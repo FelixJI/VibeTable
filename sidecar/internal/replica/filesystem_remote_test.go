@@ -709,7 +709,7 @@ func writeMirroredManifest(
 	}
 	raw, err := json.Marshal(contractsv2.WorkspaceManifest{
 		ContractVersion: "2.0",
-		FormatVersion:   2,
+		FormatVersion:   3,
 		WorkspaceID:     workspaceID,
 		DisplayName:     "Replica",
 		CreatedAt: time.Date(
@@ -717,7 +717,7 @@ func writeMirroredManifest(
 		).Format(time.RFC3339),
 		StorageMode:           "mirrored",
 		EncryptionMode:        "convenient",
-		RepositoryFormat:      "kopia-v3",
+		RepositoryFormat:      "kopia-v4",
 		TopologySchemaVersion: 1,
 		BusinessSchemaVersion: 1,
 	})

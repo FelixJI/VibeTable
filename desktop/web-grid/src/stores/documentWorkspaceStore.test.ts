@@ -115,6 +115,61 @@ describe("documentWorkspaceStore", () => {
     expect(store.entries).toEqual([]);
   });
 
+  it("rebinds preserved selection and its range anchor to the fresh page by document identity", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(0);
+    store.selectAt(2, { toggle: true });
+    store.showInspector("history");
+    const refreshed = [entries[2]!, entries[1]!, entries[0]!].map((item) => ({
+      ...item, entryHandle: `fresh-${item.entryHandle}`, effectiveRevisionId: "restored-revision",
+    }));
+    store.setPage(refreshed, null, 8, false, true);
+    expect(store.selectedHandles).toEqual(["fresh-a", "fresh-c"]);
+    expect(store.primaryHandle).toBe("fresh-c");
+    expect(store.primaryEntry?.effectiveRevisionId).toBe("restored-revision");
+    expect(store.inspectorTab).toBe("history");
+    store.selectAt(1, { range: true });
+    expect(store.selectedHandles).toEqual(["fresh-c", "fresh-b"]);
+  });
+
+  it("clears preserved selection for missing documents and revoked history capability", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(0);
+    store.showInspector("history");
+    store.setPage([{ ...entries[0]!, entryHandle: "fresh-a", capabilities: ["open"] }], null, 8, false, true);
+    expect(store.primaryHandle).toBe("fresh-a");
+    expect(store.inspectorTab).toBe("preview");
+    store.setPage([entries[1]!], null, 9, false, true);
+    expect(store.selectedHandles).toEqual([]);
+    expect(store.primaryHandle).toBeNull();
+  });
+
+  it("does not preserve selection for a normal replacement query", () => {
+    const store = useDocumentWorkspaceStore();
+    store.setEntries(entries);
+    store.selectAt(0);
+    store.showInspector("history");
+    store.setPage([{ ...entries[0]!, entryHandle: "query-handle" }], null, 8, false);
+    expect(store.selectedHandles).toEqual([]);
+    expect(store.primaryHandle).toBeNull();
+    expect(store.inspectorTab).toBe("preview");
+  });
+
+  it("does not rebind a diff target when selection follows a fresh handle", () => {
+    const store = useDocumentWorkspaceStore();
+    const current = { ...entries[0]!, effectiveRevisionId: "effective-before" };
+    store.setEntries([current]);
+    store.selectAt(0);
+    store.showInspector("history");
+    store.beginDiff(current.entryHandle, "historical", "effective-before", "operation");
+    store.setPage([{ ...current, entryHandle: "fresh-a", effectiveRevisionId: "effective-after" }], null, 8, false, true);
+    expect(store.primaryHandle).toBe("fresh-a");
+    expect(store.diffTarget).toBeNull();
+    expect(store.diffPhase).toBe("idle");
+    expect(store.inspectorTab).toBe("history");
+  });
   it("keeps stale entries visible while a refresh is in progress", () => {
     const store = useDocumentWorkspaceStore();
     store.setEntries(entries);
