@@ -8,6 +8,7 @@ import type {
   SearchStatus,
 } from "@/contracts/generated/workbench";
 import { requestWorkspaceV2UiAction } from "@/services/workspaceV2UiPort";
+import { WorkspaceV2RequestError } from "@/services/workspaceV2HostAdapter";
 import {
   observeWorkspaceSearchTerminal,
   WORKSPACE_SEARCH_CANCEL_TERMINAL_BUDGET_MS,
@@ -22,6 +23,13 @@ const EMPTY_STATUS: SearchStatus = {
   total: null,
   errorCode: null,
 };
+
+// Workspace v2 typed errors carry a stable code separately from their message;
+// untyped errors retain the existing message-based fallback.
+function requestErrorCode(error: unknown): string {
+  if (error instanceof WorkspaceV2RequestError) return error.code;
+  return error instanceof Error ? error.message : String(error);
+}
 
 export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
   const query = ref("");
@@ -103,7 +111,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
       generation.value = result.generation;
     } catch (error) {
       if (epoch !== requestEpoch) return;
-      errorCode.value = error instanceof Error ? error.message : String(error);
+      errorCode.value = requestErrorCode(error);
       if (!append) hits.value = [];
     } finally {
       if (epoch === requestEpoch) searching.value = false;
@@ -124,7 +132,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
       status.value = {
         ...status.value,
         state: "degraded",
-        errorCode: error instanceof Error ? error.message : String(error),
+        errorCode: requestErrorCode(error),
       };
     }
   }
@@ -139,7 +147,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
       return {
         ...status.value,
         state: "degraded",
-        errorCode: error instanceof Error ? error.message : String(error),
+        errorCode: requestErrorCode(error),
       };
     }
   }
@@ -188,7 +196,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
       if (status.value.state === "ready") await search();
     } catch (error) {
       if (epoch !== lifecycleEpoch) return;
-      errorCode.value = error instanceof Error ? error.message : String(error);
+      errorCode.value = requestErrorCode(error);
       status.value = { ...status.value, state: "failed", errorCode: errorCode.value };
     } finally {
       if (epoch === lifecycleEpoch) rebuilding.value = false;
@@ -217,7 +225,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
       status.value = terminal;
     } catch (error) {
       if (epoch !== lifecycleEpoch) return;
-      errorCode.value = error instanceof Error ? error.message : String(error);
+      errorCode.value = requestErrorCode(error);
       status.value = { ...status.value, state: "failed", errorCode: errorCode.value };
     } finally {
       if (epoch === lifecycleEpoch) {
@@ -246,7 +254,7 @@ export const useWorkspaceSearchStore = defineStore("workspace-search", () => {
       return result.hit;
     } catch (error) {
       if (epoch !== resolveEpoch) return null;
-      const code = error instanceof Error ? error.message : String(error);
+      const code = requestErrorCode(error);
       errorCode.value = code;
       if (code === "workspace_search.hit_missing") {
         hits.value = hits.value.filter((candidate) => candidate.hitId !== hit.hitId);

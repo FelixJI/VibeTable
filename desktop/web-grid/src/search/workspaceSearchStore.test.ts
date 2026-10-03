@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { SearchHit, SearchStatus } from "@/contracts/generated/workbench";
+import { WorkspaceV2RequestError } from "@/services/workspaceV2HostAdapter";
 import {
   setWorkspaceV2UiPort,
   type WorkspaceV2UiPort,
@@ -494,6 +495,129 @@ describe("workspaceSearchStore", () => {
     expect(await store.resolveHit(missing)).toBeNull();
     expect(store.hits).toEqual([]);
     expect(store.errorCode).toBe("workspace_search.hit_missing");
+  });
+
+  it("prunes a hit when hit_missing arrives as a typed error with the generic message", async () => {
+    const kept = hit("kept");
+    const missing = hit("missing");
+    setWorkspaceV2UiPort({
+      request: vi.fn(async () => {
+        throw new WorkspaceV2RequestError(
+          "workspace_search.hit_missing",
+          "workspace v2 request failed",
+          false,
+        );
+      }) as WorkspaceV2UiPort["request"],
+    });
+    const store = useWorkspaceSearchStore();
+    store.hits = [kept, missing];
+
+    expect(await store.resolveHit(missing)).toBeNull();
+    expect(store.hits.map((item) => item.hitId)).toEqual(["kept"]);
+    expect(store.errorCode).toBe("workspace_search.hit_missing");
+  });
+
+  it("keeps the hit and reports the stable code for other typed resolve failures", async () => {
+    const stale = hit("stale");
+    setWorkspaceV2UiPort({
+      request: vi.fn(async () => {
+        throw new WorkspaceV2RequestError(
+          "workspace_search.unavailable",
+          "workspace v2 request failed",
+          true,
+        );
+      }) as WorkspaceV2UiPort["request"],
+    });
+    const store = useWorkspaceSearchStore();
+    store.hits = [stale];
+
+    expect(await store.resolveHit(stale)).toBeNull();
+    expect(store.hits).toEqual([stale]);
+    expect(store.errorCode).toBe("workspace_search.unavailable");
+  });
+
+  it("classifies typed query failures by the stable code", async () => {
+    const request = vi.fn(async (action: { params: { cursor: string | null } }) => {
+      throw new WorkspaceV2RequestError(
+        action.params.cursor
+          ? "workspace_search.cursor_stale"
+          : "workspace_search.index_corrupt",
+        "workspace v2 request failed",
+        true,
+      );
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+    store.query = "typed";
+    store.hits = [hit("old")];
+
+    await store.search();
+    expect(store.hits).toEqual([]);
+    expect(store.errorCode).toBe("workspace_search.index_corrupt");
+
+    store.hits = [hit("kept")];
+    store.nextCursor = "cursor";
+    await store.search({ append: true });
+    expect(store.hits.map((item) => item.hitId)).toEqual(["kept"]);
+    expect(store.errorCode).toBe("workspace_search.cursor_stale");
+  });
+
+  it("keeps stable codes for typed lifecycle failures in rebuild, status, and cancel", async () => {
+    const request = vi.fn(async (action: { method: string }) => {
+      throw new WorkspaceV2RequestError(
+        action.method === "workspaceSearch.rebuild"
+          ? "workspace_search.storage_failed"
+          : action.method === "workspaceSearch.status"
+            ? "workspace_search.status_failed"
+            : "workspace_search.internal_failed",
+        "workspace v2 request failed",
+        false,
+      );
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+
+    await store.rebuild();
+    expect(store.status).toMatchObject({
+      state: "failed",
+      errorCode: "workspace_search.storage_failed",
+    });
+    expect(store.errorCode).toBe("workspace_search.storage_failed");
+    expect(store.rebuilding).toBe(false);
+
+    await store.refreshStatus();
+    expect(store.status).toMatchObject({
+      state: "degraded",
+      errorCode: "workspace_search.status_failed",
+    });
+
+    store.status = { ...store.status, state: "building" };
+    await store.cancelRebuild();
+    expect(store.status).toMatchObject({
+      state: "failed",
+      errorCode: "workspace_search.internal_failed",
+    });
+    expect(store.errorCode).toBe("workspace_search.internal_failed");
+    expect(store.cancelling).toBe(false);
+  });
+
+  it("keeps the message fallback for plain errors and stringifies thrown values", async () => {
+    const request = vi.fn(async (action: { method: string }) => {
+      if (action.method === "workspaceSearch.query") throw new Error("bridge offline, retry later");
+      throw 418;
+    });
+    setWorkspaceV2UiPort({ request: request as WorkspaceV2UiPort["request"] });
+    const store = useWorkspaceSearchStore();
+    store.query = "untyped";
+
+    await store.search();
+    expect(store.errorCode).toBe("bridge offline, retry later");
+
+    const retained = hit("retained");
+    store.hits = [retained];
+    await store.resolveHit(retained);
+    expect(store.errorCode).toBe("418");
+    expect(store.hits).toEqual([retained]);
   });
 
   it("suppresses an older authority result after a newer hit starts resolving", async () => {
