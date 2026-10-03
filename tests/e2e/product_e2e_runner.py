@@ -1736,7 +1736,7 @@ ConvertTo-Json -InputObject $items -Compress
         environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            ["powershell.exe", "-Mta", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             env=environment,
             capture_output=True,
             text=True,
