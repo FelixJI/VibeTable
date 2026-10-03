@@ -43,8 +43,8 @@ if TYPE_CHECKING:
     from scripts.qa.windows_process_scope import WindowsProcessScope
 
 PROTOCOL_VERSION = "2.0"
-WEBVIEW2_SDK = "1.0.4129.50"
-TABULATOR_VERSION = "6.5.2"
+WEBVIEW2_SDK = "1.0.4258.31"
+TABULATOR_VERSION = "6.6.1"
 HOST_EXE_NAME = "VibeTable.Next.exe"
 ARCHIVE_ROOT_NAME = "VibeTable"
 RELEASE_PLATFORM = "win-x64"
@@ -1139,7 +1139,7 @@ def _git_value(paths: RepoPaths, *args: str, fallback: str) -> str:
             errors="replace",
         )
         return result.stdout.strip() or fallback
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return fallback
 
 
@@ -2013,7 +2013,7 @@ def _wait_for_self_update_rollback(
             with _open_updater_journal(pointer_path) as stream:
                 pointer_bytes = stream.read(16 * 1024 + 1)
             pointer = json.loads(pointer_bytes) if len(pointer_bytes) <= 16 * 1024 else None
-        except (OSError, ValueError):
+        except OSError, ValueError:
             pointer = None
         if isinstance(pointer, dict) and pointer.get("state") == "rollbackFailed":
             pointer_error = _self_update_rollback_evidence_error(

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/parser/gen"
+	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/parser/gen"
 )
 
 const ContractVersion = "2.0"

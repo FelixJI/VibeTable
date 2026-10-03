@@ -126,3 +126,56 @@ def test_repository_uses_the_restorable_toolchain_instead_of_committed_node() ->
     plugin_cli = (ROOT / "scripts" / "vibetable_plugin.py").read_text(encoding="utf-8")
     assert 'runtime" / "node' not in plugin_cli
     assert "resolve_node(REPO_ROOT)" in plugin_cli
+
+
+@pytest.mark.parametrize("initial", ["wrong-version", "missing-shim", "missing-cli"])
+def test_ensure_npm_restores_mismatched_version_and_reuses_pinned_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial: str
+) -> None:
+    node = tmp_path / "node" / "node.exe"
+    package = tmp_path / ".tools" / "npm" / "node_modules" / "npm" / "package.json"
+    package.parent.mkdir(parents=True)
+    package.write_text(
+        '{"version": "'
+        + ("0.0.0" if initial == "wrong-version" else node_toolchain.NPM_VERSION)
+        + '"}',
+        encoding="utf-8",
+    )
+    entries = (package.parent.parent / ".bin" / "npm.cmd", package.parent / "bin" / "npm-cli.js")
+    for entry in entries:
+        if (initial, entry.name) not in {
+            ("missing-shim", "npm.cmd"),
+            ("missing-cli", "npm-cli.js"),
+        }:
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.touch()
+    monkeypatch.setattr(node_toolchain, "ensure_node", lambda root: node)
+    commands: list[list[str]] = []
+
+    def install(command: list[str], *, check: bool) -> None:
+        assert check
+        commands.append(command)
+        package.write_text('{"version": "' + node_toolchain.NPM_VERSION + '"}', encoding="utf-8")
+        for entry in entries:
+            entry.parent.mkdir(parents=True, exist_ok=True)
+            entry.touch()
+
+    monkeypatch.setattr(node_toolchain.subprocess, "run", install)
+    expected = package.parent.parent / ".bin"
+    assert node_toolchain.ensure_npm(tmp_path) == expected
+    assert node_toolchain.ensure_npm(tmp_path) == expected
+    assert len(commands) == 1
+    assert f"npm@{node_toolchain.NPM_VERSION}" in commands[0]
+    assert "--global" not in commands[0]
+
+
+def test_ensure_npm_rejects_restore_without_executable_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / ".tools" / "npm" / "node_modules" / "npm" / "package.json"
+    package.parent.mkdir(parents=True)
+    package.write_text('{"version": "' + node_toolchain.NPM_VERSION + '"}', encoding="utf-8")
+    monkeypatch.setattr(node_toolchain, "ensure_node", lambda root: tmp_path / "node.exe")
+    monkeypatch.setattr(node_toolchain.subprocess, "run", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError, match="runnable version"):
+        node_toolchain.ensure_npm(tmp_path)

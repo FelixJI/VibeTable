@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Clippit" Version="3.9.0" />
+    <PackageReference Include="Clippit" Version="3.9.1" />
     <ProjectReference Include="..\VibeTable.DocumentDiff.OpenXml\VibeTable.DocumentDiff.OpenXml.csproj" />
   </ItemGroup>
   <ItemGroup>

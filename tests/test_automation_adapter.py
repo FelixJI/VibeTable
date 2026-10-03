@@ -29,6 +29,9 @@ def node_quality_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
         (tmp_path / project).mkdir(parents=True)
         shutil.copyfile(REPO_ROOT / project / "package.json", tmp_path / project / "package.json")
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        automation_project, "ensure_npm", lambda _root: tmp_path / ".tools/npm/node_modules/.bin"
+    )
     return tmp_path
 
 
@@ -42,7 +45,14 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
         assert kwargs["check"] is True
         assert isinstance(kwargs["cwd"], Path)
         assert isinstance(kwargs["env"], dict)
-        assert kwargs["env"]["PATH"].startswith(str(node_quality_checkout / ".tools" / "node"))
+        assert kwargs["env"]["PATH"].split(automation_project.os.pathsep)[:2] == [
+            str(node_quality_checkout / ".tools/npm/node_modules/.bin"),
+            str(
+                node_quality_checkout
+                / ".tools/node"
+                / f"node-v{(node_quality_checkout / '.node-version').read_text().strip()}-win-x64"
+            ),
+        ]
         calls.append(
             (
                 (Path(command[0]).stem, *command[1:]),
@@ -306,31 +316,12 @@ def test_ci_runs_advanced_codeql_with_repository_toolchains() -> None:
     assert "global-json-file: global.json" in codeql
     assert "if: matrix.language == 'go'" in codeql
     assert "go-version-file: sidecar/go.mod" in codeql
-    action = "db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28"
-    assert codeql.count(f"github/codeql-action/init@{action}") == 2
+    action = "2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2"
+    assert codeql.count(f"github/codeql-action/init@{action}") == 1
     assert f"github/codeql-action/analyze@{action}" in codeql
     assert "build-mode: ${{ matrix.build-mode }}" in codeql
-    go_bundle = (
-        "https://github.com/github/codeql-action/releases/download/"
-        "codeql-bundle-v2.26.4/codeql-bundle-win64.tar.gz"
-    )
-    assert "Initialize CodeQL with default bundle" in codeql
-    assert "Initialize CodeQL with Go 1.27 bundle" in codeql
-    default_init = codeql.split("- name: Initialize CodeQL with default bundle", maxsplit=1)[
-        1
-    ].split("- name: Initialize CodeQL with Go 1.27 bundle", maxsplit=1)[0]
-    go_init = codeql.split("- name: Initialize CodeQL with Go 1.27 bundle", maxsplit=1)[1].split(
-        "- name: Analyze", maxsplit=1
-    )[0]
-    matrix_include = codeql.split("        include:\n", maxsplit=1)[1].split(
-        "    steps:\n", maxsplit=1
-    )[0]
-    assert "if: matrix.language != 'go'" in default_init
-    assert "tools:" not in default_init
-    assert "if: matrix.language == 'go'" in go_init
-    assert f"tools: {go_bundle}" in go_init
-    assert codeql.count(go_bundle) == 1
-    assert "tools:" not in matrix_include
+    assert "tools: linked" in codeql
+    assert "codeql-bundle-v2.26.4" not in codeql
     assert 'category: "/language:${{ matrix.language }}"' in codeql
     assert "github.event_name != 'schedule'" in ci.split("\n  plan:\n", maxsplit=1)[1]
 
@@ -350,7 +341,7 @@ def test_ci_prepare_failure_preserves_product_e2e_evidence() -> None:
     evidence_step = evidence_step.split("- name: Upload immutable candidate handoff", 1)[0]
 
     assert "if: failure()" in evidence_step
-    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in evidence_step
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in evidence_step
     assert "name: ci-prepare-evidence" in evidence_step
     assert "build/qa/pr-product-e2e" in evidence_step
     assert "build/qa/workbench-qualification-pr.json" in evidence_step
@@ -455,9 +446,12 @@ def test_candidate_prepare_bootstraps_only_release_build_dependencies(
     observed: list[tuple[tuple[str, ...], Path]] = []
     monkeypatch.setenv("VIBETABLE_CI_PREPARE_MODE", "candidate")
     monkeypatch.setattr(
+        automation_project, "ensure_npm", lambda _root: Path("C:/npm/node_modules/.bin")
+    )
+    monkeypatch.setattr(
         automation_project,
         "ensure_node",
-        lambda _root: Path("C:/node/node-v24.19.0-win-x64/node.exe"),
+        lambda _root: Path("C:/node/node-v26.10.0-win-x64/node.exe"),
     )
     monkeypatch.setattr(
         automation_project,
@@ -500,6 +494,8 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
     node.touch()
     monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(automation_project, "ensure_node", lambda _root: node)
+    npm_bin = tmp_path / ".tools" / "npm" / "node_modules" / ".bin"
+    monkeypatch.setattr(automation_project, "ensure_npm", lambda _root: npm_bin)
     monkeypatch.setattr(
         automation_project,
         "_install_w64devkit",
@@ -518,7 +514,7 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
     assert all(env is not None for _command, env in npm_calls)
     assert all(
         env is not None
-        and env["PATH"].split(automation_project.os.pathsep, maxsplit=1)[0] == str(node.parent)
+        and env["PATH"].split(automation_project.os.pathsep)[:2] == [str(npm_bin), str(node.parent)]
         for _command, env in npm_calls
     )
     assert (("install-w64devkit",), None) in observed
@@ -571,6 +567,9 @@ def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
 ) -> None:
     observed: list[tuple[str, ...]] = []
     monkeypatch.setenv("VIBETABLE_CI_PREPARE_MODE", "candidate")
+    monkeypatch.setattr(
+        automation_project, "ensure_npm", lambda _root: Path("C:/npm/node_modules/.bin")
+    )
     monkeypatch.setattr(
         automation_project,
         "_run",
@@ -1105,9 +1104,11 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     assert "{reports_dir}" in shards["aggregate"][0]
     ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "startsWith(matrix.name, 'race-')" in ci_workflow
-    assert "actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809" in ci_workflow
+    assert "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" in ci_workflow
     assert "path: .tools/w64devkit" in ci_workflow
-    assert "hashFiles('scripts/automation_project.py')" in ci_workflow
+    assert (
+        "hashFiles('scripts/automation_project.py', 'scripts/toolchain_metadata.py')" in ci_workflow
+    )
     assert config["release"]["required_assets"] == [
         "VibeTable-v{version}-win-x64.zip",
         "VibeTable-v{version}-win-x64.zip.sha256",
@@ -1476,3 +1477,30 @@ def test_changelog_footer_and_dependency_scope(
     subject: str, message: str, expected: str | None
 ) -> None:
     assert changelog._category(subject, message) == expected
+
+
+@pytest.mark.parametrize("installed_version", ["16.1.0", "16.2.0"])
+def test_w64_bootstrap_replaces_cached_older_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed_version: str
+) -> None:
+    monkeypatch.setattr(automation_project, "REPO_ROOT", tmp_path)
+    gcc = automation_project._w64devkit_gcc()
+    gcc.parent.mkdir(parents=True)
+    gcc.touch()
+
+    def inspect(command, **kwargs):
+        assert command == [str(gcc), "-dumpfullversion"]
+        assert kwargs["check"] is True
+        return subprocess.CompletedProcess(command, 0, stdout=installed_version + "\n")
+
+    def download(url, **kwargs):
+        assert url == toolchain_metadata.W64DEVKIT_DISTRIBUTION.url
+        raise RuntimeError("requested pinned distribution")
+
+    monkeypatch.setattr(automation_project.subprocess, "run", inspect)
+    monkeypatch.setattr(automation_project.urllib.request, "urlopen", download)
+    if installed_version == toolchain_metadata.W64DEVKIT_DISTRIBUTION.gcc_version:
+        automation_project._install_w64devkit()
+    else:
+        with pytest.raises(RuntimeError, match="requested pinned distribution"):
+            automation_project._install_w64devkit()

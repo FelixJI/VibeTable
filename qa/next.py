@@ -40,6 +40,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct ``python qa/next.py``
     )
 
 from qa.product_scenario_manifest import load_scenarios
+from scripts.build_next import resolve_go
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIDECAR_DIR = REPO_ROOT / "sidecar"
@@ -282,14 +283,11 @@ def _resolve(name: str) -> str:
             if marker.startswith("gitdir:"):
                 common_root = Path(marker.removeprefix("gitdir:").strip()).resolve().parents[2]
                 tool_roots.append(common_root)
-        except (OSError, IndexError):
+        except OSError, IndexError:
             pass
     if name == "go":
-        suffix = "go.exe" if os.name == "nt" else "go"
-        for tool_root in tool_roots:
-            candidate = tool_root / ".tools" / "go-full" / "go" / "bin" / suffix
-            if candidate.is_file():
-                return str(candidate)
+        return resolve_go(REPO_ROOT)
+
     if name == "gcc" and os.name == "nt":
         for tool_root in tool_roots:
             for candidate in (
@@ -549,7 +547,7 @@ def _stage_environment(
                 path.is_relative_to(resolved_root) for path in resolved_tools.values()
             ):
                 environment.update({name: str(path) for name, path in resolved_tools.items()})
-        except (KeyError, OSError, json.JSONDecodeError, TypeError):
+        except KeyError, OSError, json.JSONDecodeError, TypeError:
             pass
     if stage == "go-race" and os.name == "nt":
         # Go's Windows race runtime requires cgo plus a MinGW-w64 runtime that

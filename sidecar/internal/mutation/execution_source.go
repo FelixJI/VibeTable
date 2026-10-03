@@ -6,6 +6,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
+	"github.com/vibetable/vibetable/sidecar/internal/schemaerror"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -28,6 +29,13 @@ func (MetadataSchemaSource) Describe(
 				"mutation.table.not_found", stringPointer("tableId"),
 				"table was not found", nil, false,
 			)
+		}
+		// Execution now validates counters before preview returns. Preserve the
+		// mutation error previously emitted by Apply's metadata validation.
+		var revisionErr *schemaerror.ProductError
+		if errors.As(err, &revisionErr) && revisionErr.Code == "schema.metadata.invalid_data_revision" {
+			return schemaexecution.Table{}, mutationError("mutation.metadata.invalid_data_revision", nil,
+				"stored counter must be a non-negative integer", nil, false)
 		}
 		return schemaexecution.Table{}, storageFailure()
 	}

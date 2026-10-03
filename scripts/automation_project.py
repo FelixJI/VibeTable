@@ -20,7 +20,7 @@ import urllib.request
 from pathlib import Path
 
 try:
-    from scripts.node_toolchain import ensure_node
+    from scripts.node_toolchain import ensure_node, ensure_npm
     from scripts.toolchain_metadata import W64DEVKIT_DISTRIBUTION, resolve_executable
     from scripts.versioning import read_project_version
     from scripts.windows_doctor import (
@@ -29,7 +29,7 @@ try:
         render_report,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
-    from node_toolchain import ensure_node
+    from node_toolchain import ensure_node, ensure_npm
     from toolchain_metadata import W64DEVKIT_DISTRIBUTION, resolve_executable
     from versioning import read_project_version
     from windows_doctor import DoctorProfile, diagnose_windows_toolchain, render_report
@@ -72,9 +72,10 @@ def _run(
 
 def _node_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
     node = ensure_node(REPO_ROOT)
+    npm_bin = ensure_npm(REPO_ROOT)
     return {
         **(extra or {}),
-        "PATH": os.pathsep.join((str(node.parent), os.environ.get("PATH", ""))),
+        "PATH": os.pathsep.join((str(npm_bin), str(node.parent), os.environ.get("PATH", ""))),
     }
 
 
@@ -92,7 +93,14 @@ def _w64devkit_gcc() -> Path:
 
 def _install_w64devkit() -> None:
     if _w64devkit_gcc().is_file():
-        return
+        installed = subprocess.run(
+            [str(_w64devkit_gcc()), "-dumpfullversion"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if installed.stdout.strip() == W64DEVKIT_DISTRIBUTION.gcc_version:
+            return
     archive = REPO_ROOT / "build" / "tooling" / W64DEVKIT_DISTRIBUTION.archive_name
     archive.parent.mkdir(parents=True, exist_ok=True)
     if not archive.is_file() or _sha256(archive) != W64DEVKIT_DISTRIBUTION.archive_sha256:

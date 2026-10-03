@@ -35,10 +35,10 @@ flowchart LR
 ### 环境
 
 - Windows 10/11 x64
-- Python 3.13+ 与 `uv`
-- Node.js 24.x（仓库锁定 24.19.0）
-- .NET SDK 10.0.400
-- Go 1.27.0
+- Python 3.14+ 与 `uv`
+- Node.js 26.x（仓库锁定 26.10.0）
+- .NET SDK 10.0.401
+- Go 1.27.1
 - WebView2 Runtime
 
 在仓库根目录执行：

@@ -2,8 +2,8 @@
 package buildinfo
 
 const (
-	PocketBaseVersion = "0.40.1"
-	CELVersion        = "0.31.0"
+	PocketBaseVersion = "0.40.4"
+	CELVersion        = "0.32.0"
 	ContractVersion   = "v1"
 	ProtocolV2Version = "2.0"
 	SchemaVersion     = "15"
@@ -12,7 +12,7 @@ const (
 	SnapshotFormat    = "2"
 	PackageFormat     = "2"
 	KopiaVersion      = "v0.23.1"
-	AgeVersion        = "v1.3.1"
+	AgeVersion        = "v1.3.2"
 )
 
 // These values are populated with -ldflags in release builds.

@@ -22,7 +22,7 @@ def _repository_tool_roots(repo_root: Path) -> tuple[Path, ...]:
                 common_root = git_dir.resolve().parents[2]
                 if common_root not in roots:
                     roots.append(common_root)
-        except (OSError, IndexError):
+        except OSError, IndexError:
             pass
     return tuple(roots)
 
@@ -67,7 +67,7 @@ class W64DevkitDistribution:
 
 
 W64DEVKIT_DISTRIBUTION = W64DevkitDistribution(
-    version="2.8.0",
-    archive_sha256="6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e",
-    gcc_version="16.1.0",
+    version="2.10.0",
+    archive_sha256="18d0a4c71a166f8401ab6305781bec5882b40b5e06ba9807c61cb5f3b3c6325e",
+    gcc_version="16.2.0",
 )

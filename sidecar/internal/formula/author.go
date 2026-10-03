@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/google/cel-go/parser/gen"
+	"cel.dev/cel-go/parser/gen"
 	"github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"

@@ -6,7 +6,7 @@ package formula
 import (
 	"fmt"
 
-	"github.com/google/cel-go/cel"
+	"cel.dev/cel-go/cel"
 )
 
 func ValidateRuntime() error {

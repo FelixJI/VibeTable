@@ -9,10 +9,10 @@ import (
 
 func TestCurrentContainsPinnedDependencies(t *testing.T) {
 	info := Current("abc123")
-	if info.PocketBaseVersion != "0.40.1" {
+	if info.PocketBaseVersion != "0.40.4" {
 		t.Fatalf("PocketBase version = %q", info.PocketBaseVersion)
 	}
-	if info.CELVersion != "0.31.0" {
+	if info.CELVersion != "0.32.0" {
 		t.Fatalf("CEL version = %q", info.CELVersion)
 	}
 	if info.SchemaVersion != "15" {
@@ -27,7 +27,7 @@ func TestCurrentContainsPinnedDependencies(t *testing.T) {
 		info.SnapshotFormat != "2" ||
 		info.PackageFormat != "2" ||
 		info.KopiaVersion != "v0.23.1" ||
-		info.AgeVersion != "v1.3.1" {
+		info.AgeVersion != "v1.3.2" {
 		t.Fatalf("workspace release metadata is incomplete: %#v", info)
 	}
 }

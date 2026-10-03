@@ -106,6 +106,13 @@ func publicSchemaProductError(err error) error {
 }
 
 func publicSchemaGetTableError(err error) error {
+	// Persisted revision corruption remains a private internal error, like
+	// invalid snapshot metadata rejected by schemaSnapshotProductResult.
+	var revisionErr *schemaerror.ProductError
+	if errors.As(err, &revisionErr) &&
+		(revisionErr.Code == "schema.metadata.invalid_schema_revision" || revisionErr.Code == "schema.metadata.invalid_data_revision") {
+		return err
+	}
 	if errors.Is(err, schemaexecution.ErrTableNotFound) {
 		path := "tableId"
 		return &productrpc.PublicError{

@@ -418,7 +418,7 @@ def _wait_for_cdp(
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -846,7 +846,7 @@ def _handle_storage_proof(
             if not isinstance(selected_root, str) or not selected_root:
                 raise ValueError("workspace registry selectedRoot is invalid")
             data_db = Path(selected_root) / ".vibetable" / "data" / "data.db"
-        except (OSError, ValueError, json.JSONDecodeError):
+        except OSError, ValueError, json.JSONDecodeError:
             pass
     if not data_db.is_file():
         return {
@@ -1736,7 +1736,7 @@ ConvertTo-Json -InputObject $items -Compress
         environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            ["powershell.exe", "-Mta", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             env=environment,
             capture_output=True,
             text=True,

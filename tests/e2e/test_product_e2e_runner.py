@@ -5958,20 +5958,15 @@ def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import base64
+    from concurrent.futures import ThreadPoolExecutor
 
+    run = subprocess.run
     captured: dict[str, str] = {}
 
-    def capture(command, **_kwargs):
-        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="[]")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(runner.subprocess, "run", capture)
-        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
-    script = captured["script"]
-    initialization = script[: script.index('[Console]::Error.WriteLine("UIA_STAGE root begin')]
-    harness = (
-        r"""
+    def observe(command, **kwargs):
+        assert kwargs["timeout"] == 5
+        script = base64.b64decode(command[-1]).decode("utf-16-le")
+        guard = r"""
 # An observation must not need a compiler to initialize the system provider.
 function Add-Type {
     param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
@@ -5979,38 +5974,97 @@ function Add-Type {
     Microsoft.PowerShell.Utility\Add-Type -AssemblyName $AssemblyName
 }
 """
-        + initialization
-        + r"""
+        command = [
+            *command[:-1],
+            base64.b64encode((guard + script).encode("utf-16-le")).decode("ascii"),
+        ]
+        result = run(command, **kwargs)
+        captured["stderr"] = result.stderr
+        print(f"UIA_CLIENT argv={command[:-1]} timeout={kwargs['timeout']}")
+        print(result.stderr)
+        return result
+
+    # Only this independent STA process owns the synthetic UI. Its bootstrap
+    # is separate from the complete production observation's unchanged 5s.
+    target = r"""
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 $form = [Windows.Forms.Form]::new()
 $edit = [Windows.Forms.TextBox]::new()
+$edit.Multiline = $true
+$edit.ReadOnly = $true
 $edit.Text = 'owned-provider-regression'
 $form.Controls.Add($edit)
 try {
     $form.Show()
-    [Windows.Forms.Application]::DoEvents()
-    $root = [System.Windows.Automation.AutomationElement]::FromHandle($form.Handle)
-    $condition = [System.Windows.Automation.PropertyCondition]::new(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Edit)
-    $items = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition)
-    if ($items.Count -ne 1) { throw "owned Edit count=$($items.Count)" }
-    $pattern = $items[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    if ($pattern.Current.Value -ne 'owned-provider-regression') { throw 'owned text mismatch' }
+    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{
+        hwnd = $form.Handle.ToInt64(); pid = $PID;
+        apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
+    }))
+    [Windows.Forms.Application]::Run($form)
 } finally { $form.Close(); $form.Dispose() }
 """
-    )
-    result = subprocess.run(
+    with subprocess.Popen(
         [
             "powershell.exe",
+            "-Sta",
             "-NoProfile",
             "-NonInteractive",
             "-EncodedCommand",
-            base64.b64encode(harness.encode("utf-16-le")).decode("ascii"),
+            base64.b64encode(target.encode("utf-16-le")).decode("ascii"),
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=5,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    ) as process:
+        native = None
+        hwnd: int | None = None
+        try:
+            native = runner._DocumentNativeWindows()
+            assert process.stdout is not None
+            with ThreadPoolExecutor(max_workers=1) as reader:
+                ready = reader.submit(process.stdout.readline)
+                try:
+                    identity = json.loads(ready.result(timeout=30))
+                except BaseException:
+                    process.kill()
+                    raise
+            assert identity["pid"] == process.pid
+            assert identity["apartment"] == "STA"
+            print(f"UIA_TARGET identity={identity}")
+            hwnd = identity["hwnd"]
+            assert native.owner(hwnd) == process.pid
+            windows = [
+                item for item in native.windows() if item["pid"] == process.pid and item["visible"]
+            ]
+            assert len(windows) == 1
+            assert windows[0]["hwnd"] == hwnd
+            with monkeypatch.context() as patch:
+                patch.setattr(runner.subprocess, "run", observe)
+                documents = native.document_text(hwnd)
+            assert len(documents) == 1
+            assert documents[0]["text"] == "owned-provider-regression"
+            print(f"UIA_DOCUMENTS {documents}")
+            assert "UIA_STAGE document-query end" in captured["stderr"]
+            tab_stage = next(
+                line
+                for line in captured["stderr"].splitlines()
+                if "UIA_STAGE tab-query end" in line
+            )
+            assert tab_stage.endswith("count=0")
+            assert "apartment=MTA" in captured["stderr"], captured["stderr"]
+        finally:
+            try:
+                if native is not None and hwnd is not None and process.poll() is None:
+                    assert native.owner(hwnd) == process.pid
+                    assert native.close_new_document(hwnd, process.pid)
+                    process.wait(timeout=5)
+            finally:
+                if native is not None:
+                    native.close()
+                if process.poll() is None:
+                    process.kill()
+                _, stderr = process.communicate(timeout=5)
+                print(f"UIA_TARGET exit={process.returncode}")
+        assert process.returncode == 0, stderr

@@ -124,7 +124,7 @@ def check_packaged_provider_support(
             errors.append("provider support contract version is invalid")
         if providers["fixed"].get("creation") != "enabled":
             errors.append("fixed provider must remain enabled")
-    except (KeyError, OSError, json.JSONDecodeError, TypeError):
+    except KeyError, OSError, json.JSONDecodeError, TypeError:
         return ["provider support matrix is invalid"]
     errors.extend(
         check_provider_policy(
@@ -339,7 +339,7 @@ def check_package(
                                     "workspace compatibility corpus artifact is missing "
                                     f"or changed: {artifact.get('path')}"
                                 )
-                except (KeyError, OSError, json.JSONDecodeError, TypeError):
+                except KeyError, OSError, json.JSONDecodeError, TypeError:
                     errors.append("workspace compatibility corpus is invalid")
             policy_path = contracts_root / "workspace-version-policy.json"
             policy_schema_path = contracts_root / "workspace-version-policy.schema.json"
@@ -414,7 +414,7 @@ def check_package(
                         for error in policy_errors
                         if "violates its closed schema" not in error
                     )
-                except (OSError, json.JSONDecodeError, TypeError):
+                except OSError, json.JSONDecodeError, TypeError:
                     errors.append("packaged workspace version policy is invalid")
     if "sidecar binary" not in resolved:
         return errors
@@ -463,7 +463,7 @@ def check_package(
                 for item in provenance.get("tools", [])
                 if isinstance(item, dict)
             }
-        except (OSError, json.JSONDecodeError, AttributeError):
+        except OSError, json.JSONDecodeError, AttributeError:
             errors.append("recovery tool provenance is invalid")
     go = resolve_go(source_root)
     for label, expected_tool in expected_tools.items():
@@ -591,7 +591,7 @@ def check_package(
         }
         required_modules = {
             "github.com/pocketbase/pocketbase": f"v{expected.pocketbase}",
-            "github.com/google/cel-go": f"v{expected.cel}",
+            "cel.dev/cel-go": f"v{expected.cel}",
             "github.com/kopia/kopia": KOPIA_VERSION,
             "filippo.io/age": AGE_VERSION,
         }

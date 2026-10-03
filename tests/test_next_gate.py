@@ -2878,3 +2878,18 @@ def test_core_lane_retains_capacity_record_only_after_passing_coverage(
         assert retained.read_bytes() == raw
     else:
         assert not retained.exists()
+
+
+def test_go_gate_uses_the_same_pinned_toolchain_as_package_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import build_next
+
+    suffix = "go.exe" if next_gate.os.name == "nt" else "go"
+    pinned = tmp_path / ".tools" / f"go-{build_next.RECOVERY_GO_VERSION}" / "go/bin" / suffix
+    stale = tmp_path / ".tools/go-full/go/bin" / suffix
+    for executable in (pinned, stale):
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+    monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path)
+    assert next_gate._resolve("go") == str(pinned)

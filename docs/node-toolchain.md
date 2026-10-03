@@ -5,11 +5,11 @@ Node、npm 或 `node_modules`。
 
 ## 锁定来源
 
-- 版本来源：仓库根目录 `.node-version` 与 `.nvmrc`，当前均为 `24.19.0`。
-- 官方制品：`https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip`。
-- 官方 SHA-256：`0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821`。
-- 恢复位置：`.tools/node/node-v24.19.0-win-x64/`；下载缓存位于
-  `build/tooling/node-v24.19.0-win-x64.zip`。两者均为仓库声明的本地生成目录，不提交到 Git。
+- 版本来源：仓库根目录 `.node-version` 与 `.nvmrc`，当前均为 `26.10.0`。
+- 官方制品：`https://nodejs.org/dist/v26.10.0/node-v26.10.0-win-x64.zip`。
+- 官方 SHA-256：`9fef7eca6743a6b910989cd8e78712376b394fcb9b6e1e9c44a0799a287f90c5`。
+- 恢复位置：`.tools/node/node-v26.10.0-win-x64/`；下载缓存位于
+  `build/tooling/node-v26.10.0-win-x64.zip`。两者均为仓库声明的本地生成目录，不提交到 Git。
 
 `scripts/node_toolchain.py` 在外部制品导入时验证一次官方 SHA-256，并拒绝 ZIP 危险路径；提交后
 依赖 Git、锁文件和既有 package contract，不维护逐文件 hash 清单。
@@ -20,10 +20,18 @@ Node、npm 或 `node_modules`。
 uv run python scripts/automation_project.py bootstrap
 ```
 
-bootstrap 会恢复锁定 Node。项目自动化随后把该目录显式注入 contracts、quality、candidate build、
+bootstrap 会恢复正式 Node 26.10.0 与 npm 12.2.0。npm 通过随 Node 分发的 npm 本地安装到
+`.tools/npm`，复用 npm 自身的完整性检查，不修改系统全局安装；各项目的 `packageManager`
+声明同一固定版本。项目自动化随后把该目录显式注入 contracts、quality、candidate build、
 release smoke 与分片 smoke 的全部 Node consumer，因此 clean Windows 不依赖系统 Node，也不会意外
 绕过仓库锁定版本。`scripts/vibetable_plugin.py` 优先复用这个已恢复的 Node；若尚未 bootstrap，才回退到
 系统 PATH 中显式安装的 Node。CLI 不会在执行插件命令时静默联网下载工具链。
 
 原 `runtime/node` portable tree 已删除：它只有插件开发 CLI fallback consumer，不是产品运行时；
 恢复旧树只需 revert 对应 Git 变更，不影响 workspace 数据或发布包语义。
+
+Web 的 `vue-tsc` 需要 TypeScript 编程 API，因此按官方兼容接口将 `typescript` 指向
+`@typescript/typescript6`；SDK 与两个活跃插件示例直接使用 TypeScript 7 原生编译器。
+TypeScript 7 尚不提供同一稳定 API，不能用它替换 Vue 模板检查。
+参考[官方迁移说明](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/)和
+[vue-tsc 的兼容入口](https://github.com/vuejs/language-tools/blob/v3.3.12/packages/tsc/index.ts)。

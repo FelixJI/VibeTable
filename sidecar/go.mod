@@ -1,26 +1,28 @@
 module github.com/vibetable/vibetable/sidecar
 
-go 1.27.0
+go 1.27.1
 
 require (
-	filippo.io/age v1.3.1
+	cel.dev/cel-go v0.32.0
+	filippo.io/age v1.3.2
 	github.com/antlr4-go/antlr/v4 v4.13.1
+	github.com/fatih/color v1.19.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gabriel-vasile/mimetype v1.4.15
-	github.com/google/cel-go v0.31.0
 	github.com/google/uuid v1.6.0
 	github.com/kopia/kopia v0.23.1
 	github.com/pocketbase/dbx v1.12.0
 	github.com/pocketbase/ozzo-validation/v4 v4.3.0
-	github.com/pocketbase/pocketbase v0.40.1
+	github.com/pocketbase/pocketbase v0.40.4
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
-	golang.org/x/crypto v0.55.0
-	golang.org/x/net v0.58.0
-	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.41.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa
-	modernc.org/sqlite v1.57.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.59.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/text v0.42.0
+	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc
+	google.golang.org/protobuf v1.36.12
+	modernc.org/sqlite v1.60.1
 )
 
 require (
@@ -38,7 +40,6 @@ require (
 	github.com/domodwyer/mailyak/v3 v3.6.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/edsrzf/mmap-go v1.2.0 // indirect
-	github.com/fatih/color v1.19.0 // indirect
 	github.com/ganigeorgiev/fexpr v0.6.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -74,14 +75,13 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/image v0.45.0 // indirect
+	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260921155816-b14227669459 // indirect
 	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
-	modernc.org/libc v1.74.4 // indirect
+	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.12.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )

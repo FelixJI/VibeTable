@@ -126,7 +126,7 @@ def check_release_dependency_versions(repo_root: Path) -> list[str]:
     errors: list[str] = []
     for module, expected in (
         ("github.com/pocketbase/pocketbase", f"v{versions.pocketbase}"),
-        ("github.com/google/cel-go", f"v{versions.cel}"),
+        ("cel.dev/cel-go", f"v{versions.cel}"),
     ):
         match = re.search(
             rf"^\s*{re.escape(module)}\s+(v[^\s]+)(?:\s+//.*)?$",

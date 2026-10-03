@@ -535,3 +535,21 @@ def test_matrix_creates_schema_only_through_v2_lifecycle_and_field_change() -> N
     assert 'receipt["tableId"]' in source
     assert 'receipt["physicalName"]' not in source
     assert 'described["physicalName"]' not in source
+
+
+def test_sidecar_request_closes_http_error_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = io.BytesIO(b'{"error":"rejected"}')
+    error = matrix.urllib.error.HTTPError("http://127.0.0.1/rejected", 422, "rejected", {}, body)
+
+    def reject(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(matrix.urllib.request, "urlopen", reject)
+    sidecar = matrix.Sidecar(tmp_path / "sidecar.exe", tmp_path)
+    sidecar.address = "127.0.0.1:12345"
+    response = sidecar.request("GET", "/rejected", expected=422)
+    assert response.status == 422
+    assert response.body == b'{"error":"rejected"}'
+    assert body.closed

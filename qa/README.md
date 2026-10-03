@@ -45,8 +45,8 @@ Windows 上的 Go race detector 需要启用 cgo，并使用包含
 - `.tools/w64devkit/w64devkit/bin/gcc.exe`
 
 否则使用 `PATH` 中的 `gcc`。没有合格编译器时必须失败，不能把 race 标成
-跳过。当前验证基线是 w64devkit 2.8.0 x64（GCC 16.1.0），下载包 SHA-256：
-`6252bf34fe2231a55ac7f03d482b36d2c7c58697990551bba508102cfb3f342e`。
+跳过。当前验证基线是 w64devkit 2.10.0 x64（GCC 16.2.0），下载包 SHA-256：
+`18d0a4c71a166f8401ab6305781bec5882b40b5e06ba9807c61cb5f3b3c6325e`。
 Go 阶段只隔离 `GOTMPDIR`，不会覆盖调用者的 `GOCACHE`；CI 因而复用
 `setup-go` 恢复的默认 build cache，本地显式设置的缓存路径也会原样继承。
 

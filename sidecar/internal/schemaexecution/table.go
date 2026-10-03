@@ -129,8 +129,18 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 		return Table{}, fmt.Errorf("read table execution binding: %w", err)
 	}
 
-	initialSchemaRevision := initial.GetInt("schema_revision")
-	initialDataRevision := initial.GetInt("data_revision")
+	// Validate the same stored values used to build the projection, inside its
+	// read transaction. A pre-read by a caller can race with business writes.
+	initialSchemaRevision, err := ParseStoredRevision(initial.GetRaw("schema_revision"),
+		"schema.metadata.invalid_schema_revision", "schemaRevision")
+	if err != nil {
+		return Table{}, err
+	}
+	initialDataRevision, err := ParseStoredRevision(initial.GetRaw("data_revision"),
+		"schema.metadata.invalid_data_revision", "dataRevision")
+	if err != nil {
+		return Table{}, err
+	}
 	fieldRecords, err := executionRecords(ctx, app, db, "vibetable_fields",
 		dbx.NewExp("table_id={:table} AND lifecycle_state!='retired'", dbx.Params{"table": tableID}), "id")
 	if err != nil {
@@ -195,8 +205,8 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 		TableID:        tableID,
 		DisplayName:    initial.GetString("display_name"),
 		Kind:           kind,
-		SchemaRevision: v2.FormatSchemaRevision(int64(initialSchemaRevision)),
-		DataRevision:   int64(initialDataRevision),
+		SchemaRevision: v2.FormatSchemaRevision(initialSchemaRevision),
+		DataRevision:   initialDataRevision,
 		ArchivePolicy:  archivePolicy,
 		Capabilities:   capabilities,
 		Fields:         fields,
@@ -233,10 +243,10 @@ func describe(ctx context.Context, app core.App, db dbx.Builder, tableID string)
 	if err != nil {
 		return Table{}, fmt.Errorf("re-read table execution binding: %w", err)
 	}
-	if current.GetInt("schema_revision") != initialSchemaRevision ||
-		current.GetInt("data_revision") != initialDataRevision ||
+	if int64(current.GetInt("schema_revision")) != initialSchemaRevision ||
+		int64(current.GetInt("data_revision")) != initialDataRevision ||
 		snapshot.SchemaRevision != fmt.Sprintf("schema_%04d", initialSchemaRevision) ||
-		snapshot.DataRevision != int64(initialDataRevision) {
+		snapshot.DataRevision != initialDataRevision {
 		return Table{}, fmt.Errorf(
 			"schema.execution_revision_conflict: table %s changed while loading execution snapshot",
 			tableID,

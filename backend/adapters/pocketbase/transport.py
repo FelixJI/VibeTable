@@ -275,7 +275,7 @@ def _decode_response(status: int, raw: bytes, expected_status: tuple[int, ...]) 
         return None
     try:
         return json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except UnicodeDecodeError, json.JSONDecodeError:
         raise PocketBaseTransportError(
             "PocketBase returned invalid JSON",
             code="sidecar.invalid_response",
@@ -308,7 +308,7 @@ def _normalized_path(path: str) -> str:
 def _http_error(status: int, raw: bytes) -> Exception:
     try:
         payload = json.loads(raw) if raw and len(raw) <= _MAX_RESPONSE_BYTES else {}
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except UnicodeDecodeError, json.JSONDecodeError:
         payload = {}
     if isinstance(payload, dict) and isinstance(payload.get("code"), str):
         return PocketBaseProductError(status=status, payload=payload)
@@ -337,7 +337,7 @@ def _regular_file(raw_path: str) -> Path:
         return source
     except PocketBaseTransportError:
         raise
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         raise PocketBaseTransportError(
             "Managed attachment file is invalid",
             code="attachment.host_file_invalid",
@@ -355,7 +355,7 @@ def _output_file(raw_path: str) -> Path:
         if not parent.is_dir():
             raise OSError
         return parent / target.name
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         raise PocketBaseTransportError(
             "Managed attachment destination is invalid",
             code="attachment.host_target_invalid",
