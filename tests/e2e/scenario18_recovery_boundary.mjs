@@ -1,3 +1,6 @@
+import { waitForCapturedBridgeMessage } from "./bridge_capture_wait.mjs";
+import { installWorkspaceV2MethodTerminalCaptureInPage } from "./workspace_v2_method_terminal.mjs";
+
 // One fixed key intentionally permits only one live table capture per page.
 // Owner tokens make terminal reads and cleanup compare-and-act operations, so
 // a superseded flight cannot consume or release the capture that replaced it.
@@ -210,6 +213,106 @@ function readContentProjectionTerminalInPage({ knownRequestIds, expectedTypes })
 
 function sanitizedWaitError(message, evidence) {
   return new Scenario18RecoveryBoundaryError(message, evidence);
+}
+
+const RESOLVE_HIT_METHOD = "workspaceSearch.resolveHit";
+
+function stableEvidenceToken(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_.-]{1,80}$/u.test(value)
+    ? value
+    : null;
+}
+
+function readCaptureFailureInPage() {
+  const capture = window.__vibetableE2EBridgeCapture;
+  const stableToken = (value) => typeof value === "string"
+    && /^[A-Za-z0-9_.-]{1,80}$/u.test(value)
+    ? value
+    : null;
+  return {
+    method: stableToken(capture?.error?.method ?? capture?.method) ?? null,
+    code: stableToken(capture?.error?.code) ?? null,
+  };
+}
+
+/**
+ * Prove the keyboard Enter path really drove the renderer's authority
+ * resolution. The method-terminal capture binds to this run's outbound
+ * resolveHit identity (requestId + wire); only its correlated terminal may
+ * complete the wait, and the stale contract (ok terminal, status "stale",
+ * same authority target) must hold before the fault phase may begin. An
+ * unrelated reply, an owned failure terminal, or a non-stale outcome fails
+ * closed instead of being satisfied by any visible toast.
+ */
+export async function awaitStaleSearchHitResolution({
+  page,
+  triggerResolve,
+  expectedCanonicalId,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+}) {
+  if (typeof triggerResolve !== "function") {
+    throw new Error("stale SearchHit resolution requires a resolve trigger");
+  }
+  if (typeof expectedCanonicalId !== "string" || expectedCanonicalId.length === 0) {
+    throw new Error("stale SearchHit resolution requires the authority target identity");
+  }
+  await page.evaluate(installWorkspaceV2MethodTerminalCaptureInPage, {
+    method: RESOLVE_HIT_METHOD,
+  });
+  await triggerResolve();
+  let terminal;
+  try {
+    terminal = await waitForCapturedBridgeMessage(page, timeoutMs);
+  } catch {
+    const failure = await page.evaluate(readCaptureFailureInPage);
+    throw sanitizedWaitError("stale SearchHit resolution did not reach a terminal", failure);
+  }
+  const payload = terminal?.payload ?? null;
+  const result = payload?.result ?? null;
+  const resolved = result?.hit ?? null;
+  const requestId = stableEvidenceToken(terminal?.requestId);
+  if (terminal?.type !== "workspace.v2.response" || payload?.method !== RESOLVE_HIT_METHOD) {
+    throw sanitizedWaitError("stale SearchHit resolution failed", {
+      reason: "terminal_failed",
+      method: stableEvidenceToken(payload?.method) ?? stableEvidenceToken(terminal?.operation),
+      code: stableEvidenceToken(payload?.error?.code) ?? stableEvidenceToken(terminal?.code),
+      requestId,
+    });
+  }
+  if (payload.ok !== true) {
+    throw sanitizedWaitError("stale SearchHit resolution failed", {
+      reason: "resolve_failed",
+      code: stableEvidenceToken(payload.error?.code),
+      requestId,
+    });
+  }
+  if (result?.status !== "stale") {
+    throw sanitizedWaitError("stale SearchHit resolution failed", {
+      reason: "unexpected_status",
+      status: stableEvidenceToken(result?.status),
+      requestId,
+    });
+  }
+  if (typeof resolved?.canonicalId !== "string" || resolved.canonicalId.length === 0) {
+    throw sanitizedWaitError("stale SearchHit resolution failed", {
+      reason: "terminal_invalid",
+      requestId,
+    });
+  }
+  if (resolved.canonicalId !== expectedCanonicalId) {
+    throw sanitizedWaitError("stale SearchHit resolution targeted a different authority", {
+      reason: "authority_target_changed",
+      expectedCanonicalId: stableEvidenceToken(expectedCanonicalId),
+      actualCanonicalId: stableEvidenceToken(resolved.canonicalId),
+    });
+  }
+  return {
+    requestId,
+    status: result.status,
+    hitId: stableEvidenceToken(resolved.hitId),
+    canonicalId: resolved.canonicalId,
+    kind: stableEvidenceToken(resolved.kind),
+  };
 }
 
 async function awaitFreshTableProjection(page, tableId, triggerFreshTable, timeoutMs) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  awaitStaleSearchHitResolution,
   Scenario18RecoveryBoundaryError,
   runScenario18RecoveryBoundary,
 } from "./scenario18_recovery_boundary.mjs";
@@ -218,6 +219,223 @@ function datasetReady(table = "tbl-search") {
     payload: { table, rows: [{ privatePath: "C:\\secret" }] },
   };
 }
+
+function resolveWire(sequence = 3) {
+  return {
+    scope: "workspace",
+    workspaceId: "11111111-2222-4333-8444-555555555555",
+    sessionEpoch: 1,
+    operationId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    sequence,
+  };
+}
+
+function resolveHitRequest(requestId, wire, params = {}) {
+  return {
+    type: "workspace.v2.request",
+    requestId,
+    payload: { method: "workspaceSearch.resolveHit", params, wire },
+    wire,
+  };
+}
+
+function resolveHitResponse(requestId, wire, outcome) {
+  return {
+    type: "workspace.v2.response",
+    requestId,
+    payload: { method: "workspaceSearch.resolveHit", wire, ...outcome },
+    wire,
+  };
+}
+
+const staleOutcome = (canonicalId) => ({
+  ok: true,
+  result: {
+    status: "stale",
+    hit: { hitId: `hit-${canonicalId}-fresh`, kind: "record", canonicalId },
+  },
+});
+
+const resolveFailureOutcome = {
+  ok: false,
+  error: {
+    code: "workspace_search.internal_failed",
+    message: "workspace v2 request failed C:\\secret",
+    retryable: false,
+  },
+};
+
+test("stale resolution ignores an unrelated reply and completes on the owned stale terminal", async () => {
+  const page = new FakePage();
+  const ownedWire = resolveWire();
+  const run = awaitStaleSearchHitResolution({
+    page,
+    expectedCanonicalId: "record-1",
+    triggerResolve: async () => {
+      page.webview.emit(resolveHitResponse(
+        "request-older",
+        resolveWire(9),
+        staleOutcome("record-1"),
+      ));
+      page.webview.postMessage(resolveHitRequest("request-owned", ownedWire));
+      page.webview.emit(resolveHitResponse("request-owned", ownedWire, staleOutcome("record-1")));
+    },
+  });
+
+  assert.deepEqual(await run, {
+    requestId: "request-owned",
+    status: "stale",
+    hitId: "hit-record-1-fresh",
+    canonicalId: "record-1",
+    kind: "record",
+  });
+});
+
+test("stale resolution fails closed on this run's error terminal instead of passing on a toast", async () => {
+  const page = new FakePage();
+  const ownedWire = resolveWire();
+  const run = awaitStaleSearchHitResolution({
+    page,
+    expectedCanonicalId: "record-1",
+    triggerResolve: async () => {
+      page.webview.postMessage(resolveHitRequest("request-owned", ownedWire));
+      page.webview.emit(resolveHitResponse("request-owned", ownedWire, resolveFailureOutcome));
+    },
+  });
+
+  await assert.rejects(run, (error) => {
+    assert.ok(error instanceof Scenario18RecoveryBoundaryError);
+    assert.deepEqual(error.evidence, {
+      reason: "resolve_failed",
+      code: "workspace_search.internal_failed",
+      requestId: "request-owned",
+    });
+    assert.doesNotMatch(JSON.stringify(error), /workspace v2 request failed|secret/u);
+    return true;
+  });
+});
+
+test("stale resolution fails closed on an owned operation.failed terminal", async () => {
+  const page = new FakePage();
+  const ownedWire = resolveWire();
+  const run = awaitStaleSearchHitResolution({
+    page,
+    expectedCanonicalId: "record-1",
+    triggerResolve: async () => {
+      page.webview.postMessage(resolveHitRequest("request-owned", ownedWire));
+      page.webview.emit({
+        type: "operation.failed",
+        requestId: "request-owned",
+        payload: {
+          operation: "workspaceSearch.resolveHit",
+          code: "workspace_search.hit_missing",
+          message: "workspace v2 request failed C:\\secret",
+        },
+      });
+    },
+  });
+
+  await assert.rejects(run, (error) => {
+    assert.ok(error instanceof Scenario18RecoveryBoundaryError);
+    assert.deepEqual(error.evidence, {
+      reason: "terminal_failed",
+      method: "workspaceSearch.resolveHit",
+      code: "workspace_search.hit_missing",
+      requestId: "request-owned",
+    });
+    assert.doesNotMatch(JSON.stringify(error), /workspace v2 request failed|secret/u);
+    return true;
+  });
+});
+
+test("stale resolution rejects non-stale or retargeted terminals", async () => {
+  const page = new FakePage();
+  const ownedWire = resolveWire();
+  const currentRun = awaitStaleSearchHitResolution({
+    page,
+    expectedCanonicalId: "record-1",
+    triggerResolve: async () => {
+      page.webview.postMessage(resolveHitRequest("request-current", ownedWire));
+      page.webview.emit(resolveHitResponse("request-current", ownedWire, {
+        ok: true,
+        result: {
+          status: "current",
+          hit: { hitId: "hit-record-1-current", kind: "record", canonicalId: "record-1" },
+        },
+      }));
+    },
+  });
+  await assert.rejects(currentRun, (error) => {
+    assert.ok(error instanceof Scenario18RecoveryBoundaryError);
+    assert.deepEqual(error.evidence, {
+      reason: "unexpected_status",
+      status: "current",
+      requestId: "request-current",
+    });
+    return true;
+  });
+
+  const retargetedPage = new FakePage();
+  const retargetedWire = resolveWire();
+  const retargetedRun = awaitStaleSearchHitResolution({
+    page: retargetedPage,
+    expectedCanonicalId: "record-1",
+    triggerResolve: async () => {
+      retargetedPage.webview.postMessage(resolveHitRequest("request-other", retargetedWire));
+      retargetedPage.webview.emit(resolveHitResponse(
+        "request-other",
+        retargetedWire,
+        staleOutcome("record-2"),
+      ));
+    },
+  });
+  await assert.rejects(retargetedRun, (error) => {
+    assert.ok(error instanceof Scenario18RecoveryBoundaryError);
+    assert.deepEqual(error.evidence, {
+      reason: "authority_target_changed",
+      expectedCanonicalId: "record-1",
+      actualCanonicalId: "record-2",
+    });
+    return true;
+  });
+});
+
+test("stale resolution sanitizes a terminal timeout before the fault phase", async () => {
+  const page = new FakePage();
+  const ownedWire = resolveWire();
+  const timeout = new Error("playwright path C:\\secret");
+  timeout.name = "TimeoutError";
+  const run = awaitStaleSearchHitResolution({
+    page,
+    expectedCanonicalId: "record-1",
+    triggerResolve: async () => {
+      page.webview.postMessage(resolveHitRequest("request-owned", ownedWire));
+      page.nextWaitError = timeout;
+    },
+  });
+
+  await assert.rejects(run, (error) => {
+    assert.ok(error instanceof Scenario18RecoveryBoundaryError);
+    assert.deepEqual(error.evidence, {
+      method: "workspaceSearch.resolveHit",
+      code: "CAPTURE_RELEASED",
+    });
+    assert.doesNotMatch(JSON.stringify(error), /playwright|secret/u);
+    return true;
+  });
+});
+
+test("stale resolution requires a trigger and an authority target identity", async () => {
+  const page = new FakePage();
+  await assert.rejects(
+    awaitStaleSearchHitResolution({ page, triggerResolve: async () => {} }),
+    /requires the authority target identity/u,
+  );
+  await assert.rejects(
+    awaitStaleSearchHitResolution({ page, expectedCanonicalId: "record-1" }),
+    /requires a resolve trigger/u,
+  );
+});
 
 function armTableSelection(page) {
   page.webview.postMessage({

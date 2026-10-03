@@ -78,10 +78,19 @@ type Error struct {
 func (err *Error) Error() string { return err.Code }
 
 type Engine struct {
-	db         *sql.DB
+	db *sql.DB
+	// operations guards the engine lifecycle: Close takes it exclusively so
+	// no statement races with storage teardown.
 	operations sync.RWMutex
-	closeOnce  sync.Once
-	closeErr   error
+	// writes serializes the engine's own write transactions. SQLite allows
+	// one writer per file, and pooled connections do not inherit the
+	// per-connection busy_timeout PRAGMA, so two concurrent engine writers
+	// (for example the projection worker and a resolveHit refresh) would
+	// otherwise fail immediately with SQLITE_BUSY instead of queueing.
+	// Readers stay lock-free and concurrent through WAL.
+	writes    sync.Mutex
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // ProjectionCheckpoint binds one promoted search generation to the exact
@@ -215,6 +224,8 @@ func Normalize(value string) string {
 func (engine *Engine) Upsert(ctx context.Context, source SourceDocument) error {
 	engine.operations.RLock()
 	defer engine.operations.RUnlock()
+	engine.writes.Lock()
+	defer engine.writes.Unlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -316,6 +327,8 @@ func (engine *Engine) rebuildWithProgress(
 ) error {
 	engine.operations.RLock()
 	defer engine.operations.RUnlock()
+	engine.writes.Lock()
+	defer engine.writes.Unlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -376,6 +389,8 @@ func (engine *Engine) ApplyProjectionChanges(
 	}
 	engine.operations.RLock()
 	defer engine.operations.RUnlock()
+	engine.writes.Lock()
+	defer engine.writes.Unlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -620,6 +635,8 @@ func (engine *Engine) Tombstone(
 func (engine *Engine) Invalidate(ctx context.Context) error {
 	engine.operations.RLock()
 	defer engine.operations.RUnlock()
+	engine.writes.Lock()
+	defer engine.writes.Unlock()
 	tx, err := engine.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

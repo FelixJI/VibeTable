@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	contracts "github.com/vibetable/vibetable/sidecar/internal/contracts/workbench"
 )
@@ -1121,6 +1122,69 @@ func TestApplyProjectionChangesUpsertsAndTombstonesAffectedSourcesAtomically(t *
 		t.Fatalf("tombstoned hits = %#v", hits)
 	}
 	if actual, err := engine.ProjectionCheckpoint(ctx); err != nil || actual != checkpoint {
+		t.Fatalf("checkpoint = %#v, %v", actual, err)
+	}
+}
+
+// TestProjectionRefreshWaitsForInFlightProjectionWrite reproduces the S18
+// workspaceSearch.resolveHit failure shape: the 500ms projection worker and
+// a resolveHit refresh both promote projection changes through their own
+// pooled SQLite connections. Without single-writer coordination inside the
+// engine, the refresh hits the file write lock held by the in-flight
+// projection transaction and fails immediately, surfacing to the renderer as
+// a workspaceSearch.resolveHit operation failure.
+func TestProjectionRefreshWaitsForInFlightProjectionWrite(t *testing.T) {
+	engine := testEngine(t)
+	ctx := context.Background()
+	corpus := make([]SourceDocument, 0, 4000)
+	for index := 0; index < 4000; index++ {
+		corpus = append(corpus, source(
+			"file",
+			fmt.Sprintf("document-%04d", index),
+			fmt.Sprintf("rev-%04d", index),
+			fmt.Sprintf("Document %04d", index),
+			"projection rebuild corpus 离线数据工作台",
+			index == 0,
+		))
+	}
+	inFlight := make(chan struct{})
+	var progressOnce sync.Once
+	rebuildDone := make(chan error, 1)
+	go func() {
+		rebuildDone <- engine.RebuildProjection(
+			ctx, corpus, ProjectionCheckpoint{BusinessOutboxRowID: 1},
+			func(processed, total int) {
+				progressOnce.Do(func() { close(inFlight) })
+			},
+		)
+	}()
+	select {
+	case <-inFlight:
+	case <-time.After(30 * time.Second):
+		t.Fatal("projection write never reported progress")
+	}
+	table, record := "tbl_refresh", "record_refresh"
+	refreshed := source(
+		"record", table+":"+record, "rev-refresh",
+		"Refreshed authority title", "refresh body", true,
+	)
+	refreshed.TableID, refreshed.RecordID = &table, &record
+	refreshCheckpoint := ProjectionCheckpoint{
+		BusinessOutboxRowID: 2, MutationRevision: 7,
+	}
+	if err := engine.ApplyProjectionChanges(ctx, ProjectionChanges{
+		Records: []RecordProjectionKey{{TableID: table, RecordID: record}},
+		Sources: []SourceDocument{refreshed},
+	}, refreshCheckpoint); err != nil {
+		t.Fatalf("refresh during in-flight projection write: %v", err)
+	}
+	if err := <-rebuildDone; err != nil {
+		t.Fatalf("projection write: %v", err)
+	}
+	if hits := query(t, engine, request("refreshed")).Hits; len(hits) != 1 {
+		t.Fatalf("refreshed hits = %#v", hits)
+	}
+	if actual, err := engine.ProjectionCheckpoint(ctx); err != nil || actual != refreshCheckpoint {
 		t.Fatalf("checkpoint = %#v, %v", actual, err)
 	}
 }
