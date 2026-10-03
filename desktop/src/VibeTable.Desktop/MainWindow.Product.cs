@@ -360,6 +360,10 @@ public partial class MainWindow : Window
                 return await gateway.InvokePluginCatalogAsync(method, parameters, token).ConfigureAwait(false);
             },
             ensureGateway: EnsurePluginGatewayAsync,
+            sharedReadEmitGate: context => PluginRequestDispatcher.CaptureSharedReadEmitGate(
+                _workspaceSessions,
+                _workspaceSessionFilter,
+                context),
             packageCacheRoot: projectKey =>
             {
                 WorkspaceRegistryEntryV2? workspace = _runtime.CurrentWorkspace;

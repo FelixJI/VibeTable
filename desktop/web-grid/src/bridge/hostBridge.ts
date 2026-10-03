@@ -1104,7 +1104,10 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           }, requestTimeoutMs);
       pending.set(requestId, {
         retirementScope: (type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
-          || type === "settings.readWorkCalendar" || type === "lookup.query" || type.startsWith("command.") || type.startsWith("shortcut."))
+          || type === "settings.readWorkCalendar" || type === "lookup.query"
+          || type === "plugin.catalog.list" || type === "plugin.audit.list"
+          || type === "plugin.cleanup.listPending"
+          || type.startsWith("command.") || type.startsWith("shortcut."))
           && env.scope ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
           : undefined,
         messageType: type,

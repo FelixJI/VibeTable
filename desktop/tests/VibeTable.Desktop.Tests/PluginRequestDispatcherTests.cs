@@ -1,6 +1,7 @@
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -78,6 +79,326 @@ public sealed class PluginRequestDispatcherTests
             if (switchContext) Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
             else Assert.AreEqual("plugin.action.describe", reply.ResponseType);
         }
+    }
+
+    [TestMethod]
+    [DataRow("error")]
+    [DataRow("success")]
+    [DataRow("invalid-catalog")]
+    public async Task SharedReadTerminalAfterSessionRetirementIsNotReplied(string terminal)
+    {
+        var reply = new RecordingReplySink();
+        var traces = new List<string>();
+        var (manager, filter, root) = await OpenRetirementSessionAsync();
+        try
+        {
+            PluginProjectContext context = PluginProjectContext.FromSession(manager.Current)!;
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            var pending = new TaskCompletionSource<JsonElement>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            using var dispatcher = new PluginRequestDispatcher(
+                reply,
+                surfaces,
+                new FakePluginPackageSourcePicker(null),
+                resources,
+                filePicker: null,
+                githubSource: null,
+                diagnosticTrace: traces.Add,
+                projectContext: () => context,
+                sharedRpc: (_, _, _) => pending.Task,
+                sharedReadEmitGate: captured => PluginRequestDispatcher.CaptureSharedReadEmitGate(manager, filter, captured));
+
+            Task reading = dispatcher.DispatchAsync(Request(
+                "plugin.catalog.list",
+                "catalog-retired",
+                $$"""{"projectKey":"{{context.ProjectKey}}"}"""));
+            // A regular close publishes Switching/Draining synchronously before
+            // its drain, so the emission gate is already retired when the
+            // in-flight terminal settles.
+            await manager.CloseAsync("retire-shared-read");
+            switch (terminal)
+            {
+                case "error":
+                    pending.SetException(new OperationCanceledException());
+                    break;
+                case "success":
+                    pending.SetResult(JsonSerializer.SerializeToElement(
+                        Array.Empty<PluginRuntimeSnapshot>()));
+                    break;
+                default:
+                    pending.SetResult(JsonSerializer.SerializeToElement(
+                        new { notACatalog = true }));
+                    break;
+            }
+            await reading.WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.IsNull(reply.FailureCode);
+            Assert.IsNull(reply.ResponseType);
+            Assert.IsNull(reply.RequestId);
+            Assert.IsTrue(traces.Any(trace =>
+                trace.Contains("dropped as retired", StringComparison.Ordinal)));
+            // Host-owned task queries are never retired with the session.
+            await dispatcher.DispatchAsync(Request(
+                "plugin.task.get",
+                "task-after-retirement",
+                """{"taskId":"missing"}"""));
+            Assert.AreEqual("PLUGIN_TASK_NOT_FOUND", reply.FailureCode);
+            Assert.AreEqual("task-after-retirement", reply.RequestId);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task SharedReadCurrentFailureEmitsOriginalCodeOnceThroughGate()
+    {
+        var reply = new RecordingReplySink();
+        var traces = new List<string>();
+        var (manager, filter, root) = await OpenRetirementSessionAsync();
+        try
+        {
+            PluginProjectContext context = PluginProjectContext.FromSession(manager.Current)!;
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(
+                reply,
+                surfaces,
+                new FakePluginPackageSourcePicker(null),
+                resources,
+                filePicker: null,
+                githubSource: null,
+                diagnosticTrace: traces.Add,
+                projectContext: () => context,
+                sharedRpc: (_, _, _) => Task.FromException<JsonElement>(
+                    new OperationCanceledException()),
+                sharedReadEmitGate: captured => PluginRequestDispatcher.CaptureSharedReadEmitGate(manager, filter, captured));
+
+            await dispatcher.DispatchAsync(Request(
+                "plugin.catalog.list",
+                "catalog-current-gate",
+                $$"""{"projectKey":"{{context.ProjectKey}}"}"""));
+
+            Assert.AreEqual("PLUGIN_OPERATION_FAILED", reply.FailureCode);
+            Assert.AreEqual("catalog-current-gate", reply.RequestId);
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "Plugin request failed; type=plugin.catalog.list; " +
+                    "exception=OperationCanceledException",
+                },
+                traces);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task UnguardedSharedReadKeepsStaleFailureAfterContextChange()
+    {
+        var reply = new RecordingReplySink();
+        PluginProjectContext context = ReadyContext();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pending = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: () => context,
+            sharedRpc: (_, _, _) => pending.Task);
+
+        Task reading = dispatcher.DispatchAsync(Request(
+            "plugin.catalog.list",
+            "catalog-stale-unguarded",
+            """{"projectKey":"project-1"}"""));
+        context = context with { SessionGeneration = 2 };
+        pending.SetResult(JsonSerializer.SerializeToElement(
+            new[] { FakePluginGateway.DefaultSnapshot }));
+        await reading.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
+        Assert.AreNotEqual("plugin.catalog.list", reply.ResponseType);
+    }
+
+    [TestMethod]
+    public async Task UnguardedSharedReadCurrentInvalidCatalogKeepsBadPayload()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromResult(
+                JsonSerializer.SerializeToElement(new { notACatalog = true })));
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.catalog.list",
+            "catalog-unguarded-json",
+            """{"projectKey":"project-1"}"""));
+
+        Assert.AreEqual("BAD_PAYLOAD", reply.FailureCode);
+        Assert.AreEqual("catalog-unguarded-json", reply.RequestId);
+    }
+
+    /// <summary>
+    /// Opens a real manager-backed session so the production emission gate —
+    /// TryUseCurrentSession under the publication lock — decides every guarded
+    /// terminal, mirroring the MainWindow wiring.
+    /// </summary>
+    internal static async Task<(WorkspaceSessionManager Manager, WorkspaceSessionEnvelopeFilter Filter, string Root)>
+        OpenRetirementSessionAsync(IWorkspaceProtectionHook? protection = null)
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"vibetable-plugin-retirement-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var registry = new WorkspaceRegistry(root);
+        string workspaceRoot = Path.Combine(root, "workspace");
+        WorkspaceLayoutResult layout = WorkspaceLayout.Create(
+            workspaceRoot,
+            "Retirement Gate",
+            WorkspaceStorageMode.Direct,
+            WorkspaceEncryptionMode.Convenient);
+        Guid workspaceId = layout.Manifest.WorkspaceId;
+        registry.Register(new WorkspaceRegistryEntryV2
+        {
+            ContractVersion = WorkspaceV2Json.ContractVersion,
+            WorkspaceId = workspaceId,
+            DisplayName = layout.Manifest.DisplayName,
+            SelectedRoot = workspaceRoot,
+            ActivityRoot = null,
+            StorageKind = WorkspaceStorageKind.Fixed,
+            CoordinationStrength = WorkspaceCoordinationStrength.Strong,
+            LastOpenedAt = null,
+            LastKnownHealth = WorkspaceHealth.Healthy,
+            LastSnapshotAt = null,
+            LastSyncAt = null,
+            PendingSync = false,
+        });
+        var manager = new WorkspaceSessionManager(
+            registry,
+            new GateRuntimeFactory(),
+            protection);
+        // Mirror the MainWindow bootstrap wiring: the real envelope filter is
+        // the manager's request-drain hook, so capture/drain/resume behave
+        // exactly as in production.
+        var filter = new WorkspaceSessionEnvelopeFilter(manager);
+        manager.SetRequestDrainHook(filter);
+        _ = await manager.OpenAsync(workspaceId, WorkspaceOpenMode.Writable);
+        Assert.AreEqual(WorkspaceSessionPhase.Idle, manager.Current.Phase);
+        return (manager, filter, root);
+    }
+
+    internal sealed class FailingProtectionHook : IWorkspaceProtectionHook
+    {
+        public Task ProtectAsync(
+            Guid workspaceId,
+            ulong sessionEpoch,
+            string reason,
+            CancellationToken cancellationToken)
+            => throw new InvalidOperationException("injected protection failure");
+    }
+
+    private sealed class GateRuntimeFactory : IWorkspaceRuntimeFactory
+    {
+        public IWorkspaceRuntime Create(
+            WorkspaceRegistryEntryV2 workspace,
+            ulong sessionEpoch)
+            => new Runtime(workspace.WorkspaceId, sessionEpoch);
+
+        private sealed class Runtime(Guid workspaceId, ulong sessionEpoch) : IWorkspaceRuntime
+        {
+            public Guid WorkspaceId { get; } = workspaceId;
+            public ulong SessionEpoch { get; } = sessionEpoch;
+            public Task StartAsync(
+                WorkspaceOpenMode mode,
+                WorkspaceActivationBudget budget) => Task.CompletedTask;
+            public Task VerifyAsync(WorkspaceActivationBudget budget) => Task.CompletedTask;
+            public Task DrainAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+            public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    [TestMethod]
+    public async Task SharedReadFailureInCurrentScopeStillReportsTheOriginalFailureCode()
+    {
+        var reply = new RecordingReplySink();
+        var traces = new List<string>();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: null,
+            diagnosticTrace: traces.Add,
+            projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromException<JsonElement>(
+                new OperationCanceledException()));
+        dispatcher.SetProjectContext(ReadyContext());
+
+        await dispatcher.DispatchAsync(Request(
+            "plugin.catalog.list",
+            "catalog-current-oce",
+            """{"projectKey":"project-1"}"""));
+
+        Assert.AreEqual("PLUGIN_OPERATION_FAILED", reply.FailureCode);
+        Assert.AreEqual("catalog-current-oce", reply.RequestId);
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                "Plugin request failed; type=plugin.catalog.list; " +
+                "exception=OperationCanceledException",
+            },
+            traces);
+    }
+
+    [TestMethod]
+    public async Task SharedLifecycleWriteKeepsItsStaleFailureAfterContextRotation()
+    {
+        var reply = new RecordingReplySink();
+        PluginProjectContext context = ReadyContext();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pending = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var dispatcher = new PluginRequestDispatcher(
+            reply,
+            surfaces,
+            new FakePluginPackageSourcePicker(null),
+            resources,
+            filePicker: null,
+            githubSource: null,
+            projectContext: () => context,
+            sharedRpc: (_, _, _) => pending.Task);
+        dispatcher.SetProjectContext(ReadyContext());
+
+        Task writing = dispatcher.DispatchAsync(Request(
+            "plugin.lifecycle.setEnabled",
+            "set-enabled-stale",
+            """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+        context = context with { SessionGeneration = 2 };
+        dispatcher.SetProjectContext(context);
+        pending.SetResult(JsonSerializer.SerializeToElement(FakePluginGateway.DefaultSnapshot));
+        await writing.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
     }
 
     [TestMethod]

@@ -905,6 +905,68 @@ def test_windows_tempdir_cleanup_retry_never_matches_data_race(
     )
 
 
+@pytest.mark.parametrize(
+    "toolchain_failure",
+    [
+        "fatal error: out of memory\n",
+        "[build failed]\n",
+        "fork/exec C:\\go\\compile.exe: Access is denied.\n",
+        "The paging file is too small for this operation to be completed.\n",
+    ],
+)
+def test_windows_tempdir_cleanup_retry_never_matches_mixed_toolchain_failure(
+    monkeypatch,
+    toolchain_failure: str,
+) -> None:
+    monkeypatch.setattr(next_gate.os, "name", "nt")
+    cleanup = (
+        "--- FAIL: TestExample\n"
+        "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
+        "The directory is not empty.\n"
+    )
+
+    assert not next_gate._is_windows_tempdir_cleanup_flake(cleanup + toolchain_failure)
+
+
+@pytest.mark.parametrize("stage", ["go-test", "go-coverage"])
+def test_go_stage_never_retries_mixed_cleanup_and_toolchain_failure(
+    monkeypatch,
+    stage: str,
+) -> None:
+    monkeypatch.setattr(next_gate.os, "name", "nt")
+    monkeypatch.setattr(
+        next_gate,
+        "stage_command",
+        lambda _stage, package_root=None: (["go", "test", "./..."], "repo"),
+    )
+    monkeypatch.setattr(
+        next_gate,
+        "_stage_environment",
+        lambda _stage, _command, package_root=None: {},
+    )
+    calls = 0
+
+    def run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return (
+            1,
+            "--- FAIL: TestExample\n"
+            "    testing.go:1464: TempDir RemoveAll cleanup: unlinkat path: "
+            "The directory is not empty.\n"
+            "fatal error: out of memory\n",
+            "fork/exec C:\\go\\pkg\\tool\\compile.exe: The paging file is too small "
+            "for this operation to be completed.\n",
+        )
+
+    monkeypatch.setattr(next_gate, "_run_command", run)
+    result = next_gate.run_stage(stage)
+
+    assert result.returncode == 1
+    assert calls == 1
+    assert "attempt 2/3" not in result.stdout
+
+
 def test_fault_injection_evidence_uses_isolated_gate_temp(
     monkeypatch,
     tmp_path: Path,

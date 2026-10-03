@@ -126,11 +126,15 @@ describe("HostBridge", () => {
       bridge.start();
       const retired = vi.fn();
       window.addEventListener("vibetable:bridge-request-retired", retired);
+      const pluginProjectKey = "local:1111111111114111811111111111111";
       const requests = [
         bridge.request("dashboard.listRequested", {}),
         bridge.request("dashboard.manifestRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("lookup.query", lookupQueryPayload()),
+        bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
+        bridge.request("plugin.audit.list", { projectKey: pluginProjectKey, pluginId: "com.acme.clean" }),
+        bridge.request("plugin.cleanup.listPending", { projectKey: pluginProjectKey }),
       ].map(promise => promise.catch(error => error));
       if (retirementTrigger === "closeSession") {
         session.closeSession();
@@ -152,7 +156,7 @@ describe("HostBridge", () => {
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
       for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-      expect(retired).toHaveBeenCalledTimes(4);
+      expect(retired).toHaveBeenCalledTimes(7);
       const lookupEnvelope = webview.postMessage.mock.calls
         .map(call => call[0] as BridgeMessage)
         .find(message => message.type === "lookup.query");
@@ -161,6 +165,18 @@ describe("HostBridge", () => {
         detail: {
           requestId: lookupEnvelope!.requestId,
           requestType: "lookup.query",
+          workspaceId: "11111111-1111-4111-8111-111111111111",
+          sessionEpoch: 7,
+        },
+      }));
+      const catalogEnvelope = webview.postMessage.mock.calls
+        .map(call => call[0] as BridgeMessage)
+        .find(message => message.type === "plugin.catalog.list");
+      expect(catalogEnvelope?.requestId).toEqual(expect.any(String));
+      expect(retired).toHaveBeenCalledWith(expect.objectContaining({
+        detail: {
+          requestId: catalogEnvelope!.requestId,
+          requestType: "plugin.catalog.list",
           workspaceId: "11111111-1111-4111-8111-111111111111",
           sessionEpoch: 7,
         },
