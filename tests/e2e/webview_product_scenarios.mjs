@@ -54,7 +54,10 @@ import { seedFileRestoreCrash, resumeFileRestoreCrash, requireRestoreCrashCheckp
   from "./file_restore_crash_journey.mjs";
 import { COMBINATION_DOCX, COMBINATION_XLSX, FILE_WORKFLOW_FINAL_CALCULATION_ORACLE,
   fileWorkflowCombinationBeforeCorpus, fileWorkflowCombinationSources, fileWorkflowHasCurrentBinding } from "./file_workflow_combination.mjs";
-import { runScenario18RecoveryBoundary } from "./scenario18_recovery_boundary.mjs";
+import {
+  awaitStaleSearchHitResolution,
+  runScenario18RecoveryBoundary,
+} from "./scenario18_recovery_boundary.mjs";
 import { installTableMutationReceiptCaptureInPage } from "./table_mutation_receipt_capture.mjs";
 import { selectSeededReplicaConflict, requireResolvedReplicaConflict }
   from "./directory_replica_conflict_ui.mjs";
@@ -9582,7 +9585,11 @@ async function scenario18(page, recorder, _network, runtime) {
   await page.getByTestId("workspace-search-scope-current").check();
   await page.getByTestId("workspace-search-filter-extension").locator("input").fill("");
   await workspace.locator(".segmented button", { hasText: "AND" }).click();
-  await submitWorkspaceSearch(page);
+  const staleBaseline = await submitWorkspaceSearch(page);
+  const staleRecordHit = staleBaseline.hits.find((candidate) => candidate.kind === "record");
+  if (!staleRecordHit?.canonicalId) {
+    throw new Error(`stale SearchHit setup lacks a record target: ${JSON.stringify(staleBaseline)}`);
+  }
   const staleRecord = page.locator(
     '[data-testid="workspace-search-result"][data-kind="record"]',
   ).first();
@@ -9633,7 +9640,17 @@ async function scenario18(page, recorder, _network, runtime) {
         ?.[titleField.physicalName] === "E2E searchable record changed",
   { staleBeforeRevision, staleAfterRevision, staleMutation, staleAfter });
   await staleRecord.focus();
-  await staleRecord.press("Enter");
+  const staleResolution = await awaitStaleSearchHitResolution({
+    page,
+    triggerResolve: async () => {
+      await staleRecord.press("Enter");
+    },
+    expectedCanonicalId: staleRecordHit.canonicalId,
+  });
+  recorder.check("keyboard opening a stale SearchHit resolves the same authority target",
+    staleResolution.status === "stale"
+      && staleResolution.canonicalId === staleRecordHit.canonicalId,
+  { staleResolution, expectedCanonicalId: staleRecordHit.canonicalId });
   const staleMessage = page.locator(".n-message").last();
   await staleMessage.waitFor({ state: "visible", timeout: 30_000 });
   const staleMessageText = (await staleMessage.innerText()).trim();
@@ -9650,6 +9667,22 @@ async function scenario18(page, recorder, _network, runtime) {
 
   const freshTableName = page.getByTestId("sidebar-table-name")
     .filter({ hasText: "E2E Search Records" });
+  // S7-aligned pre-kill guard: the destructive fault phase may only start from
+  // a quiescent bridge. Any recorded failure (including workspace_search ones)
+  // fails closed here; nothing is dropped, acknowledged, or whitelisted.
+  const bridgeBeforeSearchRestart = await waitForBridgeDiagnosticsToSettle(page);
+  const failuresBeforeSearchRestart = bridgeBeforeSearchRestart?.failures ?? [];
+  const pendingBeforeSearchRestart = bridgeBeforeSearchRestart?.pending ?? [];
+  recorder.check(
+    "workspace search restart begins from a quiescent bridge",
+    bridgeBeforeSearchRestart !== null
+      && failuresBeforeSearchRestart.length === 0
+      && pendingBeforeSearchRestart.length === 0,
+    {
+      failures: failuresBeforeSearchRestart,
+      pending: pendingBeforeSearchRestart,
+    },
+  );
   const recovery = await runScenario18RecoveryBoundary({
     page,
     tableId,
