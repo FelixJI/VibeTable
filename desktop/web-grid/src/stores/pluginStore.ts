@@ -67,6 +67,12 @@ export const usePluginStore = defineStore("plugins", () => {
       actionOpen.value = false;
       busy.value = false;
       lastError.value = null;
+    } else {
+      // A same-key reopen rotates the generation: the previous generation's
+      // busy/error state is settled synchronously here, and its late
+      // terminals stay inert against the new generation in the service.
+      busy.value = false;
+      lastError.value = null;
     }
     projectKey.value = key;
     projectRevision.value = revision;
@@ -77,6 +83,10 @@ export const usePluginStore = defineStore("plugins", () => {
     if (!projectContextReady.value || projectRevision.value === revision) return false;
     projectRevision.value = revision;
     projectContextGeneration.value += 1;
+    // The in-place revision advance rotates the generation like a same-key
+    // reopen: settle the previous generation's busy/error synchronously.
+    busy.value = false;
+    lastError.value = null;
     return true;
   }
 

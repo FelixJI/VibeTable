@@ -34,4 +34,58 @@ public interface IWebReplySink
         string? code = null,
         string? operation = null,
         string? operationId = null);
+
+    /// <summary>
+    /// Guarded correlated reply. The transport must invoke
+    /// <paramref name="emitGate"/> with a synchronous commit callback at the
+    /// actual emission moment — not merely when the reply is enqueued — so the
+    /// scope check and the real post commit atomically against whatever the
+    /// gate serializes on (e.g. workspace session publication). A null gate
+    /// emits unconditionally. Synchronous sinks inherit the default commit
+    /// below; async transports MUST override so the guard rides the UI queue
+    /// callback that performs the real post.
+    /// </summary>
+    bool TryPostResponse(
+        string type,
+        string? requestId,
+        object? payload,
+        Func<Func<bool>, bool>? emitGate = null)
+    {
+        if (emitGate is null)
+        {
+            PostResponse(type, requestId, payload);
+            return true;
+        }
+        return emitGate(() =>
+        {
+            PostResponse(type, requestId, payload);
+            return true;
+        });
+    }
+
+    /// <summary>
+    /// Guarded <c>operation.failed</c> reply with the same emission-gate
+    /// contract as <see cref="TryPostResponse"/>. Async transports MUST
+    /// override; the default commits synchronously like the legacy
+    /// <see cref="PostOperationFailed"/>.
+    /// </summary>
+    bool TryPostOperationFailed(
+        string? requestId,
+        string message,
+        string? code = null,
+        string? operation = null,
+        string? operationId = null,
+        Func<Func<bool>, bool>? emitGate = null)
+    {
+        if (emitGate is null)
+        {
+            PostOperationFailed(requestId, message, code, operation, operationId);
+            return true;
+        }
+        return emitGate(() =>
+        {
+            PostOperationFailed(requestId, message, code, operation, operationId);
+            return true;
+        });
+    }
 }

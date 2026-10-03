@@ -36,6 +36,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly HostPluginTaskRegistry _taskRegistry;
     private readonly ProductAuthorityEpoch _authority;
     private readonly bool _ownsAuthority;
+    private readonly Func<PluginProjectContext, Func<Func<bool>, bool>>? _sharedReadEmitGate;
     private IPluginRpcGateway? _gateway;
     private Action<PluginEventEnvelope>? _taskChangedHandler;
     private Action<PluginEventEnvelope>? _interactionRequestedHandler;
@@ -82,7 +83,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         ProductAuthorityEpoch? authority = null,
         Func<string, JsonElement, CancellationToken, Task<JsonElement>>? sharedRpc = null,
         Func<string, string?>? packageCacheRoot = null,
-        Func<CancellationToken, Task>? ensureGateway = null)
+        Func<CancellationToken, Task>? ensureGateway = null,
+        Func<PluginProjectContext, Func<Func<bool>, bool>>? sharedReadEmitGate = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
@@ -97,6 +99,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         _ensureGateway = ensureGateway;
         _authority = authority ?? new ProductAuthorityEpoch();
         _ownsAuthority = authority is null;
+        _sharedReadEmitGate = sharedReadEmitGate;
         _installLeases = new HostInstallPlanLeaseRegistry(_authority);
         _taskRegistry = new HostPluginTaskRegistry(_authority);
     }
@@ -200,18 +203,53 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 PluginProjectContext? context = _projectContext();
                 if (context is null) throw new PluginDispatchException("PLUGIN_NOT_READY", "Plugin project context is unavailable.");
-                JsonElement shared = await (_sharedRpc ?? throw new PluginDispatchException(
-                    "PLUGIN_NOT_READY", "Plugin catalog is not available for the current project."))
-                    (sharedMethod, request.Payload, token).ConfigureAwait(false);
-                if (context != _projectContext()) throw StaleTask();
-                object projected = sharedMethod switch
+                Func<string, JsonElement, CancellationToken, Task<JsonElement>> sharedRpc = _sharedRpc
+                    ?? throw new PluginDispatchException(
+                        "PLUGIN_NOT_READY", "Plugin catalog is not available for the current project.");
+                // The three shared reads settle through the workspace session
+                // emission gate: the gate runs the actual reply commit under
+                // the session publication lock, so a scope retired by a close
+                // or epoch rotation can never emit a late terminal while the
+                // renderer has already settled the request locally. The
+                // setEnabled write keeps its stale-failure semantics and every
+                // non-shared path keeps its existing replies. Without a
+                // production gate (standalone construction) the sink's
+                // synchronous default commits exactly as before.
+                bool sharedRead = sharedMethod is not "plugin.setEnabled";
+                Func<Func<bool>, bool>? emitGate = sharedRead
+                    ? GateSharedReadTerminal(request.Type, context)
+                    : null;
+                JsonElement shared;
+                object projected;
+                try
                 {
-                    "plugin.listCatalog" => (shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
-                        ?? throw new JsonException("Invalid plugin catalog.")).Select(ProjectSnapshot).ToArray(),
-                    "plugin.setEnabled" => ProjectSnapshot(shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions)
-                        ?? throw new JsonException("Invalid plugin snapshot.")),
-                    _ => shared,
-                };
+                    shared = await sharedRpc(sharedMethod, request.Payload, token).ConfigureAwait(false);
+                    // Ungated paths (standalone/public construction) keep the
+                    // original stale reply for a rotated context; gated reads
+                    // rely on the session emission gate instead.
+                    if (context != _projectContext() && (!sharedRead || emitGate is null)) throw StaleTask();
+                    projected = sharedMethod switch
+                    {
+                        "plugin.listCatalog" => (shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
+                            ?? throw new JsonException("Invalid plugin catalog.")).Select(ProjectSnapshot).ToArray(),
+                        "plugin.setEnabled" => ProjectSnapshot(shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions)
+                            ?? throw new JsonException("Invalid plugin snapshot.")),
+                        _ => shared,
+                    };
+                }
+                catch (Exception ex) when (emitGate is not null)
+                {
+                    // Every shared-read failure — RPC, cancellation, JSON and
+                    // projection included — maps to its original code but only
+                    // commits through the emission gate.
+                    PostSharedReadFailure(request, ex, token, emitGate);
+                    return;
+                }
+                if (sharedRead)
+                {
+                    _reply.TryPostResponse(request.Type, request.RequestId, projected, emitGate);
+                    return;
+                }
                 _reply.PostResponse(request.Type, request.RequestId, projected);
                 return;
             }
@@ -721,6 +759,130 @@ public sealed class PluginRequestDispatcher : IDisposable
     private static PluginDispatchException StaleTask() => new(
         "PLUGIN_TASK_STALE",
         "Plugin task belongs to a retired project session.");
+
+    private Func<Func<bool>, bool>? GateSharedReadTerminal(
+        string requestType,
+        PluginProjectContext context)
+    {
+        if (_sharedReadEmitGate is null) return null;
+        Func<Func<bool>, bool> gate = _sharedReadEmitGate(context);
+        return post =>
+        {
+            if (gate(post)) return true;
+            SafeDiagnosticTrace(
+                $"Plugin shared read terminal was dropped as retired at emit; " +
+                $"type={requestType}");
+            return false;
+        };
+    }
+
+    /// <summary>
+    /// Captures the shared-read emission gate for one request admission.
+    /// The host epoch lease is taken inside the publication gate; its token is
+    /// copied and the observer disposed immediately so a close drain never
+    /// waits for the queued terminal. The terminal commits only when,
+    /// atomically under the publication gate, the copied token is still
+    /// uncancelled AND the admitting (workspace, epoch) is the current opened
+    /// Idle session: a close drain permanently cancels the old token and a
+    /// protection-failure rollback resumes the same UUID/epoch with a fresh
+    /// token, so an old terminal can never revive. A failed capture rejects
+    /// the gate outright — never a null fallback.
+    /// </summary>
+    internal static Func<Func<bool>, bool> CaptureSharedReadEmitGate(
+        WorkspaceSessionManager sessions,
+        WorkspaceSessionEnvelopeFilter filter,
+        PluginProjectContext context)
+    {
+        string key = context.ProjectKey;
+        if (key.Length <= "local:".Length
+            || !key.StartsWith("local:", StringComparison.Ordinal)
+            || !Guid.TryParseExact(key.AsSpan("local:".Length), "N", out Guid workspaceId))
+        {
+            return _ => false;
+        }
+        ulong epoch = context.SessionGeneration;
+        CancellationToken capturedToken = default;
+        bool admitted = sessions.TryUseCurrentSession(
+            workspaceId,
+            epoch,
+            () =>
+            {
+                if (!filter.TryCaptureHost(
+                        workspaceId,
+                        epoch,
+                        Guid.NewGuid(),
+                        out WorkspaceRequestEpochLease? lease)
+                    || lease is null)
+                {
+                    return false;
+                }
+                // Copy the epoch token, then release the observer immediately:
+                // only the copied token's cancellation state is read later,
+                // never the disposed lease.
+                capturedToken = lease.CancellationToken;
+                lease.Dispose();
+                return true;
+            });
+        if (!admitted)
+        {
+            return _ => false;
+        }
+        // The token check lives INSIDE the publication action: checking it
+        // outside the lock would let a paused caller observe an uncancelled
+        // token, then drain-cancel, then a same-UUID/epoch rollback resume,
+        // and only then acquire and emit a revived late terminal.
+        return post => sessions.TryUseCurrentSession(
+            workspaceId,
+            epoch,
+            () => !capturedToken.IsCancellationRequested && post());
+    }
+
+    /// <summary>
+    /// Maps a shared-read failure exactly like the unguarded dispatch catches
+    /// and commits it only through the session emission gate, so the original
+    /// code stays visible for a current scope while a retired scope emits
+    /// nothing.
+    /// </summary>
+    private void PostSharedReadFailure(
+        RoutedWebRequest request,
+        Exception exception,
+        CancellationToken token,
+        Func<Func<bool>, bool> emitGate)
+    {
+        string message;
+        string? code;
+        switch (exception)
+        {
+            case JsonException:
+                message = "Plugin request payload is invalid.";
+                code = "BAD_PAYLOAD";
+                break;
+            case PluginDispatchException dispatch:
+                message = dispatch.Message;
+                code = dispatch.Code;
+                break;
+            case GitHubPluginSourceException github:
+                message = github.Message;
+                code = github.Code;
+                break;
+            case OperationCanceledException when token.IsCancellationRequested:
+                message = "Plugin request was cancelled.";
+                code = "PLUGIN_REQUEST_CANCELLED";
+                break;
+            default:
+                message = "Plugin operation failed.";
+                code = "PLUGIN_OPERATION_FAILED";
+                SafeTrace(() => Trace.TraceError(DiagnosticEvent.Failure(
+                    "VibeTable.Desktop.PluginRequestDispatcher",
+                    request.Type,
+                    exception.GetType().Name)));
+                SafeDiagnosticTrace(
+                    $"Plugin request failed; type={request.Type}; " +
+                    $"exception={exception.GetType().Name}");
+                break;
+        }
+        _reply.TryPostOperationFailed(request.RequestId, message, code, emitGate: emitGate);
+    }
 
     private static PluginDispatchException UnknownTask() => new(
         "PLUGIN_TASK_NOT_FOUND",

@@ -1077,6 +1077,15 @@ def _is_windows_tempdir_cleanup_flake(output: str) -> bool:
         return False
     if "WARNING: DATA RACE" in output or "panic:" in output:
         return False
+    if any(
+        marker in output
+        for marker in ("fatal error:", "[build failed]", "fork/exec", "paging file")
+    ):
+        # Mixed output also carries a toolchain failure (out-of-memory
+        # abort, failed build, or a paging-file spawn error). Those are never
+        # the cleanup race and must fail closed instead of consuming the
+        # bounded cleanup retries.
+        return False
     if "TempDir RemoveAll cleanup:" not in output:
         return False
     if "The directory is not empty" not in output:

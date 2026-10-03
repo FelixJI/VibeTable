@@ -15,6 +15,7 @@ import type {
   WebPluginActionDescription,
 } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
+import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 import { usePluginStore } from "@/stores/pluginStore";
 import {
   PluginInstallPlanLease,
@@ -135,18 +136,26 @@ export function usePluginService(): PluginService {
     payload: WebPayloadMap[K],
     options: { readonly errorPolicy?: RequestErrorPolicy } = {},
   ): Promise<T> {
-    ensureProjectReady();
+    const context = ensureProjectReady();
+    const isCurrentContext = () => store.projectKey === context.projectKey
+      && store.projectContextGeneration === context.generation;
     const errorPolicy = options.errorPolicy ?? "foreground";
     store.startBusy(errorPolicy === "foreground");
     try {
       const result = await bridge.request(type, payload);
-      store.finishBusy();
+      if (isCurrentContext()) store.finishBusy();
       return result as T;
     } catch (error) {
-      if (errorPolicy === "foreground") {
-        store.fail(error);
-      } else {
-        store.failIfNoError(error);
+      // A late terminal from a retired generation must not fail or un-busy
+      // the next project context; the scope/reset lifecycle settles it. The
+      // local retirement of a draining workspace read is not a current user
+      // failure either. Everything else keeps its original visibility.
+      if (isCurrentContext() && !(error instanceof BridgeRequestRetiredError)) {
+        if (errorPolicy === "foreground") {
+          store.fail(error);
+        } else {
+          store.failIfNoError(error);
+        }
       }
       throw error;
     }

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { createHostBridge } from "@/bridge/hostBridge";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type { PluginSnapshot, PluginTaskSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { createPluginCommandContext, usePluginService } from "./pluginService";
@@ -300,6 +301,181 @@ describe("pluginService canonical wire", () => {
 
     expect(store.projectKey).toBe(nextProject);
     expect(store.plugins).toEqual([]);
+  });
+
+  it("keeps the next project context clean when a retired-generation shared read settles late", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `generation-race-${++sequence}`,
+      webview: {
+        postMessage: () => undefined,
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+    const stale = service.listAudit(snapshot.pluginId);
+    store.setProjectContext("project:b", "r2");
+    const current = service.listAudit(snapshot.pluginId);
+
+    listener?.({
+      data: {
+        type: "operation.failed",
+        requestId: "generation-race-1",
+        payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+      },
+    });
+    await expect(stale).rejects.toThrow("audit unavailable");
+
+    expect(store.lastError).toBeNull();
+    expect(store.busy).toBe(true);
+
+    listener?.({
+      data: { type: "plugin.audit.list", requestId: "generation-race-2", payload: [] },
+    });
+    await current;
+    expect(store.busy).toBe(false);
+    expect(store.lastError).toBeNull();
+    bridge.stop();
+  });
+
+  it("settles the old generation when the same project key reopens without a new request", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "same-key-retired",
+      webview: {
+        postMessage: () => undefined,
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+    const stale = service.listAudit(snapshot.pluginId);
+
+    store.setProjectContext("local:default", "r2");
+
+    listener?.({
+      data: {
+        type: "operation.failed",
+        requestId: "same-key-retired",
+        payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+      },
+    });
+    await expect(stale).rejects.toThrow("audit unavailable");
+
+    expect(store.busy).toBe(false);
+    expect(store.lastError).toBeNull();
+    bridge.stop();
+  });
+
+  it("does not let a same-key retired terminal clear the busy of a new generation request", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `same-key-race-${++sequence}`,
+      webview: {
+        postMessage: () => undefined,
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+    const stale = service.listAudit(snapshot.pluginId);
+    store.setProjectContext("local:default", "r2");
+    const current = service.listAudit(snapshot.pluginId);
+    expect(store.busy).toBe(true);
+
+    listener?.({
+      data: {
+        type: "operation.failed",
+        requestId: "same-key-race-1",
+        payload: { code: "PLUGIN_AUDIT_UNAVAILABLE", message: "audit unavailable" },
+      },
+    });
+    await expect(stale).rejects.toThrow("audit unavailable");
+
+    expect(store.lastError).toBeNull();
+    expect(store.busy).toBe(true);
+
+    listener?.({
+      data: { type: "plugin.audit.list", requestId: "same-key-race-2", payload: [] },
+    });
+    await current;
+    expect(store.busy).toBe(false);
+    expect(store.lastError).toBeNull();
+    bridge.stop();
+  });
+
+  it("settles an in-flight catalog read locally on close without a visible plugin failure", async () => {
+    const session = useWorkspaceSessionStore();
+    session.configureCapabilities(["workspace.session.v2"]);
+    session.setWorkspaces([{
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      displayName: "E2E",
+      selectedRoot: "D:\\E2E",
+      activityRoot: null,
+      storageKind: "fixed",
+      coordinationStrength: "strong",
+      lastOpenedAt: null,
+      lastKnownHealth: "healthy",
+      lastSnapshotAt: null,
+      lastSyncAt: null,
+      pendingSync: false,
+    }]);
+    session.applySession({
+      contractVersion: "2.0",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+      state: "openedWritable",
+      openMode: "writable",
+      writable: true,
+      provisional: false,
+      phase: "idle",
+      errorCode: null,
+    });
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "catalog-close-1",
+      timeoutMs: 50,
+      webview: {
+        postMessage: () => undefined,
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+    const pending = service.list();
+
+    expect(session.beginClose()).toBe(true);
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    listener?.({
+      data: {
+        type: "operation.failed",
+        requestId: "catalog-close-1",
+        payload: { code: "PLUGIN_OPERATION_FAILED", message: "Plugin operation failed." },
+      },
+    });
+    await Promise.resolve();
+    expect(store.lastError).toBeNull();
+    // The retired busy state is settled by the scope/reset lifecycle.
+    service.openProjectContext("", "");
+    expect(store.busy).toBe(false);
+    bridge.stop();
   });
 
   it("fails closed before the install bridge while project context is not ready", async () => {

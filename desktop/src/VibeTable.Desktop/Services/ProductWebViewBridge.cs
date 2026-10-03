@@ -29,6 +29,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     private readonly string? _isolatedUserDataRoot;
     private readonly bool _stableIsolatedUserDataRoot;
     private readonly object _loadGate = new();
+    private Action<Action> _uiEmit;
     private Task<CoreWebView2Environment>? _environment;
     private Task? _loadTask;
 
@@ -52,6 +53,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             ?? throw new ArgumentNullException(nameof(processFailed));
         _isolatedUserDataRoot = isolatedUserDataRoot;
         _stableIsolatedUserDataRoot = stableIsolatedUserDataRoot;
+        _uiEmit = action => _owner.Dispatcher.BeginInvoke(action);
         Realtime = new ProductRealtimeDelivery(
             (action, token) => _owner.Dispatcher.InvokeAsync(action, DispatcherPriority.Normal, token).Task,
             () => _router.IsReady && _webView.CoreWebView2 is not null,
@@ -104,25 +106,82 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     public void PostWorkspaceV2Event(object? payload, JsonElement wire)
         => PostEnvelope("workspace.v2.event", requestId: null, payload, wire);
 
+    /// <summary>
+    /// Queue seam for the guarded reply emissions. Production parks each
+    /// emission on the owner's UI dispatcher; tests substitute a controllable
+    /// queue so the actual emission callback can be pumped deterministically.
+    /// </summary>
+    internal Action<Action> UiEmission
+    {
+        get => _uiEmit;
+        set => _uiEmit = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    public bool TryPostResponse(
+        string type,
+        string? requestId,
+        object? payload,
+        Func<Func<bool>, bool>? emitGate = null)
+        => PostEnvelope(type, requestId, payload, default, emitGate);
+
+    public bool TryPostOperationFailed(
+        string? requestId,
+        string message,
+        string? code = null,
+        string? operation = null,
+        string? operationId = null,
+        Func<Func<bool>, bool>? emitGate = null)
+    {
+        EnqueueUiEmission(
+            SerializeRouterReply(WebMessageRouter.BuildOperationFailed(
+                requestId,
+                message,
+                code,
+                operation,
+                operationId)),
+            emitGate);
+        return true;
+    }
+
     public void PostOperationFailed(
         string? requestId,
         string message,
         string? code = null,
         string? operation = null,
         string? operationId = null)
+        => EnqueueUiEmission(
+            SerializeRouterReply(WebMessageRouter.BuildOperationFailed(
+                requestId,
+                message,
+                code,
+                operation,
+                operationId)),
+            emitGate: null);
+
+    /// <summary>
+    /// Parks one reply emission on the UI queue. The gate — when present — is
+    /// invoked inside this callback and wraps the synchronous wire post, so
+    /// the scope check and the actual PostWebMessageAsString commit atomically
+    /// against the gate's serialization point. A scope retired between
+    /// enqueue and pump can therefore never emit its late terminal.
+    /// </summary>
+    private void EnqueueUiEmission(string json, Func<Func<bool>, bool>? emitGate)
     {
-        _owner.Dispatcher.BeginInvoke(() =>
+        _uiEmit(() =>
         {
-            CoreWebView2? core = _webView.CoreWebView2;
-            if (core is null) return;
-            PostRouterReply(
-                core,
-                WebMessageRouter.BuildOperationFailed(
-                    requestId,
-                    message,
-                    code,
-                    operation,
-                    operationId));
+            Func<bool> commit = () =>
+            {
+                CoreWebView2? core = _webView.CoreWebView2;
+                if (core is null) return false;
+                core.PostWebMessageAsString(json);
+                return true;
+            };
+            if (emitGate is null)
+            {
+                commit();
+                return;
+            }
+            emitGate(commit);
         });
     }
 
@@ -447,15 +506,16 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         return new NativeFileIngressInspection(paths, count, null, null);
     }
 
-    private void PostEnvelope(
+    private bool PostEnvelope(
         string type,
         string? requestId,
         object? payload,
-        JsonElement wire = default)
+        JsonElement wire = default,
+        Func<Func<bool>, bool>? emitGate = null)
     {
         if (!_router.IsHostNotificationAllowed(type))
         {
-            return;
+            return false;
         }
         if (type.StartsWith("history.", StringComparison.Ordinal)
             || string.Equals(type, "operation.failed", StringComparison.Ordinal))
@@ -475,10 +535,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         string json = JsonSerializer.Serialize(
             envelope,
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        _owner.Dispatcher.BeginInvoke(() =>
-        {
-            _webView.CoreWebView2?.PostWebMessageAsString(json);
-        });
+        EnqueueUiEmission(json, emitGate);
+        return true;
     }
 
     private static void PostRouterReply(

@@ -30,6 +30,35 @@ const plugin = (revision: number, status: PluginSnapshot["status"] = "enabled"):
 describe("pluginStore", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  it("settles busy and error synchronously when the same project key reopens a new generation", () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    store.fail(new Error("旧世代请求失败"));
+    store.startBusy(false);
+    expect(store.busy).toBe(true);
+    expect(store.lastError).toBe("旧世代请求失败");
+
+    store.setProjectContext("local:default", "r2");
+
+    expect(store.busy).toBe(false);
+    expect(store.lastError).toBeNull();
+    expect(store.projectContextGeneration).toBe(2);
+  });
+
+  it("settles busy and error when the project revision advances in place", () => {
+    const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
+    store.fail(new Error("旧世代请求失败"));
+    store.startBusy(false);
+
+    expect(store.updateProjectRevision("r2")).toBe(true);
+
+    expect(store.busy).toBe(false);
+    expect(store.lastError).toBeNull();
+    expect(store.projectContextGeneration).toBe(2);
+    expect(store.projectRevision).toBe("r2");
+  });
+
   it("drops stale canonical plugin snapshots by revision", () => {
     const store = usePluginStore();
     store.replaceCatalog("local:default", [plugin(8, "enabled")], 8);
