@@ -9,6 +9,7 @@ export const PRODUCT_RPC_PUBLIC_METHODS = [
   "data.applyImport",
   "data.export",
   "data.generateTemplate",
+  "data.importHistory",
   "data.previewImport",
   "events.reconcile",
   "field.change.apply",

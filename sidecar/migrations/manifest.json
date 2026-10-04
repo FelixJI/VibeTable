@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "schemaVersion": 15,
+  "schemaVersion": 16,
   "migrations": [
     {
       "id": 2026072401,
@@ -85,6 +85,12 @@
       "name": "dependency_input_revision",
       "source": "2026092901_dependency_input_revision.go",
       "sha256": "dbc1714a47696b80bad0c7cee5be2a8f6a67ed6c20335cf1e6c88c3d574c014e"
+    },
+    {
+      "id": 2026100101,
+      "name": "import_history",
+      "source": "2026100101_import_history.go",
+      "sha256": "b9c5014f2481d39220a475f86fc4280ee4b99c14c18f8396d9d19f5e28c0bbad"
     }
   ]
 }

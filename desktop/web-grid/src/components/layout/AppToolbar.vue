@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h } from "vue";
 import { NButton, NButtonGroup, NDropdown, NIcon, NTooltip } from "naive-ui";
-import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload } from "@lucide/vue";
+import { BookOpenText, ChevronDown, Download, History, Keyboard, MoreHorizontal, Network, Plus, RefreshCw, Table2, Trash2, Upload, ArrowDownToLine } from "@lucide/vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { ExportFormat } from "@/contracts";
 import { collectionLabel } from "./collectionLabel";
@@ -33,6 +33,7 @@ const emit = defineEmits<{
   openFieldManager: [];
   openContent: [];
   importData: [];
+  openImportManagement: [];
   exportData: [format: ExportFormat];
   cancelDataTask: [];
   pluginAction: [key: string];
@@ -59,6 +60,11 @@ const moreOptions = computed(() => [
     key: "import",
     icon: () => h(Upload),
     disabled: !workspace.currentTable || props.dataIoBusy || props.dataIoImportDisabled,
+  },
+  {
+    label: t("toolbar.importManagement"),
+    key: "import-management",
+    icon: () => h(ArrowDownToLine),
   },
   {
     label: "导出 CSV",
@@ -95,6 +101,7 @@ function onMore(key: string) {
   if (key === "refresh") emit("refresh");
   if (key === "help") emit("openHelp");
   if (key === "import") emit("importData");
+  if (key === "import-management") emit("openImportManagement");
   if (key === "export-csv") emit("exportData", "csv");
   if (key === "export-xlsx") emit("exportData", "xlsx");
   if (key === "cancel-data-task") emit("cancelDataTask");

@@ -838,6 +838,10 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
                         client.Terminated += _fileClientTerminated;
                         try
                         {
+                            // The import history journal follows the Go Sidecar
+                            // generation, not the Python client, but both bind
+                            // here so worker churn never strands settlements.
+                            DataIoTasks.BindImportHistory(snapshot);
                             DataIoTasks.BindClient(client, snapshot.Identity);
                             // This final registration also rejects a client whose reader
                             // terminated before our subscriptions could be installed.
@@ -904,6 +908,10 @@ public sealed class ProductionWorkspaceRuntime : IWorkspaceRuntime
         _ = await Gateway.DrainAsync(
                 TimeSpan.FromSeconds(30),
                 cancellationToken)
+            .ConfigureAwait(false);
+        // Give already-reported terminal outcomes a bounded chance to persist
+        // while their Sidecar generation is still current.
+        await DataIoTasks.DrainImportHistoryAsync(TimeSpan.FromSeconds(5))
             .ConfigureAwait(false);
         _owner.Deactivate(this);
     }

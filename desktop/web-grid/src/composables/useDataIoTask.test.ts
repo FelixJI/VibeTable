@@ -256,6 +256,37 @@ describe("useDataIoTask", () => {
     expect(exportSucceeded).toHaveBeenCalledOnce();
   });
 
+  it("previews an externally granted source against the current live context", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    const grant = { grantId: "grant-managed" } as SessionPathGrant;
+    const { task, service } = setup({}, () => context.value);
+
+    await task.previewImportWithGrant(grant);
+
+    expect(service.previewImportWithGrant).toHaveBeenCalledWith(
+      grant,
+      "orders",
+      "schema_0001",
+      [],
+    );
+    expect(task.previewSession.value?.grant.grantId).toBe("grant-managed");
+    expect(task.relationOptions.value).toEqual(relationOptions);
+  });
+
+  it("drops a granted-source preview when the target context retires before its reply", async () => {
+    const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
+    let resolvePlan!: (value: ImportPlan) => void;
+    const pending = new Promise<ImportPlan>((resolve) => { resolvePlan = resolve; });
+    const { task } = setup({ previewImportWithGrant: vi.fn(() => pending) }, () => context.value);
+
+    const preview = task.previewImportWithGrant({ grantId: "grant-managed" } as SessionPathGrant);
+    context.value = { ...context.value, collection: "invoices" };
+    resolvePlan({ ...previewSession().plan, token: { token: "stale", expiresAt: 1, consumed: false } });
+    await preview;
+
+    expect(task.previewSession.value).toBeNull();
+  });
+
   it("owns the preview/apply lifecycle and refreshes only after a successful apply", async () => {
     const { task, service, session, importSucceeded, refresh } = setup();
 

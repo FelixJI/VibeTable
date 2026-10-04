@@ -9,6 +9,7 @@
     {"method":"data.applyImport","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
     {"method":"data.export","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
     {"method":"data.generateTemplate","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
+    {"method":"data.importHistory","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
     {"method":"data.previewImport","scope":"workspace","audience":"rendererPublic","capabilityId":"data.transfer"},
     {"method":"events.reconcile","scope":"workspace","audience":"rendererPublic","capabilityId":"realtime"},
     {"method":"field.change.apply","scope":"workspace","audience":"rendererPublic","capabilityId":"schema.definition"},

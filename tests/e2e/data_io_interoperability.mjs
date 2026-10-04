@@ -17,6 +17,8 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   const {
     waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
     canonicalJsonText, chooseToolbarMore,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod,
+    beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
   } = helpers;
   const corpus = JSON.parse(await fs.readFile(
     new URL("../fixtures/data-io/a5-interop-matrix-corpus.json", import.meta.url), "utf8",
@@ -82,13 +84,24 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     await page.getByTestId("export-lookup-confirm").click();
     return waitForExportFile(targetPath);
   };
-  const importThroughUi = async (sourcePath) => {
+  const importThroughUi = async (sourcePath, managedTarget = null) => {
     await selectImportSource(sourcePath);
     // Same realtime-lag guard as the #349 UI phase: refresh the grid (a real
     // user action) before each toolbar import so the command is actionable.
     await chooseToolbarMore(page, "refresh");
     await page.waitForTimeout(500);
-    await chooseToolbarMore(page, "import");
+    if (managedTarget) {
+      await page.getByTestId("import-management-open").click();
+      await page.getByTestId("import-management").waitFor({ state: "visible" });
+      recorder.check("unimplemented cloud sources are explicitly unavailable",
+        await page.getByTestId("import-source-feishu").isDisabled()
+          && await page.getByTestId("import-source-wps").isDisabled());
+      await page.getByTestId("import-source-xlsx").click();
+      await page.getByTestId("import-target-option")
+        .filter({ hasText: managedTarget }).click();
+    } else {
+      await chooseToolbarMore(page, "import");
+    }
     await page.getByTestId("import-preview-panel").waitFor({ state: "visible", timeout: 60_000 });
     const acknowledgement = page.getByTestId("import-ack");
     if (await acknowledgement.count()) await acknowledgement.click();
@@ -195,7 +208,7 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     JSON.stringify(producer, null, 2), "utf8");
   const xlsxExpectedRows = [corpus.formulaLikeText.value, "普通文本"].map((note) =>
     [nativeDate.queryWire, nativeDatetime.queryWire, note]);
-  await importThroughUi(xlsxSource);
+  await importThroughUi(xlsxSource, "A5 Interop Xlsx");
   const xlsxImported = await waitForAuthorityRows(xlsxTable.tableId, xlsxExpectedRows.length);
   recorder.check("UI import turns native XLSX dates into the frozen UTC wire text",
     sameRows(xlsxImported.rows.map((row) =>
@@ -237,6 +250,60 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
       && codePoints(longImported.rows[0][longTable.field.physicalName]).join(",")
         === codePoints(longValue).join(","),
     { path: longSource, length: longSource.length, longImported });
+
+  const expectedHistory = [
+    { collection: table.tableId, count: csvRows.length, sourceType: "csv" },
+    { collection: xlsxTable.tableId, count: xlsxExpectedRows.length, sourceType: "xlsx" },
+    { collection: longTable.tableId, count: 1, sourceType: "csv" },
+  ];
+  const history = await request("data.importHistory", {});
+  const committed = expectedHistory.map((expected) => history.items.find((entry) =>
+    entry.collection === expected.collection && entry.commitState === "committed"));
+  recorder.check("both entry points retain Go-confirmed import counts and safe source metadata",
+    committed.every((entry, index) => entry?.state === "succeeded"
+      && entry.sourceType === expectedHistory[index].sourceType
+      && entry.createdCount === expectedHistory[index].count && entry.updatedCount === 0
+      && entry.startedAt && entry.finishedAt && entry.sourceName
+      && !/[\\/]/.test(entry.sourceName)
+      && !["token", "grantId", "idempotencyKey", "accessToken"].some(key => key in entry)),
+    { history });
+  await page.getByTestId("import-management-open").click();
+  await page.getByTestId("import-management").waitFor({ state: "visible" });
+  await page.getByTestId("import-history-refresh").click();
+  for (const entry of committed) {
+    await page.locator(`[data-testid="import-history-row"][data-task-id="${entry.taskId}"]`)
+      .waitFor({ state: "visible" });
+  }
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "35-import-management-history.png"), fullPage: true });
+  await page.getByTestId(`import-history-target-${committed[0].taskId}`).click();
+  await page.getByTestId("toolbar-table-title").waitFor({ state: "visible" });
+  recorder.check("the history target action returns to the original import table",
+    (await page.getByTestId("toolbar-table-title").textContent()).includes("A5 Interop CSV"));
+
+  const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
+  recorder.check("import history acceptance closes the actual workspace", closed.result?.state === "closed", { closed });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  const reopenedHistory = await request("data.importHistory", {});
+  recorder.check("reopening retains terminal receipts without resurrecting old tasks or tokens",
+    reopened.payload.session.workspaceId === originalSession.workspaceId
+      && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
+      && committed.every((before) => {
+        const after = reopenedHistory.items.find(entry => entry.taskId === before.taskId);
+        return after?.state === "succeeded" && after.commitState === "committed"
+          && after.createdCount === before.createdCount && after.updatedCount === before.updatedCount;
+      })
+      && reopenedHistory.items.every(entry => !["queued", "running"].includes(entry.state)),
+    { reopenedHistory });
+  await page.getByTestId("import-management-open").click();
+  await page.getByTestId("import-history-row").first().waitFor({ state: "visible" });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "35-import-management-reopened.png"), fullPage: true });
 }
 
 function expectedRepresentative(corpus, key) {

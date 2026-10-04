@@ -12,13 +12,20 @@ describe("AppNavigation", () => {
   it("emits navigation intent so the workspace can guard dirty drafts", async () => {
     const wrapper = mount(AppNavigation);
     await wrapper.get('[data-testid="nav-tables"]').trigger("click");
+    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
     await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
     await wrapper.get('[data-testid="nav-files"]').trigger("click");
     await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
     await wrapper.get('[data-testid="nav-settings"]').trigger("click");
     expect(wrapper.emitted("navigate")?.map((args) => args[0])).toEqual([
-      "tables", "interfaces", "files", "plugins", "settings",
+      "tables", "imports", "interfaces", "files", "plugins", "settings",
     ]);
+  });
+
+  it("exposes the import management page behind the fixed E2E entry selector", () => {
+    const wrapper = mount(AppNavigation);
+    const entry = wrapper.get('[data-testid="import-management-open"]');
+    expect(entry.attributes("aria-label")).toBe("导入管理");
   });
 
   it("emits administration and help actions without pretending they are routes", async () => {

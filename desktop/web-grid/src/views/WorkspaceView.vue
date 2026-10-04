@@ -48,6 +48,7 @@ import { TABULATOR_INJECTION_KEY, GRID_PRESENTATION_KEY } from "@/components/gri
 import { useGridPresentationService } from "@/services/gridPresentationService";
 import PastePanel from "@/components/panels/PastePanel.vue";
 import ImportPreviewPanel from "@/components/panels/ImportPreviewPanel.vue";
+import ImportManagementView from "@/components/import-management/ImportManagementView.vue";
 import ExportLookupPanel from "@/components/panels/ExportLookupPanel.vue";
 import CreateTableModal from "@/components/panels/CreateTableModal.vue";
 import DeleteConfirmModal from "@/components/panels/DeleteConfirmModal.vue";
@@ -71,6 +72,7 @@ import { useWorkspaceService } from "@/services/workspaceService";
 import { useTableService } from "@/services/tableService";
 import { usePasteService } from "@/services/pasteService";
 import { useDataIoService } from "@/services/dataIoService";
+import { useImportManagementService } from "@/services/importManagementService";
 import { useMutationService } from "@/services/mutationService";
 import {
   createStructuredDialogFocus,
@@ -132,6 +134,7 @@ import { createWorkspaceSessionUiController } from "@/workspace/workspaceSession
 import { createAuthoritativeLookupController } from "@/workspace/authoritativeLookupController";
 import type {
   MutationErrorPayload,
+  SessionPathGrant,
 } from "@/contracts";
 import { t } from "@/i18n";
 
@@ -215,6 +218,7 @@ const {
   schemaDrifted: importSchemaDrifted,
   repreviewing: importRepreviewing,
   previewImport: importTableData,
+  previewImportWithGrant: importTableDataWithGrant,
   repreviewImport: repreviewTableImport,
   setRelationConfig: setImportRelationConfig,
   applyImport: confirmTableImport,
@@ -246,6 +250,184 @@ const {
   reportError: (error) => message.error(error),
   refresh: refreshTable,
 });
+
+// ---------------------------------------------------------------------------
+// Import management (#434). The page is a single WorkspaceView-resident
+// surface (setup persists across v-show pages), so a service-local instance —
+// no extra global store — owns the projected history. Live execution stays in
+// dataIoService/useDataIoTask above; this only reads data.importHistory and
+// forwards cancellation through the existing task.cancel bridge method.
+// ---------------------------------------------------------------------------
+const importManagement = useImportManagementService();
+importManagement.bindScope(() => ({
+  workspaceId: workspaceSession.enabled ? workspaceSession.activeWorkspaceId : null,
+  sessionEpoch: workspaceSession.enabled ? workspaceSession.sessionEpoch : null,
+}));
+const importSourceGrant = ref<SessionPathGrant | null>(null);
+const pickingImportSource = ref(false);
+const choosingImportTarget = ref(false);
+const cancellingImportTaskId = ref<string | null>(null);
+const importManagementProps = computed(() => ({
+  loading: importManagement.loading.value,
+  error: importManagement.error.value,
+  loaded: importManagement.loaded.value,
+  items: importManagement.items.value ?? [],
+  activeTaskId: dataIoService.activeTaskId.value,
+  taskCancellable: dataIoBusy.value,
+  cancellingTaskId: cancellingImportTaskId.value,
+  pendingSourceName: importSourceGrant.value?.displayName ?? null,
+  canStart: workspace.collections.length > 0 && !dataIoBusy.value && !importSourceGrant.value,
+}));
+
+function importScopeSnapshot() {
+  return {
+    workspaceId: workspaceSession.enabled ? workspaceSession.activeWorkspaceId : null,
+    sessionEpoch: workspaceSession.enabled ? workspaceSession.sessionEpoch : null,
+  } satisfies { workspaceId: string | null; sessionEpoch: number | string | null };
+}
+
+function importScopeRetired(scope: { workspaceId: string | null; sessionEpoch: number | string | null }): boolean {
+  const current = importScopeSnapshot();
+  return current.workspaceId !== scope.workspaceId || current.sessionEpoch !== scope.sessionEpoch;
+}
+
+/** Opens the native source picker for the managed flow (no preview yet). */
+async function startManagedImport(): Promise<void> {
+  if (pickingImportSource.value) return;
+  if (dataIoBusy.value || importSourceGrant.value || workspace.collections.length === 0) return;
+  // Admission lock across the picker await: rapid clicks must not open a
+  // second native picker dialog.
+  pickingImportSource.value = true;
+  const scope = importScopeSnapshot();
+  try {
+    const grant = await dataIoService.pickImportSource();
+    if (importScopeRetired(scope)) return;
+    importSourceGrant.value = grant;
+  } catch {
+    // The raw failure may embed transport details (e.g. token URLs); surface a
+    // fixed, localized message instead of echoing arbitrary text.
+    message.error(t("importManagement.pickFailed"));
+  } finally {
+    pickingImportSource.value = false;
+  }
+}
+
+function cancelManagedImportSource(): void {
+  importSourceGrant.value = null;
+}
+
+/** Waits until the authoritative table schema for `collection` is selected. */
+function waitForTableSchema(collection: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let stopWatch: (() => void) | null = null;
+    let timeout = 0;
+    const settle = (value: string | null) => {
+      stopWatch?.();
+      window.clearTimeout(timeout);
+      resolve(value);
+    };
+    const check = () => {
+      if (workspace.currentTable !== collection) {
+        settle(null);
+        return true;
+      }
+      const revision = tableStore.schemaRevision;
+      if (revision) {
+        settle(revision);
+        return true;
+      }
+      return false;
+    };
+    stopWatch = watch(
+      () => [workspace.currentTable, tableStore.schemaRevision] as const,
+      () => { check(); },
+      { flush: "sync" },
+    );
+    if (!check()) timeout = window.setTimeout(() => settle(null), 30_000);
+  });
+}
+
+/** Chooses the import target: jump via tableService, await schema, then preview. */
+async function chooseImportTarget(collection: string): Promise<void> {
+  const grant = importSourceGrant.value;
+  if (!grant || choosingImportTarget.value || pickingImportSource.value) return;
+  if (!workspace.collections.some((item) => item.collection === collection)) return;
+  choosingImportTarget.value = true;
+  importSourceGrant.value = null;
+  // The grant belongs to this workspace/session only; a switch during the
+  // schema wait must not carry it into another workspace (same-name
+  // collections are not identity).
+  const scope = importScopeSnapshot();
+  try {
+    onSelect(collection);
+    // selectTable synchronously resets the store, so any non-null revision
+    // observed afterwards belongs to the NEW selection — never the old one.
+    const schemaRevision = await waitForTableSchema(collection);
+    if (!schemaRevision || workspace.currentTable !== collection) return;
+    if (importScopeRetired(scope)) return;
+    await importTableDataWithGrant(grant);
+  } finally {
+    choosingImportTarget.value = false;
+  }
+}
+
+function openImportTarget(collection: string): void {
+  if (!workspace.collections.some((item) => item.collection === collection)) return;
+  onSelect(collection);
+}
+
+async function cancelImportTask(taskId: string): Promise<void> {
+  if (cancellingImportTaskId.value) return;
+  cancellingImportTaskId.value = taskId;
+  try {
+    if (taskId === dataIoService.activeTaskId.value) {
+      // Keep the locally-owned task's drain/retire session fencing intact.
+      await cancelDataTask();
+    } else {
+      await importManagement.cancelTask(taskId);
+    }
+    await importManagement.refresh();
+  } catch {
+    // Fixed safe message; never echo raw transport text for cancellations.
+    message.error(t("importManagement.cancelFailed"));
+  } finally {
+    cancellingImportTaskId.value = null;
+  }
+}
+
+let importHistoryPollHandle: number | null = null;
+watch(
+  () => [ui.activeView === "imports", importManagement.activeEntries.value.length > 0] as const,
+  ([visible, hasActive]) => {
+    // Controlled polling: only while the page is visible AND a current-session
+    // task is queued/running. No background resident task is created.
+    if (visible && hasActive && importHistoryPollHandle === null) {
+      importHistoryPollHandle = window.setInterval(() => {
+        if (importManagement.activeEntries.value.length > 0) void importManagement.refresh();
+      }, 5_000);
+    } else if ((!visible || !hasActive) && importHistoryPollHandle !== null) {
+      window.clearInterval(importHistoryPollHandle);
+      importHistoryPollHandle = null;
+    }
+  },
+  { immediate: true },
+);
+watch(
+  () => ui.activeView === "imports",
+  (visible, previous) => {
+    if (visible && !previous) void importManagement.refresh();
+  },
+);
+watch(
+  () => importApplying.value || dataIoBusy.value,
+  (busy, previous) => {
+    if (busy || previous === undefined || previous === busy) return;
+    // A data task just ended: refresh the projection when it is in use.
+    if (ui.activeView === "imports" || importManagement.loaded.value) {
+      void importManagement.refresh();
+    }
+  },
+);
 const editRejection = ref<MutationErrorPayload | null>(null);
 const editRejectionText = computed(() =>
   editRejection.value ? mutationRejectionMessage(editRejection.value) : "");
@@ -834,6 +1016,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   viewMounted = false;
+  if (importHistoryPollHandle !== null) {
+    window.clearInterval(importHistoryPollHandle);
+    importHistoryPollHandle = null;
+  }
   retireRendererRecovery();
   stopRecoveryDataInvalidation?.();
   stopRecoveryDataInvalidation = null;
@@ -948,6 +1134,7 @@ function onOpenTableFromHome(name: string) {
 
 const pageTitle = computed(() => {
   if (ui.activeView === "home") return t("nav.home");
+  if (ui.activeView === "imports") return t("nav.imports");
   if (ui.activeView === "settings") return t("nav.settings");
   if (ui.activeView === "files") return t("nav.files");
   if (ui.activeView === "search") return t("nav.search");
@@ -986,6 +1173,8 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
     presetViews.clearPresets();
     realtime.reset();
     ui.setWorkspaceNamespace(nextWorkspaceId);
+    importManagement.retire();
+    importSourceGrant.value = null;
   },
 );
 
@@ -1075,6 +1264,7 @@ useKeyboard({
               @open-field-manager="openFieldManager"
               @open-content="contentPanelOpen = true"
               @import-data="importTableData"
+              @open-import-management="ui.navigate('imports')"
               @export-data="exportTableData"
               @cancel-data-task="cancelDataTask"
               @plugin-action="pluginController.dispatch({ type: 'action.open', key: $event })"
@@ -1259,6 +1449,16 @@ useKeyboard({
             </div>
           </main>
         </div>
+        <ImportManagementView
+          v-if="!showWorkspaceCenterScreen && ui.activeView === 'imports'"
+          v-bind="importManagementProps"
+          @new-import="startManagedImport"
+          @cancel-source="cancelManagedImportSource"
+          @choose-target="chooseImportTarget"
+          @refresh="importManagement.refresh()"
+          @cancel-task="cancelImportTask"
+          @open-target="openImportTarget"
+        />
         <DashboardWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'dashboard'" />
         <InterfaceWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'interfaces'" />
         <SettingsView

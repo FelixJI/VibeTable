@@ -63,6 +63,22 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     internal Task<JsonElement> DescribeAsync(string id, CancellationToken token)
         => HandleAsync("describe", JsonSerializer.SerializeToElement(new { grantId = id }), token);
 
+    /// <summary>
+    /// Resolves the safe display facts of one import source grant: the short
+    /// file name and the csv/xlsx source type (xlsm counts as xlsx, matching
+    /// the worker reader). No absolute path, grant secret, or token escapes.
+    /// </summary>
+    internal async Task<(string SourceType, string SourceName)> DescribeImportSourceAsync(
+        string grantId, CancellationToken token)
+    {
+        JsonElement descriptor = await HandleAsync(
+            "describeImport",
+            JsonSerializer.SerializeToElement(new { grantId }),
+            token).ConfigureAwait(false);
+        return (descriptor.GetProperty("sourceType").GetString()!,
+            descriptor.GetProperty("displayName").GetString()!);
+    }
+
     public async Task<JsonElement> HandleAsync(string action, JsonElement parameters, CancellationToken token)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _retired.Token);
@@ -73,6 +89,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             return action switch
             {
                 "describe" => Describe(parameters),
+                "describeImport" => DescribeImport(parameters),
                 "openRead" => Open(parameters, write: false),
                 "openWrite" => Open(parameters, write: true),
                 "read" => await ReadAsync(parameters, linked.Token).ConfigureAwait(false),
@@ -91,6 +108,31 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     {
         Exact(p, "grantId");
         return Descriptor(Available(Text(p, "grantId"), write: null, runId: null));
+    }
+
+    private JsonElement DescribeImport(JsonElement p)
+    {
+        Exact(p, "grantId");
+        // History only needs immutable display facts; any live grant state
+        // (available/reserved/reading) still describes the same source file.
+        Grant grant = _grants.TryGetValue(Text(p, "grantId"), out Grant? found)
+            && !found.Write
+            ? found
+            : throw new HostPathGrantException();
+        string name = Path.GetFileName(grant.Path);
+        string sourceType = Path.GetExtension(name).ToLowerInvariant() switch
+        {
+            ".csv" => "csv",
+            ".xlsx" or ".xlsm" => "xlsx",
+            _ => throw new HostPathGrantException(),
+        };
+        // IssueAsync already caps native file names at the frozen 256-char
+        // history limit, so the display name needs no further mutation.
+        return JsonSerializer.SerializeToElement(new
+        {
+            sourceType,
+            displayName = name,
+        });
     }
 
     private JsonElement Open(JsonElement p, bool write)

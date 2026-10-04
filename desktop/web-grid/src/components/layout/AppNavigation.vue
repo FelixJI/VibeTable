@@ -13,6 +13,7 @@ import {
   GitCompareArrows,
   Settings,
   Table2,
+  ArrowDownToLine,
 } from "@lucide/vue";
 import type { AppView } from "@/stores/uiStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -33,6 +34,7 @@ const emit = defineEmits<{
 const primary = computed(() => [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
+  { view: "imports" as const, icon: ArrowDownToLine, label: "nav.imports", testid: "import-management-open" },
   { view: "dashboard" as const, icon: LayoutDashboard, label: "nav.dashboard" },
   { view: "interfaces" as const, icon: LayoutTemplate, label: "nav.interfaces" },
   { view: "files" as const, icon: Files, label: "nav.files" },
@@ -63,7 +65,7 @@ function navigate(view: AppView) {
             :class="{ 'nav-button--active': ui.activeView === item.view }"
             :aria-label="t(item.label)"
             :aria-current="ui.activeView === item.view ? 'page' : undefined"
-            :data-testid="`nav-${item.view}`"
+            :data-testid="'testid' in item && item.testid ? item.testid : `nav-${item.view}`"
             @click="navigate(item.view)"
           >
             <template #icon><NIcon :size="19"><component :is="item.icon" /></NIcon></template>

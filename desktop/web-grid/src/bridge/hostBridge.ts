@@ -244,6 +244,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "task.changed",
   "realtime.recovered",
   "data.importSourceRequested",
+  "data.importHistory",
   "data.exportTargetRequested",
   "data.previewImport",
   "data.applyImport",
@@ -448,6 +449,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   // B2 paste preview + apply requests.
   "table.previewPasteRequested",
   "table.applyPasteRequested",
+  "data.importHistory",
   "data.importSourceRequested",
   "data.exportTargetRequested",
   "data.previewImport",

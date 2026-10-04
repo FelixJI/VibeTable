@@ -204,7 +204,8 @@
       "sidecar/migrations/2026092601_plugin_shared_state.go",
       "sidecar/migrations/2026092801_conditional_lookup.go",
       "sidecar/migrations/2026092802_clock_revision.go",
-      "sidecar/migrations/2026092901_dependency_input_revision.go"
+      "sidecar/migrations/2026092901_dependency_input_revision.go",
+      "sidecar/migrations/2026100101_import_history.go"
     ],
     "capabilities": [
       "sidecar/internal/schema/v2/capabilities.go",

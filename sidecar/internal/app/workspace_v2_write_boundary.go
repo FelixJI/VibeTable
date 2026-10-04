@@ -48,6 +48,11 @@ var workspaceV2CoordinatedPosts = map[string]struct{}{
 	"/api/vibetable/v1/metadata/dashboards/commit": {},
 	"/api/vibetable/v2/field-change/plan":          {},
 	"/api/vibetable/v2/field-change/apply":         {},
+	// The import history projection writes run behind the business write
+	// gate (coordinateIdempotentBusinessWrite) like every other formal
+	// PocketBase mutator; exact paths only — adjacent paths stay fail-closed.
+	"/api/vibetable/v2/import-history/start":  {},
+	"/api/vibetable/v2/import-history/finish": {},
 }
 
 func bindWorkspaceV2WriteBoundary(event *core.ServeEvent) {

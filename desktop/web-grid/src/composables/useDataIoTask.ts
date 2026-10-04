@@ -284,6 +284,38 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     await loadRelationOptions(context.collection, scope);
   }
 
+  /**
+   * Starts the same preview lifecycle for an already-granted source file
+   * (import-management flow). The caller owns selecting the target table and
+   * waits for its schema; this method only runs against the CURRENT live
+   * context, never a stale schema captured earlier.
+   */
+  async function previewImportWithGrant(grant: SessionPathGrant): Promise<void> {
+    const context = resolveImportContext();
+    if (!context) return;
+    const scope = captureScope(context.collection);
+    previewing.value = true;
+    applyError.value = null;
+    resetRelationCatalog();
+    try {
+      const plan = await options.service.previewImportWithGrant(
+        grant,
+        context.collection,
+        context.schemaRevision,
+        [],
+      );
+      if (!isLive(scope)) return;
+      previewSession.value = { grant, plan, mode: "create_only" };
+      previewedMappingKey = "[]";
+    } catch (error) {
+      if (isLive(scope)) options.reportError(errorMessage(error));
+      return;
+    } finally {
+      previewing.value = false;
+    }
+    await loadRelationOptions(context.collection, scope);
+  }
+
   async function repreviewImport(): Promise<void> {
     const session = previewSession.value;
     const context = resolveRepreviewContext();
@@ -511,6 +543,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
     exportPanel: readonly(exportPanel),
     exportLookupIds: readonly(exportLookupIds),
     previewImport,
+    previewImportWithGrant,
     repreviewImport,
     setRelationConfig,
     applyImport,

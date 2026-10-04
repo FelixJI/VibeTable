@@ -382,6 +382,79 @@ describe("WorkspaceView", () => {
     expect(wrapper.get(".tables-view").isVisible()).toBe(true);
   });
 
+  it("routes the managed import flow from the fixed entry to the original preview panel", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened([{ collection: "orders" }, { collection: "invoices" }], { orders: "订单", invoices: "发票" });
+    workspace.selectTable("orders");
+    useUiStore().navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="import-management"]').exists()).toBe(true);
+    expect(posted.some((item) => item.type === "data.importHistory")).toBe(true);
+    const historyRequest = [...posted].reverse().find((item) => item.type === "data.importHistory")!;
+    emit({ type: "data.importHistory", requestId: historyRequest.requestId, payload: { items: [] } });
+    await flushPromises();
+
+    await wrapper.get('[data-testid="import-source-xlsx"]').trigger("click");
+    await flushPromises();
+    const pickerRequest = [...posted].reverse().find((item) => item.type === "data.importSourceRequested")!;
+    emit({
+      type: "data.importSourceRequested",
+      requestId: pickerRequest.requestId,
+      payload: {
+        grantId: "grant-managed", purpose: "import_source", direction: "read",
+        displayName: "batch.xlsx", sizeBytes: 48, mimeType: null, expiresAt: 1,
+      },
+    });
+    await flushPromises();
+    expect(wrapper.get('[data-testid="import-target"]').text()).toContain("batch.xlsx");
+
+    const invoicesOption = wrapper.findAll('[data-testid="import-target-option"]')
+      .find((option) => option.attributes("data-collection") === "invoices")!;
+    await invoicesOption.trigger("click");
+    await flushPromises();
+    expect(posted.some((item) => item.type === "table.selected"
+      && (item.payload as { table: string }).table === "invoices")).toBe(true);
+
+    // Selection pushes an authoritative page; the schema wait must resolve
+    // only from the invoices page, never the previously selected table.
+    emit({
+      type: "table.pageLoaded",
+      payload: {
+        table: "invoices", columns: [], rows: [], offset: 0, limit: 100, totalRows: 0, mode: "remote",
+        revision: { databaseSessionId: "pocketbase", schemaRevision: "schema-9", dataRevision: 1 },
+      },
+    });
+    await flushPromises();
+
+    const previewRequest = [...posted].reverse().find((item) => item.type === "data.previewImport")!;
+    expect((previewRequest.payload as { grantId: string }).grantId).toBe("grant-managed");
+    expect((previewRequest.payload as { collection: string }).collection).toBe("invoices");
+    expect((previewRequest.payload as { schemaRevision: string }).schemaRevision).toBe("schema-9");
+    emit({
+      type: "data.previewImport",
+      requestId: previewRequest.requestId,
+      payload: {
+        collection: "invoices", schemaRevision: "schema-9",
+        summary: { totalRows: 1, validRows: 1, errorRows: 0, warningRows: 0, errorCount: 0, warningCount: 0 },
+        rows: [], sourceColumns: [], unmatchedColumns: [], diagnostics: [],
+        token: { token: "preview-managed", expiresAt: 1, consumed: false },
+      },
+    });
+    await flushPromises();
+
+    // The original preview panel opens on the tables view so the toolbar stays
+    // available for the follow-up export in the extended desktop scenario.
+    expect(useUiStore().activeView).toBe("tables");
+    expect(wrapper.find('[data-testid="import-preview-panel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="import-target"]').exists()).toBe(false);
+  });
+
   it("renders every top-level product workspace from the shared navigation state", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

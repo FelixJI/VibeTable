@@ -95,6 +95,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
     "wpfHost": (
         "command.list",
         "command.run",
+        "data.importHistory",
         "file.applyHostChange",
         "file.saveHostFile",
         "gridState.get",
