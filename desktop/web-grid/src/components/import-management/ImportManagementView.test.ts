@@ -58,8 +58,11 @@ describe("ImportManagementView", () => {
 
     for (const cloud of ["feishu", "wps"]) {
       const card = wrapper.get(`[data-testid="import-source-${cloud}"]`);
+      expect(card.attributes("role")).toBe("button");
       expect(card.attributes("aria-disabled")).toBe("true");
       expect(card.text()).toContain("暂不可用");
+      await card.trigger("click");
+      await card.trigger("keydown", { key: "Enter" });
     }
     // Unavailable cloud cards must not emit import intent.
     expect(wrapper.emitted("newImport")).toHaveLength(2);

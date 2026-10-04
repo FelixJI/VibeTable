@@ -182,6 +182,7 @@ function toggleExpanded(taskId: string): void {
                 <div
                   class="import-source-card import-source-card--unavailable"
                   :data-testid="`import-source-${source.id}`"
+                  role="button"
                   aria-disabled="true"
                 >
                   <span class="import-source-icon"><NIcon :size="19"><component :is="source.icon" /></NIcon></span>
