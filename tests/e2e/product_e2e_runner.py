@@ -2588,7 +2588,7 @@ def run_scenario(
         try:
             process_network = (
                 {"observations": {}, "errors": [], "samples": 0}
-                if scenario.id == "01-offline-first-start"
+                if scenario.id in {"01-offline-first-start", "35-data-io-interoperability"}
                 else None
             )
             _wait_for_cdp(port, scope, process_network, readiness_dir)
@@ -2664,10 +2664,11 @@ def run_scenario(
                     "code": "HOST_NOT_READY",
                     "message": str(readiness.get("error") or readiness),
                 }
-            elif scenario.id == "01-offline-first-start" and (
+            elif scenario.id in {"01-offline-first-start", "35-data-io-interoperability"} and (
                 process_network_report is None
                 or process_network_report.get("status") != "completed"
                 or process_network_report.get("samples", 0) < 1
+                or bool(process_network_report.get("errors"))
                 or bool(process_network_report.get("unexpectedProductNonLoopback"))
             ):
                 result["status"] = "failed"

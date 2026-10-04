@@ -6068,3 +6068,83 @@ try {
                 _, stderr = process.communicate(timeout=5)
                 print(f"UIA_TARGET exit={process.returncode}")
         assert process.returncode == 0, stderr
+
+
+@pytest.mark.parametrize(
+    "network_case", ["clean", "missing", "errors", "remote", "unsampled", "incomplete"]
+)
+def test_source_migration_requires_completed_local_process_network_evidence(
+    monkeypatch, tmp_path: Path, network_case: str
+) -> None:
+    scenario = runner.Scenario(
+        id="35-data-io-interoperability", title="source migration", requirement="offline attachment"
+    )
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    monkeypatch.setattr(
+        runner,
+        "_request_normal_exit",
+        lambda *_args, **_kwargs: {
+            "normalExitRequested": True,
+            "hostExitCode": 0,
+            "membersAfterExit": [],
+            "portsReleased": True,
+            "errors": [],
+            "status": "passed",
+        },
+    )
+
+    def successful_node(
+        _command: list[str],
+        *,
+        scenario_dir: Path,
+        local_data: Path,
+        host_scope: Any,
+        process_network: dict[str, Any] | None = None,
+        measure_diff_worker: bool = False,
+    ) -> tuple[int, str, str]:
+        del local_data, host_scope, measure_diff_worker
+        assert process_network is not None, "the real Host scope must be monitored for scenario 35"
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}), encoding="utf-8"
+        )
+        report = {
+            "status": "completed",
+            "samples": 1,
+            "errors": [],
+            "unexpectedProductNonLoopback": [],
+        }
+        if network_case == "errors":
+            report["errors"] = ["TCP observation unavailable"]
+        elif network_case == "remote":
+            report["unexpectedProductNonLoopback"] = [{"processName": "VibeTable.Sidecar"}]
+        elif network_case == "unsampled":
+            report["samples"] = 0
+        elif network_case == "incomplete":
+            report["status"] = "monitoring"
+        if network_case != "missing":
+            (scenario_dir / "process-network-observations.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+    result = runner.run_scenario(
+        scenario, package_root=package, evidence_root=tmp_path / "evidence", node="node"
+    )
+    assert result["status"] == ("passed" if network_case == "clean" else "failed")
+    if network_case == "clean":
+        assert result["processNetwork"]["status"] == "completed"
+        assert result["processNetwork"]["unexpectedProductNonLoopback"] == []
+    else:
+        assert result["error"]["code"] == "PROCESS_NETWORK_OBSERVATION_FAILED"

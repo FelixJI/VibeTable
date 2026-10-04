@@ -636,6 +636,55 @@ test("the journey enters through the active workspace and starts the migration",
   }
 });
 
+test("the renderer-offline stage helper gates business on offline and always restores", async () => {
+  const module = await import("./source_import_journey.mjs");
+  assert.equal(typeof module.withRendererOffline, "function",
+    "the AC6 offline seam must be exported (missing on the pre-fix journey)");
+
+  const harness = (onlineValue, actionBehavior = "ok") => {
+    const calls = [];
+    let actionRan = false;
+    const context = {
+      setOffline: async (offline) => { calls.push(`setOffline:${offline}`); },
+    };
+    const page = {
+      context: () => context,
+      evaluate: async () => { calls.push("evaluate:onLine"); return onlineValue; },
+    };
+    const action = async () => {
+      actionRan = true;
+      calls.push("action");
+      if (actionBehavior === "throw") throw new Error("action exploded");
+      return "business-result";
+    };
+    return { calls, page, action, ran: () => actionRan };
+  };
+
+  // Offline confirmed: business runs strictly after the offline assertion and
+  // the connection is restored afterwards.
+  const offline = harness(false);
+  assert.equal(await module.withRendererOffline(offline.page, offline.action), "business-result");
+  assert.deepEqual(offline.calls, ["setOffline:true", "evaluate:onLine", "action", "setOffline:false"]);
+
+  // Not actually offline: business never runs, the failure is explicit, and
+  // the renderer is still restored.
+  const notOffline = harness(true);
+  await assert.rejects(
+    () => module.withRendererOffline(notOffline.page, notOffline.action),
+    /renderer offline mode was not applied/);
+  assert.equal(notOffline.ran(), false);
+  assert.deepEqual(notOffline.calls, ["setOffline:true", "evaluate:onLine", "setOffline:false"]);
+
+  // A failing (or cancelled — the rejection path is identical) action still
+  // restores the connection and propagates the original error.
+  const exploding = harness(false, "throw");
+  await assert.rejects(
+    () => module.withRendererOffline(exploding.page, exploding.action),
+    /action exploded/);
+  assert.deepEqual(exploding.calls,
+    ["setOffline:true", "evaluate:onLine", "action", "setOffline:false"]);
+});
+
 test("the entry helper is exported and fail-closes without an active session", async () => {
   const module = await import("./source_import_journey.mjs");
   assert.equal(typeof module.awaitSourceImportEntryReady, "function",

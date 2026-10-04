@@ -639,6 +639,29 @@ export async function awaitSourceImportEntryReady(page, rawBridgeRequest) {
   return session;
 }
 
+/**
+ * AC6 executing-state offline stage. Mirrors the repo's scenario05/26
+ * pattern (page.context().setOffline + !navigator.onLine) with a local
+ * try/finally: business runs ONLY after the renderer has proven offline, and
+ * the connection is restored on every exit path (success, rejection, or
+ * cancellation). This is the RENDERER's network posture only — the Host
+ * process's own network is covered fail-closed by the runner's product
+ * process-network observation, not by this switch.
+ */
+export async function withRendererOffline(page, action) {
+  const context = page.context();
+  await context.setOffline(true);
+  try {
+    const online = await page.evaluate(() => navigator.onLine);
+    if (online !== false) {
+      throw new Error(`renderer offline mode was not applied: navigator.onLine is ${JSON.stringify(online)}`);
+    }
+    return await action();
+  } finally {
+    await context.setOffline(false);
+  }
+}
+
 export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   const {
     rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
@@ -936,55 +959,64 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   recorder.check("after the final reopen every migration receipt persists by job id unchanged",
     persistenceProblems.length === 0, { problems: persistenceProblems });
 
-  // Offline stability of the committed success data one last time.
-  const finalTables = await verifyLocalAuthority();
-  const finalAttachmentTable = finalTables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
-  const finalAttachmentRequest = {
-    tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
-    recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
-    fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
-  };
-  const finalFiles = await request("file.list", finalAttachmentRequest);
-  const finalAuthorityProblems = [
-    ...verifyRecordIdentityByCode({
-      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
-    ...verifyRelationGraph({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
-    ...verifyAttachmentBinding({
-      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables, fileListing: finalFiles }),
-  ];
-  recorder.check("the committed success data stays offline-stable across the final reopen",
-    finalAuthorityProblems.length === 0,
-    { problems: finalAuthorityProblems,
-      attachment: safeAttachmentEvidence({ ...finalAttachmentRequest, fileListing: finalFiles }) });
+  // Offline stability of the committed success data one last time — now in
+  // the EXECUTING offline state: the final Go-authority verification and the
+  // real Host file.downloadRequested/PNG byte comparison run with the
+  // renderer offline (scenario05/26 pattern); the Host channel's own network
+  // posture is asserted separately fail-closed by the runner's product
+  // process-network observation.
+  await withRendererOffline(page, async () => {
+    recorder.check("the renderer network stays offline across the final authority and download stage",
+      await page.evaluate(() => navigator.onLine === false), {});
+    const finalTables = await verifyLocalAuthority();
+    const finalAttachmentTable = finalTables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
+    const finalAttachmentRequest = {
+      tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
+      recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
+      fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
+    };
+    const finalFiles = await request("file.list", finalAttachmentRequest);
+    const finalAuthorityProblems = [
+      ...verifyRecordIdentityByCode({
+        expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
+      ...verifyRelationGraph({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
+      ...verifyAttachmentBinding({
+        expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables, fileListing: finalFiles }),
+    ];
+    recorder.check("the committed success data stays offline-stable across the final reopen",
+      finalAuthorityProblems.length === 0,
+      { problems: finalAuthorityProblems,
+        attachment: safeAttachmentEvidence({ ...finalAttachmentRequest, fileListing: finalFiles }) });
 
-  // ---- AC6: materialize the migrated attachment bytes through the real Host ----
-  // file.list proves metadata and capability only. The offline contract uses
-  // the real native download channel: the correlated file.downloadRequested
-  // wire request carries the committed identity (tableId/recordId/fieldId +
-  // storedName/originalName), TestMode resolves the save target from the
-  // attachment-target.txt control, and the gateway writes the stored bytes.
-  // rawBridgeRequest is used directly so a failed download stays a verifiable
-  // outcome instead of a thrown wrapper error.
-  const downloadTarget = path.join(runtime.evidenceDir, "35-source-import-attachment-download.png");
-  await fs.writeFile(path.join(runtime.controlsDir, "attachment-target.txt"), downloadTarget, "utf8");
-  const downloadReply = await rawBridgeRequest(page, "file.downloadRequested", {
-    tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
-    recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
-    fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
-    storedName: finalFiles.attachments[0].storedName,
-    originalName: EXPECTED_SYNTHETIC_SOURCE.attachment.name,
-  }, 60_000);
-  const outcomeProblems = verifyDownloadOutcome(downloadReply);
-  let byteProblems = ["saved attachment bytes were not read because the download outcome failed"];
-  if (outcomeProblems.length === 0) {
-    byteProblems = verifyOfflineAttachmentBytes({
-      savedBytes: await fs.readFile(downloadTarget),
-      expectedBase64: TESTMODE_ATTACHMENT_PNG_BASE64,
-    });
-  }
-  recorder.check("the real Host downloads the committed attachment and the saved bytes equal the fixture PNG",
-    outcomeProblems.length === 0 && byteProblems.length === 0,
-    { problems: [...outcomeProblems, ...byteProblems],
-      replyOutcome: downloadReply?.payload?.outcome ?? null,
-      evidence: path.basename(downloadTarget) });
+    // ---- AC6: materialize the migrated attachment bytes through the real Host ----
+    // file.list proves metadata and capability only. The offline contract uses
+    // the real native download channel: the correlated file.downloadRequested
+    // wire request carries the committed identity (tableId/recordId/fieldId +
+    // storedName/originalName), TestMode resolves the save target from the
+    // attachment-target.txt control, and the gateway writes the stored bytes.
+    // rawBridgeRequest is used directly so a failed download stays a verifiable
+    // outcome instead of a thrown wrapper error.
+    const downloadTarget = path.join(runtime.evidenceDir, "35-source-import-attachment-download.png");
+    await fs.writeFile(path.join(runtime.controlsDir, "attachment-target.txt"), downloadTarget, "utf8");
+    const downloadReply = await rawBridgeRequest(page, "file.downloadRequested", {
+      tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
+      recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
+      fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
+      storedName: finalFiles.attachments[0].storedName,
+      originalName: EXPECTED_SYNTHETIC_SOURCE.attachment.name,
+    }, 60_000);
+    const outcomeProblems = verifyDownloadOutcome(downloadReply);
+    let byteProblems = ["saved attachment bytes were not read because the download outcome failed"];
+    if (outcomeProblems.length === 0) {
+      byteProblems = verifyOfflineAttachmentBytes({
+        savedBytes: await fs.readFile(downloadTarget),
+        expectedBase64: TESTMODE_ATTACHMENT_PNG_BASE64,
+      });
+    }
+    recorder.check("the real Host downloads the committed attachment and the saved bytes equal the fixture PNG",
+      outcomeProblems.length === 0 && byteProblems.length === 0,
+      { problems: [...outcomeProblems, ...byteProblems],
+        replyOutcome: downloadReply?.payload?.outcome ?? null,
+        evidence: path.basename(downloadTarget) });
+  });
 }
