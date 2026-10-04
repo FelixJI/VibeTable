@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -19,6 +20,8 @@ type sourceStoredPlan struct {
 	claimed bool
 	handles map[sourceimport.Key]string
 	manager *attachments.Manager
+	jobID   string
+	closed  bool
 }
 
 type sourcePreviewReply struct {
@@ -53,7 +56,7 @@ func (owner *importPlanOwner) mintSource(plan sourceimport.Plan, epoch uint64, m
 		owner.sourcePlans = map[string]*sourceStoredPlan{}
 	}
 	for id, stored := range owner.sourcePlans {
-		if !stored.claimed && !owner.now().Before(stored.expires) {
+		if !stored.claimed && stored.jobID == "" && !owner.now().Before(stored.expires) {
 			stored.cleanup()
 			delete(owner.sourcePlans, id)
 		}
@@ -73,12 +76,13 @@ func (owner *importPlanOwner) mintSource(plan sourceimport.Plan, epoch uint64, m
 }
 
 type sourceClaimRequest struct {
-	Contract     string                   `json:"contract"`
-	Token        string                   `json:"token"`
-	JobID        string                   `json:"jobId"`
-	SessionEpoch uint64                   `json:"sessionEpoch"`
-	Confirmed    bool                     `json:"confirmed"`
-	Observation  sourceimport.Observation `json:"observation"`
+	Contract         string                   `json:"contract"`
+	Token            string                   `json:"token"`
+	JobID            string                   `json:"jobId"`
+	SessionEpoch     uint64                   `json:"sessionEpoch"`
+	Confirmed        bool                     `json:"confirmed"`
+	Observation      sourceimport.Observation `json:"observation"`
+	requireAdmission bool
 }
 
 func (owner *importPlanOwner) claimSource(input sourceClaimRequest, epoch uint64) (*sourceStoredPlan, error) {
@@ -88,16 +92,18 @@ func (owner *importPlanOwner) claimSource(input sourceClaimRequest, epoch uint64
 	if stored == nil || owner.workspaceID == "" || input.Contract != sourceimport.Contract {
 		return nil, fmt.Errorf("source_import.plan.unknown")
 	}
-	if !owner.now().Before(stored.expires) {
-		stored.cleanup()
-		delete(owner.sourcePlans, input.Token)
-		return nil, fmt.Errorf("source_import.plan.expired")
-	}
-	if stored.claimed {
-		return nil, fmt.Errorf("source_import.plan.consumed")
-	}
 	if stored.epoch != epoch || input.SessionEpoch != epoch {
 		return nil, fmt.Errorf("source_import.session_changed")
+	}
+	if !owner.now().Before(stored.expires) {
+		stored.cleanup()
+		if stored.jobID == "" {
+			delete(owner.sourcePlans, input.Token)
+		}
+		return nil, fmt.Errorf("source_import.plan.expired")
+	}
+	if stored.claimed || stored.closed {
+		return nil, fmt.Errorf("source_import.plan.consumed")
 	}
 	if !input.Confirmed || !stored.plan.CanApply {
 		return nil, fmt.Errorf("source_import.confirmation_required")
@@ -107,6 +113,9 @@ func (owner *importPlanOwner) claimSource(input sourceClaimRequest, epoch uint64
 	}
 	if input.JobID == "" || len(input.JobID) > 80 || strings.ContainsAny(input.JobID, "\x00\r\n/\\") {
 		return nil, fmt.Errorf("source_import.job.invalid")
+	}
+	if (stored.jobID != "" || input.requireAdmission) && stored.jobID != input.JobID {
+		return nil, fmt.Errorf("source_import.job.binding_conflict")
 	}
 	for _, attachment := range stored.plan.Attachments {
 		key := sourceimport.Key{Provider: stored.plan.Provider, ContainerID: stored.plan.ContainerID, TableID: attachment.TableID, FieldID: attachment.FieldID, RecordID: attachment.RecordID, ObjectID: attachment.ID}
@@ -124,7 +133,7 @@ func (owner *importPlanOwner) uploadSource(token string, epoch uint64, key sourc
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	stored := owner.sourcePlans[token]
-	if stored == nil || stored.claimed || stored.epoch != epoch || !owner.now().Before(stored.expires) || !stored.plan.CanApply {
+	if stored == nil || stored.claimed || stored.closed || stored.epoch != epoch || !owner.now().Before(stored.expires) || !stored.plan.CanApply {
 		return fmt.Errorf("source_import.attachment.plan_invalid")
 	}
 	if key.Provider != stored.plan.Provider || key.ContainerID != stored.plan.ContainerID {
@@ -150,6 +159,84 @@ func (owner *importPlanOwner) uploadSource(token string, epoch uint64, key sourc
 	}
 	stored.handles[key] = handle
 	return nil
+}
+
+type sourceLifecycleRequest struct {
+	Token        string `json:"token"`
+	JobID        string `json:"jobId"`
+	SessionEpoch uint64 `json:"sessionEpoch"`
+	State        string `json:"state,omitempty"`
+}
+
+func (owner *importPlanOwner) startSource(ctx context.Context, input sourceLifecycleRequest, epoch uint64, journal sourceimport.Journal) (sourceimport.Result, error) {
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	stored := owner.sourcePlans[input.Token]
+	if stored == nil || stored.claimed || stored.closed || !stored.plan.CanApply || !owner.now().Before(stored.expires) {
+		return sourceimport.Result{}, fmt.Errorf("source_import.plan.unknown")
+	}
+	if input.SessionEpoch != epoch || stored.epoch != epoch {
+		return sourceimport.Result{}, fmt.Errorf("source_import.session_changed")
+	}
+	if input.State != "" || input.JobID == "" || len(input.JobID) > 80 || strings.ContainsAny(input.JobID, "\x00\r\n/\\") || (stored.jobID != "" && stored.jobID != input.JobID) {
+		return sourceimport.Result{}, fmt.Errorf("source_import.job.binding_conflict")
+	}
+	for _, other := range owner.sourcePlans {
+		if other != stored && other.jobID == input.JobID {
+			return sourceimport.Result{}, fmt.Errorf("source_import.job.binding_conflict")
+		}
+	}
+	stored.jobID = input.JobID
+	result := sourceimport.InitialResult(stored.plan, input.JobID, epoch, "preparing")
+	if err := journal.Start(ctx, result); err != nil {
+		return sourceimport.Result{}, err
+	}
+	return journal.Read(ctx, input.JobID)
+}
+
+func (owner *importPlanOwner) finishSourcePreparation(ctx context.Context, input sourceLifecycleRequest, epoch uint64, journal sourceimport.Journal) (sourceimport.Result, error) {
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	stored := owner.sourcePlans[input.Token]
+	if stored == nil || stored.claimed || stored.jobID != input.JobID {
+		return sourceimport.Result{}, fmt.Errorf("source_import.plan.consumed")
+	}
+	if input.SessionEpoch != epoch || stored.epoch != epoch {
+		return sourceimport.Result{}, fmt.Errorf("source_import.session_changed")
+	}
+	if input.State != "failed" && input.State != "cancelled" {
+		return sourceimport.Result{}, fmt.Errorf("source_import.job.state_invalid")
+	}
+	result, err := journal.Read(ctx, input.JobID)
+	if err != nil {
+		return sourceimport.Result{}, err
+	}
+	expected := sourceimport.InitialResult(stored.plan, input.JobID, epoch, "preparing")
+	if result.Provider != expected.Provider || result.ContainerID != expected.ContainerID || result.SourceName != expected.SourceName || result.Total != expected.Total || result.SessionEpoch != epoch || result.ReadWindow != expected.ReadWindow || !reflect.DeepEqual(result.Fields, expected.Fields) {
+		return sourceimport.Result{}, fmt.Errorf("source_import.job.binding_conflict")
+	}
+	if stored.closed {
+		return result, nil
+	}
+	if result.Stage == "preparing" && (result.State == "failed" || result.State == "cancelled") && result.FinishedAt != "" && result.Created == 0 && len(result.Batches) == 0 && len(result.Targets) == 0 && result.SessionEpoch == epoch {
+		// Reconcile a lost preparation-settlement acknowledgement without
+		// rewriting its terminal facts or issuing a replacement job.
+		stored.closed = true
+		stored.cleanup()
+		return result, nil
+	}
+	if result.State != "interrupted" || result.Stage != "preparing" || result.Created != 0 || len(result.Batches) != 0 || len(result.Targets) != 0 || result.SessionEpoch != epoch {
+		return sourceimport.Result{}, fmt.Errorf("source_import.job.already_started")
+	}
+	result.State = input.State
+	result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	result.Diagnostics = append(result.Diagnostics, sourceimport.Diagnostic{Code: "source_import.preparation_stopped", Message: "来源核对或附件读取阶段停止；尚未创建业务目标，请重新预检", Blocking: true})
+	if err := journal.Finish(ctx, result); err != nil {
+		return sourceimport.Result{}, err
+	}
+	stored.closed = true
+	stored.cleanup()
+	return journal.Read(ctx, input.JobID)
 }
 
 func (stored *sourceStoredPlan) Stage(ctx context.Context, job, table, field string, attachment sourceimport.Attachment) (string, error) {

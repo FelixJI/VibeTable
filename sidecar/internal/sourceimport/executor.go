@@ -57,14 +57,7 @@ func (executor *Executor) Execute(ctx context.Context, plan Plan, jobID string, 
 	}
 	plan = frozen
 	work := &execution{owner: executor, plan: plan, mappings: map[Key]Mapping{}, revisions: map[string]string{}, definitions: map[Key]v2.FieldDefinition{},
-		result: Result{Contract: Contract, JobID: jobID, Provider: plan.Provider, ContainerID: plan.ContainerID, SourceName: plan.DisplayName, State: "interrupted", Stage: "schema",
-			Targets: []Target{}, Batches: []Batch{}, Diagnostics: append([]Diagnostic{}, plan.Diagnostics...), Fields: []FieldSummary{}, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), SessionEpoch: epoch, ReadWindow: plan.ReadWindow}}
-	for _, table := range plan.Tables {
-		work.result.Total += len(table.Records)
-		for _, field := range table.Fields {
-			work.result.Fields = append(work.result.Fields, FieldSummary{work.key(table.SourceID, field.Source.ID, ""), field.Source.Kind, field.Policy, field.Source.Definition})
-		}
-	}
+		result: InitialResult(plan, jobID, epoch, "schema")}
 	if err := executor.journal.Start(ctx, work.result); err != nil {
 		return Result{}, err
 	}
@@ -123,6 +116,21 @@ func (executor *Executor) Execute(ctx context.Context, plan Plan, jobID string, 
 		return work.unavailableResult(), fmt.Errorf("source_import.result_unavailable: %w", readErr)
 	}
 	return result, err
+}
+
+// InitialResult derives task facts only from the frozen Go plan. Admission
+// reports are durable before Host downloads; no renderer supplies row counts.
+func InitialResult(plan Plan, jobID string, epoch uint64, stage string) Result {
+	result := Result{Contract: Contract, JobID: jobID, Provider: plan.Provider, ContainerID: plan.ContainerID, SourceName: plan.DisplayName, State: "interrupted", Stage: stage,
+		Targets: []Target{}, Batches: []Batch{}, Diagnostics: append([]Diagnostic{}, plan.Diagnostics...), Fields: []FieldSummary{}, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), SessionEpoch: epoch, ReadWindow: plan.ReadWindow}
+	for _, table := range plan.Tables {
+		result.Total += len(table.Records)
+		for _, field := range table.Fields {
+			result.Fields = append(result.Fields, FieldSummary{Key{Provider: plan.Provider, ContainerID: plan.ContainerID, TableID: table.SourceID, FieldID: field.Source.ID}, field.Source.Kind, field.Policy, field.Source.Definition})
+		}
+	}
+	result.NotSubmitted = result.Total
+	return result
 }
 
 func (work *execution) unavailableResult() Result {

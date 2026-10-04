@@ -70,6 +70,28 @@ func registerSourceImportRoutes(r *router.Router[*core.RequestEvent], pb core.Ap
 		}
 		return request.JSON(http.StatusOK, reply)
 	})
+	r.POST(sourceImportPath+"/start", func(request *core.RequestEvent) error {
+		var input sourceLifecycleRequest
+		if err := decodeImportPlanBody(request, &input); err != nil {
+			return writeFieldError(request, err)
+		}
+		result, err := owner.startSource(request.Request.Context(), input, epoch, journal)
+		if err != nil {
+			return writeFieldError(request, err)
+		}
+		return request.JSON(http.StatusOK, sourceimport.Project(result))
+	})
+	r.POST(sourceImportPath+"/finish", func(request *core.RequestEvent) error {
+		var input sourceLifecycleRequest
+		if err := decodeImportPlanBody(request, &input); err != nil {
+			return writeFieldError(request, err)
+		}
+		result, err := owner.finishSourcePreparation(request.Request.Context(), input, epoch, journal)
+		if err != nil {
+			return writeFieldError(request, err)
+		}
+		return request.JSON(http.StatusOK, sourceimport.Project(result))
+	})
 	r.POST(sourceImportPath+"/upload", func(request *core.RequestEvent) error {
 		// Metadata identities live in the frozen plan. The Host transports only
 		// their key and real bytes; URLs and arbitrary file paths are rejected.
@@ -133,6 +155,7 @@ func registerSourceImportRoutes(r *router.Router[*core.RequestEvent], pb core.Ap
 		if err := decodeImportPlanBody(request, &input); err != nil {
 			return writeFieldError(request, err)
 		}
+		input.requireAdmission = true
 		stored, err := owner.claimSource(input, epoch)
 		if err != nil {
 			return writeFieldError(request, err)

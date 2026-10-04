@@ -42,6 +42,8 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
+	sourceImportPath + "/start":                    {},
+	sourceImportPath + "/finish":                   {},
 	sourceImportPath + "/execute":                  {},
 	pluginStorePath:                                {},
 	"/api/vibetable/v2/schema/tables":              {},

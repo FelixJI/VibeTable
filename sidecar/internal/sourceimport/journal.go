@@ -25,7 +25,7 @@ func (journal *PocketBaseJournal) Start(ctx context.Context, result Result) erro
 	if !validID(result.JobID) || len(result.JobID) > 128 || result.Contract != Contract || result.Total < 0 || result.Total > MaxRecords {
 		return fmt.Errorf("source_import.job.invalid")
 	}
-	if result.State != "interrupted" || len(result.Batches) != 0 || len(result.Targets) != 0 || result.Created != 0 {
+	if result.State != "interrupted" || len(result.Batches) != 0 || len(result.Targets) != 0 || result.Created != 0 || result.FinishedAt != "" || result.UnknownBatch != "" || result.UnknownRecords != 0 || (result.Stage != "preparing" && result.Stage != "schema") {
 		return fmt.Errorf("source_import.job.initial_state")
 	}
 	return journal.app.RunInTransaction(func(tx core.App) error {
@@ -37,7 +37,25 @@ func (journal *PocketBaseJournal) Start(ctx context.Context, result Result) erro
 			return err
 		}
 		if existing != nil {
-			return fmt.Errorf("source_import.job.already_started")
+			var prepared Result
+			if err := json.Unmarshal([]byte(existing.GetString("result_json")), &prepared); err != nil {
+				return err
+			}
+			// Only an untouched admission may advance once to execution. Already
+			// executing or terminal jobs never become restartable on a new token.
+			if prepared.State != "interrupted" || prepared.Stage != "preparing" || prepared.FinishedAt != "" || prepared.UnknownBatch != "" || prepared.Created != 0 || prepared.UnknownRecords != 0 ||
+				prepared.Provider != result.Provider || prepared.ContainerID != result.ContainerID || prepared.SourceName != result.SourceName || prepared.SessionEpoch != result.SessionEpoch || prepared.Total != result.Total || prepared.ReadWindow != result.ReadWindow || !reflect.DeepEqual(prepared.Fields, result.Fields) {
+				return fmt.Errorf("source_import.job.already_started")
+			}
+			if result.Stage == "preparing" {
+				return nil
+			}
+			prepared.Stage = "schema"
+			existing.Set("result_json", prepared)
+			if err := tx.Save(existing); err != nil {
+				return err
+			}
+			return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
 		}
 		collection, err := tx.FindCollectionByNameOrId(JobsCollection)
 		if err != nil {
@@ -230,6 +248,7 @@ func (journal *PocketBaseJournal) Finish(ctx context.Context, result Result) err
 		if initial.Provider != result.Provider || initial.ContainerID != result.ContainerID || initial.Total != result.Total || initial.SessionEpoch != result.SessionEpoch {
 			return fmt.Errorf("source_import.job.binding_conflict")
 		}
+		result.StartedAt = initial.StartedAt
 		if result.UnknownBatch != "" {
 			_, found, err := readBatch(tx, result.JobID, result.UnknownBatch)
 			if err != nil {

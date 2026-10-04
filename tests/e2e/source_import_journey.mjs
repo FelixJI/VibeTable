@@ -18,8 +18,12 @@ import path from "node:path";
 //                workspaceId, sessionEpoch, taskId, state, error }.
 //              `action` only reports control completion; the terminal task
 //              `state` carries succeeded/failed/cancelled. drift/cancel end
-//              as completed controls with failed/cancelled tasks and never
-//              write a Go journal entry.
+//              as completed controls with failed/cancelled tasks, and Go
+//              durably records the SAME job as a pre-submission terminal
+//              receipt (private /start persists "preparing" before any
+//              download; /finish writes failed/cancelled with zero
+//              submitted work) — AC7 requires the durable failure result,
+//              never a silently missing journal entry.
 //
 // Public receipt projection contract: `data.importHistory` migrations strip
 // all batch mappings and field definitions. Identity therefore comes only
@@ -72,6 +76,13 @@ export const EXPECTED_SYNTHETIC_SOURCE = {
     { table: "c", code: "C-002", field: "ca", targets: ["A-001"] },
   ],
   attachment: { table: "a", field: "files", code: "A-001", name: "qa-source-import.png" },
+  // Pre-execute terminal scenarios run the same 6-record source shape under
+  // scenario-specific identities; their durable receipts must show zero
+  // submitted work (AC7) with the current session epoch.
+  negative: {
+    drift: { containerId: "qa-source-drift", sourceName: "QA 来源漂移", state: "failed" },
+    cancel: { containerId: "qa-source-cancel", sourceName: "QA 来源取消", state: "cancelled" },
+  },
 };
 
 export function sourceImportRequestText(mode) {
@@ -202,6 +213,10 @@ export function verifyMigrationReceipt(entry, expectation) {
   "readWindow timestamps are missing");
   require(typeof entry.startedAt === "string" && entry.startedAt, "startedAt is missing");
   require(typeof entry.finishedAt === "string" && entry.finishedAt, "finishedAt is missing");
+  if (Number.isInteger(expectation?.sessionEpoch)) {
+    require(entry.sessionEpoch === expectation.sessionEpoch,
+      `sessionEpoch ${entry.sessionEpoch} !== ${expectation.sessionEpoch}`);
+  }
   for (const key of ["token", "sessionSecret", "url", "path", "accessToken", "credential"]) {
     require(!(key in entry), `receipt leaks forbidden key "${key}"`);
   }
@@ -416,30 +431,111 @@ export function validateSyntheticExpectation(expectation) {
   if (!Array.isArray(expectation.edges) || expectation.edges.length === 0) {
     problems.push("fixture must declare relation edges");
   }
+  for (const [mode, negative] of Object.entries(expectation.negative ?? {})) {
+    if (typeof negative?.containerId !== "string" || !negative.containerId
+      || typeof negative?.sourceName !== "string" || !negative.sourceName
+      || ![
+        "failed", "cancelled",
+      ].includes(negative.state)) {
+      problems.push(`fixture negative scenario ${mode} is not finalized`);
+    }
+  }
+  if (!expectation.negative?.drift || !expectation.negative?.cancel) {
+    problems.push("fixture must declare drift and cancel negative scenarios");
+  }
   return problems;
 }
 
 /**
- * Drift/cancel terminate before Go journal writes. The verifiable contract
- * is negative: the durable journal and its committed receipts are exactly
- * what they were before the request — never a wait for a migration entry
- * that is supposed to stay nonexistent.
+ * A pre-execute terminal receipt (drift/cancel after user confirmation):
+ * Go persists the same job id with a durable failed/cancelled result while
+ * NOTHING was submitted — created 0, notSubmitted covering the full total,
+ * no targets, no batches, and at least one diagnostic explaining the stop.
+ * This is the AC7 contract: the failure is reported authoritatively, not
+ * silently omitted from history.
  */
-export function assertJournalUnchanged(beforeHistory, afterHistory) {
-  const beforeIds = migrationJobIds(beforeHistory);
-  const afterIds = migrationJobIds(afterHistory);
-  const beforeEntries = new Map((beforeHistory?.migrations ?? [])
-    .map((entry) => [entry.jobId, JSON.stringify(entry)]));
+export function verifyPreSubmissionTerminalReceipt(entry, expectation) {
   const problems = [];
-  for (const id of afterIds) {
-    if (!beforeIds.has(id)) problems.push(`journal gained unexpected job ${id}`);
-    else if (JSON.stringify((afterHistory?.migrations ?? []).find((entry) => entry.jobId === id))
-      !== beforeEntries.get(id)) {
-      problems.push(`journal entry ${id} changed after a no-write control`);
+  const require = (condition, message) => { if (!condition) problems.push(message); };
+  require(entry != null && typeof entry === "object", "pre-submission receipt is missing");
+  if (problems.length) return problems;
+  require(entry.state === expectation.state,
+    `state is ${entry.state}, expected terminal ${expectation.state}`);
+  require(entry.state !== "succeeded", "pre-submission receipt claims success");
+  require(Number.isInteger(entry.created), "created is not an integer");
+  require(Number.isInteger(entry.total), "total is not an integer");
+  require(Number.isInteger(entry.notSubmitted), "notSubmitted is not an integer");
+  require(Number.isInteger(entry.unknownRecords), "unknownRecords is not an integer");
+  require(entry.created + entry.notSubmitted + entry.unknownRecords === entry.total,
+    `counts do not add up: ${entry.created}+${entry.notSubmitted}+${entry.unknownRecords}!==${entry.total}`);
+  require(entry.created === 0, `created is ${entry.created}, no work may be submitted`);
+  require(entry.unknownRecords === 0, "pre-submission stop cannot leave unknown records");
+  require(entry.notSubmitted === entry.total,
+    `notSubmitted ${entry.notSubmitted} must cover the whole total ${entry.total}`);
+  if (Number.isInteger(expectation.totalRecords)) {
+    require(entry.total === expectation.totalRecords,
+      `total ${entry.total} !== fixture records ${expectation.totalRecords}`);
+  }
+  require(!entry.unknownBatch, `receipt carries unknownBatch ${entry.unknownBatch}`);
+  require(entry.provider === expectation.provider,
+    `provider ${entry.provider} !== ${expectation.provider}`);
+  require(entry.containerId === expectation.containerId,
+    `containerId ${entry.containerId} !== ${expectation.containerId}`);
+  require(entry.sourceName === expectation.sourceName,
+    `sourceName ${entry.sourceName} !== ${expectation.sourceName}`);
+  require(Array.isArray(entry.targets) && entry.targets.length === 0,
+    `targets must stay empty, found ${entry.targets?.length}`);
+  require(Array.isArray(entry.batches) && entry.batches.length === 0,
+    `batches must stay empty, found ${entry.batches?.length}`);
+  require(Array.isArray(entry.diagnostics) && entry.diagnostics.length > 0
+    && entry.diagnostics.every((item) => typeof item?.code === "string" && item.code),
+  "diagnostics must carry at least one coded reason");
+  // Go's pre-execute finish settles an untouched admission: stage stays
+  // "preparing" and finishedAt is always written (Host validates the same).
+  require(entry.stage === "preparing",
+    `stage is ${entry.stage}, a settled admission must stay in preparing`);
+  require(typeof entry.startedAt === "string" && entry.startedAt, "startedAt is missing");
+  require(typeof entry.finishedAt === "string" && entry.finishedAt,
+    "a settled pre-submission receipt must carry finishedAt");
+  if (Number.isInteger(expectation.sessionEpoch)) {
+    require(entry.sessionEpoch === expectation.sessionEpoch,
+      `sessionEpoch ${entry.sessionEpoch} !== ${expectation.sessionEpoch}`);
+  }
+  for (const key of ["token", "sessionSecret", "url", "path", "accessToken", "credential"]) {
+    require(!(key in entry), `receipt leaks forbidden key "${key}"`);
+  }
+  return problems;
+}
+
+/**
+ * Structural contract for the negative controls: the durable journal gains
+ * EXACTLY the expected new pre-submission terminal jobs, every older entry
+ * stays byte-identical, and nothing is lost. The zero-effect half of the
+ * contract is verified separately against the receipts and the business
+ * authority queries.
+ */
+export function assertPreSubmissionTerminal(beforeHistory, afterHistory, expectedNewJobIds) {
+  const before = new Map((beforeHistory?.migrations ?? [])
+    .map((entry) => [entry.jobId, JSON.stringify(entry)]));
+  const after = new Map((afterHistory?.migrations ?? [])
+    .map((entry) => [entry.jobId, JSON.stringify(entry)]));
+  const expected = new Set(expectedNewJobIds ?? []);
+  const problems = [];
+  if (expected.size !== (expectedNewJobIds ?? []).length) {
+    problems.push("expected new job ids contain duplicates");
+  }
+  for (const id of expected) {
+    if (!after.has(id)) problems.push(`expected new terminal job ${id} is missing from history`);
+  }
+  for (const [id] of after) {
+    if (before.has(id)) {
+      if (after.get(id) !== before.get(id)) problems.push(`existing job ${id} changed after the negative controls`);
+    } else if (!expected.has(id)) {
+      problems.push(`journal gained unexpected job ${id}`);
     }
   }
-  for (const id of beforeIds) {
-    if (!afterIds.has(id)) problems.push(`journal lost job ${id}`);
+  for (const [id] of before) {
+    if (!after.has(id)) problems.push(`journal lost job ${id}`);
   }
   return problems;
 }
@@ -526,7 +622,11 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
 
   const afterSuccess = await history();
   const entry = (afterSuccess.migrations ?? []).find((item) => item.jobId === completed.taskId);
-  const receiptProblems = verifyMigrationReceipt(entry, EXPECTED_SYNTHETIC_SOURCE);
+  const successSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  const receiptProblems = verifyMigrationReceipt(entry, {
+    ...EXPECTED_SYNTHETIC_SOURCE, sessionEpoch: successSession.sessionEpoch,
+  });
   recorder.check("the durable Go receipt is a terminal success with every target and no secrets",
     receiptProblems.length === 0, { problems: receiptProblems, entry });
 
@@ -594,7 +694,9 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   const afterReopen = await history();
   const reopenedEntry = (afterReopen.migrations ?? [])
     .find((item) => item.jobId === completed.taskId);
-  const reopenProblems = verifyMigrationReceipt(reopenedEntry, EXPECTED_SYNTHETIC_SOURCE);
+  const reopenProblems = verifyMigrationReceipt(reopenedEntry, {
+    ...EXPECTED_SYNTHETIC_SOURCE, sessionEpoch: successSession.sessionEpoch,
+  });
   recorder.check("the migration receipt survives the workspace reopen unchanged",
     reopenProblems.length === 0, { problems: reopenProblems, reopenedEntry });
 
@@ -614,21 +716,132 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   await page.screenshot({ path: evidence("35-source-import-reopened.png"), fullPage: true });
   const baselineRowCount = await page.getByTestId("source-import-row").count();
 
-  // ---- Drift and cancel end as failed/cancelled tasks with no journal write ----
+  // ---- Pre-execute drift and cancel: durable terminal receipts, zero effects ----
+  // AC7: after user confirmation, an observation drift or a pre-execute
+  // cancellation must still produce an authoritative Go result. The Host
+  // terminal reply and the durable journal share the SAME job id.
   const beforeNegative = await history();
-  const expectedTerminal = { drift: "failed", cancel: "cancelled" };
+  const negativeEpoch = reopened.payload.session.sessionEpoch;
+  const totalFixtureRecords = EXPECTED_SYNTHETIC_SOURCE.tables
+    .reduce((sum, table) => sum + table.records, 0);
+  const negativeReceipts = new Map();
   for (const mode of ["drift", "cancel"]) {
+    const expectation = EXPECTED_SYNTHETIC_SOURCE.negative[mode];
     await writeControl(mode);
     const terminal = await waitForState(180_000, mode);
-    recorder.check(`the ${mode} control ends as a ${expectedTerminal[mode]} task, never succeeded`,
+    recorder.check(`the ${mode} control ends as a ${expectation.state} task`,
       terminal.action === "source-import-completed"
-        && terminal.state === expectedTerminal[mode], { terminal });
-    const problems = assertJournalUnchanged(beforeNegative, await history());
-    recorder.check(`${mode} adds no journal entry and mutates no committed receipt`,
-      problems.length === 0, { problems });
+        && terminal.state === expectation.state
+        && terminal.taskId != null, { terminal });
+    const afterMode = await history();
+    const negativeEntry = (afterMode.migrations ?? [])
+      .find((item) => item.jobId === terminal.taskId);
+    const problems = verifyPreSubmissionTerminalReceipt(negativeEntry, {
+      ...expectation,
+      provider: EXPECTED_SYNTHETIC_SOURCE.provider,
+      totalRecords: totalFixtureRecords,
+      sessionEpoch: negativeEpoch,
+    });
+    recorder.check(`${mode} persists a durable ${expectation.state} receipt with zero submitted work`,
+      problems.length === 0, { problems, negativeEntry });
+    negativeReceipts.set(terminal.taskId, JSON.stringify(negativeEntry));
   }
+  const afterNegatives = await history();
+  const structureProblems = assertPreSubmissionTerminal(
+    beforeNegative, afterNegatives, [...negativeReceipts.keys()]);
+  recorder.check("only the two pre-submission terminal receipts join the durable journal",
+    structureProblems.length === 0, { problems: structureProblems });
+
+  // The committed business authority — rows, relations, fields and the real
+  // attachment — is untouched by the negative runs (same public queries as
+  // the success phase).
+  const afterNegativeTables = await verifyLocalAuthority();
+  const negativeAttachmentTable = afterNegativeTables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
+  const afterNegativeFiles = await request("file.list", {
+    tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
+    recordId: negativeAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
+    fieldId: negativeAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
+  });
+  const authorityProblems = [
+    ...verifyRecordIdentityByCode({
+      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: afterNegativeTables }),
+    ...verifyRelationGraph({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables: afterNegativeTables }),
+    ...verifyAttachmentBinding({
+      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: afterNegativeTables,
+      fileListing: afterNegativeFiles }),
+  ];
+  recorder.check("drift and cancel leave committed rows, relations and the attachment untouched",
+    authorityProblems.length === 0, { problems: authorityProblems });
+
+  // The management page renders both new terminal outcomes.
+  await openManagement();
   await page.getByTestId("import-history-refresh").click();
-  recorder.check("drift and cancel leave the management migration list unchanged",
-    (await page.getByTestId("source-import-row").count()) === baselineRowCount,
+  for (const [taskId, snapshot] of negativeReceipts) {
+    const row = page.locator(
+      `[data-testid="source-import-row"][data-job-id="${taskId}"]`);
+    await row.waitFor({ state: "visible", timeout: 60_000 });
+    const receipt = JSON.parse(snapshot);
+    recorder.check(`the management page renders job ${taskId} as terminal ${receipt.state}`,
+      (await row.getAttribute("data-state")) === receipt.state, { taskId });
+  }
+  recorder.check("the migration list gained exactly the two negative terminal rows",
+    (await page.getByTestId("source-import-row").count()) === baselineRowCount + 2,
     { baselineRowCount });
+  await page.screenshot({ path: evidence("35-source-import-negative.png"), fullPage: true });
+
+  // ---- Final reopen: every receipt persists by job id, byte-identical ----
+  const negativeSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const negativeClosed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
+  recorder.check("the negative-control acceptance closes the actual workspace",
+    negativeClosed.result?.state === "closed", { negativeClosed });
+  await beginWritableWorkspaceBootstrapCapture(
+    page, negativeSession.sessionEpoch, "workspace.open");
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const finalReopened = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("the final reopen advances the session epoch again",
+    finalReopened.payload.session.workspaceId === negativeSession.workspaceId
+      && finalReopened.payload.session.sessionEpoch > negativeSession.sessionEpoch,
+    { finalReopened });
+
+  const afterFinalReopen = await history();
+  const persistenceProblems = [];
+  for (const [taskId, snapshot] of negativeReceipts) {
+    const persisted = (afterFinalReopen.migrations ?? [])
+      .find((item) => item.jobId === taskId);
+    if (!persisted || JSON.stringify(persisted) !== snapshot) {
+      persistenceProblems.push(`negative job ${taskId} did not persist byte-identically`);
+    }
+  }
+  const finalSuccessEntry = (afterFinalReopen.migrations ?? [])
+    .find((item) => item.jobId === completed.taskId);
+  if (!finalSuccessEntry || verifyMigrationReceipt(finalSuccessEntry, {
+    ...EXPECTED_SYNTHETIC_SOURCE, sessionEpoch: successSession.sessionEpoch,
+  }).length !== 0) {
+    persistenceProblems.push("the success receipt did not persist with its original facts");
+  }
+  recorder.check("after the final reopen every migration receipt persists by job id unchanged",
+    persistenceProblems.length === 0, { problems: persistenceProblems });
+
+  // Offline stability of the committed success data one last time.
+  const finalTables = await verifyLocalAuthority();
+  const finalAttachmentTable = finalTables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
+  const finalFiles = await request("file.list", {
+    tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
+    recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
+    fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
+  });
+  const finalAuthorityProblems = [
+    ...verifyRecordIdentityByCode({
+      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
+    ...verifyRelationGraph({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
+    ...verifyAttachmentBinding({
+      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables, fileListing: finalFiles }),
+  ];
+  recorder.check("the committed success data stays offline-stable across the final reopen",
+    finalAuthorityProblems.length === 0, { problems: finalAuthorityProblems });
 }

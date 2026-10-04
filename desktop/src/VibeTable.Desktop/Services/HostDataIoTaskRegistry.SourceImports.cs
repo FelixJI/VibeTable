@@ -238,9 +238,23 @@ internal sealed partial class HostDataIoTaskRegistry
         try
         {
             CancellationToken token = session.Lifetime.Token;
-            EnsureSourceCurrent(session, token);
+            EnsureSourceCurrent(session, CancellationToken.None);
             UpdateSourceTask(task, TaskStates.Running, "重新核对来源版本");
             HostSourceImportPreview preview = session.Preview!;
+            // Admission records the confirmed task before any file work. A
+            // queued cancellation still needs a durable cancelled receipt.
+            using (var admission = CancellationTokenSource.CreateLinkedTokenSource(session.Lease.CancellationToken))
+            {
+                admission.CancelAfter(TimeSpan.FromSeconds(10));
+                JsonElement started = await StartSourceCurrent(session, () => session.Gateway.StartSourceImportAsync(
+                    preview.Token, task.Status.TaskId, session.Snapshot.Identity.SessionEpoch, admission.Token)).ConfigureAwait(false);
+                HostSourceImportResult result = ValidateSourceResult(task, started);
+                if (result.State != "interrupted" || started.GetProperty("stage").GetString() != "preparing"
+                    || result.Created != 0 || started.GetProperty("unknownRecords").GetInt32() != 0
+                    || started.GetProperty("notSubmitted").GetInt32() != result.Total)
+                    throw new JsonException("Invalid source import admission receipt.");
+            }
+            EnsureSourceCurrent(session, token);
             HostSourceImportAttachment[] attachments = preview.Plan.GetProperty("attachments")
                 .Deserialize<HostSourceImportAttachment[]>(Wire) ?? [];
             if (attachments.Length > 500 || attachments.Any(a => a.Size < 0 || a.Size > 32 * 1024 * 1024)
@@ -307,22 +321,47 @@ internal sealed partial class HostDataIoTaskRegistry
                     using var reconcile = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                     JsonElement wire = await StartSourceCurrent(session, () => session.Gateway
                         .ReadSourceImportResultAsync(task.Status.TaskId, reconcile.Token)).ConfigureAwait(false);
-                    CompleteSourceResult(task, wire);
-                    receiptConfirmed = true;
-                    return;
+                    HostSourceImportResult receipt = ValidateSourceResult(task, wire);
+                    // A rejected execute can leave its durable admission in
+                    // preparing. Only Go's unclaimed-token finish may settle it.
+                    if (receipt.State != "interrupted" || wire.GetProperty("stage").GetString() != "preparing")
+                    {
+                        CompleteSourceResult(task, wire);
+                        receiptConfirmed = true;
+                        return;
+                    }
                 }
                 catch (Exception) { /* Keep the outcome explicitly unconfirmed. */ }
             }
-            UpdateSourceTask(task,
-                submitted || session.Retired ? TaskStates.Aborted : session.Lifetime.IsCancellationRequested
-                    ? TaskStates.Cancelled : TaskStates.Failed,
-                submitted ? "迁移结果待核实；请核对 Go 持久结果，不能自动重试。"
-                    : "迁移尚未提交；请重新预检来源与附件。", error: true);
         }
         finally
         {
             if (!receiptConfirmed && session.IsCurrent() && session.Preview is { } unused)
             {
+                try
+                {
+                    using var settlement = CancellationTokenSource.CreateLinkedTokenSource(session.Lease.CancellationToken);
+                    settlement.CancelAfter(TimeSpan.FromSeconds(5));
+                    string state = session.Lifetime.IsCancellationRequested ? "cancelled" : "failed";
+                    JsonElement finished = await StartSourceCurrent(session, () => session.Gateway.FinishSourceImportAsync(
+                        unused.Token, task.Status.TaskId, session.Snapshot.Identity.SessionEpoch, state, settlement.Token))
+                        .ConfigureAwait(false);
+                    HostSourceImportResult result = ValidateSourceResult(task, finished);
+                    if (result.State != state || result.Created != 0 || finished.GetProperty("unknownRecords").GetInt32() != 0
+                        || finished.GetProperty("notSubmitted").GetInt32() != result.Total
+                        || !finished.TryGetProperty("finishedAt", out JsonElement finishedAt)
+                        || finishedAt.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(finishedAt.GetString()))
+                        throw new JsonException("Invalid source import preparation settlement.");
+                    CompleteSourceResult(task, finished);
+                    receiptConfirmed = true;
+                }
+                catch (Exception error)
+                {
+                    // Claimed or unreachable plans remain under Go authority;
+                    // never fabricate a zero-count terminal result.
+                    System.Diagnostics.Trace.TraceWarning(
+                        $"Source import preparation finish was not acknowledged: {error.GetType().Name}");
+                }
                 try
                 {
                     // Cancellation of this task must not cancel its cleanup.
@@ -346,6 +385,9 @@ internal sealed partial class HostDataIoTaskRegistry
                         $"Source import staging discard was not acknowledged: {error.GetType().Name}");
                 }
             }
+            if (!receiptConfirmed)
+                UpdateSourceTask(task, TaskStates.Aborted,
+                    "迁移结果待核实；请核对 Go 持久结果，不能自动重试。", error: true);
             lock (_gate)
             {
                 string? id = _sourceSessions.FirstOrDefault(p => ReferenceEquals(p.Value, session)).Key;
@@ -360,11 +402,7 @@ internal sealed partial class HostDataIoTaskRegistry
 
     private void CompleteSourceResult(SourceTask task, JsonElement wire)
     {
-        SourceSession session = task.Session!;
-        EnsureSourceCurrent(session, CancellationToken.None);
-        HostSourceImportResult result = HostSourceImportResult.Parse(wire);
-        if (result.JobId != task.Status.TaskId || result.SessionEpoch != session.Snapshot.Identity.SessionEpoch)
-            throw new JsonException("Source import receipt belongs to another job or epoch.");
+        HostSourceImportResult result = ValidateSourceResult(task, wire);
         string state = result.State switch
         {
             "succeeded" => TaskStates.Succeeded,
@@ -374,6 +412,16 @@ internal sealed partial class HostDataIoTaskRegistry
         };
         UpdateSourceTask(task, state, result.State == "succeeded" ? "迁移完成" : "迁移未完整完成，请核对已创建目标。",
             result, state != TaskStates.Succeeded);
+    }
+
+    private static HostSourceImportResult ValidateSourceResult(SourceTask task, JsonElement wire)
+    {
+        SourceSession session = task.Session!;
+        EnsureSourceCurrent(session, CancellationToken.None);
+        HostSourceImportResult result = HostSourceImportResult.Parse(wire);
+        if (result.JobId != task.Status.TaskId || result.SessionEpoch != session.Snapshot.Identity.SessionEpoch)
+            throw new JsonException("Source import receipt belongs to another job or epoch.");
+        return result;
     }
 
     private void UpdateSourceTask(SourceTask task, string state, string message,

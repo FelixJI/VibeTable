@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  EXPECTED_SYNTHETIC_SOURCE, SOURCE_IMPORT_MODES, assertJournalUnchanged,
+  EXPECTED_SYNTHETIC_SOURCE, SOURCE_IMPORT_MODES, assertPreSubmissionTerminal,
   buildCodeIndex, buildTableTargets, migrationJobIds, parseSourceImportState,
   relationValueIds, resolveFieldColumns, sourceImportRequestText,
   validateSyntheticExpectation, verifyAttachmentBinding, verifyMigrationReceipt,
-  verifyRecordIdentityByCode, verifyRelationGraph,
+  verifyPreSubmissionTerminalReceipt, verifyRecordIdentityByCode, verifyRelationGraph,
 } from "./source_import_journey.mjs";
 
 // A mirror of the PUBLIC receipt projection: targets carry the authoritative
@@ -92,6 +92,33 @@ function verifiedTables(corrupt) {
   }
   if (corrupt) corrupt(tables);
   return tables;
+}
+
+function negativeEntry(mode, { jobId } = {}) {
+  const expectation = EXPECTED_SYNTHETIC_SOURCE.negative[mode];
+  return {
+    contract: "vibetable.source-import.v1", jobId: jobId ?? `task-${mode}`,
+    provider: EXPECTED_SYNTHETIC_SOURCE.provider,
+    containerId: expectation.containerId,
+    sourceName: expectation.sourceName,
+    state: expectation.state, stage: "preparing",
+    created: 0, total: 6, notSubmitted: 6, unknownRecords: 0,
+    targets: [], batches: [],
+    diagnostics: [{ code: "source_import.preparation_stopped", message: "来源核对或附件读取阶段停止；尚未创建业务目标，请重新预检", blocking: true }],
+    startedAt: "2026-10-04T08:10:00Z", finishedAt: "2026-10-04T08:10:01Z",
+    sessionEpoch: 4,
+    readWindow: { startedAt: "2026-10-04T08:10:00Z", finishedAt: "2026-10-04T08:10:00Z", consistency: "snapshot" },
+  };
+}
+
+function negativeExpectation(mode, overrides = {}) {
+  return {
+    ...EXPECTED_SYNTHETIC_SOURCE.negative[mode],
+    provider: EXPECTED_SYNTHETIC_SOURCE.provider,
+    totalRecords: 6,
+    sessionEpoch: 4,
+    ...overrides,
+  };
 }
 
 test("control request text is the bare strict mode word only", () => {
@@ -293,17 +320,76 @@ test("the frozen QA fixture expectation validates as final", () => {
     relations: EXPECTED_SYNTHETIC_SOURCE.relations.filter((item) => item.targetTable !== "a"),
   };
   assert.ok(validateSyntheticExpectation(noCycle).some((p) => p.includes("loop")));
+  const badNegative = {
+    ...EXPECTED_SYNTHETIC_SOURCE,
+    negative: { drift: EXPECTED_SYNTHETIC_SOURCE.negative.drift },
+  };
+  assert.ok(validateSyntheticExpectation(badNegative).some((p) => p.includes("drift and cancel")));
+  const wrongNegativeState = {
+    ...EXPECTED_SYNTHETIC_SOURCE,
+    negative: { drift: { ...EXPECTED_SYNTHETIC_SOURCE.negative.drift, state: "succeeded" },
+      cancel: EXPECTED_SYNTHETIC_SOURCE.negative.cancel },
+  };
+  assert.ok(validateSyntheticExpectation(wrongNegativeState).some((p) => p.includes("drift")));
 });
 
-test("no-write controls leave the durable journal byte-identical", () => {
+test("pre-submission terminal receipts verify zero submitted work", () => {
+  for (const mode of ["drift", "cancel"]) {
+    assert.deepEqual(
+      verifyPreSubmissionTerminalReceipt(negativeEntry(mode), negativeExpectation(mode)), []);
+  }
+  const corrupt = (mutate, mode = "drift") => {
+    const entry = negativeEntry(mode);
+    mutate(entry);
+    return verifyPreSubmissionTerminalReceipt(entry, negativeExpectation(mode));
+  };
+  assert.deepEqual(verifyPreSubmissionTerminalReceipt(null, negativeExpectation("drift")),
+    ["pre-submission receipt is missing"]);
+  assert.ok(corrupt((entry) => { entry.state = "succeeded"; }).some((p) => p.includes("claims success")));
+  assert.ok(corrupt((entry) => { entry.state = "cancelled"; }).some((p) => p.includes("expected terminal failed")));
+  assert.ok(corrupt((entry) => { entry.created = 1; entry.total = 6; entry.notSubmitted = 5; })
+    .some((p) => p.includes("created is 1")));
+  assert.ok(corrupt((entry) => { entry.notSubmitted = 5; }).some((p) => p.includes("whole total")));
+  assert.ok(corrupt((entry) => { entry.unknownRecords = 1; entry.notSubmitted = 5; })
+    .some((p) => p.includes("unknown records")));
+  assert.ok(corrupt((entry) => { entry.total = 5; entry.notSubmitted = 5; })
+    .some((p) => p.includes("fixture records")));
+  assert.ok(corrupt((entry) => { entry.targets = [{ sourceTableId: "a" }]; })
+    .some((p) => p.includes("targets must stay empty")));
+  assert.ok(corrupt((entry) => { entry.batches = [{ batchId: "b" }]; })
+    .some((p) => p.includes("batches must stay empty")));
+  assert.ok(corrupt((entry) => { entry.diagnostics = []; }).some((p) => p.includes("diagnostics")));
+  assert.ok(corrupt((entry) => { entry.diagnostics = [{ message: "无代码" }]; })
+    .some((p) => p.includes("diagnostics")));
+  assert.ok(corrupt((entry) => { entry.containerId = "qa-source-success"; })
+    .some((p) => p.includes("containerId")));
+  assert.ok(corrupt((entry) => { entry.sourceName = "QA 三表合成来源"; })
+    .some((p) => p.includes("sourceName")));
+  assert.ok(corrupt((entry) => { entry.sessionEpoch = 3; }).some((p) => p.includes("sessionEpoch")));
+  assert.ok(corrupt((entry) => { entry.stage = "settled"; }).some((p) => p.includes("preparing")));
+  assert.ok(corrupt((entry) => { entry.finishedAt = ""; }).some((p) => p.includes("finishedAt")));
+  assert.ok(corrupt((entry) => { entry.token = "leak"; }).some((p) => p.includes("forbidden key")));
+});
+
+test("the journal gains exactly the expected pre-submission terminal jobs", () => {
   const before = { migrations: [journalEntry()] };
-  assert.deepEqual(assertJournalUnchanged(before, { migrations: [journalEntry()] }), []);
-  const added = { migrations: [...before.migrations, journalEntry({ jobId: "task-drift" })] };
-  assert.ok(assertJournalUnchanged(before, added).some((p) => p.includes("gained unexpected job")));
-  const mutated = { migrations: [journalEntry()] };
-  mutated.migrations[0].created = 5;
-  mutated.migrations[0].total = 5;
-  assert.ok(assertJournalUnchanged(before, mutated).some((p) => p.includes("changed")));
-  const removed = { migrations: [] };
-  assert.ok(assertJournalUnchanged(before, removed).some((p) => p.includes("lost job")));
+  const drift = negativeEntry("drift", { jobId: "task-drift" });
+  const cancel = negativeEntry("cancel", { jobId: "task-cancel" });
+  const after = { migrations: [...before.migrations, drift, cancel] };
+  assert.deepEqual(assertPreSubmissionTerminal(before, after, ["task-drift", "task-cancel"]), []);
+  assert.deepEqual(
+    assertPreSubmissionTerminal(before, after, ["task-cancel", "task-drift"]), []);
+  assert.ok(assertPreSubmissionTerminal(before, { migrations: [...before.migrations, drift] },
+    ["task-drift", "task-cancel"]).some((p) => p.includes("task-cancel is missing")));
+  assert.ok(assertPreSubmissionTerminal(before, after, ["task-drift"])
+    .some((p) => p.includes("unexpected job task-cancel")));
+  const changedSuccess = { migrations: [journalEntry(), drift, cancel] };
+  changedSuccess.migrations[0].created = 5;
+  changedSuccess.migrations[0].notSubmitted = 1;
+  assert.ok(assertPreSubmissionTerminal(before, changedSuccess, ["task-drift", "task-cancel"])
+    .some((p) => p.includes("existing job task-success changed")));
+  assert.ok(assertPreSubmissionTerminal(before, { migrations: [drift, cancel] },
+    ["task-drift", "task-cancel"]).some((p) => p.includes("lost job task-success")));
+  assert.ok(assertPreSubmissionTerminal(before, after, ["task-drift", "task-drift"])
+    .some((p) => p.includes("duplicates")));
 });

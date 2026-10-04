@@ -68,8 +68,11 @@ public sealed class SourceImportHostTests
         await fixture.Terminal(first);
         await fixture.Provider.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
         JsonElement remaining = (await fixture.History()).GetProperty("migrations");
-        Assert.AreEqual(1, remaining.GetArrayLength());
-        Assert.AreEqual(second.GetProperty("taskId").GetString(), remaining[0].GetProperty("jobId").GetString());
+        Assert.AreEqual(2, remaining.GetArrayLength());
+        Assert.AreEqual("cancelled", remaining.EnumerateArray().Single(e =>
+            e.GetProperty("jobId").GetString() == first.GetProperty("taskId").GetString()).GetProperty("state").GetString());
+        Assert.AreEqual("running", remaining.EnumerateArray().Single(e =>
+            e.GetProperty("jobId").GetString() == second.GetProperty("taskId").GetString()).GetProperty("state").GetString());
         fixture.Registry.RequestCancel(second.GetProperty("taskId").GetString()!);
         await fixture.Terminal(second);
         await secondProvider.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -142,12 +145,60 @@ public sealed class SourceImportHostTests
             }
             await fixture.Terminal(initial);
             await fixture.Provider.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            JsonElement durable = (await fixture.History()).GetProperty("migrations")[0];
+            Assert.AreEqual(mode == "cancel" ? "cancelled" : "failed", durable.GetProperty("state").GetString(), mode);
+            Assert.AreEqual(0, durable.GetProperty("created").GetInt32(), mode);
+            Assert.AreEqual(durable.GetProperty("total").GetInt32(), durable.GetProperty("notSubmitted").GetInt32(), mode);
+            Assert.AreEqual(1, fixture.Http.Starts, mode);
+            Assert.AreEqual(1, fixture.Http.Finishes, mode);
             Assert.AreEqual(1, fixture.Http.Discards, mode);
             Assert.AreEqual(preview.Token, fixture.Http.DiscardMetadata.GetProperty("token").GetString());
             Assert.AreEqual(7UL, fixture.Http.DiscardMetadata.GetProperty("sessionEpoch").GetUInt64());
             Assert.IsFalse(fixture.Http.Staged.Contains(preview.Token), mode);
             Assert.IsTrue(fixture.Http.Staged.Contains("other-plan"), mode);
             Assert.AreEqual(0, fixture.Http.Executions, mode);
+        }
+    }
+
+    [TestMethod]
+    public async Task AttachmentPermissionAndMissingPathFailuresSettleDurableAdmission()
+    {
+        foreach (string failure in new[] { "permission", "disk" })
+        {
+            using var fixture = new Fixture(attachment: true);
+            fixture.Provider.AttachmentFailure = failure;
+            JsonElement terminal = await fixture.Terminal(await fixture.Start(await fixture.Prepare()));
+            Assert.AreEqual("failed", terminal.GetProperty("state").GetString());
+            Assert.IsNotNull(fixture.Provider.AttachmentError);
+            if (failure == "permission") Assert.IsInstanceOfType<UnauthorizedAccessException>(fixture.Provider.AttachmentError);
+            else Assert.IsInstanceOfType<IOException>(fixture.Provider.AttachmentError);
+            JsonElement durable = (await fixture.History()).GetProperty("migrations")[0];
+            Assert.AreEqual("failed", durable.GetProperty("state").GetString());
+            Assert.AreEqual(0, durable.GetProperty("created").GetInt32());
+            Assert.AreEqual(1, durable.GetProperty("notSubmitted").GetInt32());
+            Assert.AreEqual(1, fixture.Http.Starts);
+            Assert.AreEqual(1, fixture.Http.Finishes);
+            Assert.AreEqual(0, fixture.Http.Uploads);
+            Assert.AreEqual(0, fixture.Http.Executions);
+        }
+    }
+
+    [TestMethod]
+    public async Task AdmissionAndSettlementAckFailuresNeverFabricateOrReplayExecution()
+    {
+        foreach (string failure in new[] { "start-before", "start-ack", "finish-before", "finish-ack" })
+        {
+            using var fixture = new Fixture();
+            fixture.Http.LifecycleFailure = failure;
+            fixture.Provider.ObserveMode = "failure";
+            JsonElement terminal = await fixture.Terminal(await fixture.Start(await fixture.Prepare()));
+            Assert.AreEqual(failure == "start-ack" ? "failed" : "aborted", terminal.GetProperty("state").GetString(), failure);
+            JsonElement history = (await fixture.History()).GetProperty("migrations");
+            if (failure == "start-before") Assert.AreEqual(0, history.GetArrayLength());
+            else Assert.AreEqual(failure == "finish-before" ? "interrupted" : "failed", history[0].GetProperty("state").GetString(), failure);
+            Assert.AreEqual(1, fixture.Http.Starts, failure);
+            Assert.AreEqual(1, fixture.Http.Finishes, failure);
+            Assert.AreEqual(0, fixture.Http.Executions, failure);
         }
     }
 
@@ -298,6 +349,9 @@ public sealed class SourceImportHostTests
         JsonElement initial = await fixture.Start(await fixture.Prepare());
         fixture.Registry.RequestCancel(initial.GetProperty("taskId").GetString()!);
         Assert.AreEqual("cancelled", (await fixture.Terminal(initial)).GetProperty("state").GetString());
+        Assert.AreEqual("cancelled", (await fixture.History()).GetProperty("migrations")[0].GetProperty("state").GetString());
+        Assert.AreEqual(1, fixture.Http.Starts);
+        Assert.AreEqual(1, fixture.Http.Finishes);
         Assert.AreEqual(0, fixture.Http.Executions);
     }
 
@@ -446,6 +500,8 @@ public sealed class SourceImportHostTests
         internal readonly TaskCompletionSource Observing = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TaskCompletionSource Disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal string ObserveMode = "";
+        internal string AttachmentFailure = "";
+        internal Exception? AttachmentError;
         internal HostSourceImportAttachment[] Attachments => attachment
             ? [new("object-1", "table-1", "record-1", "file-1", "test.bin", "application/octet-stream", 4)] : [];
         public Task<HostSourceImportSnapshot> ReadAsync(CancellationToken token) => Task.FromResult(new HostSourceImportSnapshot(
@@ -460,13 +516,25 @@ public sealed class SourceImportHostTests
                 new Dictionary<string, string> { ["table-1"] = ObserveMode == "structure" ? "t2" : "t1" });
         }
         public Task<Stream> OpenAttachmentAsync(HostSourceImportAttachment item, CancellationToken token)
-            => Task.FromResult<Stream>(new MemoryStream([0, 1, 2, 255], writable: false));
+        {
+            try
+            {
+                if (AttachmentFailure == "permission") return Task.FromResult<Stream>(
+                    File.OpenRead(Path.TrimEndingDirectorySeparator(Path.GetTempPath())));
+                if (AttachmentFailure == "disk") return Task.FromResult<Stream>(File.OpenRead(
+                    Path.Combine(Path.GetTempPath(), "vibetable-source-missing-" + Guid.NewGuid().ToString("N"), "attachment.bin")));
+                return Task.FromResult<Stream>(new MemoryStream([0, 1, 2, 255], writable: false));
+            }
+            catch (Exception error) { AttachmentError = error; throw; }
+        }
         public void Dispose() => Disposed.TrySetResult();
     }
 
     private sealed class Peer(Provider provider) : HttpMessageHandler
     {
-        internal int Executions, Uploads, ResultReads, Discards;
+        internal int Executions, Uploads, ResultReads, Discards, Starts, Finishes;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _plans = new();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, JsonElement> _receipts = new();
         private int _previews;
         internal int RecordCount = 1;
         internal bool LoseAck, FailUpload, FailResultRead, SessionHeaderSeen, HoldExecute, HoldUpload, HideHistory, RejectClaim;
@@ -475,6 +543,7 @@ public sealed class SourceImportHostTests
         internal readonly HashSet<string> Staged = ["other-plan"];
         private readonly HashSet<string> _claimed = [];
         internal string Outcome = "succeeded";
+        internal string LifecycleFailure = "";
         internal string? JobId;
         internal byte[]? UploadBytes;
         internal JsonElement UploadMetadata;
@@ -487,12 +556,17 @@ public sealed class SourceImportHostTests
             string path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/source-import/history", StringComparison.Ordinal))
                 return Reply(new { contract = HostSourceImportResult.ContractName,
-                    entries = JobId is null || HideHistory ? Array.Empty<object>() : new[] { ResultWire() } });
+                    entries = HideHistory ? [] : _receipts.Select(pair =>
+                        pair.Key == JobId && Executions > 0 && !RejectClaim ? ResultElement() : pair.Value).ToArray() });
             if (path.EndsWith("/import-history", StringComparison.Ordinal))
                 return Reply(new { items = Array.Empty<object>() });
-            if (path.EndsWith("/preview", StringComparison.Ordinal)) return Reply(new
+            if (path.EndsWith("/preview", StringComparison.Ordinal))
             {
-                contract = HostSourceImportResult.ContractName, token = "mip1.synthetic-" + Interlocked.Increment(ref _previews),
+                string planToken = "mip1.synthetic-" + Interlocked.Increment(ref _previews);
+                _plans[planToken] = RecordCount;
+                return Reply(new
+            {
+                contract = HostSourceImportResult.ContractName, token = planToken,
                 expiresAt = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds(),
                 plan = new { provider = "synthetic", containerId = "container-1", displayName = "合成来源", version = "v1", canApply = true,
                     readWindow = new { startedAt = "2026-10-01T00:00:00Z", finishedAt = "2026-10-01T00:00:01Z", consistency = "window" },
@@ -501,8 +575,48 @@ public sealed class SourceImportHostTests
                     diagnostics = Array.Empty<object>(),
                     tables = new[] { new { sourceId = "table-1", version = "t1", recordCount = RecordCount } }, attachments = provider.Attachments },
             });
+            }
+            if (path.EndsWith("/start", StringComparison.Ordinal) || path.EndsWith("/finish", StringComparison.Ordinal))
+            {
+                token.ThrowIfCancellationRequested();
+                using JsonDocument doc = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+                string plan = doc.RootElement.GetProperty("token").GetString()!;
+                string job = doc.RootElement.GetProperty("jobId").GetString()!;
+                Assert.AreEqual(7UL, doc.RootElement.GetProperty("sessionEpoch").GetUInt64());
+                string state = "interrupted";
+                if (path.EndsWith("/start", StringComparison.Ordinal))
+                {
+                    Interlocked.Increment(ref Starts);
+                    if (LifecycleFailure == "start-before") return new(HttpStatusCode.ServiceUnavailable);
+                }
+                else
+                {
+                    Interlocked.Increment(ref Finishes);
+                    if (LifecycleFailure == "finish-before") return new(HttpStatusCode.ServiceUnavailable);
+                    if (_claimed.Contains(plan)) return new(HttpStatusCode.Conflict);
+                    if (!_receipts.ContainsKey(job)) return new(HttpStatusCode.NotFound);
+                    state = doc.RootElement.GetProperty("state").GetString()!;
+                }
+                JsonElement receipt = JsonSerializer.SerializeToElement(new
+                {
+                    contract = HostSourceImportResult.ContractName, jobId = job, state, stage = "preparing",
+                    provider = "synthetic", containerId = "container-1", sourceName = "合成来源",
+                    created = 0, total = _plans[plan], notSubmitted = _plans[plan], unknownRecords = 0, sessionEpoch = 7,
+                    startedAt = "2026-10-05T00:00:00Z", finishedAt = state == "interrupted" ? null : "2026-10-05T00:00:01Z",
+                    readWindow = new { startedAt = "2026-10-01T00:00:00Z", finishedAt = "2026-10-01T00:00:01Z", consistency = "window" },
+                    fields = new[] { new { source = new { provider = "synthetic", containerId = "container-1", tableId = "table-1", fieldId = "field-1" },
+                        kind = "formula", policy = "snapshot", definition = "" } },
+                    targets = Array.Empty<object>(), batches = Array.Empty<object>(), diagnostics = Array.Empty<object>(),
+                });
+                _receipts[job] = receipt;
+                if ((state == "interrupted" && LifecycleFailure == "start-ack")
+                    || (state != "interrupted" && LifecycleFailure == "finish-ack"))
+                    throw new HttpRequestException("Synthetic lifecycle ACK loss.");
+                return Reply(receipt);
+            }
             if (path.EndsWith("/upload", StringComparison.Ordinal))
             {
+                Assert.IsTrue(Starts > 0, "Attachment work requires durable admission first.");
                 Uploads++;
                 var form = (MultipartFormDataContent)request.Content!;
                 foreach (HttpContent part in form)
@@ -548,12 +662,14 @@ public sealed class SourceImportHostTests
             {
                 ResultReads++;
                 Assert.IsTrue(path.EndsWith("/" + JobId, StringComparison.Ordinal));
-                return FailResultRead ? new(HttpStatusCode.InternalServerError) : Result();
+                return FailResultRead ? new(HttpStatusCode.InternalServerError)
+                    : RejectClaim ? Reply(_receipts[JobId!]) : Result();
             }
             throw new InvalidOperationException("Unexpected private route: " + path);
         }
 
         private HttpResponseMessage Result() => Reply(ResultWire());
+        private JsonElement ResultElement() => JsonSerializer.SerializeToElement(ResultWire());
         private object ResultWire() => new
         {
             contract = HostSourceImportResult.ContractName, jobId = JobId, state = Outcome,

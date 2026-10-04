@@ -13,6 +13,13 @@ public sealed partial class ProductSidecarHttpGateway
     internal Task<JsonElement> PreviewSourceImportAsync(object input, CancellationToken token)
         => SourceImportJsonAsync("preview", input, token);
 
+    internal Task<JsonElement> StartSourceImportAsync(string planToken, string jobId, ulong sessionEpoch, CancellationToken token)
+        => SourceImportJsonAsync("start", new { token = planToken, jobId, sessionEpoch }, token);
+
+    internal Task<JsonElement> FinishSourceImportAsync(string planToken, string jobId, ulong sessionEpoch,
+        string state, CancellationToken token)
+        => SourceImportJsonAsync("finish", new { token = planToken, jobId, sessionEpoch, state }, token);
+
     internal async Task<JsonElement> ExecuteSourceImportAsync(object input, CancellationToken token)
     {
         // A bounded multi-batch job outlives the ordinary RPC timeout. Host
