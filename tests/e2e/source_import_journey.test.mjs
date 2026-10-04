@@ -65,17 +65,21 @@ function journalEntry({ jobId = "task-success" } = {}) {
     containerId: EXPECTED_SYNTHETIC_SOURCE.containerId,
     sourceName: EXPECTED_SYNTHETIC_SOURCE.sourceName,
     state: "succeeded", stage: "settled",
-    created: 6, total: 6, notSubmitted: 0, unknownRecords: 0,
+    created: 6, total: 6, notSubmitted: 0, unknownRecords: 0, unknownBatch: null,
     targets: EXPECTED_SYNTHETIC_SOURCE.tables.map((table) => ({
       sourceTableId: table.id, tableId: LOCAL.tables[table.id],
       name: table.name, collection: `col_${table.id}`,
     })),
     // Public projection: counts only — the full mappings stay Go-private.
+    // schemaRevisions mirrors the real durable wire (PocketBase re-serializes
+    // map keys non-deterministically between reads).
     batches: [
-      { batchId: "b1", stage: "schema", mappings: [], created: 0 },
+      { batchId: "b1", stage: "schema", mappings: [], created: 0,
+        schemaRevisions: { tbl_a: "schema_0001", tbl_b: "schema_0002", tbl_c: "schema_0003" } },
       { batchId: "b2", stage: "records", mappings: [], created: 6 },
       { batchId: "b3", stage: "relations", mappings: [], created: 0, relationWrites: 8 },
-      { batchId: "b4", stage: "attachments", mappings: [], created: 0, attachmentWrites: 1 },
+      { batchId: "b4", stage: "attachments", mappings: [], created: 0, attachmentWrites: 1,
+        schemaRevisions: { tbl_a: "schema_0001" } },
     ],
     diagnostics: [],
     startedAt: "2026-10-04T08:00:00Z", finishedAt: "2026-10-04T08:00:05Z",
@@ -512,6 +516,51 @@ test("the journal gains exactly the expected pre-submission terminal jobs", () =
     ["task-drift", "task-cancel"]).some((p) => p.includes("lost job task-success")));
   assert.ok(assertPreSubmissionTerminal(before, after, ["task-drift", "task-drift"])
     .some((p) => p.includes("duplicates")));
+
+  // PocketBase 0.40.4 Event.JSON is not deterministic (encoding/json v2,
+  // no Deterministic flag): the SAME durable receipt re-serializes map keys
+  // in a different order across reads (CI F435-12: $.batches[11].schemaRevisions
+  // key order swapped, values identical). Receipt equality is STRUCTURAL —
+  // key order is not a fact; the pre-fix serialized-string comparison failed
+  // this same two-key shape from the real history pair.
+  const withRevisions = journalEntry();
+  withRevisions.batches[0].schemaRevisions = { tbl_a: "schema_0005", tbl_b: "schema_0004" };
+  const reorderedRead = journalEntry();
+  reorderedRead.batches[0].schemaRevisions = {
+    tbl_b: "schema_0004", tbl_a: "schema_0005",
+  };
+  assert.deepEqual(
+    assertPreSubmissionTerminal({ migrations: [withRevisions] }, { migrations: [reorderedRead] }, []),
+    []);
+
+  // Meaningful changes stay rejected — structural equality keeps every
+  // field/value, array ORDER, and the null/missing distinction; nothing is
+  // sorted, dropped, or reduced to a subset.
+  const reject = (after) =>
+    assertPreSubmissionTerminal({ migrations: [journalEntry()] }, { migrations: [after] }, []);
+  const revisionValueChanged = journalEntry();
+  revisionValueChanged.batches[0].schemaRevisions.tbl_b = "schema_0009";
+  assert.ok(reject(revisionValueChanged).some((p) => p.includes("existing job task-success changed")));
+  const missingVersusNull = journalEntry();
+  delete missingVersusNull.unknownBatch;
+  assert.ok(reject(missingVersusNull).some((p) => p.includes("existing job task-success changed")));
+  const batchOrderSwapped = journalEntry();
+  batchOrderSwapped.batches = [
+    batchOrderSwapped.batches[1], batchOrderSwapped.batches[0],
+    batchOrderSwapped.batches[2], batchOrderSwapped.batches[3],
+  ];
+  assert.ok(reject(batchOrderSwapped).some((p) => p.includes("existing job task-success changed")));
+  const targetOrderSwapped = journalEntry();
+  targetOrderSwapped.targets = [
+    targetOrderSwapped.targets[2], targetOrderSwapped.targets[1], targetOrderSwapped.targets[0],
+  ];
+  assert.ok(reject(targetOrderSwapped).some((p) => p.includes("existing job task-success changed")));
+  const stateChanged = journalEntry();
+  stateChanged.state = "unknown";
+  stateChanged.stage = "relations";
+  stateChanged.unknownRecords = 6;
+  stateChanged.notSubmitted = 0;
+  assert.ok(reject(stateChanged).some((p) => p.includes("existing job task-success changed")));
 });
 
 // ---- CI regression: scenario 35's source-migration entry ----

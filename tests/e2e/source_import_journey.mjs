@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 // #435 synthetic source-migration journey on the real WPF management page.
 //
@@ -590,15 +591,18 @@ export function verifyPreSubmissionTerminalReceipt(entry, expectation) {
 /**
  * Structural contract for the negative controls: the durable journal gains
  * EXACTLY the expected new pre-submission terminal jobs, every older entry
- * stays byte-identical, and nothing is lost. The zero-effect half of the
- * contract is verified separately against the receipts and the business
- * authority queries.
+ * keeps identical FACTS, and nothing is lost. Equality is structural
+ * (util.isDeepStrictEqual): PocketBase 0.40.4 HTTP JSON is not deterministic
+ * (encoding/json v2 without Deterministic), so the same receipt may
+ * re-serialize map keys (e.g. schemaRevisions) in a different order across
+ * reads — key order is not a fact. Values, field presence, the null/missing
+ * distinction, and array ORDER all remain strictly compared; nothing is
+ * sorted, dropped, or reduced to a subset. Errors report locating job ids
+ * only, never receipt payloads.
  */
 export function assertPreSubmissionTerminal(beforeHistory, afterHistory, expectedNewJobIds) {
-  const before = new Map((beforeHistory?.migrations ?? [])
-    .map((entry) => [entry.jobId, JSON.stringify(entry)]));
-  const after = new Map((afterHistory?.migrations ?? [])
-    .map((entry) => [entry.jobId, JSON.stringify(entry)]));
+  const before = new Map((beforeHistory?.migrations ?? []).map((entry) => [entry.jobId, entry]));
+  const after = new Map((afterHistory?.migrations ?? []).map((entry) => [entry.jobId, entry]));
   const expected = new Set(expectedNewJobIds ?? []);
   const problems = [];
   if (expected.size !== (expectedNewJobIds ?? []).length) {
@@ -607,9 +611,11 @@ export function assertPreSubmissionTerminal(beforeHistory, afterHistory, expecte
   for (const id of expected) {
     if (!after.has(id)) problems.push(`expected new terminal job ${id} is missing from history`);
   }
-  for (const [id] of after) {
+  for (const [id, entry] of after) {
     if (before.has(id)) {
-      if (after.get(id) !== before.get(id)) problems.push(`existing job ${id} changed after the negative controls`);
+      if (!isDeepStrictEqual(entry, before.get(id))) {
+        problems.push(`existing job ${id} changed after the negative controls`);
+      }
     } else if (!expected.has(id)) {
       problems.push(`journal gained unexpected job ${id}`);
     }
@@ -789,12 +795,17 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   recorder.check("the management page renders the migration as terminal success",
     (await migrationRow.getAttribute("data-state")) === "succeeded"
       && (await migrationRow.getAttribute("data-stage")) === "settled", { taskId: completed.taskId });
+  // Keep the real migration outcome inside the scroll container viewport so
+  // the screenshot shows the rendered source-import receipt row.
+  await migrationRow.scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence("35-source-import-history.png"), fullPage: true });
   await page.getByTestId(`source-import-detail-${completed.taskId}`).click();
   const targetButtons = migrationRow.locator('[data-testid="source-target-open"]');
   await targetButtons.first().waitFor({ state: "visible", timeout: 60_000 });
   recorder.check("the receipt lists every committed target as openable",
     (await targetButtons.count()) === EXPECTED_SYNTHETIC_SOURCE.tables.length, {});
+  // The expanded target list stays in view for the evidence capture.
+  await migrationRow.scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence("35-source-import-targets.png"), fullPage: true });
   const firstTarget = EXPECTED_SYNTHETIC_SOURCE.tables[0];
   await page.locator(
@@ -839,16 +850,19 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
     reopenedGraphProblems.length === 0, { problems: reopenedGraphProblems });
 
   await openManagement();
-  await page.locator(
-    `[data-testid="source-import-row"][data-job-id="${completed.taskId}"]`)
-    .waitFor({ state: "visible", timeout: 60_000 });
+  const reopenedRow = page.locator(
+    `[data-testid="source-import-row"][data-job-id="${completed.taskId}"]`);
+  await reopenedRow.waitFor({ state: "visible", timeout: 60_000 });
+  await reopenedRow.scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence("35-source-import-reopened.png"), fullPage: true });
   const baselineRowCount = await page.getByTestId("source-import-row").count();
 
   // ---- Pre-execute drift and cancel: durable terminal receipts, zero effects ----
   // AC7: after user confirmation, an observation drift or a pre-execute
   // cancellation must still produce an authoritative Go result. The Host
-  // terminal reply and the durable journal share the SAME job id.
+  // terminal reply and the durable journal share the SAME job id. Snapshots
+  // keep the parsed receipt OBJECTS so later comparisons stay structural
+  // (PocketBase re-serializes map keys non-deterministically between reads).
   const beforeNegative = await history();
   const negativeEpoch = reopened.payload.session.sessionEpoch;
   const totalFixtureRecords = EXPECTED_SYNTHETIC_SOURCE.tables
@@ -872,8 +886,8 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
       sessionEpoch: negativeEpoch,
     });
     recorder.check(`${mode} persists a durable ${expectation.state} receipt with zero submitted work`,
-      problems.length === 0, { problems, negativeEntry });
-    negativeReceipts.set(terminal.taskId, JSON.stringify(negativeEntry));
+      problems.length === 0, { problems });
+    negativeReceipts.set(terminal.taskId, negativeEntry);
   }
   const afterNegatives = await history();
   const structureProblems = assertPreSubmissionTerminal(
@@ -908,20 +922,24 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   // The management page renders both new terminal outcomes.
   await openManagement();
   await page.getByTestId("import-history-refresh").click();
-  for (const [taskId, snapshot] of negativeReceipts) {
+  let lastNegativeRow = null;
+  for (const [taskId, receipt] of negativeReceipts) {
     const row = page.locator(
       `[data-testid="source-import-row"][data-job-id="${taskId}"]`);
     await row.waitFor({ state: "visible", timeout: 60_000 });
-    const receipt = JSON.parse(snapshot);
     recorder.check(`the management page renders job ${taskId} as terminal ${receipt.state}`,
       (await row.getAttribute("data-state")) === receipt.state, { taskId });
+    lastNegativeRow = row;
   }
   recorder.check("the migration list gained exactly the two negative terminal rows",
     (await page.getByTestId("source-import-row").count()) === baselineRowCount + 2,
     { baselineRowCount });
+  // Keep the real migration outcomes inside the scroll container viewport so
+  // the screenshot actually shows the rendered negative receipts.
+  if (lastNegativeRow) await lastNegativeRow.scrollIntoViewIfNeeded();
   await page.screenshot({ path: evidence("35-source-import-negative.png"), fullPage: true });
 
-  // ---- Final reopen: every receipt persists by job id, byte-identical ----
+  // ---- Final reopen: every receipt persists by job id with identical facts ----
   const negativeSession = await page.evaluate(
     () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await openWorkspaceCenterFromSwitcher(page);
@@ -941,12 +959,19 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
     { finalReopened });
 
   const afterFinalReopen = await history();
-  const persistenceProblems = [];
+  // Full-fact structural persistence: every pre-existing receipt (the success
+  // job included) keeps identical facts across the reopen, exactly the two
+  // negative jobs exist, and each captured negative receipt is structurally
+  // equal to its post-run snapshot. Key order is not a fact; values, field
+  // presence, null/missing, and array order all are.
+  const persistenceProblems = [
+    ...assertPreSubmissionTerminal(beforeNegative, afterFinalReopen, [...negativeReceipts.keys()]),
+  ];
   for (const [taskId, snapshot] of negativeReceipts) {
     const persisted = (afterFinalReopen.migrations ?? [])
       .find((item) => item.jobId === taskId);
-    if (!persisted || JSON.stringify(persisted) !== snapshot) {
-      persistenceProblems.push(`negative job ${taskId} did not persist byte-identically`);
+    if (!persisted || !isDeepStrictEqual(persisted, snapshot)) {
+      persistenceProblems.push(`negative job ${taskId} did not persist with identical facts`);
     }
   }
   const finalSuccessEntry = (afterFinalReopen.migrations ?? [])
