@@ -28,7 +28,8 @@ func (journal *PocketBaseJournal) Start(ctx context.Context, result Result) erro
 	if result.State != "interrupted" || len(result.Batches) != 0 || len(result.Targets) != 0 || result.Created != 0 || result.FinishedAt != "" || result.UnknownBatch != "" || result.UnknownRecords != 0 || (result.Stage != "preparing" && result.Stage != "schema") {
 		return fmt.Errorf("source_import.job.initial_state")
 	}
-	return journal.app.RunInTransaction(func(tx core.App) error {
+	var replaySignal error
+	err := journal.app.RunInTransaction(func(tx core.App) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -48,6 +49,9 @@ func (journal *PocketBaseJournal) Start(ctx context.Context, result Result) erro
 				return fmt.Errorf("source_import.job.already_started")
 			}
 			if result.Stage == "preparing" {
+				// The verified admission replay wrote nothing. Abort only its
+				// exact outer Runtime intent instead of allocating a revision.
+				replaySignal = writecoordinator.ReplayedBusinessWrite(ctx, "source.import.admit", result.JobID)
 				return nil
 			}
 			prepared.Stage = "schema"
@@ -70,6 +74,10 @@ func (journal *PocketBaseJournal) Start(ctx context.Context, result Result) erro
 		}
 		return writecoordinator.PersistPocketBaseReceipt(ctx, tx, time.Now().UTC())
 	})
+	if err != nil {
+		return err
+	}
+	return replaySignal
 }
 
 func findJob(app core.App, id string) (*core.Record, error) {

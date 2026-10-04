@@ -21,7 +21,13 @@ type sourceImportJournal struct {
 }
 
 func (journal *sourceImportJournal) Start(ctx context.Context, result sourceimport.Result) error {
-	return runBusinessWrite(ctx, journal.gates, "source.import.start", result.JobID, func(ctx context.Context) error { return journal.PocketBaseJournal.Start(ctx, result) })
+	kind := "source.import.start"
+	if result.Stage == "preparing" {
+		// Admission and execution each commit once for this job. Sharing a
+		// receipt identity would collide when preparing advances to schema.
+		kind = "source.import.admit"
+	}
+	return runBusinessWrite(ctx, journal.gates, kind, result.JobID, func(ctx context.Context) error { return journal.PocketBaseJournal.Start(ctx, result) })
 }
 
 func (journal *sourceImportJournal) Prepare(ctx context.Context, job, batch, stage string, count int) error {
