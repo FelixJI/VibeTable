@@ -383,11 +383,12 @@ public sealed class ImportHistoryHostTests
         // check window; it must not overwrite or retire the newer journal.
         fixture.Tasks.BindImportHistory(fixture.Snapshot, fixture.Http);
 
-        JsonElement history = await fixture.Gateway().GetImportHistoryAsync(
-            Json("{}"), CancellationToken.None);
+        JsonElement history = await fixture.Tasks.ReadImportHistoryAsync(CancellationToken.None);
         Assert.AreEqual("task-newer",
             history.GetProperty("items")[0].GetProperty("taskId").GetString(),
             "the newer generation's journal must keep serving reads");
+        await Assert.ThrowsExactlyAsync<BackendUnavailableException>(() =>
+            fixture.Gateway().GetImportHistoryAsync(Json("{}"), CancellationToken.None));
         Assert.AreEqual(1, fixture.Http.ListCalls,
             "the stale journal must not receive further calls");
     }
@@ -636,6 +637,9 @@ public sealed class ImportHistoryHostTests
                 out IEnumerable<string>? values)
                 && values.Contains("history-session-secret");
             string path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get
+                && path == "/api/vibetable/v2/source-import/history")
+                return Reply(Json("{\"contract\":\"vibetable.source-import.v1\",\"entries\":[]}"));
             if (request.Method == HttpMethod.Get
                 && path == "/api/vibetable/v2/import-history")
             {

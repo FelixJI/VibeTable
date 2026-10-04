@@ -357,14 +357,18 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			businessGate,
 		)
 		importWorkspaceID := ""
+		var importSessionEpoch uint64
 		if options.WorkspaceV2 != nil {
 			importWorkspaceID = options.WorkspaceV2.WorkspaceID
+			importSessionEpoch = options.WorkspaceV2.SessionEpoch
 		}
+		importPlans := newImportPlanOwner(importWorkspaceID)
 		registerImportRoutes(
 			event.Router,
 			importvalue.New(fieldchange.NewCatalog(pb)),
-			newImportPlanOwner(importWorkspaceID),
+			importPlans,
 		)
+		registerSourceImportRoutes(event.Router, pb, importPlans, newSourceImportAuthority(fieldSettings, mutationKernel, businessGate), attachmentManager, importSessionEpoch, businessGate)
 		registerImportHistoryRoutes(event.Router, pb, importHistoryStore, idempotentBusinessGate)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, pb, formulaCompiler)

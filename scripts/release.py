@@ -43,7 +43,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _ignore_transient_pocketbase_files(_, names: list[str]) -> set[str]:
-    return {name for name in names if name.casefold().startswith("auxiliary.db-shm")}
+    # SQLite shared-memory files are rebuildable WAL indexes, including the
+    # Windows replacement file. Keep database and WAL bytes in every copy.
+    shared_memory = {"data.db-shm", "data.db-shm.tmp", "auxiliary.db-shm", "auxiliary.db-shm.tmp"}
+    return {name for name in names if name.casefold() in shared_memory}
 
 
 @dataclass(frozen=True)

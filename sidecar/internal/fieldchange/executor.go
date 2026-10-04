@@ -116,8 +116,23 @@ func (executor *Executor) Apply(
 	ctx context.Context,
 	request v2.ApplyRequest,
 ) (v2.ApplyReceipt, error) {
+	return executor.ApplyWithCommit(ctx, request, nil)
+}
+
+// ApplyWithCommit applies a frozen field change and runs commit inside the
+// same business transaction, mirroring mutation.Kernel.ApplyWithCommit. The
+// callback runs only for the first actual apply of an operation; a replay
+// returns the durable receipt without re-projecting. A callback error rolls
+// the schema change back together with its replay receipt, audit and plan
+// marker, while migration and backfill workers still start only after the
+// business commit succeeds.
+func (executor *Executor) ApplyWithCommit(
+	ctx context.Context,
+	request v2.ApplyRequest,
+	commit func(core.App, v2.ApplyReceipt) error,
+) (v2.ApplyReceipt, error) {
 	started := time.Now()
-	receipt, err := executor.apply(ctx, request)
+	receipt, err := executor.apply(ctx, request, commit)
 	attributes := []any{
 		"event", "field_change_applied",
 		"plan_id", request.PlanID,
@@ -149,6 +164,7 @@ func (executor *Executor) Apply(
 func (executor *Executor) apply(
 	ctx context.Context,
 	request v2.ApplyRequest,
+	commit func(core.App, v2.ApplyReceipt) error,
 ) (v2.ApplyReceipt, error) {
 	if err := validateApplyRequest(request); err != nil {
 		return v2.ApplyReceipt{}, err
@@ -311,7 +327,13 @@ func (executor *Executor) apply(
 			); replayErr != nil {
 				return replayErr
 			}
-			return markPlanApplied(txApp, plan.PlanID, request.OperationID)
+			if err := markPlanApplied(txApp, plan.PlanID, request.OperationID); err != nil {
+				return err
+			}
+			if commit != nil {
+				return commit(txApp, receipt)
+			}
+			return nil
 		}
 		applied, applyErr := executor.applyFrozenPlan(ctx, txApp, *plan)
 		if applyErr != nil {
@@ -396,7 +418,13 @@ func (executor *Executor) apply(
 		); replayErr != nil {
 			return replayErr
 		}
-		return markPlanApplied(txApp, plan.PlanID, request.OperationID)
+		if err := markPlanApplied(txApp, plan.PlanID, request.OperationID); err != nil {
+			return err
+		}
+		if commit != nil {
+			return commit(txApp, receipt)
+		}
+		return nil
 	})
 	if err != nil {
 		_ = executor.app.RunInTransaction(func(txApp core.App) error {

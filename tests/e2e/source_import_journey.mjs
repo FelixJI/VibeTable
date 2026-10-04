@@ -1,0 +1,634 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+
+// #435 synthetic source-migration journey on the real WPF management page.
+//
+// The Host TestMode seam (Astra) owns the synthetic provider and its fixture;
+// this journey drives only the fixed, JSON-free control protocol and then
+// verifies the RESULT through public surfaces: the #434 management page UI,
+// the `data.importHistory` Go receipts, `schema.describe`, `query.page` and
+// `file.list`. Nothing fabricates history — every assertion runs against
+// real committed tables and the durable Go journal.
+//
+// Control protocol (as implemented by TestModeHostController/TestModeSourceImport):
+// - request  : controls dir file `host-source-import.request`, strict UTF-8
+//              text `success` | `drift` | `cancel` (no JSON, paths, or source).
+// - response : controls dir file `host-source-import-state.json`:
+//              { evidenceKind: "packaged-host-source-import", action, scenario,
+//                workspaceId, sessionEpoch, taskId, state, error }.
+//              `action` only reports control completion; the terminal task
+//              `state` carries succeeded/failed/cancelled. drift/cancel end
+//              as completed controls with failed/cancelled tasks and never
+//              write a Go journal entry.
+//
+// Public receipt projection contract: `data.importHistory` migrations strip
+// all batch mappings and field definitions. Identity therefore comes only
+// from Target.sourceTableId→tableId, schema.describe column titles→field
+// identities, and fixture code values→local record ids. Source record ids
+// never leave the Go journal and are never assumed here.
+export const SOURCE_IMPORT_REQUEST_CONTROL = "host-source-import.request";
+export const SOURCE_IMPORT_STATE_CONTROL = "host-source-import-state.json";
+export const SOURCE_IMPORT_STATE_EVIDENCE_KIND = "packaged-host-source-import";
+export const SOURCE_IMPORT_ACTIONS = ["source-import-completed", "source-import-failed"];
+export const SOURCE_IMPORT_MODES = ["success", "drift", "cancel"];
+
+/**
+ * Frozen mirror of the Host TestMode synthetic fixture (#435 AC1/AC2): 3
+ * tables, a bidirectional pair (A.ab ⇄ B.ba), a cycle (A→B→C→A), identical
+ * display titles across every table with distinct code identities, and one
+ * real built-in PNG attachment on A-001. Record edges are expressed in code
+ * values — the only source-side stable identity the public surface exposes.
+ */
+export const EXPECTED_SYNTHETIC_SOURCE = {
+  provider: "synthetic",
+  containerId: "qa-source-success",
+  sourceName: "QA 三表合成来源",
+  titleValue: "QA 重复显示值",
+  tables: [
+    {
+      id: "a", name: "QA 来源迁移 A", records: 2, codes: ["A-001", "A-002"],
+      fields: { title: "名称", code: "编码", ab: "关联 B", files: "附件" },
+    },
+    {
+      id: "b", name: "QA 来源迁移 B", records: 2, codes: ["B-001", "B-002"],
+      fields: { title: "名称", code: "编码", ba: "反向 A", bc: "关联 C" },
+    },
+    {
+      id: "c", name: "QA 来源迁移 C", records: 2, codes: ["C-001", "C-002"],
+      fields: { title: "名称", code: "编码", ca: "循环 A" },
+    },
+  ],
+  relations: [
+    { table: "a", field: "ab", targetTable: "b", reverseField: "ba", cardinality: "many" },
+    { table: "b", field: "bc", targetTable: "c", reverseField: null, cardinality: "one" },
+    { table: "c", field: "ca", targetTable: "a", reverseField: null, cardinality: "one" },
+  ],
+  edges: [
+    { table: "a", code: "A-001", field: "ab", targets: ["B-001", "B-002"] },
+    { table: "a", code: "A-002", field: "ab", targets: ["B-002"] },
+    { table: "b", code: "B-001", field: "bc", targets: ["C-001"] },
+    { table: "b", code: "B-002", field: "bc", targets: ["C-002"] },
+    { table: "c", code: "C-001", field: "ca", targets: ["A-002"] },
+    { table: "c", code: "C-002", field: "ca", targets: ["A-001"] },
+  ],
+  attachment: { table: "a", field: "files", code: "A-001", name: "qa-source-import.png" },
+};
+
+export function sourceImportRequestText(mode) {
+  if (!SOURCE_IMPORT_MODES.includes(mode)) {
+    throw new Error(`Source import control mode must be one of ${SOURCE_IMPORT_MODES.join("/")}: ${mode}`);
+  }
+  // Bare word only: the Host parser trims at most 64 bytes and rejects
+  // anything that is not a fixed scenario word.
+  return mode;
+}
+
+export function parseSourceImportState(rawText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    throw new Error("Source import state control is not valid JSON.");
+  }
+  const state = parsed ?? {};
+  if (state.evidenceKind !== SOURCE_IMPORT_STATE_EVIDENCE_KIND) {
+    throw new Error(`Source import state evidenceKind must be "${SOURCE_IMPORT_STATE_EVIDENCE_KIND}": ${JSON.stringify(state)}`);
+  }
+  if (!SOURCE_IMPORT_ACTIONS.includes(state.action)) {
+    throw new Error(`Source import state action must be ${SOURCE_IMPORT_ACTIONS.join("/")}: ${JSON.stringify(state)}`);
+  }
+  if (typeof state.scenario !== "string" || !state.scenario) {
+    throw new Error(`Source import state scenario is missing: ${JSON.stringify(state)}`);
+  }
+  if (typeof state.workspaceId !== "string" || !state.workspaceId) {
+    throw new Error(`Source import state workspaceId is missing: ${JSON.stringify(state)}`);
+  }
+  if (!Number.isInteger(state.sessionEpoch) || state.sessionEpoch < 1) {
+    throw new Error(`Source import state sessionEpoch is invalid: ${JSON.stringify(state)}`);
+  }
+  if (state.action === "source-import-completed"
+    && (typeof state.taskId !== "string" || !state.taskId
+      || typeof state.state !== "string" || !state.state)) {
+    throw new Error(`Completed source import control must carry taskId and state: ${JSON.stringify(state)}`);
+  }
+  if (state.taskId != null && typeof state.taskId !== "string") {
+    throw new Error(`Source import state taskId is invalid: ${JSON.stringify(state)}`);
+  }
+  if (state.state != null && typeof state.state !== "string") {
+    throw new Error(`Source import state state is invalid: ${JSON.stringify(state)}`);
+  }
+  if (state.error != null && typeof state.error !== "string") {
+    throw new Error(`Source import state error is invalid: ${JSON.stringify(state)}`);
+  }
+  return {
+    action: state.action,
+    scenario: state.scenario,
+    taskId: state.taskId ?? null,
+    state: state.state ?? null,
+    workspaceId: state.workspaceId,
+    sessionEpoch: state.sessionEpoch,
+    error: state.error ?? null,
+  };
+}
+
+export function migrationJobIds(history) {
+  return new Set((history?.migrations ?? []).map((entry) => {
+    if (typeof entry?.jobId !== "string" || !entry.jobId) {
+      throw new Error(`Migration history entry has no jobId: ${JSON.stringify(entry)}`);
+    }
+    return entry.jobId;
+  }));
+}
+
+// A terminal success receipt keeps the strict arithmetic, all targets, and
+// the read window; it never carries provider credentials, URLs, paths, or
+// plan tokens (those stay Host-internal by #435's channel contract).
+export function verifyMigrationReceipt(entry, expectation) {
+  const problems = [];
+  const require = (condition, message) => { if (!condition) problems.push(message); };
+  require(entry != null && typeof entry === "object", "migration entry is missing");
+  if (problems.length) return problems;
+  require(entry.state === "succeeded", `state is ${entry.state}`);
+  require(entry.stage === "settled", `stage is ${entry.stage}`);
+  require(Number.isInteger(entry.created), "created is not an integer");
+  require(Number.isInteger(entry.total), "total is not an integer");
+  require(Number.isInteger(entry.notSubmitted), "notSubmitted is not an integer");
+  require(Number.isInteger(entry.unknownRecords), "unknownRecords is not an integer");
+  require(entry.created + entry.notSubmitted + entry.unknownRecords === entry.total,
+    `counts do not add up: ${entry.created}+${entry.notSubmitted}+${entry.unknownRecords}!==${entry.total}`);
+  require(entry.notSubmitted === 0 && entry.unknownRecords === 0,
+    "terminal success still reports pending or unknown records");
+  require(!entry.unknownBatch, `success carries unknownBatch ${entry.unknownBatch}`);
+  require(typeof entry.sourceName === "string" && entry.sourceName.length > 0, "sourceName is empty");
+  if (expectation?.sourceName) {
+    require(entry.sourceName === expectation.sourceName,
+      `sourceName ${entry.sourceName} !== fixture ${expectation.sourceName}`);
+  }
+  if (expectation?.provider) {
+    require(entry.provider === expectation.provider,
+      `provider ${entry.provider} !== fixture ${expectation.provider}`);
+  }
+  if (expectation?.containerId) {
+    require(entry.containerId === expectation.containerId,
+      `containerId ${entry.containerId} !== fixture ${expectation.containerId}`);
+  }
+  const totalRecords = (expectation?.tables ?? []).reduce((sum, table) => sum + table.records, 0);
+  if (totalRecords > 0) {
+    require(entry.total === totalRecords, `total ${entry.total} !== fixture records ${totalRecords}`);
+    require(entry.created === totalRecords, `created ${entry.created} !== fixture records ${totalRecords}`);
+  }
+  const targets = Array.isArray(entry.targets) ? entry.targets : [];
+  const expectedTables = expectation?.tables ?? [];
+  require(targets.length === expectedTables.length,
+    `targets ${targets.length} !== fixture tables ${expectedTables.length}`);
+  for (const table of expectedTables) {
+    const target = targets.find((item) => item.sourceTableId === table.id);
+    require(target != null, `no committed target for source table ${table.id}`);
+    if (target) {
+      require(typeof target.tableId === "string" && target.tableId.length > 0,
+        `target for ${table.id} has no local tableId`);
+      require(target.name === table.name,
+        `target name for ${table.id} is ${target.name}, fixture says ${table.name}`);
+      require(typeof target.collection === "string" && target.collection.length > 0,
+        `target for ${table.id} has no physical collection name`);
+    }
+  }
+  require(Array.isArray(entry.batches) && entry.batches.length > 0, "no committed batches");
+  const window = entry.readWindow;
+  require(window != null && (window.consistency === "snapshot" || window.consistency === "window"),
+    "readWindow consistency is missing");
+  require(typeof window?.startedAt === "string" && window.startedAt
+    && typeof window.finishedAt === "string" && window.finishedAt,
+  "readWindow timestamps are missing");
+  require(typeof entry.startedAt === "string" && entry.startedAt, "startedAt is missing");
+  require(typeof entry.finishedAt === "string" && entry.finishedAt, "finishedAt is missing");
+  for (const key of ["token", "sessionSecret", "url", "path", "accessToken", "credential"]) {
+    require(!(key in entry), `receipt leaks forbidden key "${key}"`);
+  }
+  return problems;
+}
+
+// The public projection keeps one authoritative identity: Target
+// sourceTableId → committed local table/collection. Everything else below is
+// verified against the local authority itself, never against stripped
+// journal mappings.
+export function buildTableTargets(entry, expectation) {
+  const targets = new Map();
+  const localIds = new Set();
+  for (const table of expectation.tables) {
+    const target = (entry?.targets ?? []).find((item) => item.sourceTableId === table.id);
+    if (!target) throw new Error(`receipt has no committed target for source table ${table.id}`);
+    if (typeof target.tableId !== "string" || !target.tableId
+      || typeof target.collection !== "string" || !target.collection) {
+      throw new Error(`target for ${table.id} lacks tableId/collection`);
+    }
+    if (localIds.has(target.tableId)) throw new Error(`two source tables map to ${target.tableId}`);
+    localIds.add(target.tableId);
+    targets.set(table.id, { tableId: target.tableId, collection: target.collection, name: target.name });
+  }
+  return targets;
+}
+
+// schema.describe is the only public field-identity surface: a fixture field
+// display name must resolve to exactly one committed column.
+export function resolveFieldColumns(table, columns) {
+  const resolved = new Map();
+  for (const [fieldId, title] of Object.entries(table.fields)) {
+    const matches = (columns ?? []).filter((column) => column.title === title);
+    if (matches.length !== 1) {
+      throw new Error(`field "${title}" of table ${table.id} resolved ${matches.length} columns, expected 1`);
+    }
+    const column = matches[0];
+    if (typeof column.name !== "string" || !column.name
+      || typeof column.fieldId !== "string" || !column.fieldId) {
+      throw new Error(`column "${title}" of table ${table.id} has no name/fieldId`);
+    }
+    resolved.set(fieldId, column);
+  }
+  return resolved;
+}
+
+// Codes are the fixture's stable per-table record identity; duplicate titles
+// are deliberately useless as identity. Each code must own exactly one row.
+export function buildCodeIndex(table, rows, codeColumn) {
+  const index = new Map();
+  for (const code of table.codes) {
+    const matches = (rows ?? []).filter((row) => row[codeColumn] === code);
+    if (matches.length !== 1) {
+      throw new Error(`code ${code} of table ${table.id} matched ${matches.length} rows, expected 1`);
+    }
+    index.set(code, matches[0]);
+  }
+  return index;
+}
+
+export function relationValueIds(value) {
+  if (value == null) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+    return [...value].sort();
+  }
+  throw new Error(`relation value is neither id nor id list: ${JSON.stringify(value)}`);
+}
+
+/**
+ * Duplicate display titles across all tables must not blur identities: each
+ * table keeps its own distinct row ids, its fixture code values, and a
+ * single shared title text.
+ */
+export function verifyRecordIdentityByCode({ expectation, tables }) {
+  const problems = [];
+  for (const [tableId, verified] of tables) {
+    const table = expectation.tables.find((item) => item.id === tableId);
+    if (verified.rows.length !== table.records) {
+      problems.push(`${table.id} has ${verified.rows.length} rows, fixture says ${table.records}`);
+    }
+    const titles = new Set(verified.rows.map((row) => row[verified.columns.get("title").name]));
+    if (titles.size !== 1 || !titles.has(expectation.titleValue)) {
+      problems.push(`${table.id} titles ${JSON.stringify([...titles])} !== single fixture value`);
+    }
+    const codes = verified.rows.map((row) => row[verified.columns.get("code").name]).sort();
+    if (JSON.stringify(codes) !== JSON.stringify([...table.codes].sort())) {
+      problems.push(`${table.id} codes ${JSON.stringify(codes)} !== ${JSON.stringify(table.codes)}`);
+    }
+    const ids = new Set(verified.rows.map((row) => row.id));
+    if (ids.size !== verified.rows.length) problems.push(`${table.id} row ids are not distinct`);
+  }
+  return problems;
+}
+
+/**
+ * Verifies the committed relation graph against the frozen fixture edges.
+ * Edges are expressed in code identities; target rows resolve through the
+ * target table's own code index, so a swapped or display-name-based mapping
+ * cannot satisfy the check. For a declared reverse field the reciprocal
+ * backlinks are asserted too.
+ */
+export function verifyRelationGraph({ expectation, tables }) {
+  const problems = [];
+  const verifiedOf = (tableId) => {
+    const verified = tables.get(tableId);
+    if (!verified || !verified.columns || !verified.codeIndex) {
+      throw new Error(`table ${tableId} has no verified schema/code identity`);
+    }
+    return verified;
+  };
+  const rowOf = (tableId, code) => {
+    const row = verifiedOf(tableId).codeIndex.get(code);
+    if (!row) throw new Error(`code ${code} is not indexed in table ${tableId}`);
+    return row;
+  };
+  for (const edge of expectation.edges) {
+    const relation = expectation.relations.find(
+      (item) => item.table === edge.table && item.field === edge.field);
+    if (!relation) throw new Error(`fixture edge ${edge.table}.${edge.field} has no relation declaration`);
+    const origin = verifiedOf(edge.table);
+    const column = origin.columns.get(edge.field);
+    if (!column) throw new Error(`table ${edge.table} has no resolved column for field ${edge.field}`);
+    const row = rowOf(edge.table, edge.code);
+    const expected = edge.targets.map((code) => rowOf(relation.targetTable, code).id).sort();
+    const actual = relationValueIds(row[column.name]);
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      problems.push(`${edge.table}.${edge.code}.${edge.field} is ${JSON.stringify(actual)},`
+        + ` expected ${JSON.stringify(expected)} by code identity`);
+    }
+    if (!relation.reverseField) continue;
+    const target = verifiedOf(relation.targetTable);
+    const reverseColumn = target.columns.get(relation.reverseField);
+    if (!reverseColumn) {
+      throw new Error(`table ${relation.targetTable} has no resolved reverse column ${relation.reverseField}`);
+    }
+    for (const code of edge.targets) {
+      const reverseActual = relationValueIds(rowOf(relation.targetTable, code)[reverseColumn.name]);
+      if (!reverseActual.includes(row.id)) {
+        problems.push(`reverse ${relation.targetTable}.${code}.${relation.reverseField}`
+          + ` does not backlink ${edge.table}.${edge.code} (${row.id})`);
+      }
+    }
+  }
+  return problems;
+}
+
+// The migrated attachment must land as a real local file reference on the
+// committed row: the physical cell holds the stored name the file capability
+// reports, and the listing carries the fixture identity (never a URL).
+export function verifyAttachmentBinding({ expectation, tables, fileListing }) {
+  const problems = [];
+  const table = expectation.tables.find((item) => item.id === expectation.attachment.table);
+  const verified = tables.get(expectation.attachment.table);
+  const column = verified.columns.get(expectation.attachment.field);
+  if (!column) throw new Error(`table ${table.id} has no resolved column for the attachment field`);
+  const row = verified.codeIndex.get(expectation.attachment.code);
+  if (!row) throw new Error(`attachment code ${expectation.attachment.code} is not indexed`);
+  const files = fileListing?.attachments;
+  if (!Array.isArray(files) || files.length !== 1) {
+    return [`file.list returned ${JSON.stringify(files)} instead of exactly one migrated attachment`];
+  }
+  const file = files[0];
+  if (file.name !== expectation.attachment.name) {
+    problems.push(`attachment name ${file.name} !== ${expectation.attachment.name}`);
+  }
+  if (row[column.name] !== file.storedName) {
+    problems.push(`row cell ${column.name} is ${JSON.stringify(row[column.name])}`
+      + ` but storedName is ${file.storedName}`);
+  }
+  for (const key of ["url", "remoteUrl", "token"]) {
+    if (key in file) problems.push(`attachment leaks forbidden key "${key}"`);
+  }
+  return problems;
+}
+
+export function validateSyntheticExpectation(expectation) {
+  const problems = [];
+  if (!expectation || !Array.isArray(expectation.tables) || expectation.tables.length < 3) {
+    problems.push("fixture expectation must declare at least 3 tables");
+    return problems;
+  }
+  for (const key of ["provider", "containerId", "sourceName", "titleValue"]) {
+    if (typeof expectation[key] !== "string" || !expectation[key]
+      || expectation[key].includes("PLACEHOLDER")) {
+      problems.push(`fixture expectation field "${key}" is not finalized`);
+    }
+  }
+  const ids = new Set(expectation.tables.map((table) => table.id));
+  if (ids.size !== expectation.tables.length) problems.push("fixture table ids are not unique");
+  for (const table of expectation.tables) {
+    if (!Number.isInteger(table.records) || table.records < 1) {
+      problems.push(`fixture table ${table.id} record count is invalid`);
+    }
+    if (typeof table.name !== "string" || !table.name) {
+      problems.push(`fixture table ${table.id} name is missing`);
+    }
+    if (!Array.isArray(table.codes) || table.codes.length !== table.records) {
+      problems.push(`fixture table ${table.id} codes do not match its record count`);
+    }
+    if (!table.fields || typeof table.fields !== "object" || Object.keys(table.fields).length === 0) {
+      problems.push(`fixture table ${table.id} declares no field names`);
+    }
+  }
+  const relations = expectation.relations ?? [];
+  if (!relations.some((item) => item.reverseField)) {
+    problems.push("fixture must declare a bidirectional reverse field");
+  }
+  const firstTable = expectation.tables[0]?.id;
+  const cycle = relations.some((item) => item.targetTable === firstTable && item.table !== firstTable);
+  if (!cycle) problems.push("fixture must close a loop back into the first table");
+  if (!Array.isArray(expectation.edges) || expectation.edges.length === 0) {
+    problems.push("fixture must declare relation edges");
+  }
+  return problems;
+}
+
+/**
+ * Drift/cancel terminate before Go journal writes. The verifiable contract
+ * is negative: the durable journal and its committed receipts are exactly
+ * what they were before the request — never a wait for a migration entry
+ * that is supposed to stay nonexistent.
+ */
+export function assertJournalUnchanged(beforeHistory, afterHistory) {
+  const beforeIds = migrationJobIds(beforeHistory);
+  const afterIds = migrationJobIds(afterHistory);
+  const beforeEntries = new Map((beforeHistory?.migrations ?? [])
+    .map((entry) => [entry.jobId, JSON.stringify(entry)]));
+  const problems = [];
+  for (const id of afterIds) {
+    if (!beforeIds.has(id)) problems.push(`journal gained unexpected job ${id}`);
+    else if (JSON.stringify((afterHistory?.migrations ?? []).find((entry) => entry.jobId === id))
+      !== beforeEntries.get(id)) {
+      problems.push(`journal entry ${id} changed after a no-write control`);
+    }
+  }
+  for (const id of beforeIds) {
+    if (!afterIds.has(id)) problems.push(`journal lost job ${id}`);
+  }
+  return problems;
+}
+
+export async function runSourceImportJourney(page, recorder, runtime, helpers) {
+  const {
+    waitForShell, rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
+    beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
+  } = helpers;
+  const fixtureProblems = validateSyntheticExpectation(EXPECTED_SYNTHETIC_SOURCE);
+  if (fixtureProblems.length) {
+    throw new Error(`Synthetic source fixture expectation is not finalized: ${fixtureProblems.join("; ")}`);
+  }
+  const request = async (type, payload) => {
+    const response = await rawBridgeRequest(page, type, payload);
+    if (response.type === "operation.failed" || response.payload?.error) {
+      throw new Error(`${type} failed: ${JSON.stringify(response)}`);
+    }
+    return response.payload;
+  };
+  const history = async () => request("data.importHistory", {});
+  const query = { filters: [], sorts: [], offset: 0, limit: 100 };
+  // Verifies one full pass of local authority state for all three tables:
+  // schema columns, code-indexed rows, duplicate-title integrity, the loop
+  // and reciprocal relation graph.
+  const verifyLocalAuthority = async () => {
+    const tables = new Map();
+    for (const table of EXPECTED_SYNTHETIC_SOURCE.tables) {
+      const described = await request("schema.describe", {
+        collection: tableTargets.get(table.id).tableId, requestGeneration: 0,
+        accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+      });
+      const columns = resolveFieldColumns(table, described.schema?.columns ?? []);
+      const result = await request("query.page", {
+        tableId: tableTargets.get(table.id).tableId, query,
+      });
+      const rows = [...result.rows].sort((left, right) => left.id.localeCompare(right.id));
+      tables.set(table.id, { rows, columns, codeIndex: buildCodeIndex(table, rows, columns.get("code").name) });
+    }
+    return tables;
+  };
+
+  const statePath = path.join(runtime.controlsDir, SOURCE_IMPORT_STATE_CONTROL);
+  const requestPath = path.join(runtime.controlsDir, SOURCE_IMPORT_REQUEST_CONTROL);
+  const evidence = (name) => path.join(runtime.evidenceDir, name);
+  const writeControl = async (mode) => {
+    // Remove the previous terminal state so a stale file can never satisfy
+    // the next wait; the runner owns the controls directory.
+    await fs.rm(statePath, { force: true });
+    await fs.writeFile(requestPath, sourceImportRequestText(mode), "utf8");
+  };
+  const waitForState = async (timeoutMs, scenario) => {
+    const deadline = Date.now() + timeoutMs;
+    let lastError = null;
+    while (Date.now() < deadline) {
+      try {
+        const state = parseSourceImportState(await fs.readFile(statePath, "utf8"));
+        if (state.scenario === scenario) return state;
+        lastError = new Error(`stale state for scenario ${state.scenario}`);
+      } catch (error) {
+        lastError = error;
+      }
+      await page.waitForTimeout(200);
+    }
+    throw new Error(`Host source import state for "${scenario}" never became valid: ${lastError}`);
+  };
+  const openManagement = async () => {
+    const panel = page.getByTestId("import-management");
+    if (!(await panel.isVisible().catch(() => false))) {
+      await page.getByTestId("import-management-open").click();
+    }
+    await panel.waitFor({ state: "visible", timeout: 60_000 });
+  };
+
+  await waitForShell(page, recorder, { requireDatabaseOpened: true });
+  await history(); // baseline fetch also proves the bridge method works pre-run
+
+  // ---- Real success migration through the Host TestMode provider ----
+  await writeControl("success");
+  const completed = await waitForState(180_000, "success");
+  recorder.check("the real Host completes the synthetic 3-table migration with state succeeded",
+    completed.action === "source-import-completed" && completed.state === "succeeded",
+    { completed });
+
+  const afterSuccess = await history();
+  const entry = (afterSuccess.migrations ?? []).find((item) => item.jobId === completed.taskId);
+  const receiptProblems = verifyMigrationReceipt(entry, EXPECTED_SYNTHETIC_SOURCE);
+  recorder.check("the durable Go receipt is a terminal success with every target and no secrets",
+    receiptProblems.length === 0, { problems: receiptProblems, entry });
+
+  const tableTargets = buildTableTargets(entry, EXPECTED_SYNTHETIC_SOURCE);
+  const tables = await verifyLocalAuthority();
+  recorder.check("duplicate display values keep distinct code identities in every target",
+    verifyRecordIdentityByCode({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables }).length === 0,
+    { tables: [...tables.entries()].map(([id, value]) => ({ id, rows: value.rows.length })) });
+  const graphProblems = verifyRelationGraph({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables });
+  recorder.check("loop and one-to-one relations resolve by code identity with reciprocal backlinks",
+    graphProblems.length === 0, { problems: graphProblems });
+
+  const attachmentTable = tables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
+  const fileListing = await request("file.list", {
+    tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
+    recordId: attachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
+    fieldId: attachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
+  });
+  const attachmentProblems = verifyAttachmentBinding({
+    expectation: EXPECTED_SYNTHETIC_SOURCE, tables, fileListing });
+  recorder.check("the migrated attachment is a real local file reference on the committed row",
+    attachmentProblems.length === 0, { problems: attachmentProblems, fileListing });
+
+  // ---- Management page: receipt, targets, physical table open ----
+  await openManagement();
+  await page.getByTestId("import-history-refresh").click();
+  const migrationRow = page.locator(
+    `[data-testid="source-import-row"][data-job-id="${completed.taskId}"]`);
+  await migrationRow.waitFor({ state: "visible", timeout: 60_000 });
+  await migrationRow.locator('[data-testid="source-count-created"]').waitFor({ state: "visible" });
+  recorder.check("the management page renders the migration as terminal success",
+    (await migrationRow.getAttribute("data-state")) === "succeeded"
+      && (await migrationRow.getAttribute("data-stage")) === "settled", { taskId: completed.taskId });
+  await page.screenshot({ path: evidence("35-source-import-history.png"), fullPage: true });
+  await page.getByTestId(`source-import-detail-${completed.taskId}`).click();
+  const targetButtons = migrationRow.locator('[data-testid="source-target-open"]');
+  await targetButtons.first().waitFor({ state: "visible", timeout: 60_000 });
+  recorder.check("the receipt lists every committed target as openable",
+    (await targetButtons.count()) === EXPECTED_SYNTHETIC_SOURCE.tables.length, {});
+  await page.screenshot({ path: evidence("35-source-import-targets.png"), fullPage: true });
+  const firstTarget = EXPECTED_SYNTHETIC_SOURCE.tables[0];
+  await page.locator(
+    `[data-testid="source-target-open"][data-table-id="${tableTargets.get(firstTarget.id).tableId}"]`).click();
+  await page.getByTestId("toolbar-table-title").waitFor({ state: "visible" });
+  recorder.check("opening a committed target physically switches the grid to that table",
+    (await page.getByTestId("toolbar-table-title").textContent()).includes(firstTarget.name), {});
+
+  // ---- Workspace close/reopen: journal, rows, relations persist ----
+  const originalSession = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
+  recorder.check("source import acceptance closes the actual workspace",
+    closed.result?.state === "closed", { closed });
+  await beginWritableWorkspaceBootstrapCapture(page, originalSession.sessionEpoch, "workspace.open");
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  recorder.check("the workspace reopens with a fresh session epoch",
+    reopened.payload.session.workspaceId === originalSession.workspaceId
+      && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch, { reopened });
+
+  const afterReopen = await history();
+  const reopenedEntry = (afterReopen.migrations ?? [])
+    .find((item) => item.jobId === completed.taskId);
+  const reopenProblems = verifyMigrationReceipt(reopenedEntry, EXPECTED_SYNTHETIC_SOURCE);
+  recorder.check("the migration receipt survives the workspace reopen unchanged",
+    reopenProblems.length === 0, { problems: reopenProblems, reopenedEntry });
+
+  const reopenedTables = await verifyLocalAuthority();
+  const reopenedGraphProblems = [
+    ...verifyRecordIdentityByCode({
+      expectation: EXPECTED_SYNTHETIC_SOURCE, tables: reopenedTables }),
+    ...verifyRelationGraph({ expectation: EXPECTED_SYNTHETIC_SOURCE, tables: reopenedTables }),
+  ];
+  recorder.check("after reopen rows and relations still map to the same local records",
+    reopenedGraphProblems.length === 0, { problems: reopenedGraphProblems });
+
+  await openManagement();
+  await page.locator(
+    `[data-testid="source-import-row"][data-job-id="${completed.taskId}"]`)
+    .waitFor({ state: "visible", timeout: 60_000 });
+  await page.screenshot({ path: evidence("35-source-import-reopened.png"), fullPage: true });
+  const baselineRowCount = await page.getByTestId("source-import-row").count();
+
+  // ---- Drift and cancel end as failed/cancelled tasks with no journal write ----
+  const beforeNegative = await history();
+  const expectedTerminal = { drift: "failed", cancel: "cancelled" };
+  for (const mode of ["drift", "cancel"]) {
+    await writeControl(mode);
+    const terminal = await waitForState(180_000, mode);
+    recorder.check(`the ${mode} control ends as a ${expectedTerminal[mode]} task, never succeeded`,
+      terminal.action === "source-import-completed"
+        && terminal.state === expectedTerminal[mode], { terminal });
+    const problems = assertJournalUnchanged(beforeNegative, await history());
+    recorder.check(`${mode} adds no journal entry and mutates no committed receipt`,
+      problems.length === 0, { problems });
+  }
+  await page.getByTestId("import-history-refresh").click();
+  recorder.check("drift and cancel leave the management migration list unchanged",
+    (await page.getByTestId("source-import-row").count()) === baselineRowCount,
+    { baselineRowCount });
+}

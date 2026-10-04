@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaapi"
@@ -43,6 +44,34 @@ func (d schemaFieldChangeDomain) CreateTable(ctx context.Context, intent v2.Tabl
 	return receipt, nil
 }
 
+// CreateTableWithCommit keeps CreateTable's replay and business gate authority
+// and additionally runs commit inside the table create transaction. Replays
+// never re-project; a projection failure rolls the create back atomically.
+func (d schemaFieldChangeDomain) CreateTableWithCommit(
+	ctx context.Context,
+	intent v2.TableCreateIntent,
+	commit func(core.App, v2.TableCreateReceipt) error,
+) (v2.TableCreateReceipt, error) {
+	if replay, found, err := d.tables.FindReplay(intent); err != nil {
+		return v2.TableCreateReceipt{}, err
+	} else if found {
+		return replay, nil
+	}
+	var receipt v2.TableCreateReceipt
+	err := runIdempotentBusinessWrite(ctx, d.gates, "schema.table.create", intent.OperationID, func(ctx context.Context) error {
+		var err error
+		receipt, err = d.tables.CreateWithCommit(ctx, intent, commit)
+		return err
+	})
+	if err != nil {
+		return receipt, err
+	}
+	if receipt.TableID == "" {
+		return d.tables.Replay(intent)
+	}
+	return receipt, nil
+}
+
 func (d schemaFieldChangeDomain) Plan(ctx context.Context, intent v2.FieldChangeIntent) (v2.FieldChangePlan, error) {
 	var plan v2.FieldChangePlan
 	err := runBusinessWrite(ctx, d.gates, "field.change.plan", fmt.Sprintf("%s:%s:%s:%s", intent.TableID, intent.FieldID, intent.Action, intent.ExpectedSchemaRev), func(ctx context.Context) error {
@@ -58,6 +87,23 @@ func (d schemaFieldChangeDomain) Apply(ctx context.Context, request v2.ApplyRequ
 	err := runBusinessWrite(ctx, d.gates, "field.change.apply", request.OperationID, func(ctx context.Context) error {
 		var err error
 		receipt, err = d.core.Apply(ctx, request)
+		return err
+	})
+	return receipt, err
+}
+
+// ApplyWithCommit keeps Apply's business gate authority and forwards to the
+// schema executor's commit projection seam. Replays never re-project; a
+// projection failure rolls the field change back atomically.
+func (d schemaFieldChangeDomain) ApplyWithCommit(
+	ctx context.Context,
+	request v2.ApplyRequest,
+	commit func(core.App, v2.ApplyReceipt) error,
+) (v2.ApplyReceipt, error) {
+	var receipt v2.ApplyReceipt
+	err := runBusinessWrite(ctx, d.gates, "field.change.apply", request.OperationID, func(ctx context.Context) error {
+		var err error
+		receipt, err = d.core.ApplyWithCommit(ctx, request, commit)
 		return err
 	})
 	return receipt, err

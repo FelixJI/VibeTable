@@ -125,6 +125,55 @@ public sealed class TestModeHostControllerTests
             Path.Combine(fixture.Root, "host-normal-close.request")));
     }
 
+    [TestMethod]
+    public async Task FixedSourceControlIsConsumedOnceAndPublishesOnlySafeIds()
+    {
+        int calls = 0;
+        using var fixture = new Fixture((scenario, _) =>
+        {
+            Assert.AreEqual("success", scenario);
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(JsonSerializer.SerializeToElement(new
+            { taskId = "task-synthetic", state = "succeeded", secret = "must-not-be-published" }));
+        });
+        File.WriteAllText(Path.Combine(fixture.Root, "host-source-import.request"), "success");
+        JsonElement evidence = await fixture.WaitForStateAsync("source-import-completed", "host-source-import-state.json");
+        Assert.AreEqual(1, calls);
+        Assert.AreEqual("task-synthetic", evidence.GetProperty("taskId").GetString());
+        Assert.AreEqual("succeeded", evidence.GetProperty("state").GetString());
+        Assert.AreEqual("packaged-host-source-import", evidence.GetProperty("evidenceKind").GetString());
+        Assert.IsFalse(evidence.GetRawText().Contains("must-not-be-published", StringComparison.Ordinal));
+        Assert.IsFalse(File.Exists(Path.Combine(fixture.Root, "host-source-import.request")));
+        fixture.Controller.Check();
+        Assert.AreEqual(1, calls);
+    }
+
+    [TestMethod]
+    public async Task SourceControlRejectsJsonAndUnknownScenariosWithoutCallingProvider()
+    {
+        int calls = 0;
+        using var fixture = new Fixture((_, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            throw new InvalidOperationException("Must not run");
+        });
+        File.WriteAllText(Path.Combine(fixture.Root, "host-source-import.request"), "{\"snapshot\":{}}");
+        JsonElement evidence = await fixture.WaitForStateAsync("source-import-failed", "host-source-import-state.json");
+        Assert.AreEqual("invalid scenario", evidence.GetProperty("error").GetString());
+        Assert.AreEqual(0, calls);
+    }
+
+    [TestMethod]
+    public void SourceControlWithoutExplicitTestPortIsNotConsumed()
+    {
+        using var fixture = new Fixture();
+        string path = Path.Combine(fixture.Root, "host-source-import.request");
+        File.WriteAllText(path, "success");
+        fixture.Controller.Check();
+        Assert.IsTrue(File.Exists(path));
+        Assert.AreEqual(0, fixture.Host.ScheduleCalls);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
@@ -160,23 +209,23 @@ public sealed class TestModeHostControllerTests
 
     private sealed class Fixture : IDisposable
     {
-        public Fixture()
+        public Fixture(Func<string, CancellationToken, Task<JsonElement>>? sourceImport = null)
         {
             Root = Path.Combine(
                 Path.GetTempPath(),
                 "vibetable-test-host-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
             Host = new FakeHost();
-            Controller = new TestModeHostController(Root, Host);
+            Controller = new TestModeHostController(Root, Host, sourceImport: sourceImport);
         }
 
         public string Root { get; }
         public FakeHost Host { get; }
         public TestModeHostController Controller { get; }
 
-        public async Task<JsonElement> WaitForStateAsync(string action)
+        public async Task<JsonElement> WaitForStateAsync(string action, string fileName = "host-lifecycle-state.json")
         {
-            string path = Path.Combine(Root, "host-lifecycle-state.json");
+            string path = Path.Combine(Root, fileName);
             JsonElement state = default;
             await WaitUntilAsync(() =>
             {

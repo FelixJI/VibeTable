@@ -112,6 +112,7 @@ type importPlanOwner struct {
 	now         func() time.Time
 	mu          sync.Mutex
 	plans       map[string]*importStoredPlan
+	sourcePlans map[string]*sourceStoredPlan
 }
 
 func newImportPlanOwner(workspaceID string) *importPlanOwner {

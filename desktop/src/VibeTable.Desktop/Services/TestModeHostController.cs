@@ -37,19 +37,23 @@ public sealed class TestModeHostController : IDisposable
     private readonly string _controlsRoot;
     private readonly ITestModeHost _host;
     private readonly Func<CancellationToken> _sessionToken;
+    private readonly Func<string, CancellationToken, Task<JsonElement>>? _sourceImport;
     private readonly Timer _timer;
     private int _checking;
     private int _disposed;
+    private int _sourceImportRunning;
 
     public TestModeHostController(
         string controlsRoot,
         ITestModeHost host,
-        Func<CancellationToken>? sessionToken = null)
+        Func<CancellationToken>? sessionToken = null,
+        Func<string, CancellationToken, Task<JsonElement>>? sourceImport = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(controlsRoot);
         _controlsRoot = Path.GetFullPath(controlsRoot);
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _sessionToken = sessionToken ?? (() => CancellationToken.None);
+        _sourceImport = sourceImport;
         _timer = new Timer(
             _ => Check(),
             null,
@@ -98,11 +102,68 @@ public sealed class TestModeHostController : IDisposable
                 return;
             }
             TryOpenWorkspace();
+            TrySourceImport();
         }
         finally
         {
             Volatile.Write(ref _checking, 0);
         }
+    }
+
+    private void TrySourceImport()
+    {
+        if (_sourceImport is null || Volatile.Read(ref _sourceImportRunning) != 0) return;
+        string path = Path.Combine(_controlsRoot, "host-source-import.request");
+        if (!File.Exists(path)) return;
+        string scenario;
+        try
+        {
+            scenario = new FileInfo(path).Length <= 64 ? File.ReadAllText(path).Trim() : "";
+            File.Delete(path);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _host.Trace($"TestModeHostController: source import control rejected: {exception.GetType().Name}");
+            return;
+        }
+        if (!TestModeSourceImport.IsScenario(scenario))
+        {
+            WriteSourceImportState("source-import-failed", "invalid", null, "invalid scenario");
+            return;
+        }
+        Interlocked.Exchange(ref _sourceImportRunning, 1);
+        if (!Dispatch("source import", async () =>
+        {
+            TestModeHostState origin = _host.CaptureState();
+            try
+            {
+                JsonElement status = await _sourceImport(scenario, _sessionToken()).ConfigureAwait(true);
+                WriteSourceImportState("source-import-completed", scenario, status, null, origin);
+            }
+            catch (Exception exception)
+            {
+                // Evidence contains no provider payload, secret or address.
+                WriteSourceImportState("source-import-failed", scenario, null, exception.GetType().Name, origin);
+            }
+            finally { Volatile.Write(ref _sourceImportRunning, 0); }
+        })) Volatile.Write(ref _sourceImportRunning, 0);
+    }
+
+    private void WriteSourceImportState(string action, string scenario, JsonElement? status, string? error,
+        TestModeHostState? origin = null)
+    {
+        TestModeHostState host = origin ?? _host.CaptureState();
+        WriteEvidence("host-source-import-state.json", new
+        {
+            evidenceKind = "packaged-host-source-import",
+            action,
+            scenario,
+            workspaceId = host.Session.WorkspaceId,
+            sessionEpoch = host.Session.SessionEpoch,
+            taskId = status?.GetProperty("taskId").GetString(),
+            state = status?.GetProperty("state").GetString(),
+            error,
+        });
     }
 
     private void TryOpenWorkspace()
@@ -178,17 +239,19 @@ public sealed class TestModeHostController : IDisposable
                 return Task.CompletedTask;
             });
 
-    private void Dispatch(string action, Func<Task> callback)
+    private bool Dispatch(string action, Func<Task> callback)
     {
         _host.Trace($"TestModeHostController: {action} requested");
         try
         {
             _host.Schedule(callback);
+            return true;
         }
         catch (InvalidOperationException exception)
         {
             _host.Trace(
                 $"TestModeHostController: {action} dispatch rejected: {exception.GetType().Name}");
+            return false;
         }
     }
 
@@ -214,9 +277,12 @@ public sealed class TestModeHostController : IDisposable
                     state.Session.State.ToString()),
             error,
         };
-        string destination = Path.Combine(
-            _controlsRoot,
-            "host-lifecycle-state.json");
+        WriteEvidence("host-lifecycle-state.json", payload);
+    }
+
+    private void WriteEvidence(string fileName, object payload)
+    {
+        string destination = Path.Combine(_controlsRoot, fileName);
         string temporary = destination + $".{Guid.NewGuid():N}.tmp";
         try
         {

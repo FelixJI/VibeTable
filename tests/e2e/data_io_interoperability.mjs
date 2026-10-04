@@ -4,6 +4,8 @@ import { execFile } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
+import { runSourceImportJourney } from "./source_import_journey.mjs";
+
 const executeFile = promisify(execFile);
 const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
 
@@ -304,6 +306,15 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
   await page.getByTestId("import-management-open").click();
   await page.getByTestId("import-history-row").first().waitFor({ state: "visible" });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "35-import-management-reopened.png"), fullPage: true });
+
+  // ---- #435 synthetic source migration through the Host TestMode seam ----
+  // Scenario 35 keeps its #434 evidence untouched; the source migration
+  // appends its own controls, receipts, targets and reopen persistence on
+  // the same real WPF management page.
+  await runSourceImportJourney(page, recorder, runtime, {
+    waitForShell, rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
+    beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
+  });
 }
 
 function expectedRepresentative(corpus, key) {

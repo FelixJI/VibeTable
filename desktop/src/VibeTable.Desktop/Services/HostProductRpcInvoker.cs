@@ -153,7 +153,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         {
             // A pure Go read: it never starts Python and never mutates state.
             _taskOwner.BindImportHistory(_snapshot, _handler);
-            return await _taskOwner.ReadImportHistoryAsync(token).ConfigureAwait(false);
+            return await ReadSourceImportHistoryAsync(token).ConfigureAwait(false);
         }
         if (method == "task.status")
         {
@@ -186,6 +186,15 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         string kind = parameters.GetProperty("kind").GetString()
             ?? throw new JsonException("Task kind is required.");
         JsonElement taskParams = parameters.GetProperty("params");
+        if (kind == "data.sourceImport")
+        {
+            token.ThrowIfCancellationRequested();
+            JsonElement initial = default;
+            if (!_tryUseGoCurrent(() =>
+                { initial = _taskOwner.StartSourceImport(_snapshot, taskParams); return true; }))
+                throw Unavailable();
+            return initial;
+        }
         JsonRpcClient clientForStart = execution ?? await EnsurePythonAsync(token).ConfigureAwait(false);
         EnsurePythonCurrent(clientForStart);
         var (taskId, _) = _taskOwner.Admit(

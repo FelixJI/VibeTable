@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	pbcore "github.com/pocketbase/pocketbase/core"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
@@ -90,4 +91,36 @@ func (core *Core) Apply(
 	request v2.ApplyRequest,
 ) (v2.ApplyReceipt, error) {
 	return core.executor.Apply(ctx, request)
+}
+
+// CommitExecutor is the optional executor capability behind
+// Core.ApplyWithCommit; Interface itself stays unchanged for existing callers.
+type CommitExecutor interface {
+	ApplyWithCommit(
+		ctx context.Context,
+		request v2.ApplyRequest,
+		commit func(pbcore.App, v2.ApplyReceipt) error,
+	) (v2.ApplyReceipt, error)
+}
+
+// ApplyWithCommit is a narrow forwarding seam for callers that must persist an
+// authoritative projection in the same transaction as the field change. It
+// reuses the configured executor authority; when the executor does not
+// support commit projection the callback is never silently dropped and the
+// call fails explicitly.
+func (core *Core) ApplyWithCommit(
+	ctx context.Context,
+	request v2.ApplyRequest,
+	commit func(pbcore.App, v2.ApplyReceipt) error,
+) (v2.ApplyReceipt, error) {
+	if commit == nil {
+		return core.executor.Apply(ctx, request)
+	}
+	executor, ok := core.executor.(CommitExecutor)
+	if !ok {
+		return v2.ApplyReceipt{}, errors.New(
+			"schemacore.commit.unsupported: field executor does not support commit projection",
+		)
+	}
+	return executor.ApplyWithCommit(ctx, request, commit)
 }
