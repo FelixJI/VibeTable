@@ -35,6 +35,7 @@ const stateLabels: Record<SourceImportState, { label: string; kind: "default" | 
 };
 
 const STAGE_LABELS: Record<string, string> = {
+  preparing: t("importManagement.migration.stage.preparing"),
   schema: t("importManagement.migration.stage.schema"),
   constraints: t("importManagement.migration.stage.constraints"),
   records: t("importManagement.migration.stage.records"),

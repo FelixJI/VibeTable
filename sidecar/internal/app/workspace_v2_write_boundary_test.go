@@ -27,6 +27,8 @@ func TestWorkspaceV2WriteBoundaryFailsClosed(t *testing.T) {
 		{"formula draft validate", http.MethodPost, "/api/vibetable/v1/formulas/draft/validate", true},
 		{"mutation preview", http.MethodPost, "/api/vibetable/v1/mutations/preview", true},
 		{"import preview", http.MethodPost, "/api/vibetable/v2/import-preview", true},
+		{"source staging discard", http.MethodPost, sourceImportPath + "/discard", true},
+		{"source discard extra segment", http.MethodPost, sourceImportPath + "/discard/extra", false},
 		{"import plan mint", http.MethodPost, "/api/vibetable/v2/import-plans", true},
 		{"import plan stage", http.MethodPost, "/api/vibetable/v2/import-plans/stage", true},
 		{"import plan bind", http.MethodPost, "/api/vibetable/v2/import-plans/bind", true},

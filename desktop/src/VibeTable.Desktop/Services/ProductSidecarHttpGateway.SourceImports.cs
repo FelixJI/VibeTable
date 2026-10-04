@@ -28,6 +28,14 @@ public sealed partial class ProductSidecarHttpGateway
     internal Task<JsonElement> ReadSourceImportResultAsync(string jobId, CancellationToken token)
         => SourceImportJsonAsync("result/" + Uri.EscapeDataString(jobId), null, token);
 
+    internal async Task DiscardSourceImportAsync(string planToken, ulong sessionEpoch, CancellationToken token)
+    {
+        JsonElement reply = await SourceImportJsonAsync("discard", new { token = planToken, sessionEpoch }, token)
+            .ConfigureAwait(false);
+        if (reply.GetProperty("discarded").ValueKind != JsonValueKind.True)
+            throw new JsonException("Source import staging discard was not acknowledged.");
+    }
+
     internal async Task<HostSourceImportResult[]> ReadSourceImportHistoryAsync(CancellationToken token)
     {
         JsonElement root = await SourceImportJsonAsync("history", null, token).ConfigureAwait(false);

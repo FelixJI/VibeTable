@@ -96,6 +96,19 @@ func TestFaultGateDataPathThatIsAFileIsActionable(t *testing.T) {
 	}
 }
 
+func TestFaultClassificationDoesNotReadFailureMeaningFromFilePath(t *testing.T) {
+	err := &os.PathError{Op: "mkdir", Path: "workspace/migration-checksum mismatch/data", Err: errors.New("not a directory")}
+	classified := Classify("create data directory", err)
+	assertStable(t, classified, CodeStartFailed, "retry")
+	if !errors.Is(classified, err) {
+		t.Fatal("classification discarded the underlying storage error")
+	}
+	corrupt := &Error{Code: CodeMigrationCorrupt, Message: "known-good Snapshot", Cause: err}
+	if Classify("load manifest", corrupt) != corrupt {
+		t.Fatal("typed manifest corruption no longer takes precedence")
+	}
+}
+
 func assertStable(t *testing.T, err error, code, guidance string) {
 	t.Helper()
 	var stable *Error

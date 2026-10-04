@@ -329,6 +329,7 @@ export const messages: Record<string, string> = {
   "importManagement.migration.empty": "还没有迁移记录",
   "importManagement.migration.state.unknown": "结果未知",
   "importManagement.migration.stage.schema": "建表/字段",
+  "importManagement.migration.stage.preparing": "读取与核对来源",
   "importManagement.migration.stage.constraints": "关联与约束",
   "importManagement.migration.stage.records": "记录写入",
   "importManagement.migration.stage.relations": "关系回填",

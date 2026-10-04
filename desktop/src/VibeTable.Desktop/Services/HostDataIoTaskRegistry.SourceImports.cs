@@ -13,6 +13,103 @@ internal sealed partial class HostDataIoTaskRegistry
     private readonly Dictionary<string, SourceSession> _sourceSessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SourceTask> _sourceTasks = new(StringComparer.Ordinal);
 
+    internal JsonElement[] OverlaySourceImportHistory(ProductSidecarGenerationSnapshot snapshot,
+        IReadOnlyList<HostSourceImportResult> durable)
+    {
+        var entries = durable.Select(result => result.Wire).ToList();
+        lock (_gate)
+        {
+            if (_disposed) return entries.ToArray();
+            foreach (SourceTask task in _sourceTasks.Values)
+            {
+                // Recheck liveness after the Go read. Retired generations and
+                // terminal Host tasks must never revive an interrupted job.
+                if (task.Status.State is not (TaskStates.Queued or TaskStates.Running)
+                    || task.Session is not { Retired: false } session
+                    || session.Lease.CancellationToken.IsCancellationRequested
+                    || !session.Snapshot.Matches(snapshot)) continue;
+                int index = -1;
+                for (int candidate = 0; candidate < durable.Count; candidate++)
+                {
+                    if (durable[candidate].JobId == task.Status.TaskId
+                        && durable[candidate].SessionEpoch == snapshot.Identity.SessionEpoch)
+                    { index = candidate; break; }
+                }
+                if (index >= 0)
+                {
+                    HostSourceImportResult receipt = durable[index];
+                    bool finished = receipt.Wire.TryGetProperty("finishedAt", out JsonElement finishedAt)
+                        && finishedAt.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(finishedAt.GetString());
+                    if (receipt.State is "succeeded" or "failed" or "cancelled" or "unknown" || finished) continue;
+                    // Go owns counts, targets and receipts, including a pending
+                    // batch's unknown subset. Only Host liveness is projected.
+                    entries[index] = SourceHistoryState(receipt.Wire, task.Status.State,
+                        task.Submitted ? receipt.Wire.GetProperty("stage").GetString()! : task.Phase);
+                }
+                else
+                {
+                    if (task.Submitted)
+                        throw new BackendUnavailableException("Source import submission receipt is not available yet.");
+                    entries.Add(SourceHistoryState(task.Preparation, task.Status.State, task.Phase));
+                }
+            }
+        }
+        return entries.ToArray();
+    }
+
+    private static JsonElement SourceHistoryState(JsonElement source, string state, string stage)
+    {
+        var values = source.EnumerateObject().ToDictionary(property => property.Name, property => property.Value);
+        values["state"] = JsonSerializer.SerializeToElement(state);
+        values["stage"] = JsonSerializer.SerializeToElement(stage);
+        return JsonSerializer.SerializeToElement(values);
+    }
+
+    private static JsonElement SourcePreparationHistory(HostSourceImportPreview preview, string taskId, ulong epoch)
+    {
+        int total = 0;
+        foreach (JsonElement table in preview.Plan.GetProperty("tables").EnumerateArray())
+        {
+            int count = table.GetProperty("recordCount").GetInt32();
+            if (count < 0) throw new JsonException("Source plan record count is invalid.");
+            total = checked(total + count);
+        }
+        JsonElement PlanArray(string name)
+        {
+            JsonElement value = preview.Plan.GetProperty(name);
+            if (value.ValueKind == JsonValueKind.Array) return value;
+            if (value.ValueKind == JsonValueKind.Null) return JsonSerializer.SerializeToElement(Array.Empty<object>());
+            throw new JsonException("Source plan summary is invalid.");
+        }
+        return JsonSerializer.SerializeToElement(new
+        {
+            contract = HostSourceImportResult.ContractName,
+            jobId = taskId,
+            provider = preview.Plan.GetProperty("provider"),
+            containerId = preview.Plan.GetProperty("containerId"),
+            sourceName = preview.Plan.GetProperty("displayName"),
+            state = TaskStates.Queued,
+            stage = "preparing",
+            created = 0,
+            total,
+            notSubmitted = total,
+            unknownRecords = 0,
+            targets = Array.Empty<object>(),
+            batches = Array.Empty<object>(),
+            diagnostics = PlanArray("diagnostics"),
+            fields = PlanArray("fields").EnumerateArray().Select(field => new
+            {
+                source = field.GetProperty("source"),
+                kind = field.GetProperty("kind"),
+                policy = field.GetProperty("policy"),
+                definition = "",
+            }).ToArray(),
+            startedAt = DateTimeOffset.UtcNow.ToString("O"),
+            sessionEpoch = epoch,
+            readWindow = preview.Plan.GetProperty("readWindow"),
+        });
+    }
+
     internal string RegisterSourceImportProvider(ProductSidecarGenerationSnapshot snapshot,
         IWorkspaceHostEpochLeaseSource leases, IHostSourceImportProvider provider,
         HttpMessageHandler? handler = null)
@@ -117,9 +214,10 @@ internal sealed partial class HostDataIoTaskRegistry
                 || preview.Plan.GetProperty("canApply").ValueKind != JsonValueKind.True)
                 throw new InvalidOperationException("Source import plan is not available for confirmation.");
             string taskId = "task-" + Guid.NewGuid().ToString("N");
+            JsonElement preparation = SourcePreparationHistory(preview, taskId, snapshot.Identity.SessionEpoch);
             session.Consumed = true;
             task = new SourceTask(session, new TaskStatus(taskId, "data.sourceImport", TaskStates.Queued,
-                new TaskProgress(0, 0, "等待迁移"), null, null));
+                new TaskProgress(0, preparation.GetProperty("total").GetInt32(), "等待迁移"), null, null), preparation);
             _sourceTasks.Add(taskId, task);
             foreach (string old in _sourceTasks.Where(p => Terminal(p.Value.Status.State))
                 .Take(Math.Max(0, _sourceTasks.Count - MaxTasks)).Select(p => p.Key).ToArray())
@@ -136,6 +234,7 @@ internal sealed partial class HostDataIoTaskRegistry
     {
         SourceSession session = task.Session!;
         bool submitted = false;
+        bool receiptConfirmed = false;
         try
         {
             CancellationToken token = session.Lifetime.Token;
@@ -147,6 +246,7 @@ internal sealed partial class HostDataIoTaskRegistry
             if (attachments.Length > 500 || attachments.Any(a => a.Size < 0 || a.Size > 32 * 1024 * 1024)
                 || attachments.Sum(a => a.Size) > 128L * 1024 * 1024)
                 throw new InvalidOperationException("Source attachments exceed the migration capacity.");
+            lock (_gate) task.Phase = "attachments";
             foreach (HostSourceImportAttachment attachment in attachments)
             {
                 EnsureSourceCurrent(session, token);
@@ -169,6 +269,7 @@ internal sealed partial class HostDataIoTaskRegistry
             }
             // Re-observe after downloads, immediately before consuming the Go
             // plan. The renderer has no observation input on this path.
+            lock (_gate) task.Phase = "preparing";
             HostSourceImportObservation observation = await session.Provider.ObserveAsync(token).ConfigureAwait(false);
             EnsureSourceCurrent(session, token);
             if (observation.Version != preview.Plan.GetProperty("version").GetString()
@@ -180,6 +281,7 @@ internal sealed partial class HostDataIoTaskRegistry
             JsonElement wire = await StartSourceCurrent(session, () =>
             {
                 token.ThrowIfCancellationRequested();
+                lock (_gate) task.Submitted = true;
                 submitted = true;
                 return session.Gateway.ExecuteSourceImportAsync(new
                 {
@@ -192,6 +294,7 @@ internal sealed partial class HostDataIoTaskRegistry
                 }, token);
             }).ConfigureAwait(false);
             CompleteSourceResult(task, wire);
+            receiptConfirmed = true;
         }
         catch (Exception)
         {
@@ -205,6 +308,7 @@ internal sealed partial class HostDataIoTaskRegistry
                     JsonElement wire = await StartSourceCurrent(session, () => session.Gateway
                         .ReadSourceImportResultAsync(task.Status.TaskId, reconcile.Token)).ConfigureAwait(false);
                     CompleteSourceResult(task, wire);
+                    receiptConfirmed = true;
                     return;
                 }
                 catch (Exception) { /* Keep the outcome explicitly unconfirmed. */ }
@@ -217,6 +321,31 @@ internal sealed partial class HostDataIoTaskRegistry
         }
         finally
         {
+            if (!receiptConfirmed && session.IsCurrent() && session.Preview is { } unused)
+            {
+                try
+                {
+                    // Cancellation of this task must not cancel its cleanup.
+                    // The original epoch still fences the request. Go atomically
+                    // rejects claimed tokens, including an ambiguous execute
+                    // whose ACK and result read were both lost.
+                    using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(session.Lease.CancellationToken);
+                    cleanup.CancelAfter(TimeSpan.FromSeconds(5));
+                    await StartSourceCurrent(session, async () =>
+                    {
+                        await session.Gateway.DiscardSourceImportAsync(unused.Token,
+                            session.Snapshot.Identity.SessionEpoch, cleanup.Token).ConfigureAwait(false);
+                        return true;
+                    }).ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    // Keep the original business outcome. A claimed token or
+                    // retired/unreachable Go must not lead to another execute.
+                    System.Diagnostics.Trace.TraceWarning(
+                        $"Source import staging discard was not acknowledged: {error.GetType().Name}");
+                }
+            }
             lock (_gate)
             {
                 string? id = _sourceSessions.FirstOrDefault(p => ReferenceEquals(p.Value, session)).Key;
@@ -257,7 +386,8 @@ internal sealed partial class HostDataIoTaskRegistry
             task.Status = task.Status with
             {
                 State = state,
-                Progress = new TaskProgress(result?.Created ?? 0, result?.Total ?? 0, message),
+                Progress = new TaskProgress(result?.Created ?? task.Status.Progress.Done,
+                    result?.Total ?? task.Status.Progress.Total, message),
                 Result = result?.Wire,
                 Error = error ? message : null,
             };
@@ -330,10 +460,13 @@ internal sealed partial class HostDataIoTaskRegistry
         return content.ToArray();
     }
 
-    private sealed class SourceTask(SourceSession session, TaskStatus status)
+    private sealed class SourceTask(SourceSession session, TaskStatus status, JsonElement preparation)
     {
         internal SourceSession? Session { get; set; } = session;
         internal TaskStatus Status { get; set; } = status;
+        internal JsonElement Preparation { get; } = preparation;
+        internal bool Submitted { get; set; }
+        internal string Phase { get; set; } = "preparing";
         internal Task? Run { get; set; }
     }
 

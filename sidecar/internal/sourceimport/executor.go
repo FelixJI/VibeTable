@@ -108,13 +108,31 @@ func (executor *Executor) Execute(ctx context.Context, plan Plan, jobID string, 
 		work.result.Diagnostics = append(work.result.Diagnostics, Diagnostic{Code: "source_import.execution_stopped", Message: "迁移已停止；保留已提交目标和批次，请查看分阶段结果", Blocking: true})
 	}
 	if finishErr := executor.journal.Finish(settleCtx, work.result); finishErr != nil {
-		return work.result, fmt.Errorf("source_import.result_unavailable: %w", finishErr)
+		// A lost Finish acknowledgement is resolved only from the same durable
+		// job. Never deliver the unpersisted in-memory success as authority.
+		if persisted, readErr := executor.journal.Read(settleCtx, jobID); readErr == nil {
+			if persisted.State == "succeeded" && persisted.Stage == "settled" && persisted.FinishedAt != "" {
+				return persisted, nil
+			}
+			return persisted, fmt.Errorf("source_import.result_unavailable: %w", finishErr)
+		}
+		return work.unavailableResult(), fmt.Errorf("source_import.result_unavailable: %w", finishErr)
 	}
 	result, readErr := executor.journal.Read(settleCtx, jobID)
 	if readErr != nil {
-		return work.result, fmt.Errorf("source_import.result_unavailable: %w", readErr)
+		return work.unavailableResult(), fmt.Errorf("source_import.result_unavailable: %w", readErr)
 	}
 	return result, err
+}
+
+func (work *execution) unavailableResult() Result {
+	result := work.result
+	result.State = "unknown"
+	result.FinishedAt = ""
+	result.Diagnostics = append(append([]Diagnostic{}, result.Diagnostics...), Diagnostic{
+		Code: "source_import.result_unavailable", Message: "最终持久结果暂不可读取；保留已确认批次和目标，请重新读取原任务结果", Blocking: true,
+	})
+	return result
 }
 
 func (work *execution) key(table, field, record string) Key {

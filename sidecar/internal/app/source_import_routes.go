@@ -112,6 +112,22 @@ func registerSourceImportRoutes(r *router.Router[*core.RequestEvent], pb core.Ap
 		}
 		return request.JSON(http.StatusOK, map[string]any{"uploaded": true})
 	})
+	r.POST(sourceImportPath+"/discard", func(request *core.RequestEvent) error {
+		var input struct {
+			Token        string `json:"token"`
+			SessionEpoch uint64 `json:"sessionEpoch"`
+		}
+		if err := decodeImportPlanBody(request, &input); err != nil {
+			return writeFieldError(request, err)
+		}
+		if input.SessionEpoch != epoch {
+			return writeFieldError(request, fmt.Errorf("source_import.session_changed"))
+		}
+		if err := owner.discardSource(input.Token, epoch); err != nil {
+			return writeFieldError(request, err)
+		}
+		return request.JSON(http.StatusOK, map[string]any{"discarded": true})
+	})
 	r.POST(sourceImportPath+"/execute", func(request *core.RequestEvent) error {
 		var input sourceClaimRequest
 		if err := decodeImportPlanBody(request, &input); err != nil {

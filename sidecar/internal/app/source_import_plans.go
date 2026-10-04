@@ -66,6 +66,7 @@ func (owner *importPlanOwner) mintSource(plan sourceimport.Plan, epoch uint64, m
 	publicPlan := plan
 	publicPlan.Tables = append([]sourceimport.TablePlan{}, plan.Tables...)
 	for index := range publicPlan.Tables {
+		publicPlan.Tables[index].RecordCount = len(publicPlan.Tables[index].Records)
 		publicPlan.Tables[index].Records = []sourceimport.Record{}
 	}
 	return sourcePreviewReply{Contract: sourceimport.Contract, Token: token, ExpiresAt: float64(expires.UnixNano()) / 1e9, Plan: publicPlan}, nil
@@ -183,4 +184,24 @@ func (owner *importPlanOwner) retireSource(token string) {
 		stored.cleanup()
 		delete(owner.sourcePlans, token)
 	}
+}
+
+// Discard is a Host lifecycle operation, never an execution cancellation. The
+// same lock as upload/claim makes cleanup unable to race a claimed executor.
+func (owner *importPlanOwner) discardSource(token string, epoch uint64) error {
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	stored := owner.sourcePlans[token]
+	if stored == nil {
+		return nil
+	}
+	if stored.epoch != epoch {
+		return fmt.Errorf("source_import.session_changed")
+	}
+	if stored.claimed {
+		return fmt.Errorf("source_import.plan.consumed")
+	}
+	stored.cleanup()
+	delete(owner.sourcePlans, token)
+	return nil
 }

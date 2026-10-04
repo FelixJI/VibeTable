@@ -17,6 +17,7 @@ const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
 var workspaceV2ReadOnlyPosts = map[string]struct{}{
 	sourceImportPath + "/preview":                {},
 	sourceImportPath + "/upload":                 {},
+	sourceImportPath + "/discard":                {},
 	"/api/vibetable/v1/formulas/validate":        {},
 	"/api/vibetable/v1/formulas/preview":         {},
 	"/api/vibetable/v1/formulas/draft/validate":  {},

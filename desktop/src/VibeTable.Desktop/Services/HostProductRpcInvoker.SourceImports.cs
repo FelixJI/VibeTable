@@ -33,7 +33,7 @@ internal sealed partial class HostProductRpcInvoker
         return JsonSerializer.SerializeToElement(new
         {
             items = files.GetProperty("items"),
-            migrations = migrations.Select(result => result.Wire).ToArray(),
+            migrations = _taskOwner.OverlaySourceImportHistory(_snapshot, migrations),
         }, WireOptions);
     }
 }

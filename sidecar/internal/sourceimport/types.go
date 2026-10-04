@@ -158,6 +158,7 @@ type TablePlan struct {
 	PrimaryFieldID string      `json:"primaryFieldId"`
 	Fields         []FieldPlan `json:"fields"`
 	Records        []Record    `json:"records"`
+	RecordCount    int         `json:"recordCount"`
 }
 
 type Plan struct {

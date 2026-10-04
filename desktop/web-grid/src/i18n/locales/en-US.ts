@@ -329,6 +329,7 @@ export const messages: Record<string, string> = {
   "importManagement.migration.empty": "No migration records yet",
   "importManagement.migration.state.unknown": "Outcome unknown",
   "importManagement.migration.stage.schema": "Tables / fields",
+  "importManagement.migration.stage.preparing": "Read and verify source",
   "importManagement.migration.stage.constraints": "Relations & constraints",
   "importManagement.migration.stage.records": "Records",
   "importManagement.migration.stage.relations": "Relations",

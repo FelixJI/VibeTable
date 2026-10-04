@@ -118,6 +118,12 @@ func Classify(operation string, err error) error {
 	}
 
 	lower := strings.ToLower(err.Error())
+	// File paths are context, not failure semantics. A workspace directory
+	// named "migration" must not turn a storage error into corrupt migrations.
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		lower = strings.ToLower(pathErr.Err.Error())
+	}
 	switch {
 	case errors.Is(err, syscall.ENOSPC),
 		strings.Contains(lower, "no space left"),
