@@ -334,17 +334,15 @@ func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request
 				return PreviewResult{}, mutationError("mutation.archive.unsupported", stringPointer(path), "table has no archive policy", nil, false)
 			}
 		}
-		values := make(map[string]any, len(operation.Values)+len(operation.RawValues))
-		suppliedV2 := make(
-			map[string]struct{}, len(operation.Values)+len(operation.RawValues),
-		)
+		values := make(map[string]any)
+		suppliedV2 := make(map[string]struct{})
 		type suppliedValue struct {
 			key   string
 			value any
 			raw   bool
 		}
 		supplied := make(
-			[]suppliedValue, 0, len(operation.Values)+len(operation.RawValues),
+			[]suppliedValue, 0, len(operation.Values),
 		)
 		for key, value := range operation.Values {
 			supplied = append(supplied, suppliedValue{key: key, value: value})
