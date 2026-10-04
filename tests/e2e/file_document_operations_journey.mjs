@@ -236,6 +236,9 @@ async function confirm(page, recorder, helpers, change, action, sourcePath, docu
       && reply.request.payload.params.documentId === documentId
       && reply.result.state === "applied", { request: reply.request, result: reply.result });
   await page.keyboard.press("Escape");
+  // NModal restores focus again when its leave transition unmounts the trap.
+  // Let that finish before the next search fill can take focus.
+  await page.locator(".pending-changes-modal").waitFor({ state: "detached", timeout: 30000 });
   return reply.result.document;
 }
 
@@ -320,6 +323,7 @@ export async function runFileDocumentOperationsJourney(page, recorder, runtime, 
     rejected.payload?.ok === false && rejected.payload?.error?.code === "file_history.pending_change_stale", { rejected });
   await helpers.acknowledgeExpectedBridgeFailure(page, rejected);
   await page.keyboard.press("Escape");
+  await page.locator(".pending-changes-modal").waitFor({ state: "detached", timeout: 30000 });
   assert.deepEqual(await tree(page, helpers, imported.documentId), originalTree);
   const preserved = (await query(page, helpers)).documents.find(item => item.documentId === imported.documentId);
   recorder.check("rejected stale delete preserves current path, status and effective revision",

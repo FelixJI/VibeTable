@@ -66,6 +66,14 @@
       "effect": "read"
     },
     {
+      "method": "data.importHistory",
+      "scope": "workspace",
+      "audience": "rendererPublic",
+      "capabilityId": "data.transfer",
+      "owner": "wpfHost",
+      "effect": "read"
+    },
+    {
       "method": "data.previewImport",
       "scope": "workspace",
       "audience": "rendererPublic",

@@ -23,6 +23,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
     private readonly Func<CancellationToken, Task<JsonRpcClient>>? _ensurePython;
     private readonly Func<JsonRpcClient, Func<bool>, bool>? _tryUseExactPython;
     private readonly Func<HostSessionFileBroker>? _hostFiles;
+    private readonly HttpMessageHandler? _handler;
     private readonly HostDataIoTaskRegistry _taskOwner;
     private readonly ProductSidecarHttpGateway _sidecar;
     private readonly CancellationTokenSource _lifetime = new();
@@ -55,6 +56,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         _ensurePython = ensurePython;
         _tryUseExactPython = tryUseExactPython;
         _hostFiles = hostFiles;
+        _handler = handler;
         if (ensurePython is null) _taskOwner.BindClient(client, snapshot.Identity);
         _sidecar = new ProductSidecarHttpGateway(snapshot.Context, snapshot.Identity,
             snapshot.Registrations, handler);
@@ -147,6 +149,12 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
     private async Task<JsonElement> InvokeTaskAsync(
         string method, JsonElement parameters, CancellationToken token, JsonRpcClient? execution = null)
     {
+        if (method == "data.importHistory")
+        {
+            // A pure Go read: it never starts Python and never mutates state.
+            _taskOwner.BindImportHistory(_snapshot, _handler);
+            return await _taskOwner.ReadImportHistoryAsync(token).ConfigureAwait(false);
+        }
         if (method == "task.status")
         {
             string id = parameters.GetProperty("taskId").GetString()
@@ -184,6 +192,13 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             clientForStart, _snapshot.Identity, kind);
         try
         {
+            if (kind == "data.import")
+            {
+                // The durable Go start must precede worker execution; its
+                // failure blocks the business run instead of running blind.
+                await StartImportHistoryAsync(taskId, taskParams, token)
+                    .ConfigureAwait(false);
+            }
             JsonElement request = JsonSerializer.SerializeToElement(new
             {
                 taskId,
@@ -205,6 +220,37 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             throw;
         }
     }
+
+    /// <summary>
+    /// Persists the durable start projection of one import before the worker
+    /// runs. Only safe display facts cross the seam: the grant resolves to a
+    /// short file name plus the csv/xlsx source type, and the idempotency key
+    /// binds the attribution to the apply attempt.
+    /// </summary>
+    private async Task StartImportHistoryAsync(
+        string taskId, JsonElement taskParams, CancellationToken token)
+    {
+        string grantId = RequiredText(taskParams, "grantId");
+        string collection = RequiredText(taskParams, "collection");
+        string idempotencyPrefix = RequiredText(taskParams, "idempotencyPrefix");
+        _taskOwner.BindImportHistory(_snapshot, _handler);
+        (string SourceType, string SourceName) source = await Files
+            .DescribeImportSourceAsync(grantId, token).ConfigureAwait(false);
+        await _taskOwner.StartImportHistoryAsync(
+            taskId,
+            collection,
+            source.SourceType,
+            source.SourceName,
+            idempotencyPrefix + "-0",
+            token).ConfigureAwait(false);
+    }
+
+    private static string RequiredText(JsonElement value, string name)
+        => value.TryGetProperty(name, out JsonElement element)
+            && element.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(element.GetString())
+                ? element.GetString()!
+                : throw new JsonException($"Import parameter '{name}' is required.");
     internal async Task<JsonElement> ExecuteExportAsync(JsonElement parameters, CancellationToken token)
     {
         using WorkspaceRequestEpochLease lease = CaptureLease();

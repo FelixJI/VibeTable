@@ -78,7 +78,9 @@ const SCHEMA_ACCEPTS = [
 export function useDataIoService() {
   const bridge = useHostBridge();
   const activeTaskId = ref<string | null>(null);
-  const busy = computed(() => activeTaskId.value !== null);
+  /** True while `task.create` is awaited but admission is not yet assigned an id. */
+  const createPending = ref(false);
+  const busy = computed(() => activeTaskId.value !== null || createPending.value);
   let catalogGeneration = 0;
   let activeTaskSession: () => DataTaskSessionState = () => "active";
 
@@ -88,50 +90,71 @@ export function useDataIoService() {
     assertCurrent: () => void,
     taskSession: () => DataTaskSessionState,
   ): Promise<unknown> {
-    if (activeTaskId.value) {
+    if (activeTaskId.value || createPending.value) {
       throw new Error("A data task is already running.");
     }
     assertCurrent();
-    let status = await bridge.request("task.create", { kind, params }) as DataTaskStatus;
-    // Admission is already complete. Keep tracking the owned task through its
-    // terminal receipt so table changes do not discard busy/cancellation state.
-    activeTaskId.value = status.taskId;
-    activeTaskSession = taskSession;
+    // Admission lock: without it, two confirmations racing before the first
+    // `task.create` reply would both pass the guard and admit two tasks. The
+    // lock is released on create failure so later tasks are not blocked.
+    createPending.value = true;
     try {
-      while (status.state === "queued" || status.state === "running") {
-        await new Promise((resolve) => window.setTimeout(resolve, 100));
-        const sessionState = taskSession();
-        if (sessionState === "retired") throw new Error(t("dataIo.operationRetired"));
-        if (sessionState === "draining") continue;
-        try {
-          status = await bridge.request("task.status", {
-            taskId: status.taskId,
-          }) as DataTaskStatus;
-        } catch (error) {
-          // Drain cancels the status RPC lease, not the admitted backend task.
-          // Keep its last receipt: the next iteration waits for the original
-          // session to resume or retires ownership before any replacement RPC.
-          if (!(error instanceof BridgeOperationError)
-              || error.code !== "workspace.session_stale") throw error;
-        }
+      let status = await bridge.request("task.create", { kind, params }) as DataTaskStatus;
+      // Admission is already complete. Keep tracking the owned task through its
+      // terminal receipt so table changes do not discard busy/cancellation state.
+      activeTaskId.value = status.taskId;
+      activeTaskSession = taskSession;
+      try {
+        status = await trackTaskToTerminal(status, taskSession);
+        return readTaskResult(kind, status);
+      } finally {
+        activeTaskId.value = null;
       }
-      if (status.state !== "succeeded") {
-        throw new Error(status.error ?? `Data task ended as ${status.state}.`);
-      }
-      if (kind === "data.import"
-          && status.result
-          && typeof status.result === "object"
-          && Array.isArray((status.result as { failedRows?: unknown }).failedRows)
-          && ((status.result as { failedRows: unknown[] }).failedRows.length > 0)) {
-        throw new Error(
-          status.progress?.message
-          ?? `Import failed for ${(status.result as { failedRows: unknown[] }).failedRows.length} row(s).`,
-        );
-      }
-      return status.result;
     } finally {
-      activeTaskId.value = null;
+      createPending.value = false;
     }
+  }
+
+  async function trackTaskToTerminal(
+    initial: DataTaskStatus,
+    taskSession: () => DataTaskSessionState,
+  ): Promise<DataTaskStatus> {
+    let status = initial;
+    while (status.state === "queued" || status.state === "running") {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      const sessionState = taskSession();
+      if (sessionState === "retired") throw new Error(t("dataIo.operationRetired"));
+      if (sessionState === "draining") continue;
+      try {
+        status = await bridge.request("task.status", {
+          taskId: status.taskId,
+        }) as DataTaskStatus;
+      } catch (error) {
+        // Drain cancels the status RPC lease, not the admitted backend task.
+        // Keep its last receipt: the next iteration waits for the original
+        // session to resume or retires ownership before any replacement RPC.
+        if (!(error instanceof BridgeOperationError)
+            || error.code !== "workspace.session_stale") throw error;
+      }
+    }
+    return status;
+  }
+
+  function readTaskResult(kind: "data.import" | "data.export", status: DataTaskStatus): unknown {
+    if (status.state !== "succeeded") {
+      throw new Error(status.error ?? `Data task ended as ${status.state}.`);
+    }
+    if (kind === "data.import"
+        && status.result
+        && typeof status.result === "object"
+        && Array.isArray((status.result as { failedRows?: unknown }).failedRows)
+        && ((status.result as { failedRows: unknown[] }).failedRows.length > 0)) {
+      throw new Error(
+        status.progress?.message
+        ?? `Import failed for ${(status.result as { failedRows: unknown[] }).failedRows.length} row(s).`,
+      );
+    }
+    return status.result;
   }
 
   async function cancelActive(): Promise<void> {
@@ -161,14 +184,19 @@ export function useDataIoService() {
     }) as ImportPlan;
   }
 
+  /** Opens the native import-source picker without previewing any target yet. */
+  async function pickImportSource(): Promise<SessionPathGrant> {
+    return await bridge.request("data.importSourceRequested", {
+      accept: [".xlsx", ".xlsm", ".csv"],
+    }) as SessionPathGrant;
+  }
+
   async function previewImport(
     collection: string,
     schemaRevision: string,
     assertCurrent: () => void = () => undefined,
   ): Promise<ImportPreviewSession> {
-    const grant = await bridge.request("data.importSourceRequested", {
-      accept: [".xlsx", ".xlsm", ".csv"],
-    }) as SessionPathGrant;
+    const grant = await pickImportSource();
     assertCurrent();
     const plan = await requestPreview(grant, collection, schemaRevision, []);
     return { grant, plan, mode: "create_only" };
@@ -312,6 +340,7 @@ export function useDataIoService() {
   return {
     activeTaskId,
     busy,
+    pickImportSource,
     previewImport,
     previewImportWithGrant,
     loadRelationImportOptions,

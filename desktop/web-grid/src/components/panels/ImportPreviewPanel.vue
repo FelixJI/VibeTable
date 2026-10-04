@@ -15,7 +15,7 @@ import type { RelationMappingDraft } from "@/composables/useDataIoTask";
 import ImportRelationMapping from "./ImportRelationMapping.vue";
 import { getLocale, t } from "@/i18n";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   session: ImportPreviewSession;
   applying: boolean;
   cancellable: boolean;
@@ -28,13 +28,18 @@ const props = defineProps<{
   mappingDirty: boolean;
   schemaDrifted: boolean;
   repreviewing: boolean;
-}>();
+  /** True only after the host admitted the task (task.create returned an id). */
+  taskAdmitted?: boolean;
+}>(), {
+  taskAdmitted: false,
+});
 
 const emit = defineEmits<{
   confirm: [];
   cancel: [];
   cancelTask: [];
   repreview: [];
+  openImportManagement: [];
   "update:relationConfig": [rows: readonly RelationMappingDraft[]];
 }>();
 
@@ -255,6 +260,15 @@ function displayValue(row: ImportPlanRow, field: string): string {
         <div class="panel-actions">
           <span>{{ t("dataIo.import.preview.createOnly") }}</span>
           <div>
+            <NButton
+              v-if="applying && taskAdmitted"
+              size="small"
+              tertiary
+              data-testid="import-view-task"
+              @click="emit('openImportManagement')"
+            >
+              {{ t("dataIo.import.preview.viewTask") }}
+            </NButton>
             <NButton
               v-if="relationOptions !== null || relationOptionsLoading"
               :loading="repreviewing"

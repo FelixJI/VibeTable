@@ -46,7 +46,7 @@ public sealed class ProductDataRpcRegistryTests
             "recordDocumentLink.list", "recordDocumentLink.commit",
             "recordDocumentLink.repair", "recordDocumentLink.delete",
             "mutation.preview", "mutation.apply",
-            "data.previewImport", "data.applyImport", "data.export",
+            "data.previewImport", "data.applyImport", "data.export", "data.importHistory",
             "task.create", "task.cancel", "task.status",
             "formula.validate", "formula.draft.validate", "formula.preview",
             "file.list", "file.token", "events.reconcile",
@@ -187,7 +187,7 @@ public sealed class ProductDataRpcRegistryTests
                      "field.settings.describe", "field.change.status",
                      "field.recycleBin.list",
                      "mutation.preview", "query.page", "query.view",
-                     "data.previewImport", "data.export", "task.status",
+                     "data.previewImport", "data.export", "data.importHistory", "task.status",
                  })
         {
             Assert.IsTrue(ProductDataRpcRegistry.TryGet(type, out var endpoint));

@@ -186,6 +186,91 @@ public sealed partial class ProductSidecarHttpGateway : IProductSidecarGatewayCa
         }).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Persists one import history start in the Go authority. Called by the
+    /// runtime-owned import history journal only; never by renderer forwards.
+    /// </summary>
+    public Task<JsonElement> StartImportHistoryAsync(
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+        => PostImportHistoryAsync(
+            "api/vibetable/v2/import-history/start",
+            parameters,
+            cancellationToken);
+
+    /// <summary>
+    /// Records a Host-observed import terminal state (failed/cancelled/
+    /// aborted). The Go authority rejects claimed success and never
+    /// overwrites its own committed receipts.
+    /// </summary>
+    public Task<JsonElement> FinishImportHistoryAsync(
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+        => PostImportHistoryAsync(
+            "api/vibetable/v2/import-history/finish",
+            parameters,
+            cancellationToken);
+
+    private async Task<JsonElement> PostImportHistoryAsync(
+        string relative,
+        JsonElement parameters,
+        CancellationToken cancellationToken)
+    {
+        lock (_stateGate)
+            ThrowIfDisposed();
+        if (parameters.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("The import history request is invalid.");
+        byte[] body = JsonSerializer.SerializeToUtf8Bytes(parameters);
+        if (body.Length > MaxRequestBytes)
+            throw new InvalidOperationException("The Product Sidecar request is too large.");
+        return await RunCallAsync(cancellationToken, async callToken =>
+        {
+            using HttpRequestMessage request = CreateRequest(HttpMethod.Post, relative);
+            request.Content = new ByteArrayContent(body);
+            request.Content.Headers.ContentType =
+                new MediaTypeHeaderValue("application/json");
+            return await ReadImportHistoryReplyAsync(request, callToken)
+                .ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads the durable import history page from the Go authority. The
+    /// response is bounded and validated by the journal before projection.
+    /// </summary>
+    public Task<JsonElement> GetImportHistoryAsync(
+        CancellationToken cancellationToken)
+    {
+        lock (_stateGate)
+            ThrowIfDisposed();
+        return RunCallAsync(cancellationToken, async callToken =>
+        {
+            using HttpRequestMessage request = CreateRequest(
+                HttpMethod.Get,
+                "api/vibetable/v2/import-history");
+            return await ReadImportHistoryReplyAsync(request, callToken)
+                .ConfigureAwait(false);
+        });
+    }
+
+    private async Task<JsonElement> ReadImportHistoryReplyAsync(
+        HttpRequestMessage request,
+        CancellationToken callToken)
+    {
+        using HttpResponseMessage response = await _client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            callToken).ConfigureAwait(false);
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw Unavailable();
+        byte[] raw = await ReadBoundedAsync(response, callToken)
+            .ConfigureAwait(false);
+        using JsonDocument document = JsonDocument.Parse(raw);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw InvalidResponse();
+        return document.RootElement.Clone();
+    }
+
     public void Dispose()
     {
         lock (_stateGate)

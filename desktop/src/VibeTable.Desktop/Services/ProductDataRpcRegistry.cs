@@ -146,6 +146,8 @@ internal static class ProductDataRpcRegistry
             (g, p, t) => g.ApplyImportAsync(p, t),
             MutatesWorkspace: true,
             ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
+        new("data.importHistory", p => Safe(p) && HasExactProperties(p),
+            (g, p, t) => g.GetImportHistoryAsync(p, t)),
         new("data.export", p => Safe(p) && HasStrings(p, "grantId", "collection") && HasObject(p, "query"),
             (g, p, t) => g.ExportAsync(p, t)),
         new("task.create", p => Safe(p) && HasString(p, "kind") && HasObject(p, "params"),

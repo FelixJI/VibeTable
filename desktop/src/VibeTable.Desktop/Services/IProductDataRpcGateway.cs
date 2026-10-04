@@ -98,6 +98,7 @@ public interface IProductDataRpcGateway : IDisposable, IRelationLookupRpcGateway
     Task<JsonElement> RegisterExportTargetAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> PreviewImportAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ApplyImportAsync(JsonElement parameters, CancellationToken token);
+    Task<JsonElement> GetImportHistoryAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> ExportAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> CreateTaskAsync(JsonElement parameters, CancellationToken token);
     Task<JsonElement> CancelTaskAsync(JsonElement parameters, CancellationToken token);

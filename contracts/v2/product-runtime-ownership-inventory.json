@@ -472,6 +472,35 @@
       ]
     },
     {
+      "id": "rpc.data-import-history",
+      "kind": "rpc",
+      "names": ["data.importHistory"],
+      "currentPath": ["renderer", "wpfHost", "goSidecar", "pocketBase"],
+      "currentRoute": "wpfHost",
+      "classification": "HOST_NATIVE",
+      "targetOwner": "HOST_NATIVE",
+      "authority": "HOST_NATIVE",
+      "effects": {
+        "read": ["data.importHistory"],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": ["goSidecar", "pocketBase", "wpfHost"],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "operationBounded",
+      "productScenarios": ["04-json-round-trip", "09-atomic-import-scale"],
+      "targetSlice": "L7",
+      "targetPr": null,
+      "deleteWhen": "Host overlays only its current live import tasks on Go-owned durable receipts; history reads never launch the file Worker or replay mutations.",
+      "evidence": [
+        "desktop/src/VibeTable.Desktop/Services/HostDataIoTaskRegistry.cs",
+        "desktop/src/VibeTable.Desktop/Services/HostProductRpcInvoker.cs",
+        "sidecar/internal/app/app.go"
+      ]
+    },
+    {
       "id": "rpc.data-transfer",
       "kind": "rpc",
       "names": [

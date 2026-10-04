@@ -49,7 +49,9 @@ internal sealed class ProductRpcRouteSelector
             return true;
         }
         if (!_manifest.TryGet(method, out ProductRpcCapability capability)) return false;
-        if (capability.Owner == "wpfHost" && method is ("task.create" or "task.status" or "task.cancel"))
+        if (capability.Owner == "wpfHost"
+            && method is ("task.create" or "task.status" or "task.cancel"
+                or "data.importHistory"))
         {
             route = ProductRpcRoute.HostDataIo;
             return true;

@@ -11278,6 +11278,14 @@ async function scenario36(page, recorder, _network, runtime) {
   }
   let fault;
   try {
+    await page.getByTestId("import-view-task").click();
+    await page.getByTestId("import-preview-panel").waitFor({ state: "hidden" });
+    await page.getByTestId("import-active-task").waitFor({ state: "visible" });
+    recorder.check("leaving the preview retains the admitted import and its cancellation entry",
+      (await page.getByTestId("import-active-task").innerText()).includes(task.taskId)
+        && await page.getByTestId("import-cancel-active-task").isEnabled());
+    await page.getByTestId("nav-tables").click();
+    await page.getByTestId("import-preview-panel").waitFor({ state: "visible" });
     fault = await requestPackagedProcessKill(runtime, "kill-backend",
       "interrupt active 1k-row import after first uncommitted record");
   } finally {
@@ -11313,6 +11321,23 @@ async function scenario36(page, recorder, _network, runtime) {
   recorder.check("late Go settlement cannot overwrite the Host terminal snapshot",
     retained.payload?.state === "aborted" && retained.payload?.result == null,
     { retained });
+  const history = await rawBridgeRequest(page, "data.importHistory", {});
+  const entry = history.payload?.items?.find((item) => item.taskId === task.taskId);
+  recorder.check("worker exit history distinguishes execution loss from Go commit evidence",
+    history.type === "data.importHistory" && entry != null
+      && (entry.commitState === "committed"
+        ? entry.state === "succeeded" && entry.createdCount === 1_000
+          && entry.updatedCount === 0 && entry.finishedAt != null
+        : ["aborted", "interrupted"].includes(entry.state)
+          && entry.createdCount === null && entry.updatedCount === null),
+    { entry });
+  await page.getByTestId("import-management-open").click();
+  await page.locator(`[data-testid="import-history-row"][data-task-id="${task.taskId}"]`)
+    .waitFor({ state: "visible" });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "36-import-management-worker-exit.png"),
+    fullPage: true,
+  });
 }
 
 const scenarios = {
@@ -11358,6 +11383,8 @@ const scenarios = {
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, rawBridgeRequest,
       parseCsv, canonicalJsonText, chooseToolbarMore,
+      openWorkspaceCenterFromSwitcher, replicaUiMethod,
+      beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
     },
   ),
   "36-backend-import-exit": scenario36,

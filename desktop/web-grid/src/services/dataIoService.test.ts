@@ -173,6 +173,74 @@ describe("dataIoService", () => {
     expect(service.busy.value).toBe(false);
   });
 
+  it("admits only one task when two confirmations race the create receipt", async () => {
+    vi.useFakeTimers();
+    let resolveCreated!: (value: unknown) => void;
+    const created = new Promise((resolve) => { resolveCreated = resolve; });
+    const request = vi.fn(async (method: string) => {
+      if (method === "data.exportTargetRequested") return { grantId: "grant-out" };
+      if (method === "task.create") return await created;
+      return { taskId: "owned-task", state: "succeeded", result: { rowsWritten: 1 } };
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    const first = service.exportData("orders", {}, "csv").catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    const second = await service.exportData("orders", {}, "csv").catch((error: unknown) => error);
+    try {
+      expect(second).toBeInstanceOf(Error);
+      expect((second as Error).message).toBe("A data task is already running.");
+      expect(request.mock.calls.filter(([method]) => method === "task.create")).toHaveLength(1);
+      expect(service.busy.value).toBe(true);
+    } finally {
+      resolveCreated({ taskId: "owned-task", state: "succeeded", result: { rowsWritten: 1 } });
+      await first;
+      await vi.advanceTimersByTimeAsync(100);
+      vi.useRealTimers();
+    }
+    expect(service.busy.value).toBe(false);
+  });
+
+  it("releases the admission lock when task.create fails so later tasks still run", async () => {
+    vi.useFakeTimers();
+    let failures = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === "data.exportTargetRequested") return { grantId: "grant-out" };
+      if (method === "task.create") {
+        if (++failures === 1) throw new Error("backend rejected");
+        return { taskId: "owned-task", state: "succeeded", result: { rowsWritten: 1 } };
+      }
+      throw new Error(`Unexpected request ${method}`);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    try {
+      await expect(service.exportData("orders", {})).rejects.toThrow("backend rejected");
+      expect(service.busy.value).toBe(false);
+      await expect(service.exportData("orders", {})).resolves.toEqual({ rowsWritten: 1 });
+      expect(request.mock.calls.filter(([method]) => method === "task.create")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("exposes the native import-source picker without previewing", async () => {
+    const request = vi.fn(async () => ({
+      grantId: "grant-in", purpose: "import_source", direction: "read",
+      displayName: "orders.csv", sizeBytes: 12, mimeType: "text/csv", expiresAt: 1,
+    }));
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+
+    const grant = await service.pickImportSource();
+
+    expect(grant.grantId).toBe("grant-in");
+    expect(request).toHaveBeenCalledWith("data.importSourceRequested", {
+      accept: [".xlsx", ".xlsm", ".csv"],
+    });
+    expect(service.busy.value).toBe(false);
+  });
+
   afterEach(() => {
     setHostBridgeForTesting(null);
     vi.restoreAllMocks();

@@ -42,7 +42,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     manifest = build_manifest()
 
     assert manifest["contractVersion"] == "2.0"
-    assert len(manifest["rpcMethods"]) == 114
+    assert len(manifest["rpcMethods"]) == 115
     assert len(manifest["eventTopics"]) == 7
     schema = next(item for item in manifest["rpcMethods"] if item["method"] == "schema.getTable")
     assert schema == {
@@ -56,6 +56,7 @@ def test_policy_joins_catalog_and_inventory_with_migrated_current_owners() -> No
     assert {item["method"] for item in manifest["rpcMethods"] if item["owner"] != "pythonBff"} == {
         "command.list",
         "command.run",
+        "data.importHistory",
         "file.applyHostChange",
         "file.saveHostFile",
         "path.registerExportTarget",
@@ -349,6 +350,7 @@ def test_generated_types_and_current_owner_adapters_are_exact() -> None:
     assert current_owner_methods("wpfHost") == (
         "command.list",
         "command.run",
+        "data.importHistory",
         "file.applyHostChange",
         "file.saveHostFile",
         "gridState.get",

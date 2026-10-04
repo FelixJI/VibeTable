@@ -92,11 +92,13 @@ describe("AppToolbar", () => {
     expect(dropdown).toBeTruthy();
     const select = dropdown!.props("onSelect") as (key: string) => void;
     select("import");
+    select("import-management");
     select("export-csv");
     select("export-xlsx");
     select("refresh");
     select("help");
     expect(wrapper.emitted("importData")).toHaveLength(1);
+    expect(wrapper.emitted("openImportManagement")).toHaveLength(1);
     expect(wrapper.emitted("exportData")).toEqual([["csv"], ["xlsx"]]);
     expect(wrapper.emitted("refresh")).toHaveLength(1);
     expect(wrapper.emitted("openHelp")).toHaveLength(1);
@@ -115,11 +117,25 @@ describe("AppToolbar", () => {
     expect(keys).toEqual([
       "cancel-data-task",
       "import",
+      "import-management",
       "export-csv",
       "export-xlsx",
       "refresh",
       "help",
     ]);
+  });
+
+  it("keeps the import management entry available even while a data task is busy", () => {
+    const workspace = useWorkspaceStore();
+    workspace.selectTable("orders");
+    const wrapper = mount(AppToolbar, { props: { dataIoBusy: true } });
+    const dropdown = wrapper.findAllComponents(NDropdown).find((candidate) =>
+      (candidate.props("options") as Array<{ key: string }>).some(
+        (option) => option.key === "import-management",
+      ),
+    );
+    const options = dropdown!.props("options") as Array<{ key: string; disabled?: boolean }>;
+    expect(options.find((option) => option.key === "import-management")?.disabled).toBeFalsy();
   });
 
   it("prevents starting another import or export while a data task is active", () => {

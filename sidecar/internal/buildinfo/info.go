@@ -6,7 +6,7 @@ const (
 	CELVersion        = "0.32.0"
 	ContractVersion   = "v1"
 	ProtocolV2Version = "2.0"
-	SchemaVersion     = "15"
+	SchemaVersion     = "16"
 	WorkspaceFormat   = "3"
 	RepositoryFormat  = "kopia-v4"
 	SnapshotFormat    = "2"

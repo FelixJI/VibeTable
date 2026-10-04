@@ -138,6 +138,7 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     public Task<JsonElement> RegisterExportTargetAsync(JsonElement p, CancellationToken t) => Invoke("path.registerExportTarget", p, t);
     public Task<JsonElement> PreviewImportAsync(JsonElement p, CancellationToken t) => Invoke("data.previewImport", p, t);
     public Task<JsonElement> ApplyImportAsync(JsonElement p, CancellationToken t) => Invoke("data.applyImport", p, t);
+    public Task<JsonElement> GetImportHistoryAsync(JsonElement p, CancellationToken t) => Invoke("data.importHistory", p, t);
     public Task<JsonElement> ExportAsync(JsonElement p, CancellationToken t) => Invoke("data.export", p, t);
     public Task<JsonElement> CreateTaskAsync(JsonElement p, CancellationToken t) => Invoke("task.create", p, t);
     public Task<JsonElement> CancelTaskAsync(JsonElement p, CancellationToken t) => Invoke("task.cancel", p, t);

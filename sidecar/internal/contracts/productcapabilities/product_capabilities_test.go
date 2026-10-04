@@ -43,8 +43,8 @@ func TestGeneratedCurrentOwnerCatalogKeepsMigratedOwners(t *testing.T) {
 
 func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T) {
 	descriptors := RPCDescriptors()
-	if len(descriptors) != 114 {
-		t.Fatalf("RPCDescriptors length = %d, want 114", len(descriptors))
+	if len(descriptors) != 115 {
+		t.Fatalf("RPCDescriptors length = %d, want 115", len(descriptors))
 	}
 	if descriptors[0].Method != "command.list" ||
 		descriptors[len(descriptors)-1].Method != "version.save" {
@@ -173,7 +173,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		got[50] != (RPCDescriptor{Method: "table.previewPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	hostMethods := []string{"command.list", "command.run", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "plugin.cancelInstall", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "task.cancel", "task.create", "task.status"}
+	hostMethods := []string{"command.list", "command.run", "data.importHistory", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "plugin.cancelInstall", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "task.cancel", "task.create", "task.status"}
 	hostDescriptors := CurrentOwnerRPCDescriptors(WpfHost)
 	if len(hostDescriptors) != len(hostMethods) {
 		t.Fatalf("wpfHost count = %d", len(hostDescriptors))

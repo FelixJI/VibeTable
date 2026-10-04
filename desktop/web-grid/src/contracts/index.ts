@@ -1,4 +1,5 @@
 import type { FormulaAuthorDocument } from "./generated/workbench";
+import type { ImportHistoryResult } from "./importManagement";
 import type { DocumentDiffSessionResult, DocumentDiffChangePageRequest, DocumentDiffChangePageResult } from "./documentDiffV2";
 import type { WorkCalendarOverride } from "@/calendar/workCalendar";
 
@@ -1463,6 +1464,7 @@ export type WebMessageType =
   | "table.applyPasteRequested"
   | "data.importSourceRequested"
   | "data.exportTargetRequested"
+  | "data.importHistory"
   | "data.previewImport"
   | "data.applyImport"
   | "data.export"
@@ -1541,6 +1543,7 @@ export type HostMessageType =
   | "task.changed"
   | "realtime.recovered"
   | "data.importSourceRequested"
+  | "data.importHistory"
   | "data.exportTargetRequested"
   | "data.previewImport"
   | "data.applyImport"
@@ -1877,6 +1880,7 @@ export interface HostPayloadMap {
   "data.importSourceRequested": SessionPathGrant;
   "data.exportTargetRequested": SessionPathGrant;
   "data.previewImport": ImportPlan;
+  "data.importHistory": ImportHistoryResult;
   "data.applyImport": ApplyImportResult;
   "data.export": ExportResult;
   "task.create": DataTaskStatus;
@@ -2163,6 +2167,7 @@ export interface WebPayloadMap {
   };
   "task.cancel": { readonly taskId: string };
   "task.status": { readonly taskId: string };
+  "data.importHistory": Readonly<Record<string, never>>;
   "dailyQuote.fetch": DailyQuoteFetchRequest;
   // Revision audit + two-phase safe restore requests.
   "history.queryRequested": HistoryQueryPayload;

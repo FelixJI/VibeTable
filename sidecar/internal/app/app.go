@@ -25,6 +25,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/health"
+	"github.com/vibetable/vibetable/sidecar/internal/importhistory"
 	"github.com/vibetable/vibetable/sidecar/internal/importvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/jobs"
 	"github.com/vibetable/vibetable/sidecar/internal/launch"
@@ -141,6 +142,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 		mutation.MetadataSchemaSource{},
 		mutationOptions...,
 	)
+	// The import result projection is the durable import history: it is
+	// promoted to succeeded only inside the business mutation transaction,
+	// so the mutation routes see the projected kernel while background jobs
+	// and restore paths keep the raw kernel.
+	importHistoryStore := importhistory.NewStore()
 	jobService.SetKernel(mutationKernel)
 	ledgerRoot := filepath.Join(filepath.Dir(options.DataDir), "audit")
 	ledger, err := auditledger.Open(ledgerRoot)
@@ -359,10 +365,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			importvalue.New(fieldchange.NewCatalog(pb)),
 			newImportPlanOwner(importWorkspaceID),
 		)
+		registerImportHistoryRoutes(event.Router, pb, importHistoryStore, idempotentBusinessGate)
 		registerQueryRoutes(event.Router, queryPort)
 		registerFormulaRoutes(event.Router, pb, formulaCompiler)
 		registerJobRoutes(event.Router, jobService)
-		registerMutationRoutes(event.Router, mutationKernel, attachmentManager, businessGate)
+		registerMutationRoutes(event.Router, importhistory.Project(mutationKernel, importHistoryStore), attachmentManager, businessGate)
 		registerAttachmentRoutes(event.Router, attachmentManager)
 		registerAuditRoutes(event.Router, auditService)
 		registerRelationRoutes(event.Router, relationService, businessGate)

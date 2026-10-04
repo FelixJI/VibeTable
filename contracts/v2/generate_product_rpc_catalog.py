@@ -17,6 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, RootModel, TypeAdapter
 
 import backend.__main__ as composition
+from backend.contracts.import_management import ImportHistoryParams, ImportHistoryResult
 from backend.contracts.product_rpc import (
     PRODUCT_RPC_REGISTRY as PRODUCT_PARAM_MODELS,
     ProductParams,
@@ -334,6 +335,8 @@ def _model_payload(
                 "complete": True,
             }
         ).model_dump(mode="json", by_alias=True)
+    if model is ImportHistoryResult:
+        return {"items": []}
     if model.__module__ == "backend.contracts.work_calendar":
         samples = {
             "WorkCalendarOverride": {"date": "2026-09-10", "kind": "holiday", "name": "公司假日"},
@@ -407,6 +410,7 @@ def _registered_models() -> dict[str, type[BaseModel]]:
 
     result.update(
         {
+            "data.importHistory": ImportHistoryParams,
             "task.create": CreateTaskParams,
             "task.cancel": TaskIdParams,
             "task.status": TaskIdParams,
@@ -928,6 +932,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "system.handshake": _typed(HandshakeResult),
         "table.applyPaste": _typed(ApplyPasteResult),
         "table.previewPaste": _typed(PastePlan),
+        "data.importHistory": _typed(ImportHistoryResult),
         "task.cancel": _typed(TaskStatus),
         "task.cancelExecution": _manual("CancelExecutionResult", True),
         "task.create": _typed(TaskStatus),
