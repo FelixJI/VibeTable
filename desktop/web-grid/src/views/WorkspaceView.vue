@@ -378,15 +378,16 @@ function openImportTarget(collection: string): void {
 }
 
 /**
- * Source targets carry the physical collection identity committed in the
- * table-create transaction (legacy receipts fall back to the receipt table
- * id). Jump only when the workspace catalog knows that exact identity;
- * never guess by label, never derive tbl_ → physical names, and never
- * fabricate a collection entry.
+ * Source targets carry the Go-committed LOGICAL table id — the tbl_*
+ * identity the authoritative schema catalog lists. Mapping.Collection is
+ * the physical t_* name (schemacore guarantees the two never match) and
+ * stays display metadata; it is never used for navigation. Jump only when
+ * the workspace catalog knows that exact identity; never guess by label,
+ * never derive tbl_/t_ names, and never fabricate a catalog entry.
  */
-function openSourceImportTarget(identity: string): void {
-  if (!workspace.collections.some((item) => item.collection === identity)) return;
-  onSelect(identity);
+function openSourceImportTarget(tableId: string): void {
+  if (!workspace.collections.some((item) => item.collection === tableId)) return;
+  onSelect(tableId);
 }
 
 async function cancelImportTask(taskId: string): Promise<void> {

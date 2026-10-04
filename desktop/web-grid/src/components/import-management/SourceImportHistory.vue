@@ -177,7 +177,7 @@ function toggleExpanded(jobId: string): void {
                       data-testid="source-target-open"
                       :data-table-id="target.tableId"
                       :data-collection="target.collection ?? target.tableId"
-                      @click="emit('openTarget', target.collection ?? target.tableId)"
+                      @click="emit('openTarget', target.tableId)"
                     >
                       <NIcon :size="13"><Table2 /></NIcon>
                       <span>{{ target.name }}</span>

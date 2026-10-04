@@ -115,13 +115,19 @@ describe("SourceImportHistory", () => {
     // the later records batch is pending confirmation.
     const buttons = wrapper.findAll('[data-testid="source-target-open"]');
     expect(buttons).toHaveLength(1);
+    // Canonical authority chain: Go commits a LOGICAL table id (tbl_*) that
+    // the schema catalog lists, while Mapping.Collection is the physical
+    // name (t_*) — schemacore guarantees the two never match.
+    expect(buttons[0]!.attributes("data-table-id")).toBe("tbl_orders");
+    // The physical collection stays observable metadata on the button.
     expect(buttons[0]!.attributes("data-collection")).toBe("t_orders9f2a");
-    // The button emits the committed physical identity, never the logical id.
+    // Navigation always emits the Go-committed logical identity that the
+    // authoritative schema.list guard matches; never the physical name.
     await buttons[0]!.trigger("click");
-    expect(wrapper.emitted("openTarget")).toEqual([["t_orders9f2a"]]);
+    expect(wrapper.emitted("openTarget")).toEqual([["tbl_orders"]]);
 
-    // Legacy receipts without a committed collection fall back to the receipt
-    // identity; nothing is derived or guessed in the frontend.
+    // Legacy receipts without a committed collection keep the same contract:
+    // the logical id navigates and the metadata attribute falls back to it.
     const legacy = mountHistory([migration({ unknownBatch: null, notSubmitted: 0, created: 403, targets: [
       { sourceTableId: "src_people", tableId: "tbl_people", name: "People" },
     ], batches: [
@@ -129,6 +135,7 @@ describe("SourceImportHistory", () => {
     ] })]);
     await legacy.get('[data-testid="source-import-detail-job-1"]').trigger("click");
     const legacyButton = legacy.get('[data-testid="source-target-open"]');
+    expect(legacyButton.attributes("data-table-id")).toBe("tbl_people");
     expect(legacyButton.attributes("data-collection")).toBe("tbl_people");
     await legacyButton.trigger("click");
     expect(legacy.emitted("openTarget")).toEqual([["tbl_people"]]);

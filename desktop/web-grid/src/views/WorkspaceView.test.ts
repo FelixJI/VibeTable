@@ -455,6 +455,90 @@ describe("WorkspaceView", () => {
     expect(wrapper.find('[data-testid="import-target"]').exists()).toBe(false);
   });
 
+  it("opens a source-import target through the logical catalog identity, never the physical collection", async () => {
+    // Canonical authority (schemacore/table_lifecycle.go): TableID is the
+    // logical tbl_* id the schema catalog lists; Mapping.Collection is the
+    // physical t_* name and the two never match. The button must emit the
+    // logical id so the exact-match catalog guard resolves and the grid
+    // navigates — the CI 35 timeout came from emitting the physical name.
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    workspace.setOpened(
+      [{ collection: "tbl_orders_9f2a" }, { collection: "tbl_invoices_1" }],
+      { tbl_orders_9f2a: "QA 来源迁移 A", tbl_invoices_1: "QA 来源迁移 B" });
+    workspace.selectTable("tbl_orders_9f2a");
+    const ui = useUiStore();
+    ui.navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
+    const historyRequest = [...posted].reverse().find((item) => item.type === "data.importHistory")!;
+    emit({
+      type: "data.importHistory",
+      requestId: historyRequest.requestId,
+      payload: {
+        items: [],
+        migrations: [
+          {
+            contract: "vibetable.source-import.v1",
+            jobId: "job-src-1", provider: "synthetic", containerId: "qa-source-success",
+            sourceName: "QA 三表合成来源", state: "succeeded", stage: "settled",
+            created: 6, total: 6, notSubmitted: 0, unknownRecords: 0, unknownBatch: null,
+            targets: [{ sourceTableId: "a", tableId: "tbl_orders_9f2a", name: "QA 来源迁移 A", collection: "t_orders_9f2a" }],
+            batches: [{ jobId: "job-src-1", batchId: "b-schema", stage: "schema", tableId: "tbl_orders_9f2a", created: 6, relationWrites: 2, attachmentWrites: 1 }],
+            diagnostics: [], fields: [],
+            startedAt: "2026-10-04T08:00:00Z", finishedAt: "2026-10-04T08:00:05Z", sessionEpoch: 3,
+            readWindow: { startedAt: "2026-10-04T08:00:00Z", finishedAt: "2026-10-04T08:00:01Z", consistency: "snapshot" },
+          },
+          {
+            contract: "vibetable.source-import.v1",
+            jobId: "job-src-2", provider: "synthetic", containerId: "qa-source-success",
+            sourceName: "QA 三表合成来源", state: "succeeded", stage: "settled",
+            created: 6, total: 6, notSubmitted: 0, unknownRecords: 0, unknownBatch: null,
+            targets: [{ sourceTableId: "a", tableId: "tbl_missing_0", name: "外部目标", collection: "t_missing_0" }],
+            batches: [{ jobId: "job-src-2", batchId: "b-schema-2", stage: "schema", tableId: "tbl_missing_0", created: 6, relationWrites: 0, attachmentWrites: 0 }],
+            diagnostics: [], fields: [],
+            startedAt: "2026-10-04T08:01:00Z", finishedAt: "2026-10-04T08:01:05Z", sessionEpoch: 3,
+            readWindow: null,
+          },
+        ],
+      },
+    });
+    await flushPromises();
+
+    // Emitted target -> exact catalog guard -> selectTable + navigation.
+    await wrapper.get('[data-testid="source-import-detail-job-src-1"]').trigger("click");
+    const openButton = wrapper.get('[data-testid="source-target-open"][data-table-id="tbl_orders_9f2a"]');
+    // The physical identity stays visible as metadata but never navigates.
+    expect(openButton.attributes("data-collection")).toBe("t_orders_9f2a");
+    await openButton.trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("tables");
+    expect(workspace.currentTable).toBe("tbl_orders_9f2a");
+    expect(posted.some((item) => item.type === "table.selected"
+      && (item.payload as { table: string }).table === "tbl_orders_9f2a")).toBe(true);
+    expect(posted.some((item) => item.type === "table.selected"
+      && (item.payload as { table: string }).table === "t_orders_9f2a")).toBe(false);
+
+    // The exact-match guard stays: a receipt target outside the catalog is
+    // reported but never navigates or fabricates a selection.
+    await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+    await flushPromises();
+    expect(ui.activeView).toBe("imports");
+    await wrapper.get('[data-testid="source-import-detail-job-src-2"]').trigger("click");
+    const foreignButton = wrapper.get('[data-testid="source-target-open"][data-table-id="tbl_missing_0"]');
+    await foreignButton.trigger("click");
+    await flushPromises();
+    expect(posted.some((item) => item.type === "table.selected"
+      && (item.payload as { table: string }).table === "tbl_missing_0")).toBe(false);
+    expect(ui.activeView).toBe("imports");
+    expect(workspace.currentTable).toBe("tbl_orders_9f2a");
+  });
+
   it("renders every top-level product workspace from the shared navigation state", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
