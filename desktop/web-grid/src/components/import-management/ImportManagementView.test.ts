@@ -206,11 +206,11 @@ describe("ImportManagementView", () => {
     const rows = wrapper.findAll('[data-testid="source-import-row"]');
     expect(rows).toHaveLength(2);
 
-    // Committed target opens with its physical collection identity, not the
-    // logical tbl_ id or a label guess.
+    // Source target navigation uses the logical tableId from the Go receipt;
+    // the physical collection remains metadata for the committed target.
     await wrapper.get('[data-testid="source-import-detail-job-done"]').trigger("click");
     await wrapper.get('[data-table-id="tbl_orders"]').trigger("click");
-    expect(wrapper.emitted("openSourceTarget")).toEqual([["t_orders9f2a"]]);
+    expect(wrapper.emitted("openSourceTarget")).toEqual([["tbl_orders"]]);
 
     // Source job cancellation reuses the existing controlled cancel intent.
     await wrapper.get('[data-job-id="job-live"]').get('[data-testid="source-import-cancel"]').trigger("click");
