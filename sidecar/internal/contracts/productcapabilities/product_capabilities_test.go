@@ -173,7 +173,7 @@ func TestGeneratedRPCDescriptorsKeepCanonicalPolicyAndReturnCopies(t *testing.T)
 		got[50] != (RPCDescriptor{Method: "table.previewPaste", Scope: WorkspaceScope, Audience: RendererPublic, CapabilityID: "data.paste", Owner: GoSidecar, Effect: ReadEffect}) {
 		t.Fatalf("goSidecar descriptors = %#v", got)
 	}
-	hostMethods := []string{"command.list", "command.run", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "plugin.cancelInstall", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "task.cancel", "task.create", "task.status"}
+	hostMethods := []string{"command.list", "command.run", "data.importHistory", "file.applyHostChange", "file.saveHostFile", "gridState.get", "gridState.save", "path.registerExportTarget", "path.registerImportSource", "path.requestExportTarget", "path.requestImportSource", "path.resolveGrant", "path.revokeExportTarget", "plugin.cancelInstall", "settings.readDevice", "settings.saveDevice", "shortcut.delete", "shortcut.launch", "shortcut.list", "shortcut.save", "task.cancel", "task.create", "task.status"}
 	hostDescriptors := CurrentOwnerRPCDescriptors(WpfHost)
 	if len(hostDescriptors) != len(hostMethods) {
 		t.Fatalf("wpfHost count = %d", len(hostDescriptors))
