@@ -12,6 +12,19 @@ internal sealed partial class HostDataIoTaskRegistry
 {
     private readonly Dictionary<string, SourceSession> _sourceSessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, SourceTask> _sourceTasks = new(StringComparer.Ordinal);
+    private ProductSidecarGenerationSnapshot? _sourceCatalogSnapshot;
+    private Func<ProductSidecarGenerationSnapshot, CancellationToken, Task>? _sourceCatalogRefresh;
+
+    internal void BindSourceImportCatalogRefresh(ProductSidecarGenerationSnapshot snapshot,
+        Func<ProductSidecarGenerationSnapshot, CancellationToken, Task> refresh)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _sourceCatalogSnapshot = snapshot;
+            _sourceCatalogRefresh = refresh;
+        }
+    }
 
     internal JsonElement[] OverlaySourceImportHistory(ProductSidecarGenerationSnapshot snapshot,
         IReadOnlyList<HostSourceImportResult> durable)
@@ -307,7 +320,7 @@ internal sealed partial class HostDataIoTaskRegistry
                     observation,
                 }, token);
             }).ConfigureAwait(false);
-            CompleteSourceResult(task, wire);
+            await CompleteSourceResultAsync(task, wire).ConfigureAwait(false);
             receiptConfirmed = true;
         }
         catch (Exception)
@@ -326,7 +339,7 @@ internal sealed partial class HostDataIoTaskRegistry
                     // preparing. Only Go's unclaimed-token finish may settle it.
                     if (receipt.State != "interrupted" || wire.GetProperty("stage").GetString() != "preparing")
                     {
-                        CompleteSourceResult(task, wire);
+                        await CompleteSourceResultAsync(task, wire).ConfigureAwait(false);
                         receiptConfirmed = true;
                         return;
                     }
@@ -352,7 +365,7 @@ internal sealed partial class HostDataIoTaskRegistry
                         || !finished.TryGetProperty("finishedAt", out JsonElement finishedAt)
                         || finishedAt.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(finishedAt.GetString()))
                         throw new JsonException("Invalid source import preparation settlement.");
-                    CompleteSourceResult(task, finished);
+                    await CompleteSourceResultAsync(task, finished).ConfigureAwait(false);
                     receiptConfirmed = true;
                 }
                 catch (Exception error)
@@ -400,9 +413,31 @@ internal sealed partial class HostDataIoTaskRegistry
         }
     }
 
-    private void CompleteSourceResult(SourceTask task, JsonElement wire)
+    private async Task CompleteSourceResultAsync(SourceTask task, JsonElement wire)
     {
         HostSourceImportResult result = ValidateSourceResult(task, wire);
+        SourceSession session = task.Session!;
+        Func<ProductSidecarGenerationSnapshot, CancellationToken, Task>? refresh;
+        lock (_gate)
+            refresh = _sourceCatalogSnapshot?.Matches(session.Snapshot) == true ? _sourceCatalogRefresh : null;
+        if (refresh is not null && wire.GetProperty("targets") is { ValueKind: JsonValueKind.Array } targets
+            && targets.GetArrayLength() > 0)
+        {
+            // Partial outcomes also created tables. Refresh the existing Host
+            // and renderer catalogs before advertising a terminal task.
+            try
+            {
+                using var projection = CancellationTokenSource.CreateLinkedTokenSource(session.Lease.CancellationToken);
+                projection.CancelAfter(TimeSpan.FromSeconds(10));
+                await refresh(session.Snapshot, projection.Token).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                // Catalog delivery cannot invalidate the durable migration or
+                // cause another execute/result reconciliation attempt.
+                System.Diagnostics.Trace.TraceWarning($"Source import catalog refresh failed: {error.GetType().Name}");
+            }
+        }
         string state = result.State switch
         {
             "succeeded" => TaskStates.Succeeded,

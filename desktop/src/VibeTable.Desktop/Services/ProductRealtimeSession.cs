@@ -52,6 +52,58 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
 
     private void OnSessionChanged(object? sender, WorkspaceSessionChangedEventArgs args) => Refresh();
 
+    internal async Task RefreshCatalogAsync(ProductSidecarGenerationSnapshot snapshot, CancellationToken token)
+    {
+        Binding? binding;
+        lock (_gate) binding = !_disposed && _requested?.Snapshot.Matches(snapshot) == true ? _requested : null;
+        if (binding is null || !_leases.TryCaptureHost(binding.Scope.WorkspaceId, binding.Scope.Epoch,
+            Guid.NewGuid(), out WorkspaceRequestEpochLease? lease) || lease is null) return;
+        using (lease)
+        using (var call = CancellationTokenSource.CreateLinkedTokenSource(token, lease.CancellationToken))
+        {
+            bool Current(Func<bool> action) => TryUseBinding(binding, lease, call.Token, action);
+            using var catalog = new ProductRealtimeCatalog(snapshot, Current, _handler);
+            try
+            {
+                TableSummary summary = await catalog.ReadAsync(lease, call.Token).ConfigureAwait(false);
+                await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
+                {
+                    _applyCatalog(summary);
+                    post("database.collectionsChanged", new
+                    { tables = summary.Tables, views = summary.Views, displayNames = summary.DisplayNames });
+                    return true;
+                }), call.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (lease.CancellationToken.IsCancellationRequested) { }
+            catch (Exception error)
+            {
+                _failed("source_import.catalog_refresh_failed:" + error.GetType().Name);
+                if (call.IsCancellationRequested) return;
+                // Preserve the committed migration. Only the current renderer
+                // may receive this independent projection failure.
+                await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
+                    {
+                        post("operation.failed", new
+                        {
+                            operation = "source_import.catalog", code = "source_import.catalog_refresh_failed",
+                            message = "目标表已保存，但目录刷新失败；重新打开工作区后可查看。",
+                        });
+                        return true;
+                    }), call.Token).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private bool TryUseBinding(Binding binding, WorkspaceRequestEpochLease lease,
+        CancellationToken token, Func<bool> action)
+        => _authority.TryUseCurrent(binding.Snapshot, () =>
+            _sessions.TryUseCurrentSession(binding.Scope.WorkspaceId, binding.Scope.Epoch, () =>
+            {
+                lock (_gate)
+                    return !_disposed && !token.IsCancellationRequested && _requested == binding
+                        && _leases.IsCurrent(lease) && action();
+            }));
+
     private void Refresh()
     {
         lock (_refreshGate)
@@ -116,13 +168,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         using (var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime, lease.CancellationToken))
         {
             CancellationToken token = cancellation.Token;
-            bool Current(Func<bool> action) => _authority.TryUseCurrent(binding.Snapshot, () =>
-                _sessions.TryUseCurrentSession(binding.Scope.WorkspaceId, binding.Scope.Epoch, () =>
-                {
-                    lock (_gate)
-                        return !_disposed && !token.IsCancellationRequested && _requested == binding
-                            && _leases.IsCurrent(lease) && action();
-                }));
+            bool Current(Func<bool> action) => TryUseBinding(binding, lease, token, action);
             using var catalog = new ProductRealtimeCatalog(binding.Snapshot, Current, _handler);
             int attempt = 0;
             bool posting = false;

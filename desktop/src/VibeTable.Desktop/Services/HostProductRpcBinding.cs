@@ -30,6 +30,9 @@ internal sealed class HostProductRpcBinding(
     internal bool Matches(ProductSidecarGenerationSnapshot other)
         => ReferenceEquals(_snapshot, other);
 
+    internal void BindSourceImportCatalogRefresh(Func<ProductSidecarGenerationSnapshot, CancellationToken, Task> refresh)
+        => taskOwner.BindSourceImportCatalogRefresh(_snapshot, refresh);
+
     internal JsonRpcProductDataGateway CreateGateway(
         IWorkspaceHostEpochLeaseSource leases, HttpMessageHandler? handler = null)
         => new(new HostProductRpcInvoker(Client, _snapshot, leases,

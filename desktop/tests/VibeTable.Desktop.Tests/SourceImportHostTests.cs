@@ -11,6 +11,74 @@ namespace VibeTable.Desktop.Tests;
 public sealed class SourceImportHostTests
 {
     [TestMethod]
+    public async Task CatalogRefreshFailureDoesNotReclassifyOrReexecuteCommittedMigration()
+    {
+        using var fixture = new Fixture();
+        fixture.Registry.BindSourceImportCatalogRefresh(fixture.Snapshot,
+            (_, _) => throw new IOException("synthetic catalog failure"));
+        JsonElement result = await fixture.Terminal(await fixture.Start(await fixture.Prepare()));
+        Assert.AreEqual("succeeded", result.GetProperty("state").GetString());
+        Assert.AreEqual(1, result.GetProperty("result").GetProperty("created").GetInt32());
+        Assert.AreEqual(1, fixture.Http.Executions);
+        Assert.AreEqual(0, fixture.Http.ResultReads);
+        Assert.AreEqual(0, fixture.Http.Discards);
+    }
+
+    [TestMethod]
+    public async Task PreparationFailureAndForeignCatalogBindingNeverRefresh()
+    {
+        foreach (bool noTargets in new[] { true, false })
+        {
+            using var fixture = new Fixture();
+            using var foreign = new Fixture();
+            int refreshes = 0;
+            fixture.Provider.ObserveMode = noTargets ? "failure" : "";
+            fixture.Registry.BindSourceImportCatalogRefresh(noTargets ? fixture.Snapshot : foreign.Snapshot,
+                (_, _) => { refreshes++; return Task.CompletedTask; });
+            JsonElement result = await fixture.Terminal(await fixture.Start(await fixture.Prepare()));
+            Assert.AreEqual(noTargets ? "failed" : "succeeded", result.GetProperty("state").GetString());
+            Assert.AreEqual(0, refreshes);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("succeeded")]
+    [DataRow("failed")]
+    [DataRow("cancelled")]
+    [DataRow("unknown")]
+    public async Task CommittedTargetsRefreshCatalogBeforeTerminalNotification(string outcome)
+    {
+        using var fixture = new Fixture();
+        fixture.Http.Outcome = outcome;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool projected = false;
+        bool terminalBeforeCatalog = false;
+        fixture.Registry.BindSourceImportCatalogRefresh(fixture.Snapshot, async (snapshot, token) =>
+        {
+            Assert.IsTrue(snapshot.Matches(fixture.Snapshot));
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+            projected = true;
+        });
+        fixture.Registry.TaskChanged += change =>
+        {
+            if (change.GetProperty("state").GetString() is "succeeded" or "failed" or "cancelled")
+                terminalBeforeCatalog = !projected;
+        };
+        JsonElement initial = await fixture.Start(await fixture.Prepare());
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual("running", fixture.Registry.Status(initial.GetProperty("taskId").GetString()!).GetProperty("state").GetString());
+        release.TrySetResult();
+        JsonElement terminal = await fixture.Terminal(initial);
+        Assert.IsTrue(projected);
+        Assert.IsFalse(terminalBeforeCatalog);
+        Assert.AreEqual(outcome, terminal.GetProperty("result").GetProperty("state").GetString());
+        Assert.AreEqual(1, terminal.GetProperty("result").GetProperty("created").GetInt32());
+        Assert.AreEqual(1, fixture.Http.Executions);
+    }
+
+    [TestMethod]
     public async Task UploadingSourceIsVisibleWithRealPlannedCountsAndCanBeCancelled()
     {
         using var fixture = new Fixture(attachment: true);
@@ -450,6 +518,7 @@ public sealed class SourceImportHostTests
         internal readonly Provider Provider;
         internal readonly Peer Http;
         internal readonly HostProductRpcInvoker Invoker;
+        internal readonly ProductSidecarGenerationSnapshot Snapshot;
         internal int PythonStarts;
         private readonly string _session;
 
@@ -462,6 +531,7 @@ public sealed class SourceImportHostTests
                 new PocketBaseAdminContext(new Uri("http://127.0.0.1:12345/_/"), new Uri("http://127.0.0.1:12345/"),
                     "X-VibeTable-Session", "synthetic-source-session"), identity, [],
                 action => Authority.Current && action());
+            Snapshot = snapshot;
             Http = new Peer(Provider);
             Invoker = new HostProductRpcInvoker(null, snapshot, Leases, action => action(), handler: Http,
                 tryUseGoCurrent: action => Authority.Current && action(), taskOwner: Registry,

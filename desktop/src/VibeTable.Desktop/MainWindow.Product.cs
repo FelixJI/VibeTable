@@ -685,6 +685,7 @@ public partial class MainWindow : Window
         _productGateway = binding.CreateGateway(_workspaceSessionFilter);
         _productGateway.EnableHostFiles();
         _productGateway.TaskChanged += OnProductTaskChanged;
+        binding.BindSourceImportCatalogRefresh(_productRealtime.RefreshCatalogAsync);
         _dispatcher.SetProductDataGateway(_productGateway);
 
         _dispatcher.SetDashboardGateway(
