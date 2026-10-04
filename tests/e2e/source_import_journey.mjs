@@ -540,9 +540,28 @@ export function assertPreSubmissionTerminal(beforeHistory, afterHistory, expecte
   return problems;
 }
 
+/**
+ * The file-import journey has already reopened the workspace and may have
+ * its management view open. Verify that session and its real history port.
+ */
+export async function awaitSourceImportEntryReady(page, rawBridgeRequest) {
+  await page.getByTestId("nav-home").waitFor({ state: "visible", timeout: 60_000 });
+  const session = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  if (typeof session?.workspaceId !== "string" || !session.workspaceId
+    || !Number.isInteger(session.sessionEpoch) || session.sessionEpoch < 1) {
+    throw new Error(`Source import entry requires an active workspace session: ${JSON.stringify(session)}`);
+  }
+  const response = await rawBridgeRequest(page, "data.importHistory", {});
+  if (response.type === "operation.failed" || response.payload?.error) {
+    throw new Error(`data.importHistory failed at source import entry: ${JSON.stringify(response)}`);
+  }
+  return session;
+}
+
 export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   const {
-    waitForShell, rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
+    rawBridgeRequest, openWorkspaceCenterFromSwitcher, replicaUiMethod,
     beginWritableWorkspaceBootstrapCapture, waitForCapturedBridgeMessage,
   } = helpers;
   const fixtureProblems = validateSyntheticExpectation(EXPECTED_SYNTHETIC_SOURCE);
@@ -610,8 +629,10 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
     await panel.waitFor({ state: "visible", timeout: 60_000 });
   };
 
-  await waitForShell(page, recorder, { requireDatabaseOpened: true });
-  await history(); // baseline fetch also proves the bridge method works pre-run
+  // Entry runs on the already-active workspace session (see
+  // awaitSourceImportEntryReady); the caller keeps its import-management
+  // view open and the same workspace/session is retained for the migration.
+  const entrySession = await awaitSourceImportEntryReady(page, rawBridgeRequest);
 
   // ---- Real success migration through the Host TestMode provider ----
   await writeControl("success");
@@ -628,7 +649,10 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
     ...EXPECTED_SYNTHETIC_SOURCE, sessionEpoch: successSession.sessionEpoch,
   });
   recorder.check("the durable Go receipt is a terminal success with every target and no secrets",
-    receiptProblems.length === 0, { problems: receiptProblems, entry });
+    receiptProblems.length === 0
+      && successSession.workspaceId === entrySession.workspaceId
+      && successSession.sessionEpoch === entrySession.sessionEpoch,
+    { problems: receiptProblems, entry, entrySession, successSession });
 
   const tableTargets = buildTableTargets(entry, EXPECTED_SYNTHETIC_SOURCE);
   const tables = await verifyLocalAuthority();

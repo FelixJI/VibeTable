@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   EXPECTED_SYNTHETIC_SOURCE, SOURCE_IMPORT_MODES, assertPreSubmissionTerminal,
@@ -392,4 +395,172 @@ test("the journal gains exactly the expected pre-submission terminal jobs", () =
     ["task-drift", "task-cancel"]).some((p) => p.includes("lost job task-success")));
   assert.ok(assertPreSubmissionTerminal(before, after, ["task-drift", "task-drift"])
     .some((p) => p.includes("duplicates")));
+});
+
+// ---- CI regression: scenario 35's source-migration entry ----
+// The CI failure (data-io job 111501061508) timed out in the shared
+// waitForShell helper: it waits for workspace-center visibility and then
+// CREATES a new "E2E Product Workspace". When the journey is appended to
+// scenario 35 the caller has just closed and REOPENED the workspace — the
+// app sits in the active workspace with the import-management view open, so
+// the center never becomes visible and the migration never starts. The
+// entry contract below must therefore run on the already-active workspace
+// session and never demand the center or a new workspace.
+function stubLocatorJournal(interactions, testId) {
+  const record = (method) => {
+    interactions.push(`${method}:${testId}`);
+  };
+  return {
+    waitFor: async (options) => { record("waitFor"); return options; },
+    click: async () => { record("click"); },
+    count: async () => { record("count"); return 0; },
+    getAttribute: async () => { record("getAttribute"); return null; },
+    textContent: async () => { record("textContent"); return ""; },
+    isVisible: async () => { record("isVisible"); return false; },
+    isHidden: async () => { record("isHidden"); return true; },
+    first() { record("first"); return this; },
+    filter() { record("filter"); return this; },
+    locator() { record("locator"); return this; },
+  };
+}
+
+async function journeyEntryHarness({ sessionEpoch = 7 } = {}) {
+  const interactions = [];
+  const bridgeTypes = [];
+  const checks = [];
+  const controlsDir = await mkdtemp(path.join(tmpdir(), "source-entry-controls-"));
+  const evidenceDir = await mkdtemp(path.join(tmpdir(), "source-entry-evidence-"));
+  const requestPath = path.join(controlsDir, "host-source-import.request");
+  const statePath = path.join(controlsDir, "host-source-import-state.json");
+  // A stale terminal state must be removed before the new control runs.
+  await writeFile(statePath, JSON.stringify({
+    evidenceKind: "packaged-host-source-import", action: "source-import-completed",
+    scenario: "cancel", taskId: "task-stale", state: "cancelled",
+    workspaceId: "11111111-1111-4111-8111-111111111111", sessionEpoch: 1, error: null,
+  }), "utf8");
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    __vibetableE2EBridgeDiagnostics: {
+      workspaceSession: sessionEpoch > 0
+        ? { workspaceId: "22222222-2222-4222-8222-222222222222", sessionEpoch }
+        : null,
+    },
+  };
+  let ticks = 0;
+  const page = {
+    getByTestId: (testId) => stubLocatorJournal(interactions, testId),
+    locator: (selector) => stubLocatorJournal(interactions, selector),
+    evaluate: async (expression) => {
+      interactions.push("evaluate:workspaceSession");
+      return expression();
+    },
+    waitForTimeout: async () => {
+      ticks += 1;
+      if (ticks >= 3) throw new Error("simulated host silence");
+    },
+    screenshot: async (options) => { interactions.push(`screenshot:${options?.path ?? ""}`); },
+  };
+  const rawBridgeRequest = async (_page, type, payload) => {
+    bridgeTypes.push(type);
+    if (type === "data.importHistory") {
+      return { type, payload: { items: [], migrations: [] } };
+    }
+    return { type, payload: {} };
+  };
+  const helpers = {
+    // The legacy entry called this shared fresh-device bootstrap, which
+    // waits for workspace-center and creates a new workspace.
+    waitForShell: async () => {
+      interactions.push("waitForShell:legacy-entry");
+      throw new Error("legacy wait-for-shell entry demanded a fresh workspace");
+    },
+    rawBridgeRequest,
+    openWorkspaceCenterFromSwitcher: async () => { interactions.push("openCenter:helper"); },
+    replicaUiMethod: async () => ({ result: { state: "closed" } }),
+    beginWritableWorkspaceBootstrapCapture: async () => { interactions.push("capture:helper"); },
+    waitForCapturedBridgeMessage: async () => ({
+      payload: { session: { workspaceId: "22222222-2222-4222-8222-222222222222", sessionEpoch: 8 } },
+    }),
+  };
+  const recorder = { check: (name, ok, meta) => { checks.push({ name, ok, meta }); } };
+  const runtime = { controlsDir, evidenceDir, pythonExecutable: null };
+  const restore = () => { globalThis.window = previousWindow; };
+  return {
+    interactions, bridgeTypes, checks, page, helpers, recorder, runtime,
+    requestPath, statePath, restore,
+  };
+}
+
+test("the journey enters through the active workspace and starts the migration", async () => {
+  const harness = await journeyEntryHarness();
+  const journey = (await import("./source_import_journey.mjs")).runSourceImportJourney(
+    harness.page, harness.recorder, harness.runtime, harness.helpers);
+  try {
+    // The silent Host stops the run AFTER entry; the old implementation
+    // rejected inside the legacy waitForShell bootstrap instead.
+    await assert.rejects(journey, /simulated host silence/);
+    assert.equal(harness.interactions.includes("waitForShell:legacy-entry"), false,
+      "the shared fresh-device bootstrap must not run at the entry");
+    for (const forbidden of [
+      "waitFor:workspace-center", "click:workspace-create", "click:workspace-flow-confirm",
+      "waitFor:workspace-flow-modal", "waitFor:home-view",
+    ]) {
+      assert.equal(harness.interactions.includes(forbidden), false,
+        `entry must not demand ${forbidden} (center is not visible in the active workspace)`);
+    }
+    assert.ok(harness.interactions.includes("waitFor:nav-home"),
+      "entry readiness anchors on the persistent shell navigation");
+    assert.ok(harness.bridgeTypes.includes("data.importHistory"),
+      "entry readiness proves the current workspace bridge with a real history RPC");
+    assert.equal(await readFile(harness.requestPath, "utf8"), "success",
+      "the journey entered the migration by writing the success control");
+  } finally {
+    harness.restore();
+  }
+});
+
+test("the entry helper is exported and fail-closes without an active session", async () => {
+  const module = await import("./source_import_journey.mjs");
+  assert.equal(typeof module.awaitSourceImportEntryReady, "function",
+    "the entry contract must be exported for the journey and its regression");
+  const interactions = [];
+  const bridgeTypes = [];
+  const page = {
+    getByTestId: (testId) => stubLocatorJournal(interactions, testId),
+    evaluate: async (expression) => expression(),
+  };
+  const rawBridgeRequest = async (_page, type) => {
+    bridgeTypes.push(type);
+    return { type, payload: { items: [], migrations: [] } };
+  };
+  const previousWindow = globalThis.window;
+  try {
+    globalThis.window = {
+      __vibetableE2EBridgeDiagnostics: {
+        workspaceSession: { workspaceId: "33333333-3333-4333-8333-333333333333", sessionEpoch: 4 },
+      },
+    };
+    const session = await module.awaitSourceImportEntryReady(page, rawBridgeRequest);
+    assert.equal(session.workspaceId, "33333333-3333-4333-8333-333333333333");
+    assert.equal(session.sessionEpoch, 4);
+    assert.ok(interactions.includes("waitFor:nav-home"));
+    assert.deepEqual(bridgeTypes, ["data.importHistory"]);
+    globalThis.window = {
+      __vibetableE2EBridgeDiagnostics: { workspaceSession: null },
+    };
+    await assert.rejects(
+      () => module.awaitSourceImportEntryReady(page, rawBridgeRequest),
+      /requires an active workspace session/);
+    globalThis.window = {
+      __vibetableE2EBridgeDiagnostics: {
+        workspaceSession: { workspaceId: "33333333-3333-4333-8333-333333333333", sessionEpoch: 4 },
+      },
+    };
+    await assert.rejects(
+      () => module.awaitSourceImportEntryReady(page, async () =>
+        ({ type: "operation.failed", payload: { error: { code: "PRODUCT_DATA_FAILED" } } })),
+      /data.importHistory failed/);
+  } finally {
+    globalThis.window = previousWindow;
+  }
 });
