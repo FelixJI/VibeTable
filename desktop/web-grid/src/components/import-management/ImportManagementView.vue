@@ -396,7 +396,7 @@ function toggleExpanded(taskId: string): void {
   transition: border-color 140ms var(--vt-ease), box-shadow 140ms var(--vt-ease), transform 140ms var(--vt-ease);
 }
 button.import-source-card:hover:not(:disabled) {
-  border-color: var(--vt-color-primary-400);
+  border-color: var(--vt-color-primary-300);
   box-shadow: 0 4px 16px rgb(15 23 42 / 8%);
   transform: translateY(-1px);
 }
@@ -447,7 +447,7 @@ button.import-source-card:disabled { opacity: 0.55; cursor: not-allowed; }
   text-align: left;
   cursor: pointer;
 }
-.import-target-list button:hover { border-color: var(--vt-color-primary-400); }
+.import-target-list button:hover { border-color: var(--vt-color-primary-300); }
 .import-target-list button span { font-weight: 600; }
 .import-target-list button small { margin-left: auto; color: var(--vt-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .import-history-empty {
