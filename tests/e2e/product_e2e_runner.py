@@ -2025,13 +2025,23 @@ def _run_node_runner(
                     storage_result,
                     _handle_storage_proof(request, local_data),
                 )
-        native_request = _read_json(scenario_dir / "file-document-native-request.json")
+        native_request_path = scenario_dir / "file-document-native-request.json"
+        native_request = _read_json(native_request_path)
         if native_request is not None and controls is not None:
             native_request_id = native_request.get("requestId")
             if (
                 isinstance(native_request_id, str)
                 and native_request_id not in handled_document_native_ids
             ):
+                # Consume the synthetic request slot BEFORE handling: the Node
+                # journey awaits this requestId's ack and only then renames its
+                # next complete .tmp onto the same path, so after consumption
+                # the rename targets a NONEXISTENT file. Keeping the stale slot
+                # would race the next plain read handle — on Windows
+                # MoveFileExW cannot replace an open destination regardless of
+                # share flags (CI 37239042992 scenario-42 EPERM). Deletion is a
+                # hard precondition: failures propagate, never retried.
+                native_request_path.unlink()
                 handled_document_native_ids.add(native_request_id)
                 native_result = _handle_document_native_request(
                     native_request,

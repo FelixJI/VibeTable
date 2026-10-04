@@ -6148,3 +6148,237 @@ def test_source_migration_requires_completed_local_process_network_evidence(
         assert result["processNetwork"]["unexpectedProductNonLoopback"] == []
     else:
         assert result["error"]["code"] == "PROCESS_NETWORK_OBSERVATION_FAILED"
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows atomic control publication contract")
+def test_document_native_request_slot_is_consumed_before_the_next_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver must consume the native request slot before Node renames.
+
+    The Node journey publishes each request by renaming a complete ``.tmp``
+    onto ``file-document-native-request.json`` (fs.rename == MoveFileExW) only
+    AFTER awaiting the previous requestId's ack. The runner therefore deletes
+    the consumed slot before handling; the next rename then targets a
+    NONEXISTENT file. Keeping the stale slot would make the rename race the
+    runner's next plain read handle — on Windows MoveFileExW cannot replace an
+    open destination regardless of share flags, the real EPERM from CI
+    37239042992 scenario 42.
+
+    A fake node process (no real UI) drives exactly two requests — copy then
+    cancel — with same-id acks observed from the real ``_write_json_atomic``
+    ack file. The single real ``os.replace`` is interleaved at the runner's
+    next actual ``Path.open`` of the request slot, mirroring the worst-case
+    Node rename instant.
+    """
+    import os
+
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    controls_dir = tmp_path / "controls"
+    controls_dir.mkdir()
+    request_slot = scenario_dir / "file-document-native-request.json"
+    cancel_tmp = scenario_dir / "file-document-native-request.json.tmp"
+    ack_file = scenario_dir / "file-document-native-result.json"
+    copy_request = {"requestId": "copy-1", "action": "copy", "source": "a", "target": "b"}
+    cancel_request = {"requestId": "cancel-1", "action": "cancel"}
+    request_slot.write_text(json.dumps(copy_request), encoding="utf-8")
+    cancel_tmp.write_text(json.dumps(cancel_request), encoding="utf-8")
+
+    handled: list[dict[str, object]] = []
+
+    def fake_native_handler(request: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        # Record only; assertions happen at the end so the interleaved old
+        # driver's real failure is observed instead of short-circuited.
+        handled.append(
+            {
+                "requestId": request.get("requestId"),
+                "action": request.get("action"),
+                "slotPresent": request_slot.exists(),
+            }
+        )
+        return {
+            "requestId": request.get("requestId"),
+            "status": "completed",
+            "action": request.get("action"),
+        }
+
+    monkeypatch.setattr(runner, "_handle_document_native_request", fake_native_handler)
+
+    class _FakeNodeProcess:
+        """poll() four times: three loop iterations, then exit code 0."""
+
+        def __init__(self) -> None:
+            self._polls = 0
+            self.returncode: int | None = None
+            self.acked: list[str] = []
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            try:
+                ack = json.loads(ack_file.read_text(encoding="utf-8"))
+            except OSError, json.JSONDecodeError:
+                ack = None
+            ack_id = ack.get("requestId") if isinstance(ack, dict) else None
+            if isinstance(ack_id, str) and ack_id not in self.acked:
+                # Same requestId is kept in the ack file; only marked as sent.
+                # The real producer exits only after its current id was acked,
+                # so every poll records an existing ack BEFORE deciding exit.
+                self.acked.append(ack_id)
+            if self._polls > 3:
+                self.returncode = 0
+                return 0
+            return None
+
+        def communicate(self, timeout: float = 10) -> tuple[str, str]:
+            return "", ""
+
+        def kill(self) -> None:
+            raise AssertionError("fake node process was killed")
+
+    node = _FakeNodeProcess()
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: node)
+
+    replace_attempts: list[dict[str, object]] = []
+    intercepted = False
+    original_open = runner.Path.open
+
+    def opened(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal intercepted
+        if path != request_slot or intercepted or not node.acked:
+            return original_open(path, *args, **kwargs)
+        intercepted = True
+        try:
+            stream = original_open(path, *args, **kwargs)
+        except FileNotFoundError:
+            # Post-fix contract: the consumed slot no longer exists. Publish
+            # the next request with one REAL replace onto the nonexistent
+            # target (atomic publication), then re-raise so this poll reads
+            # nothing and the next loop iteration handles the cancel request.
+            try:
+                os.replace(cancel_tmp, request_slot)
+                replace_attempts.append({"replacedOnto": "missing", "succeeded": True})
+            except OSError as failure:
+                replace_attempts.append(
+                    {
+                        "replacedOnto": "missing",
+                        "succeeded": False,
+                        "error": repr(failure),
+                    }
+                )
+            raise
+        # Pre-fix driver: the stale slot still exists and this plain read
+        # handle is open — the Node rename races exactly this instant.
+        try:
+            os.replace(cancel_tmp, request_slot)
+            replace_attempts.append({"replacedOnto": "existing", "succeeded": True})
+        except OSError as failure:
+            replace_attempts.append(
+                {
+                    "replacedOnto": "existing",
+                    "succeeded": False,
+                    "winError": getattr(failure, "winerror", None),
+                }
+            )
+        return stream
+
+    monkeypatch.setattr(runner.Path, "open", opened)
+
+    code, stdout, stderr = runner._run_node_runner(
+        [
+            "node",
+            "--controls-dir",
+            str(controls_dir),
+            "--scenario",
+            "42-file-document-native-operations",
+        ],
+        scenario_dir=scenario_dir,
+        local_data=tmp_path / "local-data",
+        host_scope=SimpleNamespace(),
+    )
+
+    assert (code, stdout, stderr) == (0, "", "")
+    # Exactly one real os.replace, and only onto the CONSUMED (missing) slot.
+    # The pre-fix driver records the genuine WinError 5 replace failure over
+    # its own open read handle here — the CI EPERM — not a missing symbol.
+    assert replace_attempts == [{"replacedOnto": "missing", "succeeded": True}]
+    # Both requests handled exactly once, in order, with the slot already
+    # consumed at handler time.
+    assert handled == [
+        {"requestId": "copy-1", "action": "copy", "slotPresent": False},
+        {"requestId": "cancel-1", "action": "cancel", "slotPresent": False},
+    ]
+    # Acks were observed for each id in order (same-id ack files kept).
+    assert node.acked == ["copy-1", "cancel-1"]
+    # The published request and its tmp are gone: nothing left to collide.
+    assert not request_slot.exists()
+    assert not cancel_tmp.exists()
+
+
+def test_document_native_request_slot_delete_failure_propagates_before_handling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing slot deletion must fail the driver before any handling."""
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    controls_dir = tmp_path / "controls"
+    controls_dir.mkdir()
+    request_slot = scenario_dir / "file-document-native-request.json"
+    request_slot.write_text(json.dumps({"requestId": "copy-1", "action": "copy"}), encoding="utf-8")
+
+    handled: list[dict[str, object]] = []
+
+    def fake_native_handler(request: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        handled.append({"requestId": request.get("requestId")})
+        return {"requestId": request.get("requestId"), "status": "completed"}
+
+    monkeypatch.setattr(runner, "_handle_document_native_request", fake_native_handler)
+
+    class _FakeNodeProcess:
+        """poll() three times: two bounded loop iterations, then exit code 0."""
+
+        def __init__(self) -> None:
+            self._polls = 0
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            if self._polls > 2:
+                self.returncode = 0
+                return 0
+            return None
+
+        def communicate(self, timeout: float = 10) -> tuple[str, str]:
+            return "", ""
+
+        def kill(self) -> None:
+            raise AssertionError("fake node process was killed")
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: _FakeNodeProcess())
+
+    original_unlink = runner.Path.unlink
+
+    def failing_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        # Precisely the owned request slot; every other unlink stays real.
+        if path == request_slot:
+            raise PermissionError(5, "simulated slot delete failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(runner.Path, "unlink", failing_unlink)
+
+    with pytest.raises(PermissionError, match="simulated slot delete failure"):
+        runner._run_node_runner(
+            [
+                "node",
+                "--controls-dir",
+                str(controls_dir),
+                "--scenario",
+                "42-file-document-native-operations",
+            ],
+            scenario_dir=scenario_dir,
+            local_data=tmp_path / "local-data",
+            host_scope=SimpleNamespace(),
+        )
+    # No handler ran and no ack was published: deletion is a hard precondition.
+    assert handled == []
+    assert not (scenario_dir / "file-document-native-result.json").exists()
