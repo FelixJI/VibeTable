@@ -235,6 +235,7 @@ export const messages: Record<string, string> = {
   "dataIo.import.preview.createOnly": "写入模式：仅新增",
   "dataIo.import.preview.cancel": "取消",
   "dataIo.import.preview.cancelTask": "取消导入任务",
+  "dataIo.import.preview.viewTask": "查看导入任务",
   "dataIo.import.preview.confirm": "导入 {count} 行",
   "dataIo.import.preview.sizeUnknown": "大小未知",
   "dataIo.import.repreview": "重新预检",

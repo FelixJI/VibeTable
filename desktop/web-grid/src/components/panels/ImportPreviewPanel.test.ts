@@ -134,6 +134,40 @@ describe("ImportPreviewPanel", () => {
     expect(wrapper.get('[data-testid="import-cancel"]').attributes("disabled")).toBeDefined();
   });
 
+  it("hides the background view-task entry until a task is admitted", () => {
+    // Preview stage: no task exists yet (and no explicit admission prop).
+    const preview = mount(ImportPreviewPanel, { props: baseProps() });
+    expect(preview.find('[data-testid="import-view-task"]').exists()).toBe(false);
+
+    // Applying but the create receipt (task id) has not arrived yet.
+    const unadmitted = mount(ImportPreviewPanel, {
+      props: baseProps({ applying: true, cancellable: false }),
+    });
+    expect(unadmitted.find('[data-testid="import-view-task"]').exists()).toBe(false);
+
+    // Preview stage with a stray admission flag must not show it either.
+    const staleAdmission = mount(ImportPreviewPanel, {
+      props: baseProps({ taskAdmitted: true }),
+    });
+    expect(staleAdmission.find('[data-testid="import-view-task"]').exists()).toBe(false);
+  });
+
+  it("emits openImportManagement from the admitted applying task only", async () => {
+    const wrapper = mount(ImportPreviewPanel, {
+      props: baseProps({ applying: true, cancellable: true, taskAdmitted: true }),
+    });
+
+    const viewTask = wrapper.get('[data-testid="import-view-task"]');
+    expect(viewTask.text()).toBe("查看导入任务");
+    await viewTask.trigger("click");
+    expect(wrapper.emitted("openImportManagement")).toHaveLength(1);
+
+    // Cancellation stays tracked and available on the same admitted task.
+    const cancel = wrapper.get('[data-testid="import-cancel"]');
+    expect(cancel.attributes("disabled")).toBeUndefined();
+    expect(cancel.text()).toBe("取消导入任务");
+  });
+
   it("disables confirm until a changed mapping is re-previewed", async () => {
     const wrapper = mount(ImportPreviewPanel, {
       props: baseProps({

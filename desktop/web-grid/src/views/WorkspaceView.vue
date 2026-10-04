@@ -1678,6 +1678,7 @@ useKeyboard({
     />
     <ImportPreviewPanel
       v-if="importPreviewSession"
+      v-show="ui.activeView === 'tables'"
       :session="importPreviewSession"
       :applying="importApplying"
       :cancellable="dataIoBusy"
@@ -1690,10 +1691,12 @@ useKeyboard({
       :mapping-dirty="importMappingDirty"
       :schema-drifted="importSchemaDrifted"
       :repreviewing="importRepreviewing"
+      :task-admitted="Boolean(dataIoService.activeTaskId.value)"
       @confirm="confirmTableImport"
       @cancel="cancelImportPreview"
       @cancel-task="cancelActiveImport"
       @repreview="repreviewTableImport"
+      @open-import-management="ui.navigate('imports')"
       @update:relation-config="setImportRelationConfig"
     />
     <ExportLookupPanel

@@ -235,6 +235,7 @@ export const messages: Record<string, string> = {
   "dataIo.import.preview.createOnly": "Write mode: create only",
   "dataIo.import.preview.cancel": "Cancel",
   "dataIo.import.preview.cancelTask": "Cancel import task",
+  "dataIo.import.preview.viewTask": "View import task",
   "dataIo.import.preview.confirm": "Import {count} row(s)",
   "dataIo.import.preview.sizeUnknown": "Unknown size",
   "dataIo.import.repreview": "Re-run preview",

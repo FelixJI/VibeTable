@@ -2104,6 +2104,124 @@ describe("WorkspaceView", () => {
     expect(document.body.textContent).toContain("已导入 2 行。");
   });
 
+  it("keeps an admitted running import cancellable while viewing it from the management page", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const workspace = useWorkspaceStore();
+    const table = useTableStore();
+    const ui = useUiStore();
+    workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+    workspace.selectTable("orders");
+    table.revision = {
+      databaseSessionId: "session-1",
+      schemaRevision: "schema-1",
+      dataRevision: 1,
+    };
+    ui.navigate("tables");
+    const wrapper = mountView();
+    await flushPromises();
+    posted.length = 0;
+
+    // Open the preview through the legacy toolbar path (E2E36's flow).
+    wrapper.findComponent(AppToolbar).vm.$emit("importData");
+    await flushPromises();
+    let request = posted.at(-1)!;
+    emit({ type: request.type, requestId: request.requestId, payload: { grantId: "grant-import", displayName: "orders.csv" } });
+    await flushPromises();
+    request = posted.at(-1)!;
+    emit({
+      type: request.type,
+      requestId: request.requestId,
+      payload: {
+        collection: "orders", schemaRevision: "schema-1", capabilityHash: "cap-1", sourceHash: "source-1",
+        token: { token: "import-token", expiresAt: 9999999999, consumed: false },
+        summary: { validRows: 1, errorRows: 0, warningRows: 1, totalRows: 1, errorCount: 0, warningCount: 1 },
+        rows: [], sourceColumns: ["number"], unmatchedColumns: [], diagnostics: [],
+      },
+    });
+    await flushPromises();
+    const describeRequest = posted.at(-1)!;
+    emit({
+      type: "schema.describe",
+      requestId: describeRequest.requestId,
+      payload: {
+        contract: "vibetable.schema-describe.v1",
+        collection: "orders",
+        requestGeneration: (describeRequest.payload as { requestGeneration: number }).requestGeneration,
+        schema: { collection: "orders", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+        capabilities: {},
+      },
+    });
+    await flushPromises();
+
+    const panel = () => wrapper.find('[data-testid="import-preview-panel"]');
+    expect(panel().exists()).toBe(true);
+    const previewElement = panel().element;
+    await wrapper.get('[data-testid="import-ack"]').trigger("click");
+    // Before admission there is no task to view in the background.
+    expect(wrapper.find('[data-testid="import-view-task"]').exists()).toBe(false);
+
+    // Confirm: the task is admitted and then paused mid-run (mutation barrier).
+    (wrapper.get('[data-testid="import-confirm"]').element as HTMLElement).click();
+    await flushPromises();
+    request = posted.at(-1)!;
+    expect(request.type).toBe("task.create");
+    emit({
+      type: request.type,
+      requestId: request.requestId,
+      payload: { taskId: "task-import", kind: "data.import", state: "running", progress: 0, result: null, error: null },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const viewTask = wrapper.get('[data-testid="import-view-task"]');
+    await viewTask.trigger("click");
+    await flushPromises();
+
+    // The management page opens without the modal shell intercepting it: the
+    // panel stays mounted (same session/ack state) but is hidden by v-show.
+    expect(ui.activeView).toBe("imports");
+    expect(wrapper.find('[data-testid="import-management"]').exists()).toBe(true);
+    expect(panel().exists()).toBe(true);
+    expect(panel().isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="import-active-task"]').text()).toContain("task-import");
+    expect(wrapper.get('[data-testid="import-cancel-active-task"]').attributes("disabled")).toBeUndefined();
+    expect(posted.filter((item) => item.type === "task.create")).toHaveLength(1);
+
+    // Returning to tables restores the SAME preview: still applying, still
+    // cancellable, and no second task.create was issued.
+    ui.navigate("tables");
+    try {
+      await flushPromises();
+      expect(panel().isVisible()).toBe(true);
+      expect(panel().element).toBe(previewElement);
+      expect(wrapper.get('[data-testid="import-ack"]').attributes("aria-checked")).toBe("true");
+      expect(wrapper.get('[data-testid="import-confirm"]').attributes("disabled")).toBeDefined();
+      const cancel = wrapper.get('[data-testid="import-cancel"]');
+      expect(cancel.attributes("disabled")).toBeUndefined();
+      expect(cancel.text()).toBe("取消导入任务");
+      expect(posted.filter((item) => item.type === "task.create")).toHaveLength(1);
+
+      // Settle the paused run so the polling loop retires with real timers off.
+      await vi.advanceTimersByTimeAsync(100);
+      request = [...posted].reverse().find((item) => item.type === "task.status")!;
+      emit({
+        type: request.type,
+        requestId: request.requestId,
+        payload: {
+          taskId: "task-import", kind: "data.import", state: "succeeded", progress: 1,
+          result: { collection: "orders", createdCount: 1, updatedCount: 0, failedRows: [], chunks: [], requestIds: [] },
+          error: null,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(posted.filter((item) => item.type === "task.create")).toHaveLength(1);
+      expect(panel().exists()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("opens the unified relation field settings drawer from the table toolbar", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);

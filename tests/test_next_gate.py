@@ -1613,6 +1613,10 @@ def test_passing_product_e2e_report_accepts_exact_scenario_evidence(tmp_path: Pa
         ),
         encoding="utf-8",
     )
+    scenario_root = run_root / "35-data-io-interoperability"
+    scenario_root.mkdir()
+    for filename in IMPORT_MANAGEMENT_SCREENSHOTS["35-data-io-interoperability"]:
+        (scenario_root / filename).write_bytes(b"synthetic unit-test image payload")
 
     destination = next_gate.persist_product_e2e_evidence(
         tmp_path / "source",
@@ -1767,7 +1771,10 @@ def _prepare_complete_product_reports(
                 phase_root.mkdir(parents=True)
                 for filename in filenames:
                     (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
-        for scenario_id, filenames in NATIVE_RESTORE_PASS_EVIDENCE.items():
+        for scenario_id, filenames in {
+            **NATIVE_RESTORE_PASS_EVIDENCE,
+            **IMPORT_MANAGEMENT_SCREENSHOTS,
+        }.items():
             if scenario_id not in selected[stage]:
                 continue
             for filename in filenames:
@@ -2597,6 +2604,74 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
         "product-e2e-report.json",
         *(f"{scenario_id}/persistent/{name}" for name in evidence),
     }
+
+
+IMPORT_MANAGEMENT_SCREENSHOTS = {
+    "35-data-io-interoperability": (
+        "35-import-management-history.png",
+        "35-import-management-reopened.png",
+    ),
+    "36-backend-import-exit": (
+        "36-import-aborted-after-backend-exit.png",
+        "36-import-management-worker-exit.png",
+    ),
+}
+
+
+def _import_management_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> Path:
+    run = tmp_path / "source" / "20261004T050000Z"
+    directory = run / scenario_id
+    directory.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps({"status": status, "scenarios": [{"scenario": scenario_id, "status": status}]}),
+        encoding="utf-8",
+    )
+    for filename in IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id]:
+        (directory / filename).write_bytes(filename.encode())
+    (directory / "unrelated.png").write_bytes(b"unrelated")
+    (directory / "workspace.db").write_bytes(b"private workspace")
+    return run
+
+
+@pytest.mark.parametrize("scenario_id", IMPORT_MANAGEMENT_SCREENSHOTS)
+def test_import_management_screenshots_archive_only_declared_images(
+    tmp_path: Path, scenario_id: str
+) -> None:
+    run = _import_management_screenshot_run(tmp_path, scenario_id, "passed")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    expected = {"product-e2e-report.json"}
+    for filename in IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id]:
+        relative = f"{scenario_id}/{filename}"
+        expected.add(relative)
+        assert (retained / relative).read_bytes() == filename.encode()
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == expected
+
+
+@pytest.mark.parametrize("scenario_id", IMPORT_MANAGEMENT_SCREENSHOTS)
+def test_import_management_screenshots_missing_image_rejects_passed_report(
+    tmp_path: Path, scenario_id: str
+) -> None:
+    run = _import_management_screenshot_run(tmp_path, scenario_id, "passed")
+    filename = IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id][-1]
+    (run / scenario_id / filename).unlink()
+    with pytest.raises(ValueError, match=filename):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_import_management_screenshots_preserve_partial_failed_evidence(tmp_path: Path) -> None:
+    scenario_id = "36-backend-import-exit"
+    run = _import_management_screenshot_run(tmp_path, scenario_id, "failed")
+    present, missing = IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id]
+    (run / scenario_id / missing).unlink()
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert (retained / scenario_id / present).read_bytes() == present.encode()
+    assert not (retained / scenario_id / missing).exists()
+    assert not (retained / scenario_id / "workspace.db").exists()
+    assert not (retained / scenario_id / "unrelated.png").exists()
 
 
 S39_SCREENSHOTS = {

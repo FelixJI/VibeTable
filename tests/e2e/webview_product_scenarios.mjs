@@ -11276,14 +11276,16 @@ async function scenario36(page, recorder, _network, runtime) {
   } finally {
     await capture.release();
   }
-  await page.getByTestId("import-management-open").click();
-  await page.getByTestId("import-active-task").waitFor({ state: "visible" });
-  recorder.check("leaving the table retains the admitted import and its cancellation entry",
-    (await page.getByTestId("import-active-task").innerText()).includes(task.taskId)
-      && await page.getByTestId("import-cancel-active-task").isEnabled());
-  await page.getByTestId("nav-tables").click();
   let fault;
   try {
+    await page.getByTestId("import-view-task").click();
+    await page.getByTestId("import-preview-panel").waitFor({ state: "hidden" });
+    await page.getByTestId("import-active-task").waitFor({ state: "visible" });
+    recorder.check("leaving the preview retains the admitted import and its cancellation entry",
+      (await page.getByTestId("import-active-task").innerText()).includes(task.taskId)
+        && await page.getByTestId("import-cancel-active-task").isEnabled());
+    await page.getByTestId("nav-tables").click();
+    await page.getByTestId("import-preview-panel").waitFor({ state: "visible" });
     fault = await requestPackagedProcessKill(runtime, "kill-backend",
       "interrupt active 1k-row import after first uncommitted record");
   } finally {
