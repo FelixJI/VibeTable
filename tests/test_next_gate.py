@@ -2614,6 +2614,7 @@ IMPORT_MANAGEMENT_SCREENSHOTS = {
         "35-source-import-targets.png",
         "35-source-import-reopened.png",
         "35-source-import-negative.png",
+        "35-source-import-attachment-download.png",
     ),
     "36-backend-import-exit": (
         "36-import-aborted-after-backend-exit.png",

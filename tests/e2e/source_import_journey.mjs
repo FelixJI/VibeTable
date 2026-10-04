@@ -79,11 +79,20 @@ export const EXPECTED_SYNTHETIC_SOURCE = {
   // Pre-execute terminal scenarios run the same 6-record source shape under
   // scenario-specific identities; their durable receipts must show zero
   // submitted work (AC7) with the current session epoch.
+  // TestModeSourceImport keeps ONE SourceName constant for all scenarios
+  // (drift/cancel prefixes only rename target tables), so every negative
+  // receipt carries the same sourceName and differs only by containerId.
   negative: {
-    drift: { containerId: "qa-source-drift", sourceName: "QA 来源漂移", state: "failed" },
-    cancel: { containerId: "qa-source-cancel", sourceName: "QA 来源取消", state: "cancelled" },
+    drift: { containerId: "qa-source-drift", sourceName: "QA 三表合成来源", state: "failed" },
+    cancel: { containerId: "qa-source-cancel", sourceName: "QA 三表合成来源", state: "cancelled" },
   },
 };
+
+// Byte mirror of TestModeSourceImport.AttachmentBytes — the fixed built-in
+// 1x1 PNG the provider serves. Used only for exact Buffer.equals of the
+// Host-downloaded artifact; no hash layer is introduced.
+export const TESTMODE_ATTACHMENT_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=";
 
 export function sourceImportRequestText(mode) {
   if (!SOURCE_IMPORT_MODES.includes(mode)) {
@@ -366,7 +375,9 @@ export function verifyRelationGraph({ expectation, tables }) {
 
 // The migrated attachment must land as a real local file reference on the
 // committed row: the physical cell holds the stored name the file capability
-// reports, and the listing carries the fixture identity (never a URL).
+// reports, and the canonical ManagedAttachmentRef identifies the fixture by
+// `originalName` (contracts/v2/fixtures/managed-attachment-ref.json) with no
+// legacy `name` fallback. Capability-grade metadata never enters evidence.
 export function verifyAttachmentBinding({ expectation, tables, fileListing }) {
   const problems = [];
   const table = expectation.tables.find((item) => item.id === expectation.attachment.table);
@@ -376,12 +387,18 @@ export function verifyAttachmentBinding({ expectation, tables, fileListing }) {
   const row = verified.codeIndex.get(expectation.attachment.code);
   if (!row) throw new Error(`attachment code ${expectation.attachment.code} is not indexed`);
   const files = fileListing?.attachments;
-  if (!Array.isArray(files) || files.length !== 1) {
-    return [`file.list returned ${JSON.stringify(files)} instead of exactly one migrated attachment`];
+  if (!Array.isArray(files)) {
+    return ["file.list attachments is not an array, expected exactly one migrated attachment"];
+  }
+  if (files.length !== 1) {
+    // Count-only diagnostics: whole refs are never stringified because they
+    // carry capability-grade metadata.
+    return [`file.list returned ${files.length} attachment(s), expected exactly one`];
   }
   const file = files[0];
-  if (file.name !== expectation.attachment.name) {
-    problems.push(`attachment name ${file.name} !== ${expectation.attachment.name}`);
+  if (file.originalName !== expectation.attachment.name) {
+    problems.push(`attachment originalName ${JSON.stringify(file.originalName ?? null)}`
+      + ` !== ${expectation.attachment.name}`);
   }
   if (row[column.name] !== file.storedName) {
     problems.push(`row cell ${column.name} is ${JSON.stringify(row[column.name])}`
@@ -389,6 +406,66 @@ export function verifyAttachmentBinding({ expectation, tables, fileListing }) {
   }
   for (const key of ["url", "remoteUrl", "token"]) {
     if (key in file) problems.push(`attachment leaks forbidden key "${key}"`);
+  }
+  return problems;
+}
+
+/**
+ * Safe evidence projection for file.list diagnostics: only the request
+ * anchors and the necessary display/storage metadata survive. Capability
+ * strings, hashes, thumbnails and any other ref internals are dropped — a
+ * failure report must never widen the attachment channel's exposure.
+ */
+export function safeAttachmentEvidence({ tableId, recordId, fieldId, fileListing }) {
+  const attachments = (Array.isArray(fileListing?.attachments) ? fileListing.attachments : [])
+    .map((file) => ({
+      originalName: typeof file?.originalName === "string" ? file.originalName : null,
+      storedName: typeof file?.storedName === "string" ? file.storedName : null,
+      mimeType: typeof file?.mimeType === "string" ? file.mimeType : null,
+      size: typeof file?.size === "number" ? file.size : null,
+    }));
+  return { requested: { tableId, recordId, fieldId }, count: attachments.length, attachments };
+}
+
+/**
+ * Correlated native download outcome: the Host reply must be a
+ * file.downloadRequested response with outcome "saved" and no path echo
+ * (NativeProductFileRequestController posts outcome only).
+ */
+export function verifyDownloadOutcome(response) {
+  const problems = [];
+  if (response?.type !== "file.downloadRequested") {
+    problems.push(`download reply type is ${response?.type ?? "missing"}, expected file.downloadRequested`);
+    return problems;
+  }
+  if (response.payload?.outcome !== "saved") {
+    problems.push(`download outcome is ${JSON.stringify(response.payload?.outcome ?? null)}, expected saved`);
+  }
+  if (response.payload != null && "path" in response.payload) {
+    problems.push("download reply leaks a filesystem path");
+  }
+  return problems;
+}
+
+/**
+ * Strict offline-bytes contract for the AC6 evidence: the Host-saved file
+ * must equal the fixed TestMode PNG byte for byte. Diagnostics report
+ * lengths only — never the raw bytes or the base64 encoding.
+ */
+export function verifyOfflineAttachmentBytes({ savedBytes, expectedBase64 }) {
+  if (!Buffer.isBuffer(savedBytes)) {
+    return ["saved attachment bytes must be a Buffer"];
+  }
+  const problems = [];
+  const expected = Buffer.from(expectedBase64, "base64");
+  if (savedBytes.length === 0) problems.push("saved attachment is empty");
+  if (savedBytes.length !== 0 && savedBytes.subarray(1, 4).toString("latin1") !== "PNG") {
+    problems.push("saved attachment does not carry the PNG magic signature");
+  }
+  if (savedBytes.length !== expected.length) {
+    problems.push(`saved length ${savedBytes.length} !== fixture length ${expected.length}`);
+  } else if (!savedBytes.equals(expected)) {
+    problems.push("saved bytes differ from the fixed TestMode fixture PNG");
   }
   return problems;
 }
@@ -438,6 +515,9 @@ export function validateSyntheticExpectation(expectation) {
         "failed", "cancelled",
       ].includes(negative.state)) {
       problems.push(`fixture negative scenario ${mode} is not finalized`);
+    } else if (negative.sourceName !== expectation.sourceName) {
+      problems.push(`fixture negative scenario ${mode} must keep the shared sourceName`
+        + ` ${expectation.sourceName} (scenario prefixes only rename targets)`);
     }
   }
   if (!expectation.negative?.drift || !expectation.negative?.cancel) {
@@ -664,15 +744,17 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
     graphProblems.length === 0, { problems: graphProblems });
 
   const attachmentTable = tables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
-  const fileListing = await request("file.list", {
+  const attachmentRequest = {
     tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
     recordId: attachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
     fieldId: attachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
-  });
+  };
+  const fileListing = await request("file.list", attachmentRequest);
   const attachmentProblems = verifyAttachmentBinding({
     expectation: EXPECTED_SYNTHETIC_SOURCE, tables, fileListing });
   recorder.check("the migrated attachment is a real local file reference on the committed row",
-    attachmentProblems.length === 0, { problems: attachmentProblems, fileListing });
+    attachmentProblems.length === 0,
+    { problems: attachmentProblems, attachment: safeAttachmentEvidence({ ...attachmentRequest, fileListing }) });
 
   // ---- Management page: receipt, targets, physical table open ----
   await openManagement();
@@ -781,11 +863,12 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   // the success phase).
   const afterNegativeTables = await verifyLocalAuthority();
   const negativeAttachmentTable = afterNegativeTables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
-  const afterNegativeFiles = await request("file.list", {
+  const negativeAttachmentRequest = {
     tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
     recordId: negativeAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
     fieldId: negativeAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
-  });
+  };
+  const afterNegativeFiles = await request("file.list", negativeAttachmentRequest);
   const authorityProblems = [
     ...verifyRecordIdentityByCode({
       expectation: EXPECTED_SYNTHETIC_SOURCE, tables: afterNegativeTables }),
@@ -795,7 +878,9 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
       fileListing: afterNegativeFiles }),
   ];
   recorder.check("drift and cancel leave committed rows, relations and the attachment untouched",
-    authorityProblems.length === 0, { problems: authorityProblems });
+    authorityProblems.length === 0,
+    { problems: authorityProblems,
+      attachment: safeAttachmentEvidence({ ...negativeAttachmentRequest, fileListing: afterNegativeFiles }) });
 
   // The management page renders both new terminal outcomes.
   await openManagement();
@@ -854,11 +939,12 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   // Offline stability of the committed success data one last time.
   const finalTables = await verifyLocalAuthority();
   const finalAttachmentTable = finalTables.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table);
-  const finalFiles = await request("file.list", {
+  const finalAttachmentRequest = {
     tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
     recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
     fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
-  });
+  };
+  const finalFiles = await request("file.list", finalAttachmentRequest);
   const finalAuthorityProblems = [
     ...verifyRecordIdentityByCode({
       expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables }),
@@ -867,5 +953,38 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
       expectation: EXPECTED_SYNTHETIC_SOURCE, tables: finalTables, fileListing: finalFiles }),
   ];
   recorder.check("the committed success data stays offline-stable across the final reopen",
-    finalAuthorityProblems.length === 0, { problems: finalAuthorityProblems });
+    finalAuthorityProblems.length === 0,
+    { problems: finalAuthorityProblems,
+      attachment: safeAttachmentEvidence({ ...finalAttachmentRequest, fileListing: finalFiles }) });
+
+  // ---- AC6: materialize the migrated attachment bytes through the real Host ----
+  // file.list proves metadata and capability only. The offline contract uses
+  // the real native download channel: the correlated file.downloadRequested
+  // wire request carries the committed identity (tableId/recordId/fieldId +
+  // storedName/originalName), TestMode resolves the save target from the
+  // attachment-target.txt control, and the gateway writes the stored bytes.
+  // rawBridgeRequest is used directly so a failed download stays a verifiable
+  // outcome instead of a thrown wrapper error.
+  const downloadTarget = path.join(runtime.evidenceDir, "35-source-import-attachment-download.png");
+  await fs.writeFile(path.join(runtime.controlsDir, "attachment-target.txt"), downloadTarget, "utf8");
+  const downloadReply = await rawBridgeRequest(page, "file.downloadRequested", {
+    tableId: tableTargets.get(EXPECTED_SYNTHETIC_SOURCE.attachment.table).tableId,
+    recordId: finalAttachmentTable.codeIndex.get(EXPECTED_SYNTHETIC_SOURCE.attachment.code).id,
+    fieldId: finalAttachmentTable.columns.get(EXPECTED_SYNTHETIC_SOURCE.attachment.field).fieldId,
+    storedName: finalFiles.attachments[0].storedName,
+    originalName: EXPECTED_SYNTHETIC_SOURCE.attachment.name,
+  }, 60_000);
+  const outcomeProblems = verifyDownloadOutcome(downloadReply);
+  let byteProblems = ["saved attachment bytes were not read because the download outcome failed"];
+  if (outcomeProblems.length === 0) {
+    byteProblems = verifyOfflineAttachmentBytes({
+      savedBytes: await fs.readFile(downloadTarget),
+      expectedBase64: TESTMODE_ATTACHMENT_PNG_BASE64,
+    });
+  }
+  recorder.check("the real Host downloads the committed attachment and the saved bytes equal the fixture PNG",
+    outcomeProblems.length === 0 && byteProblems.length === 0,
+    { problems: [...outcomeProblems, ...byteProblems],
+      replyOutcome: downloadReply?.payload?.outcome ?? null,
+      evidence: path.basename(downloadTarget) });
 }

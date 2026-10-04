@@ -286,23 +286,140 @@ test("the committed graph matches the fixture loop and reciprocal backlinks", ()
   assert.throws(() => verifyRelationGraph({ ...args, tables: emptied }), /no verified schema\/code identity/);
 });
 
-test("attachment binding ties the row cell to the real stored file", () => {
+test("attachment binding ties the row cell to the canonical ManagedAttachmentRef", () => {
+  // Canonical wire per contracts/v2/fixtures/managed-attachment-ref.json: the
+  // display identity is `originalName`; `downloadCapability`/`sha256` are
+  // capability-grade metadata that must never leak into evidence.
+  const canonicalRef = (overrides = {}) => ({
+    originalName: "qa-source-import.png",
+    storedName: "stored-a1.png",
+    mimeType: "image/png",
+    size: 70,
+    sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    downloadCapability: "filecap_SECRET_01HZX",
+    ...overrides,
+  });
   const args = {
     expectation: EXPECTED_SYNTHETIC_SOURCE, tables: verifiedTables(),
-    fileListing: { attachments: [{ name: "qa-source-import.png", storedName: "stored-a1.png", sha256: "x" }] },
+    fileListing: { attachments: [canonicalRef()] },
   };
   assert.deepEqual(verifyAttachmentBinding(args), []);
+  const renamed = { attachments: [canonicalRef({ originalName: "迁移改名.png" })] };
+  assert.ok(verifyAttachmentBinding({ ...args, fileListing: renamed })
+    .some((p) => p.includes("originalName") && p.includes("迁移改名.png")));
+  // No legacy `name` fallback: a ref that only carries the old field fails.
+  const legacyNameOnly = { attachments: [canonicalRef({ name: "qa-source-import.png" })] };
+  delete legacyNameOnly.attachments[0].originalName;
+  assert.ok(verifyAttachmentBinding({ ...args, fileListing: legacyNameOnly })
+    .some((p) => p.includes("originalName")));
   const detached = verifiedTables((tables) => {
     tables.get("a").rows[0].col_a_files = null;
   });
   assert.ok(verifyAttachmentBinding({ ...args, tables: detached })
     .some((p) => p.includes("storedName")));
   assert.ok(verifyAttachmentBinding({ ...args, fileListing: { attachments: [] } })
-    .some((p) => p.includes("exactly one")));
+    .some((p) => p.includes("expected exactly one")));
   assert.ok(verifyAttachmentBinding({
     ...args,
-    fileListing: { attachments: [{ name: "qa-source-import.png", storedName: "s", url: "http://x" }] },
+    fileListing: { attachments: [canonicalRef({ url: "http://x" })] },
   }).some((p) => p.includes("forbidden key")));
+});
+
+test("negative expectations keep the fixed fixture source identity", () => {
+  // TestModeSourceImport.cs keeps ONE SourceName constant for all three
+  // scenarios; the drift/cancel prefixes only rename target tables, and Go
+  // persists plan.DisplayName verbatim. The durable negative receipts must
+  // therefore carry the same sourceName, distinguished only by containerId.
+  for (const mode of ["drift", "cancel"]) {
+    const negative = EXPECTED_SYNTHETIC_SOURCE.negative[mode];
+    assert.equal(negative.sourceName, EXPECTED_SYNTHETIC_SOURCE.sourceName,
+      `${mode} must keep the shared fixture source name`);
+    assert.equal(negative.containerId, `qa-source-${mode}`);
+  }
+  assert.notEqual(
+    EXPECTED_SYNTHETIC_SOURCE.negative.drift.containerId,
+    EXPECTED_SYNTHETIC_SOURCE.negative.cancel.containerId);
+  const detached = {
+    ...EXPECTED_SYNTHETIC_SOURCE,
+    negative: {
+      drift: { ...EXPECTED_SYNTHETIC_SOURCE.negative.drift, sourceName: "QA 来源漂移" },
+      cancel: EXPECTED_SYNTHETIC_SOURCE.negative.cancel,
+    },
+  };
+  assert.ok(validateSyntheticExpectation(detached)
+    .some((p) => p.includes("sourceName")),
+  "validation must reject a scenario-specific negative sourceName");
+});
+
+test("offline attachment download outcome and bytes verify strictly", async () => {
+  const module = await import("./source_import_journey.mjs");
+  const pngBase64 = module.TESTMODE_ATTACHMENT_PNG_BASE64;
+  assert.equal(typeof pngBase64, "string");
+  const expected = Buffer.from(pngBase64, "base64");
+  assert.ok(expected.length > 8 && expected.subarray(1, 4).toString("latin1") === "PNG");
+  assert.equal(typeof module.verifyDownloadOutcome, "function");
+  assert.equal(typeof module.verifyOfflineAttachmentBytes, "function");
+  assert.deepEqual(
+    module.verifyDownloadOutcome({ type: "file.downloadRequested", payload: { outcome: "saved" } }), []);
+  assert.ok(module.verifyDownloadOutcome({ type: "file.downloadRequested", payload: { outcome: "failed" } })
+    .some((p) => p.includes("outcome")));
+  assert.ok(module.verifyDownloadOutcome({ type: "operation.failed", payload: {} })
+    .some((p) => p.includes("file.downloadRequested")));
+  assert.deepEqual(
+    module.verifyOfflineAttachmentBytes({ savedBytes: expected, expectedBase64: pngBase64 }), []);
+  const flipped = Buffer.from(expected); flipped[flipped.length - 1] ^= 0xff;
+  const truncated = expected.subarray(0, expected.length - 4);
+  for (const [label, savedBytes] of [["flipped", flipped], ["truncated", truncated], ["empty", Buffer.alloc(0)]]) {
+    const problems = module.verifyOfflineAttachmentBytes({ savedBytes, expectedBase64: pngBase64 });
+    assert.ok(problems.length > 0, label);
+    const text = problems.join(" | ");
+    assert.ok(!text.includes("base64"), `${label} failure must not embed the fixture encoding`);
+    assert.ok(!/[A-Za-z0-9+/]{40,}/.test(text), `${label} failure must not leak raw bytes`);
+  }
+  assert.ok(module.verifyOfflineAttachmentBytes({ savedBytes: Buffer.from("not a png"), expectedBase64: pngBase64 })
+    .some((p) => p.includes("PNG")));
+  assert.ok(module.verifyOfflineAttachmentBytes({ savedBytes: "not-a-buffer", expectedBase64: pngBase64 })
+    .some((p) => p.includes("Buffer")));
+});
+
+test("attachment failure text and evidence redact capability-grade metadata", async () => {
+  const module = await import("./source_import_journey.mjs");
+  const secretRef = {
+    originalName: "qa-source-import.png", storedName: "stored-a1.png",
+    mimeType: "image/png", size: 70,
+    sha256: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    downloadCapability: "filecap_SECRET_01HZX",
+  };
+  const tables = verifiedTables();
+  const base = { expectation: EXPECTED_SYNTHETIC_SOURCE, tables };
+  // Wrong array count must report counts, never stringify whole refs.
+  const problems = verifyAttachmentBinding({
+    ...base, fileListing: { attachments: [secretRef, { ...secretRef, storedName: "s2" }] },
+  });
+  const text = problems.join(" | ");
+  assert.ok(problems.some((p) => p.includes("expected exactly one")));
+  for (const secret of ["filecap_SECRET_01HZX", "ffffffffffff", "originalName"]) {
+    assert.equal(text.includes(secret), false, `failure text must not leak ${secret}`);
+  }
+  // The evidence projection keeps only the necessary safe metadata.
+  assert.equal(typeof module.safeAttachmentEvidence, "function",
+    "the safe evidence projection must be exported");
+  const evidence = module.safeAttachmentEvidence({
+    tableId: "tbl_a", recordId: "row_a1", fieldId: "f_a_files",
+    fileListing: { attachments: [secretRef] },
+  });
+  assert.deepEqual(Object.keys(evidence).sort(), ["attachments", "count", "requested"]);
+  assert.deepEqual(evidence.requested, { tableId: "tbl_a", recordId: "row_a1", fieldId: "f_a_files" });
+  assert.equal(evidence.count, 1);
+  assert.deepEqual(Object.keys(evidence.attachments[0]).sort(),
+    ["mimeType", "originalName", "size", "storedName"]);
+  const evidenceText = JSON.stringify(evidence);
+  for (const forbidden of ["filecap", "downloadCapability", "sha256", "ffffffff", "url", "token"]) {
+    assert.equal(evidenceText.includes(forbidden), false, `evidence must not carry ${forbidden}`);
+  }
+  assert.deepEqual(module.safeAttachmentEvidence({ fileListing: null }),
+    { requested: { tableId: undefined, recordId: undefined, fieldId: undefined },
+      count: 0, attachments: [] });
 });
 
 test("the frozen QA fixture expectation validates as final", () => {
@@ -366,7 +483,7 @@ test("pre-submission terminal receipts verify zero submitted work", () => {
     .some((p) => p.includes("diagnostics")));
   assert.ok(corrupt((entry) => { entry.containerId = "qa-source-success"; })
     .some((p) => p.includes("containerId")));
-  assert.ok(corrupt((entry) => { entry.sourceName = "QA 三表合成来源"; })
+  assert.ok(corrupt((entry) => { entry.sourceName = "QA 场景专属名"; })
     .some((p) => p.includes("sourceName")));
   assert.ok(corrupt((entry) => { entry.sessionEpoch = 3; }).some((p) => p.includes("sessionEpoch")));
   assert.ok(corrupt((entry) => { entry.stage = "settled"; }).some((p) => p.includes("preparing")));
