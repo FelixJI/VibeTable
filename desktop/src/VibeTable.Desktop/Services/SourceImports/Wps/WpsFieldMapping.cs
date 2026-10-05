@@ -21,6 +21,7 @@ internal sealed record WpsFieldMap
     internal HostSourceImportOption[] Options { get; init; } = [];
     internal HostSourceImportRelation? Relation { get; init; }
     internal HostSourceImportNumberFormat? NumberFormat { get; init; }
+    internal System.Text.RegularExpressions.Regex? DatePattern { get; init; }
 
     internal HostSourceImportField ToField() => new(Id, Name, Kind, ValueKind, Required: false,
         Options, Relation, NumberFormat, Timezone: "", Definition);
@@ -75,8 +76,7 @@ internal sealed class WpsFieldMapping
         "MultipleSelect" => Select(id, name, type, multiple: true, data),
         "Link" => MapLink(id, name, data),
         "Formula" => new WpsFieldMap { Id = id, Name = name, WpsType = type, Kind = "formula", ValueKind = "",
-            Definition = Provenance(type, data, data.TryGetProperty("formula", out JsonElement formula)
-                && formula.ValueKind == JsonValueKind.String ? formula.GetString() : null) },
+            Definition = Provenance(type, data) },
         "Lookup" => new WpsFieldMap { Id = id, Name = name, WpsType = type, Kind = "lookup", ValueKind = "",
             Definition = Provenance(type, data) },
         "AutoNumber" => Unknown(id, name, type, data, "编号为自动字段，原生迁移未验证"),
@@ -105,7 +105,7 @@ internal sealed class WpsFieldMapping
         {
             Id = id, Name = name, WpsType = type, Kind = "number", ValueKind = "number",
             NumberFormat = WpsNumberFormat.Parse(format, percent),
-            Definition = Provenance(type, data, string.IsNullOrWhiteSpace(format) ? null : format),
+            Definition = Provenance(type, data),
         };
     }
 
@@ -115,13 +115,20 @@ internal sealed class WpsFieldMapping
             && data.TryGetProperty("number_format", out JsonElement element)
             && element.ValueKind == JsonValueKind.String ? element.GetString()! : "";
         // 官方仅给出按 number_format 展示的日期字符串，未携带时区证据；含时间部分
-        // 的格式无法在不虚构时区的情况下转 dateTime，因此映射为需确认的 unknown。
+        // 的格式无法在不虚构时区的情况下转 dateTime；格式缺失或未验证（无法按记号
+        // 精确重建年/月/日）时同样映射为 unknown，允许文本/JSON 快照，不做文化猜测。
         if (WpsDateFormat.HasTimeComponent(format))
             return Unknown(id, name, "Date", data, "日期时间无来源时区证据，不虚构偏移");
+        // 格式缺失或未验证（无法按记号精确重建年/月/日）时映射为 unknown，允许
+        // 文本/JSON 快照，不做文化猜测；编译后的解析模式随字段携带，避免逐记录重建。
+        System.Text.RegularExpressions.Regex? pattern = WpsDateFormat.BuildDatePattern(format);
+        if (format.Length == 0 || pattern is null)
+            return Unknown(id, name, "Date", data, "日期格式缺失或未验证，不猜测语义");
         return new WpsFieldMap
         {
             Id = id, Name = name, WpsType = "Date", Kind = "date", ValueKind = "date",
-            Definition = Provenance("Date", data, string.IsNullOrWhiteSpace(format) ? null : format),
+            DatePattern = pattern,
+            Definition = Provenance("Date", data),
         };
     }
 
@@ -176,9 +183,7 @@ internal sealed class WpsFieldMapping
         {
             Id = id, Name = name, WpsType = "Link", Kind = "relation", ValueKind = "relation",
             Relation = new(target, reverse, multiple ? "many" : "one"),
-            Definition = Provenance("Link", data, "link_sheet=" + target
-                + ";multiple_links=" + (multiple ? "true" : "false")
-                + (reverse.Length == 0 ? ";link_field=absent" : "")),
+            Definition = Provenance("Link", data, reverse.Length == 0 ? "link_field=absent" : null),
         };
     }
 
@@ -188,11 +193,55 @@ internal sealed class WpsFieldMapping
 
     private static string Provenance(string type, JsonElement data, string? detail = null)
     {
-        // 溯源串保留来源类型与关键定义，不包含任何凭据；长度约束在引擎溯源预算内。
-        string provenance = "wps:type=" + type;
-        if (detail is { Length: > 0 } && provenance.Length + detail.Length + 1 <= 256)
-            provenance += ";" + detail;
-        return provenance;
+        // 溯源串完整保留官方可得的字段定义（公式/引用目标/格式等），不设单项长度截断；
+        // 不包含凭据或临时 URL。总量预算由 #435 Go 引擎按 plan.Fields（含 skip 决策）
+        // 唯一裁定，provider 不重复预算、不提前阻断。
+        var parts = new List<string> { "wps:type=" + type };
+        void Add(string key, string property)
+        {
+            if (data.ValueKind != JsonValueKind.Object
+                || !data.TryGetProperty(property, out JsonElement element)) return;
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.String when element.GetString() is { Length: > 0 } text:
+                    parts.Add(key + "=" + text);
+                    break;
+                case JsonValueKind.Number:
+                    parts.Add(key + "=" + element.GetRawText());
+                    break;
+                case JsonValueKind.True or JsonValueKind.False:
+                    parts.Add(key + "=" + (element.ValueKind == JsonValueKind.True ? "true" : "false"));
+                    break;
+            }
+        }
+        switch (type)
+        {
+            case "Formula":
+                Add("formula", "formula");
+                Add("value_type", "value_type");
+                Add("number_format", "number_format");
+                break;
+            case "Lookup":
+                Add("link_field", "link_field");
+                Add("lookup_field", "lookup_field");
+                Add("aggregation", "aggregation");
+                Add("base_type", "base_type");
+                Add("lookup_sheet_id", "lookup_sheet_id");
+                break;
+            case "Link":
+                Add("link_sheet", "link_sheet");
+                Add("link_field", "link_field");
+                Add("multiple_links", "multiple_links");
+                break;
+            case "MultiLineText" or "ID" or "Phone":
+                Add("unique_value", "unique_value");
+                break;
+            default:
+                Add("number_format", "number_format");
+                break;
+        }
+        if (detail is { Length: > 0 }) parts.Add(detail);
+        return string.Join(";", parts);
     }
 
     /// <summary>
@@ -265,7 +314,8 @@ internal sealed class WpsFieldMapping
             case "Date" when field.Kind == "date":
             {
                 if (value.ValueKind == JsonValueKind.String
-                    && WpsDateFormat.TryParseDateOnly(value.GetString()!, out DateOnly date))
+                    && field.DatePattern is { } pattern
+                    && WpsDateFormat.TryParseExact(pattern, value.GetString()!, out DateOnly date))
                     return JsonSerializer.SerializeToElement(
                         date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
                 return value.Clone(); // 解析失败保留原值，由引擎值校验阻断。
@@ -317,7 +367,9 @@ internal static class WpsNumberFormat
                 scale++;
         bool hasPlaceholder = section.Contains('#');
         return new(
-            OnlyInt: dot < 0,
+            // 显示为整数（如 "0_ "）只是展示约束，不是取值约束；没有真实约束证据时
+            // 不允许 OnlyInt 把合法小数拒之门外。
+            OnlyInt: false,
             DisplayScale: Math.Min(scale, 15),
             ScaleMode: hasPlaceholder ? "max" : "fixed",
             TrimTrailingZeros: hasPlaceholder,
@@ -337,8 +389,11 @@ internal static class WpsNumberFormat
 }
 
 /// <summary>
-/// 解析 WPS 日期/时间显示串。仅实现官方样例中出现的常见格式；不支持形状返回
-/// false，对应字段值保持原样并交由引擎阻断，不猜测语义。
+/// 按声明的 number_format 记号精确解析日期；未验证/缺失格式一律交由上层映射为
+/// unknown（允许文本/JSON 快照），不做文化猜测。仅支持官方样例中出现的记号子集
+/// （y{3,4} 年、m{1,2} 月、d{1,2} 日、引号/反斜杠字面量、[$-..] 区域前缀、星期
+/// 记号忽略、';' 取首段、尾部 '@' 去除）；其余记号（含 2 位年、月名、时间记号）
+/// 一律视为未验证。时间为已验证格式（hh:mm:ss 等）沿用解析。
 /// </summary>
 internal static partial class WpsDateFormat
 {
@@ -355,6 +410,92 @@ internal static partial class WpsDateFormat
             || section.Contains("上午", StringComparison.Ordinal);
     }
 
+    /// <summary>把声明格式编译为精确解析模式；记号不在已验证子集内时返回 null。</summary>
+    internal static Regex? BuildDatePattern(string format) => Build(format);
+
+    internal static bool TryParseExact(Regex pattern, string text, out DateOnly date)
+    {
+        date = default;
+        Match match = pattern.Match(text);
+        if (!match.Success
+            || !int.TryParse(match.Groups["year"].Value, CultureInfo.InvariantCulture, out int year)
+            || !int.TryParse(match.Groups["month"].Value, CultureInfo.InvariantCulture, out int month)
+            || !int.TryParse(match.Groups["day"].Value, CultureInfo.InvariantCulture, out int day))
+            return false;
+        if (month is < 1 or > 12 || day < 1) return false;
+        try
+        {
+            date = new DateOnly(year, month, day);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
+    private static Regex? Build(string format)
+    {
+        string section = Clean(format);
+        if (section.Length == 0) return null;
+        var pattern = new System.Text.StringBuilder("^");
+        bool hasYear = false, hasMonth = false, hasDay = false;
+        for (int i = 0; i < section.Length; i++)
+        {
+            char current = section[i];
+            if (current == '"')
+            {
+                int close = i + 1;
+                while (close < section.Length && section[close] != '"')
+                    pattern.Append(Regex.Escape(section[close++].ToString()));
+                i = close;
+                continue;
+            }
+            if (current == '\\')
+            {
+                if (i + 1 < section.Length) pattern.Append(Regex.Escape(section[++i].ToString()));
+                continue;
+            }
+            if (current is 'y' or 'Y')
+            {
+                int run = RunLength(section, ref i, 'y', 'Y');
+                if (run < 3) return null; // 2 位年存在世纪歧义，未验证
+                pattern.Append("(?<year>\\d{4})");
+                hasYear = true;
+                continue;
+            }
+            if (current is 'm' or 'M')
+            {
+                int run = RunLength(section, ref i, 'm', 'M');
+                if (run > 2) return null; // 月名记号未验证
+                pattern.Append(run == 2 ? "(?<month>\\d{2})" : "(?<month>\\d{1,2})");
+                hasMonth = true;
+                continue;
+            }
+            if (current is 'd' or 'D')
+            {
+                int run = RunLength(section, ref i, 'd', 'D');
+                if (run > 2) return null;
+                pattern.Append(run == 2 ? "(?<day>\\d{2})" : "(?<day>\\d{1,2})");
+                hasDay = true;
+                continue;
+            }
+            if (current is 'h' or 'H' or 's' or 'S' or 'a' or 'A' or 'g' or 'G') return null; // 时间/上午/年代记号 → 未验证
+            pattern.Append(Regex.Escape(current.ToString()));
+        }
+        pattern.Append('$');
+        return hasYear && hasMonth && hasDay
+            ? new Regex(pattern.ToString(), RegexOptions.CultureInvariant) : null;
+    }
+
+    private static int RunLength(string section, ref int index, char lower, char upper)
+    {
+        int start = index;
+        while (index + 1 < section.Length && (section[index + 1] == lower || section[index + 1] == upper))
+            index++;
+        return index - start + 1;
+    }
+
     private static string Clean(string format)
     {
         string section = format.Split(';', 2)[0];
@@ -362,14 +503,6 @@ internal static partial class WpsDateFormat
         // 星期记号（aaaa/ddd 等）是派生显示，不参与日期身份解析。
         section = Regex.Replace(section, "a{3,4}|d{3,4}", "");
         return section.TrimEnd('@').Trim();
-    }
-
-    internal static bool TryParseDateOnly(string text, out DateOnly date)
-    {
-        if (DateOnly.TryParseExact(text, ["yyyy-M-d", "yyyy/M/d", "yyyy年M月d日"],
-                CultureInfo.InvariantCulture, DateTimeStyles.None, out date)) return true;
-        // 未声明 number_format 时的保守兜底；无法识别的形状返回 false 并由引擎阻断。
-        return DateOnly.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
     }
 
     internal static bool TryParseTime(string text, out TimeOnly time)

@@ -144,11 +144,33 @@ internal sealed record WpsTableSummary(string Id, string Name, string PrimaryFie
     IReadOnlyList<WpsFieldSummary> Fields, int ViewCount);
 
 internal sealed record WpsCatalog(string FileId, string Version, DateTimeOffset ReadAt,
-    IReadOnlyList<WpsTableSummary> Tables);
+    IReadOnlyList<WpsTableSummary> Tables, IReadOnlyList<WpsUnsupportedSheet> UnsupportedSheets);
 
-/// <summary>解析后的官方 schema 形状；字段保留原始 JSON 供映射与结构指纹使用。</summary>
+/// <summary>非数据表 sheet（仪表盘/智能文档关联表等）的类型化诊断条目，供 UI 展示与计数。</summary>
+internal sealed record WpsUnsupportedSheet(string Id, string Name, string SheetType, string Reason);
+
+/// <summary>
+/// 解析后的官方 schema 形状。sheet_type 分类依据官方 get-schema 文档：
+/// xlEtDataBaseSheet（数据表）、xlEtFlexPaperSheet（智能文档关联表）、
+/// xlDbDashBoardSheet（仪表盘）；仅数据表参与读取，其余进入类型化 unsupported 列表。
+/// 字段保留原始 JSON 供映射与结构版本使用。
+/// </summary>
 internal sealed record WpsSchemaSheet(
-    string Id, string Name, string PrimaryFieldId, JsonElement Fields, JsonElement Views)
+    string Id, string Name, string PrimaryFieldId, string SheetType, JsonElement Fields, JsonElement Views)
 {
+    internal const string DataSheetType = "xlEtDataBaseSheet";
+
+    /// <summary>旧响应可能缺 sheet_type：无类型但带字段数组时按数据表兼容处理。</summary>
+    internal bool IsDataSheet => SheetType == DataSheetType
+        || (SheetType.Length == 0 && Fields.ValueKind == JsonValueKind.Array);
+
     internal JsonElement CloneFields() => Fields.Clone();
+
+    internal static string UnsupportedReason(string sheetType) => sheetType switch
+    {
+        "xlDbDashBoardSheet" => "仪表盘不是数据表，不参与模型迁移",
+        "xlEtFlexPaperSheet" => "智能文档关联表不是数据表，不参与模型迁移",
+        "" => "缺少 sheet_type 且无数据表字段结构，无法当作数据表读取",
+        _ => "未知 sheet_type=" + sheetType + "，未验证是否为数据表",
+    };
 }

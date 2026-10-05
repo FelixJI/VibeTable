@@ -31,7 +31,11 @@ public partial class MainWindow
                 source, accessToken, token: token);
             return new(connection.Catalog.AppName, connection.Catalog.Tables.Select(table =>
                 new NativeSourceTable(table.TableId, table.Name, table.Fields.Select(field =>
-                    new NativeSourceField(field.FieldId, field.Name, field.Kind, field.ValueKind)).ToArray())).ToArray(),
+                    // Feishu relations are always one-sided: the provider mapping
+                    // keeps Relation.TargetFieldId empty, so a native migration
+                    // needs an explicit reciprocal name decision.
+                    new NativeSourceField(field.FieldId, field.Name, field.Kind, field.ValueKind,
+                        RequiresReverseName: field.Kind == "relation")).ToArray())).ToArray(),
                 ids => connection.CreateProvider(ids), connection.Dispose);
         }
         if (provider == "wps")
@@ -41,8 +45,13 @@ public partial class MainWindow
             WpsCatalog catalog = await WpsSourceImportHostApi.ReadCatalogAsync(connection, token: token);
             return new(connection.DisplayName, catalog.Tables.Select(table =>
                 new NativeSourceTable(table.Id, table.Name, table.Fields.Select(field =>
-                    new NativeSourceField(field.Id, field.Name, field.Kind, field.ValueKind)).ToArray())).ToArray(),
-                ids => WpsSourceImportHostApi.CreateProvider(connection, ids), () => { });
+                    new NativeSourceField(field.Id, field.Name, field.Kind, field.ValueKind,
+                        // Only one-sided relations (no paired reverse field in
+                        // the source schema) need a new reciprocal field name.
+                        field.Kind == "relation" && string.IsNullOrEmpty(field.RelationTargetFieldId))).ToArray())).ToArray(),
+                ids => WpsSourceImportHostApi.CreateProvider(connection, ids), () => { },
+                catalog.UnsupportedSheets.Select(sheet => new NativeSourceUnsupportedSheet(
+                    sheet.Id, sheet.Name, sheet.SheetType, sheet.Reason)).ToArray());
         }
         throw new ArgumentException("Unknown source provider.", nameof(provider));
     }

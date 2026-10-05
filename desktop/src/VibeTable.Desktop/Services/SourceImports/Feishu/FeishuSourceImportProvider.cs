@@ -240,9 +240,47 @@ internal static class FeishuSourceImportFieldMapping
             ? ReadOptions(field) : [];
         HostSourceImportRelation? relation = kind == "relation" ? ReadRelation(field) : null;
         // Required=false: Feishu has no per-field insert-required constraint
-        // and the local contract must not invent one.
+        // and the local contract must not invent one. Definition carries the
+        // official auditable semantics (formula expression, lookup filter) so
+        // snapshot provenance survives into the durable result; it is never
+        // truncated here — the Go preflight's 512KiB provenance budget stays
+        // the sole, explicit limiter.
         return new HostSourceImportField(field.Id, field.Name, kind, ValueKindOf(field), false,
-            options, relation, null, "", "");
+            options, relation, null, "", ReadDefinition(field));
+    }
+
+    private static readonly JsonSerializerOptions DefinitionWire = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Project the officially exposed, auditable field semantics into the
+    /// Definition provenance: formula_expression for formulas (21) and the
+    /// lookup filter_info (target_table plus nested conditions, verified in
+    /// the SDK models AppTableFieldProperty/LookupFilter) for lookups (20).
+    /// Only official definition fields are included — never credentials or
+    /// temporary download URLs — and nothing is invented for other kinds.
+    /// </summary>
+    private static string ReadDefinition(FeishuFieldWire field)
+    {
+        if (field.Property.ValueKind != JsonValueKind.Object) return "";
+        switch (field.Type)
+        {
+            case 21:
+                if (field.Property.TryGetProperty("formula_expression", out JsonElement expression)
+                    && expression.ValueKind == JsonValueKind.String)
+                    return JsonSerializer.Serialize(
+                        new Dictionary<string, object?> { ["formulaExpression"] = expression.GetString() },
+                        DefinitionWire);
+                return "";
+            case 20:
+                if (field.Property.TryGetProperty("filter_info", out JsonElement filter)
+                    && filter.ValueKind == JsonValueKind.Object)
+                    return JsonSerializer.Serialize(
+                        new Dictionary<string, object?> { ["lookupFilter"] = filter.Clone() },
+                        DefinitionWire);
+                return "";
+            default:
+                return "";
+        }
     }
 
     private static HostSourceImportOption[] ReadOptions(FeishuFieldWire field)

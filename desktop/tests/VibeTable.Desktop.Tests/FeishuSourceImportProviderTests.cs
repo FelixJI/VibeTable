@@ -39,6 +39,7 @@ public sealed class FeishuSourceImportProviderTests
         ["关联B"] = "rec000000",
         ["负责人"] = new object[] { new Dictionary<string, object?> { ["id"] = "ou_SyntheticUser01", ["name"] = "张三" } },
         ["计算"] = 42,
+        ["引用标题"] = "A 000",
         ["创建时间"] = 1700000000000,
         ["电话"] = "13800000000",
         ["附件"] = index == 0 ? AttachmentValue("fileSyntheticToken01", "a.png", "image/png", 4) : Array.Empty<object>(),
@@ -77,7 +78,27 @@ public sealed class FeishuSourceImportProviderTests
                     FeishuSourceImportTestPeer.PropertyJson(
                         "{\"table_id\":\"" + TableB + "\",\"multiple\":false}")),
                 new("fldOwnerA0000010", "负责人", 11, "User", false),
-                new("fldFormulaA0001", "计算", 21, "Formula", false),
+                new("fldFormulaA0001", "计算", 21, "Formula", false,
+                    Raw(JsonSerializer.Serialize(new
+                    {
+                        formula_expression = "CONCATENATE([标题], \"-合成后缀\")",
+                    }))),
+                new("fldLookupA0005", "引用标题", 20, "Lookup", false,
+                    Raw(JsonSerializer.Serialize(new
+                    {
+                        filter_info = new
+                        {
+                            target_table = TableA,
+                            filter_info = new
+                            {
+                                conjunction = "and",
+                                conditions = new object[]
+                                {
+                                    new { field_name = "标题", @operator = "is", value = new[] { "A 000" } },
+                                },
+                            },
+                        },
+                    }))),
                 new("fldCreatedA0002", "创建时间", 1001, "CreatedTime", false),
                 new("fldFilesA0003", "附件", 17, "Attachment", false),
                 new("fldPhoneA0004", "电话", 13, "Phone", false),
@@ -159,6 +180,22 @@ public sealed class FeishuSourceImportProviderTests
             retryDelay: TimeSpan.Zero).ConfigureAwait(false);
 
     [TestMethod]
+    public async Task MalformedCursorCannotBecomeAnImplicitFinalPage()
+    {
+        foreach (bool missingMore in new[] { false, true })
+        {
+            using FeishuSourceImportTestPeer peer = PagedPeer(10);
+            using FeishuSourceImportConnection connection = await ConnectAsync(peer).ConfigureAwait(false);
+            peer.MissingHasMore = missingMore;
+            peer.InvalidPageToken = new { next = 10 };
+            using FeishuSourceImportProvider provider = connection.CreateProvider([TableA]);
+            FeishuSourceImportException error = await Assert.ThrowsExactlyAsync<FeishuSourceImportException>(
+                () => provider.ReadAsync(CancellationToken.None)).ConfigureAwait(false);
+            Assert.AreEqual(FeishuSourceImportErrorKind.Protocol, error.Kind);
+            Assert.AreEqual(1, peer.RequestsTo("/records"));
+        }
+    }
+    [TestMethod]
     public async Task ReadMapsVerifiedFieldKindsOntoNeutralContractWithStableIdentities()
     {
         using FeishuSourceImportTestPeer peer = MappingPeer();
@@ -194,6 +231,7 @@ public sealed class FeishuSourceImportProviderTests
             ["fldToB0000008"] = ("relation", "relation"),
             ["fldOwnerA0000010"] = ("person", "json"),
             ["fldFormulaA0001"] = ("formula", "json"),
+            ["fldLookupA0005"] = ("lookup", "json"),
             ["fldCreatedA0002"] = ("system", "json"),
             ["fldFilesA0003"] = ("file", "file"),
             ["fldPhoneA0004"] = ("text", "text"),
@@ -649,6 +687,100 @@ public sealed class FeishuSourceImportProviderTests
         // The injected test handler is shared by all per-provider clients and
         // must never be disposed by product code.
         Assert.AreEqual(0, peer.DisposeCount);
+    }
+
+    [TestMethod]
+    public async Task SourceDefinitionsProjectOfficialFormulaAndLookupSemantics()
+    {
+        using FeishuSourceImportTestPeer peer = MappingPeer();
+        using FeishuSourceImportConnection connection = await ConnectAsync(peer).ConfigureAwait(false);
+        using FeishuSourceImportProvider provider = connection.CreateProvider([TableA]);
+        HostSourceImportSnapshot snapshot = await provider.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+        HostSourceImportTable tableA = snapshot.Tables.Single(table => table.Id == TableA);
+
+        // The official formula_expression is projected verbatim into the
+        // auditable Definition provenance (no truncation; the Go preflight's
+        // 512KiB provenance budget stays the sole limiter).
+        HostSourceImportField formula = tableA.Fields.Single(field => field.Id == "fldFormulaA0001");
+        using (JsonDocument parsed = JsonDocument.Parse(formula.Definition))
+        {
+            Assert.AreEqual("CONCATENATE([标题], \"-合成后缀\")",
+                parsed.RootElement.GetProperty("formulaExpression").GetString());
+        }
+
+        // The official lookup filter (target table plus nested conditions) is
+        // projected as structured, auditable JSON.
+        HostSourceImportField lookup = tableA.Fields.Single(field => field.Id == "fldLookupA0005");
+        using (JsonDocument parsed = JsonDocument.Parse(lookup.Definition))
+        {
+            JsonElement filter = parsed.RootElement.GetProperty("lookupFilter");
+            Assert.AreEqual(TableA, filter.GetProperty("target_table").GetString());
+            Assert.AreEqual("and", filter.GetProperty("filter_info").GetProperty("conjunction").GetString());
+            Assert.AreEqual("标题", filter.GetProperty("filter_info").GetProperty("conditions")[0]
+                .GetProperty("field_name").GetString());
+        }
+
+        // Ordinary fields keep an empty Definition: nothing is invented.
+        Assert.IsTrue(tableA.Fields.Where(field => field.Id is not ("fldFormulaA0001" or "fldLookupA0005"))
+            .All(field => field.Definition.Length == 0));
+
+        // Definitions never carry credentials or temporary download URLs.
+        foreach (HostSourceImportField field in tableA.Fields)
+        {
+            Assert.IsFalse(field.Definition.Contains(FeishuSourceImportTestPeer.AccessToken, StringComparison.Ordinal),
+                field.Id);
+            Assert.IsFalse(field.Definition.Contains("tmp_url", StringComparison.Ordinal), field.Id);
+            Assert.IsFalse(field.Definition.Contains("http", StringComparison.Ordinal), field.Id);
+        }
+
+        // A formula without a verified expression keeps an empty Definition.
+        peer.Tables[0] = peer.Tables[0] with
+        {
+            Fields = [.. peer.Tables[0].Fields.Select(field =>
+                field.Id == "fldFormulaA0001" ? field with { Property = default } : field)],
+        };
+        HostSourceImportSnapshot reread = await provider.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("", reread.Tables.Single(table => table.Id == TableA).Fields
+            .Single(field => field.Id == "fldFormulaA0001").Definition);
+    }
+
+    [TestMethod]
+    public async Task AmbiguousPagingSignalsFailClosedInsteadOfEarlySuccess()
+    {
+        using FeishuSourceImportTestPeer nonBool = PagedPeer(10);
+        using (FeishuSourceImportConnection connection = await ConnectAsync(nonBool).ConfigureAwait(false))
+        {
+            nonBool.NonBoolHasMore = true;
+            using FeishuSourceImportProvider provider = connection.CreateProvider([TableA]);
+            FeishuSourceImportException error = await Assert.ThrowsExactlyAsync<FeishuSourceImportException>(
+                () => provider.ReadAsync(CancellationToken.None)).ConfigureAwait(false);
+            Assert.AreEqual(FeishuSourceImportErrorKind.Protocol, error.Kind);
+            StringAssert.Contains(error.Message, "has_more");
+        }
+
+        using FeishuSourceImportTestPeer strayCursor = PagedPeer(10);
+        using (FeishuSourceImportConnection connection = await ConnectAsync(strayCursor).ConfigureAwait(false))
+        {
+            strayCursor.MissingHasMoreWithCursor = true;
+            using FeishuSourceImportProvider provider = connection.CreateProvider([TableA]);
+            FeishuSourceImportException error = await Assert.ThrowsExactlyAsync<FeishuSourceImportException>(
+                () => provider.ReadAsync(CancellationToken.None)).ConfigureAwait(false);
+            Assert.AreEqual(FeishuSourceImportErrorKind.Protocol, error.Kind);
+            StringAssert.Contains(error.Message, "游标");
+            // No subsequent page is fetched after the ambiguous signal.
+            Assert.AreEqual(1, strayCursor.RequestsTo("/records"));
+        }
+
+        // Missing has_more with no cursor is the SDK-optional final-page shape
+        // and must stay a legal complete read (no unjustified tightening).
+        using FeishuSourceImportTestPeer finalPage = PagedPeer(10);
+        using (FeishuSourceImportConnection connection = await ConnectAsync(finalPage).ConfigureAwait(false))
+        {
+            finalPage.MissingHasMore = true;
+            using FeishuSourceImportProvider provider = connection.CreateProvider([TableA]);
+            HostSourceImportSnapshot snapshot = await provider.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(10, snapshot.Tables.Single().Records.Length);
+        }
     }
 
     [TestMethod]

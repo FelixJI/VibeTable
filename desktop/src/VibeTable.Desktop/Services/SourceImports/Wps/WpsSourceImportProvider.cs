@@ -77,8 +77,10 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
         WpsSourceImportConnection connection, WpsReadLimits limits, CancellationToken token)
     {
         List<WpsSchemaSheet> sheets = await ReadSchemaAsync(client, connection, token).ConfigureAwait(false);
-        var tables = new List<WpsTableSummary>(sheets.Count);
-        foreach (WpsSchemaSheet sheet in sheets)
+        List<WpsSchemaSheet> dataSheets = sheets.Where(sheet => sheet.IsDataSheet)
+            .OrderBy(sheet => sheet.Id, StringComparer.Ordinal).ToList();
+        var tables = new List<WpsTableSummary>(dataSheets.Count);
+        foreach (WpsSchemaSheet sheet in dataSheets)
         {
             WpsFieldMapping mapping = WpsFieldMapping.Parse(sheet.CloneFields());
             var fields = new List<WpsFieldSummary>(mapping.Count);
@@ -92,9 +94,13 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
             tables.Add(new(sheet.Id, sheet.Name, sheet.PrimaryFieldId, fields,
                 sheet.Views.ValueKind == JsonValueKind.Array ? sheet.Views.GetArrayLength() : 0));
         }
+        // 语义版本只覆盖数据表：仪表盘等 unsupported sheet 不参与迁移投影。
         return new WpsCatalog(connection.FileId,
-            WpsSchemaVersion.File(connection.FileId, sheets.OrderBy(sheet => sheet.Id, StringComparer.Ordinal)),
-            DateTimeOffset.UtcNow, tables);
+            WpsSchemaVersion.File(connection.FileId, dataSheets),
+            DateTimeOffset.UtcNow, tables,
+            sheets.Where(sheet => !sheet.IsDataSheet)
+                .Select(sheet => new WpsUnsupportedSheet(sheet.Id, sheet.Name, sheet.SheetType,
+                    WpsSchemaSheet.UnsupportedReason(sheet.SheetType))).ToList());
     }
 
     public async Task<HostSourceImportSnapshot> ReadAsync(CancellationToken token)
@@ -108,7 +114,6 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
                 "WPS 多维表格不包含任何数据表；请确认 file_id 指向多维表格（db/.dbt），传统表格与智能表格不在支持范围。");
         List<WpsSchemaSheet> selected = SelectSheets(sheets);
         var tables = new List<HostSourceImportTable>(selected.Count);
-        var tableVersions = new Dictionary<string, string>(StringComparer.Ordinal);
         // 记录 ID 去重按表作用域：不同表允许相同的记录 ID。
         var seenRecordIds = new HashSet<(string TableId, string RecordId)>();
         int totalRecords = 0;
@@ -128,8 +133,7 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
             if (totalRecords > _limits.MaxRecords)
                 throw new WpsImportException(WpsImportFailure.Capacity,
                     $"来源记录总数超过本次迁移上限 {_limits.MaxRecords} 条；请缩小选表范围后重试。");
-            tableVersions[sheet.Id] = WpsSchemaVersion.Sheet(sheet);
-            tables.Add(new HostSourceImportTable(sheet.Id, sheet.Name, tableVersions[sheet.Id],
+            tables.Add(new HostSourceImportTable(sheet.Id, sheet.Name, WpsSchemaVersion.Sheet(sheet),
                 sheet.PrimaryFieldId,
                 [.. mapping.ById.Values.Select(field => field.ToField())], [.. records]));
         }
@@ -170,22 +174,31 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
 
     private List<WpsSchemaSheet> SelectSheets(List<WpsSchemaSheet> sheets)
     {
-        var byId = new Dictionary<string, WpsSchemaSheet>(StringComparer.Ordinal);
+        var dataById = new Dictionary<string, WpsSchemaSheet>(StringComparer.Ordinal);
+        var unsupportedById = new Dictionary<string, WpsSchemaSheet>(StringComparer.Ordinal);
         foreach (WpsSchemaSheet sheet in sheets)
         {
-            if (byId.ContainsKey(sheet.Id))
+            var target = sheet.IsDataSheet ? dataById : unsupportedById;
+            if (target.ContainsKey(sheet.Id))
                 throw new WpsImportException(WpsImportFailure.Protocol, $"WPS schema 数据表 ID 重复：{sheet.Id}。");
-            byId[sheet.Id] = sheet;
+            target[sheet.Id] = sheet;
         }
-        List<string> missing = _selectedTableIds.Where(id => !byId.ContainsKey(id))
+        foreach (string id in _selectedTableIds)
+        {
+            if (unsupportedById.TryGetValue(id, out WpsSchemaSheet? unsupported))
+                throw new WpsImportException(WpsImportFailure.Unsupported,
+                    $"所选 sheet「{unsupported.Name}」（{id}）是 sheet_type={unsupported.SheetType}："
+                    + WpsSchemaSheet.UnsupportedReason(unsupported.SheetType) + "；请选择 xlEtDataBaseSheet 数据表。");
+        }
+        List<string> missing = _selectedTableIds.Where(id => !dataById.ContainsKey(id))
             .OrderBy(id => id, StringComparer.Ordinal).ToList();
         if (missing.Count > 0)
             throw new WpsImportException(WpsImportFailure.Protocol,
                 $"所选数据表在 schema 中不存在：{string.Join(",", missing)}；请重新选表。");
-        if (sheets.Count > _limits.MaxTables)
+        if (dataById.Count > _limits.MaxTables)
             throw new WpsImportException(WpsImportFailure.Capacity,
-                $"来源数据表 {sheets.Count} 张超过本次迁移上限 {_limits.MaxTables} 张；请缩小迁移范围。");
-        return byId.Where(pair => _selectedTableIds.Contains(pair.Key))
+                $"来源数据表 {dataById.Count} 张超过本次迁移上限 {_limits.MaxTables} 张；请缩小迁移范围。");
+        return dataById.Where(pair => _selectedTableIds.Contains(pair.Key))
             .Select(pair => pair.Value)
             .OrderBy(sheet => sheet.Id, StringComparer.Ordinal)
             .ToList();
@@ -211,18 +224,24 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
                 || !idElement.TryGetInt64(out long sheetId) || sheetId <= 0
                 || sheet.GetProperty("name").GetString() is not { } name)
                 throw new WpsImportException(WpsImportFailure.Protocol, "WPS schema 数据表缺少 id/name。");
+            string sheetType = sheet.TryGetProperty("sheet_type", out JsonElement typeElement)
+                && typeElement.ValueKind == JsonValueKind.String ? typeElement.GetString()! : "";
             string primary = sheet.TryGetProperty("primary_field_id", out JsonElement primaryElement)
                 && primaryElement.ValueKind == JsonValueKind.String ? primaryElement.GetString()! : "";
             JsonElement fields = sheet.TryGetProperty("fields", out JsonElement fieldsElement)
                 && fieldsElement.ValueKind == JsonValueKind.Array ? fieldsElement : default;
-            if (fields.ValueKind != JsonValueKind.Array)
-                throw new WpsImportException(WpsImportFailure.Protocol,
-                    $"WPS schema 数据表 {name}（{sheetId}）缺少 fields 数组。");
+            // 仪表盘/智能文档关联表等非数据表可能没有 fields；它们不进入数据表路径。
+            if (sheetType.Length == 0 || sheetType == WpsSchemaSheet.DataSheetType)
+            {
+                if (fields.ValueKind != JsonValueKind.Array && sheetType == WpsSchemaSheet.DataSheetType)
+                    throw new WpsImportException(WpsImportFailure.Protocol,
+                        $"WPS schema 数据表 {name}（{sheetId}）缺少 fields 数组。");
+            }
             JsonElement views = sheet.TryGetProperty("views", out JsonElement viewsElement)
                 && viewsElement.ValueKind == JsonValueKind.Array ? viewsElement.Clone()
                 : JsonSerializer.SerializeToElement(Array.Empty<object>());
             sheets.Add(new WpsSchemaSheet(sheetId.ToString(CultureInfo.InvariantCulture), name, primary,
-                fields.Clone(), views));
+                sheetType, fields.ValueKind == JsonValueKind.Array ? fields.Clone() : default, views));
         }
         return sheets;
     }
@@ -265,9 +284,17 @@ internal sealed class WpsSourceImportProvider : IHostSourceImportProvider
                 Dictionary<string, JsonElement> values = ParseRecordFields(sheet, record, mapping);
                 records.Add(new HostSourceImportRecord(recordId, values));
             }
-            string next = data.TryGetProperty("page_token", out JsonElement tokenElement)
-                && tokenElement.ValueKind == JsonValueKind.String ? tokenElement.GetString()! : "";
-            if (next.Length == 0) break;
+            string? next = null;
+            if (data.TryGetProperty("page_token", out JsonElement tokenElement))
+            {
+                // 官方语义：缺失或空字符串表示没有更多页；非字符串形状是协议违规，
+                // 不得当作末页提前成功。
+                if (tokenElement.ValueKind != JsonValueKind.String)
+                    throw new WpsImportException(WpsImportFailure.Protocol,
+                        $"数据表 {sheet.Name}（{sheet.Id}）返回的 page_token 形状非法（非字符串）；已中止。");
+                next = tokenElement.GetString()!;
+            }
+            if (string.IsNullOrEmpty(next)) break;
             if (!seenPageTokens.Add(next))
                 throw new WpsImportException(WpsImportFailure.Pagination,
                     $"数据表 {sheet.Name}（{sheet.Id}）返回了重复的分页游标；已中止，不会循环拉取。");
@@ -310,8 +337,8 @@ internal static class WpsSchemaVersion
     internal const int MaxLength = 262_144;
 
     internal static string Sheet(WpsSchemaSheet sheet)
-        => Bound("wps-sv1:" + sheet.Id + ":n=" + sheet.Name + ":p=" + sheet.PrimaryFieldId
-            + ":f=" + Canon(sheet.CloneFields()));
+        => Bound("wps-sv1:" + sheet.Id + ":t=" + sheet.SheetType + ":n=" + sheet.Name
+            + ":p=" + sheet.PrimaryFieldId + ":f=" + Canon(sheet.CloneFields()));
 
     internal static string File(string fileId, IEnumerable<WpsSchemaSheet> sheets)
         => Bound("wps-fv1:" + fileId + ":" + string.Join("|",

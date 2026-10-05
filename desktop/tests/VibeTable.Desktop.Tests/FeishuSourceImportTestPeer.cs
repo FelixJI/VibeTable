@@ -36,6 +36,16 @@ internal sealed class FeishuSourceImportTestPeer : HttpMessageHandler
     internal bool DuplicateRecordIds;
     internal bool RedirectAttachment;
     internal bool HoldRecords;
+    /// <summary>Pagination fault injection (F441-PAGE01): emit has_more as
+    /// an illegal non-bool value.</summary>
+    internal bool NonBoolHasMore;
+    /// <summary>Omit has_more and the page token: the tolerated final-page
+    /// shape (SDK marks both fields optional).</summary>
+    internal bool MissingHasMore;
+    /// <summary>Omit has_more but keep a non-empty page token: an ambiguous
+    /// cursor that must never end pagination as success.</summary>
+    internal bool MissingHasMoreWithCursor;
+    internal object? InvalidPageToken;
     internal readonly TaskCompletionSource HoldingRecords = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal readonly Dictionary<string, byte[]> AttachmentBytes = [];
 
@@ -167,7 +177,9 @@ internal sealed class FeishuSourceImportTestPeer : HttpMessageHandler
             // Fault injection deliberately targets the records endpoint only;
             // catalog paging stays healthy so connection tests are unaffected.
             ["data"] = PagedData(more, table.RecordCount, items, offset,
-                repeatCursor: RepeatCursor, omitPageToken: OmitPageToken),
+                repeatCursor: RepeatCursor, omitPageToken: OmitPageToken,
+                nonBoolHasMore: NonBoolHasMore, missingHasMore: MissingHasMore,
+                missingHasMoreWithCursor: MissingHasMoreWithCursor, invalidPageToken: InvalidPageToken),
         });
     }
 
@@ -186,21 +198,26 @@ internal sealed class FeishuSourceImportTestPeer : HttpMessageHandler
         return Reply(new Dictionary<string, object?>
         {
             ["code"] = 0, ["msg"] = "success",
-            ["data"] = PagedData(more, total, items, offset, repeatCursor: false, omitPageToken: false),
+            ["data"] = PagedData(more, total, items, offset, repeatCursor: false, omitPageToken: false,
+                nonBoolHasMore: false, missingHasMore: false, missingHasMoreWithCursor: false),
         });
     }
 
     private Dictionary<string, object?> PagedData(bool more, int total, List<object> items, int offset,
-        bool repeatCursor, bool omitPageToken)
+        bool repeatCursor, bool omitPageToken, bool nonBoolHasMore, bool missingHasMore,
+        bool missingHasMoreWithCursor, object? invalidPageToken = null)
     {
         var data = new Dictionary<string, object?>
         {
-            ["has_more"] = more || repeatCursor || omitPageToken,
             ["total"] = total,
             ["items"] = items,
         };
-        if (!omitPageToken)
+        if (nonBoolHasMore) data["has_more"] = "true";
+        else if (!missingHasMore && !missingHasMoreWithCursor)
+            data["has_more"] = more || repeatCursor || omitPageToken;
+        if (!omitPageToken && !missingHasMore)
             data["page_token"] = repeatCursor ? "stuck-cursor" : (offset + items.Count).ToString();
+        if (invalidPageToken is not null) data["page_token"] = invalidPageToken;
         return data;
     }
 

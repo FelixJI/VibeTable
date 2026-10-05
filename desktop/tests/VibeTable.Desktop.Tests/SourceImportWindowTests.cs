@@ -380,35 +380,318 @@ public sealed class SourceImportWindowTests
     }
 
     [TestMethod]
-    public async Task WindowCompositionRendersRealContentAndOptInScreenshotsStayInsideBuildTree()
+    public async Task ReverseNamesForTwoRelationsLandInSeparateNativeDecisions()
     {
         var log = new EventLog();
         var connect = new FakeConnect(log);
         var session = new FakeWizardSession(log);
         using var fixture = new NativeWizardStaFixture("feishu", connect, session);
         await fixture.ShowAsync();
-        await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-shot"));
+        await fixture.DoAsync(w =>
+        {
+            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
+            Require<PasswordBox>(w, "token-input").Password = SecretToken;
+        });
+        await ClickAsync(fixture, "connect-button");
+        connect.CompleteWithRelationCatalog(new FakeSourceProvider(log, "prov-rel"));
+        await fixture.SettleAsync();
+        // Two one-sided relations (tbl-a→tbl-b and tbl-c→tbl-b) would collide
+        // on the shared "迁移反向关联" default in Go checkFieldNames; each gets
+        // its own explicit reciprocal name decision.
+        await fixture.DoAsync(w =>
+        {
+            Require<CheckBox>(w, "table-select-tbl-a").IsChecked = true;
+            Require<CheckBox>(w, "table-select-tbl-b").IsChecked = true;
+            Require<CheckBox>(w, "table-select-tbl-c").IsChecked = true;
+            Require<CheckBox>(w, "reverse-checkbox").IsChecked = true;
+            Require<TextBox>(w, "field-reverse-name-tbl-a-f-rel-a").Text = "订单A的反向";
+            Require<TextBox>(w, "field-reverse-name-tbl-c-f-rel-c").Text = "订单C的反向";
+        });
+        await fixture.SettleAsync();
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
 
-        // Both captures render the real window visual tree composed from the
-        // synthetic catalog/plan data — no mocks painted over the bitmap.
-        Capture catalog = await fixture.ReadAsync(CaptureWindow);
+        HostSourceImportOptions options = session.SnapshotCalls().Single().Options;
+        Assert.IsTrue(options.ConfirmReverse);
+        HostSourceImportDecision[] decisions = options.Decisions
+            .OrderBy(decision => decision.FieldId, StringComparer.Ordinal).ToArray();
+        Assert.AreEqual(2, decisions.Length, string.Join(";", options.Decisions));
+        Assert.AreEqual("tbl-a", decisions[0].TableId);
+        Assert.AreEqual("f-rel-a", decisions[0].FieldId);
+        Assert.AreEqual("native", decisions[0].Policy);
+        Assert.AreEqual("", decisions[0].TargetKind);
+        Assert.AreEqual("订单A的反向", decisions[0].TargetName);
+        Assert.IsTrue(decisions[0].Confirmed);
+        Assert.AreEqual("tbl-c", decisions[1].TableId);
+        Assert.AreEqual("f-rel-c", decisions[1].FieldId);
+        Assert.AreEqual("native", decisions[1].Policy);
+        Assert.AreEqual("订单C的反向", decisions[1].TargetName);
+        Assert.AreNotEqual(decisions[0].TargetName, decisions[1].TargetName);
+
+        // Snapshot on a reverse-naming relation must not carry the reverse
+        // name: it renames no target column and creates no reciprocal field.
+        await fixture.DoAsync(w => Require<ComboBox>(w, "field-policy-tbl-a-f-rel-a").SelectedIndex = 1);
+        await AssertConfirmationInvalidatedAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        decisions = session.SnapshotCalls()[^1].Options.Decisions
+            .OrderBy(decision => decision.FieldId, StringComparer.Ordinal).ToArray();
+        Assert.AreEqual(2, decisions.Length, string.Join(";", decisions));
+        HostSourceImportDecision snapshot = decisions.Single(decision => decision.FieldId == "f-rel-a");
+        Assert.AreEqual("snapshot", snapshot.Policy);
+        Assert.AreEqual("json", snapshot.TargetKind);
+        Assert.AreEqual("", snapshot.TargetName);
+        HostSourceImportDecision native = decisions.Single(decision => decision.FieldId == "f-rel-c");
+        Assert.AreEqual("native", native.Policy);
+        Assert.AreEqual("订单C的反向", native.TargetName);
+    }
+
+    [TestMethod]
+    public async Task SnapshotTargetChoiceAppliesExactTextAndJsonAndInvalidatesPreview()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        await fixture.ShowAsync();
+        await fixture.DoAsync(w =>
+        {
+            Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
+            Require<PasswordBox>(w, "token-input").Password = SecretToken;
+        });
+        await ClickAsync(fixture, "connect-button");
+        connect.CompleteWithSingleFieldCatalog(new FakeSourceProvider(log, "prov-kind"), "number");
+        await fixture.SettleAsync();
+        await fixture.DoAsync(w =>
+        {
+            Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true;
+            Require<ComboBox>(w, "field-policy-tbl-1-f-target").SelectedIndex = 1;
+        });
+        await fixture.SettleAsync();
+        // The explicit snapshot target selector only exists for snapshot rows.
+        await fixture.DoAsync(w => Assert.AreEqual(Visibility.Visible,
+            Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").Visibility));
         await ClickAsync(fixture, "preview-button");
         session.CompletePending();
         await fixture.SettleAsync();
         Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
-        Capture precheck = await fixture.ReadAsync(CaptureWindow);
+        // Default keeps the source kind (old locked number mapping).
+        Assert.AreEqual("number", session.SnapshotCalls()[^1].Options.Decisions.Single().TargetKind);
 
-        Assert.IsTrue(catalog.Width > 600 && catalog.Height > 500,
-            $"catalog capture {catalog.Width}x{catalog.Height} is not the composed wizard");
-        Assert.IsTrue(catalog.ContentPixels > 100,
-            $"catalog capture only painted {catalog.ContentPixels} content pixels");
-        Assert.IsTrue(precheck.Width > 600 && precheck.Height > 500,
-            $"precheck capture {precheck.Width}x{precheck.Height} is not the composed wizard");
-        Assert.IsTrue(precheck.ContentPixels > 100,
-            $"precheck capture only painted {precheck.ContentPixels} content pixels");
+        // Exact text for float64-precision-losing numbers (9007199254740993).
+        await fixture.DoAsync(w => Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").SelectedIndex = 1);
+        await AssertConfirmationInvalidatedAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.AreEqual("text", session.SnapshotCalls()[^1].Options.Decisions.Single().TargetKind);
 
-        await ClickAsync(fixture, "start-button");
-        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+        // JSON for values without an option identity mapping.
+        await fixture.DoAsync(w => Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").SelectedIndex = 2);
+        await AssertConfirmationInvalidatedAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.AreEqual("json", session.SnapshotCalls()[^1].Options.Decisions.Single().TargetKind);
+
+        // Leaving snapshot hides the selector again; native emits no decision
+        // for a field that does not require a reverse name.
+        await fixture.DoAsync(w =>
+        {
+            Require<ComboBox>(w, "field-policy-tbl-1-f-target").SelectedIndex = 0;
+            Assert.AreEqual(Visibility.Collapsed,
+                Require<ComboBox>(w, "field-snapshot-kind-tbl-1-f-target").Visibility);
+        });
+        await AssertConfirmationInvalidatedAsync(fixture);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.AreEqual(0, session.SnapshotCalls()[^1].Options.Decisions.Length);
+    }
+
+    [TestMethod]
+    public async Task UnsupportedSheetsStayVisibleWhileDataTablesRemainSelectable()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        using var fixture = new NativeWizardStaFixture("wps", connect, session);
+        await fixture.ShowAsync();
+        await fixture.DoAsync(w =>
+        {
+            Require<TextBox>(w, "source-input").Text = "file-wps-native-test";
+            Require<PasswordBox>(w, "token-input").Password = SecretToken;
+        });
+        await ClickAsync(fixture, "connect-button");
+        connect.CompleteWithUnsupportedSheets(new FakeSourceProvider(log, "prov-wps-unsupported"),
+        [
+            new NativeSourceTable("tbl-1", "订单",
+                [new NativeSourceField("f-native", "标题", "text", "text")]),
+        ],
+        [
+            new NativeSourceUnsupportedSheet("sheet-dash", "销售看板", "xlDbDashBoardSheet",
+                "仪表盘不是数据表，不参与模型迁移"),
+            new NativeSourceUnsupportedSheet("sheet-doc", "项目文档", "xlEtFlexPaperSheet",
+                "智能文档关联表不是数据表，不参与模型迁移"),
+        ]);
+        await fixture.SettleAsync();
+
+        string status = await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text);
+        StringAssert.Contains(status, "1 张表");
+        StringAssert.Contains(status, "另有 2 个来源项不支持迁移，已在下方逐项列出原因。");
+        string dashboard = await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-dash").Text);
+        StringAssert.Contains(dashboard, "销售看板");
+        StringAssert.Contains(dashboard, "xlDbDashBoardSheet");
+        StringAssert.Contains(dashboard, "仪表盘不是数据表，不参与模型迁移");
+        string document = await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-doc").Text);
+        StringAssert.Contains(document, "项目文档");
+        StringAssert.Contains(document, "智能文档关联表不是数据表，不参与模型迁移");
+
+        // The migratable data table stays fully usable next to the disclosure.
+        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        // The disclosure survives the precheck pass.
+        StringAssert.Contains(
+            await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-dash").Text), "销售看板");
+    }
+
+    [TestMethod]
+    public async Task UnsupportedSheetsStayVisibleWhenNoDataTablesExist()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        using var fixture = new NativeWizardStaFixture("wps", connect, session);
+        await fixture.ShowAsync();
+        await fixture.DoAsync(w =>
+        {
+            Require<TextBox>(w, "source-input").Text = "file-wps-native-test";
+            Require<PasswordBox>(w, "token-input").Password = SecretToken;
+        });
+        await ClickAsync(fixture, "connect-button");
+        connect.CompleteWithUnsupportedSheets(new FakeSourceProvider(log, "prov-wps-empty"),
+        [],
+        [
+            new NativeSourceUnsupportedSheet("sheet-only", "全部是看板的文件", "xlDbDashBoardSheet",
+                "仪表盘不是数据表，不参与模型迁移"),
+        ]);
+        await fixture.SettleAsync();
+
+        string status = await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text);
+        StringAssert.Contains(status, "连接成功，当前授权范围内没有数据表。");
+        StringAssert.Contains(status, "另有 1 个来源项不支持迁移，已在下方逐项列出原因。");
+        string only = await fixture.ReadAsync(w => Require<TextBlock>(w, "unsupported-sheet-sheet-only").Text);
+        StringAssert.Contains(only, "全部是看板的文件");
+        StringAssert.Contains(only, "仪表盘不是数据表，不参与模型迁移");
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+    }
+
+    [TestMethod]
+    public async Task WindowCompositionRendersRealContentAndOptInScreenshotsStayInsideBuildTree()
+    {
+        // Feishu scenario only: synthetic Feishu catalog/plan data — never a
+        // WPS sheet type mixed in. Expanded strategy area with the snapshot
+        // target selector and reverse-name row, then the precheck report.
+        var feishuLog = new EventLog();
+        var feishuConnect = new FakeConnect(feishuLog);
+        var feishuSession = new FakeWizardSession(feishuLog);
+        Capture catalog;
+        Capture precheck;
+        using (var fixture = new NativeWizardStaFixture("feishu", feishuConnect, feishuSession))
+        {
+            // Test-only presentation size so controls and report fit the
+            // capture; the product default stays 840x760.
+            await fixture.DoAsync(w => { w.Width = 880; w.Height = 1080; });
+            await fixture.ShowAsync();
+            await fixture.DoAsync(w =>
+            {
+                Require<TextBox>(w, "source-input").Text = "https://feishu.test/base/app-native-test";
+                Require<PasswordBox>(w, "token-input").Password = SecretToken;
+            });
+            await ClickAsync(fixture, "connect-button");
+            feishuConnect.CompleteWithRelationCatalog(new FakeSourceProvider(feishuLog, "prov-shot"));
+            await fixture.SettleAsync();
+            await fixture.DoAsync(w =>
+            {
+                Require<CheckBox>(w, "table-select-tbl-a").IsChecked = true;
+                Require<CheckBox>(w, "table-select-tbl-b").IsChecked = true;
+                Require<ComboBox>(w, "field-policy-tbl-a-f-title-a").SelectedIndex = 1;
+                Require<TextBox>(w, "field-reverse-name-tbl-a-f-rel-a").Text = "客户B的订单A";
+            });
+            // Expand the first table's strategy expander and scroll the
+            // snapshot/reverse controls into the viewport.
+            await fixture.DoAsync(w => RequireType<Expander>(w).IsExpanded = true);
+            await fixture.SettleAsync();
+            await fixture.DoAsync(w => ScrollAnchorIntoView(w,
+                Require<TextBox>(w, "field-reverse-name-tbl-a-f-rel-a"), 140));
+            await fixture.SettleAsync();
+            // Catalog capture: strategy rows with the snapshot target selector
+            // and the reverse-name row visible.
+            catalog = await fixture.ReadAsync(CaptureWindow);
+
+            await ClickAsync(fixture, "preview-button");
+            feishuSession.CompletePending();
+            await fixture.SettleAsync();
+            Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+            await fixture.DoAsync(w => ScrollAnchorIntoView(w, Require<TextBlock>(w, "report-text"), 24));
+            await fixture.SettleAsync();
+            // Precheck capture: the report itself; the footer buttons are
+            // docked outside the ScrollViewer and stay visible with it.
+            precheck = await fixture.ReadAsync(CaptureWindow);
+            await ClickAsync(fixture, "start-button");
+            await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+        }
+
+        // Separate WPS scenario: the typed unsupported-sheet disclosure with
+        // WPS-native sheet types next to a still-selectable data table.
+        var wpsLog = new EventLog();
+        var wpsConnect = new FakeConnect(wpsLog);
+        Capture unsupported;
+        using (var fixture = new NativeWizardStaFixture("wps", wpsConnect, new FakeWizardSession(wpsLog)))
+        {
+            await fixture.DoAsync(w => { w.Width = 880; w.Height = 1080; });
+            await fixture.ShowAsync();
+            await fixture.DoAsync(w =>
+            {
+                Require<TextBox>(w, "source-input").Text = "file-wps-native-test";
+                Require<PasswordBox>(w, "token-input").Password = SecretToken;
+            });
+            await ClickAsync(fixture, "connect-button");
+            wpsConnect.CompleteWithUnsupportedSheets(new FakeSourceProvider(wpsLog, "prov-shot-wps"),
+                [new NativeSourceTable("tbl-1", "订单",
+                    [new NativeSourceField("f-native", "标题", "text", "text")])],
+            [
+                new NativeSourceUnsupportedSheet("sheet-dash", "销售看板", "xlDbDashBoardSheet",
+                    "仪表盘不是数据表，不参与模型迁移"),
+            ]);
+            await fixture.SettleAsync();
+            await fixture.DoAsync(w =>
+            {
+                Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true;
+                ScrollAnchorIntoView(w, Require<StackPanel>(w, "unsupported-panel"), 96);
+            });
+            await fixture.SettleAsync();
+            unsupported = await fixture.ReadAsync(CaptureWindow);
+        }
+
+        foreach ((string name, Capture capture) in new[]
+        {
+            ("catalog", catalog), ("precheck", precheck), ("wps-unsupported", unsupported),
+        })
+        {
+            Assert.IsTrue(capture.Width > 600 && capture.Height > 500,
+                $"{name} capture {capture.Width}x{capture.Height} is not the composed wizard");
+            Assert.IsTrue(capture.ContentPixels > 100,
+                $"{name} capture only painted {capture.ContentPixels} content pixels");
+        }
 
         // Disk artifacts are strictly opt-in and only ever target this tree's
         // ignored build/automation/native-wizard directory.
@@ -416,6 +699,7 @@ public sealed class SourceImportWindowTests
         if (directory is null) return;
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-catalog.png"), catalog.Png);
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-precheck.png"), precheck.Png);
+        File.WriteAllBytes(Path.Combine(directory, "native-wizard-wps-unsupported.png"), unsupported.Png);
     }
 
     private static async Task AssertConfirmationInvalidatedAsync(NativeWizardStaFixture fixture)
@@ -444,6 +728,31 @@ public sealed class SourceImportWindowTests
     private static Task ClickAsync(NativeWizardStaFixture fixture, string automationId) =>
         fixture.DoAsync(w => Require<Button>(w, automationId)
             .RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
+
+    private static T RequireType<T>(SourceImportWindow window) where T : DependencyObject
+        => FindByType<T>(window) ?? throw new AssertFailedException(
+            $"No {typeof(T).Name} in the native wizard tree.");
+
+    private static T? FindByType<T>(DependencyObject node) where T : DependencyObject
+    {
+        if (node is T typed) return typed;
+        foreach (object child in LogicalTreeHelper.GetChildren(node))
+            if (child is DependencyObject childNode && FindByType<T>(childNode) is { } match)
+                return match;
+        return null;
+    }
+
+    /// <summary>Scrolls the wizard's ScrollViewer so the anchor (with a lead
+    /// margin above it) sits inside the viewport for composition captures.</summary>
+    private static void ScrollAnchorIntoView(SourceImportWindow window, FrameworkElement anchor, double lead)
+    {
+        ScrollViewer viewer = RequireType<ScrollViewer>(window);
+        if (viewer.Content is not FrameworkElement content)
+            throw new AssertFailedException("Native wizard ScrollViewer has no scrollable content.");
+        double offset = anchor.TransformToAncestor(content).Transform(new Point(0, 0)).Y;
+        viewer.ScrollToVerticalOffset(Math.Max(0, offset - lead));
+        window.UpdateLayout();
+    }
 
     private static T Require<T>(SourceImportWindow window, string automationId) where T : FrameworkElement
         => FindByAutomationId<T>(window, automationId) ?? throw new AssertFailedException(
@@ -713,6 +1022,37 @@ public sealed class SourceImportWindowTests
                 ],
                 _ => provider,
                 () => { Releases++; log.Add("connection:released"); }));
+        }
+
+        internal void CompleteWithRelationCatalog(FakeSourceProvider provider)
+        {
+            Provider = provider;
+            Pending!.TrySetResult(new NativeSourceConnection(
+                "飞书测试空间",
+                [
+                    new NativeSourceTable("tbl-a", "订单A",
+                    [
+                        new NativeSourceField("f-title-a", "标题A", "text", "text"),
+                        new NativeSourceField("f-rel-a", "关联B", "relation", "relation", RequiresReverseName: true),
+                    ]),
+                    new NativeSourceTable("tbl-c", "订单C",
+                    [
+                        new NativeSourceField("f-title-c", "标题C", "text", "text"),
+                        new NativeSourceField("f-rel-c", "关联B", "relation", "relation", RequiresReverseName: true),
+                    ]),
+                    new NativeSourceTable("tbl-b", "客户B", [new NativeSourceField("f-name-b", "名称", "text", "text")]),
+                ],
+                _ => provider,
+                () => { Releases++; log.Add("connection:released"); }));
+        }
+
+        internal void CompleteWithUnsupportedSheets(FakeSourceProvider provider,
+            NativeSourceTable[] tables, NativeSourceUnsupportedSheet[] unsupportedSheets)
+        {
+            Provider = provider;
+            Pending!.TrySetResult(new NativeSourceConnection("WPS 测试文件", tables,
+                _ => provider,
+                () => { Releases++; log.Add("connection:released"); }, unsupportedSheets));
         }
     }
 

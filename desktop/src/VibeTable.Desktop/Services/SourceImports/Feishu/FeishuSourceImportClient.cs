@@ -253,10 +253,35 @@ internal sealed class FeishuSourceImportClient : IDisposable
                     throw new FeishuSourceImportException(FeishuSourceImportErrorKind.Capacity,
                         $"来源条目超过本次读取上限（{maxItems}）；请缩小迁移范围后重新预检。");
             }
-            bool hasMore = data.TryGetProperty("has_more", out JsonElement more) && more.ValueKind is JsonValueKind.True;
-            string? next = data.TryGetProperty("page_token", out JsonElement tokenElement)
-                && tokenElement.ValueKind == JsonValueKind.String ? tokenElement.GetString() : null;
-            if (!hasMore) break;
+            // Paging signals are validated against the official semantics:
+            // has_more must be a boolean when present (non-bool is a protocol
+            // violation, never a silent false), a missing has_more with a
+            // non-empty cursor is ambiguous and fails closed, and a missing
+            // has_more with no cursor is the SDK-optional final-page shape.
+            bool? hasMore = null;
+            if (data.TryGetProperty("has_more", out JsonElement more))
+            {
+                if (more.ValueKind is JsonValueKind.True) hasMore = true;
+                else if (more.ValueKind is JsonValueKind.False) hasMore = false;
+                else throw new FeishuSourceImportException(FeishuSourceImportErrorKind.Protocol,
+                    $"来源分页 has_more 不是布尔值（{idProperty} 列表）；读取不完整，已停止。");
+            }
+            string? next = null;
+            if (data.TryGetProperty("page_token", out JsonElement tokenElement))
+            {
+                if (tokenElement.ValueKind == JsonValueKind.String) next = tokenElement.GetString();
+                else if (tokenElement.ValueKind != JsonValueKind.Null)
+                    throw new FeishuSourceImportException(FeishuSourceImportErrorKind.Protocol,
+                        $"来源分页游标不是字符串（{idProperty} 列表）；读取不完整，已停止。");
+            }
+            if (hasMore is null)
+            {
+                if (!string.IsNullOrEmpty(next))
+                    throw new FeishuSourceImportException(FeishuSourceImportErrorKind.Protocol,
+                        $"来源分页缺少 has_more 但返回了下一页游标（{idProperty} 列表）；不能截断为成功，已停止。");
+                break;
+            }
+            if (hasMore == false) break;
             if (string.IsNullOrEmpty(next))
                 throw new FeishuSourceImportException(FeishuSourceImportErrorKind.Protocol,
                     $"来源分页标记 has_more 但缺少下一页游标（{idProperty} 列表）；读取不完整，已停止。");

@@ -1038,6 +1038,153 @@ public sealed class WpsSourceImportProviderTests
     }
 
     [TestMethod]
+    public async Task ReadAsync_RejectsNonStringPageTokenShape()
+    {
+        var handler = new WpsReplayHandler();
+        handler.RecordPages["1"] = ["{\"code\":0,\"msg\":\"\",\"data\":{\"records\":["
+            + SimpleRecord("r0", "fT", "a") + "],\"page_token\":123}}"];
+        handler.RecordPages["2"] = [];
+        handler.RecordPages["3"] = [];
+        using WpsSourceImportProvider provider = Create(handler);
+        WpsImportException error = await Assert.ThrowsExactlyAsync<WpsImportException>(
+            () => provider.ReadAsync(CancellationToken.None));
+        Assert.AreEqual(WpsImportFailure.Protocol, error.Failure);
+        StringAssert.Contains(error.Message, "page_token");
+    }
+
+    [TestMethod]
+    public async Task ReadAsync_ParsesDatesByDeclaredFormatOnly()
+    {
+        string schema = Schema(new { id = 1, name = "T", primary_field_id = "fD",
+            fields = new object[]
+            {
+                new { name = "日", type = "Date", id = "fD", data = new { number_format = "dd/mm/yyyy" } },
+                new { name = "未验证", type = "Date", id = "fU", data = new { number_format = "General" } },
+                new { name = "缺失", type = "Date", id = "fM", data = new { } },
+            },
+            views = new object[] { new { id = "v" } } });
+        var handler = new WpsReplayHandler { SchemaJson = schema };
+        handler.RecordPages["1"] = [JsonSerializer.Serialize(new
+        {
+            code = 0,
+            msg = "",
+            data = new
+            {
+                records = new object[]
+                {
+                    new { id = "r0", fields = "{\"fD\":\"02/03/2026\",\"fU\":\"2026/01/02\",\"fM\":\"2026/01/02\"}" },
+                },
+                page_token = "",
+            },
+        })];
+        using WpsSourceImportProvider provider = Create(handler, selection: ["1"]);
+        HostSourceImportSnapshot snapshot = await provider.ReadAsync(CancellationToken.None);
+        HostSourceImportTable table = snapshot.Tables[0];
+        Dictionary<string, HostSourceImportField> byId = table.Fields.ToDictionary(field => field.Id);
+        Assert.AreEqual("date", byId["fD"].Kind);
+        Assert.AreEqual("2026-03-02", table.Records[0].Values["fD"].GetString(),
+            "dd/mm/yyyy 必须按声明格式解析（日/月），不得文化猜测");
+        Assert.AreEqual("unknown", byId["fU"].Kind, "未验证格式必须 unknown 允许文本/JSON 快照");
+        Assert.AreEqual("unknown", byId["fM"].Kind, "缺失格式必须 unknown 允许快照");
+        StringAssert.Contains(byId["fU"].Definition, "未验证");
+        Assert.AreEqual("2026/01/02", table.Records[0].Values["fU"].GetString(), "unknown 值原样保留待快照确认");
+    }
+
+    [TestMethod]
+    public async Task NonDataSheetTypesAreClassifiedNotBlocking()
+    {
+        string schema = JsonSerializer.Serialize(new
+        {
+            code = 0,
+            msg = "",
+            data = new
+            {
+                sheets = new object[]
+                {
+                    new { id = 1, name = "订单", sheet_type = "xlEtDataBaseSheet", primary_field_id = "fT",
+                        fields = new object[] { Text("fT", "标题") }, views = new object[] { new { id = "v1" } } },
+                    new { id = 2, name = "仪表盘", sheet_type = "xlDbDashBoardSheet" },
+                    new { id = 3, name = "关联文档", sheet_type = "xlEtFlexPaperSheet", content_id = "c9" },
+                },
+            },
+        });
+        var handler = new WpsReplayHandler { SchemaJson = schema };
+        handler.RecordPages["1"] = [RecordsPage([SimpleRecord("r0", "fT", "a")], "")];
+        using (WpsSourceImportProvider provider = Create(handler, selection: ["1"]))
+        {
+            HostSourceImportSnapshot snapshot = await provider.ReadAsync(CancellationToken.None);
+            Assert.AreEqual(1, snapshot.Tables.Length, "仪表盘/关联文档不得堵死数据表读取");
+            Assert.AreEqual(1, snapshot.Tables[0].Records.Length);
+        }
+        using (WpsSourceImportProvider provider = Create(handler, selection: ["1"]))
+        {
+            WpsCatalog catalog = await provider.ReadCatalogAsync(CancellationToken.None);
+            Assert.AreEqual(1, catalog.Tables.Count);
+            Assert.AreEqual(2, catalog.UnsupportedSheets.Count, "unsupported 需可计数、可展示");
+            Assert.AreEqual(("2", "仪表盘", "xlDbDashBoardSheet"),
+                (catalog.UnsupportedSheets[0].Id, catalog.UnsupportedSheets[0].Name, catalog.UnsupportedSheets[0].SheetType));
+            StringAssert.Contains(catalog.UnsupportedSheets[0].Reason, "仪表盘");
+            Assert.AreEqual("xlEtFlexPaperSheet", catalog.UnsupportedSheets[1].SheetType);
+            StringAssert.Contains(catalog.UnsupportedSheets[1].Reason, "智能文档");
+        }
+        using (var invalid = new WpsReplayHandler { SchemaJson = schema })
+        {
+            invalid.RecordPages["1"] = [];
+            using WpsSourceImportProvider provider = Create(invalid, selection: ["2"]);
+            WpsImportException error = await Assert.ThrowsExactlyAsync<WpsImportException>(
+                () => provider.ReadAsync(CancellationToken.None));
+            Assert.AreEqual(WpsImportFailure.Unsupported, error.Failure);
+            StringAssert.Contains(error.Message, "xlDbDashBoardSheet");
+        }
+    }
+
+    [TestMethod]
+    public async Task IntegerDisplayFormatDoesNotConstrainValues()
+    {
+        string schema = Schema(new { id = 1, name = "T", primary_field_id = "fN",
+            fields = new object[]
+                { new { name = "数", type = "Number", id = "fN", data = new { number_format = "0_ " } } },
+            views = new object[] { new { id = "v" } } });
+        var handler = new WpsReplayHandler { SchemaJson = schema };
+        handler.RecordPages["1"] = [JsonSerializer.Serialize(new
+        {
+            code = 0,
+            msg = "",
+            data = new { records = new object[] { new { id = "r0", fields = "{\"fN\":1.5}" } }, page_token = "" },
+        })];
+        using WpsSourceImportProvider provider = Create(handler, selection: ["1"]);
+        HostSourceImportSnapshot snapshot = await provider.ReadAsync(CancellationToken.None);
+        HostSourceImportNumberFormat format = snapshot.Tables[0].Fields[0].NumberFormat!;
+        Assert.IsFalse(format.OnlyInt, "显示为整数不是取值约束；合法 1.5 不得被 OnlyInt 拒绝");
+        Assert.AreEqual(0, format.DisplayScale, "显示 scale 仍按格式推导为 0");
+        Assert.AreEqual("1.5", snapshot.Tables[0].Records[0].Values["fN"].GetRawText(), "数值原样保留精度");
+    }
+
+    [TestMethod]
+    public async Task ProvenanceRetainsFullOfficialDefinitions()
+    {
+        string longFormula = "=[数量]+" + new string('1', 400);
+        string schema = Schema(new { id = 1, name = "T", primary_field_id = "fT",
+            fields = new object[]
+            {
+                Text("fT", "标题"),
+                new { name = "公式", type = "Formula", id = "fF",
+                    data = new { formula = longFormula, number_format = "0_ ", value_type = "Fvt_number" } },
+                new { name = "引用", type = "Lookup", id = "fLK",
+                    data = new { link_field = "fL", lookup_field = "fT", aggregation = "Sum", base_type = "2", lookup_sheet_id = 3 } },
+            },
+            views = new object[] { new { id = "v" } } });
+        var handler = new WpsReplayHandler { SchemaJson = schema };
+        handler.RecordPages["1"] = [RecordsPage([SimpleRecord("r0", "fT", "a")], "")];
+        using WpsSourceImportProvider provider = Create(handler, selection: ["1"]);
+        HostSourceImportSnapshot snapshot = await provider.ReadAsync(CancellationToken.None);
+        Dictionary<string, HostSourceImportField> byId = snapshot.Tables[0].Fields.ToDictionary(field => field.Id);
+        StringAssert.Contains(byId["fF"].Definition, longFormula, "完整公式定义必须保留，不因长度静默丢弃");
+        StringAssert.Contains(byId["fLK"].Definition, "aggregation=Sum");
+        StringAssert.Contains(byId["fLK"].Definition, "lookup_sheet_id=3");
+    }
+
+    [TestMethod]
     public void CredentialCarriersPrintRedactedToString()
     {
         var credentials = new WpsKso1Credentials("AK-PRINT", SecretKey);

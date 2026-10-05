@@ -8,10 +8,18 @@ using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop;
 
-internal sealed record NativeSourceField(string Id, string Name, string Kind, string ValueKind);
+internal sealed record NativeSourceField(string Id, string Name, string Kind, string ValueKind,
+    bool RequiresReverseName = false);
 internal sealed record NativeSourceTable(string Id, string Name, NativeSourceField[] Fields);
+
+/// <summary>A non-migratable source item (dashboard, linked doc sheet…)
+/// with its typed reason; the window must disclose every entry, never
+/// silently dropping or only logging it.</summary>
+internal sealed record NativeSourceUnsupportedSheet(string Id, string Name, string SheetType, string Reason);
+
 internal sealed record NativeSourceConnection(string Name, NativeSourceTable[] Tables,
-    Func<string[], IHostSourceImportProvider> CreateProvider, Action Release) : IDisposable
+    Func<string[], IHostSourceImportProvider> CreateProvider, Action Release,
+    NativeSourceUnsupportedSheet[]? UnsupportedSheets = null) : IDisposable
 {
     public void Dispose() => Release();
 }
@@ -30,6 +38,7 @@ internal sealed class SourceImportWindow : Window
     private readonly PasswordBox _secret = new();
     private readonly StackPanel _credentials = new();
     private readonly StackPanel _tables = new();
+    private readonly StackPanel _unsupported = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _report = new() { TextWrapping = TextWrapping.Wrap };
     private readonly CheckBox _reverse = new() { Content = "允许为单向关联创建迁移反向字段" };
@@ -69,6 +78,7 @@ internal sealed class SourceImportWindow : Window
         AutomationProperties.SetAutomationId(_report, "report-text");
         AutomationProperties.SetAutomationId(_reverse, "reverse-checkbox");
         AutomationProperties.SetAutomationId(_tables, "tables-panel");
+        AutomationProperties.SetAutomationId(_unsupported, "unsupported-panel");
 
         var root = new DockPanel { Margin = new Thickness(24) };
         var footer = new StackPanel { Orientation = Orientation.Horizontal,
@@ -102,6 +112,7 @@ internal sealed class SourceImportWindow : Window
         _credentials.Children.Add(connectButton);
         content.Children.Add(_credentials);
         content.Children.Add(_status);
+        content.Children.Add(_unsupported);
         content.Children.Add(_tables);
         _reverse.Margin = new Thickness(0, 16, 0, 12);
         _reverse.Checked += (_, _) => InvalidatePreview();
@@ -138,6 +149,7 @@ internal sealed class SourceImportWindow : Window
         _connection = null;
         _choices.Clear();
         _tables.Children.Clear();
+        _unsupported.Children.Clear();
         _status.Text = "正在连接并读取当前授权范围内的表目录…";
         string secret = _secret.Password;
         string accessToken = _token.Password;
@@ -149,9 +161,14 @@ internal sealed class SourceImportWindow : Window
                 _accessKey.Text.Trim(), secret, _lifetime.Token);
             _lifetime.Token.ThrowIfCancellationRequested();
             foreach (NativeSourceTable table in _connection.Tables) AddTable(table);
-            _status.Text = _connection.Tables.Length == 0
+            AddUnsupportedSheets(_connection.UnsupportedSheets);
+            int unsupported = _connection.UnsupportedSheets?.Length ?? 0;
+            string unsupportedNote = unsupported > 0
+                ? $"另有 {unsupported} 个来源项不支持迁移，已在下方逐项列出原因。"
+                : "";
+            _status.Text = (_connection.Tables.Length == 0
                 ? "连接成功，当前授权范围内没有数据表。请核对授权后重新连接。"
-                : $"{_connection.Name} · 当前授权范围内 {_connection.Tables.Length} 张表。请选择表及必要的关联目标。";
+                : $"{_connection.Name} · 当前授权范围内 {_connection.Tables.Length} 张表。请选择表及必要的关联目标。") + unsupportedNote;
         }
         catch (OperationCanceledException) { _status.Text = "读取已取消。"; }
         catch (Exception error) { _status.Text = SafeError(error); }
@@ -175,12 +192,44 @@ internal sealed class SourceImportWindow : Window
             var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
             var policy = new ComboBox { ItemsSource = new[] { "原生迁移", "保留值快照", "跳过字段" }, SelectedIndex = 0, Width = 128 };
             AutomationProperties.SetAutomationId(policy, $"field-policy-{table.Id}-{field.Id}");
-            DockPanel.SetDock(policy, Dock.Right);
-            row.Children.Add(policy);
+            var snapshotKind = new ComboBox
+            {
+                ItemsSource = new[] { "保持类型", "精确文本", "JSON" },
+                SelectedIndex = 0,
+                Width = 96,
+                Margin = new Thickness(8, 0, 0, 0),
+                ToolTip = "值快照的目标类型：保持来源类型、精确文本（保真大数等）或 JSON",
+                Visibility = Visibility.Collapsed,
+            };
+            AutomationProperties.SetAutomationId(snapshotKind, $"field-snapshot-kind-{table.Id}-{field.Id}");
+            var strategies = new StackPanel { Orientation = Orientation.Horizontal };
+            DockPanel.SetDock(strategies, Dock.Right);
+            strategies.Children.Add(policy);
+            strategies.Children.Add(snapshotKind);
+            row.Children.Add(strategies);
             row.Children.Add(new TextBlock { Text = $"{field.Name} · {field.Kind}", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 12, 0) });
             fields.Children.Add(row);
-            choices.Add(new(field, policy));
-            policy.SelectionChanged += (_, _) => InvalidatePreview();
+            TextBox? reverseName = null;
+            if (field.RequiresReverseName)
+            {
+                reverseName = new TextBox { Padding = new Thickness(6), Margin = new Thickness(0, 2, 24, 6),
+                    MaxWidth = 360, HorizontalAlignment = HorizontalAlignment.Left };
+                AutomationProperties.SetAutomationId(reverseName, $"field-reverse-name-{table.Id}-{field.Id}");
+                fields.Children.Add(new TextBlock
+                {
+                    Text = "新建反向字段名称（仅原生迁移时创建并命名；快照/跳过不创建反向字段，也不改名目标列）",
+                    TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 2),
+                });
+                fields.Children.Add(reverseName);
+                reverseName.TextChanged += (_, _) => InvalidatePreview();
+            }
+            choices.Add(new(field, policy, snapshotKind, reverseName));
+            policy.SelectionChanged += (_, _) =>
+            {
+                snapshotKind.Visibility = policy.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+                InvalidatePreview();
+            };
+            snapshotKind.SelectionChanged += (_, _) => InvalidatePreview();
         }
         panel.Children.Add(new Expander { Header = "字段与保真策略（选择快照将失去动态计算）", Content = fields });
         _tables.Children.Add(panel);
@@ -188,6 +237,30 @@ internal sealed class SourceImportWindow : Window
         selected.Checked += (_, _) => InvalidatePreview();
         selected.Unchecked += (_, _) => InvalidatePreview();
         target.TextChanged += (_, _) => InvalidatePreview();
+    }
+
+    private void AddUnsupportedSheets(NativeSourceUnsupportedSheet[]? sheets)
+    {
+        _unsupported.Children.Clear();
+        if (sheets is not { Length: > 0 }) return;
+        _unsupported.Children.Add(new TextBlock
+        {
+            Text = $"以下 {sheets.Length} 个来源项不会被迁移：",
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 12, 0, 4),
+        });
+        foreach (NativeSourceUnsupportedSheet sheet in sheets)
+        {
+            var line = new TextBlock
+            {
+                Text = $"{sheet.Name}（{sheet.SheetType}）：{sheet.Reason}",
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 2),
+            };
+            AutomationProperties.SetAutomationId(line, $"unsupported-sheet-{sheet.Id}");
+            _unsupported.Children.Add(line);
+        }
     }
 
     private async Task PreviewAsync()
@@ -201,13 +274,25 @@ internal sealed class SourceImportWindow : Window
         try
         {
             string[] ids = selected.Select(c => c.Table.Id).ToArray();
-            HostSourceImportDecision[] decisions = selected.SelectMany(table => table.Fields
-                .Where(field => field.Policy.SelectedIndex != 0)
-                .Select(field => new HostSourceImportDecision(table.Table.Id, field.Field.Id,
-                    field.Policy.SelectedIndex == 1 ? "snapshot" : "skip",
-                    field.Policy.SelectedIndex == 1 ? SnapshotTargetKind(field.Field) : "", "", true))).ToArray();
+            var decisions = new List<HostSourceImportDecision>();
+            foreach (TableChoice table in selected)
+                foreach (FieldChoice field in table.Fields)
+                {
+                    if (field.Policy.SelectedIndex == 1)
+                        decisions.Add(new(table.Table.Id, field.Field.Id, "snapshot",
+                            SelectedSnapshotKind(field), "", true));
+                    else if (field.Policy.SelectedIndex == 2)
+                        decisions.Add(new(table.Table.Id, field.Field.Id, "skip", "", "", true));
+                    else if (field.Field.RequiresReverseName)
+                        // One-sided native relations carry an explicit reciprocal
+                        // name Decision (Go checkFieldNames blocks the shared
+                        // default); snapshot/skip never carry the reverse name
+                        // so they cannot rename the target column.
+                        decisions.Add(new(table.Table.Id, field.Field.Id, "native", "",
+                            field.ReverseName?.Text.Trim() ?? "", true));
+                }
             var options = new HostSourceImportOptions(ids, selected.Select(c =>
-                new HostSourceImportTargetName(c.Table.Id, c.Target.Text.Trim())).ToArray(), decisions,
+                new HostSourceImportTargetName(c.Table.Id, c.Target.Text.Trim())).ToArray(), decisions.ToArray(),
                 _reverse.IsChecked == true);
             _preview = await _session.PrepareAsync(_connection.CreateProvider(ids), options, _lifetime.Token);
             _lifetime.Token.ThrowIfCancellationRequested();
@@ -255,6 +340,19 @@ internal sealed class SourceImportWindow : Window
     private static string SnapshotTargetKind(NativeSourceField field) =>
         NonWritableSnapshotKinds.Contains(field.ValueKind) ? "json" : field.ValueKind;
 
+    // Explicit snapshot target choice: keep the source kind (converted where
+    // the Go guards reject it as a snapshot target), exact text for values
+    // that lose precision through float64 (CanonicalValue rejects numbers
+    // such as 9007199254740993 with "请选择精确文本快照"), or JSON for values
+    // without an option identity mapping. text and json are always writable
+    // snapshot targets; every Go guard stays authoritative.
+    private static string SelectedSnapshotKind(FieldChoice field) => field.SnapshotKind.SelectedIndex switch
+    {
+        1 => "text",
+        2 => "json",
+        _ => SnapshotTargetKind(field.Field),
+    };
+
     private void InvalidatePreview()
     {
         _preview = null;
@@ -270,6 +368,7 @@ internal sealed class SourceImportWindow : Window
         _connection = null;
         _choices.Clear();
         _tables.Children.Clear();
+        _unsupported.Children.Clear();
         InvalidatePreview();
         _previewButton.IsEnabled = false;
         _status.Text = "连接配置已变化，请重新连接。";
@@ -305,6 +404,7 @@ internal sealed class SourceImportWindow : Window
         _lifetime.Dispose();
     }
 
-    private sealed record FieldChoice(NativeSourceField Field, ComboBox Policy);
+    private sealed record FieldChoice(NativeSourceField Field, ComboBox Policy, ComboBox SnapshotKind,
+        TextBox? ReverseName);
     private sealed record TableChoice(NativeSourceTable Table, CheckBox Selected, TextBox Target, List<FieldChoice> Fields);
 }
