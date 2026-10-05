@@ -1,4 +1,5 @@
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
+import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import { createHash } from "node:crypto";
@@ -8639,7 +8640,8 @@ async function scenario16(page, recorder, _network, runtime) {
     );
     await submit.click();
     const panel = workspace.locator(".dashboard-panel").filter({ hasText: name });
-    await panel.waitFor({ state: "visible", timeout: 30_000 });
+    // Wait for editor teardown so its focus restoration completes before keyboard input.
+    await awaitDashboardPanelReady(page, panel);
     return panel;
   }
 
