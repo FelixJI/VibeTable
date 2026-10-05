@@ -78,25 +78,27 @@ describe("ImportManagementView", () => {
     );
   });
 
-  it("offers local file sources and marks cloud sources explicitly unavailable", async () => {
-    const wrapper = mountView();
-
+  it("keeps local picker and native cloud intents distinct", async () => {
+    const wrapper = mountView({ canStartCloud: true });
     await wrapper.get('[data-testid="import-source-csv"]').trigger("click");
     await wrapper.get('[data-testid="import-source-xlsx"]').trigger("click");
     expect(wrapper.emitted("newImport")).toHaveLength(2);
-
-    for (const cloud of ["feishu", "wps"]) {
-      const card = wrapper.get(`[data-testid="import-source-${cloud}"]`);
-      expect(card.attributes("role")).toBe("button");
-      expect(card.attributes("aria-disabled")).toBe("true");
-      expect(card.text()).toContain("暂不可用");
-      await card.trigger("click");
-      await card.trigger("keydown", { key: "Enter" });
-    }
-    // Unavailable cloud cards must not emit import intent.
+    await wrapper.get('[data-testid="import-source-feishu"]').trigger("click");
+    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
+    expect(wrapper.emitted("newCloudImport")).toEqual([["feishu"], ["wps"]]);
     expect(wrapper.emitted("newImport")).toHaveLength(2);
+    expect(wrapper.get('[data-testid="import-source-wps"]').text()).toContain("file_id");
   });
 
+  it("allows create-only cloud import without an existing target table", async () => {
+    const wrapper = mountView({ canStart: false, canStartCloud: true });
+    expect((wrapper.get('[data-testid="import-source-csv"]').element as HTMLButtonElement).disabled).toBe(true);
+    await wrapper.get('[data-testid="import-source-feishu"]').trigger("click");
+    expect(wrapper.emitted("newCloudImport")).toEqual([["feishu"]]);
+    await wrapper.setProps({ canStartCloud: false });
+    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
+    expect(wrapper.emitted("newCloudImport")).toHaveLength(1);
+  });
   it("disables starting a new import while a data task is busy", () => {
     const wrapper = mountView({ canStart: false });
     expect((wrapper.get('[data-testid="import-source-csv"]').element as HTMLButtonElement).disabled).toBe(true);

@@ -1283,6 +1283,19 @@ describe("HostBridge", () => {
     },
   );
 
+  it("keeps the native source wizard pending and correlates only its safe result", async () => {
+    vi.useFakeTimers();
+    const bridge = createHostBridge({ webview, timeoutMs: 1000, generateRequestId: () => "source-open" });
+    bridge.start();
+    const pending = bridge.request("sourceImport.open", { provider: "feishu" });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(settled).toBe(false);
+    webview.emit({ type: "sourceImport.open", requestId: "source-open", payload: { cancelled: false, taskId: "task-source" } });
+    await expect(pending).resolves.toEqual({ cancelled: false, taskId: "task-source" });
+    bridge.stop();
+  });
   it("still clears a pending host-owned attachment action when the bridge stops", async () => {
     const bridge = createHostBridge({
       webview,

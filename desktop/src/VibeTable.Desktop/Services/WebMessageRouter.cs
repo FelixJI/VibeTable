@@ -76,6 +76,7 @@ public sealed class WebMessageRouter
         "appPreferences.update",
         "settings.readDevice",
         "settings.saveDevice",
+        "sourceImport.open",
         "command.list", "command.run", "shortcut.list", "shortcut.save", "shortcut.delete", "shortcut.launch",
         "update.check",
         "update.install",
@@ -202,6 +203,7 @@ public sealed class WebMessageRouter
         "appPreferences.update",
         "settings.readDevice",
         "settings.saveDevice",
+        "sourceImport.open",
         "command.list", "command.run", "shortcut.list", "shortcut.save", "shortcut.delete", "shortcut.launch",
         "update.check",
         "update.install",
@@ -468,7 +470,7 @@ public sealed class WebMessageRouter
                         "BAD_WORKSPACE_SCOPE");
                 }
             }
-            if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type)) && scope is null)
+            if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type) || HostSourceImportRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (productRoute == ProductRpcRoute.GoSidecar)

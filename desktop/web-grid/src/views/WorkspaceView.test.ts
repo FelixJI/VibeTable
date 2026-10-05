@@ -193,6 +193,93 @@ function configureWorkspaceEpochPair(openInitial = true): {
   return { session, rotate: () => apply(workspaceB, 2) };
 }
 
+/**
+ * Terminal unified-history reply (one file entry + one source-migration
+ * receipt) used by the cloud-wizard regressions.
+ */
+function makeCloudImportHistoryPayload() {
+  return {
+    items: [{
+      taskId: "task-file-1",
+      collection: "orders",
+      sourceType: "xlsx",
+      sourceName: "orders.xlsx",
+      state: "succeeded",
+      commitState: "committed",
+      createdCount: 3,
+      updatedCount: 0,
+      startedAt: "2026-10-04T08:00:00Z",
+      finishedAt: "2026-10-04T08:00:05Z",
+      sessionEpoch: 1,
+      errorCode: null,
+    }],
+    migrations: [{
+      contract: "vibetable.source-import.v1",
+      jobId: "job-cloud-1",
+      provider: "feishu",
+      containerId: "qa-cloud-container",
+      sourceName: "云端知识库",
+      state: "succeeded",
+      stage: "settled",
+      created: 6,
+      total: 6,
+      notSubmitted: 0,
+      unknownRecords: 0,
+      unknownBatch: null,
+      targets: [{
+        sourceTableId: "a",
+        tableId: "tbl_orders_9f2a",
+        name: "QA 来源迁移 A",
+        collection: "t_orders_9f2a",
+      }],
+      batches: [{
+        jobId: "job-cloud-1",
+        batchId: "b-schema",
+        stage: "schema",
+        tableId: "tbl_orders_9f2a",
+        created: 6,
+        relationWrites: 0,
+        attachmentWrites: 0,
+      }],
+      diagnostics: [],
+      fields: [],
+      startedAt: "2026-10-04T08:00:00Z",
+      finishedAt: "2026-10-04T08:00:05Z",
+      sessionEpoch: 1,
+      readWindow: null,
+    }],
+  };
+}
+
+/**
+ * Mounts WorkspaceView with an open workspace-v2 session, opens the import
+ * management page, and settles its initial unified-history projection so the
+ * cloud-wizard regressions observe only traffic they trigger themselves.
+ */
+async function mountImportsPage(record: {
+  posted: Outbound[];
+  emit: (message: unknown) => void;
+}): Promise<{ wrapper: ReturnType<typeof mountView>; rotate: () => boolean }> {
+  const { rotate } = configureWorkspaceEpochPair();
+  const workspace = useWorkspaceStore();
+  workspace.setOpened([{ collection: "orders" }], { orders: "订单" });
+  workspace.selectTable("orders");
+  useUiStore().navigate("tables");
+  const wrapper = mountView();
+  await flushPromises();
+  await wrapper.get('[data-testid="import-management-open"]').trigger("click");
+  await flushPromises();
+  const initialHistory = record.posted.find((item) => item.type === "data.importHistory")!;
+  record.emit({
+    type: "data.importHistory",
+    requestId: initialHistory.requestId,
+    payload: { items: [] },
+  });
+  await flushPromises();
+  record.posted.length = 0;
+  return { wrapper, rotate };
+}
+
 vi.mock("@/grid/createGrid", () => ({
   createGrid: () => mockTabulatorRef.current,
   buildTabulatorColumns: () => [],
@@ -453,6 +540,149 @@ describe("WorkspaceView", () => {
     expect(useUiStore().activeView).toBe("tables");
     expect(wrapper.find('[data-testid="import-preview-panel"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="import-target"]').exists()).toBe(false);
+  });
+
+  it("opens the cloud source wizard exclusively and refreshes the unified history on success", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { wrapper } = await mountImportsPage({ posted, emit });
+
+    const feishu = wrapper.get('[data-testid="import-source-feishu"]');
+    expect(feishu.attributes("disabled")).toBeUndefined();
+    await feishu.trigger("click");
+    await flushPromises();
+
+    const wizard = posted.find((item) => item.type === "sourceImport.open")!;
+    // The wizard opens with the provider only; no credential material travels.
+    expect(wizard.payload).toEqual({ provider: "feishu" });
+
+    // Rapid repeats and the local picker stay locked out while the wizard is up.
+    await feishu.trigger("click");
+    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
+    await wrapper.get('[data-testid="import-source-xlsx"]').trigger("click");
+    await flushPromises();
+    expect(posted.filter((item) => item.type === "sourceImport.open")).toHaveLength(1);
+    expect(posted.some((item) => item.type === "data.importSourceRequested")).toBe(false);
+    expect(wrapper.get('[data-testid="import-source-xlsx"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.get('[data-testid="import-source-feishu"]').attributes("disabled")).toBeDefined();
+
+    emit({
+      type: "sourceImport.open",
+      requestId: wizard.requestId,
+      payload: { cancelled: false, taskId: "task-source-1" },
+    });
+    await flushPromises();
+
+    // Success refreshes the unified projection (files + migrations) once.
+    const refreshes = posted.filter((item) => item.type === "data.importHistory");
+    expect(refreshes).toHaveLength(1);
+    emit({
+      type: "data.importHistory",
+      requestId: refreshes[0]!.requestId,
+      payload: makeCloudImportHistoryPayload(),
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="import-history-row"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="source-import-row"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="import-history-error"]').exists()).toBe(false);
+    // Entry cards return once the wizard settles.
+    expect(wrapper.get('[data-testid="import-source-feishu"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("does not refresh the unified history when the cloud wizard is cancelled", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { wrapper } = await mountImportsPage({ posted, emit });
+
+    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
+    await flushPromises();
+    const wizard = posted.find((item) => item.type === "sourceImport.open")!;
+    expect(wizard.payload).toEqual({ provider: "wps" });
+
+    emit({
+      type: "sourceImport.open",
+      requestId: wizard.requestId,
+      payload: { cancelled: true, taskId: null },
+    });
+    await flushPromises();
+
+    // A cancelled wizard changes nothing: no projection reload, no error.
+    expect(posted.some((item) => item.type === "data.importHistory")).toBe(false);
+    expect(wrapper.find('[data-testid="import-history-error"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="import-source-wps"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("keeps the cloud wizard locked out while the local picker owns the entry", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { wrapper } = await mountImportsPage({ posted, emit });
+
+    await wrapper.get('[data-testid="import-source-xlsx"]').trigger("click");
+    await flushPromises();
+    expect(posted.filter((item) => item.type === "data.importSourceRequested")).toHaveLength(1);
+
+    // Cloud entries stay locked out in the OTHER direction while the native
+    // file picker is up (the disabled prop and the handler guard must agree).
+    await wrapper.get('[data-testid="import-source-feishu"]').trigger("click");
+    await wrapper.get('[data-testid="import-source-wps"]').trigger("click");
+    await wrapper.get('[data-testid="import-source-xlsx"]').trigger("click");
+    await flushPromises();
+    expect(posted.some((item) => item.type === "sourceImport.open")).toBe(false);
+    expect(posted.filter((item) => item.type === "data.importSourceRequested")).toHaveLength(1);
+    expect(wrapper.get('[data-testid="import-source-feishu"]').attributes("disabled")).toBeDefined();
+
+    const picker = posted.find((item) => item.type === "data.importSourceRequested")!;
+    emit({
+      type: "data.importSourceRequested",
+      requestId: picker.requestId,
+      payload: {
+        grantId: "grant-cloud-test",
+        purpose: "import_source",
+        direction: "read",
+        displayName: "本地来源.xlsx",
+        sizeBytes: 48,
+        mimeType: null,
+        expiresAt: 1,
+      },
+    });
+    await flushPromises();
+
+    // A pending managed grant replaces the source grid, so the cloud wizard
+    // stays unreachable until the grant is dropped.
+    expect(wrapper.find('[data-testid="import-source-feishu"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="import-target"]').exists()).toBe(true);
+
+    await wrapper.get('[data-testid="import-cancel-source"]').trigger("click");
+    await flushPromises();
+    expect(posted.some((item) => item.type === "sourceImport.open")).toBe(false);
+    expect(wrapper.get('[data-testid="import-source-feishu"]').attributes("disabled")).toBeUndefined();
+  });
+
+  it("drops a late cloud wizard completion after the workspace session retires", async () => {
+    const { bridge, posted, emit } = makeRecordingBridge();
+    setHostBridgeForTesting(bridge);
+    const { wrapper, rotate } = await mountImportsPage({ posted, emit });
+
+    await wrapper.get('[data-testid="import-source-feishu"]').trigger("click");
+    await flushPromises();
+    const wizard = posted.find((item) => item.type === "sourceImport.open")!;
+    posted.length = 0;
+
+    rotate();
+    await flushPromises();
+
+    // The wizard settles only after the epoch already rotated: the late reply
+    // must not reload the retired workspace's projection into the new one.
+    emit({
+      type: "sourceImport.open",
+      requestId: wizard.requestId,
+      payload: { cancelled: false, taskId: "task-source-1" },
+    });
+    await flushPromises();
+    expect(posted.some((item) => item.type === "data.importHistory")).toBe(false);
+    expect(wrapper.find('[data-testid="import-history-row"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="source-import-row"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="import-history-error"]').exists()).toBe(false);
   });
 
   it("opens a source-import target through the logical catalog identity, never the physical collection", async () => {
