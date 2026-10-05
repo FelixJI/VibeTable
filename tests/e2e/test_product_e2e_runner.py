@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import io
 import json
@@ -718,6 +719,15 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
     request, data, controls, source = _native_document_fixture(tmp_path)
     closed: list[tuple[int, int]] = []
     windows = [{"hwnd": 10, "pid": 20, "title": source.name, "visible": True}]
+    secret_name = "secret-fixture-name.txt"
+    secret_text = "secret fixture text 中文\n"
+    secret_frame = "\t".join(
+        [
+            "VIBETABLE_UIA1",
+            base64.b64encode(secret_name.encode("utf-8")).decode("ascii"),
+            base64.b64encode(secret_text.encode("utf-8")).decode("ascii"),
+        ]
+    )
 
     class NativeObserverStub:
         def windows(self):
@@ -726,15 +736,14 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         def document_text(self, _hwnd):
             if observation in {"timeout-str", "timeout-bytes"}:
                 stderr = "UIA_STAGE document-query begin elapsedMs=12\n" + "x" * 5000
-                # Complete single-document JSON on stdout must NOT rescue the timeout
-                # (str case); bytes stdout stays a truncated fragment (leak probe).
+                # A complete single-document frame on stdout must NOT rescue the
+                # timeout (str case); bytes stdout stays a truncated frame
+                # fragment (leak probe). Neither may reach the result JSON.
                 raise subprocess.TimeoutExpired(
                     ["powershell.exe", "-EncodedCommand", "encoded-script"],
                     5,
                     output=(
-                        '[{"name":"secret-fixture-name.txt","text":"secret fixture text"}]'
-                        if observation == "timeout-str"
-                        else b'[{"name":"private-frag'
+                        secret_frame if observation == "timeout-str" else b"VIBETABLE_UIA1\tcHJp"
                     ),
                     stderr=stderr.encode("utf-8") if observation == "timeout-bytes" else stderr,
                 )
@@ -797,50 +806,174 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         assert isinstance(result["uiaFailure"]["elapsedMs"], int)
         assert result["uiaFailure"]["elapsedMs"] >= 0
         if observation == "timeout-str":
-            # Complete single-document JSON in stdout is recorded as
+            # A complete single-document frame in stdout is recorded as
             # STRUCTURE ONLY; the run stays unverified and nothing is closed.
             assert result["uiaFailure"]["stdoutType"] == "str"
-            assert result["uiaFailure"]["stdoutLength"] == len(
-                '[{"name":"secret-fixture-name.txt","text":"secret fixture text"}]'
-            )
-            assert result["uiaFailure"]["stdoutDocuments"] == 1
-            assert result["uiaFailure"]["stdoutIsSingleDocumentJson"] is True
+            assert result["uiaFailure"]["stdoutLength"] == len(secret_frame)
+            assert result["uiaFailure"]["stdoutIsSingleDocumentFrame"] is True
         else:
             assert result["uiaFailure"]["stdoutType"] == "bytes"
-            assert result["uiaFailure"]["stdoutDocuments"] is None
-            assert result["uiaFailure"]["stdoutIsSingleDocumentJson"] is False
+            assert result["uiaFailure"]["stdoutIsSingleDocumentFrame"] is False
         assert result["status"] == "unverified"
         assert closed == []
-        assert "EncodedCommand" not in json.dumps(result)
-        assert "encoded-script" not in json.dumps(result)
-        assert "secret-fixture-name.txt" not in json.dumps(result)
-        assert "secret fixture text" not in json.dumps(result)
-        assert "private-frag" not in json.dumps(result)
+        result_json = json.dumps(result)
+        assert "EncodedCommand" not in result_json
+        assert "encoded-script" not in result_json
+        for secret in (secret_name, secret_text):
+            encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
+            assert secret not in result_json
+            assert encoded not in result_json
+        assert "cHJp" not in result_json
 
 
 def test_uia_stdout_summary_reports_shape_only_with_a_parse_bound() -> None:
-    payload = '[{"name":"a.txt","text":"t"}]'
-    assert runner._uia_stdout_summary(payload) == {
+    frame = "VIBETABLE_UIA1\t\t"
+    assert runner._uia_stdout_summary(frame) == {
         "stdoutType": "str",
-        "stdoutLength": len(payload),
-        "stdoutDocuments": 1,
-        "stdoutIsSingleDocumentJson": True,
+        "stdoutLength": len(frame),
+        "stdoutIsSingleDocumentFrame": True,
+    }
+    # Legacy ConvertTo-Json output no longer satisfies the frame contract.
+    legacy = '[{"name":"a.txt","text":"t"}]'
+    assert runner._uia_stdout_summary(legacy) == {
+        "stdoutType": "str",
+        "stdoutLength": len(legacy),
+        "stdoutIsSingleDocumentFrame": False,
     }
     # Over-bound payloads are length-only; the shape stays unverified and the
-    # payload is never parsed or persisted.
-    oversized = "x" * 32769
+    # payload is never inspected or persisted. The bound is an independent
+    # contract length (one past the 65536-char frame bound), not the runner's
+    # own constant.
+    oversized = "VIBETABLE_UIA1\t" + "Q" * 65537
     assert runner._uia_stdout_summary(oversized) == {
         "stdoutType": "str",
-        "stdoutLength": 32769,
-        "stdoutDocuments": None,
-        "stdoutIsSingleDocumentJson": None,
+        "stdoutLength": len(oversized),
+        "stdoutIsSingleDocumentFrame": None,
     }
     assert runner._uia_stdout_summary(None) == {
         "stdoutType": None,
         "stdoutLength": 0,
-        "stdoutDocuments": None,
-        "stdoutIsSingleDocumentJson": None,
+        "stdoutIsSingleDocumentFrame": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("document-native-44444444.txt", "plain ascii content"),
+        ("文档-「引号」.txt", '第一行 "引号"\r\nsecond 中文 ✓ line\twith tabs'),
+        ("", ""),
+    ],
+)
+def test_uia_document_frame_roundtrips_unicode_tabs_and_empty_values(name: str, text: str) -> None:
+    frame = "\t".join(
+        [
+            "VIBETABLE_UIA1",
+            base64.b64encode(name.encode("utf-8")).decode("ascii"),
+            base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        ]
+    )
+    assert runner._parse_uia_document_frame(frame) == [{"name": name, "text": text}]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        pytest.param('[{"name":"a.txt","text":"legacy"}]', id="legacy-json"),
+        pytest.param("VIBETABLE_UIA2\t\t", id="wrong-version"),
+        pytest.param("VIBETABLE_UIA1\t", id="truncated"),
+        pytest.param("VIBETABLE_UIA1\ta\tb\tc", id="extra-field"),
+        pytest.param("VIBETABLE_UIA1\t\t\n", id="trailing-newline"),
+        pytest.param("\tVIBETABLE_UIA1\t\t", id="leading-tab"),
+        pytest.param("VIBETABLE_UIA1\t\tVIBETABLE_UIA1\t\t", id="second-frame"),
+        # validate=True must reject charset characters that plain base64
+        # decoding would silently ignore.
+        pytest.param("VIBETABLE_UIA1\tQQ JD\t", id="non-base64-whitespace"),
+        pytest.param("VIBETABLE_UIA1\tQUJD=\t", id="extra-padding-suffix"),
+        pytest.param("VIBETABLE_UIA1\té\t", id="non-ascii-field"),
+        pytest.param(
+            "VIBETABLE_UIA1\t" + base64.b64encode("文档".encode()).decode("ascii") + "!\t",
+            id="non-base64-suffix",
+        ),
+        pytest.param(
+            "VIBETABLE_UIA1\t" + base64.b64encode(b"\xff").decode("ascii") + "\t",
+            id="invalid-utf8",
+        ),
+        pytest.param(
+            # Independent contract length: one past the 65536-char frame bound.
+            "VIBETABLE_UIA1\tQQ==\t" + "Q" * 65537,
+            id="over-bound",
+        ),
+    ],
+)
+def test_uia_document_frame_fails_closed_for_damaged_output(stdout: str) -> None:
+    with pytest.raises(ValueError, match="UIA"):
+        runner._parse_uia_document_frame(stdout)
+
+
+def test_uia_document_text_returns_documents_only_from_a_complete_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name, text = "文档.txt", "第一行\r\nsecond 中文 line\twith tabs"
+    frame = "\t".join(
+        [
+            "VIBETABLE_UIA1",
+            base64.b64encode(name.encode("utf-8")).decode("ascii"),
+            base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    def capture(_command, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(stdout=frame)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        documents = runner._DocumentNativeWindows.__new__(
+            runner._DocumentNativeWindows
+        ).document_text(7)
+    # The unchanged 5s budget and the rebuilt [{name, text}] interface.
+    assert captured["timeout"] == 5
+    assert documents == [{"name": name, "text": text}]
+
+
+def test_uia_document_text_rejects_legacy_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def capture(_command, **_kwargs):
+        return SimpleNamespace(stdout='[{"name":"a.txt","text":"legacy"}]')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        with pytest.raises(ValueError, match="not a single VIBETABLE_UIA1 frame"):
+            runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(7)
+
+
+def test_uia_success_output_drops_powershell_json_for_the_base64_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def capture(command, **_kwargs):
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    script = captured["script"]
+    # The CI boundary: ConvertTo-Json never returned on the success path, so
+    # the success tail must encode the frame with .NET Base64 primitives only.
+    success = script[script.index("UIA_STAGE encode begin") :]
+    assert "ConvertTo-Json" not in success
+    assert '"VIBETABLE_UIA1"' in success
+    assert "[Convert]::ToBase64String" in success
+    assert "[System.Text.UTF8Encoding]::new($false, $true)" in success
+    assert "[Console]::Out.Write($frame)" in success
+    assert "UIA_STAGE output end" in success
+    # The bounded error-metadata branch keeps its independent stderr JSON path.
+    assert "ConvertTo-Json" in script[: script.index("UIA_STAGE encode begin")]
 
 
 @pytest.mark.parametrize("case", ["zero", "multiple", "stem-only"])
@@ -5991,7 +6124,9 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
     def capture(command, **kwargs):
         captured.update(kwargs)
         captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="[]")
+        # A minimal valid frame (empty name/text) keeps the production parse
+        # satisfied; this stub only exists to extract the production script.
+        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
 
     with monkeypatch.context() as patch:
         patch.setattr(runner.subprocess, "run", capture)
@@ -6095,7 +6230,7 @@ def test_native_document_failure_metadata_is_bounded_and_excludes_content(
 
     def capture(command, **_kwargs):
         captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="[]")
+        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
 
     with monkeypatch.context() as patch:
         patch.setattr(runner.subprocess, "run", capture)
@@ -6161,6 +6296,8 @@ def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
         assert kwargs["timeout"] == 5
         script = base64.b64decode(command[-1]).decode("utf-16-le")
         guard = r"""
+# The production success path must avoid the serializer that timed out in CI.
+function ConvertTo-Json { throw 'generic JSON serialization is unavailable' }
 # An observation must not need a compiler to initialize the system provider.
 function Add-Type {
     param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
@@ -6174,6 +6311,7 @@ function Add-Type {
         ]
         result = run(command, **kwargs)
         captured["stderr"] = result.stderr
+        captured["stdout"] = result.stdout
         print(f"UIA_CLIENT argv={command[:-1]} timeout={kwargs['timeout']}")
         print(result.stderr)
         return result
@@ -6187,7 +6325,7 @@ $form = [Windows.Forms.Form]::new()
 $edit = [Windows.Forms.TextBox]::new()
 $edit.Multiline = $true
 $edit.ReadOnly = $true
-$edit.Text = 'owned-provider-regression'
+$edit.Text = "第一行 '引号' `"双引号`" 制表`t结尾`r`nsecond line"
 $form.Controls.Add($edit)
 try {
     $form.Show()
@@ -6238,10 +6376,19 @@ try {
                 patch.setattr(runner.subprocess, "run", observe)
                 documents = native.document_text(hwnd)
             assert len(documents) == 1
-            assert documents[0]["text"] == "owned-provider-regression"
+            assert isinstance(documents[0]["name"], str)
+            assert documents[0]["text"] == "第一行 '引号' \"双引号\" 制表\t结尾\r\nsecond line"
             print(f"UIA_DOCUMENTS {documents}")
+            # Success stdout is exactly one complete Base64 frame — never JSON.
+            frame = captured["stdout"]
+            assert frame.startswith("VIBETABLE_UIA1\t")
+            assert frame.count("\t") == 2
+            assert "\n" not in frame
+            assert "\r" not in frame
+            assert runner._UIA_FRAME_PATTERN.fullmatch(frame)
             assert "UIA_STAGE document-query end" in captured["stderr"]
-            assert "UIA_STAGE serialize end" in captured["stderr"], captured["stderr"]
+            assert "UIA_STAGE encode begin" in captured["stderr"], captured["stderr"]
+            assert "UIA_STAGE encode end" in captured["stderr"], captured["stderr"]
             assert "UIA_STAGE output end" in captured["stderr"], captured["stderr"]
             script_begin = next(
                 line for line in captured["stderr"].splitlines() if "UIA_STAGE script begin" in line

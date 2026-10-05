@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import ctypes
 import hashlib
 import ipaddress
@@ -1649,7 +1650,7 @@ class _DocumentNativeWindows:
 [Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState()) utc=$([DateTime]::UtcNow.ToString('o'))")
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -1730,10 +1731,14 @@ $items = @(foreach ($document in $documents) {
         throw 'UIA_TEXT_PATTERN unavailable'
     }
 })
-[Console]::Error.WriteLine("UIA_STAGE serialize begin elapsedMs=$($clock.ElapsedMilliseconds)")
-$output = ConvertTo-Json -InputObject $items -Compress
-[Console]::Error.WriteLine("UIA_STAGE serialize end elapsedMs=$($clock.ElapsedMilliseconds) length=$($output.Length)")
-[Console]::Out.Write($output)
+[Console]::Error.WriteLine("UIA_STAGE encode begin elapsedMs=$($clock.ElapsedMilliseconds)")
+$utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+$tab = [string][char]9
+$frame = "VIBETABLE_UIA1" + $tab +
+    [Convert]::ToBase64String($utf8.GetBytes([string]$items[0].name)) + $tab +
+    [Convert]::ToBase64String($utf8.GetBytes([string]$items[0].text))
+[Console]::Error.WriteLine("UIA_STAGE encode end elapsedMs=$($clock.ElapsedMilliseconds) length=$($frame.Length)")
+[Console]::Out.Write($frame)
 [Console]::Error.WriteLine("UIA_STAGE output end elapsedMs=$($clock.ElapsedMilliseconds)")
 """
         environment = os.environ.copy()
@@ -1748,10 +1753,9 @@ $output = ConvertTo-Json -InputObject $items -Compress
             check=True,
             timeout=5,
         )
-        documents = json.loads(result.stdout)
-        if not isinstance(documents, list):
-            raise ValueError("new editor UIA document result is not an array")
-        return documents
+        # The frame is parsed only after subprocess.run(check=True) returned:
+        # the complete process exited 0 before any output is trusted.
+        return _parse_uia_document_frame(result.stdout)
 
     def close_new_document(self, hwnd: int, pid: int) -> bool:
         if self.owner(hwnd) != pid:
@@ -1766,20 +1770,62 @@ $output = ConvertTo-Json -InputObject $items -Compress
         return False
 
 
+_UIA_FRAME_HEADER = "VIBETABLE_UIA1"
+# Canonical Base64 shape only (4-char groups with an optional 2/3-char padded
+# tail). Recognizes structure without ever decoding the payload.
+_UIA_FRAME_BASE64 = r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
+_UIA_FRAME_PATTERN = re.compile(
+    rf"{re.escape(_UIA_FRAME_HEADER)}\t{_UIA_FRAME_BASE64}\t{_UIA_FRAME_BASE64}"
+)
+# GetText caps text at 4096 chars; even 4 UTF-8 bytes per char keeps a
+# complete frame far below this bound, so anything larger fails closed.
+_UIA_FRAME_MAX_LENGTH = 65536
+
+
+def _parse_uia_document_frame(stdout: str) -> list[dict[str, str]]:
+    """Strictly parse the single-frame UIA observation stdout contract.
+
+    The PowerShell success path writes exactly one TAB-separated frame
+    ``VIBETABLE_UIA1\\t<name-base64>\\t<text-base64>`` with no newline, both
+    fields being Base64 of strict UTF-8 (.NET UTF8.GetBytes /
+    Convert.ToBase64String). A wrong header, wrong field count, non-Base64
+    bytes, invalid UTF-8, truncation, an extra frame or suffix, and an
+    over-bound frame all fail closed; nothing is stripped. Empty name and
+    text are legal. Callers may only run this after the observed process
+    exited 0.
+    """
+    if len(stdout) > _UIA_FRAME_MAX_LENGTH:
+        raise ValueError("new editor UIA frame exceeds the bounded length")
+    fields = stdout.split("\t")
+    if (
+        len(fields) != 3
+        or fields[0] != _UIA_FRAME_HEADER
+        or _UIA_FRAME_PATTERN.fullmatch(stdout) is None
+    ):
+        raise ValueError("new editor UIA output is not a single VIBETABLE_UIA1 frame")
+    try:
+        name = base64.b64decode(fields[1], validate=True).decode("utf-8")
+        text = base64.b64decode(fields[2], validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exception:
+        raise ValueError("new editor UIA frame fields are not strict UTF-8 Base64") from exception
+    return [{"name": name, "text": text}]
+
+
 def _uia_stdout_summary(stdout: str | bytes | None) -> dict[str, int | str | None]:
     """Bounded TimeoutExpired stdout shape diagnostics: never content.
 
-    Reports only the captured output's length and JSON shape so a timeout can
-    be distinguished from output that never reached the pipe. This describes
-    the captured bytes only — it is not evidence about process exit state.
-    Over-limit payloads are reported as length-only; they are not parsed.
+    Reports only the captured output's type, length, and whether its whole
+    shape is one complete single-document frame. The Base64 fields are never
+    decoded, so name/text cannot leak, and a complete frame never rescues a
+    timeout. This describes the captured bytes only — it is not evidence
+    about process exit state. Over-limit payloads are length-only and are
+    not inspected.
     """
     if stdout is None:
         return {
             "stdoutType": None,
             "stdoutLength": 0,
-            "stdoutDocuments": None,
-            "stdoutIsSingleDocumentJson": None,
+            "stdoutIsSingleDocumentFrame": None,
         }
     if isinstance(stdout, bytes):
         decoded = stdout.decode("utf-8", errors="replace")
@@ -1788,27 +1834,13 @@ def _uia_stdout_summary(stdout: str | bytes | None) -> dict[str, int | str | Non
         decoded = stdout
         kind = "str"
     summary: dict[str, int | str | None] = {"stdoutType": kind, "stdoutLength": len(decoded)}
-    # GetText caps at 4096 chars per document; JSON escaping plus structure
-    # keeps a legitimate payload far below this bound. Anything larger is not
-    # parsed and its shape stays unverified.
-    if len(decoded) > 32768:
-        summary["stdoutDocuments"] = None
-        summary["stdoutIsSingleDocumentJson"] = None
+    # A legitimate frame stays far below this bound (GetText caps text at
+    # 4096 chars); anything larger is not inspected and its shape stays
+    # unverified.
+    if len(decoded) > _UIA_FRAME_MAX_LENGTH:
+        summary["stdoutIsSingleDocumentFrame"] = None
         return summary
-    try:
-        parsed = json.loads(decoded)
-    except json.JSONDecodeError, ValueError:
-        parsed = None
-    if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
-        summary["stdoutDocuments"] = len(parsed)
-        summary["stdoutIsSingleDocumentJson"] = (
-            len(parsed) == 1
-            and isinstance(parsed[0].get("name"), str)
-            and isinstance(parsed[0].get("text"), str)
-        )
-    else:
-        summary["stdoutDocuments"] = None
-        summary["stdoutIsSingleDocumentJson"] = False
+    summary["stdoutIsSingleDocumentFrame"] = _UIA_FRAME_PATTERN.fullmatch(decoded) is not None
     return summary
 
 
