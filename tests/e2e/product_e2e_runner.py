@@ -1646,7 +1646,7 @@ class _DocumentNativeWindows:
         # Only a newly observed HWND is inspected. Windows' own UIA avoids a
         # Python COM dependency and does not launch or control an editor.
         script = """
-[Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState())")
+[Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState()) utc=$([DateTime]::UtcNow.ToString('o'))")
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -1730,7 +1730,11 @@ $items = @(foreach ($document in $documents) {
         throw 'UIA_TEXT_PATTERN unavailable'
     }
 })
-ConvertTo-Json -InputObject $items -Compress
+[Console]::Error.WriteLine("UIA_STAGE serialize begin elapsedMs=$($clock.ElapsedMilliseconds)")
+$output = ConvertTo-Json -InputObject $items -Compress
+[Console]::Error.WriteLine("UIA_STAGE serialize end elapsedMs=$($clock.ElapsedMilliseconds) length=$($output.Length)")
+[Console]::Out.Write($output)
+[Console]::Error.WriteLine("UIA_STAGE output end elapsedMs=$($clock.ElapsedMilliseconds)")
 """
         environment = os.environ.copy()
         environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)
@@ -1762,6 +1766,52 @@ ConvertTo-Json -InputObject $items -Compress
         return False
 
 
+def _uia_stdout_summary(stdout: str | bytes | None) -> dict[str, int | str | None]:
+    """Bounded TimeoutExpired stdout shape diagnostics: never content.
+
+    Reports only the captured output's length and JSON shape so a timeout can
+    be distinguished from output that never reached the pipe. This describes
+    the captured bytes only — it is not evidence about process exit state.
+    Over-limit payloads are reported as length-only; they are not parsed.
+    """
+    if stdout is None:
+        return {
+            "stdoutType": None,
+            "stdoutLength": 0,
+            "stdoutDocuments": None,
+            "stdoutIsSingleDocumentJson": None,
+        }
+    if isinstance(stdout, bytes):
+        decoded = stdout.decode("utf-8", errors="replace")
+        kind = "bytes"
+    else:
+        decoded = stdout
+        kind = "str"
+    summary: dict[str, int | str | None] = {"stdoutType": kind, "stdoutLength": len(decoded)}
+    # GetText caps at 4096 chars per document; JSON escaping plus structure
+    # keeps a legitimate payload far below this bound. Anything larger is not
+    # parsed and its shape stays unverified.
+    if len(decoded) > 32768:
+        summary["stdoutDocuments"] = None
+        summary["stdoutIsSingleDocumentJson"] = None
+        return summary
+    try:
+        parsed = json.loads(decoded)
+    except json.JSONDecodeError, ValueError:
+        parsed = None
+    if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
+        summary["stdoutDocuments"] = len(parsed)
+        summary["stdoutIsSingleDocumentJson"] = (
+            len(parsed) == 1
+            and isinstance(parsed[0].get("name"), str)
+            and isinstance(parsed[0].get("text"), str)
+        )
+    else:
+        summary["stdoutDocuments"] = None
+        summary["stdoutIsSingleDocumentJson"] = False
+    return summary
+
+
 def _handle_document_native_request(
     request: Mapping[str, Any],
     *,
@@ -1772,6 +1822,10 @@ def _handle_document_native_request(
     native: _DocumentNativeWindows | None = None
     window: dict[str, Any] | None = None
     window_observation: dict[str, Any] | None = None
+    # Parent-side observation timing: pairs the whole native observation with
+    # the script's own UIA_STAGE clock (script begin carries a UTC timestamp).
+    started_at_utc: str | None = None
+    started_at: float | None = None
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
@@ -1872,6 +1926,11 @@ def _handle_document_native_request(
             }
             raise OSError("Shell Open has no unique newly created window for the synthetic TXT")
         window = candidates[0]
+        # Observation clock: taken immediately before the UIA observation call
+        # so its delta against the script's entry UTC locates the PowerShell
+        # startup, not the validation/window search that precedes it.
+        started_at_utc = datetime.now(UTC).isoformat()
+        started_at = time.monotonic()
         documents = native.document_text(window["hwnd"])
         expected = source.read_text(encoding="utf-8").rstrip("\n")
         if (
@@ -1898,6 +1957,12 @@ def _handle_document_native_request(
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", errors="replace")
             uia_failure = {
+                "startedAtUtc": started_at_utc,
+                "elapsedMs": (
+                    round((time.monotonic() - started_at) * 1000)
+                    if started_at is not None
+                    else None
+                ),
                 "returnCode": exception.returncode
                 if isinstance(exception, subprocess.CalledProcessError)
                 else None,
@@ -1905,6 +1970,7 @@ def _handle_document_native_request(
             }
             if isinstance(exception, subprocess.TimeoutExpired):
                 uia_failure["timeoutSeconds"] = exception.timeout
+                uia_failure.update(_uia_stdout_summary(exception.stdout))
                 error = f"Shell UIA observation timed out after {exception.timeout} seconds"
             else:
                 error = f"Shell UIA observation failed (exit {exception.returncode})"

@@ -726,9 +726,16 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         def document_text(self, _hwnd):
             if observation in {"timeout-str", "timeout-bytes"}:
                 stderr = "UIA_STAGE document-query begin elapsedMs=12\n" + "x" * 5000
+                # Complete single-document JSON on stdout must NOT rescue the timeout
+                # (str case); bytes stdout stays a truncated fragment (leak probe).
                 raise subprocess.TimeoutExpired(
                     ["powershell.exe", "-EncodedCommand", "encoded-script"],
                     5,
+                    output=(
+                        '[{"name":"secret-fixture-name.txt","text":"secret fixture text"}]'
+                        if observation == "timeout-str"
+                        else b'[{"name":"private-frag'
+                    ),
                     stderr=stderr.encode("utf-8") if observation == "timeout-bytes" else stderr,
                 )
             if observation == "multiple-tabs":
@@ -783,8 +790,57 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         )
         assert len(result["uiaFailure"]["stderr"]) == 4096
         assert result["error"] == "Shell UIA observation timed out after 5 seconds"
+        # Parent-side timing evidence: bounded and parseable.
+        from datetime import datetime
+
+        datetime.fromisoformat(result["uiaFailure"]["startedAtUtc"])
+        assert isinstance(result["uiaFailure"]["elapsedMs"], int)
+        assert result["uiaFailure"]["elapsedMs"] >= 0
+        if observation == "timeout-str":
+            # Complete single-document JSON in stdout is recorded as
+            # STRUCTURE ONLY; the run stays unverified and nothing is closed.
+            assert result["uiaFailure"]["stdoutType"] == "str"
+            assert result["uiaFailure"]["stdoutLength"] == len(
+                '[{"name":"secret-fixture-name.txt","text":"secret fixture text"}]'
+            )
+            assert result["uiaFailure"]["stdoutDocuments"] == 1
+            assert result["uiaFailure"]["stdoutIsSingleDocumentJson"] is True
+        else:
+            assert result["uiaFailure"]["stdoutType"] == "bytes"
+            assert result["uiaFailure"]["stdoutDocuments"] is None
+            assert result["uiaFailure"]["stdoutIsSingleDocumentJson"] is False
+        assert result["status"] == "unverified"
+        assert closed == []
         assert "EncodedCommand" not in json.dumps(result)
         assert "encoded-script" not in json.dumps(result)
+        assert "secret-fixture-name.txt" not in json.dumps(result)
+        assert "secret fixture text" not in json.dumps(result)
+        assert "private-frag" not in json.dumps(result)
+
+
+def test_uia_stdout_summary_reports_shape_only_with_a_parse_bound() -> None:
+    payload = '[{"name":"a.txt","text":"t"}]'
+    assert runner._uia_stdout_summary(payload) == {
+        "stdoutType": "str",
+        "stdoutLength": len(payload),
+        "stdoutDocuments": 1,
+        "stdoutIsSingleDocumentJson": True,
+    }
+    # Over-bound payloads are length-only; the shape stays unverified and the
+    # payload is never parsed or persisted.
+    oversized = "x" * 32769
+    assert runner._uia_stdout_summary(oversized) == {
+        "stdoutType": "str",
+        "stdoutLength": 32769,
+        "stdoutDocuments": None,
+        "stdoutIsSingleDocumentJson": None,
+    }
+    assert runner._uia_stdout_summary(None) == {
+        "stdoutType": None,
+        "stdoutLength": 0,
+        "stdoutDocuments": None,
+        "stdoutIsSingleDocumentJson": None,
+    }
 
 
 @pytest.mark.parametrize("case", ["zero", "multiple", "stem-only"])
@@ -6185,6 +6241,12 @@ try {
             assert documents[0]["text"] == "owned-provider-regression"
             print(f"UIA_DOCUMENTS {documents}")
             assert "UIA_STAGE document-query end" in captured["stderr"]
+            assert "UIA_STAGE serialize end" in captured["stderr"], captured["stderr"]
+            assert "UIA_STAGE output end" in captured["stderr"], captured["stderr"]
+            script_begin = next(
+                line for line in captured["stderr"].splitlines() if "UIA_STAGE script begin" in line
+            )
+            assert "utc=" in script_begin
             tab_stage = next(
                 line
                 for line in captured["stderr"].splitlines()
