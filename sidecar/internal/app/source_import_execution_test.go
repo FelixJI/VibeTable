@@ -73,6 +73,30 @@ func sourceExecutionOrdinarySnapshot(count int) sourceimport.Snapshot {
 	return source
 }
 
+// sourceExecutionCycleSnapshot expands table a of the three-table cycle skeleton to count rows.
+// The expanded A table retains the cycle skeleton; only its two final added rows add cycle edges.
+func sourceExecutionCycleSnapshot(count int) sourceimport.Snapshot {
+	source := sourceExecutionSnapshot()
+	penultimate, ultimate := fmt.Sprintf("r%04d", count-2), fmt.Sprintf("r%04d", count-1)
+	rows := append([]sourceimport.Record{}, source.Tables[0].Records...)
+	for index := len(rows); index < count; index++ {
+		values := map[string]any{"title": "重复显示值", "code": fmt.Sprintf("a-%04d", index), "ab": []string{}}
+		if index == count-2 {
+			values["ab"] = []string{"r1"}
+		}
+		if index == count-1 {
+			values["ab"] = []string{"r2"}
+		}
+		rows = append(rows, sourceimport.Record{ID: fmt.Sprintf("r%04d", index), Values: values})
+	}
+	source.Tables[0].Records = rows
+	source.Tables[1].Records[0].Values["ba"] = []string{"r1", penultimate}
+	source.Tables[1].Records[1].Values["ba"] = []string{"r1", "r2", ultimate}
+	source.Tables[2].Records[0].Values["ca"] = ultimate
+	source.Tables[2].Records[1].Values["ca"] = penultimate
+	return source
+}
+
 func sourceExecutionPreview(t *testing.T, source sourceimport.Snapshot, existing []string) sourceimport.Plan {
 	t.Helper()
 	options := sourceimport.Options{SelectedTableIDs: []string{"c", "a", "b"}, ConfirmReverse: true,
@@ -356,24 +380,84 @@ func TestSourceImportExecutionRestoresRequiredRelationsAfterCycleWrites(t *testi
 	sourceExecutionAssertRows(t, fixture, source, result)
 }
 
-func TestSourceImportExecution2501RowsStayBoundedAndDuplicateReceiptsDoNotWrite(t *testing.T) {
+func TestSourceImportExecution2501RowCycleStaysBoundedAndDuplicateReceiptsDoNotWrite(t *testing.T) {
 	fixture := newSourceImportAuthorityFixture(t)
-	source := sourceExecutionOrdinarySnapshot(2501)
-	plan := sourceExecutionPreview(t, source, nil)
+	existing := fixture.field(t, fixture.table(t, "existing"))
+	if _, err := fixture.authority.Mutate(context.Background(), sourceImportInsert(existing, "existing-row"), nil); err != nil {
+		t.Fatal(err)
+	}
+	source := sourceExecutionCycleSnapshot(2501)
+	before := sourceExecutionFacts(t, fixture.app)
+	plan := sourceExecutionPreview(t, source, []string{"existing"})
+	planned := 0
+	for _, table := range plan.Tables {
+		planned += len(table.Records)
+	}
+	if planned != 2505 {
+		t.Fatalf("preview planned records = %d, want 2505", planned)
+	}
+	if after := sourceExecutionFacts(t, fixture.app); !reflect.DeepEqual(before, after) {
+		t.Fatalf("preview changed business authority before confirmation: before=%v after=%v", before, after)
+	}
+	// Same source with a relation target table left unselected: preflight must
+	// block with an explicit diagnosis instead of silently nulling relations,
+	// and the blocked preview must not write either.
+	blocked, err := sourceimport.Preview(context.Background(), source, sourceimport.Options{
+		SelectedTableIDs: []string{"a", "b"}, ConfirmReverse: true,
+		TargetNames: []sourceimport.TargetName{{TableID: "a", Name: "迁移 A"}, {TableID: "b", Name: "迁移 B"}},
+	}, []string{"existing"})
+	if err != nil {
+		t.Fatalf("omitted relation target failed the preview call: %v", err)
+	}
+	omitted := false
+	for _, diagnostic := range blocked.Diagnostics {
+		if diagnostic.Code == "source_import.relation_selection" && diagnostic.TableID == "b" && diagnostic.FieldID == "bc" && diagnostic.Blocking {
+			omitted = true
+		}
+	}
+	if blocked.CanApply || !omitted {
+		t.Fatalf("missing relation target table did not block with an explicit diagnosis: %#v", blocked.Diagnostics)
+	}
+	if after := sourceExecutionFacts(t, fixture.app); !reflect.DeepEqual(before, after) {
+		t.Fatalf("blocked preview changed business authority: before=%v after=%v", before, after)
+	}
 	journal := sourceimport.NewJournal(fixture.app)
 	probe := &sourceExecutionProbe{Authority: fixture.authority}
-	result, err := sourceimport.NewExecutor(probe, journal, nil).Execute(context.Background(), plan, "large-job", 7)
-	if err != nil || result.State != "succeeded" {
-		t.Fatalf("large migration: state=%s error=%v", result.State, err)
+	result, err := sourceimport.NewExecutor(probe, journal, nil).Execute(context.Background(), plan, "cycle-2501-job", 7)
+	if err != nil || result.State != "succeeded" || result.Stage != "settled" || probe.relationCalls == 0 {
+		t.Fatalf("large cycle migration: state=%s stage=%s error=%v", result.State, result.Stage, err)
 	}
-	sourceExecutionAssertCounts(t, fixture, result, 2503, 0, 0)
+	if result.Total != 2505 {
+		t.Fatalf("settled result total = %d, want 2505", result.Total)
+	}
+	sourceExecutionAssertCounts(t, fixture, result, 2505, 0, 0)
 	sourceExecutionAssertRows(t, fixture, source, result)
 	if probe.recordCalls != 9 {
-		t.Fatalf("2501 + 1 + 1 records produced %d batches, want 7 + 1 + 1", probe.recordCalls)
+		t.Fatalf("2501 + 2 + 2 records produced %d batches, want 7 + 1 + 1", probe.recordCalls)
 	}
 	for _, request := range probe.requests {
 		if len(request.Operations) > 400 {
 			t.Fatalf("source batch exceeded 400 operations: %d", len(request.Operations))
+		}
+	}
+	// The cycle closes through the two final A rows, so they must be part of
+	// the last bounded A batch rather than truncated away by the batching.
+	last := sourceimport.Batch{}
+	for _, batch := range result.Batches {
+		if batch.Stage == "records" && batch.Created == 101 {
+			last = batch
+		}
+	}
+	if last.ID == "" {
+		t.Fatal("final 101-row A batch was not journalled")
+	}
+	inLast := map[sourceimport.Key]bool{}
+	for _, mapping := range last.Mappings {
+		inLast[mapping.Source] = true
+	}
+	for _, row := range []string{"r2499", "r2500"} {
+		if !inLast[sourceimport.Key{Provider: source.Provider, ContainerID: source.ContainerID, TableID: "a", RecordID: row}] {
+			t.Fatalf("last-batch cycle row %s was truncated from the final A batch", row)
 		}
 	}
 	request := probe.requests[0]
@@ -381,7 +465,7 @@ func TestSourceImportExecution2501RowsStayBoundedAndDuplicateReceiptsDoNotWrite(
 	if err != nil || !found || batch.Created != 400 {
 		t.Fatalf("durable first batch = %#v, %v, %v", batch, found, err)
 	}
-	before := sourceExecutionFacts(t, fixture.app)
+	beforeDuplicate := sourceExecutionFacts(t, fixture.app)
 	if err := fixture.app.RunInTransaction(func(tx core.App) error { return journal.Commit(tx, batch) }); err != nil {
 		t.Fatalf("identical durable batch was not idempotent: %v", err)
 	}
@@ -392,13 +476,33 @@ func TestSourceImportExecution2501RowsStayBoundedAndDuplicateReceiptsDoNotWrite(
 	if err != nil || duplicate.Status != mutation.StatusReplayed {
 		t.Fatalf("same batch mutation did not replay: %#v, %v", duplicate, err)
 	}
-	if after := sourceExecutionFacts(t, fixture.app); !reflect.DeepEqual(before, after) {
-		t.Fatalf("duplicate batch changed rows, revisions, audit or events: before=%v after=%v", before, after)
+	afterDuplicate := sourceExecutionFacts(t, fixture.app)
+	if !reflect.DeepEqual(beforeDuplicate, afterDuplicate) {
+		t.Fatalf("duplicate batch changed rows, revisions, audit or events: before=%v after=%v", beforeDuplicate, afterDuplicate)
+	}
+	for _, suffix := range []string{"/rows", "/data"} {
+		key := existing.TableID + suffix
+		if afterDuplicate[key] != before[key] {
+			t.Fatalf("existing business table changed: %s = %d, was %d", key, afterDuplicate[key], before[key])
+		}
 	}
 	again, err := journal.Read(context.Background(), result.JobID)
 	if err != nil || !reflect.DeepEqual(result, again) {
 		t.Fatalf("duplicate receipt changed persistent result: %v", err)
 	}
+	// Close and reopen PocketBase, then re-check the persisted cycle edges
+	// (including the two last-batch rows) from the durable journal facts.
+	if err := fixture.app.ResetBootstrapState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.app.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := sourceimport.NewJournal(fixture.app).Read(context.Background(), "cycle-2501-job")
+	if err != nil || !reflect.DeepEqual(result, persisted) {
+		t.Fatalf("durable result differs: %v", err)
+	}
+	sourceExecutionAssertRows(t, fixture, source, persisted)
 }
 
 func TestSourceImportExecutionReportsSecondThirdAndRelationFailures(t *testing.T) {
