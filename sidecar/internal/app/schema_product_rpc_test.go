@@ -500,11 +500,26 @@ func schemaProductStore(t *testing.T) *pocketbase.PocketBase {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		// Keep the concrete pools before ClearBootstrap clears their app
+		// pointers, so closing the fixture cannot hide a still-active pool.
+		var pools []*dbx.DB
+		if pb.IsBootstrapped() {
+			pools = []*dbx.DB{
+				pb.ConcurrentDB().(*dbx.DB), pb.NonconcurrentDB().(*dbx.DB),
+				pb.AuxConcurrentDB().(*dbx.DB), pb.AuxNonconcurrentDB().(*dbx.DB),
+			}
+		}
 		event := &core.TerminateEvent{App: pb}
 		if err := pb.OnTerminate().Trigger(event, func(event *core.TerminateEvent) error {
 			return event.App.ResetBootstrapState()
 		}); err != nil {
 			t.Error(err)
+		}
+		for index, pool := range pools {
+			stats := pool.DB().Stats()
+			if stats.OpenConnections != 0 || stats.InUse != 0 {
+				t.Errorf("PocketBase pool %d remains active after termination: %+v", index, stats)
+			}
 		}
 	})
 	if err := pb.RunAllMigrations(); err != nil {

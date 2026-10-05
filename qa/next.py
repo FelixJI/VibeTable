@@ -1311,24 +1311,27 @@ def persist_product_e2e_evidence(
 
     for item in scenarios:
         scenario_id = item["scenario"]
-        import_screenshots = {
+        import_evidence = {
             "35-data-io-interoperability": (
                 "35-import-management-history.png",
                 "35-import-management-reopened.png",
+                "35-source-import-history.png",
+                "35-source-import-targets.png",
+                "35-source-import-reopened.png",
+                "35-source-import-negative.png",
+                "35-source-import-attachment-download.png",
             ),
             "36-backend-import-exit": (
                 "36-import-aborted-after-backend-exit.png",
                 "36-import-management-worker-exit.png",
             ),
         }.get(scenario_id, ())
-        for filename in import_screenshots:
+        for filename in import_evidence:
             copied = _copy_if_file(
                 run_source / scenario_id / filename, run_destination / scenario_id / filename
             )
             if not copied and item["status"] == "passed":
-                raise ValueError(
-                    f"passing {scenario_id} report lacks import screenshot: {filename}"
-                )
+                raise ValueError(f"passing {scenario_id} report lacks import evidence: {filename}")
         if scenario_id == "42-file-document-native-operations":
             for filename in (
                 "415-native-file-document.png",

@@ -976,6 +976,358 @@
               "errorCode"
             ],
             "type": "object"
+          },
+          "SourceImportBatch": {
+            "additionalProperties": false,
+            "properties": {
+              "jobId": {
+                "type": "string"
+              },
+              "batchId": {
+                "type": "string"
+              },
+              "stage": {
+                "type": "string"
+              },
+              "tableId": {
+                "type": "string"
+              },
+              "mappings": {
+                "items": {
+                  "$ref": "#/$defs/SourceImportMapping"
+                },
+                "type": "array"
+              },
+              "created": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "relationWrites": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "attachmentWrites": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "schemaRevisions": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "jobId",
+              "batchId",
+              "stage",
+              "tableId",
+              "mappings",
+              "created",
+              "relationWrites",
+              "attachmentWrites",
+              "schemaRevisions"
+            ],
+            "type": "object"
+          },
+          "SourceImportDiagnostic": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "tableId": {
+                "default": "",
+                "type": "string"
+              },
+              "fieldId": {
+                "default": "",
+                "type": "string"
+              },
+              "recordId": {
+                "default": "",
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "blocking": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "blocking"
+            ],
+            "type": "object"
+          },
+          "SourceImportFieldSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/SourceImportKey"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "policy": {
+                "enum": [
+                  "native",
+                  "snapshot",
+                  "skip",
+                  "blocked"
+                ],
+                "type": "string"
+              },
+              "definition": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "kind",
+              "policy",
+              "definition"
+            ],
+            "type": "object"
+          },
+          "SourceImportKey": {
+            "additionalProperties": false,
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "containerId": {
+                "type": "string"
+              },
+              "tableId": {
+                "type": "string"
+              },
+              "fieldId": {
+                "default": "",
+                "type": "string"
+              },
+              "recordId": {
+                "default": "",
+                "type": "string"
+              },
+              "objectId": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "provider",
+              "containerId",
+              "tableId"
+            ],
+            "type": "object"
+          },
+          "SourceImportMapping": {
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/SourceImportKey"
+              },
+              "kind": {
+                "enum": [
+                  "table",
+                  "field",
+                  "record"
+                ],
+                "type": "string"
+              },
+              "localId": {
+                "type": "string"
+              },
+              "tableId": {
+                "type": "string"
+              },
+              "name": {
+                "default": "",
+                "type": "string"
+              },
+              "collection": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "kind",
+              "localId",
+              "tableId"
+            ],
+            "type": "object"
+          },
+          "SourceImportResult": {
+            "additionalProperties": false,
+            "properties": {
+              "contract": {
+                "const": "vibetable.source-import.v1",
+                "type": "string"
+              },
+              "jobId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "provider": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "containerId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "sourceName": {
+                "type": "string"
+              },
+              "state": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "interrupted",
+                  "succeeded",
+                  "failed",
+                  "cancelled",
+                  "unknown",
+                  "aborted"
+                ],
+                "type": "string"
+              },
+              "stage": {
+                "type": "string"
+              },
+              "created": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "notSubmitted": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknownRecords": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknownBatch": {
+                "default": "",
+                "type": "string"
+              },
+              "targets": {
+                "items": {
+                  "$ref": "#/$defs/SourceImportTarget"
+                },
+                "type": "array"
+              },
+              "batches": {
+                "items": {
+                  "$ref": "#/$defs/SourceImportBatch"
+                },
+                "type": "array"
+              },
+              "diagnostics": {
+                "items": {
+                  "$ref": "#/$defs/SourceImportDiagnostic"
+                },
+                "type": "array"
+              },
+              "startedAt": {
+                "type": "string"
+              },
+              "finishedAt": {
+                "default": "",
+                "type": "string"
+              },
+              "sessionEpoch": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "readWindow": {
+                "$ref": "#/$defs/SourceImportWindow"
+              },
+              "fields": {
+                "items": {
+                  "$ref": "#/$defs/SourceImportFieldSummary"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "contract",
+              "jobId",
+              "provider",
+              "containerId",
+              "sourceName",
+              "state",
+              "stage",
+              "created",
+              "total",
+              "notSubmitted",
+              "unknownRecords",
+              "targets",
+              "batches",
+              "diagnostics",
+              "startedAt",
+              "sessionEpoch",
+              "readWindow",
+              "fields"
+            ],
+            "type": "object"
+          },
+          "SourceImportTarget": {
+            "additionalProperties": false,
+            "properties": {
+              "sourceTableId": {
+                "type": "string"
+              },
+              "tableId": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "collection": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sourceTableId",
+              "tableId",
+              "name",
+              "collection"
+            ],
+            "type": "object"
+          },
+          "SourceImportWindow": {
+            "additionalProperties": false,
+            "properties": {
+              "startedAt": {
+                "type": "string"
+              },
+              "finishedAt": {
+                "type": "string"
+              },
+              "consistency": {
+                "enum": [
+                  "snapshot",
+                  "window"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "startedAt",
+              "finishedAt",
+              "consistency"
+            ],
+            "type": "object"
           }
         },
         "additionalProperties": false,
@@ -983,6 +1335,13 @@
           "items": {
             "items": {
               "$ref": "#/$defs/ImportHistoryEntry"
+            },
+            "maxItems": 200,
+            "type": "array"
+          },
+          "migrations": {
+            "items": {
+              "$ref": "#/$defs/SourceImportResult"
             },
             "maxItems": 200,
             "type": "array"
@@ -1003,7 +1362,8 @@
         "jsonrpc": "2.0",
         "id": "rpc-009",
         "result": {
-          "items": []
+          "items": [],
+          "migrations": []
         }
       },
       "error": {

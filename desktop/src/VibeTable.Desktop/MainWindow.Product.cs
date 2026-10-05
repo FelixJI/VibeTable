@@ -530,8 +530,23 @@ public partial class MainWindow : Window
                         _trayIcon?.Visible == true,
                         _workspaceSessions.Current),
                     message => _readiness?.Trace(message)),
-                () => _session.Token);
+                () => _session.Token,
+                RunTestModeSourceImportAsync);
         }
+    }
+
+    private Task<JsonElement> RunTestModeSourceImportAsync(string scenario, CancellationToken token)
+    {
+        // This callback is installed only by the TestMode + controls-dir gate.
+        // It uses the current runtime's existing task owner, never a private
+        // sidecar client or a parallel task registry.
+        if (_e2eControlsDir is null || !HasCurrentProductGateways() || !_workspaceSessions.Current.Writable)
+            throw new InvalidOperationException("Test source import requires the current test workspace.");
+        ProductSidecarGenerationSnapshot snapshot = _runtime.CaptureProductSidecarGeneration()
+            ?? throw new BackendUnavailableException("Test workspace Go generation is unavailable.");
+        if (snapshot.RuntimeAuthority is not ProductionWorkspaceRuntime runtime)
+            throw new InvalidOperationException("Test workspace runtime is unavailable.");
+        return TestModeSourceImport.RunAsync(scenario, snapshot, runtime.DataIoTasks, _workspaceSessionFilter, token);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
@@ -670,6 +685,7 @@ public partial class MainWindow : Window
         _productGateway = binding.CreateGateway(_workspaceSessionFilter);
         _productGateway.EnableHostFiles();
         _productGateway.TaskChanged += OnProductTaskChanged;
+        binding.BindSourceImportCatalogRefresh(_productRealtime.RefreshCatalogAsync);
         _dispatcher.SetProductDataGateway(_productGateway);
 
         _dispatcher.SetDashboardGateway(

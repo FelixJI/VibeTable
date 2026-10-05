@@ -15,6 +15,9 @@ const maxRejectedWriteBodyBytes = 1 << 20
 const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
 
 var workspaceV2ReadOnlyPosts = map[string]struct{}{
+	sourceImportPath + "/preview":                {},
+	sourceImportPath + "/upload":                 {},
+	sourceImportPath + "/discard":                {},
 	"/api/vibetable/v1/formulas/validate":        {},
 	"/api/vibetable/v1/formulas/preview":         {},
 	"/api/vibetable/v1/formulas/draft/validate":  {},
@@ -39,6 +42,9 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
+	sourceImportPath + "/start":                    {},
+	sourceImportPath + "/finish":                   {},
+	sourceImportPath + "/execute":                  {},
 	pluginStorePath:                                {},
 	"/api/vibetable/v2/schema/tables":              {},
 	"/api/vibetable/v2/schema/table-settings":      {},

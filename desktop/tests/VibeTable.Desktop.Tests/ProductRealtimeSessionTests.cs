@@ -13,6 +13,82 @@ namespace VibeTable.Desktop.Tests;
 public sealed class ProductRealtimeSessionTests
 {
     [TestMethod]
+    public async Task ExplicitCatalogRefreshImmediatelyMakesNewTargetSelectable()
+    {
+        var gateway = new FakeTableRpcGateway();
+        gateway.DatabaseOpenResults["db"] = new DatabaseOpenResult([], [], TestDisplayNames.For());
+        gateway.SelectionProjectionResults["fresh-table"] = new TableSelectionProjection(
+            new TablePage("fresh-table", [], [], 0, 500, 0, "remote"),
+            new EditSchemaResult("fresh-table", "schema_0001", "id", true, false, []));
+        var workspace = new TableWorkspaceService(gateway);
+        await workspace.OpenDatabaseAsync("db");
+        await using var fixture = await Fixture.OpenAsync(applyCatalog: workspace.UpdateKnownCatalog);
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None);
+        Action post = await fixture.NextPost();
+        await Assert.ThrowsExactlyAsync<ArgumentException>(() => workspace.SelectTableAsync("fresh-table"));
+        Assert.HasCount(0, fixture.Posted);
+        post();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsTrue(await workspace.SelectTableAsync("fresh-table"));
+        Assert.AreEqual("fresh-table", fixture.Posted.Single().Payload.GetProperty("tables")[0].GetString());
+        Assert.AreEqual("database.collectionsChanged", fixture.Posted.Single().Topic);
+        Assert.AreEqual(1, fixture.Http.CatalogReads);
+        Assert.HasCount(1, gateway.OpenDatabaseCalls, "Catalog refresh must not reopen the workspace.");
+    }
+
+    [TestMethod]
+    [DataRow("epoch")]
+    [DataRow("generation")]
+    [DataRow("renderer")]
+    public async Task ExplicitCatalogRefreshCannotProjectIntoRetiredBinding(string retired)
+    {
+        int applications = 0;
+        await using var fixture = await Fixture.OpenAsync(applyCatalog: _ => applications++);
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None);
+        Action stale = await fixture.NextPost();
+        if (retired == "renderer") fixture.Delivery.Retire();
+        else if (retired == "generation")
+        {
+            fixture.Snapshot = null;
+            fixture.Authority.SetCurrent(null);
+        }
+        else
+        {
+            WorkspaceSessionV2 session = fixture.Sessions.Current;
+            await fixture.Leases.DrainAsync(session.WorkspaceId!.Value, session.SessionEpoch, CancellationToken.None);
+        }
+        stale();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(0, applications);
+        Assert.HasCount(0, fixture.Posted);
+    }
+
+    [TestMethod]
+    public async Task ExplicitCatalogReadFailureReportsSeparateSafeProjectionFailure()
+    {
+        int applications = 0;
+        await using var fixture = await Fixture.OpenAsync(applyCatalog: _ => applications++);
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Http.CatalogFailure = true;
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        Task refresh = fixture.Owner.RefreshCatalogAsync(fixture.Snapshot!, CancellationToken.None);
+        (await fixture.NextPost())();
+        await refresh.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(0, applications);
+        Assert.AreEqual("operation.failed", fixture.Posted.Single().Topic);
+        Assert.AreEqual("source_import.catalog_refresh_failed", fixture.Posted.Single().Payload.GetProperty("code").GetString());
+        Assert.DoesNotContain("secret", fixture.Posted.Single().Payload.ToString());
+        Assert.AreEqual(1, fixture.Http.CatalogReads);
+    }
+
+    [TestMethod]
     public async Task FirstOpenWaitsForBusinessReadyAndDuplicateReadyKeepsTheCommittedBookmark()
     {
         await using var fixture = await Fixture.OpenAsync(initiallyClosed: true);
@@ -299,7 +375,8 @@ public sealed class ProductRealtimeSessionTests
         internal bool PostFailure { get; set; }
 
         internal static async Task<Fixture> OpenAsync(bool initiallyClosed = false,
-            Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null)
+            Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null,
+            Action<TableSummary>? applyCatalog = null)
         {
             var fixture = new Fixture();
             var registry = new WorkspaceRegistry(fixture._root);
@@ -342,13 +419,20 @@ public sealed class ProductRealtimeSessionTests
                     JsonSerializer.SerializeToElement(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
             });
             fixture.Owner = new ProductRealtimeSession(fixture.Authority, () => fixture.Snapshot,
-                fixture.Sessions, fixture.Leases, fixture.Delivery, _ => { },
+                fixture.Sessions, fixture.Leases, fixture.Delivery, applyCatalog ?? (_ => { }),
                 code => fixture.Failures.Writer.TryWrite(code), fixture.Http, async (_, token) =>
                 {
                     fixture.Delayed.TrySetResult();
                     await fixture.ResumeDelay.Task.WaitAsync(token);
                 }, projectPluginCatalog);
             return fixture;
+        }
+
+        internal void HoldStreamWithoutRecovery()
+        {
+            var content = new StreamContent(new TestSseStream([], blockAtEnd: true));
+            content.Headers.ContentType = new("text/event-stream");
+            Http.StreamReplies.Enqueue(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
         }
 
         internal async Task<string?> NextConnection() =>

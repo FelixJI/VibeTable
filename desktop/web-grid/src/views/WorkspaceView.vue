@@ -272,6 +272,7 @@ const importManagementProps = computed(() => ({
   error: importManagement.error.value,
   loaded: importManagement.loaded.value,
   items: importManagement.items.value ?? [],
+  sourceEntries: importManagement.sourceEntries.value ?? [],
   activeTaskId: dataIoService.activeTaskId.value,
   taskCancellable: dataIoBusy.value,
   cancellingTaskId: cancellingImportTaskId.value,
@@ -376,6 +377,19 @@ function openImportTarget(collection: string): void {
   onSelect(collection);
 }
 
+/**
+ * Source targets carry the Go-committed LOGICAL table id — the tbl_*
+ * identity the authoritative schema catalog lists. Mapping.Collection is
+ * the physical t_* name (schemacore guarantees the two never match) and
+ * stays display metadata; it is never used for navigation. Jump only when
+ * the workspace catalog knows that exact identity; never guess by label,
+ * never derive tbl_/t_ names, and never fabricate a catalog entry.
+ */
+function openSourceImportTarget(tableId: string): void {
+  if (!workspace.collections.some((item) => item.collection === tableId)) return;
+  onSelect(tableId);
+}
+
 async function cancelImportTask(taskId: string): Promise<void> {
   if (cancellingImportTaskId.value) return;
   cancellingImportTaskId.value = taskId;
@@ -397,15 +411,24 @@ async function cancelImportTask(taskId: string): Promise<void> {
 
 let importHistoryPollHandle: number | null = null;
 watch(
-  () => [ui.activeView === "imports", importManagement.activeEntries.value.length > 0] as const,
-  ([visible, hasActive]) => {
+  () => [
+    ui.activeView === "imports",
+    importManagement.activeEntries.value.length > 0,
+    importManagement.activeSourceEntries.value.length > 0,
+  ] as const,
+  ([visible, hasActive, hasSourceActive]) => {
     // Controlled polling: only while the page is visible AND a current-session
-    // task is queued/running. No background resident task is created.
-    if (visible && hasActive && importHistoryPollHandle === null) {
+    // file import or source-migration job is queued/running. No background
+    // resident task is created.
+    const active = hasActive || hasSourceActive;
+    if (visible && active && importHistoryPollHandle === null) {
       importHistoryPollHandle = window.setInterval(() => {
-        if (importManagement.activeEntries.value.length > 0) void importManagement.refresh();
+        if (importManagement.activeEntries.value.length > 0
+          || importManagement.activeSourceEntries.value.length > 0) {
+          void importManagement.refresh();
+        }
       }, 5_000);
-    } else if ((!visible || !hasActive) && importHistoryPollHandle !== null) {
+    } else if ((!visible || !active) && importHistoryPollHandle !== null) {
       window.clearInterval(importHistoryPollHandle);
       importHistoryPollHandle = null;
     }
@@ -1458,6 +1481,7 @@ useKeyboard({
           @refresh="importManagement.refresh()"
           @cancel-task="cancelImportTask"
           @open-target="openImportTarget"
+          @open-source-target="openSourceImportTarget"
         />
         <DashboardWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'dashboard'" />
         <InterfaceWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'interfaces'" />

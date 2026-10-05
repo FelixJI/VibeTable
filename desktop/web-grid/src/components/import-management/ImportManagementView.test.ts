@@ -3,7 +3,7 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import ImportManagementView from "./ImportManagementView.vue";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import type { ImportHistoryEntry } from "@/contracts/importManagement";
+import type { ImportHistoryEntry, SourceImportEntry } from "@/contracts/importManagement";
 
 function entry(overrides: Partial<ImportHistoryEntry> = {}): ImportHistoryEntry {
   return {
@@ -19,6 +19,35 @@ function entry(overrides: Partial<ImportHistoryEntry> = {}): ImportHistoryEntry 
     finishedAt: "2026-10-01T08:00:05Z",
     sessionEpoch: 1,
     errorCode: null,
+    ...overrides,
+  };
+}
+
+function sourceMigration(overrides: Partial<SourceImportEntry> = {}): SourceImportEntry {
+  return {
+    jobId: "job-1",
+    provider: "feishu",
+    containerId: "space-1",
+    sourceName: "云端空间",
+    state: "succeeded",
+    stage: "settled",
+    created: 403,
+    total: 403,
+    notSubmitted: 0,
+    unknownRecords: 0,
+    unknownBatch: null,
+    targets: [{ sourceTableId: "src_orders", tableId: "tbl_orders", name: "Orders", collection: "t_orders9f2a" }],
+    batches: [{
+      jobId: "job-1", batchId: "b-records", stage: "records", tableId: "tbl_orders",
+      created: 403, relationWrites: 0, attachmentWrites: 0,
+    }],
+    diagnostics: [],
+    startedAt: "2026-10-01T08:00:00Z",
+    finishedAt: "2026-10-01T08:06:00Z",
+    sessionEpoch: 1,
+    readWindow: null,
+    snapshotFieldCount: 0,
+    skippedFieldCount: 0,
     ...overrides,
   };
 }
@@ -160,5 +189,35 @@ describe("ImportManagementView", () => {
 
     await wrapper.get('[data-testid="import-history-refresh"]').trigger("click");
     expect(wrapper.emitted("refresh")).toHaveLength(1);
+  });
+
+  it("renders source migrations on the management page and re-emits their intents", async () => {
+    const wrapper = mountView({
+      sourceEntries: [
+        sourceMigration({ jobId: "job-done" }),
+        sourceMigration({
+          jobId: "job-live", state: "running", stage: "records",
+          created: 100, notSubmitted: 303, finishedAt: null,
+        }),
+      ],
+    });
+
+    const section = wrapper.get('[data-testid="source-import-history"]');
+    const rows = wrapper.findAll('[data-testid="source-import-row"]');
+    expect(rows).toHaveLength(2);
+
+    // Source target navigation uses the logical tableId from the Go receipt;
+    // the physical collection remains metadata for the committed target.
+    await wrapper.get('[data-testid="source-import-detail-job-done"]').trigger("click");
+    await wrapper.get('[data-table-id="tbl_orders"]').trigger("click");
+    expect(wrapper.emitted("openSourceTarget")).toEqual([["tbl_orders"]]);
+
+    // Source job cancellation reuses the existing controlled cancel intent.
+    await wrapper.get('[data-job-id="job-live"]').get('[data-testid="source-import-cancel"]').trigger("click");
+    expect(wrapper.emitted("cancelTask")).toEqual([["job-live"]]);
+
+    // Local file history and migration history stay separate sections.
+    expect(wrapper.find('[data-testid="import-history-list"]').exists()).toBe(false);
+    expect(section.text()).toContain("迁移历史");
   });
 });

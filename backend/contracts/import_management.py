@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from backend.contracts.source_import import SourceImportResult
 from backend.contracts.task import CamelModel
 
 
@@ -46,3 +47,7 @@ class ImportHistoryEntry(CamelModel):
 
 class ImportHistoryResult(CamelModel):
     items: list[ImportHistoryEntry] = Field(max_length=200)
+
+    # Additive discriminator: partial source migrations keep their own result
+    # semantics; CSV/XLSX unknown/committed validation above stays unchanged.
+    migrations: list[SourceImportResult] = Field(default_factory=list, max_length=200)

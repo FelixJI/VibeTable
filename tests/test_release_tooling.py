@@ -26,6 +26,7 @@ from scripts.qa.windows_process_scope import (
 )
 from scripts.release import (
     _ensure_clean_worktree,
+    _replace_tree,
     activate_upgrade,
     prepare_upgrade,
 )
@@ -107,8 +108,27 @@ def test_repository_versions_are_consistent() -> None:
     assert versions.pocketbase == "0.40.4"
     assert versions.cel == "0.32.0"
     assert versions.contract == "v1"
-    assert versions.schema == "16"
+    assert versions.schema == "17"
     assert len(versions.migration_hash) == 64
+
+
+def test_upgrade_copy_keeps_database_and_wal_without_windows_shared_memory(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    for name in ("data.db", "data.db-wal", "auxiliary.db", "auxiliary.db-wal", "notes.tmp"):
+        (source / name).write_bytes(name.encode())
+    for name in ("DATA.DB-SHM.tmp", "data.db-shm", "auxiliary.db-shm.tmp"):
+        (source / name).write_bytes(b"transient index")
+    _replace_tree(source, target)
+    assert {path.name for path in target.iterdir()} == {
+        "data.db",
+        "data.db-wal",
+        "auxiliary.db",
+        "auxiliary.db-wal",
+        "notes.tmp",
+    }
+    assert (target / "data.db-wal").read_bytes() == b"data.db-wal"
 
 
 def test_release_dependency_versions_fail_fast_before_packaging(tmp_path: Path) -> None:
@@ -348,7 +368,7 @@ def test_manifest_contains_sidecar_release_identity_and_no_runtime_installer() -
         "pocketBaseVersion": "0.40.4",
         "celVersion": "0.32.0",
         "contractVersion": "2.0",
-        "schemaVersion": "16",
+        "schemaVersion": "17",
         "migrationHash": collect_release_versions(REPO_ROOT).migration_hash,
         "sha256": digest,
     }

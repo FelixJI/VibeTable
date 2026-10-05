@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import hashlib
 import io
 import json
@@ -413,6 +414,143 @@ def test_restore_crash_lifecycle_is_a_separate_owned_scope_contract(case: str) -
     )
 
 
+def test_restore_crash_exit_waits_on_the_stable_handle_after_async_termination() -> None:
+    """TerminateJobObject is async: a zero-wait poll can miss the real exit.
+
+    In the CI 37243530031 seed the root polled None at 34 ms while every Job
+    fact (members, ports, cleanup) already held — settled Job state does not
+    guarantee the root already signaled, so the observer must WAIT on the
+    already-held stable handle for the real exit code instead of failing on
+    the poll miss. The fixture's wait returns the real code 1.
+    """
+
+    class AsyncTerminatedRoot(_FakeRoot):
+        def __init__(self) -> None:
+            super().__init__(exit_code=None)
+            self.wait_timeout: float | None = None
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_timeout = timeout
+            self.exit_code = 1
+            return 1
+
+    root = AsyncTerminatedRoot()
+    scope = _FakeScope(members=())
+    scope.root = root
+    owner = _FakePortOwnerLease(released=True)
+    crash = {
+        "ownedHost": {
+            "rootPid": scope.root.pid,
+            "termination": {
+                "status": "passed",
+                "terminationRequested": True,
+                "remainingPids": [],
+                "errors": [],
+            },
+            "remainingPids": [],
+            "errors": [],
+        }
+    }
+
+    report = runner._observe_restore_crash_exit(scope, crash, owner)
+
+    assert report["status"] == "passed"
+    assert report["hostExitCode"] == 1
+    assert root.wait_timeout is not None
+    assert root.wait_timeout > 0
+    assert owner.closed
+
+
+@pytest.mark.parametrize("failure", ["wait-timeout", "stable-handle-error"])
+def test_restore_crash_exit_wait_failures_stay_failed_and_close_the_owner(
+    failure: str,
+) -> None:
+    """A missed or failing stable-handle wait must not fabricate an exit."""
+
+    class FailingRoot(_FakeRoot):
+        def wait(self, timeout: float | None = None) -> int:
+            if failure == "stable-handle-error":
+                raise OSError("stable handle wait failed")
+            raise subprocess.TimeoutExpired(["fake-host"], 0 if timeout is None else timeout)
+
+    scope = _FakeScope(members=())
+    scope.root = FailingRoot(exit_code=None)
+    owner = _FakePortOwnerLease(released=True)
+    crash = {
+        "ownedHost": {
+            "rootPid": scope.root.pid,
+            "termination": {
+                "status": "passed",
+                "terminationRequested": True,
+                "remainingPids": [],
+                "errors": [],
+            },
+            "remainingPids": [],
+            "errors": [],
+        }
+    }
+
+    report = runner._observe_restore_crash_exit(scope, crash, owner)
+
+    assert report["status"] == "failed"
+    assert report["hostExitCode"] is None
+    if failure == "stable-handle-error":
+        assert "stable handle wait failed" in report["errors"]
+    assert owner.closed
+
+
+def test_restore_crash_exit_waits_share_one_absolute_budget(monkeypatch) -> None:
+    """The crash observer shares the normal 35 s budget, never an added one."""
+
+    class Clock:
+        value = 100.0
+
+        def monotonic(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = Clock()
+    waits: list[tuple[str, float]] = []
+
+    class BudgetRoot(_FakeRoot):
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            waits.append(("host", timeout))
+            clock.advance(timeout)
+            raise subprocess.TimeoutExpired(["fake-host"], timeout)
+
+    class BudgetScope(_FakeScope):
+        def __init__(self) -> None:
+            super().__init__(members=())
+            self.root = BudgetRoot()
+
+    class BudgetOwner(_FakePortOwnerLease):
+        def observe_release(self, *, timeout: float) -> PortReleaseReport:
+            waits.append(("owner", timeout))
+            return PortReleaseReport(
+                owner_pid=42,
+                owner_name="msedgewebview2.exe",
+                capture_rows=(),
+                release_rows=(),
+                decision="listener-released",
+                released=True,
+                owner_exited=True,
+                errors=(),
+            )
+
+    monkeypatch.setattr(runner.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: pytest.fail("no polling"))
+
+    report = runner._observe_restore_crash_exit(BudgetScope(), {}, BudgetOwner())
+
+    assert waits == [("host", 30.0), ("owner", 5.0)]
+    assert sum(timeout for _name, timeout in waits) == runner.LIFECYCLE_EXIT_TIMEOUT_SECONDS
+    assert report["hostExitCode"] is None
+    assert report["status"] == "failed"
+
+
 def _native_document_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path, Path, Path]:
     request = {
         "requestId": "11111111-1111-4111-8111-111111111111",
@@ -581,6 +719,15 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
     request, data, controls, source = _native_document_fixture(tmp_path)
     closed: list[tuple[int, int]] = []
     windows = [{"hwnd": 10, "pid": 20, "title": source.name, "visible": True}]
+    secret_name = "secret-fixture-name.txt"
+    secret_text = "secret fixture text 中文\n"
+    secret_frame = "\t".join(
+        [
+            "VIBETABLE_UIA1",
+            base64.b64encode(secret_name.encode("utf-8")).decode("ascii"),
+            base64.b64encode(secret_text.encode("utf-8")).decode("ascii"),
+        ]
+    )
 
     class NativeObserverStub:
         def windows(self):
@@ -589,9 +736,15 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         def document_text(self, _hwnd):
             if observation in {"timeout-str", "timeout-bytes"}:
                 stderr = "UIA_STAGE document-query begin elapsedMs=12\n" + "x" * 5000
+                # A complete single-document frame on stdout must NOT rescue the
+                # timeout (str case); bytes stdout stays a truncated frame
+                # fragment (leak probe). Neither may reach the result JSON.
                 raise subprocess.TimeoutExpired(
                     ["powershell.exe", "-EncodedCommand", "encoded-script"],
                     5,
+                    output=(
+                        secret_frame if observation == "timeout-str" else b"VIBETABLE_UIA1\tcHJp"
+                    ),
                     stderr=stderr.encode("utf-8") if observation == "timeout-bytes" else stderr,
                 )
             if observation == "multiple-tabs":
@@ -646,8 +799,181 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
         )
         assert len(result["uiaFailure"]["stderr"]) == 4096
         assert result["error"] == "Shell UIA observation timed out after 5 seconds"
-        assert "EncodedCommand" not in json.dumps(result)
-        assert "encoded-script" not in json.dumps(result)
+        # Parent-side timing evidence: bounded and parseable.
+        from datetime import datetime
+
+        datetime.fromisoformat(result["uiaFailure"]["startedAtUtc"])
+        assert isinstance(result["uiaFailure"]["elapsedMs"], int)
+        assert result["uiaFailure"]["elapsedMs"] >= 0
+        if observation == "timeout-str":
+            # A complete single-document frame in stdout is recorded as
+            # STRUCTURE ONLY; the run stays unverified and nothing is closed.
+            assert result["uiaFailure"]["stdoutType"] == "str"
+            assert result["uiaFailure"]["stdoutLength"] == len(secret_frame)
+            assert result["uiaFailure"]["stdoutIsSingleDocumentFrame"] is True
+        else:
+            assert result["uiaFailure"]["stdoutType"] == "bytes"
+            assert result["uiaFailure"]["stdoutIsSingleDocumentFrame"] is False
+        assert result["status"] == "unverified"
+        assert closed == []
+        result_json = json.dumps(result)
+        assert "EncodedCommand" not in result_json
+        assert "encoded-script" not in result_json
+        for secret in (secret_name, secret_text):
+            encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
+            assert secret not in result_json
+            assert encoded not in result_json
+        assert "cHJp" not in result_json
+
+
+def test_uia_stdout_summary_reports_shape_only_with_a_parse_bound() -> None:
+    frame = "VIBETABLE_UIA1\t\t"
+    assert runner._uia_stdout_summary(frame) == {
+        "stdoutType": "str",
+        "stdoutLength": len(frame),
+        "stdoutIsSingleDocumentFrame": True,
+    }
+    # Legacy ConvertTo-Json output no longer satisfies the frame contract.
+    legacy = '[{"name":"a.txt","text":"t"}]'
+    assert runner._uia_stdout_summary(legacy) == {
+        "stdoutType": "str",
+        "stdoutLength": len(legacy),
+        "stdoutIsSingleDocumentFrame": False,
+    }
+    # Over-bound payloads are length-only; the shape stays unverified and the
+    # payload is never inspected or persisted. The bound is an independent
+    # contract length (one past the 65536-char frame bound), not the runner's
+    # own constant.
+    oversized = "VIBETABLE_UIA1\t" + "Q" * 65537
+    assert runner._uia_stdout_summary(oversized) == {
+        "stdoutType": "str",
+        "stdoutLength": len(oversized),
+        "stdoutIsSingleDocumentFrame": None,
+    }
+    assert runner._uia_stdout_summary(None) == {
+        "stdoutType": None,
+        "stdoutLength": 0,
+        "stdoutIsSingleDocumentFrame": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("document-native-44444444.txt", "plain ascii content"),
+        ("文档-「引号」.txt", '第一行 "引号"\r\nsecond 中文 ✓ line\twith tabs'),
+        ("", ""),
+    ],
+)
+def test_uia_document_frame_roundtrips_unicode_tabs_and_empty_values(name: str, text: str) -> None:
+    frame = "\t".join(
+        [
+            "VIBETABLE_UIA1",
+            base64.b64encode(name.encode("utf-8")).decode("ascii"),
+            base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        ]
+    )
+    assert runner._parse_uia_document_frame(frame) == [{"name": name, "text": text}]
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        pytest.param('[{"name":"a.txt","text":"legacy"}]', id="legacy-json"),
+        pytest.param("VIBETABLE_UIA2\t\t", id="wrong-version"),
+        pytest.param("VIBETABLE_UIA1\t", id="truncated"),
+        pytest.param("VIBETABLE_UIA1\ta\tb\tc", id="extra-field"),
+        pytest.param("VIBETABLE_UIA1\t\t\n", id="trailing-newline"),
+        pytest.param("\tVIBETABLE_UIA1\t\t", id="leading-tab"),
+        pytest.param("VIBETABLE_UIA1\t\tVIBETABLE_UIA1\t\t", id="second-frame"),
+        # validate=True must reject charset characters that plain base64
+        # decoding would silently ignore.
+        pytest.param("VIBETABLE_UIA1\tQQ JD\t", id="non-base64-whitespace"),
+        pytest.param("VIBETABLE_UIA1\tQUJD=\t", id="extra-padding-suffix"),
+        pytest.param("VIBETABLE_UIA1\té\t", id="non-ascii-field"),
+        pytest.param(
+            "VIBETABLE_UIA1\t" + base64.b64encode("文档".encode()).decode("ascii") + "!\t",
+            id="non-base64-suffix",
+        ),
+        pytest.param(
+            "VIBETABLE_UIA1\t" + base64.b64encode(b"\xff").decode("ascii") + "\t",
+            id="invalid-utf8",
+        ),
+        pytest.param(
+            # Independent contract length: one past the 65536-char frame bound.
+            "VIBETABLE_UIA1\tQQ==\t" + "Q" * 65537,
+            id="over-bound",
+        ),
+    ],
+)
+def test_uia_document_frame_fails_closed_for_damaged_output(stdout: str) -> None:
+    with pytest.raises(ValueError, match="UIA"):
+        runner._parse_uia_document_frame(stdout)
+
+
+def test_uia_document_text_returns_documents_only_from_a_complete_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    name, text = "文档.txt", "第一行\r\nsecond 中文 line\twith tabs"
+    frame = "\t".join(
+        [
+            "VIBETABLE_UIA1",
+            base64.b64encode(name.encode("utf-8")).decode("ascii"),
+            base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    def capture(_command, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(stdout=frame)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        documents = runner._DocumentNativeWindows.__new__(
+            runner._DocumentNativeWindows
+        ).document_text(7)
+    # The unchanged 5s budget and the rebuilt [{name, text}] interface.
+    assert captured["timeout"] == 5
+    assert documents == [{"name": name, "text": text}]
+
+
+def test_uia_document_text_rejects_legacy_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def capture(_command, **_kwargs):
+        return SimpleNamespace(stdout='[{"name":"a.txt","text":"legacy"}]')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        with pytest.raises(ValueError, match="not a single VIBETABLE_UIA1 frame"):
+            runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(7)
+
+
+def test_uia_success_output_drops_powershell_json_for_the_base64_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def capture(command, **_kwargs):
+        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
+        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runner.subprocess, "run", capture)
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
+    script = captured["script"]
+    # The CI boundary: ConvertTo-Json never returned on the success path, so
+    # the success tail must encode the frame with .NET Base64 primitives only.
+    success = script[script.index("UIA_STAGE encode begin") :]
+    assert "ConvertTo-Json" not in success
+    assert '"VIBETABLE_UIA1"' in success
+    assert "[Convert]::ToBase64String" in success
+    assert "[System.Text.UTF8Encoding]::new($false, $true)" in success
+    assert "[Console]::Out.Write($frame)" in success
+    assert "UIA_STAGE output end" in success
+    # The bounded error-metadata branch keeps its independent stderr JSON path.
+    assert "ConvertTo-Json" in script[: script.index("UIA_STAGE encode begin")]
 
 
 @pytest.mark.parametrize("case", ["zero", "multiple", "stem-only"])
@@ -4474,6 +4800,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("dashboard_panel_editor_completion.test.mjs"),
         runner.NODE_RUNNER.with_name("import_fault_outcome.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
         runner.NODE_RUNNER.with_name("packaged_runtime_probe.test.mjs"),
@@ -5797,7 +6124,9 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
     def capture(command, **kwargs):
         captured.update(kwargs)
         captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="[]")
+        # A minimal valid frame (empty name/text) keeps the production parse
+        # satisfied; this stub only exists to extract the production script.
+        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
 
     with monkeypatch.context() as patch:
         patch.setattr(runner.subprocess, "run", capture)
@@ -5901,7 +6230,7 @@ def test_native_document_failure_metadata_is_bounded_and_excludes_content(
 
     def capture(command, **_kwargs):
         captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="[]")
+        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
 
     with monkeypatch.context() as patch:
         patch.setattr(runner.subprocess, "run", capture)
@@ -5967,6 +6296,8 @@ def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
         assert kwargs["timeout"] == 5
         script = base64.b64decode(command[-1]).decode("utf-16-le")
         guard = r"""
+# The production success path must avoid the serializer that timed out in CI.
+function ConvertTo-Json { throw 'generic JSON serialization is unavailable' }
 # An observation must not need a compiler to initialize the system provider.
 function Add-Type {
     param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
@@ -5980,6 +6311,7 @@ function Add-Type {
         ]
         result = run(command, **kwargs)
         captured["stderr"] = result.stderr
+        captured["stdout"] = result.stdout
         print(f"UIA_CLIENT argv={command[:-1]} timeout={kwargs['timeout']}")
         print(result.stderr)
         return result
@@ -5993,7 +6325,7 @@ $form = [Windows.Forms.Form]::new()
 $edit = [Windows.Forms.TextBox]::new()
 $edit.Multiline = $true
 $edit.ReadOnly = $true
-$edit.Text = 'owned-provider-regression'
+$edit.Text = "第一行 '引号' `"双引号`" 制表`t结尾`r`nsecond line"
 $form.Controls.Add($edit)
 try {
     $form.Show()
@@ -6044,9 +6376,24 @@ try {
                 patch.setattr(runner.subprocess, "run", observe)
                 documents = native.document_text(hwnd)
             assert len(documents) == 1
-            assert documents[0]["text"] == "owned-provider-regression"
+            assert isinstance(documents[0]["name"], str)
+            assert documents[0]["text"] == "第一行 '引号' \"双引号\" 制表\t结尾\r\nsecond line"
             print(f"UIA_DOCUMENTS {documents}")
+            # Success stdout is exactly one complete Base64 frame — never JSON.
+            frame = captured["stdout"]
+            assert frame.startswith("VIBETABLE_UIA1\t")
+            assert frame.count("\t") == 2
+            assert "\n" not in frame
+            assert "\r" not in frame
+            assert runner._UIA_FRAME_PATTERN.fullmatch(frame)
             assert "UIA_STAGE document-query end" in captured["stderr"]
+            assert "UIA_STAGE encode begin" in captured["stderr"], captured["stderr"]
+            assert "UIA_STAGE encode end" in captured["stderr"], captured["stderr"]
+            assert "UIA_STAGE output end" in captured["stderr"], captured["stderr"]
+            script_begin = next(
+                line for line in captured["stderr"].splitlines() if "UIA_STAGE script begin" in line
+            )
+            assert "utc=" in script_begin
             tab_stage = next(
                 line
                 for line in captured["stderr"].splitlines()
@@ -6068,3 +6415,317 @@ try {
                 _, stderr = process.communicate(timeout=5)
                 print(f"UIA_TARGET exit={process.returncode}")
         assert process.returncode == 0, stderr
+
+
+@pytest.mark.parametrize(
+    "network_case", ["clean", "missing", "errors", "remote", "unsampled", "incomplete"]
+)
+def test_source_migration_requires_completed_local_process_network_evidence(
+    monkeypatch, tmp_path: Path, network_case: str
+) -> None:
+    scenario = runner.Scenario(
+        id="35-data-io-interoperability", title="source migration", requirement="offline attachment"
+    )
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "host.exe").write_bytes(b"host")
+    (package / "publish-layout.json").write_text(
+        json.dumps({"launch": {"host": "host.exe"}}), encoding="utf-8"
+    )
+    scope = _FakeScope()
+    scope.root = _SuccessfulRoot()
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *_args, **_kwargs: scope)
+    monkeypatch.setattr(runner, "_wait_for_cdp", lambda *_args: None)
+    _stub_cdp_owner_capture(monkeypatch)
+    monkeypatch.setattr(runner, "_wait_for_readiness", lambda *_args: {"ready": True})
+    monkeypatch.setattr(
+        runner,
+        "_request_normal_exit",
+        lambda *_args, **_kwargs: {
+            "normalExitRequested": True,
+            "hostExitCode": 0,
+            "membersAfterExit": [],
+            "portsReleased": True,
+            "errors": [],
+            "status": "passed",
+        },
+    )
+
+    def successful_node(
+        _command: list[str],
+        *,
+        scenario_dir: Path,
+        local_data: Path,
+        host_scope: Any,
+        process_network: dict[str, Any] | None = None,
+        measure_diff_worker: bool = False,
+    ) -> tuple[int, str, str]:
+        del local_data, host_scope, measure_diff_worker
+        assert process_network is not None, "the real Host scope must be monitored for scenario 35"
+        (scenario_dir / f"{scenario.id}-result.json").write_text(
+            json.dumps({"scenario": scenario.id, "status": "passed"}), encoding="utf-8"
+        )
+        report = {
+            "status": "completed",
+            "samples": 1,
+            "errors": [],
+            "unexpectedProductNonLoopback": [],
+        }
+        if network_case == "errors":
+            report["errors"] = ["TCP observation unavailable"]
+        elif network_case == "remote":
+            report["unexpectedProductNonLoopback"] = [{"processName": "VibeTable.Sidecar"}]
+        elif network_case == "unsampled":
+            report["samples"] = 0
+        elif network_case == "incomplete":
+            report["status"] = "monitoring"
+        if network_case != "missing":
+            (scenario_dir / "process-network-observations.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+        return 0, "", ""
+
+    monkeypatch.setattr(runner, "_run_node_runner", successful_node)
+    result = runner.run_scenario(
+        scenario, package_root=package, evidence_root=tmp_path / "evidence", node="node"
+    )
+    assert result["status"] == ("passed" if network_case == "clean" else "failed")
+    if network_case == "clean":
+        assert result["processNetwork"]["status"] == "completed"
+        assert result["processNetwork"]["unexpectedProductNonLoopback"] == []
+    else:
+        assert result["error"]["code"] == "PROCESS_NETWORK_OBSERVATION_FAILED"
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows atomic control publication contract")
+def test_document_native_request_slot_is_consumed_before_the_next_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver must consume the native request slot before Node renames.
+
+    The Node journey publishes each request by renaming a complete ``.tmp``
+    onto ``file-document-native-request.json`` (fs.rename == MoveFileExW) only
+    AFTER awaiting the previous requestId's ack. The runner therefore deletes
+    the consumed slot before handling; the next rename then targets a
+    NONEXISTENT file. Keeping the stale slot would make the rename race the
+    runner's next plain read handle — on Windows MoveFileExW cannot replace an
+    open destination regardless of share flags, the real EPERM from CI
+    37239042992 scenario 42.
+
+    A fake node process (no real UI) drives exactly two requests — copy then
+    cancel — with same-id acks observed from the real ``_write_json_atomic``
+    ack file. The single real ``os.replace`` is interleaved at the runner's
+    next actual ``Path.open`` of the request slot, mirroring the worst-case
+    Node rename instant.
+    """
+    import os
+
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    controls_dir = tmp_path / "controls"
+    controls_dir.mkdir()
+    request_slot = scenario_dir / "file-document-native-request.json"
+    cancel_tmp = scenario_dir / "file-document-native-request.json.tmp"
+    ack_file = scenario_dir / "file-document-native-result.json"
+    copy_request = {"requestId": "copy-1", "action": "copy", "source": "a", "target": "b"}
+    cancel_request = {"requestId": "cancel-1", "action": "cancel"}
+    request_slot.write_text(json.dumps(copy_request), encoding="utf-8")
+    cancel_tmp.write_text(json.dumps(cancel_request), encoding="utf-8")
+
+    handled: list[dict[str, object]] = []
+
+    def fake_native_handler(request: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        # Record only; assertions happen at the end so the interleaved old
+        # driver's real failure is observed instead of short-circuited.
+        handled.append(
+            {
+                "requestId": request.get("requestId"),
+                "action": request.get("action"),
+                "slotPresent": request_slot.exists(),
+            }
+        )
+        return {
+            "requestId": request.get("requestId"),
+            "status": "completed",
+            "action": request.get("action"),
+        }
+
+    monkeypatch.setattr(runner, "_handle_document_native_request", fake_native_handler)
+
+    class _FakeNodeProcess:
+        """poll() four times: three loop iterations, then exit code 0."""
+
+        def __init__(self) -> None:
+            self._polls = 0
+            self.returncode: int | None = None
+            self.acked: list[str] = []
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            try:
+                ack = json.loads(ack_file.read_text(encoding="utf-8"))
+            except OSError, json.JSONDecodeError:
+                ack = None
+            ack_id = ack.get("requestId") if isinstance(ack, dict) else None
+            if isinstance(ack_id, str) and ack_id not in self.acked:
+                # Same requestId is kept in the ack file; only marked as sent.
+                # The real producer exits only after its current id was acked,
+                # so every poll records an existing ack BEFORE deciding exit.
+                self.acked.append(ack_id)
+            if self._polls > 3:
+                self.returncode = 0
+                return 0
+            return None
+
+        def communicate(self, timeout: float = 10) -> tuple[str, str]:
+            return "", ""
+
+        def kill(self) -> None:
+            raise AssertionError("fake node process was killed")
+
+    node = _FakeNodeProcess()
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: node)
+
+    replace_attempts: list[dict[str, object]] = []
+    intercepted = False
+    original_open = runner.Path.open
+
+    def opened(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal intercepted
+        if path != request_slot or intercepted or not node.acked:
+            return original_open(path, *args, **kwargs)
+        intercepted = True
+        try:
+            stream = original_open(path, *args, **kwargs)
+        except FileNotFoundError:
+            # Post-fix contract: the consumed slot no longer exists. Publish
+            # the next request with one REAL replace onto the nonexistent
+            # target (atomic publication), then re-raise so this poll reads
+            # nothing and the next loop iteration handles the cancel request.
+            try:
+                os.replace(cancel_tmp, request_slot)
+                replace_attempts.append({"replacedOnto": "missing", "succeeded": True})
+            except OSError as failure:
+                replace_attempts.append(
+                    {
+                        "replacedOnto": "missing",
+                        "succeeded": False,
+                        "error": repr(failure),
+                    }
+                )
+            raise
+        # Pre-fix driver: the stale slot still exists and this plain read
+        # handle is open — the Node rename races exactly this instant.
+        try:
+            os.replace(cancel_tmp, request_slot)
+            replace_attempts.append({"replacedOnto": "existing", "succeeded": True})
+        except OSError as failure:
+            replace_attempts.append(
+                {
+                    "replacedOnto": "existing",
+                    "succeeded": False,
+                    "winError": getattr(failure, "winerror", None),
+                }
+            )
+        return stream
+
+    monkeypatch.setattr(runner.Path, "open", opened)
+
+    code, stdout, stderr = runner._run_node_runner(
+        [
+            "node",
+            "--controls-dir",
+            str(controls_dir),
+            "--scenario",
+            "42-file-document-native-operations",
+        ],
+        scenario_dir=scenario_dir,
+        local_data=tmp_path / "local-data",
+        host_scope=SimpleNamespace(),
+    )
+
+    assert (code, stdout, stderr) == (0, "", "")
+    # Exactly one real os.replace, and only onto the CONSUMED (missing) slot.
+    # The pre-fix driver records the genuine WinError 5 replace failure over
+    # its own open read handle here — the CI EPERM — not a missing symbol.
+    assert replace_attempts == [{"replacedOnto": "missing", "succeeded": True}]
+    # Both requests handled exactly once, in order, with the slot already
+    # consumed at handler time.
+    assert handled == [
+        {"requestId": "copy-1", "action": "copy", "slotPresent": False},
+        {"requestId": "cancel-1", "action": "cancel", "slotPresent": False},
+    ]
+    # Acks were observed for each id in order (same-id ack files kept).
+    assert node.acked == ["copy-1", "cancel-1"]
+    # The published request and its tmp are gone: nothing left to collide.
+    assert not request_slot.exists()
+    assert not cancel_tmp.exists()
+
+
+def test_document_native_request_slot_delete_failure_propagates_before_handling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing slot deletion must fail the driver before any handling."""
+    scenario_dir = tmp_path / "scenario"
+    scenario_dir.mkdir()
+    controls_dir = tmp_path / "controls"
+    controls_dir.mkdir()
+    request_slot = scenario_dir / "file-document-native-request.json"
+    request_slot.write_text(json.dumps({"requestId": "copy-1", "action": "copy"}), encoding="utf-8")
+
+    handled: list[dict[str, object]] = []
+
+    def fake_native_handler(request: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        handled.append({"requestId": request.get("requestId")})
+        return {"requestId": request.get("requestId"), "status": "completed"}
+
+    monkeypatch.setattr(runner, "_handle_document_native_request", fake_native_handler)
+
+    class _FakeNodeProcess:
+        """poll() three times: two bounded loop iterations, then exit code 0."""
+
+        def __init__(self) -> None:
+            self._polls = 0
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            if self._polls > 2:
+                self.returncode = 0
+                return 0
+            return None
+
+        def communicate(self, timeout: float = 10) -> tuple[str, str]:
+            return "", ""
+
+        def kill(self) -> None:
+            raise AssertionError("fake node process was killed")
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: _FakeNodeProcess())
+
+    original_unlink = runner.Path.unlink
+
+    def failing_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        # Precisely the owned request slot; every other unlink stays real.
+        if path == request_slot:
+            raise PermissionError(5, "simulated slot delete failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(runner.Path, "unlink", failing_unlink)
+
+    with pytest.raises(PermissionError, match="simulated slot delete failure"):
+        runner._run_node_runner(
+            [
+                "node",
+                "--controls-dir",
+                str(controls_dir),
+                "--scenario",
+                "42-file-document-native-operations",
+            ],
+            scenario_dir=scenario_dir,
+            local_data=tmp_path / "local-data",
+            host_scope=SimpleNamespace(),
+        )
+    # No handler ran and no ack was published: deletion is a hard precondition.
+    assert handled == []
+    assert not (scenario_dir / "file-document-native-result.json").exists()

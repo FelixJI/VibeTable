@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import ctypes
 import hashlib
 import ipaddress
@@ -1646,10 +1647,10 @@ class _DocumentNativeWindows:
         # Only a newly observed HWND is inspected. Windows' own UIA avoids a
         # Python COM dependency and does not launch or control an editor.
         script = """
-[Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState())")
+[Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState()) utc=$([DateTime]::UtcNow.ToString('o'))")
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -1730,7 +1731,15 @@ $items = @(foreach ($document in $documents) {
         throw 'UIA_TEXT_PATTERN unavailable'
     }
 })
-ConvertTo-Json -InputObject $items -Compress
+[Console]::Error.WriteLine("UIA_STAGE encode begin elapsedMs=$($clock.ElapsedMilliseconds)")
+$utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+$tab = [string][char]9
+$frame = "VIBETABLE_UIA1" + $tab +
+    [Convert]::ToBase64String($utf8.GetBytes([string]$items[0].name)) + $tab +
+    [Convert]::ToBase64String($utf8.GetBytes([string]$items[0].text))
+[Console]::Error.WriteLine("UIA_STAGE encode end elapsedMs=$($clock.ElapsedMilliseconds) length=$($frame.Length)")
+[Console]::Out.Write($frame)
+[Console]::Error.WriteLine("UIA_STAGE output end elapsedMs=$($clock.ElapsedMilliseconds)")
 """
         environment = os.environ.copy()
         environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)
@@ -1744,10 +1753,9 @@ ConvertTo-Json -InputObject $items -Compress
             check=True,
             timeout=5,
         )
-        documents = json.loads(result.stdout)
-        if not isinstance(documents, list):
-            raise ValueError("new editor UIA document result is not an array")
-        return documents
+        # The frame is parsed only after subprocess.run(check=True) returned:
+        # the complete process exited 0 before any output is trusted.
+        return _parse_uia_document_frame(result.stdout)
 
     def close_new_document(self, hwnd: int, pid: int) -> bool:
         if self.owner(hwnd) != pid:
@@ -1762,6 +1770,80 @@ ConvertTo-Json -InputObject $items -Compress
         return False
 
 
+_UIA_FRAME_HEADER = "VIBETABLE_UIA1"
+# Canonical Base64 shape only (4-char groups with an optional 2/3-char padded
+# tail). Recognizes structure without ever decoding the payload.
+_UIA_FRAME_BASE64 = r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"
+_UIA_FRAME_PATTERN = re.compile(
+    rf"{re.escape(_UIA_FRAME_HEADER)}\t{_UIA_FRAME_BASE64}\t{_UIA_FRAME_BASE64}"
+)
+# GetText caps text at 4096 chars; even 4 UTF-8 bytes per char keeps a
+# complete frame far below this bound, so anything larger fails closed.
+_UIA_FRAME_MAX_LENGTH = 65536
+
+
+def _parse_uia_document_frame(stdout: str) -> list[dict[str, str]]:
+    """Strictly parse the single-frame UIA observation stdout contract.
+
+    The PowerShell success path writes exactly one TAB-separated frame
+    ``VIBETABLE_UIA1\\t<name-base64>\\t<text-base64>`` with no newline, both
+    fields being Base64 of strict UTF-8 (.NET UTF8.GetBytes /
+    Convert.ToBase64String). A wrong header, wrong field count, non-Base64
+    bytes, invalid UTF-8, truncation, an extra frame or suffix, and an
+    over-bound frame all fail closed; nothing is stripped. Empty name and
+    text are legal. Callers may only run this after the observed process
+    exited 0.
+    """
+    if len(stdout) > _UIA_FRAME_MAX_LENGTH:
+        raise ValueError("new editor UIA frame exceeds the bounded length")
+    fields = stdout.split("\t")
+    if (
+        len(fields) != 3
+        or fields[0] != _UIA_FRAME_HEADER
+        or _UIA_FRAME_PATTERN.fullmatch(stdout) is None
+    ):
+        raise ValueError("new editor UIA output is not a single VIBETABLE_UIA1 frame")
+    try:
+        name = base64.b64decode(fields[1], validate=True).decode("utf-8")
+        text = base64.b64decode(fields[2], validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exception:
+        raise ValueError("new editor UIA frame fields are not strict UTF-8 Base64") from exception
+    return [{"name": name, "text": text}]
+
+
+def _uia_stdout_summary(stdout: str | bytes | None) -> dict[str, int | str | None]:
+    """Bounded TimeoutExpired stdout shape diagnostics: never content.
+
+    Reports only the captured output's type, length, and whether its whole
+    shape is one complete single-document frame. The Base64 fields are never
+    decoded, so name/text cannot leak, and a complete frame never rescues a
+    timeout. This describes the captured bytes only — it is not evidence
+    about process exit state. Over-limit payloads are length-only and are
+    not inspected.
+    """
+    if stdout is None:
+        return {
+            "stdoutType": None,
+            "stdoutLength": 0,
+            "stdoutIsSingleDocumentFrame": None,
+        }
+    if isinstance(stdout, bytes):
+        decoded = stdout.decode("utf-8", errors="replace")
+        kind = "bytes"
+    else:
+        decoded = stdout
+        kind = "str"
+    summary: dict[str, int | str | None] = {"stdoutType": kind, "stdoutLength": len(decoded)}
+    # A legitimate frame stays far below this bound (GetText caps text at
+    # 4096 chars); anything larger is not inspected and its shape stays
+    # unverified.
+    if len(decoded) > _UIA_FRAME_MAX_LENGTH:
+        summary["stdoutIsSingleDocumentFrame"] = None
+        return summary
+    summary["stdoutIsSingleDocumentFrame"] = _UIA_FRAME_PATTERN.fullmatch(decoded) is not None
+    return summary
+
+
 def _handle_document_native_request(
     request: Mapping[str, Any],
     *,
@@ -1772,6 +1854,10 @@ def _handle_document_native_request(
     native: _DocumentNativeWindows | None = None
     window: dict[str, Any] | None = None
     window_observation: dict[str, Any] | None = None
+    # Parent-side observation timing: pairs the whole native observation with
+    # the script's own UIA_STAGE clock (script begin carries a UTC timestamp).
+    started_at_utc: str | None = None
+    started_at: float | None = None
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
@@ -1872,6 +1958,11 @@ def _handle_document_native_request(
             }
             raise OSError("Shell Open has no unique newly created window for the synthetic TXT")
         window = candidates[0]
+        # Observation clock: taken immediately before the UIA observation call
+        # so its delta against the script's entry UTC locates the PowerShell
+        # startup, not the validation/window search that precedes it.
+        started_at_utc = datetime.now(UTC).isoformat()
+        started_at = time.monotonic()
         documents = native.document_text(window["hwnd"])
         expected = source.read_text(encoding="utf-8").rstrip("\n")
         if (
@@ -1898,6 +1989,12 @@ def _handle_document_native_request(
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", errors="replace")
             uia_failure = {
+                "startedAtUtc": started_at_utc,
+                "elapsedMs": (
+                    round((time.monotonic() - started_at) * 1000)
+                    if started_at is not None
+                    else None
+                ),
                 "returnCode": exception.returncode
                 if isinstance(exception, subprocess.CalledProcessError)
                 else None,
@@ -1905,6 +2002,7 @@ def _handle_document_native_request(
             }
             if isinstance(exception, subprocess.TimeoutExpired):
                 uia_failure["timeoutSeconds"] = exception.timeout
+                uia_failure.update(_uia_stdout_summary(exception.stdout))
                 error = f"Shell UIA observation timed out after {exception.timeout} seconds"
             else:
                 error = f"Shell UIA observation failed (exit {exception.returncode})"
@@ -2025,13 +2123,23 @@ def _run_node_runner(
                     storage_result,
                     _handle_storage_proof(request, local_data),
                 )
-        native_request = _read_json(scenario_dir / "file-document-native-request.json")
+        native_request_path = scenario_dir / "file-document-native-request.json"
+        native_request = _read_json(native_request_path)
         if native_request is not None and controls is not None:
             native_request_id = native_request.get("requestId")
             if (
                 isinstance(native_request_id, str)
                 and native_request_id not in handled_document_native_ids
             ):
+                # Consume the synthetic request slot BEFORE handling: the Node
+                # journey awaits this requestId's ack and only then renames its
+                # next complete .tmp onto the same path, so after consumption
+                # the rename targets a NONEXISTENT file. Keeping the stale slot
+                # would race the next plain read handle — on Windows
+                # MoveFileExW cannot replace an open destination regardless of
+                # share flags (CI 37239042992 scenario-42 EPERM). Deletion is a
+                # hard precondition: failures propagate, never retried.
+                native_request_path.unlink()
                 handled_document_native_ids.add(native_request_id)
                 native_result = _handle_document_native_request(
                     native_request,
@@ -2588,7 +2696,7 @@ def run_scenario(
         try:
             process_network = (
                 {"observations": {}, "errors": [], "samples": 0}
-                if scenario.id == "01-offline-first-start"
+                if scenario.id in {"01-offline-first-start", "35-data-io-interoperability"}
                 else None
             )
             _wait_for_cdp(port, scope, process_network, readiness_dir)
@@ -2664,10 +2772,11 @@ def run_scenario(
                     "code": "HOST_NOT_READY",
                     "message": str(readiness.get("error") or readiness),
                 }
-            elif scenario.id == "01-offline-first-start" and (
+            elif scenario.id in {"01-offline-first-start", "35-data-io-interoperability"} and (
                 process_network_report is None
                 or process_network_report.get("status") != "completed"
                 or process_network_report.get("samples", 0) < 1
+                or bool(process_network_report.get("errors"))
                 or bool(process_network_report.get("unexpectedProductNonLoopback"))
             ):
                 result["status"] = "failed"
@@ -2789,12 +2898,33 @@ def _observe_restore_crash_exit(
     cdp_owner: _PortOwnerLease,
 ) -> dict[str, Any]:
     """The 44 seed's explicit owned Job crash has a separate exit contract."""
+    # TerminateJobObject is asynchronous: the Job members, ports and cleanup
+    # can already be settled while the root's exit code is not yet observable
+    # through a zero-wait poll (CI 37243530031 seed: poll None at 34 ms —
+    # settled Job/ports state does NOT guarantee the root already signaled;
+    # the observer must wait for the real exit). Mirror the normal exit
+    # observer's discipline: one absolute lifecycle budget, wait on the root's
+    # already-held stable handle (never reopen the pid), then observe the
+    # members and the CDP listener with the remaining budget. No polling, no
+    # fabricated exit code, no widened timeout; a missed or failing wait
+    # stays failed.
+    deadline = time.monotonic() + LIFECYCLE_EXIT_TIMEOUT_SECONDS
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
+
     errors: list[str] = []
     release: PortReleaseReport | None = None
+    exit_code: int | None = None
+    try:
+        exit_code = scope.root.wait(timeout=min(30.0, remaining()))
+    except subprocess.TimeoutExpired:
+        pass
+    except (OSError, RuntimeError) as exc:
+        errors.append(str(exc))
     try:
         members = _scope_members(scope)
-        exit_code = scope.root.poll()
-        release = cdp_owner.observe_release(timeout=LIFECYCLE_EXIT_TIMEOUT_SECONDS)
+        release = cdp_owner.observe_release(timeout=remaining())
         errors.extend(release.errors)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         members, exit_code = [], None

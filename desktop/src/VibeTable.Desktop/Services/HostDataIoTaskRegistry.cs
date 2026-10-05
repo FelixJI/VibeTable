@@ -12,7 +12,7 @@ namespace VibeTable.Desktop.Services;
 /// The durable import history journal is owned here as well, so terminal
 /// settlements outlive invoker replacements and disposals.
 /// </summary>
-internal sealed class HostDataIoTaskRegistry : IDisposable
+internal sealed partial class HostDataIoTaskRegistry : IDisposable
 {
     private const int MaxTasks = 256;
     private readonly object _gate = new();
@@ -234,13 +234,18 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
     internal JsonElement Status(string taskId)
     {
         lock (_gate)
+        {
+            if (_sourceTasks.TryGetValue(taskId, out SourceTask? source))
+                return JsonSerializer.SerializeToElement(source.Status, Wire);
             return _tasks.TryGetValue(taskId, out Record? record)
                 ? Snapshot(record)
                 : throw new KeyNotFoundException("Data IO task is not in this workspace.");
+        }
     }
 
     internal (JsonElement Snapshot, JsonRpcClient? Client) RequestCancel(string taskId)
     {
+        if (TryCancelSourceImport(taskId, out JsonElement source)) return (source, null);
         lock (_gate)
         {
             if (!_tasks.TryGetValue(taskId, out Record? record))
@@ -364,9 +369,10 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
         return changed;
     }
 
-    private JsonElement EventLocked(Record record)
+    private JsonElement EventLocked(Record record) => EventLocked(record.Status);
+
+    private JsonElement EventLocked(TaskStatus status)
     {
-        TaskStatus status = record.Status;
         TaskProgress progress = status.Progress;
         double ratio = progress.Total > 0
             ? Math.Min(1.0, (double)progress.Done / progress.Total) : 0;
@@ -384,7 +390,7 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
             sequence = ++_sequence,
             occurredAt = DateTimeOffset.UtcNow.ToString("O"),
             taskId = status.TaskId,
-            taskType = status.Kind == "data.import" ? "import" : "export",
+            taskType = status.Kind is "data.import" or "data.sourceImport" ? "import" : "export",
             state,
             progress = ratio,
             cursor = (string?)null,
@@ -459,6 +465,7 @@ internal sealed class HostDataIoTaskRegistry : IDisposable
         }
         Publish(changed);
         journal?.Dispose();
+        DisposeSourceImports();
     }
 
     private sealed class Record(

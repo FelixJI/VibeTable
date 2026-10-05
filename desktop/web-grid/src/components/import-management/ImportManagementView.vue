@@ -2,10 +2,11 @@
 import { computed, ref } from "vue";
 import { NAlert, NButton, NEmpty, NIcon, NTag, NTooltip } from "naive-ui";
 import { ArrowDownToLine, ChevronDown, CloudOff, FileSpreadsheet, FileText, RefreshCw, Table2 } from "@lucide/vue";
-import type { ImportHistoryEntry } from "@/contracts/importManagement";
+import type { ImportHistoryEntry, SourceImportEntry } from "@/contracts/importManagement";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
 import { IMPORT_SOURCES, type ImportSourceId } from "./importSources";
+import SourceImportHistory from "./SourceImportHistory.vue";
 import { getLocale, t } from "@/i18n";
 
 /**
@@ -13,17 +14,21 @@ import { getLocale, t } from "@/i18n";
  * call (picker, preview, cancellation, history RPC); this component only reads
  * the workspace table catalog for target selection and emits user intent.
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   loading: boolean;
   error: string | null;
   loaded: boolean;
   items: readonly ImportHistoryEntry[];
+  /** Durable source-migration receipts projected by importManagementService. */
+  sourceEntries?: readonly SourceImportEntry[];
   activeTaskId: string | null;
   taskCancellable: boolean;
   cancellingTaskId: string | null;
   pendingSourceName: string | null;
   canStart: boolean;
-}>();
+}>(), {
+  sourceEntries: () => [],
+});
 
 const emit = defineEmits<{
   newImport: [];
@@ -32,6 +37,7 @@ const emit = defineEmits<{
   refresh: [];
   cancelTask: [taskId: string];
   openTarget: [collection: string];
+  openSourceTarget: [tableId: string];
 }>();
 
 const workspace = useWorkspaceStore();
@@ -322,6 +328,13 @@ function toggleExpanded(taskId: string): void {
         </li>
       </ol>
     </section>
+
+    <SourceImportHistory
+      :entries="props.sourceEntries"
+      :cancelling-job-id="props.cancellingTaskId"
+      @cancel-task="(jobId) => emit('cancelTask', jobId)"
+      @open-target="(tableId) => emit('openSourceTarget', tableId)"
+    />
   </section>
 </template>
 

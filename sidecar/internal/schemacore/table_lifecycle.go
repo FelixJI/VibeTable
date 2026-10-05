@@ -38,6 +38,19 @@ func (lifecycle *TableLifecycle) Create(
 	ctx context.Context,
 	intent v2.TableCreateIntent,
 ) (v2.TableCreateReceipt, error) {
+	return lifecycle.CreateWithCommit(ctx, intent, nil)
+}
+
+// CreateWithCommit creates a table and runs commit inside the same business
+// transaction, mirroring mutation.Kernel.ApplyWithCommit. The callback runs
+// only for the first actual create; a replayed operationId returns the
+// deterministic receipt without re-projecting. A callback error rolls the
+// whole create back, including metadata and audit, before anything commits.
+func (lifecycle *TableLifecycle) CreateWithCommit(
+	ctx context.Context,
+	intent v2.TableCreateIntent,
+	commit func(core.App, v2.TableCreateReceipt) error,
+) (v2.TableCreateReceipt, error) {
 	displayName, err := validateTableCreateIntent(intent)
 	if err != nil {
 		return v2.TableCreateReceipt{}, err
@@ -105,6 +118,9 @@ func (lifecycle *TableLifecycle) Create(
 			ctx, txApp, intent, receipt, afterHash, lifecycle.clock().UTC(),
 		); err != nil {
 			return err
+		}
+		if commit != nil {
+			return commit(txApp, receipt)
 		}
 		return nil
 	})
