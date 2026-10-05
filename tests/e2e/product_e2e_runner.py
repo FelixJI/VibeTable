@@ -2800,12 +2800,33 @@ def _observe_restore_crash_exit(
     cdp_owner: _PortOwnerLease,
 ) -> dict[str, Any]:
     """The 44 seed's explicit owned Job crash has a separate exit contract."""
+    # TerminateJobObject is asynchronous: the Job members, ports and cleanup
+    # can already be settled while the root's exit code is not yet observable
+    # through a zero-wait poll (CI 37243530031 seed: poll None at 34 ms —
+    # settled Job/ports state does NOT guarantee the root already signaled;
+    # the observer must wait for the real exit). Mirror the normal exit
+    # observer's discipline: one absolute lifecycle budget, wait on the root's
+    # already-held stable handle (never reopen the pid), then observe the
+    # members and the CDP listener with the remaining budget. No polling, no
+    # fabricated exit code, no widened timeout; a missed or failing wait
+    # stays failed.
+    deadline = time.monotonic() + LIFECYCLE_EXIT_TIMEOUT_SECONDS
+
+    def remaining() -> float:
+        return max(0.0, deadline - time.monotonic())
+
     errors: list[str] = []
     release: PortReleaseReport | None = None
+    exit_code: int | None = None
+    try:
+        exit_code = scope.root.wait(timeout=min(30.0, remaining()))
+    except subprocess.TimeoutExpired:
+        pass
+    except (OSError, RuntimeError) as exc:
+        errors.append(str(exc))
     try:
         members = _scope_members(scope)
-        exit_code = scope.root.poll()
-        release = cdp_owner.observe_release(timeout=LIFECYCLE_EXIT_TIMEOUT_SECONDS)
+        release = cdp_owner.observe_release(timeout=remaining())
         errors.extend(release.errors)
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
         members, exit_code = [], None

@@ -413,6 +413,143 @@ def test_restore_crash_lifecycle_is_a_separate_owned_scope_contract(case: str) -
     )
 
 
+def test_restore_crash_exit_waits_on_the_stable_handle_after_async_termination() -> None:
+    """TerminateJobObject is async: a zero-wait poll can miss the real exit.
+
+    In the CI 37243530031 seed the root polled None at 34 ms while every Job
+    fact (members, ports, cleanup) already held — settled Job state does not
+    guarantee the root already signaled, so the observer must WAIT on the
+    already-held stable handle for the real exit code instead of failing on
+    the poll miss. The fixture's wait returns the real code 1.
+    """
+
+    class AsyncTerminatedRoot(_FakeRoot):
+        def __init__(self) -> None:
+            super().__init__(exit_code=None)
+            self.wait_timeout: float | None = None
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_timeout = timeout
+            self.exit_code = 1
+            return 1
+
+    root = AsyncTerminatedRoot()
+    scope = _FakeScope(members=())
+    scope.root = root
+    owner = _FakePortOwnerLease(released=True)
+    crash = {
+        "ownedHost": {
+            "rootPid": scope.root.pid,
+            "termination": {
+                "status": "passed",
+                "terminationRequested": True,
+                "remainingPids": [],
+                "errors": [],
+            },
+            "remainingPids": [],
+            "errors": [],
+        }
+    }
+
+    report = runner._observe_restore_crash_exit(scope, crash, owner)
+
+    assert report["status"] == "passed"
+    assert report["hostExitCode"] == 1
+    assert root.wait_timeout is not None
+    assert root.wait_timeout > 0
+    assert owner.closed
+
+
+@pytest.mark.parametrize("failure", ["wait-timeout", "stable-handle-error"])
+def test_restore_crash_exit_wait_failures_stay_failed_and_close_the_owner(
+    failure: str,
+) -> None:
+    """A missed or failing stable-handle wait must not fabricate an exit."""
+
+    class FailingRoot(_FakeRoot):
+        def wait(self, timeout: float | None = None) -> int:
+            if failure == "stable-handle-error":
+                raise OSError("stable handle wait failed")
+            raise subprocess.TimeoutExpired(["fake-host"], 0 if timeout is None else timeout)
+
+    scope = _FakeScope(members=())
+    scope.root = FailingRoot(exit_code=None)
+    owner = _FakePortOwnerLease(released=True)
+    crash = {
+        "ownedHost": {
+            "rootPid": scope.root.pid,
+            "termination": {
+                "status": "passed",
+                "terminationRequested": True,
+                "remainingPids": [],
+                "errors": [],
+            },
+            "remainingPids": [],
+            "errors": [],
+        }
+    }
+
+    report = runner._observe_restore_crash_exit(scope, crash, owner)
+
+    assert report["status"] == "failed"
+    assert report["hostExitCode"] is None
+    if failure == "stable-handle-error":
+        assert "stable handle wait failed" in report["errors"]
+    assert owner.closed
+
+
+def test_restore_crash_exit_waits_share_one_absolute_budget(monkeypatch) -> None:
+    """The crash observer shares the normal 35 s budget, never an added one."""
+
+    class Clock:
+        value = 100.0
+
+        def monotonic(self) -> float:
+            return self.value
+
+        def advance(self, seconds: float) -> None:
+            self.value += seconds
+
+    clock = Clock()
+    waits: list[tuple[str, float]] = []
+
+    class BudgetRoot(_FakeRoot):
+        def wait(self, timeout: float | None = None) -> int:
+            assert timeout is not None
+            waits.append(("host", timeout))
+            clock.advance(timeout)
+            raise subprocess.TimeoutExpired(["fake-host"], timeout)
+
+    class BudgetScope(_FakeScope):
+        def __init__(self) -> None:
+            super().__init__(members=())
+            self.root = BudgetRoot()
+
+    class BudgetOwner(_FakePortOwnerLease):
+        def observe_release(self, *, timeout: float) -> PortReleaseReport:
+            waits.append(("owner", timeout))
+            return PortReleaseReport(
+                owner_pid=42,
+                owner_name="msedgewebview2.exe",
+                capture_rows=(),
+                release_rows=(),
+                decision="listener-released",
+                released=True,
+                owner_exited=True,
+                errors=(),
+            )
+
+    monkeypatch.setattr(runner.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(runner.time, "sleep", lambda _seconds: pytest.fail("no polling"))
+
+    report = runner._observe_restore_crash_exit(BudgetScope(), {}, BudgetOwner())
+
+    assert waits == [("host", 30.0), ("owner", 5.0)]
+    assert sum(timeout for _name, timeout in waits) == runner.LIFECYCLE_EXIT_TIMEOUT_SECONDS
+    assert report["hostExitCode"] is None
+    assert report["status"] == "failed"
+
+
 def _native_document_fixture(tmp_path: Path) -> tuple[dict[str, Any], Path, Path, Path]:
     request = {
         "requestId": "11111111-1111-4111-8111-111111111111",
