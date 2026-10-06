@@ -1,3 +1,5 @@
+using System.IO;
+using Microsoft.Win32;
 using VibeTable.Infrastructure.Rpc;
 using VibeTable.Desktop.Services;
 
@@ -16,9 +18,33 @@ public partial class MainWindow
         var window = new SourceImportWindow(provider,
             (source, accessToken, key, secret, cancellation) =>
                 ConnectSourceImportAsync(provider, source, accessToken, key, secret, cancellation),
-            session, DescribeSourceImportError, token) { Owner = this };
+            session, DescribeSourceImportError, token,
+            provider == "feishu" ? OpenFeishuBaseFileAsync : null) { Owner = this };
         window.ShowDialog();
         return Task.FromResult(window.Result);
+    }
+
+    private static async Task<NativeSourceConnection?> OpenFeishuBaseFileAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var dialog = new OpenFileDialog
+        {
+            Title = "导入飞书 .base 文件",
+            Filter = "飞书多维表格 (*.base)|*.base",
+            CheckFileExists = true,
+            CheckPathExists = true,
+            Multiselect = false,
+            RestoreDirectory = true,
+        };
+        if (dialog.ShowDialog() != true) return null;
+        token.ThrowIfCancellationRequested();
+        FeishuBaseFileDocument document = await FeishuBaseFileSource.ReadFileAsync(dialog.FileName, token);
+        token.ThrowIfCancellationRequested();
+        return new(document.Snapshot.DisplayName, document.Snapshot.Tables.Select(table =>
+            new NativeSourceTable(table.Id, table.Name, table.Fields.Select(field =>
+                new NativeSourceField(field.Id, field.Name, field.Kind, field.ValueKind,
+                    field.Kind == "relation" && field.Relation is { TargetFieldId: "" })).ToArray())).ToArray(),
+            document.CreateProvider, () => { }, Notices: document.Notices);
     }
 
     private static async Task<NativeSourceConnection> ConnectSourceImportAsync(
@@ -58,6 +84,8 @@ public partial class MainWindow
 
     private static string DescribeSourceImportError(Exception error) => error switch
     {
+        InvalidDataException => "无法读取 .base 文件：文件损坏、超过读取上限或包含尚未支持的结构，请重新导出并核对格式。",
+        IOException or UnauthorizedAccessException => "无法打开所选文件，请检查文件是否存在及读取权限后重试。",
         FeishuSourceImportException { Kind: FeishuSourceImportErrorKind.InvalidInput } =>
             "飞书来源地址无效。请使用国内飞书 Base/Wiki 链接或明确的 app_token；Wiki 需单独读取权限且节点必须是多维表格。",
         FeishuSourceImportException { Kind: FeishuSourceImportErrorKind.InvalidToken } =>

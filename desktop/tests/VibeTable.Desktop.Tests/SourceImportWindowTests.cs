@@ -595,6 +595,201 @@ public sealed class SourceImportWindowTests
     }
 
     [TestMethod]
+    public async Task LocalFileCatalogLoadsThroughInjectedOpenerWithoutCloudDelegateOrToken()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        await fixture.ShowAsync();
+
+        // The local path is reachable with no source link and no token; the
+        // opener is the only entry and never needs a credential.
+        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "token-input").Password));
+        await ClickAsync(fixture, "source-file-button");
+        Assert.AreEqual("正在读取本地 .base 文件…",
+            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
+        Assert.AreEqual(1, opener.Calls);
+        FakeSourceProvider provider = new(log, "prov-local");
+        opener.CompleteWith(LocalBaseConnection(provider, () => log.Add("local-connection:released")));
+        await fixture.SettleAsync();
+
+        // The cloud HTTP delegate was never invoked and no token or signature
+        // was requested: the catalog arrives only through the opener.
+        Assert.AreEqual(0, connect.SnapshotCalls().Count);
+        Assert.IsFalse(log.Contains("connect:enter"));
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text), "1 张表");
+        // A notice-free local file opens no acknowledgement gate at all.
+        Assert.AreEqual(Visibility.Collapsed,
+            await fixture.ReadAsync(w => Require<CheckBox>(w, "notice-acknowledge-checkbox").Visibility));
+
+        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        PrepareCall prepare = session.SnapshotCalls().Single();
+        Assert.AreSame(provider, prepare.Provider);
+        AssertNoEcho(JsonSerializer.Serialize(prepare.Options));
+        CollectionAssert.AreEqual(new[] { "tbl-1" }, prepare.Options.SelectedTableIds);
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+    }
+
+    [TestMethod]
+    public async Task CancelledLocalFileSelectionIsSilentAndNeverPrepares()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        await fixture.ShowAsync();
+        await ClickAsync(fixture, "source-file-button");
+        opener.CompleteWithCancel(); // null: the user dismissed the picker.
+        await fixture.SettleAsync();
+
+        // Cancellation is neither an error nor a write: no precheck, no cloud
+        // delegate, no credential consumption and the window stays open.
+        Assert.AreEqual("已取消选择本地 .base 文件，未导入任何内容。",
+            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
+        Assert.AreEqual(1, opener.Calls);
+        Assert.AreEqual(0, connect.SnapshotCalls().Count);
+        Assert.AreEqual(0, session.SnapshotCalls().Count);
+        Assert.IsFalse(log.Contains("session:prepare-enter"));
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+        Assert.AreEqual("", await fixture.ReadAsync(w => Require<PasswordBox>(w, "token-input").Password));
+
+        // WPS never exposes the local entry, even with an opener injected.
+        using var wpsFixture = new NativeWizardStaFixture("wps",
+            new FakeConnect(log), new FakeWizardSession(log), new FakeLocalFileOpener(log));
+        await wpsFixture.ShowAsync();
+        Assert.IsNull(await wpsFixture.ReadAsync(w => FindByAutomationId<Button>(w, "source-file-button")));
+    }
+
+    [TestMethod]
+    public async Task LocalFileNoticesRequireAcknowledgementBeforePreview()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        await fixture.ShowAsync();
+        await ClickAsync(fixture, "source-file-button");
+        opener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-notices"),
+            () => log.Add("local-connection:released"),
+        [
+            "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
+            "文件包含 1 个工作流：工作流（自动化）不会随导入迁移",
+            "表「订单」字段「总额」是公式：源文件未导出计算值，不会迁入计算值",
+        ]));
+        await fixture.SettleAsync();
+
+        // Every notice stays visible next to the catalog with an explicit
+        // acknowledgement gate; nothing is silently dropped or over-claimed.
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "notice-0").Text), "仪表盘");
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "notice-1").Text), "工作流");
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "notice-2").Text), "不会迁入计算值");
+        Assert.AreEqual(Visibility.Visible,
+            await fixture.ReadAsync(w => Require<CheckBox>(w, "notice-acknowledge-checkbox").Visibility));
+
+        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
+        await fixture.SettleAsync();
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        await ClickAsync(fixture, "preview-button"); // RaiseEvent bypasses IsEnabled.
+        Assert.AreEqual(0, session.SnapshotCalls().Count);
+        StringAssert.Contains(await fixture.ReadAsync(w => Require<TextBlock>(w, "report-text").Text), "告知");
+
+        await fixture.DoAsync(w => Require<CheckBox>(w, "notice-acknowledge-checkbox").IsChecked = true);
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "preview-button").IsEnabled));
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        // Retracting the acknowledgement invalidates the confirmed preview.
+        await fixture.DoAsync(w => Require<CheckBox>(w, "notice-acknowledge-checkbox").IsChecked = false);
+        await AssertConfirmationInvalidatedAsync(fixture);
+    }
+
+    [TestMethod]
+    public async Task SwitchingToLocalFileInvalidatesCloudPreviewAndPreparesWithNewProvider()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        await fixture.ShowAsync();
+        FakeSourceProvider cloudProvider = new(log, "prov-cloud");
+        await ConnectAndSelectFirstTableAsync(fixture, connect, cloudProvider);
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+
+        await ClickAsync(fixture, "source-file-button");
+        FakeSourceProvider localProvider = new(log, "prov-local-switch");
+        opener.CompleteWith(LocalBaseConnection(localProvider, () => log.Add("local-connection:released")));
+        await fixture.SettleAsync();
+
+        // The cloud preview cannot survive the source switch: the cloud
+        // connection is released and the stale preview neither confirms nor
+        // starts anything.
+        Assert.AreEqual(1, opener.Calls);
+        Assert.AreEqual(1, connect.SnapshotCalls().Count);
+        Assert.AreEqual(1, connect.Releases);
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+        await ClickAsync(fixture, "start-button");
+        await fixture.SettleAsync();
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+        Assert.IsTrue((await fixture.ReadAsync(w => w.Result)).Cancelled);
+
+        await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
+        await fixture.SettleAsync();
+        await ClickAsync(fixture, "preview-button");
+        session.CompletePending();
+        await fixture.SettleAsync();
+        // The new precheck runs against the local file's provider only; the
+        // cloud token/provider is not reused for the new source.
+        Assert.AreSame(localProvider, session.SnapshotCalls()[^1].Provider);
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<Button>(w, "start-button").IsEnabled));
+    }
+
+    [TestMethod]
+    public async Task ClosingWhileOpeningLocalFileReleasesLateConnectionWithoutAdopting()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        var opener = new FakeLocalFileOpener(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session, opener);
+        await fixture.ShowAsync();
+        await ClickAsync(fixture, "source-file-button"); // Gate stays open: file read in flight.
+        await fixture.DoAsync(w => w.Close()); // Busy: close deferred, lifetime cancelled.
+
+        // The opener ignores the token and completes with a real connection.
+        int releases = 0;
+        opener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(log, "prov-late"),
+            () => releases++));
+        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+
+        // The late connection is released exactly once, never adopted into
+        // the catalog, and the precheck never starts.
+        Assert.AreEqual(1, releases);
+        Assert.AreEqual(0, connect.SnapshotCalls().Count);
+        Assert.AreEqual(0, session.SnapshotCalls().Count);
+        Assert.AreEqual(1, session.Disposals);
+        Assert.AreEqual(0, await fixture.ReadAsync(w => Require<StackPanel>(w, "tables-panel").Children.Count));
+        Assert.AreEqual("读取本地 .base 文件已取消。",
+            await fixture.ReadAsync(w => Require<TextBlock>(w, "status-text").Text));
+    }
+
+    [TestMethod]
     public async Task WindowCompositionRendersRealContentAndOptInScreenshotsStayInsideBuildTree()
     {
         // Feishu scenario only: synthetic Feishu catalog/plan data — never a
@@ -682,9 +877,45 @@ public sealed class SourceImportWindowTests
             unsupported = await fixture.ReadAsync(CaptureWindow);
         }
 
+        // Synthetic local .base scenario: a fabricated .local catalog — never
+        // the user's real sample file — with the full non-table disclosure
+        // set (workflows/dashboards/views, attachment reference snapshots,
+        // unexported formula values) next to a still-selectable data table.
+        var localLog = new EventLog();
+        var localConnect = new FakeConnect(localLog);
+        var localOpener = new FakeLocalFileOpener(localLog);
+        Capture localNotices;
+        using (var fixture = new NativeWizardStaFixture("feishu", localConnect,
+            new FakeWizardSession(localLog), localOpener))
+        {
+            await fixture.DoAsync(w => { w.Width = 880; w.Height = 1080; });
+            await fixture.ShowAsync();
+            await ClickAsync(fixture, "source-file-button");
+            localOpener.CompleteWith(LocalBaseConnection(new FakeSourceProvider(localLog, "prov-shot-local"),
+                () => localLog.Add("local-connection:released"),
+            [
+                "文件包含 1 个工作流：工作流（自动化）不会随导入迁移",
+                "文件包含 2 个仪表盘：仪表盘不会随导入迁移",
+                "文件包含 3 个视图：视图配置不会随导入迁移",
+                "附件字段仅保留引用快照：附件字节不会下载或迁入",
+                "表「订单」字段「总额」是公式：源文件未导出计算值，不会迁入计算值",
+            ], name: "合成示例.local.base"));
+            await fixture.SettleAsync();
+            await fixture.DoAsync(w =>
+            {
+                Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true;
+                ScrollAnchorIntoView(w, Require<StackPanel>(w, "notices-panel"), 96);
+            });
+            await fixture.SettleAsync();
+            // Gated state capture: notices disclosed, acknowledgement still
+            // unchecked, preflight therefore unavailable.
+            localNotices = await fixture.ReadAsync(CaptureWindow);
+        }
+
         foreach ((string name, Capture capture) in new[]
         {
             ("catalog", catalog), ("precheck", precheck), ("wps-unsupported", unsupported),
+            ("local-notices", localNotices),
         })
         {
             Assert.IsTrue(capture.Width > 600 && capture.Height > 500,
@@ -700,6 +931,7 @@ public sealed class SourceImportWindowTests
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-catalog.png"), catalog.Png);
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-precheck.png"), precheck.Png);
         File.WriteAllBytes(Path.Combine(directory, "native-wizard-wps-unsupported.png"), unsupported.Png);
+        File.WriteAllBytes(Path.Combine(directory, "native-wizard-local-notices.png"), localNotices.Png);
     }
 
     private static async Task AssertConfirmationInvalidatedAsync(NativeWizardStaFixture fixture)
@@ -724,6 +956,15 @@ public sealed class SourceImportWindowTests
         await fixture.DoAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked = true);
         await fixture.SettleAsync();
     }
+
+    /// <summary>Synthetic local .base catalog exactly as the MainWindow
+    /// opener hands it over: no token, no signature, no file path in the
+    /// window, optional non-table notices.</summary>
+    private static NativeSourceConnection LocalBaseConnection(
+        FakeSourceProvider provider, Action release, string[]? notices = null, string name = "本地 base 文件") => new(
+        name,
+        [new NativeSourceTable("tbl-1", "订单", [new NativeSourceField("f-title", "标题", "text", "text")])],
+        _ => provider, release, Notices: notices);
 
     private static Task ClickAsync(NativeWizardStaFixture fixture, string automationId) =>
         fixture.DoAsync(w => Require<Button>(w, automationId)
@@ -846,7 +1087,8 @@ public sealed class SourceImportWindowTests
         internal Dispatcher Dispatcher =>
             _dispatcher ?? throw new AssertFailedException("Native wizard dispatcher was not constructed.");
 
-        internal NativeWizardStaFixture(string provider, FakeConnect connect, FakeWizardSession session)
+        internal NativeWizardStaFixture(string provider, FakeConnect connect, FakeWizardSession session,
+            FakeLocalFileOpener? openLocalFile = null)
         {
             _thread = new Thread(() =>
             {
@@ -856,7 +1098,7 @@ public sealed class SourceImportWindowTests
                 {
                     _dispatcher = Dispatcher.CurrentDispatcher;
                     window = new SourceImportWindow(provider, connect.Invoke, session,
-                        DescribeSafe, CancellationToken.None);
+                        DescribeSafe, CancellationToken.None, openLocalFile is null ? null : openLocalFile.Invoke);
                     // Composition-only presentation: no taskbar entry, no
                     // focus stealing and parked far off-screen.
                     window.WindowStartupLocation = WindowStartupLocation.Manual;
@@ -1054,6 +1296,28 @@ public sealed class SourceImportWindowTests
                 _ => provider,
                 () => { Releases++; log.Add("connection:released"); }, unsupportedSheets));
         }
+    }
+
+    /// <summary>Fake .base opener mirroring the MainWindow-injected delegate:
+    /// gated at its await boundary, fully offline — no file dialog, no file
+    /// path, no HTTP, so tests never touch the user's real sample.</summary>
+    private sealed class FakeLocalFileOpener(EventLog log)
+    {
+        private readonly object _gate = new();
+        internal TaskCompletionSource<NativeSourceConnection?>? Pending { get; private set; }
+        internal int Calls { get; private set; }
+
+        internal Task<NativeSourceConnection?> Invoke(CancellationToken token)
+        {
+            var completion = new TaskCompletionSource<NativeSourceConnection?>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_gate) { Calls++; Pending = completion; }
+            log.Add("local-file:enter");
+            return completion.Task;
+        }
+
+        internal void CompleteWith(NativeSourceConnection connection) => Pending!.TrySetResult(connection);
+        internal void CompleteWithCancel() => Pending!.TrySetResult(null);
     }
 
     internal sealed record PrepareCall(IHostSourceImportProvider Provider, HostSourceImportOptions Options);

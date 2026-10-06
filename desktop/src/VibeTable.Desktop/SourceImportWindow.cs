@@ -17,9 +17,12 @@ internal sealed record NativeSourceTable(string Id, string Name, NativeSourceFie
 /// silently dropping or only logging it.</summary>
 internal sealed record NativeSourceUnsupportedSheet(string Id, string Name, string SheetType, string Reason);
 
+/// <summary>Non-table disclosures of a local .base file; every entry is
+/// shown and requires acknowledgement before preflight, never dropped.</summary>
 internal sealed record NativeSourceConnection(string Name, NativeSourceTable[] Tables,
     Func<string[], IHostSourceImportProvider> CreateProvider, Action Release,
-    NativeSourceUnsupportedSheet[]? UnsupportedSheets = null) : IDisposable
+    NativeSourceUnsupportedSheet[]? UnsupportedSheets = null,
+    string[]? Notices = null) : IDisposable
 {
     public void Dispose() => Release();
 }
@@ -28,6 +31,7 @@ internal sealed record NativeSourceConnection(string Name, NativeSourceTable[] T
 internal sealed class SourceImportWindow : Window
 {
     private readonly Func<string, string, string, string, CancellationToken, Task<NativeSourceConnection>> _connect;
+    private readonly Func<CancellationToken, Task<NativeSourceConnection?>>? _openLocalFile;
     private readonly IHostSourceImportWizardSession _session;
     private readonly Func<Exception, string> _describeError;
     private readonly CancellationTokenSource _lifetime;
@@ -39,6 +43,12 @@ internal sealed class SourceImportWindow : Window
     private readonly StackPanel _credentials = new();
     private readonly StackPanel _tables = new();
     private readonly StackPanel _unsupported = new();
+    private readonly StackPanel _notices = new();
+    private readonly CheckBox _noticeAcknowledge = new()
+    {
+        Content = "我已阅读并理解上述告知：相应内容不会随导入迁移，仍要继续导入数据表",
+        Visibility = Visibility.Collapsed,
+    };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _report = new() { TextWrapping = TextWrapping.Wrap };
     private readonly CheckBox _reverse = new() { Content = "允许为单向关联创建迁移反向字段" };
@@ -47,6 +57,7 @@ internal sealed class SourceImportWindow : Window
     private readonly List<TableChoice> _choices = [];
     private NativeSourceConnection? _connection;
     private HostSourceImportPreview? _preview;
+    private bool _noticesAcknowledged;
     private bool _busy;
     private bool _closing;
     private bool _closed;
@@ -56,9 +67,11 @@ internal sealed class SourceImportWindow : Window
     internal SourceImportWindow(string provider,
         Func<string, string, string, string, CancellationToken, Task<NativeSourceConnection>> connect,
         IHostSourceImportWizardSession session, Func<Exception, string> describeError,
-        CancellationToken cancellation)
+        CancellationToken cancellation,
+        Func<CancellationToken, Task<NativeSourceConnection?>>? openLocalFile = null)
     {
         _connect = connect;
+        _openLocalFile = openLocalFile;
         _session = session;
         _describeError = describeError;
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -79,6 +92,8 @@ internal sealed class SourceImportWindow : Window
         AutomationProperties.SetAutomationId(_reverse, "reverse-checkbox");
         AutomationProperties.SetAutomationId(_tables, "tables-panel");
         AutomationProperties.SetAutomationId(_unsupported, "unsupported-panel");
+        AutomationProperties.SetAutomationId(_notices, "notices-panel");
+        AutomationProperties.SetAutomationId(_noticeAcknowledge, "notice-acknowledge-checkbox");
 
         var root = new DockPanel { Margin = new Thickness(24) };
         var footer = new StackPanel { Orientation = Orientation.Horizontal,
@@ -106,17 +121,34 @@ internal sealed class SourceImportWindow : Window
             AddInput(_credentials, "签名 secret key（未开启签名请留空）", _secret, "secret-input");
         }
         var connectButton = new Button { Content = "连接并读取表目录", HorizontalAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 8, 0, 12) };
+            Padding = new Thickness(12, 6, 12, 6) };
         AutomationProperties.SetAutomationId(connectButton, "connect-button");
         connectButton.Click += async (_, _) => await ConnectAsync();
-        _credentials.Children.Add(connectButton);
+        var connectRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 12) };
+        connectRow.Children.Add(connectButton);
+        // Only Feishu with an injected opener gets the local entry; the
+        // window itself never touches a file path or credential.
+        if (provider == "feishu" && openLocalFile is not null)
+        {
+            var localFileButton = new Button { Content = "从 .base 文件导入",
+                Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(8, 0, 0, 0) };
+            AutomationProperties.SetAutomationId(localFileButton, "source-file-button");
+            localFileButton.Click += async (_, _) => await OpenLocalFileAsync();
+            connectRow.Children.Add(localFileButton);
+        }
+        _credentials.Children.Add(connectRow);
         content.Children.Add(_credentials);
         content.Children.Add(_status);
         content.Children.Add(_unsupported);
+        content.Children.Add(_notices);
+        _noticeAcknowledge.Margin = new Thickness(0, 8, 0, 0);
+        content.Children.Add(_noticeAcknowledge);
         content.Children.Add(_tables);
         _reverse.Margin = new Thickness(0, 16, 0, 12);
         _reverse.Checked += (_, _) => InvalidatePreview();
         _reverse.Unchecked += (_, _) => InvalidatePreview();
+        _noticeAcknowledge.Checked += (_, _) => AcknowledgeNotices(true);
+        _noticeAcknowledge.Unchecked += (_, _) => AcknowledgeNotices(false);
         content.Children.Add(_reverse);
         content.Children.Add(_report);
         Content = root;
@@ -144,12 +176,7 @@ internal sealed class SourceImportWindow : Window
     {
         if (_busy || _closing) return;
         SetBusy(true);
-        InvalidatePreview();
-        _connection?.Dispose();
-        _connection = null;
-        _choices.Clear();
-        _tables.Children.Clear();
-        _unsupported.Children.Clear();
+        ResetConnection();
         _status.Text = "正在连接并读取当前授权范围内的表目录…";
         string secret = _secret.Password;
         string accessToken = _token.Password;
@@ -157,22 +184,79 @@ internal sealed class SourceImportWindow : Window
         _token.Clear();
         try
         {
-            _connection = await _connect(_source.Text.Trim(), accessToken,
+            NativeSourceConnection connection = await _connect(_source.Text.Trim(), accessToken,
                 _accessKey.Text.Trim(), secret, _lifetime.Token);
-            _lifetime.Token.ThrowIfCancellationRequested();
-            foreach (NativeSourceTable table in _connection.Tables) AddTable(table);
-            AddUnsupportedSheets(_connection.UnsupportedSheets);
-            int unsupported = _connection.UnsupportedSheets?.Length ?? 0;
-            string unsupportedNote = unsupported > 0
-                ? $"另有 {unsupported} 个来源项不支持迁移，已在下方逐项列出原因。"
-                : "";
-            _status.Text = (_connection.Tables.Length == 0
-                ? "连接成功，当前授权范围内没有数据表。请核对授权后重新连接。"
-                : $"{_connection.Name} · 当前授权范围内 {_connection.Tables.Length} 张表。请选择表及必要的关联目标。") + unsupportedNote;
+            ReleaseLateConnection(connection);
+            AdoptConnection(connection);
         }
         catch (OperationCanceledException) { _status.Text = "读取已取消。"; }
         catch (Exception error) { _status.Text = SafeError(error); }
         finally { SetBusy(false); }
+    }
+
+    /// <summary>Loads a local .base file via the injected opener; null is
+    /// plain user cancellation — no error, no write and no precheck.</summary>
+    private async Task OpenLocalFileAsync()
+    {
+        Func<CancellationToken, Task<NativeSourceConnection?>>? opener = _openLocalFile;
+        if (_busy || _closing || opener is null) return;
+        SetBusy(true);
+        _status.Text = "正在读取本地 .base 文件…";
+        try
+        {
+            NativeSourceConnection? connection = await opener(_lifetime.Token);
+            ReleaseLateConnection(connection);
+            if (connection is null)
+            { _status.Text = "已取消选择本地 .base 文件，未导入任何内容。"; return; }
+            ResetConnection();
+            AdoptConnection(connection, localFile: true);
+        }
+        catch (OperationCanceledException) { _status.Text = "读取本地 .base 文件已取消。"; }
+        catch (Exception error) { _status.Text = SafeError(error); }
+        finally { SetBusy(false); }
+    }
+
+    // Late results after cancellation are never adopted: window disposal may
+    // already have run, so the freshly returned connection is released here.
+    private void ReleaseLateConnection(NativeSourceConnection? connection)
+    {
+        if (!_lifetime.Token.IsCancellationRequested) return;
+        connection?.Dispose();
+        _lifetime.Token.ThrowIfCancellationRequested();
+    }
+
+    private void ResetConnection()
+    {
+        // Switching sources immediately releases the old pending preview and
+        // its provider in the Host session, not at the next Prepare.
+        _session.DiscardPreview();
+        InvalidatePreview();
+        _connection?.Dispose();
+        _connection = null;
+        _choices.Clear();
+        _tables.Children.Clear();
+        _unsupported.Children.Clear();
+        ResetNotices();
+    }
+
+    /// <summary>Shared catalog receiver for cloud and local sources: one
+    /// connection lifecycle feeding the same preflight pipeline.</summary>
+    private void AdoptConnection(NativeSourceConnection connection, bool localFile = false)
+    {
+        _connection = connection;
+        foreach (NativeSourceTable table in connection.Tables) AddTable(table);
+        AddUnsupportedSheets(connection.UnsupportedSheets);
+        AddNotices(connection.Notices);
+        int unsupported = connection.UnsupportedSheets?.Length ?? 0;
+        string unsupportedNote = unsupported > 0
+            ? $"另有 {unsupported} 个来源项不支持迁移，已在下方逐项列出原因。"
+            : "";
+        string catalog = connection.Tables.Length == 0
+            ? localFile
+                ? "读取成功，该 .base 文件中没有数据表。"
+                : "连接成功，当前授权范围内没有数据表。请核对授权后重新连接。"
+            : $"{connection.Name} · {(localFile ? "共" : "当前授权范围内")} {connection.Tables.Length} 张表。请选择表及必要的关联目标。";
+        _status.Text = catalog + unsupportedNote;
     }
 
     private void AddTable(NativeSourceTable table)
@@ -263,9 +347,50 @@ internal sealed class SourceImportWindow : Window
         }
     }
 
+    private void AddNotices(string[]? notices)
+    {
+        ResetNotices();
+        if (notices is not { Length: > 0 }) return;
+        _notices.Children.Add(new TextBlock
+        {
+            Text = $"该来源包含 {notices.Length} 项不会随导入迁移的内容，请逐条阅读：",
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 12, 0, 4),
+        });
+        for (int index = 0; index < notices.Length; index++)
+        {
+            var line = new TextBlock { Text = notices[index], TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 2) };
+            AutomationProperties.SetAutomationId(line, $"notice-{index}");
+            _notices.Children.Add(line);
+        }
+        _noticeAcknowledge.Visibility = Visibility.Visible;
+    }
+
+    private void ResetNotices()
+    {
+        _noticesAcknowledged = false;
+        _noticeAcknowledge.IsChecked = false;
+        _noticeAcknowledge.Visibility = Visibility.Collapsed;
+        _notices.Children.Clear();
+    }
+
+    private bool NoticesPending => _connection?.Notices is { Length: > 0 } && !_noticesAcknowledged;
+
+    private void AcknowledgeNotices(bool acknowledged)
+    {
+        _noticesAcknowledged = acknowledged;
+        if (!acknowledged) InvalidatePreview();
+        if (!_busy)
+            _previewButton.IsEnabled = _connection is { Tables.Length: > 0 } && !NoticesPending;
+    }
+
     private async Task PreviewAsync()
     {
         if (_busy || _closing || _connection is null) return;
+        if (NoticesPending)
+        { _report.Text = "请先阅读并勾选确认上方告知，再进行预检。"; return; }
         TableChoice[] selected = _choices.Where(c => c.Selected.IsChecked == true).ToArray();
         if (selected.Length == 0) { _report.Text = "请至少选择一张来源表。"; return; }
         SetBusy(true);
@@ -363,13 +488,7 @@ internal sealed class SourceImportWindow : Window
     private void ConnectionChanged()
     {
         if (_busy || _closed) return;
-        _session.DiscardPreview();
-        _connection?.Dispose();
-        _connection = null;
-        _choices.Clear();
-        _tables.Children.Clear();
-        _unsupported.Children.Clear();
-        InvalidatePreview();
+        ResetConnection();
         _previewButton.IsEnabled = false;
         _status.Text = "连接配置已变化，请重新连接。";
     }
@@ -380,7 +499,8 @@ internal sealed class SourceImportWindow : Window
         _credentials.IsEnabled = !value;
         _tables.IsEnabled = !value;
         _reverse.IsEnabled = !value;
-        _previewButton.IsEnabled = !value && _connection is { Tables.Length: > 0 };
+        _noticeAcknowledge.IsEnabled = !value;
+        _previewButton.IsEnabled = !value && _connection is { Tables.Length: > 0 } && !NoticesPending;
         _startButton.IsEnabled = !value && _preview?.Plan.GetProperty("canApply").GetBoolean() == true;
         if (!value && _closing) Close();
     }
