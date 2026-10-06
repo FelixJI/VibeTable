@@ -11,16 +11,17 @@ describe("importSources catalog", () => {
     }
   });
 
-  it("keeps cloud sources explicitly unavailable without picker accepts", () => {
-    for (const cloud of IMPORT_SOURCES.filter((source) => !source.available)) {
+  it("routes cloud sources to native wizards without local file accepts", () => {
+    for (const cloud of IMPORT_SOURCES.filter((source) => source.accept === null)) {
       expect(cloud.id === "feishu" || cloud.id === "wps").toBe(true);
       expect(cloud.accept).toBeNull();
+      expect(cloud.available).toBe(true);
       expect(cloud.unavailableReasonKey).toBe("importManagement.source.unavailableTooltip");
     }
   });
 
   it("exposes file accepts only for the available local sources", () => {
-    const locals = IMPORT_SOURCES.filter((source) => source.available);
+    const locals = IMPORT_SOURCES.filter((source) => source.available && source.accept !== null);
     expect(locals.map((source) => source.id)).toEqual(["csv", "xlsx"]);
     expect(localFileAcceptList()).toEqual([".csv", ".xlsx", ".xlsm"]);
   });

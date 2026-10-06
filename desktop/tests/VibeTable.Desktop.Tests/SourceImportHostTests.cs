@@ -11,6 +11,36 @@ namespace VibeTable.Desktop.Tests;
 public sealed class SourceImportHostTests
 {
     [TestMethod]
+    public async Task DiscardOnlyReleasesUnsubmittedProviderInItsOwnWorkspace()
+    {
+        using var fixture = new Fixture();
+        using var foreign = new Fixture();
+        HostSourceImportPreview preview = await fixture.Prepare();
+        fixture.Registry.DiscardSourceImportProvider(foreign.Snapshot, preview.ProviderSessionId);
+        Assert.IsFalse(fixture.Provider.Disposed.Task.IsCompleted);
+        fixture.Registry.DiscardSourceImportProvider(fixture.Snapshot, preview.ProviderSessionId);
+        await fixture.Provider.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => fixture.Start(preview));
+        Assert.AreEqual(0, fixture.Http.Executions);
+    }
+
+    [TestMethod]
+    public async Task DiscardAfterConfirmationDoesNotCancelSubmittedTask()
+    {
+        using var fixture = new Fixture();
+        fixture.Provider.ObserveGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        HostSourceImportPreview preview = await fixture.Prepare();
+        JsonElement initial = await fixture.Start(preview);
+        await fixture.Provider.Observing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Registry.DiscardSourceImportProvider(fixture.Snapshot, preview.ProviderSessionId);
+        Assert.IsFalse(fixture.Provider.Disposed.Task.IsCompleted);
+        fixture.Provider.ObserveGate.TrySetResult();
+        JsonElement result = await fixture.Terminal(initial);
+        Assert.AreEqual("succeeded", result.GetProperty("state").GetString());
+        Assert.AreEqual(1, fixture.Http.Executions);
+        await fixture.Provider.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+    [TestMethod]
     public async Task CatalogRefreshFailureDoesNotReclassifyOrReexecuteCommittedMigration()
     {
         using var fixture = new Fixture();

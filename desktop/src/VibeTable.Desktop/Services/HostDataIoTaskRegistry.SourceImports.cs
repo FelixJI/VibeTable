@@ -489,12 +489,19 @@ internal sealed partial class HostDataIoTaskRegistry
         return true;
     }
 
-    private void RetireSourceSession(SourceSession session)
+    internal void DiscardSourceImportProvider(ProductSidecarGenerationSnapshot snapshot, string id)
+    {
+        SourceSession? session;
+        lock (_gate) session = _sourceSessions.GetValueOrDefault(id);
+        if (session is not null && session.Snapshot.Matches(snapshot))
+            RetireSourceSession(session, unconsumedOnly: true);
+    }
+    private void RetireSourceSession(SourceSession session, bool unconsumedOnly = false)
     {
         SourceTask? task;
         lock (_gate)
         {
-            if (session.Retired) return;
+            if (session.Retired || (unconsumedOnly && session.Consumed)) return;
             session.Retired = true;
             task = _sourceTasks.Values.FirstOrDefault(t => ReferenceEquals(t.Session, session));
             foreach (string id in _sourceSessions.Where(p => ReferenceEquals(p.Value, session)).Select(p => p.Key).ToArray())

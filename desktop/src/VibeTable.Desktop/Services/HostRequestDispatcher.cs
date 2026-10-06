@@ -150,6 +150,7 @@ internal sealed class HostRequestDispatcher
         DeviceSettingsRequestController deviceSettings,
         GridPresentationRequestController gridPresentation,
         HostCommandRequestController commands,
+        HostSourceImportRequestController sourceImports,
         Action<RoutedWebRequest>? beforeDispatch = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
@@ -163,6 +164,7 @@ internal sealed class HostRequestDispatcher
         ArgumentNullException.ThrowIfNull(deviceSettings);
         ArgumentNullException.ThrowIfNull(gridPresentation);
         ArgumentNullException.ThrowIfNull(commands);
+        ArgumentNullException.ThrowIfNull(sourceImports);
         _beforeDispatch = beforeDispatch;
         _routes =
         [
@@ -174,6 +176,7 @@ internal sealed class HostRequestDispatcher
             new(DeviceSettingsRequestController.Handles,
                 request => _ = deviceSettings.DispatchAsync(request)),
             new(HostCommandRequestController.Handles, request => _ = commands.DispatchAsync(request)),
+            new(HostSourceImportRequestController.Handles, request => _ = sourceImports.DispatchAsync(request)),
             new(GridPresentationRequestController.Handles,
                 request => _ = gridPresentation.DispatchAsync(request)),
             new(DocumentRequestController.Handles,

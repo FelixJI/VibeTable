@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NAlert, NButton, NEmpty, NIcon, NTag, NTooltip } from "naive-ui";
-import { ArrowDownToLine, ChevronDown, CloudOff, FileSpreadsheet, FileText, RefreshCw, Table2 } from "@lucide/vue";
+import { ArrowDownToLine, ChevronDown, Cloud, FileSpreadsheet, FileText, RefreshCw, Table2 } from "@lucide/vue";
 import type { ImportHistoryEntry, SourceImportEntry } from "@/contracts/importManagement";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { collectionLabel } from "@/components/layout/collectionLabel";
@@ -26,12 +26,15 @@ const props = withDefaults(defineProps<{
   cancellingTaskId: string | null;
   pendingSourceName: string | null;
   canStart: boolean;
+  canStartCloud?: boolean;
 }>(), {
   sourceEntries: () => [],
+  canStartCloud: false,
 });
 
 const emit = defineEmits<{
   newImport: [];
+  newCloudImport: [provider: "feishu" | "wps"];
   cancelSource: [];
   chooseTarget: [collection: string];
   refresh: [];
@@ -45,8 +48,8 @@ const workspace = useWorkspaceStore();
 const sourceIcons: Record<ImportSourceId, typeof FileText> = {
   csv: FileText,
   xlsx: FileSpreadsheet,
-  feishu: CloudOff,
-  wps: CloudOff,
+  feishu: Cloud,
+  wps: Cloud,
 };
 
 const catalogSources = IMPORT_SOURCES.map((source) => ({
@@ -173,14 +176,14 @@ function toggleExpanded(taskId: string): void {
               v-if="source.available"
               type="button"
               class="import-source-card"
-              :disabled="!props.canStart"
+              :disabled="source.accept ? !props.canStart : !props.canStartCloud"
               :data-testid="`import-source-${source.id}`"
-              @click="emit('newImport')"
+              @click="source.id === 'feishu' || source.id === 'wps' ? emit('newCloudImport', source.id) : emit('newImport')"
             >
               <span class="import-source-icon"><NIcon :size="19"><component :is="source.icon" /></NIcon></span>
               <span class="import-source-copy">
                 <strong>{{ source.label }}</strong>
-                <small>{{ t("importManagement.source.hint") }}</small>
+                <small>{{ source.accept ? t("importManagement.source.hint") : t(`importManagement.source.${source.id}Hint`) }}</small>
               </span>
             </button>
             <NTooltip v-else placement="top" :delay="200">

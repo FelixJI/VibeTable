@@ -300,6 +300,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "preset.save",
   "preset.delete",
   "command.list",
+  "sourceImport.open",
   "command.run",
   "shortcut.list",
   "shortcut.save",
@@ -425,6 +426,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "preset.save",
   "preset.delete",
   "command.list",
+  "sourceImport.open",
   "command.run",
   "shortcut.list",
   "shortcut.save",
@@ -583,6 +585,7 @@ const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Se
   "tableAdmin.deleteRequested",
 ]);
 const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+  "sourceImport.open",
   "file.previewRequested",
   "file.downloadRequested",
 ]);

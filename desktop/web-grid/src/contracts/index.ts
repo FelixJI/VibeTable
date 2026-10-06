@@ -1443,6 +1443,7 @@ export type WebMessageType =
   | "preset.save"
   | "preset.delete"
   | "command.list"
+  | "sourceImport.open"
   | "command.run"
   | "shortcut.list"
   | "shortcut.save"
@@ -1599,6 +1600,7 @@ export type HostMessageType =
   | "preset.save"
   | "preset.delete"
   | "command.list"
+  | "sourceImport.open"
   | "command.run"
   | "shortcut.list"
   | "shortcut.save"
@@ -1934,6 +1936,7 @@ export interface HostPayloadMap {
   "preset.save": PresetEntry;
   "preset.delete": DeletePresetVersionResult;
   "command.list": { readonly commands: readonly HostCommandEntry[] };
+  "sourceImport.open": { readonly cancelled: boolean; readonly taskId: string | null };
   "command.run": { readonly commandId: string; readonly success: boolean; readonly output: ExportResult; readonly error: string | null };
   "shortcut.list": { readonly shortcuts: readonly HostShortcut[] };
   "shortcut.save": HostShortcut;
@@ -2085,6 +2088,7 @@ export interface WebPayloadMap {
     readonly operationId: string;
   };
   "command.list": Record<string, never>;
+  "sourceImport.open": { readonly provider: "feishu" | "wps" };
   "command.run": { readonly commandId: "export.query"; readonly params: HostExportParameters };
   "shortcut.list": Record<string, never>;
   "shortcut.save": { readonly shortcut: HostShortcut };

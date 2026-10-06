@@ -95,9 +95,9 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
     if (managedTarget) {
       await page.getByTestId("import-management-open").click();
       await page.getByTestId("import-management").waitFor({ state: "visible" });
-      recorder.check("unimplemented cloud sources are explicitly unavailable",
-        await page.getByTestId("import-source-feishu").isDisabled()
-          && await page.getByTestId("import-source-wps").isDisabled());
+      recorder.check("cloud source choices are available for explicit activation",
+        await page.getByTestId("import-source-feishu").isEnabled()
+          && await page.getByTestId("import-source-wps").isEnabled());
       await page.getByTestId("import-source-xlsx").click();
       await page.getByTestId("import-target-option")
         .filter({ hasText: managedTarget }).click();

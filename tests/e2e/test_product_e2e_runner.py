@@ -6309,7 +6309,17 @@ function Add-Type {
             *command[:-1],
             base64.b64encode((guard + script).encode("utf-16-le")).decode("ascii"),
         ]
-        result = run(command, **kwargs)
+        try:
+            result = run(command, **kwargs)
+        except subprocess.TimeoutExpired as error:
+            stderr = error.stderr
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            stages = "\n".join(
+                line[:512] for line in (stderr or "").splitlines() if "UIA_STAGE " in line
+            )
+            error.add_note(f"UIA timeout stages:\n{stages[-8192:] or '<no stage output>'}")
+            raise
         captured["stderr"] = result.stderr
         captured["stdout"] = result.stdout
         print(f"UIA_CLIENT argv={command[:-1]} timeout={kwargs['timeout']}")

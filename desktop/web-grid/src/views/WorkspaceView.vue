@@ -265,6 +265,7 @@ importManagement.bindScope(() => ({
 }));
 const importSourceGrant = ref<SessionPathGrant | null>(null);
 const pickingImportSource = ref(false);
+const openingCloudImport = ref(false);
 const choosingImportTarget = ref(false);
 const cancellingImportTaskId = ref<string | null>(null);
 const importManagementProps = computed(() => ({
@@ -277,7 +278,10 @@ const importManagementProps = computed(() => ({
   taskCancellable: dataIoBusy.value,
   cancellingTaskId: cancellingImportTaskId.value,
   pendingSourceName: importSourceGrant.value?.displayName ?? null,
-  canStart: workspace.collections.length > 0 && !dataIoBusy.value && !importSourceGrant.value,
+  canStart: workspace.collections.length > 0 && !dataIoBusy.value && !importSourceGrant.value
+    && !openingCloudImport.value && !pickingImportSource.value,
+  canStartCloud: !!workspaceSession.activeWorkspaceId && !dataIoBusy.value && !importSourceGrant.value
+    && !openingCloudImport.value && !pickingImportSource.value,
 }));
 
 function importScopeSnapshot() {
@@ -292,10 +296,31 @@ function importScopeRetired(scope: { workspaceId: string | null; sessionEpoch: n
   return current.workspaceId !== scope.workspaceId || current.sessionEpoch !== scope.sessionEpoch;
 }
 
+async function startCloudImport(provider: "feishu" | "wps"): Promise<void> {
+  // Two-direction mutex with the local picker: only one native dialog may be
+  // open at a time, whichever entry was clicked first.
+  if (openingCloudImport.value || pickingImportSource.value
+    || dataIoBusy.value || importSourceGrant.value) return;
+  const scope = importScopeSnapshot();
+  if (!scope.workspaceId || scope.sessionEpoch === null) return;
+  openingCloudImport.value = true;
+  try {
+    const result = await hostBridge.request("sourceImport.open", { provider });
+    if (importScopeRetired(scope)) return;
+    if (!result.cancelled) await importManagement.refresh();
+  } catch {
+    if (!importScopeRetired(scope)) message.error(t("importManagement.cloudOpenFailed"));
+  } finally {
+    openingCloudImport.value = false;
+  }
+}
 /** Opens the native source picker for the managed flow (no preview yet). */
 async function startManagedImport(): Promise<void> {
   if (pickingImportSource.value) return;
-  if (dataIoBusy.value || importSourceGrant.value || workspace.collections.length === 0) return;
+  // The other mutex direction: never open the local picker while the native
+  // cloud wizard is already up.
+  if (openingCloudImport.value || dataIoBusy.value || importSourceGrant.value
+    || workspace.collections.length === 0) return;
   // Admission lock across the picker await: rapid clicks must not open a
   // second native picker dialog.
   pickingImportSource.value = true;
@@ -1476,6 +1501,7 @@ useKeyboard({
           v-if="!showWorkspaceCenterScreen && ui.activeView === 'imports'"
           v-bind="importManagementProps"
           @new-import="startManagedImport"
+          @new-cloud-import="startCloudImport"
           @cancel-source="cancelManagedImportSource"
           @choose-target="chooseImportTarget"
           @refresh="importManagement.refresh()"

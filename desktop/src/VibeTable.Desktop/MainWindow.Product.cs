@@ -479,6 +479,8 @@ public partial class MainWindow : Window
                 new WindowsHostCommandActions(this, () => _productGateway as IHostCommandExportGateway,
                     new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
                     _e2eControlsDir), message => _readiness?.Trace(message)),
+            new HostSourceImportRequestController(_webBridge, _workspaceSessionFilter,
+                new HostSourceImportActions(OpenSourceImportAsync)),
             TraceHostRequest);
 
         _runtime.ClientReady += OnRuntimeClientReady;

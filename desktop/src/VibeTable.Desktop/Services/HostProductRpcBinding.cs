@@ -40,6 +40,26 @@ internal sealed class HostProductRpcBinding(
             ensurePython is null ? null : token => ensurePython(leases, token),
             tryUseExactPython, hostFiles is null ? null : () => hostFiles(leases)));
 
+    internal IHostSourceImportWizardSession CreateSourceImportWizardSession(
+        IWorkspaceHostEpochLeaseSource leases, Action ensureCurrent)
+    {
+        T Current<T>(Func<T> action)
+        {
+            ensureCurrent();
+            T result = default!;
+            if (!(tryUseGo ?? tryUsePython)(() => { result = action(); return true; }))
+                throw new BackendUnavailableException("Source import workspace is unavailable.");
+            return result;
+        }
+        return new HostSourceImportWizardSession(
+            provider => Current(() => taskOwner.RegisterSourceImportProvider(_snapshot, leases, provider)),
+            (id, options, token) => Current(() => taskOwner.PrepareSourceImportAsync(id, options, token)),
+            preview => Current(() => taskOwner.StartSourceImport(_snapshot,
+                System.Text.Json.JsonSerializer.SerializeToElement(new
+                { providerSessionId = preview.ProviderSessionId, token = preview.Token, confirmed = true }))
+                .GetProperty("taskId").GetString()!),
+            id => taskOwner.DiscardSourceImportProvider(_snapshot, id), ensureCurrent);
+    }
     internal Task<JsonRpcClient> EnsurePythonClientAsync(
         IWorkspaceHostEpochLeaseSource leases, CancellationToken token)
         => ensurePython is not null ? ensurePython(leases, token)
