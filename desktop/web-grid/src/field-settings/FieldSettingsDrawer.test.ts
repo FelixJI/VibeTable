@@ -7,7 +7,7 @@ import FieldSettingsDrawer from "./FieldSettingsDrawer.vue";
 import { useFieldSettingsStore } from "./store";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
-import { NSelect } from "naive-ui";
+import { NInputNumber, NSelect, NSwitch } from "naive-ui";
 import type {
   CapabilityV2,
   FieldChangePlanV2,
@@ -501,5 +501,196 @@ describe("FieldSettingsDrawer", () => {
       { label: "金额", value: "fld_amount", logicalType: "number" },
       { label: "备注", value: "fld_note", logicalType: "text" },
     ]);
+  });
+
+  it("数字显示预设/位数/尾零/币种写入草稿并实时预览（AC1/AC2）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    const previews = () => wrapper.findAll('[data-testid="number-display-preview"] code')
+      .map(item => item.text());
+
+    // 预设选项来自能力声明；未知预设原样透出，已知预设给中文标签。
+    expect(select("number-display-preset").props("options")).toEqual([
+      { label: "plain", value: "plain" }, { label: "货币", value: "currency" },
+    ]);
+    // 默认（max + trim）预览：1234.56789 -> 1,234.57；12 -> 12。
+    expect(previews()).toEqual(["1,234.57", "12"]);
+
+    // 切换“固定”规范化尾零规则，并预览尾零保留。
+    select("number-display-scale-mode").vm.$emit("update:value", "fixed");
+    await flushPromises();
+    expect(store.draft?.display.scaleMode).toBe("fixed");
+    expect(store.draft?.display.trimTrailingZeros).toBe(false);
+    expect(previews()).toEqual(["1,234.57", "12.00"]);
+
+    // 货币预设附带币种并预览币符。
+    select("number-display-preset").vm.$emit("update:value", "currency");
+    await flushPromises();
+    expect(store.draft?.display.preset).toBe("currency");
+    expect(store.draft?.display.currency).toBe("CNY");
+    expect(previews()).toEqual(["¥1,234.57", "¥12.00"]);
+
+    // 整数显示只改呈现，不动存储 onlyInt。
+    select("number-display-preset").vm.$emit("update:value", "integer");
+    await flushPromises();
+    expect(store.draft?.display.displayScale).toBe(0);
+    expect(store.draft?.storage.options.onlyInt).toBe(false);
+    expect(previews()).toEqual(["1,235", "12"]);
+
+    // 百分比预设解释两种存储语义并预览同一显示。
+    select("number-display-preset").vm.$emit("update:value", "percent");
+    await flushPromises();
+    expect(store.draft?.display.percentStorage).toBe("ratio");
+    expect(wrapper.get('[data-testid="number-display-preview"]').text()).toContain("存储 0.125 显示 12.5%");
+    select("number-display-percent-storage").vm.$emit("update:value", "percent");
+    await flushPromises();
+    expect(store.draft?.display.percentStorage).toBe("percent");
+    expect(wrapper.get('[data-testid="number-display-preview"]').text()).toContain("存储 12.5 显示 12.5%");
+
+    // 单位预设附着单位字符串；先把小数位调回 2 再验证附着规则。
+    select("number-display-preset").vm.$emit("update:value", "unit");
+    await flushPromises();
+    wrapper.findAllComponents(NInputNumber)
+      .find(item => item.attributes("data-testid") === "number-display-scale")!
+      .vm.$emit("update:value", 2);
+    await flushPromises();
+    wrapper.get('[data-testid="number-display-unit"]').find("input").setValue("kg");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBe("kg");
+    expect(previews()[0]).toBe("1,234.57kg");
+
+    // 关闭千分位后预览不再有分隔符。
+    wrapper.findAllComponents(NSwitch)
+      .find(item => item.attributes("data-testid") === "number-display-grouping")!
+      .vm.$emit("update:value", false);
+    await flushPromises();
+    expect(store.draft?.display.useGrouping).toBe(false);
+    expect(previews()[0]).toBe("1234.57kg");
+    expect(store.dirty).toBe(true);
+  });
+
+  it("小数位控件限 0..15 并稳定钳制非法输入（AC1）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const scaleInput = wrapper.findAllComponents(NInputNumber)
+      .find(item => item.attributes("data-testid") === "number-display-scale")!;
+    expect(scaleInput.props("min")).toBe(0);
+    expect(scaleInput.props("max")).toBe(15);
+    scaleInput.vm.$emit("update:value", 17);
+    await flushPromises();
+    expect(store.draft?.display.displayScale).toBe(15);
+    scaleInput.vm.$emit("update:value", null);
+    await flushPromises();
+    expect(store.draft?.display.displayScale).toBe(0);
+  });
+
+  it("尾零规则由位数模式唯一决定，不再提供独立开关", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    // 只读说明，不提供无效开关；wire 字段在切换模式时规范化。
+    expect(wrapper.find('[data-testid="number-display-trim"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="number-display-trailing-zeros-hint"]').text())
+      .toContain("最多模式按最多位数显示并自动去掉尾零");
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    select("number-display-scale-mode").vm.$emit("update:value", "fixed");
+    await flushPromises();
+    expect(store.draft?.display.trimTrailingZeros).toBe(false);
+    expect(wrapper.get('[data-testid="number-display-trailing-zeros-hint"]').text())
+      .toContain("固定模式始终保留指定位尾零");
+    select("number-display-scale-mode").vm.$emit("update:value", "max");
+    await flushPromises();
+    expect(store.draft?.display.trimTrailingZeros).toBe(true);
+  });
+
+  it("数字显示按权威结果类型对 Formula 开放，文本结果不开放（AC4）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("formula"));
+    let wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("结果数字显示");
+    // 货币预设同样作用于公式结果展示。
+    wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === "number-display-preset")!
+      .vm.$emit("update:value", "currency");
+    await flushPromises();
+    expect(store.draft?.display.preset).toBe("currency");
+    expect(wrapper.findAll('[data-testid="number-display-preview"] code')[0].text())
+      .toBe("¥1,234.57");
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+
+    // 文本结果的公式不开放数字显示入口。
+    const textFormula = described("formula");
+    const definitionWithTextResult = {
+      ...textFormula.definition!,
+      formula: { ...textFormula.definition!.formula!, resultType: "text" as const },
+    } as FieldDefinitionV2;
+    store.beginOpen();
+    store.load({ ...textFormula, definition: definitionWithTextResult });
+    wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
+  });
+
+  it("数字显示按权威输出类型对 Lookup 开放：SUM 汇总与数值目标（AC4）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    const lookupDescribed = described("lookup");
+    store.load(lookupDescribed);
+    store.setLookupSchemas([lookupSchemaSnapshot("tbl_customers", [
+      { name: "f_name", fieldId: "fld_name", title: "名称", kind: "scalar", dataType: "text" },
+      { name: "f_balance", fieldId: "fld_balance", title: "余额", kind: "scalar", dataType: "decimal" },
+    ])]);
+    let wrapper = mountDrawer();
+    await flushPromises();
+    // 文本目标且无聚合：不开放。
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
+    // 数值目标：数值列表元素适用数字显示。
+    store.patchDraft({
+      lookup: { ...store.draft!.lookup!, targetFieldId: "fld_balance" },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    // 文本目标 + SUM 数值聚合：结果为 decimal，开放。
+    store.patchDraft({
+      lookup: {
+        ...store.draft!.lookup!,
+        targetFieldId: "fld_name",
+        aggregation: "sum",
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("结果数字显示");
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+
+    // 文本聚合（如 values 保持文本元素）不开放。
+    store.patchDraft({
+      lookup: {
+        ...store.draft!.lookup!,
+        aggregation: "values",
+        targetFieldId: "fld_name",
+      },
+    });
+    wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
   });
 });

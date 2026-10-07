@@ -33,7 +33,7 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 			"columns": []any{map[string]any{
 				"name": "id", "title": "ID", "fieldId": "id", "kind": "system",
 				"relationId": nil, "lookupId": nil, "dataType": "text", "editable": false, "nullable": false,
-				"scale": nil, "precision": nil, "attachmentPolicy": nil,
+				"scale": nil, "precision": nil, "attachmentPolicy": nil, "display": nil,
 				"filterOperators": []string{"eq", "ne", "in", "contains", "starts_with", "ends_with", "is_null", "is_not_null"},
 			}},
 			"normalizedRelations": []any{}, "schemaRevision": snapshot.SchemaRevision, "permissionRevision": snapshot.SchemaRevision,
@@ -110,8 +110,9 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 			"name": field.Identity.PhysicalName, "title": field.DisplayName, "fieldId": field.Identity.FieldID,
 			"kind": kind, "relationId": relationID, "lookupId": lookupID, "dataType": dataType,
 			"editable": !readonly, "nullable": !field.Value.Required, "scale": field.Display.DisplayScale,
-			"precision": nil, "attachmentPolicy": attachment, "filterOperators": operators,
-			"groupable": capability.Groupable, "summaryOperations": summaries,
+			"precision": nil, "attachmentPolicy": attachment, "display": field.Display,
+			"filterOperators": operators,
+			"groupable":       capability.Groupable, "summaryOperations": summaries,
 		})
 	}
 	if primary == "" && len(snapshot.Fields) > 0 {

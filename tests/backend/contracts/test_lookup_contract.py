@@ -27,6 +27,7 @@ def _lookup(
             "source": source or {"kind": "target_field", "fieldRef": "price"},
             "outputType": "decimal",
             "outputScale": 2,
+            "resultCardinality": "one",
             "dependencies": dependencies or [],
         }
     )
@@ -38,6 +39,23 @@ def test_lookup_definition_uses_camel_case_wire_shape() -> None:
     assert dumped["lookupId"] == "contract_price"
     assert dumped["path"][0] == {"relationId": "contract"}
     assert dumped["outputScale"] == 2
+    assert dumped["resultCardinality"] == "one"
+
+
+def test_lookup_definition_rejects_unknown_result_cardinality() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        LookupDefinition.model_validate(
+            {
+                "lookupId": "contract_many",
+                "collection": "orders",
+                "fieldKey": "contract_many",
+                "displayName": "Contract many",
+                "path": [{"relationId": "contracts"}],
+                "source": {"kind": "target_field", "fieldRef": "price"},
+                "outputType": "decimal",
+                "resultCardinality": "unknown",
+            }
+        )
 
 
 def test_lookup_aggregation_rejects_the_removed_rollup_surface() -> None:
@@ -110,3 +128,82 @@ def test_schema_snapshot_keeps_relation_and_numeric_metadata() -> None:
 
     assert snapshot.columns[0].scale == 2
     assert snapshot.normalized_relations[0].related_collection == "contracts"
+
+
+def test_column_schema_accepts_canonical_display_spec() -> None:
+    column = ColumnSchema.model_validate(
+        {
+            "name": "amount",
+            "title": "Amount",
+            "dataType": "decimal",
+            "scale": 2,
+            "display": {
+                "kind": "number",
+                "preset": "currency",
+                "displayScale": 2,
+                "scaleMode": "fixed",
+                "trimTrailingZeros": False,
+                "useGrouping": True,
+                "currency": "CNY",
+                "percentStorage": "ratio",
+                "unit": "元",
+                "precision": "exact",
+                "timezone": "system",
+                "mode": "default",
+                "indent": 0,
+                "trueLabel": "是",
+                "falseLabel": "否",
+            },
+        }
+    )
+    assert column.display is not None
+    assert column.display.preset == "currency"
+    assert column.display.display_scale == 2
+    assert column.display.scale_mode == "fixed"
+    assert column.display.currency == "CNY"
+    assert column.display.percent_storage == "ratio"
+    assert column.display.unit == "元"
+    dumped = column.model_dump(by_alias=True, mode="json")
+    assert dumped["display"]["trimTrailingZeros"] is False
+    assert dumped["display"]["useGrouping"] is True
+
+
+def test_column_schema_display_stays_optional_and_closed() -> None:
+    column = ColumnSchema.model_validate({"name": "id", "title": "ID", "dataType": "text"})
+    assert column.display is None
+    # A hand-rolled pseudo spec with missing canonical fields never validates.
+    with pytest.raises(ValidationError, match="Field required"):
+        ColumnSchema.model_validate(
+            {
+                "name": "id",
+                "title": "ID",
+                "dataType": "text",
+                "display": {"kind": "number", "displayScale": 2},
+            }
+        )
+    complete_display = {
+        "kind": "number",
+        "preset": "number",
+        "displayScale": 2,
+        "scaleMode": "max",
+        "trimTrailingZeros": True,
+        "useGrouping": True,
+        "currency": "CNY",
+        "percentStorage": "ratio",
+        "unit": None,
+        "precision": "exact",
+        "timezone": "system",
+        "mode": "default",
+        "indent": 0,
+        "trueLabel": "是",
+        "falseLabel": "否",
+    }
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        ColumnSchema.model_validate(
+            {
+                "name": "id",
+                "title": "ID",
+                "dataType": "text",
+                "display": {**complete_display, "fractionDigits": 2},
+            }
+        )

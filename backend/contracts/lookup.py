@@ -63,6 +63,10 @@ class LookupDefinition(CamelModel):
     source: LookupSource
     output_type: LookupOutputType
     output_scale: int | None = Field(default=None, ge=0, le=30)
+    # Authoritative result shape from the relation catalog: scalar (``one``) or
+    # value list (``many``). Renderers key element formatting off ``output_type``
+    # plus this cardinality instead of guessing from observed cell values.
+    result_cardinality: Literal["one", "many"] = "one"
     revision: int = Field(default=1, ge=1)
     state: LookupState = "valid"
     diagnostics: list[LookupDiagnostic] = Field(default_factory=list)

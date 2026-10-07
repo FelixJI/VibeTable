@@ -118,7 +118,9 @@ export function validateLocally(
   if (editor.kind === "number") {
     const n = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(n)) {
-      return { ok: false, error: `${String(value)} is not a valid number` };
+      // Do not echo the raw input here: pasted text like "12.5%" must not
+      // leak into local hints; the message stays stable without the raw token.
+      return { ok: false, error: "this value is not a valid number" };
     }
     for (const rule of rules) {
       if (rule.kind === "range") {

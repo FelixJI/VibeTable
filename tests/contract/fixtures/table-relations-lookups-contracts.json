@@ -50,6 +50,7 @@
     "source": {"kind": "target_field", "fieldRef": "price"},
     "outputType": "decimal",
     "outputScale": 2,
+    "resultCardinality": "one",
     "revision": 1,
     "state": "valid",
     "diagnostics": [],

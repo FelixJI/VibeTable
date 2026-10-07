@@ -132,6 +132,12 @@ export interface LookupDefinition {
   readonly source: LookupSource;
   readonly outputType: LookupOutputType;
   readonly outputScale?: number | null;
+  /**
+   * Authoritative result shape from the relation catalog: scalar ("one") or
+   * value list ("many"). Element formatting keys off outputType plus this
+   * cardinality instead of guessing from observed cell values.
+   */
+  readonly resultCardinality?: "one" | "many";
   readonly revision: number;
   readonly state: LookupState;
   readonly diagnostics: readonly LookupDiagnostic[];

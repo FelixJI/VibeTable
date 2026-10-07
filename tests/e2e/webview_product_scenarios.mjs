@@ -1106,6 +1106,130 @@ async function scenario02(page, recorder, _network, runtime) {
   await page.getByTestId("formula-editor-cancel").click();
   await closeFieldSettingsDrawer(page);
 
+  // 数字显示贯通：权威 Schema 保存货币/百分比显示后，列投影携带完整
+  // DisplaySpec，网格按显示渲染，且显示位数不再约束输入（AC1/AC2/AC3）。
+  // 与后续断言一样：脱离可见网格做 schema/值变更，避免 UI 刷新前触发 Lookup 读。
+  await selectTable(page, "E2E Relation Target V2");
+  const amountDisplayCurrency = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "currency",
+          displayScale: 2,
+          scaleMode: "fixed",
+          trimTrailingZeros: false,
+          useGrouping: true,
+          currency: "CNY",
+        };
+        return draft;
+      },
+    },
+  );
+  const currencySeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 1234.56789 },
+  }], "e2e-number-display-currency");
+  if (currencySeed.payload?.status !== "applied"
+    || amountDisplayCurrency.applied?.type === "operation.failed") {
+    throw new Error(`currency display change was not committed: ${JSON.stringify([amountDisplayCurrency, currencySeed])}`);
+  }
+  await selectTable(page, "E2E Field Settings V2");
+  const describedDisplay = await rawBridgeRequest(page, "schema.describe", {
+    collection: tableId,
+    requestGeneration: 1,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  const describedAmountColumn = describedDisplay.payload?.schema?.columns
+    ?.find((column) => column.fieldId === amountField.fieldId);
+  recorder.check(
+    "schema.describe projects the complete DisplaySpec for the number column",
+    describedAmountColumn?.display?.preset === "currency"
+      && describedAmountColumn?.display?.displayScale === 2
+      && describedAmountColumn?.display?.scaleMode === "fixed"
+      && describedAmountColumn?.display?.currency === "CNY",
+    { describedAmountColumn },
+  );
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("¥1,234.57"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  recorder.check(
+    "grid renders the stored 1234.56789 as ¥1,234.57 under currency display",
+    true,
+  );
+  // 显示 2 位不得拒绝 1.234567：真实编辑路径提交原值（旧实现把
+  // displayScale 注入编辑器 scale 会在本地拒绝该输入）。
+  const amountCell = page.locator(`.tabulator-cell[tabulator-field="${amountField.physicalName}"]`).first();
+  const amountEditor = await beginCellEdit(amountCell);
+  await amountEditor.fill("1.234567");
+  await amountEditor.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.length === 1
+      && payload.rows[0]?.[amountField.physicalName] === 1.234567,
+  );
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("¥1.23"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  const editRejectionsAfterDisplay = await page.evaluate(
+    () => window.__vibetableE2eEditSchemaRejections,
+  );
+  recorder.check(
+    "display scale never rejects raw input 1.234567 (¥1.23 shown, raw value preserved)",
+    editRejectionsAfterDisplay.length === 0,
+    { editRejectionsAfterDisplay },
+  );
+
+  // 百分比：ratio 存储 0.125 显示 12.5%，原值不被缩放改写。
+  await selectTable(page, "E2E Relation Target V2");
+  const amountDisplayPercent = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "percent",
+          percentStorage: "ratio",
+          displayScale: 1,
+          scaleMode: "max",
+        };
+        return draft;
+      },
+    },
+  );
+  const percentSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 0.125 },
+  }], "e2e-number-display-percent");
+  if (percentSeed.payload?.status !== "applied"
+    || amountDisplayPercent.applied?.type === "operation.failed") {
+    throw new Error(`percent display change was not committed: ${JSON.stringify([amountDisplayPercent, percentSeed])}`);
+  }
+  await selectTable(page, "E2E Field Settings V2");
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("12.5%"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  recorder.check(
+    "ratio 0.125 renders as 12.5% without rescaling the stored value",
+    true,
+  );
+
   // The remaining assertions intentionally mutate this table through raw
   // bridge requests. Keep the visible grid on a different table so it cannot
   // issue Lookup reads between an out-of-band schema apply and its UI refresh.

@@ -1,14 +1,43 @@
-import type { ColumnSchema, PresetView } from "@/contracts";
-import { t } from "@/i18n";
+import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
+import { findLookupDefinition, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
+import { formatNumberDisplay } from "@/number/numberDisplay";
+import { getLocale, t } from "@/i18n";
 
-export function rowTitle(row: Record<string, unknown>, view: PresetView): string {
-  const value = view.titleField ? row[view.titleField] : null;
-  if (value !== null && value !== undefined && String(value).trim()) return String(value);
-  return t("views.recordFallback", { id: String(row.rowKey ?? "—") });
+function isEnvelope(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+    && "state" in (value as Record<string, unknown>);
 }
 
-export function displayValue(value: unknown): string {
+/**
+ * Render one record-card field value. Numeric formatting is type-driven:
+ * scalar numbers only render through the authoritative column DisplaySpec
+ * when the column's declared dataType is decimal/integer; formula/lookup
+ * envelopes reuse the shared computed-value renderer (state first, then the
+ * authoritative result type). Runtime number-looking values under other
+ * declared types never get numeric formatting.
+ */
+export function displayValue(
+  value: unknown,
+  column?: ColumnSchema | null,
+  lookups?: readonly LookupDefinition[] | ReadonlyMap<string, LookupDefinition> | null,
+): string {
   if (value === null || value === undefined || value === "") return "—";
+  if (isEnvelope(value)) {
+    if (column?.kind === "formula") {
+      return renderFormulaEnvelope(value, { dataType: column.dataType, display: column.display });
+    }
+    if (column?.kind === "lookup") {
+      return renderLookupEnvelope(value, findLookupDefinition(column, lookups), column.display);
+    }
+  }
+  if (typeof value === "number") {
+    const formatted = column
+      && (column.dataType === "decimal" || column.dataType === "integer")
+      ? formatNumberDisplay(value, column.display, getLocale())
+      : null;
+    if (formatted !== null) return formatted;
+    return String(value);
+  }
   if (typeof value === "boolean") return value ? "✓" : "✕";
   if (typeof value === "object") {
     try {
@@ -43,4 +72,12 @@ export function safeImageUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const candidate = value.trim();
   return /^(data:image\/|\/(?!\/))/i.test(candidate) ? candidate : null;
+}
+
+export { rowTitle };
+
+function rowTitle(row: Record<string, unknown>, view: PresetView): string {
+  const value = view.titleField ? row[view.titleField] : null;
+  if (value !== null && value !== undefined && String(value).trim()) return String(value);
+  return t("views.recordFallback", { id: String(row.rowKey ?? "—") });
 }

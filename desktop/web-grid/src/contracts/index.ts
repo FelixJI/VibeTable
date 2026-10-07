@@ -114,6 +114,13 @@ export interface ColumnSchema {
   readonly scale?: number | null;
   /** Numeric precision (total significant digits) from the product schema. */
   readonly precision?: number | null;
+  /**
+   * Authoritative read-only display spec (canonical Schema V2 DisplaySpec)
+   * projected verbatim by the schema-describe owner. Absent/null for system
+   * columns or legacy hosts. Pure presentation: editors, sorting, filtering
+   * and raw-value exports keep consuming the unformatted value.
+   */
+  readonly display?: import("./generated/schemaV2").DisplaySpec | null;
 	/** Sidecar-compatible operators exposed by the authoritative host schema. */
 	readonly filterOperators?: readonly FilterOperator[];
 	/** Authoritative editor kind for filter operands; never inferred from row values. */

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Kanban } from "@lucide/vue";
-import type { ColumnSchema, PresetView } from "@/contracts";
+import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { displayValue, metadataFields, rowTitle } from "./recordViewUtils";
 
@@ -11,6 +11,7 @@ const props = defineProps<{
   view: PresetView;
   interactionEnabled?: boolean;
   laneOptions?: readonly { readonly optionId: string; readonly label: string }[];
+  lookupDefinitions?: readonly LookupDefinition[];
 }>();
 const emit = defineEmits<{
   cardMove: [intent: {
@@ -33,6 +34,9 @@ interface DraggedCard {
 }
 
 const draggedCard = ref<DraggedCard | null>(null);
+
+const groupColumn = computed(() =>
+  props.schema.find((column) => column.name === props.view.groupField) ?? null);
 
 const details = computed(() => metadataFields(
   props.schema,
@@ -61,7 +65,7 @@ const lanes = computed(() => {
     if (!lane) {
       lane = {
         key,
-        label: blank ? t("views.kanban.ungrouped") : displayValue(raw),
+        label: blank ? t("views.kanban.ungrouped") : displayValue(raw, groupColumn.value, props.lookupDefinitions),
         targetOptionId: null,
         records: [],
       };
@@ -135,7 +139,7 @@ function onDrop(event: DragEvent, targetOptionId: string | null): void {
             <strong>{{ rowTitle(row, view) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">
-                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name]) }}</dd>
+                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name], field, lookupDefinitions) }}</dd>
               </template>
             </dl>
           </article>

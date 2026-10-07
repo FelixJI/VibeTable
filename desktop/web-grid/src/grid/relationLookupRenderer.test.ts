@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { lookupFormatter, normalizeTargets, relationFormatter } from "./relationLookupRenderer";
 import type { LookupDefinition, NormalizedRelationDescriptor } from "@/contracts";
+import type { DisplaySpec } from "@/contracts/generated/schemaV2";
+
+const columnDisplay: DisplaySpec = {
+  kind: "readonly", preset: "", displayScale: 2, scaleMode: "max",
+  trimTrailingZeros: true, useGrouping: true, currency: "CNY",
+  percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+  mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+};
 
 const relation: NormalizedRelationDescriptor = {
   relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o",
@@ -16,6 +24,50 @@ const lookup: LookupDefinition = {
 };
 
 describe("relation / Lookup grid renderers", () => {
+  it("formats scalar numeric lookup results through the shared column display (SUM-like)", () => {
+    const node = lookupFormatter(lookup, true, null, undefined, undefined, columnDisplay)({
+      getValue: () => ({ state: "ok", value: 1234.56789, provenance: [] }),
+    });
+    expect(node.querySelector(".vt-lookup-text")?.textContent).toBe("1,234.57");
+  });
+
+  it("formats numeric list elements per definition outputType and cardinality", () => {
+    const list: LookupDefinition = {
+      ...lookup,
+      lookupId: "orders.prices",
+      resultCardinality: "many",
+    };
+    const node = lookupFormatter(list, true, null, undefined, undefined, columnDisplay)({
+      getValue: () => ({
+        state: "ok",
+        value: [1.5, 1234.56789, 0],
+        provenance: [],
+      }),
+    });
+    expect(node.querySelector(".vt-lookup-text")?.textContent)
+      .toBe("1.5 · 1,234.57 · 0");
+  });
+
+  it("never formats non-numeric lookups even when observed values look numeric", () => {
+    const jsonLookup: LookupDefinition = {
+      ...lookup,
+      lookupId: "orders.payload",
+      outputType: "json",
+    };
+    const node = lookupFormatter(jsonLookup, true, null, undefined, undefined, columnDisplay)({
+      getValue: () => ({ state: "ok", value: 1234, provenance: [] }),
+    });
+    expect(node.querySelector(".vt-lookup-text")?.textContent).toBe("1234");
+  });
+
+  it("keeps legacy scalar/list rendering when the definition omits cardinality", () => {
+    const legacy: LookupDefinition = { ...lookup };
+    const scalar = lookupFormatter(legacy, true, null, undefined, undefined, columnDisplay)({
+      getValue: () => ({ state: "ok", value: [12.5, 1.25], provenance: [] }),
+    });
+    expect(scalar.querySelector(".vt-lookup-text")?.textContent).toBe("12.5 · 1.25");
+  });
+
   it("renders display metadata while retaining raw relation IDs and falling back per target", () => {
     const value = ["v1", "v2", "v3", "v4"];
     const cell = {

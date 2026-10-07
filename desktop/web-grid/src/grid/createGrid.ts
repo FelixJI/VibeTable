@@ -36,6 +36,9 @@ import type {
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
+import { formulaStateLabel } from "./computedValueDisplay";
+import type { DisplaySpec } from "@/contracts/generated/schemaV2";
+import { formatNumberDisplay } from "@/number/numberDisplay";
 import { getLocale, t } from "@/i18n";
 
 /**
@@ -405,6 +408,7 @@ function toColumnDef(
         relationLookup?.lookupUnavailableReason,
         relationLookup?.onLookupSourceRequested,
 		relationLookup?.onLookupSourcePageRequested,
+        col.display,
       ),
       cssClass: "vt-lookup-cell",
     };
@@ -413,7 +417,10 @@ function toColumnDef(
     return {
       ...def,
       editable: false,
-      formatter: formulaValueFormatter,
+      // The authoritative effective result type (Go projection of
+      // Formula.ResultType) decides numeric formatting; a JSON-result formula
+      // never formats a number-looking ready value.
+      formatter: (cell: { getValue(): unknown }) => formulaValueFormatter(cell, col.dataType, col.display),
       cssClass: "vt-formula-cell",
     };
   }
@@ -422,6 +429,19 @@ function toColumnDef(
   // NOT mutate the underlying cell value (decimals preserved exactly).
   switch (col.dataType) {
     case "decimal":
+    case "integer":
+      // With the authoritative DisplaySpec the shared numeric formatter owns
+      // scale/grouping/currency/percent/unit; non-number values fall back to
+      // the raw rendering and are never coerced.
+      if (col.display) {
+        return {
+          ...def,
+          formatter: numericDisplayFormatter(col.display),
+        };
+      }
+      if (col.dataType === "integer") {
+        return { ...def, formatter: "plaintext" };
+      }
       // Show numeric value with a thousands separator but DO NOT round or
       // re-store. Tabulator's "money" formatter reads-only. Precision follows
       // the column's declared scale when the product schema reports one (e.g. 2 for a
@@ -450,20 +470,58 @@ function toColumnDef(
         headerFilterFunc: jsonHeaderFilter,
         cssClass: "vt-json-cell",
       };
-    case "integer":
     case "text":
     default:
       return { ...def, formatter: "plaintext" };
   }
 }
 
-function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
+/**
+ * Shared numeric cell formatter for scalar number columns. The authoritative
+ * column DisplaySpec drives scale/grouping/currency/percent/unit; values that
+ * are not finite numbers (null, text, malformed host data) fall back to the
+ * previous raw rendering instead of being coerced into a number.
+ */
+function numericDisplayFormatter(display: DisplaySpec): GridCellFormatter {
+  return (cell) => {
+    const element = document.createElement("span");
+    const formatted = formatNumberDisplay(cell.getValue(), display, getLocale());
+    if (formatted !== null) {
+      element.textContent = formatted;
+      return element;
+    }
+    const raw = cell.getValue();
+    if (raw === null || raw === undefined || raw === "") {
+      element.classList.add("vt-cell-empty");
+      element.textContent = "—";
+      return element;
+    }
+    element.textContent = String(raw);
+    return element;
+  };
+}
+
+function formulaValueFormatter(
+  cell: { getValue(): unknown },
+  dataType: ColumnSchema["dataType"],
+  display?: DisplaySpec | null,
+): HTMLElement {
   const raw = cell.getValue();
   const root = document.createElement("span");
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const envelope = raw as Record<string, unknown>;
     if (envelope.state === "ready") {
-      root.textContent = envelope.value == null ? "—" : String(envelope.value);
+      const value = envelope.value;
+      // Only declared decimal/integer results take the numeric display path;
+      // the runtime shape of the value never decides the type.
+      const formatted = (dataType === "decimal" || dataType === "integer")
+        ? formatNumberDisplay(value, display, getLocale())
+        : null;
+      root.textContent = value == null
+        ? "—"
+        : formatted !== null
+          ? formatted
+          : String(value);
       return root;
     }
     const label = formulaStateLabel(envelope.state);
@@ -480,17 +538,6 @@ function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
   }
   root.textContent = raw == null ? "—" : String(raw);
   return root;
-}
-
-function formulaStateLabel(state: unknown): string | null {
-  switch (state) {
-    case "updating": return "grid.formula.updating";
-    case "failed": return "grid.formula.failed";
-    case "cancelled": return "grid.formula.cancelled";
-    case "invalid": return "grid.formula.invalid";
-    case "too_expensive": return "grid.formula.too_expensive";
-    default: return null;
-  }
 }
 
 /**

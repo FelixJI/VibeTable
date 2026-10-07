@@ -18,6 +18,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+from backend.contracts.generated_schema_v2 import DisplaySpec
+
 FilterOperator = Literal[
     "eq",
     "ne",
@@ -83,4 +85,9 @@ class ColumnSchema(CamelModel):
     # validation both key off ``scale``.
     scale: int | None = None
     precision: int | None = None
+    # Authoritative read-only display spec (canonical Schema V2 ``DisplaySpec``)
+    # projected verbatim by the schema-describe owner. ``None`` for system
+    # columns. Pure presentation: editors, sorting, filters and exports keep
+    # consuming the raw value.
+    display: DisplaySpec | None = None
     filter_operators: list[FilterOperator] = Field(default_factory=list)
