@@ -1,7 +1,47 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["intent"],
-  "properties": { "intent": { "enum": ["refresh", "export"] } },
+  "required": [
+    "contract",
+    "status",
+    "summary"
+  ],
+  "properties": {
+    "contract": {
+      "type": "string",
+      "enum": ["vibetable.plugin-result.v1"]
+    },
+    "status": {
+      "enum": [
+        "success",
+        "warning",
+        "error"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "array"
+    },
+    "table": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "refresh": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "warnings": {
+      "type": "array"
+    },
+    "artifacts": {
+      "type": "array"
+    }
+  },
   "additionalProperties": false
 }

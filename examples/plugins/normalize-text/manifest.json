@@ -2,38 +2,56 @@
   "$schema": "vibetable.plugin-manifest.v1",
   "pluginId": "com.vibetable.examples.normalize-text",
   "version": "1.0.0",
-  "displayName": { "zh-CN": "批量文本规范化", "en": "Normalize text" },
-  "description": { "zh-CN": "预览并规范化选中记录中的文本" },
+  "displayName": {
+    "zh-CN": "批量文本规范化",
+    "en": "Normalize text"
+  },
+  "description": {
+    "zh-CN": "预览并规范化选中记录中的文本"
+  },
   "compatibility": {
-    "minHostVersion": "1.0.0",
+    "minHostVersion": "0.5.1",
     "pluginApi": "1.x"
   },
   "permissions": {
     "data": [
       {
         "collection": "$active",
-        "operations": ["read", "update"],
-        "fields": ["$configured"]
+        "operations": [
+          "read",
+          "update"
+        ],
+        "fields": [
+          "$configured"
+        ]
       }
     ],
     "files": [],
-    "privateStorage": true,
-    "network": { "domains": [], "methods": ["GET"] }
+    "privateStorage": false
   },
   "actions": [
     {
       "actionId": "normalize-selection",
-      "displayName": { "zh-CN": "规范化选中文本" },
+      "displayName": {
+        "zh-CN": "规范化选中文本"
+      },
       "mode": "local",
       "risk": "write",
       "invocation": "manual",
-      "placements": ["table.toolbar", "table.context-menu"],
-      "requires": { "selection": "one-or-more" },
+      "placements": [
+        "table.toolbar",
+        "table.context-menu"
+      ],
+      "requires": {
+        "selection": "one-or-more"
+      },
       "workerEntry": "dist/workers/normalize.js",
       "formSchema": "schemas/action-form.v1.json",
       "inputSchema": "schemas/action-input.v1.json",
       "outputSchema": "schemas/action-output.v1.json"
     }
   ],
-  "ui": { "customViews": [] }
+  "ui": {
+    "customViews": []
+  }
 }

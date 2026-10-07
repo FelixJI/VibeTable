@@ -1,5 +1,6 @@
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
+import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import { createHash } from "node:crypto";
@@ -5714,6 +5715,10 @@ async function scenario10(page, recorder, _network, runtime) {
 async function scenario11(page, recorder, _network, runtime) {
   const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
   const projectKey = databaseOpened.payload.projectKey.trim();
+  await exerciseSdkExamples(page, recorder, runtime, projectKey, {
+    createSimpleTable, applyProductMutation, rawBridgeRequest,
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+  });
   await page.getByTestId("nav-tables").click();
   const pluginTable = await createSimpleTable(page, "E2E Plugin Target", "value");
   await selectTable(page, "E2E Plugin Target");

@@ -193,7 +193,7 @@ def _package(tmp_path: Path, source: str) -> Path:
                 "pluginId": "com.example.safe-worker",
                 "version": "1.0.0",
                 "displayName": {"en": "Safe Worker"},
-                "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+                "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
                 "permissions": {"data": [], "files": [], "privateStorage": False},
                 "actions": [
                     {
@@ -484,7 +484,6 @@ async def test_worker_supports_declared_file_and_structured_ui_capabilities(
             summary: `copied ${content.length}`,
             warnings: [],
           };
-          await capabilities.ui.emitResult(result);
           return result;
         }
         """,
@@ -1263,3 +1262,120 @@ async def test_in_memory_adapter_run_appends_trace() -> None:
 
 def test_in_memory_adapter_is_available() -> None:
     assert InMemoryPluginWorkerAdapter().available is True
+
+
+@pytest.mark.asyncio
+async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path: Path) -> None:
+    _require_node()
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contract/fixtures/plugin-capabilities-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    class ConformanceClient(FakeProductReadClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows: list[dict[str, Any]] = []
+
+        async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
+            assert table_id == "articles"
+            offset, limit = query["offset"], query["limit"]
+            return FakeQueryPage(rows=self.rows[offset : offset + limit])
+
+    client = ConformanceClient()
+    profile = CollectionProfile(
+        collection="articles",
+        fields=corpus["fields"],
+        update_fields=["title"],
+        archive_field=None,
+        date_updated_field=None,
+    )
+    adapter, store = _retained_worker(
+        tmp_path,
+        """
+        export async function run(input, capabilities) {
+          if (input.returnValue) return input.returnValue;
+          try {
+            const page = await capabilities.data.read(input.request);
+            return { contract: "vibetable.plugin-result.v1", status: "success",
+              summary: "read", table: page };
+          } catch (error) {
+            return { contract: "vibetable.plugin-result.v1", status: "error",
+              summary: error.message, table: { code: error.code } };
+          }
+        }
+        """,
+        permissions={
+            "data": [
+                {
+                    "collection": "$active",
+                    "operations": ["read", "update"],
+                    "fields": ["$configured"],
+                }
+            ],
+            "files": [],
+            "privateStorage": False,
+        },
+        profiles={"articles": profile},
+        client=client,
+    )
+    execution = _execution(package_hash=store.installation.package_hash)
+    for case in corpus["readCases"]:
+        client.rows = [
+            {**corpus["rows"][0], "id": str(index + 1), "__vibetableDigest": "sha256:" + "a" * 64}
+            for index in range(case.get("rowCount", 1))
+        ]
+        result = await adapter.run(
+            "dist/worker.js", _context(), {"request": case["request"]}, execution=execution
+        )
+        page = result["table"]
+        if "code" in case:
+            assert page["code"] == case["code"], case["name"]
+        else:
+            assert len(page["items"]) == case["count"], case["name"]
+            assert page["nextCursor"] == case["nextCursor"], case["name"]
+            if "first" in case:
+                assert page["items"][0] == case["first"], case["name"]
+                assert set(page["rowGuards"].values()) == {"sha256:" + "a" * 64}
+    for value in corpus["returns"]:
+        assert (
+            await adapter.run(
+                "dist/worker.js", _context(), {"returnValue": value}, execution=execution
+            )
+            == value
+        )
+    for guard in corpus["invalidGuards"]:
+        plan = json.loads(json.dumps(corpus["returns"][1]))
+        plan["operations"][0].update(guard)
+        with pytest.raises(PluginWorkerError):
+            await adapter.run(
+                "dist/worker.js", _context(), {"returnValue": plan}, execution=execution
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "code"),
+    [
+        ("data.mutate", "plugin_direct_mutation_unsupported"),
+        ("ui.emitResult", "plugin_emit_result_unsupported"),
+    ],
+)
+async def test_deprecated_capability_errors_are_typed_in_the_vm(
+    tmp_path: Path, method: str, code: str
+) -> None:
+    _require_node()
+    adapter, store = _retained_worker(
+        tmp_path,
+        f"export async function run(_input, capabilities) {{ await capabilities.{method}({{}}); }}",
+        permissions={"data": [], "files": [], "privateStorage": False},
+    )
+    with pytest.raises(PluginWorkerError) as raised:
+        await adapter.run(
+            "dist/worker.js",
+            _context(),
+            {},
+            execution=_execution(package_hash=store.installation.package_hash),
+        )
+    assert raised.value.code == code

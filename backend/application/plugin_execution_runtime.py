@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from backend.application.task_runtime import CancellationToken, ProgressReporter
 from backend.contracts.plugin import (
     ActionAvailability,
     CommandContext,
@@ -24,13 +25,17 @@ from backend.contracts.plugin import (
     MutationPlan,
     PluginAction,
     PluginAuditEvent,
+    PluginCommitUnknownError,
     PluginEventEnvelope,
+    PluginExecutionError,
+    PluginProgress,
     PluginResult,
     PluginRisk,
     PluginSafeError,
     PluginSnapshot,
     PluginTaskSnapshot,
 )
+from backend.contracts.task import TaskStatus
 
 PluginNotificationSink = Callable[[PluginEventEnvelope], Awaitable[None]]
 
@@ -66,13 +71,15 @@ class ConfirmationPort(Protocol):
 
 
 class MutationPort(Protocol):
-    async def apply(self, plan: MutationPlan) -> dict[str, Any]: ...
+    async def apply(
+        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+    ) -> dict[str, Any]: ...
 
 
 class _ExecutionHandle:
     """Internal execution context for one host-owned task."""
 
-    __slots__ = ("plugin_id", "project_key", "run_id", "task", "task_id")
+    __slots__ = ("cancel", "plugin_id", "project_key", "run_id", "task", "task_id")
 
     def __init__(
         self,
@@ -82,12 +89,14 @@ class _ExecutionHandle:
         plugin_id: str,
         project_key: str,
         task: asyncio.Task[None],
+        cancel: CancellationToken,
     ) -> None:
         self.task_id = task_id
         self.run_id = run_id
         self.plugin_id = plugin_id
         self.project_key = project_key
         self.task = task
+        self.cancel = cancel
 
 
 class PluginExecutionRuntime:
@@ -171,6 +180,7 @@ class PluginExecutionRuntime:
             risk=action.risk,
             state="queued",
         )
+        cancel = CancellationToken()
         task = asyncio.create_task(
             self._run(
                 snapshot,
@@ -178,6 +188,7 @@ class PluginExecutionRuntime:
                 context,
                 input_payload,
                 package_hash=installation.package_hash,
+                cancel=cancel,
             ),
             name=task_id,
         )
@@ -187,6 +198,7 @@ class PluginExecutionRuntime:
             plugin_id=plugin_id,
             project_key=context.project_key,
             task=task,
+            cancel=cancel,
         )
         self._executions[task_id] = handle
         task.add_done_callback(lambda _task: self._executions.pop(task_id, None))
@@ -206,11 +218,28 @@ class PluginExecutionRuntime:
         input_payload: dict[str, Any],
         *,
         package_hash: str,
+        cancel: CancellationToken,
     ) -> None:
         started_at = datetime.now(UTC).replace(microsecond=0)
         started_monotonic = time.monotonic()
         running = initial.model_copy(update={"state": "running"})
         await self._emit(running)
+
+        async def report(status: TaskStatus) -> None:
+            nonlocal running
+            running = running.model_copy(
+                update={
+                    "progress": PluginProgress(
+                        current=status.progress.done,
+                        total=status.progress.total,
+                        message=status.progress.message,
+                        cancellable=bool(execution.get("_hostCancellable", False)),
+                    ),
+                    "cancel_requested": cancel.cancelled,
+                }
+            )
+            await self._emit(running)
+
         execution = {
             "taskId": initial.task_id,
             "runId": initial.run_id,
@@ -220,6 +249,8 @@ class PluginExecutionRuntime:
             "actionId": initial.action_id,
             "projectKey": context.project_key,
             "context": context.model_dump(mode="json", by_alias=True),
+            "_hostReporter": ProgressReporter(initial.task_id, "plugin", report),
+            "_hostCancel": cancel,
         }
         try:
             if self._worker is None:
@@ -233,15 +264,32 @@ class PluginExecutionRuntime:
             result = await self._finalize_result(action, context, raw, execution)
             completed = running.model_copy(update={"state": "succeeded", "result": result})
         except asyncio.CancelledError:
-            completed = running.model_copy(update={"state": "cancelled", "cancel_requested": True})
+            if execution.get("_commitStarted"):
+                completed = running.model_copy(
+                    update={
+                        "state": "aborted",
+                        "cancel_requested": True,
+                        "error": PluginSafeError(
+                            code="plugin_commit_unknown",
+                            message="Cancellation after submission cannot establish rollback.",
+                            recoverability="none",
+                        ),
+                    }
+                )
+            else:
+                completed = running.model_copy(
+                    update={"state": "cancelled", "cancel_requested": True}
+                )
         except Exception as exc:
             completed = running.model_copy(
                 update={
-                    "state": "failed",
+                    "state": "aborted" if isinstance(exc, PluginCommitUnknownError) else "failed",
                     "error": PluginSafeError(
-                        code="plugin_action_failed",
+                        code=getattr(exc, "code", "plugin_action_failed"),
                         message=str(exc) or exc.__class__.__name__,
-                        recoverability="reconfigure",
+                        recoverability=(
+                            "none" if isinstance(exc, PluginCommitUnknownError) else "reconfigure"
+                        ),
                         plugin_id=initial.plugin_id,
                         action_id=initial.action_id,
                         run_id=initial.run_id,
@@ -301,8 +349,16 @@ class PluginExecutionRuntime:
             execution=execution,
         )
         if not approved:
-            raise ValueError("mutation plan was rejected")
-        return PluginResult.model_validate(await self._mutation.apply(plan))
+            raise PluginExecutionError(
+                "mutation plan was rejected", code="plugin_mutation_rejected"
+            )
+        if getattr(execution.get("_hostCancel"), "cancelled", False):
+            raise asyncio.CancelledError
+
+        def submitted() -> None:
+            execution["_commitStarted"] = True
+
+        return PluginResult.model_validate(await self._mutation.apply(plan, on_submit=submitted))
 
     async def request_cancel(self, task_id: str) -> bool:
         """Triggers the host-owned task's local cancel handle.
@@ -313,6 +369,7 @@ class PluginExecutionRuntime:
         handle = self._executions.get(task_id)
         if handle is None:
             return False
+        handle.cancel.cancel()
         handle.task.cancel()
         return True
 

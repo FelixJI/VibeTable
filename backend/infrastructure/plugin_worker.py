@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -26,7 +27,6 @@ from backend.contracts.plugin import (
     MutationPlan,
     PluginPrivateSetting,
     PluginProgress,
-    PluginResult,
     PluginRisk,
     PluginSnapshot,
 )
@@ -42,6 +42,10 @@ _STORAGE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 class PluginWorkerError(RuntimeError):
     """Safe, diagnostic failure at the local plugin isolation boundary."""
+
+    def __init__(self, message: str, *, code: str = "plugin_worker_failed") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class _QueryPage(Protocol):
@@ -192,7 +196,9 @@ class NodePluginWorkerAdapter:
                         node, invocation, resolved, context, execution or {}
                     )
             except TimeoutError as exc:
-                raise PluginWorkerError("plugin Worker timed out and was terminated") from exc
+                raise PluginWorkerError(
+                    "plugin Worker timed out and was terminated", code="plugin_timeout"
+                ) from exc
         if not isinstance(result, dict):
             raise PluginWorkerError("plugin Worker result must be a JSON object")
         if result.get("contract") == "vibetable.mutation-plan.v1":
@@ -235,7 +241,8 @@ class NodePluginWorkerAdapter:
                     return message.get("value")
                 if kind == "error":
                     raise PluginWorkerError(
-                        f"plugin Worker failed: {message.get('error', 'unknown error')}"
+                        f"plugin Worker failed: {message.get('error', 'unknown error')}",
+                        code=str(message.get("code", "plugin_worker_failed")),
                     )
                 if kind != "capability" or not isinstance(message.get("id"), int):
                     raise PluginWorkerError("plugin Worker emitted an invalid protocol message")
@@ -262,6 +269,7 @@ class NodePluginWorkerAdapter:
                         "id": message["id"],
                         "ok": False,
                         "error": str(exc),
+                        "code": getattr(exc, "code", "plugin_capability_invalid"),
                     }
                 await self._write_message(process, response)
         finally:
@@ -303,7 +311,8 @@ class NodePluginWorkerAdapter:
             return await self._data_read(resolved, context, args)
         if name == "data.mutate":
             raise PluginWorkerError(
-                "data.mutate cannot write directly; return a mutation plan from the action"
+                "data.mutate cannot write directly; return a mutation plan from the action",
+                code="plugin_direct_mutation_unsupported",
             )
         if name in {"file.pickRead", "file.pickWrite", "file.read", "file.write"}:
             return await self._file_capability(resolved, execution, name, args)
@@ -314,13 +323,20 @@ class NodePluginWorkerAdapter:
         }:
             return await self._storage(resolved, name, args)
         if name == "ui.emitResult":
-            PluginResult.model_validate(args)
-            return None
+            raise PluginWorkerError(
+                "ui.emitResult is unsupported; return the final result from the action",
+                code="plugin_emit_result_unsupported",
+            )
         if name == "ui.reportProgress":
             progress = PluginProgress.model_validate(args)
+            if progress.total > 0 and progress.current > progress.total:
+                raise PluginWorkerError(
+                    "progress is out of bounds", code="plugin_capability_invalid"
+                )
             reporter = execution.get("_hostReporter")
             if reporter is None:
                 raise PluginWorkerError("plugin progress reporter is unavailable")
+            execution["_hostCancellable"] = progress.cancellable
             await reporter.report(
                 done=progress.current,
                 total=progress.total,
@@ -383,7 +399,10 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError("data.read collection is required")
         grant = self._read_grant(resolved.permissions, context, collection)
         if grant is None:
-            raise PluginWorkerError(f"collection {collection!r} was not declared for read")
+            raise PluginWorkerError(
+                f"collection {collection!r} was not declared for read",
+                code="plugin_read_denied",
+            )
         profile = await self._profile(collection)
         requested_fields = request.get("fields")
         if not isinstance(requested_fields, list) or not all(
@@ -395,10 +414,14 @@ class NodePluginWorkerAdapter:
         denied = set(fields) - allowed_fields
         if denied:
             raise PluginWorkerError(
-                f"data.read fields were not declared: {', '.join(sorted(denied))}"
+                f"data.read fields were not declared: {', '.join(sorted(denied))}",
+                code="plugin_read_denied",
             )
         if request.get("filter") not in (None, {}):
-            raise PluginWorkerError("data.read filter is unavailable in plugin API v1")
+            raise PluginWorkerError(
+                "data.read filter is unavailable in plugin API v1",
+                code="plugin_filter_unsupported",
+            )
         page_size = request.get("pageSize", 100)
         if not isinstance(page_size, int) or isinstance(page_size, bool):
             raise PluginWorkerError("data.read pageSize must be an integer")
@@ -423,6 +446,12 @@ class NodePluginWorkerAdapter:
         value = {
             "items": items,
             "nextCursor": str(offset + len(items)) if len(items) == page_size else None,
+            "rowGuards": {
+                str(row["id"]): row["__vibetableDigest"]
+                for row in page.rows
+                if isinstance(row.get("id"), (str, int))
+                and isinstance(row.get("__vibetableDigest"), str)
+            },
         }
         self._bounded_json(value, "data.read response")
         return value
@@ -750,7 +779,11 @@ class InMemoryBulkMutationAdapter:
     trace: list[str] | None = None
     plans: list[MutationPlan] = field(default_factory=list)
 
-    async def apply(self, plan: MutationPlan) -> dict[str, Any]:
+    async def apply(
+        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
+        if on_submit is not None:
+            on_submit()
         if self.trace is not None:
             self.trace.append("bulk.apply")
         self.plans.append(plan)

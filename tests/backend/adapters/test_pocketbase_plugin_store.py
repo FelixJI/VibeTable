@@ -48,7 +48,7 @@ def _manifest() -> PluginManifest:
             "pluginId": "com.example.summary",
             "version": "1.0.0",
             "displayName": {"en": "Summary"},
-            "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
             "permissions": {"data": [], "files": [], "privateStorage": True},
             "actions": [
                 {

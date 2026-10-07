@@ -21,7 +21,7 @@ def _write_plugin(root: Path) -> None:
                 "version": "1.0.0",
                 "displayName": {"en": "Reader"},
                 "compatibility": {
-                    "minHostVersion": "1.0.0",
+                    "minHostVersion": "0.5.1",
                     "pluginApi": "1.x",
                 },
                 "permissions": {

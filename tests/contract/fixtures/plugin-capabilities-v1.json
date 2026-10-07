@@ -1,0 +1,28 @@
+{
+  "fields": ["id", "title", "zero", "empty", "flag", "tags"],
+  "rows": [{"id":"1","title":" raw ","zero":0,"empty":null,"flag":false,"tags":[0,false,null]}],
+  "readCases": [
+    {"name":"raw projection","request":{"collection":"articles","fields":["zero","empty","flag","tags"]},"count":1,"first":{"zero":0,"empty":null,"flag":false,"tags":[0,false,null]},"nextCursor":null},
+    {"name":"empty filter","request":{"collection":"articles","fields":["id"],"filter":{}},"count":1,"first":{"id":"1"},"nextCursor":null},
+    {"name":"null filter","request":{"collection":"articles","fields":["id"],"filter":null},"count":1,"first":{"id":"1"},"nextCursor":null},
+    {"name":"minimum page","request":{"collection":"articles","fields":["id"],"pageSize":0},"count":1,"first":{"id":"1"},"nextCursor":"1"},
+    {"name":"page limit","rowCount":200,"request":{"collection":"articles","fields":["id"],"pageSize":500},"count":200,"first":{"id":"1"},"nextCursor":"200"},
+    {"name":"full page terminates on empty page","rowCount":200,"request":{"collection":"articles","fields":["id"],"cursor":"200","pageSize":200},"count":0,"nextCursor":null},
+    {"name":"undeclared table","request":{"collection":"secrets","fields":["id"]},"code":"plugin_read_denied"},
+    {"name":"undeclared field","request":{"collection":"articles","fields":["secret"]},"code":"plugin_read_denied"},
+    {"name":"v1 filter rejected","request":{"collection":"articles","fields":["id"],"filter":{"title":"raw"}},"code":"plugin_filter_unsupported"},
+    {"name":"boolean page size","request":{"collection":"articles","fields":["id"],"pageSize":true},"code":"plugin_worker_failed"},
+    {"name":"invalid cursor","request":{"collection":"articles","fields":["id"],"cursor":"1junk"},"code":"plugin_worker_failed"},
+    {"name":"null page size","request":{"collection":"articles","fields":["id"],"pageSize":null},"code":"plugin_worker_failed"},
+    {"name":"legacy integer cursor","rowCount":12,"request":{"collection":"articles","fields":["id"],"cursor":"1_0"},"count":2,"first":{"id":"11"},"nextCursor":null}
+  ],
+  "invalidGuards": [
+    {"expectedDigest":""},
+    {"expectedDateUpdated":""},
+    {"expectedDateUpdated":"2026-10-07T12:00:00Z"}
+  ],
+  "returns": [
+    {"contract":"vibetable.plugin-result.v1","status":"success","summary":"read result","table":{"data":{"zero":0,"empty":null,"flag":false,"tags":[0,false,null]}}},
+    {"contract":"vibetable.mutation-plan.v1","collection":"articles","operations":[{"kind":"update","primaryKey":"1","expectedDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","values":{"title":"raw"}}],"preview":{"affectedCount":1,"sampleRows":[{"before":" raw ","after":"raw"}]}}
+  ]
+}

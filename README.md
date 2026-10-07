@@ -50,7 +50,7 @@ VibeTable 将 WPF/WebView2 界面、Python BFF 和固定版本的 PocketBase sid
 | 文档工作区 | 文档版本、发布、修订历史，以及与业务记录的本地关联 |
 | 实时更新 | 本地 sidecar SSE 更新、断线续传和事件去重 |
 | 版本与恢复 | 工作区级 Snapshot、文件修订树、完整性验证和可审计恢复 |
-| 插件边界 | 插件提交受控 mutation plan，不直接获得数据库写权限；支持本地包、开发目录和公共 GitHub Release |
+| 插件边界 | read 返回 PluginResult，write 返回带预览与行保护的 MutationPlan，由 Host 最终确认后提交；支持本地包、开发目录和公共 GitHub Release |
 
 ## 快速开始
 
