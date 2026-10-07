@@ -13,14 +13,22 @@ from typing import Any, Never
 
 import pytest
 
+from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.plugin import (
+    CommandContext,
     ConfirmationPreview,
+    PluginAuditEvent,
+    PluginEventEnvelope,
+    PluginManifest,
     PluginPrivateSetting,
+    PluginSnapshot,
 )
 from backend.infrastructure.plugin_package import inspect_plugin_package
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_worker import (
+    InMemoryBulkMutationAdapter,
+    InMemoryHostConfirmationAdapter,
     InMemoryPluginWorkerAdapter,
     NodePluginWorkerAdapter,
     PluginWorkerError,
@@ -1295,7 +1303,7 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
         tmp_path,
         """
         export async function run(input, capabilities) {
-          if (input.returnValue) return input.returnValue;
+          if (Object.hasOwn(input, "returnValue")) return input.returnValue;
           try {
             const page = await capabilities.data.read(input.request);
             return { contract: "vibetable.plugin-result.v1", status: "success",
@@ -1352,6 +1360,97 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
             await adapter.run(
                 "dist/worker.js", _context(), {"returnValue": plan}, execution=execution
             )
+
+    class ConformanceRegistry:
+        def __init__(self) -> None:
+            self.snapshot = PluginSnapshot(
+                project_key="project-a",
+                plugin_id=store.installation.plugin_id,
+                version="1.0.0",
+                package_hash=store.installation.package_hash,
+                source_type="local-folder",
+                source_location=str(tmp_path / "plugin"),
+                manifest=PluginManifest.model_validate(
+                    json.loads((tmp_path / "plugin/manifest.json").read_text(encoding="utf-8"))
+                ),
+                status="enabled",
+                revision=1,
+            )
+            self.audit: list[PluginAuditEvent] = []
+
+        async def get(self, project_key: str, plugin_id: str) -> PluginSnapshot:
+            assert project_key == self.snapshot.project_key
+            assert plugin_id == self.snapshot.plugin_id
+            return self.snapshot
+
+        async def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
+            self.audit.append(event)
+            return event
+
+    registry = ConformanceRegistry()
+    confirmation = InMemoryHostConfirmationAdapter(decisions=[True])
+    mutation = InMemoryBulkMutationAdapter(result=corpus["returns"][0])
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=adapter,
+        confirmation_adapter=confirmation,
+        mutation_adapter=mutation,
+    )
+    terminal = asyncio.Event()
+    reports: list[PluginEventEnvelope] = []
+
+    async def record_report(event: PluginEventEnvelope) -> None:
+        reports.append(event)
+        if event.snapshot["state"] in {"succeeded", "failed", "aborted", "cancelled"}:
+            terminal.set()
+
+    runtime.set_notification_sink(record_report)
+    for index, case in enumerate(corpus["invalidReturns"]):
+        registry.snapshot.manifest.actions[0].risk = case["risk"]
+        terminal.clear()
+        await runtime.start(
+            registry.snapshot.plugin_id,
+            "safe-action",
+            CommandContext.model_validate(_context()),
+            {"returnValue": case["value"]},
+            task_id=f"invalid-return-{index}",
+            run_id=f"invalid-return-run-{index}",
+        )
+        await asyncio.wait_for(terminal.wait(), timeout=5)
+        assert reports[-1].snapshot["state"] == "failed", case["name"]
+        assert reports[-1].snapshot["error"]["code"] == case["code"], case["name"]
+        assert reports[-1].snapshot["result"] is None, case["name"]
+        assert registry.audit[-1].error_code == case["code"], case["name"]
+        assert confirmation.previews == [], case["name"]
+        assert mutation.plans == [], case["name"]
+
+    for index, case in enumerate(corpus["validReturns"]):
+        registry.snapshot.manifest.actions[0].risk = case["risk"]
+        confirmation.decisions.append(True)
+        terminal.clear()
+        confirmations_before, commits_before = len(confirmation.previews), len(mutation.plans)
+        await runtime.start(
+            registry.snapshot.plugin_id,
+            "safe-action",
+            CommandContext.model_validate(_context()),
+            {"returnValue": case["value"]},
+            task_id=f"valid-return-{index}",
+            run_id=f"valid-return-run-{index}",
+        )
+        await asyncio.wait_for(terminal.wait(), timeout=5)
+        assert reports[-1].snapshot["state"] == "succeeded", case["name"]
+        result = reports[-1].snapshot["result"]
+        assert result is not None, case["name"]
+        assert result["status"] == "success", case["name"]
+        expected_commits = int(case["risk"] == "write")
+        assert len(confirmation.previews) - confirmations_before == expected_commits
+        assert len(mutation.plans) - commits_before == expected_commits
+        if case["risk"] == "read" and "metrics" in case["value"]:
+            assert [metric["value"] for metric in result["metrics"]] == [
+                1,
+                1,
+                "text",
+            ]
 
 
 @pytest.mark.asyncio

@@ -77,3 +77,39 @@ test("invalid guard values never reach confirmation or commit", async () => {
     assert.equal(host.mutationPlans.length, 0);
   }
 });
+
+test("invalid wire returns match real Worker/Host errors before confirmation or commit", async t => {
+  for (const item of corpus.invalidReturns) {
+    await t.test(item.name, async () => {
+      let confirmations = 0;
+      let commits = 0;
+      const host = testing.createOfflineHost({ ...options,
+        approveMutation: () => { confirmations++; return true; },
+        applyMutation: async () => { commits++; return corpus.returns[0]; } });
+      const result = await testing.startOfflineAction(async () => item.value, {}, host).result;
+      assert.equal(result.status, "error");
+      assert.equal(result.table.code, item.code);
+      assert.equal(confirmations, 0);
+      assert.equal(commits, 0);
+      assert.equal(host.mutationPlans.length, 0);
+    });
+  }
+});
+
+test("valid wire members, model defaults and legacy aliases remain accepted", async t => {
+  for (const item of corpus.validReturns) {
+    await t.test(item.name, async () => {
+      let commits = 0;
+      const host = testing.createOfflineHost({ ...options, approveMutation: true,
+        applyMutation: async () => { commits++; return corpus.returns[0]; } });
+      const result = await testing.startOfflineAction(async () => item.value, {}, host).result;
+      assert.equal(result.status, "success");
+      assert.equal(commits, item.risk === "write" ? 1 : 0);
+      if (item.risk === "read" && item.value.metrics) {
+        assert.deepEqual(result.metrics.map(metric => metric.value), [1, 1, "text"]);
+      }
+      if (item.risk === "write") assert.equal(host.mutationPlans[0].preview.affectedCount,
+        item.value.operations.length);
+    });
+  }
+});

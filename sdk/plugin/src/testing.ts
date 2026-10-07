@@ -48,6 +48,87 @@ function reject(code: string, message: string): never {
   throw new PluginCapabilityError(code, message);
 }
 
+// Match the closed Python return models after the Worker's JSON transport.
+function wireObject(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).every(key => fields.includes(key));
+}
+
+function objectValue(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function arrayOf(value: unknown, member: (item: unknown) => boolean): boolean {
+  return value === undefined || (Array.isArray(value) && value.every(member));
+}
+
+function wireInteger(value: unknown): number | undefined {
+  // Pydantic's non-strict int fields also accept booleans and decimal strings.
+  const number = typeof value === "boolean" ? Number(value)
+    : typeof value === "string" && /^[+-]?\d+(?:_\d+)*(?:\.0+)?$/u.test(value.trim())
+      ? Number(value.replaceAll("_", "")) : value;
+  return typeof number === "number" && Number.isInteger(number) ? number : undefined;
+}
+
+function resultFromWire(value: unknown): PluginResult {
+  if (!wireObject(value, ["contract", "status", "summary", "metrics", "table", "artifacts", "refresh", "warnings"])
+    || (value.contract !== undefined && value.contract !== "vibetable.plugin-result.v1")
+    || (value.status !== "success" && value.status !== "warning" && value.status !== "error") || typeof value.summary !== "string"
+    || !arrayOf(value.metrics, metric => wireObject(metric, ["label", "value"])
+      && typeof metric.label === "string" && ["string", "number", "boolean"].includes(typeof metric.value))
+    || (value.table !== undefined && value.table !== null && !objectValue(value.table))
+    || !arrayOf(value.artifacts, objectValue)
+    || (value.refresh !== undefined && value.refresh !== null && !objectValue(value.refresh))
+    || !arrayOf(value.warnings, item => typeof item === "string")) {
+    reject("plugin_action_failed", "invalid plugin action result");
+  }
+  return { contract: "vibetable.plugin-result.v1", ...value,
+    ...(Array.isArray(value.metrics) ? { metrics: value.metrics.map((metric: { label: string; value: string | number | boolean }) => ({
+      ...metric, value: typeof metric.value === "boolean" ? Number(metric.value) : metric.value,
+    })) } : {}),
+  } as unknown as PluginResult;
+}
+
+function planFromWire(value: unknown): MutationPlan {
+  const invalid = () => reject("plugin_worker_failed", "invalid plugin mutation plan");
+  // populate_by_name accepts Python field names too; duplicate aliases are extras.
+  const field = (record: Record<string, unknown>, camel: string, snake: string) => {
+    if (Object.hasOwn(record, camel) && Object.hasOwn(record, snake)) invalid();
+    return Object.hasOwn(record, camel) ? record[camel] : record[snake];
+  };
+  if (!wireObject(value, ["contract", "collection", "operations", "preview", "idempotencyKey", "idempotency_key"])
+    || (value.contract !== undefined && value.contract !== "vibetable.mutation-plan.v1")
+    || typeof value.collection !== "string" || !Array.isArray(value.operations)
+    || value.operations.length > 10_000
+    || !wireObject(value.preview, ["summary", "sampleRows", "sample_rows", "affectedCount", "affected_count", "warnings"])) {
+    return invalid();
+  }
+  const idempotencyKey = field(value, "idempotencyKey", "idempotency_key") ?? null;
+  const sampleRows = field(value.preview, "sampleRows", "sample_rows");
+  const count = field(value.preview, "affectedCount", "affected_count");
+  const affectedCount = wireInteger(count === undefined ? 0 : count);
+  if (typeof idempotencyKey !== "string" && idempotencyKey !== null
+    || affectedCount === undefined || affectedCount < 0 || affectedCount !== value.operations.length
+    || !arrayOf(value.preview.summary, objectValue) || !arrayOf(sampleRows, objectValue)
+    || !arrayOf(value.preview.warnings, item => typeof item === "string")) return invalid();
+  const operations = value.operations.map(operation => {
+    if (!wireObject(operation, ["kind", "primaryKey", "primary_key", "expectedDateUpdated", "expected_date_updated", "expectedDigest", "expected_digest", "values"])
+      || (operation.kind !== "create" && operation.kind !== "update") || !objectValue(operation.values)) return invalid();
+    let primaryKey = field(operation, "primaryKey", "primary_key") ?? null;
+    const expectedDateUpdated = field(operation, "expectedDateUpdated", "expected_date_updated") ?? null;
+    const expectedDigest = field(operation, "expectedDigest", "expected_digest") ?? null;
+    if (typeof primaryKey === "boolean") primaryKey = Number(primaryKey);
+    if (primaryKey !== null && typeof primaryKey !== "string" && wireInteger(primaryKey) === undefined
+      || expectedDateUpdated !== null && (typeof expectedDateUpdated !== "string" || !/^row_[0-9]{4,}$/u.test(expectedDateUpdated))
+      || expectedDigest !== null && (typeof expectedDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(expectedDigest))) return invalid();
+    return { kind: operation.kind, primaryKey, expectedDateUpdated, expectedDigest, values: operation.values };
+  });
+  return { contract: "vibetable.mutation-plan.v1", collection: value.collection, operations,
+    preview: { summary: value.preview.summary ?? [], affectedCount,
+      sampleRows: sampleRows ?? [], warnings: value.preview.warnings ?? [] }, idempotencyKey,
+  } as unknown as MutationPlan;
+}
+
 export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost {
   let context: CommandContext = {
     contract: "vibetable.command-context.v1", projectKey: "offline:test", collection: null,
@@ -161,14 +242,12 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
     capabilities, mutationPlans, progressEvents, writtenFiles,
     setContext(patch) { context = { ...context, ...patch }; },
     requestCancel() { cancelRequested = true; },
-    async finalize(plan, onSubmit) {
-      if (plan.operations.length > 10_000 || plan.preview.affectedCount !== plan.operations.length) reject("plugin_worker_failed", "invalid mutation plan count");
+    async finalize(raw, onSubmit) {
+      const plan = planFromWire(raw);
       if (context.collection !== null && plan.collection !== context.collection) reject("plugin_action_failed", "mutation plan collection is outside the action context");
       for (const operation of plan.operations) {
         const permission = grant(plan.collection, operation.kind);
         if (!permission || Object.keys(operation.values).some(field => !allowedFields(plan.collection, permission.fields).includes(field))) reject("plugin_worker_failed", "mutation permission was not declared");
-        if (operation.expectedDateUpdated !== undefined && operation.expectedDateUpdated !== null && !/^row_[0-9]{4,}$/u.test(operation.expectedDateUpdated)) reject("plugin_worker_failed", "invalid legacy revision guard");
-        if (operation.expectedDigest !== undefined && operation.expectedDigest !== null && !/^sha256:[0-9a-f]{64}$/u.test(operation.expectedDigest)) reject("plugin_worker_failed", "invalid digest guard");
       }
       mutationPlans.push(structuredClone(plan));
       const decision = options.approveMutation ?? false;
@@ -207,13 +286,15 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
   };
   void (async () => {
     try {
-      const raw = await action(input, host.capabilities, snapshot);
+      const returned = await action(input, host.capabilities, snapshot);
       if (settled) return;
+      let raw: unknown;
+      try { raw = JSON.parse(JSON.stringify(returned)); }
+      catch { reject("plugin_worker_failed", "plugin action return is not valid JSON"); }
+      if (!objectValue(raw)) reject("plugin_worker_failed", "plugin action return must be a JSON object");
       if (raw.contract === "vibetable.mutation-plan.v1") {
-        finish(await host.finalize(raw, () => { committing = true; }));
-      } else if (raw.contract === "vibetable.plugin-result.v1" && ["success", "warning", "error"].includes(raw.status)
-        && typeof raw.summary === "string") finish(raw);
-      else finish(failure("plugin_action_failed", "invalid plugin action return"));
+        finish(resultFromWire(await host.finalize(raw as unknown as MutationPlan, () => { committing = true; })));
+      } else finish(resultFromWire(raw));
     } catch (error) {
       const code = error instanceof PluginCapabilityError ? error.code : "plugin_test_error";
       finish(failure(code, error instanceof Error ? error.message : String(error)));
