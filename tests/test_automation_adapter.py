@@ -74,17 +74,23 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
     assert automation_project.main(command[2:]) == 0
     assert calls == [
         (("npm", "run", "typecheck"), "sdk/plugin"),
+        (("npm", "run", "test"), "sdk/plugin"),
         (("npm", "run", "typecheck"), "examples/plugins/data-overview"),
         (("npm", "run", "test"), "examples/plugins/data-overview"),
+        (("npm", "run", "build"), "examples/plugins/data-overview"),
         (("npm", "run", "typecheck"), "examples/plugins/normalize-text"),
         (("npm", "run", "test"), "examples/plugins/normalize-text"),
+        (("npm", "run", "build"), "examples/plugins/normalize-text"),
         (("npm", "run", "test:coverage"), "desktop/web-grid"),
     ]
 
 
 @pytest.mark.parametrize(
     ("project", "script", "expected_calls"),
-    [("examples/plugins/data-overview", "test", 3), ("desktop/web-grid", "test:coverage", 6)],
+    [
+        ("examples/plugins/data-overview", "test", 4),
+        ("desktop/web-grid", "test:coverage", 9),
+    ],
 )
 def test_node_stage_stops_on_plugin_or_web_failure(
     node_quality_checkout: Path,
