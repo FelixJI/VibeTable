@@ -1725,6 +1725,23 @@ async function scenario02(page, recorder, _network, runtime) {
     { scale12Readback, scale15Readback },
   );
 
+  // 全部 ordinary 业务（含分组 UI 旅程）完成后、首次导出前：同一闭合契约的
+  // zero-worker 断言仍在 scenario02 流内执行；02 因刻意唤醒 Python 不再列入
+  // ORDINARY_WORKER_FREE_SCENARIOS 的公共 dispatch 断言（集合注释的既定规则）。
+  await verifyQueryViewGroupingUI(page, recorder);
+  await assertOrdinaryWorkerFreeTopology(recorder, runtime, "02-all-field-schema");
+
+  // 分组旅程把可见网格留在它自己的表上；导出前显式切回数字显示合成表，
+  // 核实抽屉保持关闭且选中表正确（I 结束态：最多 15 位渲染原值）。
+  await selectTable(page, "E2E Number Display UI");
+  await waitForVisibleRowCount(page, 1);
+  await waitAmountCellText("1,234.56789");
+  recorder.check(
+    "field settings drawer stays closed and the display table is selected before export",
+    !(await page.getByTestId("field-display-name").isVisible()),
+    {},
+  );
+
   // J) 默认 CSV 导出：数值列保持原值文本，不携带币符/百分号/千分位。
   await chooseToolbarMore(page, "export-csv");
   await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
@@ -1802,7 +1819,18 @@ async function scenario02(page, recorder, _network, runtime) {
     { xlsxResult },
   );
 
-  await verifyQueryViewGroupingUI(page, recorder);
+  // 导出后沿用真实 dataIO 拓扑：惰性 Python backend 恰好驻留一个，
+  // Host/sidecar 唯一；observePackagedPythonCount 不约束 Node，复用同一成员
+  // 快照断言导出不产生 Node worker（不新建框架，fail-closed 契约不变）。
+  const postExportProcesses = await observePackagedPythonCount(runtime, 1);
+  recorder.check(
+    "exports lazily start exactly one Python backend and zero Node workers",
+    countProcessMembers(postExportProcesses.members, "vibetable.next.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "vibetable-pb.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "vibetable-backend.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "node.exe") === 0,
+    { postExportProcesses },
+  );
   return;
 }
 
@@ -5453,7 +5481,8 @@ function findCatalogEntry(catalogPayload, pluginId) {
 // here; their topology is asserted inside their own flows instead.
 const ORDINARY_WORKER_FREE_SCENARIOS = new Set([
   "01-offline-first-start",
-  "02-all-field-schema",
+  // 02-all-field-schema 在流内（首次导出前）执行同一 zero-worker 契约；
+  // 它的导出段刻意唤醒 Python，按本集合规则不得列入公共 dispatch 断言。
   "03-schema-errors",
   "05-formula-lifecycle",
   "06-relation-fanout",
