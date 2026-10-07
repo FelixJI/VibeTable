@@ -52,6 +52,9 @@ class _QueryPage(Protocol):
     @property
     def rows(self) -> list[dict[str, JsonValue]]: ...
 
+    @property
+    def total_rows(self) -> int: ...
+
 
 class _PluginDataClient(Protocol):
     async def query_page(
@@ -446,6 +449,7 @@ class NodePluginWorkerAdapter:
         value = {
             "items": items,
             "nextCursor": str(offset + len(items)) if len(items) == page_size else None,
+            "totalRows": page.total_rows,
             "rowGuards": {
                 str(row["id"]): row["__vibetableDigest"]
                 for row in page.rows

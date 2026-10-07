@@ -113,12 +113,17 @@ Worker 的公共类型应使用 SDK 的 `JsonObject`/`JsonValue`，不要用宽�
 `data.read` 必须显式提供 collection 和 fields；字段值保持原始 JSON，包括 0、false、null、
 数组与对象，不转换成展示文本。`fields:["*"]` 仍受权限和产品字段限制。v1 的 filter 只接受
 缺省、null 或 `{}`，非空值稳定拒绝 `plugin_filter_unsupported`。pageSize 缺省 100，整数
-夹在 1–200；null、布尔和非整数拒绝。nextCursor 非空时继续读取，满页后可能还需读取一个
+夹在 1–200；null、布尔和非整数拒绝。`totalRows` 是该次查询的权威总行数，与 items
+同页返回，不额外消耗调用。nextCursor 非空时继续读取，满页后可能还需读取一个
 空页才能结束。cursor 是 offset 字符串；宿主兼容既有 Python 整数形式（如 `"1_0"`），插件
 应直接转发收到的 nextCursor，不自行拼装。
 
 单次 Worker 默认预算为 15 秒、最多 64 次 capability 调用、单条 JSON 消息最大 1 MiB；
 宿主最多并行两个 Worker。分页、文件和进度调用都消耗该预算；这些限制没有因示例而放宽。
+逐 200 行扫全表同步计数会撞上调用预算：6200 行的表需要 1 次 `context.read` 加 32 次读页
+和 32 次进度，共 65 次调用，已超过 64 次上限。只需计数时用一次 `pageSize:1` 读取并采用
+返回的权威 `totalRows`（见 `examples/plugins/data-overview/src/overview.ts`），不新建计数
+接口，也不放宽预算。
 
 rowGuards 是与同一次 Go 查询页对应的 opaque 元数据，按记录 id 索引，与获准的业务字段
 分离。它由 Go 权威行状态产生、MutationKernel 消费；插件把它放入 operation.expectedDigest，
@@ -132,7 +137,10 @@ read 动作使用 `PluginReadAction<Input, Output>` 返回 PluginResult；write/
 返回 union 保持兼容，但第三参数是已弃用的协作取消快照，不是真正 AbortSignal，没有 DOM
 取消事件。每次耗时循环 await reportProgress 后检查 receipt.cancelRequested；Host 的公开
 task 终态仍是取消与成功的权威。`cancellable:false` 只表达该进度的协作取消提示，不移除
-Host 对任务的取消管理能力。
+Host 对任务的取消管理能力。Host 取消在 Worker 执行阶段先设置取消标记，并给最多约 1 秒
+协作宽限（允许一次进度回执与清理），仍未结束则强制终止 Node 进程；确认与提交阶段不设
+宽限，取消立即生效；提交开始后的取消保持现有 `aborted`/`plugin_commit_unknown` 边界，
+不会重放。
 
 ```typescript
 import { ok, mutationPlan, type PluginReadAction, type PluginWriteAction } from "@vibetable/plugin-sdk";
@@ -162,7 +170,8 @@ export const write: PluginWriteAction<{ field: string }> = async ({ field }, cap
 };
 ```
 
-完整分页与选择处理见 `examples/plugins/normalize-text/src/normalize.ts`；真实计数见
+完整分页与选择处理见 `examples/plugins/normalize-text/src/normalize.ts`；权威计数（一次
+`pageSize:1` 读取 `totalRows`）见
 `examples/plugins/data-overview/src/overview.ts`。PluginResult 的最小形状是
 `{contract:"vibetable.plugin-result.v1",status:"success"|"warning"|"error",summary:string}`，
 可加 metrics、table、refresh、warnings、artifacts。`ok(data)` 把原始 JSON 放在 table.data，
@@ -179,7 +188,10 @@ operations,preview:{affectedCount}}`。返回额外未声明 wire 字段会被 c
 风险错配不会进入确认或提交；返回计划先按 Worker 校验写权限，空计划也不例外。
 
 离线 `createOfflineHost` 显式输入合成 collections、fields、permissions、rowGuards；默认不
-授权读写。write 测试还必须提供合成产品可写 profile，例如
+授权读写。`cancelRequested` 与进度单调基线按单次 `startOfflineAction` 执行隔离：取消或超
+时后的旧异步动作即使晚返回，也只影响自己的执行，同一宿主上的并行运行互不串扰；宿主级
+`requestCancel` 只作用于直接经 `host.capabilities` 发起的调用。storage、progressEvents 历史、
+mutationPlans 与 writtenFiles 仍由宿主共享，用于跨执行观察。write 测试还必须提供合成产品可写 profile，例如
 `writableFields: { articles: { create: [], update: ["title"] } }`；集合与本次操作的字段列表须显式
 配置，缺少时在确认前以 `plugin_action_failed` 拒绝。它独立于读取 `fields` 和 manifest 权限，
 不会从字段名称推断可写性。write 测试还须提供 approveMutation 与合成 applyMutation，它不会

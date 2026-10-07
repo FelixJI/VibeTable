@@ -93,6 +93,7 @@ class FakePluginStore:
 @dataclass(frozen=True)
 class FakeQueryPage:
     rows: list[dict[str, object]]
+    total_rows: int
 
 
 class FakeProductReadClient:
@@ -104,7 +105,7 @@ class FakeProductReadClient:
 
     async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
         self.calls.append((table_id, query))
-        return FakeQueryPage(rows=[{"id": "1", "title": "safe"}])
+        return FakeQueryPage(rows=[{"id": "1", "title": "safe"}], total_rows=1)
 
     async def describe_table(self, table_id: str) -> dict[str, Any]:
         raise AssertionError(f"static plugin read port requested schema for {table_id}")
@@ -410,6 +411,84 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
     )
     assert setting is not None
     assert setting.value == "compact"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("total", [6200, 12400])
+async def test_example_overview_worker_counts_large_table_within_capability_budget(
+    tmp_path: Path, total: int
+) -> None:
+    """The shipped data-overview worker counts any table in one authoritative read.
+
+    Running the generated example artifact keeps this regression bound to the
+    real 6200-row failure: paging the whole table 200 rows at a time needs
+    1 + 32 + 32 = 65 capability calls and exceeds the default limit of 64.
+    """
+    _require_node()
+    worker_entry = (
+        Path(__file__).parents[3]
+        / "examples"
+        / "plugins"
+        / "data-overview"
+        / "dist"
+        / "workers"
+        / "overview.js"
+    )
+    if not worker_entry.is_file():
+        pytest.fail("data-overview dist worker is missing; run the plugin build script")
+
+    class LargeTableClient(FakeProductReadClient):
+        async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
+            self.calls.append((table_id, query))
+            offset, limit = query["offset"], query["limit"]
+            rows = [{"id": str(index + 1)} for index in range(offset, min(offset + limit, total))]
+            return FakeQueryPage(rows=rows, total_rows=total)
+
+    client = LargeTableClient()
+    adapter, store = _retained_worker(
+        tmp_path,
+        worker_entry.read_text(encoding="utf-8"),
+        permissions={
+            "data": [
+                {
+                    "collection": "$active",
+                    "operations": ["read"],
+                    "fields": ["id"],
+                }
+            ],
+            "privateStorage": False,
+        },
+        profiles={
+            "articles": CollectionProfile(
+                collection="articles",
+                fields=["id", "title"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        },
+        client=client,
+    )
+    reporter = FakeReporter()
+    execution = {
+        **_execution(package_hash=store.installation.package_hash),
+        "runId": f"run-count-{total}",
+        "_hostReporter": reporter,
+        "_hostCancel": SimpleNamespace(cancelled=False),
+    }
+
+    result = await adapter.run("dist/worker.js", _context(), {}, execution=execution)
+
+    assert result["metrics"] == [{"label": "记录", "value": total}]
+    assert result["table"] == {"data": {"count": total}}
+    assert reporter.updates == [
+        {"done": total, "total": total, "message": f"已统计 {total} 条记录"}
+    ]
+    assert client.calls == [
+        (
+            "articles",
+            {"keyword": None, "filters": [], "limit": 1, "offset": 0, "sorts": []},
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -863,6 +942,36 @@ async def test_data_read_rejects_invalid_cursor_type() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_data_read_exposes_authoritative_total_rows_behind_read_grant() -> None:
+    """totalRows follows query_page's authoritative count and stays behind the read grant."""
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id", "name"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        },
+        client=FakeProductReadClient(),
+    )
+    granted = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["id"]}]}
+    )
+    value = await adapter._data_read(
+        granted, {}, {"collection": "orders", "fields": ["id"], "pageSize": 1}
+    )
+    assert value["items"] == [{"id": "1"}]
+    assert value["totalRows"] == 1
+
+    denied = _resolved({"data": []})
+    with pytest.raises(PluginWorkerError, match="not declared for read"):
+        await adapter._data_read(
+            denied, {}, {"collection": "orders", "fields": ["id"], "pageSize": 1}
+        )
+
+
 # ---------------------------------------------------------------------------
 # _storage error branches
 # ---------------------------------------------------------------------------
@@ -1289,7 +1398,7 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
         async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
             assert table_id == "articles"
             offset, limit = query["offset"], query["limit"]
-            return FakeQueryPage(rows=self.rows[offset : offset + limit])
+            return FakeQueryPage(rows=self.rows[offset : offset + limit], total_rows=len(self.rows))
 
     client = ConformanceClient()
     profile = CollectionProfile(
@@ -1344,6 +1453,7 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
         else:
             assert len(page["items"]) == case["count"], case["name"]
             assert page["nextCursor"] == case["nextCursor"], case["name"]
+            assert page["totalRows"] == case.get("rowCount", 1), case["name"]
             if "first" in case:
                 assert page["items"][0] == case["first"], case["name"]
                 assert set(page["rowGuards"].values()) == {"sha256:" + "a" * 64}
