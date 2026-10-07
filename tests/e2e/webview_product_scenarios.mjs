@@ -1230,6 +1230,38 @@ async function scenario02(page, recorder, _network, runtime) {
     true,
   );
 
+  // 准确恢复共享旅程的原值与默认显示，避免污染后续既有断言。
+  const amountRestore = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "number",
+          displayScale: 2,
+          scaleMode: "max",
+          trimTrailingZeros: true,
+          useGrouping: true,
+          percentStorage: "ratio",
+          unit: null,
+        };
+        return draft;
+      },
+    },
+  );
+  const amountRestoreSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 21 },
+  }], "e2e-number-display-restore");
+  if (amountRestoreSeed.payload?.status !== "applied"
+    || amountRestore.applied?.type === "operation.failed") {
+    throw new Error(`amount restore failed: ${JSON.stringify([amountRestore, amountRestoreSeed])}`);
+  }
+
   // The remaining assertions intentionally mutate this table through raw
   // bridge requests. Keep the visible grid on a different table so it cannot
   // issue Lookup reads between an out-of-band schema apply and its UI refresh.
@@ -1389,6 +1421,311 @@ async function scenario02(page, recorder, _network, runtime) {
     { legacyWrite },
   );
   await acknowledgeExpectedBridgeFailure(page, legacyWrite);
+
+  // AC1/AC2/AC3/AC5（UI 驱动）：独立合成表，经真实抽屉控件设置/保存/重开，
+  // 覆盖 0/2/9/12/15 持久化、固定/最多、千分位、货币/单位、百分比两种存储、
+  // 显示-only 不变量与默认 CSV 原值导出；不污染上面的共享旅程。
+  const numberUiTableId = await createEmptyTable(page, "E2E Number Display UI");
+  const uiAmount = await createV2Field(page, numberUiTableId, "金额", "number");
+  await closeFieldSettingsDrawer(page);
+  const uiFormula = await createV2Field(page, numberUiTableId, "翻倍", "formula", (draft) => {
+    draft.formula = { language: "cel-v1", source: `{${uiAmount.physicalName}} * 2` };
+    return draft;
+  });
+  await closeFieldSettingsDrawer(page);
+  const uiSeed = await applyProductMutation(page, numberUiTableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [uiAmount.physicalName]: 1234.56789 },
+  }], "e2e-number-display-ui-seed");
+  if (uiSeed.payload?.status !== "applied") {
+    throw new Error(`number display UI seed was not committed: ${JSON.stringify(uiSeed)}`);
+  }
+  await selectTable(page, "E2E Number Display UI");
+  await waitForVisibleRowCount(page, 1);
+
+  const uiQuery = () => rawBridgeRequest(page, "query.page", {
+    tableId: numberUiTableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const uiDescribeDisplay = async () => {
+    const described = await rawBridgeRequest(page, "field.settings.describe", {
+      tableId: numberUiTableId,
+      fieldId: uiAmount.fieldId,
+    });
+    return described.payload?.definition?.display ?? null;
+  };
+  const waitAmountCellText = async (expectedText) => {
+    await page.waitForFunction(
+      ({ field, expected }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes(expected),
+      { field: uiAmount.physicalName, expected: expectedText },
+      { timeout: 30_000 },
+    );
+  };
+  const openAmountSettings = async () => {
+    const header = page.locator(`.tabulator-col[tabulator-field="${uiAmount.physicalName}"]`);
+    await header.waitFor({ state: "visible" });
+    await header.locator(".tabulator-col-title").click({ button: "right" });
+    await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+    await page.getByTestId("field-display-name").waitFor();
+  };
+  const saveAmountSettings = async () => {
+    await page.getByTestId("field-plan-button").click();
+    const planCard = page.getByTestId("field-change-plan");
+    await planCard.waitFor({ state: "visible", timeout: 30_000 });
+    for (const checkbox of await planCard.getByRole("checkbox").all()) {
+      if (!await checkbox.isChecked()) await checkbox.check();
+    }
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+    await page.getByTestId("field-apply-button").click();
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`number display UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    await closeFieldSettingsDrawer(page);
+    return applied;
+  };
+  const setDisplayScaleInput = async (value) => {
+    const input = page.getByTestId("number-display-scale").locator("input");
+    await input.fill(String(value));
+    await input.press("Enter");
+  };
+  const readPersistedScale = async () => {
+    await openAmountSettings();
+    const value = Number(await page.getByTestId("number-display-scale").locator("input").inputValue());
+    await closeFieldSettingsDrawer(page);
+    return value;
+  };
+  const previewTexts = async () => (await page
+    .locator('[data-testid="number-display-preview"] code')
+    .allTextContents());
+
+  // 基准：record id + 业务 data revision（后续显示-only 变更的不变量基准）。
+  const beforeDisplayOnly = await uiQuery();
+  const beforeRowId = beforeDisplayOnly.payload?.rows?.[0]?.id;
+  const beforeDataRevision = beforeDisplayOnly.payload?.snapshot?.dataRevision;
+  const beforeSchemaRevision = beforeDisplayOnly.payload?.snapshot?.schemaRevision;
+
+  // A) 真实抽屉：预设“数字”+固定 2 位，保存前实时预览已生效。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await setDisplayScaleInput(2);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  recorder.check(
+    "drawer preview shows fixed two digits before saving",
+    (await previewTexts()).join("|") === "1,234.57|12.00",
+    { previews: await previewTexts() },
+  );
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.57");
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-fixed.png"),
+    fullPage: true,
+  });
+  const afterFirstDisplayChange = await uiQuery();
+  const fixedDisplay = await uiDescribeDisplay();
+  recorder.check(
+    "display-only change keeps record id and business data revision while schema revision advances",
+    afterFirstDisplayChange.payload?.rows?.[0]?.id === beforeRowId
+      && afterFirstDisplayChange.payload?.snapshot?.dataRevision === beforeDataRevision
+      && afterFirstDisplayChange.payload?.snapshot?.schemaRevision !== beforeSchemaRevision,
+    {
+      before: { beforeRowId, beforeDataRevision, beforeSchemaRevision },
+      after: {
+        rowId: afterFirstDisplayChange.payload?.rows?.[0]?.id,
+        dataRevision: afterFirstDisplayChange.payload?.snapshot?.dataRevision,
+        schemaRevision: afterFirstDisplayChange.payload?.snapshot?.schemaRevision,
+      },
+    },
+  );
+  recorder.check(
+    "saved fixed-2 display persists through drawer reopen and authority describe",
+    await readPersistedScale() === 2
+      && fixedDisplay?.scaleMode === "fixed"
+      && fixedDisplay?.displayScale === 2,
+    { fixedDisplay },
+  );
+
+  // B) 最多 9 位：全精度显示并持久化。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await setDisplayScaleInput(9);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.56789");
+  recorder.check("max-9 display persists", await readPersistedScale() === 9, {});
+
+  // C) 0 位：四舍五入到整数显示，持久化。
+  await openAmountSettings();
+  await setDisplayScaleInput(0);
+  await saveAmountSettings();
+  await waitAmountCellText("1,235");
+  recorder.check("scale-0 display persists", await readPersistedScale() === 0, {});
+
+  // D) 关闭千分位 + 2 位：无分隔符。
+  await openAmountSettings();
+  await setDisplayScaleInput(2);
+  await page.getByTestId("number-display-grouping").click();
+  await saveAmountSettings();
+  await waitAmountCellText("1234.57");
+
+  // E) 货币预设：币符附着并持久化（重新打开千分位）。
+  await openAmountSettings();
+  await page.getByTestId("number-display-grouping").click();
+  await selectVisibleNOption(page, "number-display-preset", "货币");
+  await saveAmountSettings();
+  await waitAmountCellText("¥1,234.57");
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-currency.png"),
+    fullPage: true,
+  });
+  const currencyDisplay = await uiDescribeDisplay();
+  recorder.check(
+    "currency preset persists with code and fixed scale",
+    currencyDisplay?.preset === "currency"
+      && currencyDisplay?.currency === "CNY"
+      && currencyDisplay?.displayScale === 2,
+    { currencyDisplay },
+  );
+
+  // F) 单位预设：单位直接附着。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "单位");
+  await fillNInput(page, "number-display-unit", "kg");
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.57kg");
+
+  // G) 百分比：ratio 0.125 与 percent 12.5 同显 12.5%，编辑/粘贴/重开不改原值。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "百分比");
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await saveAmountSettings();
+  const percentEdit = await beginCellEdit(
+    page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
+  );
+  await percentEdit.fill("0.125");
+  await percentEdit.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.[0]?.[uiAmount.physicalName] === 0.125,
+  );
+  await waitAmountCellText("12.5%");
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-percent-storage", "百分数（12.5 显示 12.5%）");
+  await saveAmountSettings();
+  const percentStorageEdit = await beginCellEdit(
+    page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
+  );
+  // 键盘插入路径（非真实剪贴板粘贴）：仍走真实输入事件替换选区。
+  await percentStorageEdit.press("Control+a");
+  await page.keyboard.insertText("12.5");
+  await percentStorageEdit.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.[0]?.[uiAmount.physicalName] === 12.5,
+  );
+  await waitAmountCellText("12.5%");
+  await openAmountSettings();
+  const rawAfterReopen = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  await closeFieldSettingsDrawer(page);
+  recorder.check(
+    "percent edit/paste/reopen keep raw values: ratio 0.125 and percent 12.5 both show 12.5%",
+    rawAfterReopen === 12.5,
+    { rawAfterReopen },
+  );
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-percent.png"),
+    fullPage: true,
+  });
+
+  // H) 小数位 5→2→5：原值与同一 Go 公式结果不变。
+  const amountReset = await applyProductMutation(page, numberUiTableId, [{
+    kind: "update",
+    recordId: beforeRowId,
+    values: { [uiAmount.physicalName]: 1234.56789 },
+  }], "e2e-number-display-formula-invariance");
+  if (amountReset.payload?.status !== "applied") {
+    throw new Error(`formula invariance seed failed: ${JSON.stringify(amountReset)}`);
+  }
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await setDisplayScaleInput(5);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.56789");
+  const formulaCellText = async () => ((await page
+    .locator(`.tabulator-cell[tabulator-field="${uiFormula.physicalName}"]`)
+    .first()
+    .textContent()) ?? "").trim();
+  await page.waitForFunction(
+    (field) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("2,469.14"),
+    uiFormula.physicalName,
+    { timeout: 30_000 },
+  );
+  const formulaAtScale5 = await formulaCellText();
+  await openAmountSettings();
+  await setDisplayScaleInput(2);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.57");
+  const formulaAtScale2 = await formulaCellText();
+  await openAmountSettings();
+  await setDisplayScaleInput(5);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.56789");
+  const formulaBackAtScale5 = await formulaCellText();
+  const rawAfterScaleCycle = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  recorder.check(
+    "displayScale 5→2→5 never changes the raw value or the same Go formula result",
+    rawAfterScaleCycle === 1234.56789
+      && formulaAtScale5 === formulaAtScale2
+      && formulaAtScale2 === formulaBackAtScale5
+      && formulaAtScale5.includes("2,469.14"),
+    { formulaAtScale5, formulaAtScale2, formulaBackAtScale5, rawAfterScaleCycle },
+  );
+
+  // I) 高位持久化：12 与 15 均为有效保存值（重开回读，不逐格截图）。
+  await openAmountSettings();
+  await setDisplayScaleInput(12);
+  await saveAmountSettings();
+  const scale12Readback = await readPersistedScale();
+  await openAmountSettings();
+  await setDisplayScaleInput(15);
+  await saveAmountSettings();
+  const scale15Readback = await readPersistedScale();
+  recorder.check(
+    "displayScale 12 and 15 both persist through the authoritative schema",
+    scale12Readback === 12 && scale15Readback === 15,
+    { scale12Readback, scale15Readback },
+  );
+
+  // J) 默认 CSV 导出：数值列保持原值文本，不携带币符/百分号/千分位。
+  await chooseToolbarMore(page, "export-csv");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const csvTarget = path.join(runtime.controlsDir, "export-result.csv");
+  const csvDeadline = Date.now() + 60_000;
+  let exportedCsv = "";
+  while (Date.now() < csvDeadline) {
+    try {
+      exportedCsv = await fs.readFile(csvTarget, "utf8");
+      if (exportedCsv.includes("1234.56789")) break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const csvRows = parseCsv(exportedCsv);
+  const csvAmountIndex = csvRows[0]?.indexOf(uiAmount.physicalName) ?? -1;
+  const csvAmountValue = csvAmountIndex >= 0 ? csvRows[1]?.[csvAmountIndex] : undefined;
+  recorder.check(
+    "default CSV export keeps the raw numeric value without currency/percent/grouping decorations",
+    csvAmountValue === "1234.56789"
+      && !exportedCsv.includes("¥")
+      && !exportedCsv.includes("%"),
+    { csvAmountIndex, csvAmountValue, exportedCsvHead: exportedCsv.slice(0, 400) },
+  );
+
   await verifyQueryViewGroupingUI(page, recorder);
   return;
 }
