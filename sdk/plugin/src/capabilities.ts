@@ -3,6 +3,8 @@ import type { CommandContext, JsonObject, JsonValue, PluginResult } from "./type
 export interface DataPage<T extends JsonObject = JsonObject> {
   readonly items: readonly T[];
   readonly nextCursor: string | null;
+  /** Authoritative total row count for the queried collection, from the same page query. */
+  readonly totalRows: number;
   /** Existing Go row guards, separate from the requested business fields. */
   readonly rowGuards: Readonly<Record<string, string>>;
 }

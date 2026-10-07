@@ -40,8 +40,23 @@ export interface OfflineHost {
   readonly progressEvents: readonly PluginProgress[];
   readonly writtenFiles: ReadonlyMap<string, Uint8Array>;
   setContext(patch: Partial<CommandContext>): void;
+  /** Host-level cancel; it only feeds capabilities used outside an execution. */
+  requestCancel(): void;
+  /** One isolated execution: cancel/progress state never crosses executions. */
+  createExecution(): OfflineExecution;
+  finalize(plan: MutationPlan, onSubmit: () => void, risk?: "read" | "write" | "destructive"): Promise<PluginResult>;
+}
+
+export interface OfflineExecution {
+  readonly capabilities: PluginCapabilities;
   requestCancel(): void;
   finalize(plan: MutationPlan, onSubmit: () => void, risk?: "read" | "write" | "destructive"): Promise<PluginResult>;
+}
+
+/** Cancel flag and monotonic progress baseline, scoped to a single execution. */
+interface ExecutionState {
+  cancelRequested: boolean;
+  lastProgress: number;
 }
 
 export interface OfflineRun {
@@ -140,8 +155,6 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
     selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light",
     density: "comfortable", user: {}, hostVersion: "unknown", ...options.context,
   };
-  let cancelRequested = false;
-  let lastProgress = 0;
   let readIndex = 0;
   const storage = new Map<string, JsonValue>();
   const mutationPlans: MutationPlan[] = [];
@@ -164,7 +177,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   const requireFile = (operation: "pickRead" | "pickWrite") => {
     if (!options.permissions?.files?.includes(operation)) reject("plugin_worker_failed", `plugin did not declare file.${operation}`);
   };
-  const capabilities: PluginCapabilities = createCapabilityClient({
+  const capabilitiesFor = (state: ExecutionState): PluginCapabilities => createCapabilityClient({
     async dataRead<T extends JsonObject>(request: DataReadRequest): Promise<DataPage<T>> {
       if (Object.keys(request).some(key => !["collection", "fields", "filter", "cursor", "pageSize"].includes(key))
         || typeof request.collection !== "string" || !request.collection
@@ -197,7 +210,8 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
         const guard = options.rowGuards?.[request.collection]?.[String(row.id)];
         return guard === undefined ? [] : [[String(row.id), guard]];
       }));
-      return { items, nextCursor: items.length === pageSize ? String(offset + items.length) : null, rowGuards };
+      return { items, nextCursor: items.length === pageSize ? String(offset + items.length) : null,
+        totalRows: (options.collections?.[request.collection] ?? []).length, rowGuards };
     },
     async dataMutate() { return reject("plugin_direct_mutation_unsupported", "data.mutate cannot write directly; return a mutation plan from the action"); },
     async filePickRead() {
@@ -239,40 +253,52 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
         || progress.current < 0 || progress.total < 0 || (progress.total > 0 && progress.current > progress.total)) {
         reject("plugin_capability_invalid", "progress is out of bounds");
       }
-      lastProgress = Math.max(lastProgress, progress.current);
-      progressEvents.push({ ...progress, current: lastProgress });
-      return { cancelRequested };
+      state.lastProgress = Math.max(state.lastProgress, progress.current);
+      progressEvents.push({ ...progress, current: state.lastProgress });
+      return { cancelRequested: state.cancelRequested };
     },
     async contextRead() { return structuredClone(context); },
   });
+  const finalizeFor = (state: ExecutionState) => async (
+    raw: MutationPlan, onSubmit: () => void, risk: "read" | "write" | "destructive" = "write",
+  ): Promise<PluginResult> => {
+    const plan = planFromWire(raw);
+    const permission = grant(plan.collection, "write");
+    if (!permission) reject("plugin_worker_failed", "mutation permission was not declared");
+    const writableProfile = options.writableFields?.[plan.collection];
+    for (const operation of plan.operations) {
+      if (!permission.operations.includes(operation.kind)
+        || Object.keys(operation.values).some(field => !allowedFields(plan.collection, permission.fields).includes(field))) reject("plugin_worker_failed", "mutation permission was not declared");
+      const writable = writableProfile?.[operation.kind];
+      if (!writable) reject("plugin_action_failed", `synthetic writable profile is unavailable for ${operation.kind}`);
+      if (Object.keys(operation.values).some(field => !writable.includes(field))) reject("plugin_action_failed", `fields are not allowed for ${operation.kind}`);
+    }
+    if (!writableProfile) reject("plugin_action_failed", "synthetic writable profile is unavailable");
+    if (risk === "read") reject("plugin_action_failed", "read plugin must return a plugin result");
+    if (context.collection !== null && plan.collection !== context.collection) reject("plugin_action_failed", "mutation plan collection is outside the action context");
+    mutationPlans.push(structuredClone(plan));
+    const decision = options.approveMutation ?? false;
+    const approved = typeof decision === "function" ? await decision(plan) : decision;
+    if (state.cancelRequested) reject("plugin_cancel_requested", "plugin cancellation requested");
+    if (!approved) reject("plugin_mutation_rejected", "mutation plan was rejected");
+    if (!options.applyMutation) reject("plugin_action_failed", "synthetic mutation adapter is unavailable");
+    onSubmit();
+    return options.applyMutation(plan);
+  };
+  const hostState: ExecutionState = { cancelRequested: false, lastProgress: 0 };
   return {
-    capabilities, mutationPlans, progressEvents, writtenFiles,
+    capabilities: capabilitiesFor(hostState), mutationPlans, progressEvents, writtenFiles,
     setContext(patch) { context = { ...context, ...patch }; },
-    requestCancel() { cancelRequested = true; },
-    async finalize(raw, onSubmit, risk = "write") {
-      const plan = planFromWire(raw);
-      const permission = grant(plan.collection, "write");
-      if (!permission) reject("plugin_worker_failed", "mutation permission was not declared");
-      const writableProfile = options.writableFields?.[plan.collection];
-      for (const operation of plan.operations) {
-        if (!permission.operations.includes(operation.kind)
-          || Object.keys(operation.values).some(field => !allowedFields(plan.collection, permission.fields).includes(field))) reject("plugin_worker_failed", "mutation permission was not declared");
-        const writable = writableProfile?.[operation.kind];
-        if (!writable) reject("plugin_action_failed", `synthetic writable profile is unavailable for ${operation.kind}`);
-        if (Object.keys(operation.values).some(field => !writable.includes(field))) reject("plugin_action_failed", `fields are not allowed for ${operation.kind}`);
-      }
-      if (!writableProfile) reject("plugin_action_failed", "synthetic writable profile is unavailable");
-      if (risk === "read") reject("plugin_action_failed", "read plugin must return a plugin result");
-      if (context.collection !== null && plan.collection !== context.collection) reject("plugin_action_failed", "mutation plan collection is outside the action context");
-      mutationPlans.push(structuredClone(plan));
-      const decision = options.approveMutation ?? false;
-      const approved = typeof decision === "function" ? await decision(plan) : decision;
-      if (cancelRequested) reject("plugin_cancel_requested", "plugin cancellation requested");
-      if (!approved) reject("plugin_mutation_rejected", "mutation plan was rejected");
-      if (!options.applyMutation) reject("plugin_action_failed", "synthetic mutation adapter is unavailable");
-      onSubmit();
-      return options.applyMutation(plan);
+    requestCancel() { hostState.cancelRequested = true; },
+    createExecution() {
+      const state: ExecutionState = { cancelRequested: false, lastProgress: 0 };
+      return {
+        capabilities: capabilitiesFor(state),
+        requestCancel() { state.cancelRequested = true; },
+        finalize: finalizeFor(state),
+      };
     },
+    finalize: finalizeFor(hostState),
   };
 }
 
@@ -281,6 +307,9 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
   action: PluginAction<TInput, TOutput>, input: TInput, host: OfflineHost,
   options: { readonly timeoutMs?: number; readonly risk?: "read" | "write" | "destructive" } = {},
 ): OfflineRun {
+  // Each run owns its cancel/progress scope: a cancelled or timed-out action
+  // that settles late only ever observes its own execution state.
+  const execution = host.createExecution();
   let settled = false;
   let committing = false;
   let resolveResult: (result: PluginResult) => void;
@@ -292,7 +321,7 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
     resolveResult(value);
   };
   const timeout = options.timeoutMs === undefined ? undefined : setTimeout(() => {
-    host.requestCancel();
+    execution.requestCancel();
     finish(failure(committing ? "plugin_commit_unknown" : "plugin_timeout", "offline action timed out"));
   }, options.timeoutMs);
   const snapshot = {
@@ -301,14 +330,14 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
   };
   void (async () => {
     try {
-      const returned = await action(input, host.capabilities, snapshot);
+      const returned = await action(input, execution.capabilities, snapshot);
       if (settled) return;
       let raw: unknown;
       try { raw = JSON.parse(JSON.stringify(returned)); }
       catch { reject("plugin_worker_failed", "plugin action return is not valid JSON"); }
       if (!objectValue(raw)) reject("plugin_worker_failed", "plugin action return must be a JSON object");
       if (raw.contract === "vibetable.mutation-plan.v1") {
-        finish(resultFromWire(await host.finalize(raw as unknown as MutationPlan,
+        finish(resultFromWire(await execution.finalize(raw as unknown as MutationPlan,
           () => { committing = true; }, options.risk ?? "read")));
       } else {
         if ((options.risk ?? "read") !== "read") reject("plugin_action_failed", "write plugin must return a mutation plan");
@@ -323,7 +352,7 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
     result,
     cancel(reason = "cancelled by offline host") {
       if (settled) return;
-      host.requestCancel();
+      execution.requestCancel();
       snapshot.aborted = true;
       finish(committing ? failure("plugin_commit_unknown", reason) : cancelled(reason));
     },

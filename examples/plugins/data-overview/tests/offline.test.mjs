@@ -11,7 +11,22 @@ test("overview counts real synthetic rows across the 200-row boundary", async ()
   const result = await testing.startOfflineAction(run, {}, host).result;
   assert.equal(result.status, "success");
   assert.deepEqual(result.table, { data: { count: 401 } });
-  assert.equal(host.progressEvents.length, 3);
+  assert.equal(host.progressEvents.length, 1);
+  assert.equal(host.progressEvents[0].current, 401);
+});
+
+test("a 6200-row table is counted within the Worker capability budget", async () => {
+  // The real Worker budget is 64 capability calls; paging the whole table 200
+  // rows at a time needs 65 here (1 context.read + 32 reads + 32 progress).
+  // One authoritative totalRows read plus one progress receipt keeps 3 calls.
+  const rows = Array.from({ length: 6200 }, (_, index) => ({ id: String(index + 1) }));
+  const host = testing.createOfflineHost({ context: { collection: "articles" },
+    permissions: { data: [{ collection: "$active", operations: ["read"], fields: ["id"] }] },
+    collections: { articles: rows } });
+  const result = await testing.startOfflineAction(run, {}, host).result;
+  assert.equal(result.status, "success");
+  assert.deepEqual(result.table, { data: { count: 6200 } });
+  assert.equal(host.progressEvents.length, 1);
 });
 
 test("an empty table reports zero and a missing active table fails clearly", async () => {
