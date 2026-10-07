@@ -1,5 +1,6 @@
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
+import { setLocale } from "@/i18n";
 import ViewGroupPanel from "./ViewGroupPanel.vue";
 
 describe("ViewGroupPanel", () => {
@@ -46,4 +47,30 @@ describe("ViewGroupPanel", () => {
     await wrapper.get(".group-toggle").trigger("click");
     expect(wrapper.emitted("toggle")).toEqual([['["east"]']]);
   });
+  it("formats parent and child numeric summaries without changing aggregates or counts", () => {
+    setLocale("zh-CN");
+    const raw = [1234.56789, 12, null, -0];
+    const wrapper = mount(ViewGroupPanel, { props: {
+      rows: [{ key: ["east", "open"], count: 7, summaries: raw,
+        parentCount: 9, parentSummaries: raw }],
+      groups: [{ field: "region" }, { field: "status" }],
+      summaries: (["sum", "avg", "min", "max"] as const)
+        .map(fn => ({ field: "amount", function: fn })),
+      columns: [{ name: "amount", title: "金额", dataType: "decimal",
+        editable: true, nullable: true, display: {
+          kind: "number", preset: "currency", currency: "CNY", displayScale: 2,
+          scaleMode: "fixed", trimTrailingZeros: false, useGrouping: true,
+          percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+          mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+        } }],
+      hasMore: false,
+    } });
+    for (const summary of wrapper.findAll(".group-summary")) {
+      expect(summary.text()).toBe("金额 合计: ¥1,234.57 · 金额 平均: ¥12.00 · 金额 最小: — · 金额 最大: ¥0.00");
+    }
+    expect(wrapper.findAll(".group-summary")).toHaveLength(2);
+    expect(wrapper.findAll("b").map(node => node.text())).toEqual(["9", "7"]);
+    expect(raw).toEqual([1234.56789, 12, null, -0]);
+  });
+
 });

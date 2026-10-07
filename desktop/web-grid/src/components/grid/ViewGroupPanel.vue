@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { NButton } from "naive-ui";
+import { getLocale } from "@/i18n";
+import { formatNumberDisplay } from "@/number/numberDisplay";
 import type { ColumnSchema, GroupCondition, SummaryCondition, ViewGroupRow } from "@/contracts";
 
 const props = defineProps<{
@@ -56,7 +58,10 @@ function summaryLabel(row: ViewGroupRow): string {
     if (!summary) return String(value ?? "—");
     const field = names.value.get(summary.field) ?? summary.field;
     const fn = { sum: "合计", avg: "平均", min: "最小", max: "最大" }[summary.function];
-    return `${field} ${fn}: ${String(value ?? "—")}`;
+    const column = props.columns.find(column => column.name === summary.field);
+    const formatted = column?.dataType === "decimal" || column?.dataType === "integer"
+      ? formatNumberDisplay(value, column.display, getLocale()) : null;
+    return `${field} ${fn}: ${formatted ?? String(value ?? "—")}`;
   }).join(" · ");
 }
 </script>
