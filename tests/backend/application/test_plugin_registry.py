@@ -26,7 +26,7 @@ def _manifest(*, version: str = "1.0.0") -> PluginManifest:
             "version": version,
             "displayName": {"en": "Summary"},
             "compatibility": {
-                "minHostVersion": "1.0.0",
+                "minHostVersion": "0.5.1",
                 "pluginApi": "1.x",
             },
             "permissions": {

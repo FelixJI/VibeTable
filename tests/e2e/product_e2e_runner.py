@@ -2508,6 +2508,19 @@ def run_scenario(
         str(plugin_fixture.resolve()) + "\n",
         encoding="utf-8",
     )
+    if scenario.id == "11-plugin-mutation":
+        for example in ("data-overview", "normalize-text"):
+            source = ROOT / "examples" / "plugins" / example
+            plugin_cli = ROOT / "scripts" / "vibetable_plugin.py"
+            archive = controls_dir / f"{example}.vtplugin"
+            subprocess.run(
+                [sys.executable, str(plugin_cli), "build", str(source)], cwd=ROOT, check=True
+            )
+            subprocess.run(
+                [sys.executable, str(plugin_cli), "pack", str(source), "--output", str(archive)],
+                cwd=ROOT,
+                check=True,
+            )
     plugin_read_source = controls_dir / "plugin-read-source.txt"
     plugin_read_source.write_text("native plugin file grant\n", encoding="utf-8")
     (controls_dir / "plugin-file-read.txt").write_text(

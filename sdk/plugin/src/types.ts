@@ -45,8 +45,28 @@ export interface PluginResult<T = JsonValue> {
 export type PluginSuccess<T = JsonValue> = PluginResult<T> & { readonly status: "success" };
 export type PluginFailure = PluginResult<never> & { readonly status: "error" };
 
+export type PluginActionReturn<TOutput = JsonValue> = PluginResult<TOutput> | import("./capabilities.js").MutationPlan;
+
+export type PluginReadAction<TInput = JsonValue, TOutput = JsonValue> = (
+  input: TInput,
+  capabilities: import("./capabilities.js").PluginCapabilities,
+) => Promise<PluginResult<TOutput>>;
+
+export type PluginWriteAction<TInput = JsonValue> = (
+  input: TInput,
+  capabilities: import("./capabilities.js").PluginCapabilities,
+) => Promise<import("./capabilities.js").MutationPlan>;
+
+/** @deprecated A compatibility snapshot, not an AbortSignal. Use progress receipts. */
+export interface LegacyCancellationSnapshot {
+  readonly aborted: boolean;
+  readonly reason?: string;
+  throwIfAborted(): void;
+}
+
+/** Compatible action shape; prefer PluginReadAction or PluginWriteAction. */
 export type PluginAction<TInput = JsonValue, TOutput = JsonValue> = (
   input: TInput,
   capabilities: import("./capabilities.js").PluginCapabilities,
-  signal: AbortSignal,
-) => Promise<PluginResult<TOutput>>;
+  signal: LegacyCancellationSnapshot,
+) => Promise<PluginActionReturn<TOutput>>;

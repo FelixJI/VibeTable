@@ -18,7 +18,7 @@ def _entries(**manifest_updates: Any) -> list[tuple[str, bytes]]:
         "version": "1.0.0",
         "displayName": {"en": "Local worker"},
         "compatibility": {
-            "minHostVersion": "1.0.0",
+            "minHostVersion": "0.5.1",
             "pluginApi": "1.x",
         },
         "permissions": {
@@ -69,7 +69,7 @@ def test_accepts_local_worker_with_mutation_and_network_capabilities() -> None:
         (
             {
                 "compatibility": {
-                    "minHostVersion": "1.0.0",
+                    "minHostVersion": "0.5.1",
                     "pluginApi": "1.x",
                     "".join(["di", "rectus"]): ">=12 <13",
                 }

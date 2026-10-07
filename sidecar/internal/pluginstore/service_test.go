@@ -82,6 +82,10 @@ func newTestService(t *testing.T) *Service {
 	if err := app.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap(): %v", err)
 	}
+	// Match PocketBase tests/app.go: retained logs write asynchronously without
+	// a join point and can race ResetBootstrapState. This fixture tests plugin
+	// records and returned errors, not the auxiliary log database.
+	app.Settings().Logs.MaxDays = 0
 	t.Cleanup(func() { _ = app.ResetBootstrapState() })
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatalf("RunAllMigrations(): %v", err)

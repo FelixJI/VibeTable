@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
+from backend._version import __version__
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -40,7 +41,7 @@ DEFAULT_PACKAGE_POLICY = PackagePolicy()
 class PluginCompatibilityPolicy:
     """Versions implemented by this host and checked before package installation."""
 
-    host_version: str = "1.0.0"
+    host_version: str = __version__
     plugin_api: str = "1.x"
 
 
