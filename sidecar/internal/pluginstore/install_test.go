@@ -119,6 +119,8 @@ func TestWholeDatabaseSnapshotRestoresFourKindsAndMigrationMarkerAtNewPath(t *te
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
+	// Keep the restored fixture free of the same asynchronous log writer.
+	app.Settings().Logs.MaxDays = 0
 	defer app.ResetBootstrapState()
 	restored := New(app, "0f8f4a3b-2c1d-4e5f-8091-a2b3c4d5e6f7")
 	if result, err := restored.ImportLegacySQLite(ctx, filepath.Join(root, "removed-legacy-source.db")); err != nil || result.Status != ImportStatusAlreadyComplete {
