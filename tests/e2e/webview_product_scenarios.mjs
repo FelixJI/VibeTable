@@ -6,7 +6,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -1429,7 +1430,7 @@ async function scenario02(page, recorder, _network, runtime) {
   const uiAmount = await createV2Field(page, numberUiTableId, "金额", "number");
   await closeFieldSettingsDrawer(page);
   const uiFormula = await createV2Field(page, numberUiTableId, "翻倍", "formula", (draft) => {
-    draft.formula = { language: "cel-v1", source: `{${uiAmount.physicalName}} * 2` };
+    draft.formula = { language: "cel-v1", source: `${uiAmount.physicalName} * 2.0` };
     return draft;
   });
   await closeFieldSettingsDrawer(page);
@@ -1613,12 +1614,24 @@ async function scenario02(page, recorder, _network, runtime) {
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-percent-storage", "百分数（12.5 显示 12.5%）");
   await saveAmountSettings();
+  // 切换存储解释后、编辑前：原值仍是 0.125，显示语义从不缩放已存值。
+  const rawBeforePercentEdit = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  recorder.check(
+    "switching percentStorage never rescales the stored 0.125 before editing",
+    rawBeforePercentEdit === 0.125,
+    { rawBeforePercentEdit },
+  );
   const percentStorageEdit = await beginCellEdit(
     page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
   );
-  // 键盘插入路径（非真实剪贴板粘贴）：仍走真实输入事件替换选区。
+  // 真实剪贴板粘贴：授予权限→写入剪贴板→编辑器 Ctrl+V（同文件既有模式）。
+  await page.context().grantPermissions(
+    ["clipboard-read", "clipboard-write"],
+    { origin: "https://app.vibetable.local" },
+  );
+  await page.evaluate(async (value) => navigator.clipboard.writeText(value), "12.5");
   await percentStorageEdit.press("Control+a");
-  await page.keyboard.insertText("12.5");
+  await percentStorageEdit.press("Control+V");
   await percentStorageEdit.press("Enter");
   await waitForQueryPage(
     page,
@@ -1630,7 +1643,7 @@ async function scenario02(page, recorder, _network, runtime) {
   const rawAfterReopen = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
   await closeFieldSettingsDrawer(page);
   recorder.check(
-    "percent edit/paste/reopen keep raw values: ratio 0.125 and percent 12.5 both show 12.5%",
+    "real clipboard paste of 12.5 into percent storage keeps the raw value while ratio 0.125 shows the same 12.5%",
     rawAfterReopen === 12.5,
     { rawAfterReopen },
   );
@@ -1639,7 +1652,9 @@ async function scenario02(page, recorder, _network, runtime) {
     fullPage: true,
   });
 
-  // H) 小数位 5→2→5：原值与同一 Go 公式结果不变。
+  // H) 小数位 5→2→5：原值与同一 Go 公式结果不变。逐轮直接查询权威
+  // query.page 的公式 envelope（state=ready 且 value=2469.13578），
+  // 不用 2 位显示文本掩盖计算变化。
   const amountReset = await applyProductMutation(page, numberUiTableId, [{
     kind: "update",
     recordId: beforeRowId,
@@ -1648,40 +1663,50 @@ async function scenario02(page, recorder, _network, runtime) {
   if (amountReset.payload?.status !== "applied") {
     throw new Error(`formula invariance seed failed: ${JSON.stringify(amountReset)}`);
   }
+  const formulaEnvelope = async () => {
+    const rows = (await uiQuery()).payload?.rows;
+    return rows?.[0]?.[uiFormula.physicalName] ?? null;
+  };
+  const waitFormulaReadyValue = async () => {
+    const deadline = Date.now() + 30_000;
+    let envelope = await formulaEnvelope();
+    while (Date.now() < deadline
+      && (envelope?.state !== "ready" || envelope?.value !== 2469.13578)) {
+      await page.waitForTimeout(100);
+      envelope = await formulaEnvelope();
+    }
+    return envelope;
+  };
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-preset", "数字");
   await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
   await setDisplayScaleInput(5);
   await saveAmountSettings();
   await waitAmountCellText("1,234.56789");
-  const formulaCellText = async () => ((await page
-    .locator(`.tabulator-cell[tabulator-field="${uiFormula.physicalName}"]`)
-    .first()
-    .textContent()) ?? "").trim();
+  const envelopeAtScale5 = await waitFormulaReadyValue();
   await page.waitForFunction(
     (field) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("2,469.14"),
     uiFormula.physicalName,
     { timeout: 30_000 },
   );
-  const formulaAtScale5 = await formulaCellText();
   await openAmountSettings();
   await setDisplayScaleInput(2);
   await saveAmountSettings();
   await waitAmountCellText("1,234.57");
-  const formulaAtScale2 = await formulaCellText();
+  const envelopeAtScale2 = await waitFormulaReadyValue();
   await openAmountSettings();
   await setDisplayScaleInput(5);
   await saveAmountSettings();
   await waitAmountCellText("1,234.56789");
-  const formulaBackAtScale5 = await formulaCellText();
+  const envelopeBackAtScale5 = await waitFormulaReadyValue();
   const rawAfterScaleCycle = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
   recorder.check(
-    "displayScale 5→2→5 never changes the raw value or the same Go formula result",
+    "displayScale 5→2→5 never changes the raw value or the Go formula envelope (ready, 2469.13578)",
     rawAfterScaleCycle === 1234.56789
-      && formulaAtScale5 === formulaAtScale2
-      && formulaAtScale2 === formulaBackAtScale5
-      && formulaAtScale5.includes("2,469.14"),
-    { formulaAtScale5, formulaAtScale2, formulaBackAtScale5, rawAfterScaleCycle },
+      && envelopeAtScale5?.state === "ready" && envelopeAtScale5?.value === 2469.13578
+      && envelopeAtScale2?.state === "ready" && envelopeAtScale2?.value === 2469.13578
+      && envelopeBackAtScale5?.state === "ready" && envelopeBackAtScale5?.value === 2469.13578,
+    { envelopeAtScale5, envelopeAtScale2, envelopeBackAtScale5, rawAfterScaleCycle },
   );
 
   // I) 高位持久化：12 与 15 均为有效保存值（重开回读，不逐格截图）。
@@ -1724,6 +1749,56 @@ async function scenario02(page, recorder, _network, runtime) {
       && !exportedCsv.includes("¥")
       && !exportedCsv.includes("%"),
     { csvAmountIndex, csvAmountValue, exportedCsvHead: exportedCsv.slice(0, 400) },
+  );
+
+  // J2) 同一合成表真实 export-xlsx：经 export-target.txt 指定唯一路径与既有 UI
+  // 确认流程，用仓库 data_io_workbook.py 的 verify-values CLI 证明数值单元格
+  // 原样（1234.56789 的 double 原值），而非币符/百分号文本。
+  const executeFile = promisify(execFile);
+  const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
+  const xlsxTarget = path.join(runtime.controlsDir, "export-result.xlsx");
+  await fs.rm(xlsxTarget, { force: true });
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "export-target.txt"),
+    `${xlsxTarget}\r\n`,
+    "utf8",
+  );
+  await chooseToolbarMore(page, "export-xlsx");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const xlsxDeadline = Date.now() + 60_000;
+  while (Date.now() < xlsxDeadline) {
+    try {
+      await fs.readFile(xlsxTarget);
+      break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
+  const xlsxVerification = await executeFile(
+    runtime.pythonExecutable,
+    [
+      workbookHelper,
+      "verify-values",
+      xlsxTarget,
+      JSON.stringify({ columns: [uiAmount.physicalName], rows: [[1234.56789]] }),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, PYTHONUTF8: "1" },
+    },
+  );
+  const xlsxResult = JSON.parse(xlsxVerification.stdout);
+  recorder.check(
+    "default XLSX export stores the raw numeric cell (verified by data_io_workbook verify-values)",
+    xlsxResult?.format === "xlsx"
+      && xlsxResult?.rows === 1
+      && xlsxResult?.columns?.[0] === uiAmount.physicalName,
+    { xlsxResult },
   );
 
   await verifyQueryViewGroupingUI(page, recorder);
