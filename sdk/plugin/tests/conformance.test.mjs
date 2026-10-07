@@ -39,11 +39,13 @@ test("read result and write plan follow separate confirmation/commit paths", asy
     applyMutation: async () => { commits++; return corpus.returns[0]; } });
   assert.equal((await testing.startOfflineAction(async () => corpus.returns[0], {}, host).result).status, "success");
   assert.equal(commits, 0);
-  assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, host).result).status, "success");
+  assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, host).result).table.code, "plugin_action_failed");
+  assert.equal(commits, 0);
+  assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, host, { risk: "write" }).result).status, "success");
   assert.equal(commits, 1);
   const denied = testing.createOfflineHost({ ...options, approveMutation: false,
     applyMutation: async () => { commits++; return corpus.returns[0]; } });
-  assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, denied).result).table.code, "plugin_mutation_rejected");
+  assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, denied, { risk: "write" }).result).table.code, "plugin_mutation_rejected");
   assert.equal(commits, 1);
 });
 
@@ -62,7 +64,7 @@ test("conflict and unknown commit are explicit, with no replay", async () => {
     const host = testing.createOfflineHost({ ...options, approveMutation: true, applyMutation: async () => {
       commits++; throw new sdk.PluginCapabilityError(code, "synthetic outcome");
     } });
-    assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, host).result).table.code, code);
+    assert.equal((await testing.startOfflineAction(async () => corpus.returns[1], {}, host, { risk: "write" }).result).table.code, code);
   }
   assert.equal(commits, 2);
 });
@@ -73,7 +75,7 @@ test("invalid guard values never reach confirmation or commit", async () => {
     Object.assign(plan.operations[0], guard);
     const host = testing.createOfflineHost({ ...options, approveMutation: true,
       applyMutation: async () => { assert.fail("invalid plan reached commit"); } });
-    assert.equal((await testing.startOfflineAction(async () => plan, {}, host).result).table.code, "plugin_worker_failed");
+    assert.equal((await testing.startOfflineAction(async () => plan, {}, host, { risk: "write" }).result).table.code, "plugin_worker_failed");
     assert.equal(host.mutationPlans.length, 0);
   }
 });
@@ -83,10 +85,10 @@ test("invalid wire returns match real Worker/Host errors before confirmation or 
     await t.test(item.name, async () => {
       let confirmations = 0;
       let commits = 0;
-      const host = testing.createOfflineHost({ ...options,
+      const host = testing.createOfflineHost({ ...options, permissions: item.permissions ?? permissions,
         approveMutation: () => { confirmations++; return true; },
         applyMutation: async () => { commits++; return corpus.returns[0]; } });
-      const result = await testing.startOfflineAction(async () => item.value, {}, host).result;
+      const result = await testing.startOfflineAction(async () => item.value, {}, host, { risk: item.risk }).result;
       assert.equal(result.status, "error");
       assert.equal(result.table.code, item.code);
       assert.equal(confirmations, 0);
@@ -100,9 +102,9 @@ test("valid wire members, model defaults and legacy aliases remain accepted", as
   for (const item of corpus.validReturns) {
     await t.test(item.name, async () => {
       let commits = 0;
-      const host = testing.createOfflineHost({ ...options, approveMutation: true,
+      const host = testing.createOfflineHost({ ...options, permissions: item.permissions ?? permissions, approveMutation: true,
         applyMutation: async () => { commits++; return corpus.returns[0]; } });
-      const result = await testing.startOfflineAction(async () => item.value, {}, host).result;
+      const result = await testing.startOfflineAction(async () => item.value, {}, host, { risk: item.risk }).result;
       assert.equal(result.status, "success");
       assert.equal(commits, item.risk === "write" ? 1 : 0);
       if (item.risk === "read" && item.value.metrics) {

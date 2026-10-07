@@ -36,7 +36,7 @@ export interface OfflineHost {
   readonly writtenFiles: ReadonlyMap<string, Uint8Array>;
   setContext(patch: Partial<CommandContext>): void;
   requestCancel(): void;
-  finalize(plan: MutationPlan, onSubmit: () => void): Promise<PluginResult>;
+  finalize(plan: MutationPlan, onSubmit: () => void, risk?: "read" | "write" | "destructive"): Promise<PluginResult>;
 }
 
 export interface OfflineRun {
@@ -142,8 +142,10 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   const mutationPlans: MutationPlan[] = [];
   const progressEvents: PluginProgress[] = [];
   const writtenFiles = new Map<string, Uint8Array>();
-  const grant = (collection: string, operation: "read" | "create" | "update") =>
-    options.permissions?.data?.find(item => item.operations.includes(operation)
+  const grant = (collection: string, operation: "read" | "create" | "update" | "write") =>
+    options.permissions?.data?.find(item => (operation === "write"
+      ? item.operations.some(kind => kind === "create" || kind === "update")
+      : item.operations.includes(operation))
       && (item.collection === collection || (item.collection === "$active" && collection === context.collection)));
   const schemaFields = (collection: string) => options.fields?.[collection]
     ?? [...new Set(options.collections?.[collection]?.flatMap(row => Object.keys(row)) ?? [])];
@@ -242,13 +244,16 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
     capabilities, mutationPlans, progressEvents, writtenFiles,
     setContext(patch) { context = { ...context, ...patch }; },
     requestCancel() { cancelRequested = true; },
-    async finalize(raw, onSubmit) {
+    async finalize(raw, onSubmit, risk = "write") {
       const plan = planFromWire(raw);
-      if (context.collection !== null && plan.collection !== context.collection) reject("plugin_action_failed", "mutation plan collection is outside the action context");
+      const permission = grant(plan.collection, "write");
+      if (!permission) reject("plugin_worker_failed", "mutation permission was not declared");
       for (const operation of plan.operations) {
-        const permission = grant(plan.collection, operation.kind);
-        if (!permission || Object.keys(operation.values).some(field => !allowedFields(plan.collection, permission.fields).includes(field))) reject("plugin_worker_failed", "mutation permission was not declared");
+        if (!permission.operations.includes(operation.kind)
+          || Object.keys(operation.values).some(field => !allowedFields(plan.collection, permission.fields).includes(field))) reject("plugin_worker_failed", "mutation permission was not declared");
       }
+      if (risk === "read") reject("plugin_action_failed", "read plugin must return a plugin result");
+      if (context.collection !== null && plan.collection !== context.collection) reject("plugin_action_failed", "mutation plan collection is outside the action context");
       mutationPlans.push(structuredClone(plan));
       const decision = options.approveMutation ?? false;
       const approved = typeof decision === "function" ? await decision(plan) : decision;
@@ -261,10 +266,10 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   };
 }
 
-/** Test execution only; production terminal state is always owned by Host. */
+/** Test execution only; risk defaults to read and must match the manifest action. */
 export function startOfflineAction<TInput, TOutput extends JsonValue>(
   action: PluginAction<TInput, TOutput>, input: TInput, host: OfflineHost,
-  options: { readonly timeoutMs?: number } = {},
+  options: { readonly timeoutMs?: number; readonly risk?: "read" | "write" | "destructive" } = {},
 ): OfflineRun {
   let settled = false;
   let committing = false;
@@ -293,8 +298,12 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
       catch { reject("plugin_worker_failed", "plugin action return is not valid JSON"); }
       if (!objectValue(raw)) reject("plugin_worker_failed", "plugin action return must be a JSON object");
       if (raw.contract === "vibetable.mutation-plan.v1") {
-        finish(resultFromWire(await host.finalize(raw as unknown as MutationPlan, () => { committing = true; })));
-      } else finish(resultFromWire(raw));
+        finish(resultFromWire(await host.finalize(raw as unknown as MutationPlan,
+          () => { committing = true; }, options.risk ?? "read")));
+      } else {
+        if ((options.risk ?? "read") !== "read") reject("plugin_action_failed", "write plugin must return a mutation plan");
+        finish(resultFromWire(raw));
+      }
     } catch (error) {
       const code = error instanceof PluginCapabilityError ? error.code : "plugin_test_error";
       finish(failure(code, error instanceof Error ? error.message : String(error)));

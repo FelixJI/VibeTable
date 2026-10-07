@@ -26,12 +26,12 @@ test("approval commits once; rejection and cancel commit zero times", async () =
   const applyMutation = async () => { commits++; return sdk.ok({ updated: 1 }); };
   for (const approveMutation of [false, true]) {
     const host = testing.createOfflineHost({ ...options, approveMutation, applyMutation });
-    const result = await testing.startOfflineAction(run, { field: "title", strategy: "trim" }, host).result;
+    const result = await testing.startOfflineAction(run, { field: "title", strategy: "trim" }, host, { risk: "write" }).result;
     assert.equal(result.status, approveMutation ? "success" : "error");
   }
   assert.equal(commits, 1);
   const host = testing.createOfflineHost({ ...options, approveMutation: true, applyMutation });
-  const action = testing.startOfflineAction(run, { field: "title", strategy: "trim" }, host);
+  const action = testing.startOfflineAction(run, { field: "title", strategy: "trim" }, host, { risk: "write" });
   action.cancel();
   assert.equal((await action.result).status, "error");
   assert.equal(commits, 1);

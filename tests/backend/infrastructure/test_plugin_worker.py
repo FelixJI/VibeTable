@@ -1405,8 +1405,11 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
             terminal.set()
 
     runtime.set_notification_sink(record_report)
+    default_permissions = store.installation.manifest.permissions
     for index, case in enumerate(corpus["invalidReturns"]):
         registry.snapshot.manifest.actions[0].risk = case["risk"]
+        store.installation.manifest.permissions = case.get("permissions", default_permissions)
+        registry.snapshot.manifest.permissions = store.installation.manifest.permissions
         terminal.clear()
         await runtime.start(
             registry.snapshot.plugin_id,
@@ -1426,6 +1429,8 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
 
     for index, case in enumerate(corpus["validReturns"]):
         registry.snapshot.manifest.actions[0].risk = case["risk"]
+        store.installation.manifest.permissions = case.get("permissions", default_permissions)
+        registry.snapshot.manifest.permissions = store.installation.manifest.permissions
         confirmation.decisions.append(True)
         terminal.clear()
         confirmations_before, commits_before = len(confirmation.previews), len(mutation.plans)

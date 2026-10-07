@@ -174,6 +174,10 @@ operations,preview:{affectedCount}}`。返回额外未声明 wire 字段会被 c
 回执会成为现有 `aborted` 终态与 `plugin_commit_unknown`。提交开始后取消不表示回滚；检查
 记录与审计再决定后续动作，宿主不会自动重放。已确认成功的任务不会被晚到取消覆盖。
 
+`startOfflineAction` 的第四参数 `risk` 应与 manifest 动作一致，默认 `"read"`；写动作测试使用
+`startOfflineAction(run, input, host, { risk: "write" })`，破坏性动作使用 `"destructive"`。
+风险错配不会进入确认或提交；返回计划先按 Worker 校验写权限，空计划也不例外。
+
 离线 `createOfflineHost` 显式输入合成 collections、fields、permissions、rowGuards；默认不
 授权读写。write 测试还必须提供 approveMutation 与合成 applyMutation，它不会默认伪造提交
 成功，也不能连接真实业务库。`startOfflineAction` 支持挂起动作取消/超时、确认拒绝和未知
