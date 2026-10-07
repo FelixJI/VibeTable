@@ -280,9 +280,12 @@ const displayPresetOptions = computed(() => {
   return presets.map((value) => ({ label: labels[value] ?? value, value }));
 });
 
-const currencyOptions = ["CNY", "USD", "EUR", "JPY", "GBP", "HKD"].map(
-  (code) => ({ label: code, value: code }),
-);
+const currencyOptions = computed(() => {
+  const codes = ["CNY", "USD", "EUR", "JPY", "GBP", "HKD"];
+  const current = store.draft?.display.currency;
+  if (current?.length === 3 && /^[A-Za-z]{3}$/.test(current) && !codes.includes(current)) codes.push(current);
+  return codes.map((code) => ({ label: code, value: code }));
+});
 
 /** 小数位与权威 Schema 一致限制在 0..15，非法输入稳定归零。 */
 function clampDisplayScale(value: number | null): number {
@@ -1180,9 +1183,11 @@ function isTextual(type: LogicalTypeV2): boolean {
                         :options="[{label:'最多',value:'max'},{label:'固定',value:'fixed'}]"
                         @update:value="patchDisplay({ scaleMode: $event })"
                       /></label>
-                      <label><span>币种</span><NInput
+                      <label><span>币种</span><NSelect
+                        data-testid="advanced-display-currency"
                         :value="store.draft.display.currency"
-                        @update:value="patchDisplay({ currency: $event })"
+                        :options="currencyOptions"
+                        @update:value="patchDisplay({ currency: String($event) })"
                       /></label>
                       <label><span>百分比存储</span><NSelect
                         :value="store.draft.display.percentStorage"

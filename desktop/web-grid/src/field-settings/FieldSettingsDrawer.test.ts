@@ -503,6 +503,26 @@ describe("FieldSettingsDrawer", () => {
     ]);
   });
 
+  it("高级币种入口复用受限下拉并保留已有合法自定义币种", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    const current = described("number");
+    store.load({ ...current, definition: {
+      ...current.definition!, display: { ...current.definition!.display, preset: "currency", currency: "cHf" },
+    } });
+    const wrapper = mountDrawer();
+    await flushPromises();
+    await openTab(wrapper, "高级");
+    const currency = wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === "advanced-display-currency");
+    expect(currency).toBeDefined();
+    expect(currency!.props("options")).toContainEqual({ label: "cHf", value: "cHf" });
+    expect(currency!.props("tag")).not.toBe(true);
+    currency!.vm.$emit("update:value", "USD");
+    await flushPromises();
+    expect(store.draft?.display.currency).toBe("USD");
+  });
+
   it("数字显示预设/位数/尾零/币种写入草稿并实时预览（AC1/AC2）", async () => {
     const store = useFieldSettingsStore();
     store.beginOpen();

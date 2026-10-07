@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/jsonschemavalidation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
@@ -318,4 +319,60 @@ func v2JSONEqual(left, right any) bool {
 	leftRaw, leftErr := json.Marshal(left)
 	rightRaw, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
+}
+
+func TestValidateCurrencyDisplayCode(t *testing.T) {
+	raw, err := os.ReadFile("../../../../contracts/schema-v2/schema.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	displaySchema := map[string]any{"$defs": schema["$defs"], "$ref": "#/$defs/DisplaySpec"}
+	validateWire := func(display v2.DisplaySpec) error {
+		t.Helper()
+		raw, err := json.Marshal(display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			t.Fatal(err)
+		}
+		return jsonschemavalidation.ValidateValue(displaySchema, value)
+	}
+	for _, code := range []string{"CNY", "usd", "cHf", "ZZZ"} {
+		definition := validNumberDefinition()
+		definition.Display.Preset = "currency"
+		definition.Display.Currency = code
+		if err := v2.Validate(definition); err != nil {
+			t.Errorf("compatible code %q rejected: %v", code, err)
+		}
+		if err := validateWire(definition.Display); err != nil {
+			t.Errorf("canonical schema rejected compatible code %q: %v", code, err)
+		}
+	}
+	for _, code := range []string{"人民币", "BADCODE", "", "US", "US1", " CNY", "ＣＮＹ", "USD\n"} {
+		definition := validNumberDefinition()
+		definition.Display.Preset = "currency"
+		definition.Display.Currency = code
+		var productErr *v2.ProductError
+		if err := v2.Validate(definition); !errors.As(err, &productErr) ||
+			productErr.Code != "field.contract.invalid" || productErr.Path != "display.currency" {
+			t.Errorf("invalid code %q error = %#v", code, err)
+		}
+		if err := validateWire(definition.Display); err == nil {
+			t.Errorf("canonical schema accepted invalid code %q", code)
+		}
+	}
+	definition := validNumberDefinition()
+	definition.Display.Currency = ""
+	if err := v2.Validate(definition); err != nil {
+		t.Errorf("unused legacy currency rejected: %v", err)
+	}
+	if err := validateWire(definition.Display); err != nil {
+		t.Errorf("canonical schema rejected unused legacy currency: %v", err)
+	}
 }
