@@ -7094,11 +7094,11 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
     } while (Date.now() < withheldDeadline);
     recorder.check("a missing retained cache fails closed with a diagnosable safe error",
       withheldTask.payload?.state === "failed"
-        && withheldTask.payload?.error?.code === "plugin_action_failed"
+        && withheldTask.payload?.error?.code === "plugin_worker_failed"
         && /load/i.test(String(withheldTask.payload?.error?.message)),
       { withheldTask });
     recorder.check("the missing-cache failure is visible to the user with its safe error code",
-      (await withheldFailure.innerText()).includes("plugin_action_failed"),
+      (await withheldFailure.innerText()).includes("plugin_worker_failed"),
       { failureText: await withheldFailure.innerText() });
     const withheldTopology = await requestPackagedProcessKill(
       runtime,
