@@ -42,6 +42,13 @@ NPM_PROJECTS = (
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
 )
+# Example plugins the resilience lane's product E2E rebuilds through the plugin
+# CLI (scenario 11-plugin-mutation). The CLI resolves the SDK from source and
+# only needs each example's local esbuild restore to bundle Workers offline.
+PLUGIN_BUILD_PROJECTS = (
+    Path("examples/plugins/data-overview"),
+    Path("examples/plugins/normalize-text"),
+)
 CI_PREPARE_MODE_ENV = "VIBETABLE_CI_PREPARE_MODE"
 
 
@@ -579,7 +586,13 @@ def _prepare_smoke_lane(lane: str) -> None:
                 _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     elif lane in {"race-a", "race-b"}:
         _install_w64devkit()
-    elif lane in {"resilience", "data-io"}:
+    elif lane == "resilience":
+        _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
+        node_env = _node_environment()
+        _run("npm", "ci", cwd=REPO_ROOT / "desktop" / "web-grid", env=node_env)
+        for project in PLUGIN_BUILD_PROJECTS:
+            _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
+    elif lane == "data-io":
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
         _run(
             "npm",
