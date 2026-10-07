@@ -3,13 +3,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
-from backend.adapters.pocketbase.client import PocketBaseProductError
+from backend.adapters.pocketbase.client import PocketBaseClient, PocketBaseProductError
 from backend.adapters.pocketbase.plugin_mutation import PocketBasePluginMutationAdapter
-from backend.adapters.pocketbase.transport import PocketBaseTransportError
-from backend.contracts.plugin import MutationPlan, PluginCommitUnknownError
+from backend.adapters.pocketbase.transport import (
+    PocketBaseConfig,
+    PocketBaseTransportError,
+    StdlibPocketBaseTransport,
+)
+from backend.contracts.plugin import MutationPlan, PluginCommitUnknownError, PluginExecutionError
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
 
@@ -229,3 +234,43 @@ async def test_plugin_submission_preserves_conflict_and_unknown_ack(outcome: str
         "mutation.digest_conflict" if outcome == "conflict" else "plugin_commit_unknown"
     )
     assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {},
+        {"status": "unexpected"},
+        {"status": []},
+        [],
+        None,
+        {"contractVersion": "2.0", "status": "rejected"},
+    ],
+)
+async def test_http_receipt_preserves_unknown_or_explicit_rejection_without_replay(
+    receipt: JsonValue,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=receipt)
+
+    config = PocketBaseConfig(base_url="http://127.0.0.1:8090", session_secret="a" * 64)
+    client = PocketBaseClient(
+        transport=StdlibPocketBaseTransport(config, http_transport=httpx.MockTransport(respond)),
+        session_secret=config.session_secret,
+    )
+    adapter = PocketBasePluginMutationAdapter(
+        client=client,
+        schema_revisions={"orders": "schema-7"},
+        writable_fields={"orders": {"status"}},
+    )
+    rejected = isinstance(receipt, dict) and receipt.get("status") == "rejected"
+    with pytest.raises(PluginExecutionError if rejected else PluginCommitUnknownError) as raised:
+        await adapter.apply(_plan())
+    assert raised.value.code == (
+        "plugin_mutation_rejected" if rejected else "plugin_commit_unknown"
+    )
+    assert len(requests) == 1

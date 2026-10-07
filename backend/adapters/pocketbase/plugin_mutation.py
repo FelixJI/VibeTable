@@ -98,14 +98,14 @@ class PocketBasePluginMutationAdapter:
                     "expectedDigest": None,
                 }
             )
-        except PocketBaseTransportError as exc:
+        except (PocketBaseTransportError, ValueError) as exc:
             raise PluginCommitUnknownError() from exc
-        if receipt.get("status") == "pending":
-            raise PluginCommitUnknownError()
-        if receipt.get("status") not in {"applied", "replayed"}:
+        if receipt.get("status") == "rejected" and receipt.get("contractVersion") == "2.0":
             raise PluginExecutionError(
                 "plugin mutation was not applied", code="plugin_mutation_rejected"
             )
+        if receipt.get("status") not in ("applied", "replayed"):
+            raise PluginCommitUnknownError("Plugin commit returned an unrecognized receipt.")
         affected = receipt.get("affectedRows")
         if (
             receipt.get("contractVersion") != "2.0"
