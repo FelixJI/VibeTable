@@ -23788,6 +23788,23 @@
                 ],
                 "type": "string"
               },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "editable": {
                 "default": false,
                 "type": "boolean"
@@ -24315,6 +24332,7 @@
                 "relationId": null,
                 "lookupId": null,
                 "dataType": "text",
+                "resultElementType": null,
                 "editable": false,
                 "nullable": true,
                 "scale": null,

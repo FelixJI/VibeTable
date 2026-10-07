@@ -349,7 +349,7 @@ const NUMERIC_LOOKUP_AGGREGATIONS: ReadonlySet<string> = new Set([
 /**
  * 显示设置适用性由权威结果类型决定，绝不按运行时值猜测：
  * - number 字段本身；
- * - formula：已提交定义的 resultType 或当前 Go 验证推断的 resultType；
+ * - formula：已提交定义或当前 Go 验证的数值结果/数值列表元素类型；
  * - lookup：数值聚合，或目标字段声明为 number（数值列表元素）。
  */
 const numericDisplayApplicable = computed(() => {
@@ -357,8 +357,11 @@ const numericDisplayApplicable = computed(() => {
   if (!draft) return false;
   if (draft.logicalType === "number") return true;
   if (draft.logicalType === "formula") {
-    if (store.result?.definition?.formula?.resultType === "number") return true;
-    return store.formulaValidation?.resultType === "number";
+    const definition = store.result?.definition?.formula;
+    const validation = store.formulaValidation;
+    return definition?.resultType === "number" || validation?.resultType === "number"
+      || (definition?.resultType === "json" && definition.resultElementType === "number")
+      || (validation?.resultType === "json" && validation.resultElementType === "number");
   }
   if (draft.logicalType === "lookup") {
     const aggregation = draft.lookup?.aggregation ?? null;

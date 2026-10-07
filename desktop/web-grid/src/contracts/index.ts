@@ -102,6 +102,8 @@ export interface ColumnSchema {
   readonly attachmentPolicy?: AttachmentPolicy | null;
   /** Grid renderer type hint. */
   readonly dataType: ColumnDataType;
+  /** Authoritative Formula list element type; absent for scalars and legacy hosts. */
+  readonly resultElementType?: import("./generated/schemaV2").FormulaSpec["resultElementType"] | null;
   /** Whether the current product capability schema permits editing. */
   readonly editable: boolean;
   /** Whether the column may hold NULL. */

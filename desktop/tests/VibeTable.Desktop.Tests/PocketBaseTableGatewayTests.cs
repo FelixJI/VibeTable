@@ -539,6 +539,42 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
+    public async Task FormulaListColumnCarriesDeclaredElementType()
+    {
+        var transport = new ProductTransport();
+        JsonObject numbers = V2Field("numbers0", "numbers0", "Numbers", "formula");
+        numbers["formula"] = new JsonObject
+        {
+            ["language"] = "cel-v2", ["source"] = "UNIQUE([1.0, 2.0, 1.0])",
+            ["resultType"] = "json", ["resultElementType"] = "number",
+        };
+        numbers["storage"]!["kind"] = "computed";
+        numbers["display"]!["kind"] = "readonly";
+        JsonObject schema = JsonNode.Parse(SchemaWithFields("items", numbers))!.AsObject();
+        JsonObject jsonCapability = schema["capabilities"]!.AsArray()[0]!.DeepClone().AsObject();
+        jsonCapability["logicalType"] = "json";
+        schema["capabilities"]!.AsArray().Add(jsonCapability);
+        transport.Respond("schema.getTable", schema.ToJsonString());
+        transport.Respond("query.view", ViewResponse("""
+            {"rows":[{"id":"row-1","f_numbers0":[1,2]}],
+             "offset":0,"limit":100,"filteredRows":1,"totalRows":1,
+             "snapshot":{"snapshotId":"00000000000000000000000000000000",
+             "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+             "databaseId":"local","table":"items","schemaRevision":"schema_0001",
+             "dataRevision":1,"normalizedQuery":{"offset":0,"limit":100}}}
+            """));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var page = await QueryViewAsync(gateway, "items", 0, 100);
+        var column = page.Columns.Single(item => item.Name == "f_numbers0");
+        Assert.AreEqual("json", column.DataType);
+        Assert.IsFalse(column.Editable);
+        using var wire = JsonDocument.Parse(JsonSerializer.Serialize(column, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.AreEqual("number", wire.RootElement.GetProperty("resultElementType").GetString());
+        Assert.AreEqual("[1,2]", JsonSerializer.Serialize(page.Rows[0]["f_numbers0"]));
+    }
+
+    [TestMethod]
     public async Task FormulaColumnUsesDeclaredResultTypeInsteadOfNumberStorage()
     {
         var transport = new ProductTransport();

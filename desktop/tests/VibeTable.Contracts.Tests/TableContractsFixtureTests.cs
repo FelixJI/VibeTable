@@ -150,6 +150,18 @@ public sealed class TableContractsFixtureTests
         StringAssert.Contains(roundTripped, "\"lookupId\":\"orders.contract_price\"");
     }
 
+    [TestMethod]
+    public void ColumnSchema_RoundTripsFormulaListElementType()
+    {
+        const string json = """
+            {"name":"numbers","title":"Numbers","dataType":"json","kind":"formula",
+             "editable":false,"nullable":true,"resultElementType":"number"}
+            """;
+        var column = JsonSerializer.Deserialize<ColumnSchema>(json, Options);
+        using var roundTrip = JsonDocument.Parse(JsonSerializer.Serialize(column, Options));
+        Assert.AreEqual("number", roundTrip.RootElement.GetProperty("resultElementType").GetString());
+    }
+
     private static string ReadFixture(string name)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "fixtures", name);

@@ -26,6 +26,32 @@ function view(input: Partial<PresetView>): PresetView {
 }
 
 describe("alternative record views", () => {
+  it("renders authoritative Formula numeric lists on cards from bare query values", () => {
+    const column = {
+      name: "numbers", title: "数值", kind: "formula", dataType: "json", resultElementType: "number",
+      editable: false, nullable: true,
+      display: { kind: "readonly", preset: "currency", displayScale: 2, scaleMode: "fixed",
+        trimTrailingZeros: false, useGrouping: true, currency: "CNY", percentStorage: "ratio",
+        unit: null, precision: "exact", timezone: "system", mode: "default", indent: 0,
+        trueLabel: "是", falseLabel: "否" },
+    } as ColumnSchema;
+    const values = Object.freeze([1234.56789, null, 0]);
+    const gallery = mount(RecordGalleryView, { props: {
+      rows: [
+        { rowKey: "1", title: "A", numbers: values },
+        { rowKey: "2", title: "B", numbers: { state: "ready", value: values } },
+        { rowKey: "3", title: "C", numbers: { state: "failed", value: values } },
+      ], schema: [...schema, column],
+      view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "numbers"] }),
+    } });
+    const cards = gallery.findAll('[data-testid="gallery-card"]');
+    expect(cards[0].text()).toContain("¥1,234.57 ·  · ¥0.00");
+    expect(cards[1].text()).toContain("¥1,234.57 ·  · ¥0.00");
+    expect(cards[2].text()).toContain("计算失败");
+    expect(cards[2].text()).not.toContain("1,234");
+    expect(values).toEqual([1234.56789, null, 0]);
+  });
+
   it("renders formula envelopes on cards by authoritative result type, never stale values (AC4)", () => {
     const formulaColumn = {
       name: "total", title: "合计", kind: "formula" as const, dataType: "decimal" as const,

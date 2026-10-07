@@ -123,6 +123,25 @@ describe("authoritative column display formatting", () => {
     expect(percent({ getValue: () => 0.125 }).textContent).toBe("12.5%");
   });
 
+  it("formats authoritative Formula numeric lists in bare query values and ready envelopes", () => {
+    const column = {
+      name: "numbers", title: "Numbers", kind: "formula" as const, dataType: "json" as const,
+      resultElementType: "number" as const, editable: false, nullable: true,
+      display: displaySpec({ preset: "currency", scaleMode: "fixed", trimTrailingZeros: false }),
+    };
+    const formatter = buildColumns({ ...samplePage(), columns: [column] })[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    const raw = Object.freeze([1234.56789, null, 0]);
+    expect(formatter({ getValue: () => raw }).textContent).toBe("¥1,234.57 ·  · ¥0.00");
+    expect(formatter({ getValue: () => ({ state: "ready", value: raw }) }).textContent).toBe("¥1,234.57 ·  · ¥0.00");
+    expect(raw).toEqual([1234.56789, null, 0]);
+    expect(formatter({ getValue: () => [] }).textContent).toBe("");
+    expect(formatter({ getValue: () => null }).textContent).toBe("—");
+    expect(formatter({ getValue: () => 1234.56789 }).textContent).toBe("1234.56789");
+    expect(formatter({ getValue: () => ({ state: "updating", value: raw }) }).textContent).toBe("计算中");
+    const untyped = buildColumns({ ...samplePage(), columns: [{ ...column, resultElementType: undefined }] })[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    expect(untyped({ getValue: () => raw }).textContent).toBe("1234.56789,,0");
+  });
+
   it("formats ready formula numbers by declared result type, never by runtime shape", () => {
     const page: TablePage = {
       ...samplePage(),

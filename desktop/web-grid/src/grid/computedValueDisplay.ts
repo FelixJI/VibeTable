@@ -8,7 +8,7 @@
  *     `invalid`, `too_expensive`, `restricted`, ...) never surface their stale
  *     value as a new result.
  *   - Numeric formatting is type-driven: Formula results key off the column's
- *     authoritative dataType (Go projection of Formula.ResultType), Lookup
+ *     authoritative dataType/resultElementType from the compiler, Lookup
  *     values off the definition's outputType/resultCardinality. A runtime
  *     number-looking value under a non-numeric declared type is never
  *     formatted as a number.
@@ -47,21 +47,28 @@ function numericText(
  */
 export function renderFormulaEnvelope(
   envelope: Readonly<Record<string, unknown>>,
-  options: { readonly dataType?: ColumnSchema["dataType"]; readonly display?: DisplaySpec | null },
+  options: Pick<ColumnSchema, "dataType" | "resultElementType" | "display">,
 ): string {
   if (envelope.state === "ready") {
-    const value = envelope.value;
-    if (value === null || value === undefined) return "—";
-    const formatted = numericText(
-      value,
-      options.dataType === "decimal" || options.dataType === "integer",
-      options.display,
-    );
-    return formatted !== null ? formatted : String(value);
+    return formatFormulaDisplayValue(envelope.value, options);
   }
   const label = formulaStateLabel(envelope.state);
   if (label !== null) return t(label);
   return JSON.stringify(envelope);
+}
+
+/** Format Formula scalars and explicitly typed numeric lists from bare ready values. */
+export function formatFormulaDisplayValue(
+  value: unknown,
+  options: Pick<ColumnSchema, "dataType" | "resultElementType" | "display">,
+): string {
+  if (value === null || value === undefined) return "—";
+  if (options.dataType === "json" && options.resultElementType === "number" && Array.isArray(value)) {
+    return value.map((item) => formatComputedScalar(item, true, options.display))
+      .join(t("grid.valueSeparator"));
+  }
+  return numericText(value, options.dataType === "decimal" || options.dataType === "integer", options.display)
+    ?? String(value);
 }
 
 const LOOKUP_STATE_LABELS: Readonly<Record<string, string>> = {
@@ -109,13 +116,13 @@ export function formatLookupDisplayValue(
   if (list) {
     const items = Array.isArray(value) ? value : [value];
     return items
-      .map((item) => formatLookupScalar(item, numeric, display))
+      .map((item) => formatComputedScalar(item, numeric, display))
       .join(t("grid.valueSeparator"));
   }
-  return formatLookupScalar(value, numeric, display);
+  return formatComputedScalar(value, numeric, display);
 }
 
-function formatLookupScalar(
+function formatComputedScalar(
   value: unknown,
   numeric: boolean,
   display: DisplaySpec | null | undefined,

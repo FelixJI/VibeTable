@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
@@ -257,4 +258,43 @@ func TestSchemaDescribeProjectsDisplaySpecWithExplicitShape(t *testing.T) {
 	if displayByField["id"] != nil {
 		t.Fatalf("system id column must not carry a display spec: %#v", displayByField["id"])
 	}
+}
+
+func TestSchemaDescribeProjectsFormulaListElementType(t *testing.T) {
+	raw, err := os.ReadFile("testdata/schema_describe_oracle.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus describeOracleCorpus
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	sample := corpus.Cases[0]
+	snapshot := corpus.Tables[sample.TableID]
+	compiler := formula.NewCompiler(formula.DefaultLimits())
+	inferred, failure := compiler.InferV2Value(formula.V2Table{TableID: snapshot.TableID, Fields: snapshot.Fields}, "UNIQUE([1.0, 2.0, 1.0])")
+	if failure != nil || inferred.LogicalType != v2.LogicalJSON || inferred.ElementType != v2.LogicalNumber {
+		t.Fatalf("real list inference = %#v, %v", inferred, failure)
+	}
+	for i := range snapshot.Fields {
+		field := &snapshot.Fields[i]
+		if field.LogicalType == v2.LogicalFormula {
+			field.Formula = &v2.FormulaSpec{Language: "cel-v2", Source: "UNIQUE([1.0, 2.0, 1.0])", ResultType: inferred.LogicalType, ResultElementType: inferred.ElementType}
+			field.Storage.Options.OnlyInt = false
+		}
+	}
+	got, err := projectSchemaDescribe(snapshot, sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) { return corpus.Tables[id], nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range got["schema"].(map[string]any)["columns"].([]any) {
+		column := item.(map[string]any)
+		if column["kind"] == "formula" {
+			if column["dataType"] != "json" || column["resultElementType"] != v2.LogicalNumber || column["editable"] != false {
+				t.Fatalf("typed Formula list projection = %#v", column)
+			}
+			return
+		}
+	}
+	t.Fatal("Formula list column missing")
 }

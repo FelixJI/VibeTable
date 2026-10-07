@@ -1,5 +1,5 @@
 import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
-import { findLookupDefinition, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
+import { findLookupDefinition, formatFormulaDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
 import { formatNumberDisplay } from "@/number/numberDisplay";
 import { getLocale, t } from "@/i18n";
 
@@ -24,11 +24,15 @@ export function displayValue(
   if (value === null || value === undefined || value === "") return "—";
   if (isEnvelope(value)) {
     if (column?.kind === "formula") {
-      return renderFormulaEnvelope(value, { dataType: column.dataType, display: column.display });
+      return renderFormulaEnvelope(value, column);
     }
     if (column?.kind === "lookup") {
       return renderLookupEnvelope(value, findLookupDefinition(column, lookups), column.display);
     }
+  }
+  if (column?.kind === "formula" && column.dataType === "json"
+    && column.resultElementType === "number" && Array.isArray(value)) {
+    return formatFormulaDisplayValue(value, column);
   }
   if (typeof value === "number") {
     const formatted = column

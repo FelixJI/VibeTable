@@ -77,6 +77,8 @@ class ColumnSchema(CamelModel):
         "time",
         "json",
     ]
+    # Formula list typing comes from the compiler, never observed row values.
+    result_element_type: Literal["number", "bool", "text", "dateTime"] | None = None
     editable: bool = False
     nullable: bool = True
     # Numeric precision/scale from the authoritative schema. ``None`` for

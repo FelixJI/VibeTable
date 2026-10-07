@@ -207,3 +207,23 @@ def test_column_schema_display_stays_optional_and_closed() -> None:
                 "display": {**complete_display, "fractionDigits": 2},
             }
         )
+
+
+def test_column_schema_round_trips_formula_list_element_type() -> None:
+    wire = {
+        "name": "numbers",
+        "title": "Numbers",
+        "kind": "formula",
+        "dataType": "json",
+        "resultElementType": "number",
+    }
+    column = ColumnSchema.model_validate(wire)
+    assert column.model_dump(by_alias=True)["resultElementType"] == "number"
+    assert (
+        ColumnSchema.model_validate({"name": "id", "title": "ID", "dataType": "text"}).model_dump(
+            by_alias=True
+        )["resultElementType"]
+        is None
+    )
+    with pytest.raises(ValidationError):
+        ColumnSchema.model_validate({**wire, "resultElementType": "decimal"})

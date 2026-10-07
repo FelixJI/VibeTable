@@ -665,6 +665,30 @@ describe("FieldSettingsDrawer", () => {
     expect(store.draft?.display.trimTrailingZeros).toBe(true);
   });
 
+  it("Formula 数值列表按已提交或Go验证的元素类型开放数字设置", async () => {
+    const store = useFieldSettingsStore();
+    const current = described("formula");
+    store.beginOpen();
+    store.load({ ...current, definition: { ...current.definition!, formula: {
+      language: "cel-v2", source: "UNIQUE([1.0, 2.0, 1.0])", resultType: "json", resultElementType: "number",
+    } } });
+    const wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    store.beginOpen();
+    store.load({ ...current, definition: { ...current.definition!, formula: {
+      language: "cel-v2", source: "UNIQUE([true, false])", resultType: "json", resultElementType: "bool",
+    } } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
+    store.setFormulaValidation("UNIQUE([1.0, 2.0])", {
+      canonicalSource: "UNIQUE([1.0, 2.0])", resultType: "json", resultElementType: "number",
+      dependencies: [], relationAggregatePaths: [],
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+  });
+
   it("数字显示按权威结果类型对 Formula 开放，文本结果不开放（AC4）", async () => {
     const store = useFieldSettingsStore();
     store.beginOpen();

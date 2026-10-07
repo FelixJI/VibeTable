@@ -746,7 +746,12 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                 RequiredStringArray(capability, "filterOperators"),
                 filterInput,
                 filterOptions,
-                ReadDisplaySpec(field)));
+                ReadDisplaySpec(field),
+                kind == "formula"
+                    && field.TryGetProperty("formula", out JsonElement formula)
+                    && formula.TryGetProperty("resultElementType", out JsonElement elementType)
+                    ? elementType.GetString()
+                    : null));
         }
         if (!hasRecordId)
         {

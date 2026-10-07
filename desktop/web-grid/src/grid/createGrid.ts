@@ -36,7 +36,7 @@ import type {
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
-import { formulaStateLabel } from "./computedValueDisplay";
+import { formatFormulaDisplayValue, formulaStateLabel } from "./computedValueDisplay";
 import type { DisplaySpec } from "@/contracts/generated/schemaV2";
 import { formatNumberDisplay } from "@/number/numberDisplay";
 import { getLocale, t } from "@/i18n";
@@ -417,10 +417,9 @@ function toColumnDef(
     return {
       ...def,
       editable: false,
-      // The authoritative effective result type (Go projection of
-      // Formula.ResultType) decides numeric formatting; a JSON-result formula
-      // never formats a number-looking ready value.
-      formatter: (cell: { getValue(): unknown }) => formulaValueFormatter(cell, col.dataType, col.display),
+      // Formula result and element types come from the compiler projection;
+      // row values never decide whether a result receives numeric formatting.
+      formatter: (cell: { getValue(): unknown }) => formulaValueFormatter(cell, col),
       cssClass: "vt-formula-cell",
     };
   }
@@ -503,8 +502,7 @@ function numericDisplayFormatter(display: DisplaySpec): GridCellFormatter {
 
 function formulaValueFormatter(
   cell: { getValue(): unknown },
-  dataType: ColumnSchema["dataType"],
-  display?: DisplaySpec | null,
+  column: ColumnSchema,
 ): HTMLElement {
   const raw = cell.getValue();
   const root = document.createElement("span");
@@ -529,16 +527,7 @@ function formulaValueFormatter(
   // The Go query port delivers ready formula results as bare values; legacy
   // envelopes carrying state=ready unwrap to the same unified value branch.
   const value = envelope && envelope.state === "ready" ? envelope.value : raw;
-  // Only declared decimal/integer results take the numeric display path; the
-  // runtime shape of the value never decides the type.
-  const formatted = (dataType === "decimal" || dataType === "integer")
-    ? formatNumberDisplay(value, display, getLocale())
-    : null;
-  root.textContent = value == null
-    ? "—"
-    : formatted !== null
-      ? formatted
-      : String(value);
+  root.textContent = formatFormulaDisplayValue(value, column);
   return root;
 }
 

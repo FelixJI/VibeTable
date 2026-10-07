@@ -106,14 +106,18 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 		if summaries == nil {
 			summaries = []string{}
 		}
-		columns = append(columns, map[string]any{
+		column := map[string]any{
 			"name": field.Identity.PhysicalName, "title": field.DisplayName, "fieldId": field.Identity.FieldID,
 			"kind": kind, "relationId": relationID, "lookupId": lookupID, "dataType": dataType,
 			"editable": !readonly, "nullable": !field.Value.Required, "scale": field.Display.DisplayScale,
 			"precision": nil, "attachmentPolicy": attachment, "display": field.Display,
 			"filterOperators": operators,
 			"groupable":       capability.Groupable, "summaryOperations": summaries,
-		})
+		}
+		if field.Formula != nil && field.Formula.ResultElementType != "" {
+			column["resultElementType"] = field.Formula.ResultElementType
+		}
+		columns = append(columns, column)
 	}
 	if primary == "" && len(snapshot.Fields) > 0 {
 		primary = snapshot.Fields[0].Identity.FieldID
