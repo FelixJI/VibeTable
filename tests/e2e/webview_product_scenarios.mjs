@@ -2,6 +2,7 @@ import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -7021,17 +7022,50 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
       && countProcessMembers(afterAction.members, "node.exe") === 0,
     { afterAction });
 
-  // Withhold the exact retained package file. The isolated workspace has
-  // exactly one installed plugin, the just-completed real action already read
-  // this package through the product boundary, and the catalog packageHash
-  // evidence above names its identity. The next action must fail closed and
+  // Withhold the exact retained package file. The seeded workspace installed
+  // exactly three plugins — the mutation-boundary fixture and both SDK example
+  // packages — and each installed plugin retains its content-addressed package.
+  // The catalog is the authority: derive every expected cache file name from
+  // the authoritative packageHash values through the shared compact-digest
+  // naming contract and require the cache to match that exact set with no
+  // extra files. The just-completed real action already read the fixture
+  // package through the product boundary, and the catalog packageHash evidence
+  // above names its identity. The next action must fail closed and
   // diagnosably without spawning any Node process, never falling back to a
   // shared absolute path, and the catalog entry must survive the miss.
+  const catalogEntries = Array.isArray(catalogResponse.payload) ? catalogResponse.payload : [];
+  const expectedPluginIds = [
+    state.pluginId,
+    "com.vibetable.examples.data-overview",
+    "com.vibetable.examples.normalize-text",
+  ];
+  const installedEntries = expectedPluginIds.map(id => findCatalogEntry(catalogEntries, id));
   const retained = await listRetainedPluginPackages(state.workspaceRoot);
-  recorder.check("the retained cache holds exactly the one installed package",
-    retained.packages.length === 1 && retained.entries.length === 1,
-    { retained, catalogPackageHash: state.packageHash });
-  const retainedPath = path.join(retained.cacheDirectory, retained.packages[0]);
+  recorder.check("the catalog holds exactly the fixture and both SDK examples",
+    catalogEntries.length === expectedPluginIds.length
+      && expectedPluginIds.every(id => catalogEntries.some(entry => entry?.pluginId === id))
+      && installedEntries.every(entry => /^sha256:[0-9a-f]{64}$/u.test(entry?.packageHash ?? "")),
+    { catalogEntries, expectedPluginIds, installedEntries });
+  if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
+  const packageNames = JSON.parse(execFileSync(runtime.pythonExecutable, [
+    "-c",
+    "import json,sys; from backend.infrastructure.plugin_package_lifecycle import _compact_package_digest; print(json.dumps([_compact_package_digest(h)+'.vtplugin' for h in json.loads(sys.argv[1])]))",
+    JSON.stringify(installedEntries.map(entry => entry.packageHash)),
+  ], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
+  }));
+  const expectedPackages = [...packageNames].sort();
+  recorder.check("the retained cache holds exactly the three installed packages",
+    isDeepStrictEqual(retained.packages, expectedPackages)
+      && isDeepStrictEqual(retained.entries, expectedPackages),
+    { retained, expectedPackages });
+  const retainedPath = path.join(
+    retained.cacheDirectory,
+    packageNames[0],
+  );
   const withheldPath = `${retainedPath}.withheld`;
   await fs.rename(retainedPath, withheldPath);
   try {

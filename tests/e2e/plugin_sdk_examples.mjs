@@ -3,6 +3,9 @@ import path from "node:path";
 
 // Real CLI-built packages, installed and executed by the packaged Host against
 // this scenario's synthetic workspace. No offline mutation adapter is involved.
+// The public lifecycle has no uninstall, so both examples stay installed for
+// the workspace's lifetime; the S11 resume contract therefore expects exactly
+// three retained packages here (fixture + both SDK examples).
 export async function exerciseSdkExamples(page, recorder, runtime, projectKey, helpers) {
   const { createSimpleTable, applyProductMutation, rawBridgeRequest,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage } = helpers;
@@ -35,12 +38,6 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
     await page.waitForFunction(() => document.querySelector('[data-testid="plugin-toggle"]')?.classList.contains("enabled"));
     return row;
   }
-  async function uninstall(row) {
-    await row.click();
-    await page.getByTestId("plugin-uninstall").click();
-    await page.getByTestId("plugin-uninstall-confirm").click();
-    await row.waitFor({ state: "hidden", timeout: 30_000 });
-  }
   async function start(example, actionId, input) {
     const response = await rawBridgeRequest(page, "plugin.action.start", {
       projectKey, pluginId: `com.vibetable.examples.${example}`, actionId, input, context,
@@ -58,12 +55,11 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
     } while (Date.now() < deadline);
     throw new Error(`SDK example Host task did not settle: ${taskId}`);
   }
-  const overview = await install("data-overview");
+  await install("data-overview");
   const read = await terminal((await start("data-overview", "open-overview", {})).taskId);
   recorder.check("real data-overview package returns the synthetic table count",
     read.state === "succeeded" && read.result?.table?.data?.count === 2, { read });
-  await uninstall(overview);
-  const normalize = await install("normalize-text");
+  await install("normalize-text");
   for (const decision of ["rejected", "cancelled", "conflict", "approved"]) {
     await beginBridgeMessageCapture(page, ["plugin.interaction.requested"]);
     const task = await start("normalize-text", "normalize-selection", { field, strategy: "collapse-whitespace" });
@@ -97,6 +93,5 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
       kind: "update", recordId: selectedId, values: { [field]: initial },
     }], "sdk-reset-synthetic-value");
   }
-  await uninstall(normalize);
   await fs.writeFile(sourceControl, originalSource, "utf8");
 }
