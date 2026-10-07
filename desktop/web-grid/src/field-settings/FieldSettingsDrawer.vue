@@ -32,6 +32,8 @@ import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import type { LookupConditionFieldOption } from "./lookup/lookupCondition";
 import { useFieldSettingsStore } from "./store";
+import { formatNumberDisplay } from "@/number/numberDisplay";
+import { getLocale } from "@/i18n";
 
 const emit = defineEmits<{
   close: [];
@@ -266,6 +268,147 @@ function patchDisplay(patchValue: Partial<FieldDraftV2["display"]>): void {
   if (!store.draft) return;
   patch({ display: { ...store.draft.display, ...patchValue } });
 }
+
+/** 数字显示预设与能力声明的 displayPresets 保持一致；缺省时回退完整预设集。 */
+const displayPresetOptions = computed(() => {
+  const presets = store.capability?.displayPresets?.length
+    ? store.capability.displayPresets
+    : ["number", "integer", "currency", "percent", "unit"];
+  const labels: Record<string, string> = {
+    number: "数字", integer: "整数显示", currency: "货币", percent: "百分比", unit: "单位",
+  };
+  return presets.map((value) => ({ label: labels[value] ?? value, value }));
+});
+
+const currencyOptions = computed(() => {
+  const codes = ["CNY", "USD", "EUR", "JPY", "GBP", "HKD"];
+  const current = store.draft?.display.currency;
+  if (current?.length === 3 && /^[A-Za-z]{3}$/.test(current) && !codes.includes(current)) codes.push(current);
+  return codes.map((code) => ({ label: code, value: code }));
+});
+
+/** 小数位与权威 Schema 一致限制在 0..15，非法输入稳定归零。 */
+function clampDisplayScale(value: number | null): number {
+  if (value === null || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(15, Math.trunc(value)));
+}
+
+/**
+ * 预设只写显示语义：整数显示不改 onlyInt 存储；货币/百分比/单位只附着
+ * 呈现层信息，切换预设不会缩放或重写任何已存值。
+ */
+function applyDisplayPreset(preset: string): void {
+  const current = store.draft?.display;
+  switch (preset) {
+    case "integer":
+      // 整数显示只改呈现；同时清掉残留单位，不触碰存储 onlyInt。
+      patchDisplay({ preset: "integer", displayScale: 0, unit: null });
+      break;
+    case "currency":
+      patchDisplay({
+        preset: "currency",
+        currency: current?.currency || "CNY",
+        displayScale: current?.displayScale ?? 2,
+        scaleMode: "fixed",
+        trimTrailingZeros: false,
+      });
+      break;
+    case "percent":
+      // 新百分比预设采用已说明的默认：小数存储 ratio。
+      patchDisplay({ preset: "percent", percentStorage: current?.percentStorage ?? "ratio" });
+      break;
+    case "unit":
+      patchDisplay({ preset: "unit", unit: current?.unit ?? "" });
+      break;
+    default:
+      // unit 是独立合法的 DisplaySpec 字段；切回“数字”时显式清除残留，
+      // 避免隐藏的单位输入框留下 kg 继续附着在显示值上。
+      patchDisplay({ preset: "number", unit: null });
+  }
+}
+
+/** 切换到“固定”时规范化尾零规则；固定始终保留尾零，最多自动去零。 */
+function applyScaleMode(mode: string): void {
+  if (mode === "fixed") patchDisplay({ scaleMode: "fixed", trimTrailingZeros: false });
+  else patchDisplay({ scaleMode: "max", trimTrailingZeros: true });
+}
+
+/** 尾零规则由位数模式唯一决定，不再提供独立开关（wire 字段保留兼容）。 */
+const trailingZeroHint = computed(() => store.draft?.display.scaleMode === "fixed"
+  ? "固定模式始终保留指定位尾零（12 → 12.00）"
+  : "最多模式按最多位数显示并自动去掉尾零（12 → 12）");
+
+/**
+ * 数值聚合与 Go 权威 LookupAggregationNumeric 一致：计数与汇总都产出
+ * decimal 结果；values/distinct 保持目标字段元素类型。
+ */
+const NUMERIC_LOOKUP_AGGREGATIONS: ReadonlySet<string> = new Set([
+  "countRecords", "countNonEmpty", "countDistinct", "sum", "average", "min", "max",
+]);
+
+/**
+ * 显示设置适用性由权威结果类型决定，绝不按运行时值猜测：
+ * - number 字段本身；
+ * - formula：已提交定义或当前 Go 验证的数值结果/数值列表元素类型；
+ * - lookup：数值聚合，或目标字段声明为 number（数值列表元素）。
+ */
+const numericDisplayApplicable = computed(() => {
+  const draft = store.draft;
+  if (!draft) return false;
+  if (draft.logicalType === "number") return true;
+  if (draft.logicalType === "formula") {
+    const definition = store.result?.definition?.formula;
+    const validation = store.formulaValidation;
+    return definition?.resultType === "number" || validation?.resultType === "number"
+      || (definition?.resultType === "json" && definition.resultElementType === "number")
+      || (validation?.resultType === "json" && validation.resultElementType === "number");
+  }
+  if (draft.logicalType === "lookup") {
+    const aggregation = draft.lookup?.aggregation ?? null;
+    if (aggregation !== null && NUMERIC_LOOKUP_AGGREGATIONS.has(aggregation)) return true;
+    const targetFieldId = draft.lookup?.targetFieldId ?? "";
+    const option = lookupTargetFieldOptions.value.find((item) => item.value === targetFieldId);
+    return option?.logicalType === "number";
+  }
+  return false;
+});
+
+const numericDisplayHint = computed(() => {
+  const type = store.draft?.logicalType;
+  if (type === "formula") return "按公式的权威结果类型开放；结果不是数字时不套用数字格式";
+  if (type === "lookup") return "按 Lookup 的权威输出类型开放；汇总/数值列表元素适用，文本结果不套用";
+  return "只改变呈现，不改写原始值";
+});
+
+const numberPreviewLarge = computed(() => {
+  if (!numericDisplayApplicable.value || !store.draft) return "";
+  return formatNumberDisplay(1234.56789, store.draft.display, getLocale()) ?? "";
+});
+
+const numberPreviewSmall = computed(() => {
+  if (!numericDisplayApplicable.value || !store.draft) return "";
+  return formatNumberDisplay(12, store.draft.display, getLocale()) ?? "";
+});
+
+const displayPreviewHint = computed(() => {
+  const display = store.draft?.display;
+  if (!display) return "";
+  if (display.preset === "percent") {
+    return display.percentStorage === "percent"
+      ? "存储 12.5 显示 12.5%；输入按原值保存，不自动乘除 100，也不带百分号输入"
+      : "存储 0.125 显示 12.5%；输入按原值保存，不自动乘除 100，也不带百分号输入";
+  }
+  if (display.preset === "integer") {
+    return "整数显示只改呈现，不改变字段的整数存储约束（仅限整数仍由存储选项控制）";
+  }
+  if (display.preset === "currency") {
+    return `币种 ${display.currency || "CNY"} 仅用于显示，不影响原值与导出`;
+  }
+  if (display.preset === "unit") {
+    return display.unit ? `单位“${display.unit}”直接附在显示值后，不影响原值` : "填写单位后直接附在显示值后";
+  }
+  return "修改显示选项不会改写已存值；小数位变化不影响公式与筛选结果";
+});
 
 function patchStorage(
   patchValue: Partial<FieldDraftV2["storage"]["options"]>,
@@ -687,23 +830,67 @@ function isTextual(type: LogicalTypeV2): boolean {
                   </div>
                 </section>
 
-                <section v-if="store.draft.logicalType === 'number'" class="settings-section">
-                  <div class="section-title"><div><strong>数字显示</strong><small>只改变呈现，不改写原始值</small></div></div>
+                <section v-if="numericDisplayApplicable" class="settings-section">
+                  <div class="section-title"><div>
+                    <strong>{{ store.draft.logicalType === 'number' ? '数字显示' : '结果数字显示' }}</strong>
+                    <small>{{ numericDisplayHint }}；只改变呈现，不改写原始值，排序、筛选、导出与计算仍用原值</small>
+                  </div></div>
                   <div class="two-column">
-                    <label><span>小数位</span><NInputNumber
-                      :value="store.draft.display.displayScale"
-                      :min="0" :max="12"
-                      @update:value="patchDisplay({ displayScale: $event ?? 0 })"
-                    /></label>
                     <label><span>预设</span><NSelect
+                      data-testid="number-display-preset"
                       :value="store.draft.display.preset"
-                      :options="(store.capability?.displayPresets ?? []).map(value => ({ label: value, value }))"
-                      @update:value="patchDisplay({ preset: $event })"
+                      :options="displayPresetOptions"
+                      @update:value="applyDisplayPreset"
+                    /></label>
+                    <label><span>小数位</span><NInputNumber
+                      data-testid="number-display-scale"
+                      :value="store.draft.display.displayScale"
+                      :min="0" :max="15"
+                      @update:value="patchDisplay({ displayScale: clampDisplayScale($event) })"
+                    /></label>
+                    <label><span>位数模式</span><NSelect
+                      data-testid="number-display-scale-mode"
+                      :value="store.draft.display.scaleMode"
+                      :options="[
+                        { label: '固定（保留指定位尾零）', value: 'fixed' },
+                        { label: '最多（不超过指定位）', value: 'max' },
+                      ]"
+                      @update:value="applyScaleMode"
+                    /></label>
+                    <label v-if="store.draft.display.preset === 'currency'"><span>币种</span><NSelect
+                      data-testid="number-display-currency"
+                      :value="store.draft.display.currency"
+                      :options="currencyOptions"
+                      @update:value="patchDisplay({ currency: String($event) })"
+                    /></label>
+                    <label v-if="store.draft.display.preset === 'percent'"><span>百分号存储</span><NSelect
+                      data-testid="number-display-percent-storage"
+                      :value="store.draft.display.percentStorage"
+                      :options="[
+                        { label: '小数（0.125 显示 12.5%）', value: 'ratio' },
+                        { label: '百分数（12.5 显示 12.5%）', value: 'percent' },
+                      ]"
+                      @update:value="patchDisplay({ percentStorage: String($event) as 'ratio' | 'percent' })"
+                    /></label>
+                    <label v-if="store.draft.display.preset === 'unit'"><span>单位</span><NInput
+                      data-testid="number-display-unit"
+                      :value="store.draft.display.unit ?? ''"
+                      placeholder="如 kg、件"
+                      @update:value="patchDisplay({ unit: $event || null })"
                     /></label>
                   </div>
                   <div class="switch-row">
                     <div><strong>千分位</strong></div>
-                    <NSwitch :value="store.draft.display.useGrouping" @update:value="patchDisplay({ useGrouping: $event })" />
+                    <NSwitch data-testid="number-display-grouping" :value="store.draft.display.useGrouping" @update:value="patchDisplay({ useGrouping: $event })" />
+                  </div>
+                  <div class="switch-row">
+                    <div><strong>尾零规则</strong><small data-testid="number-display-trailing-zeros-hint">{{ trailingZeroHint }}</small></div>
+                  </div>
+                  <div class="display-preview" data-testid="number-display-preview">
+                    <small>预览（示例 1234.56789 与 12）</small>
+                    <code>{{ numberPreviewLarge }}</code>
+                    <code>{{ numberPreviewSmall }}</code>
+                    <small class="preview-hint">{{ displayPreviewHint }}</small>
                   </div>
                 </section>
 
@@ -999,9 +1186,11 @@ function isTextual(type: LogicalTypeV2): boolean {
                         :options="[{label:'最多',value:'max'},{label:'固定',value:'fixed'}]"
                         @update:value="patchDisplay({ scaleMode: $event })"
                       /></label>
-                      <label><span>币种</span><NInput
+                      <label><span>币种</span><NSelect
+                        data-testid="advanced-display-currency"
                         :value="store.draft.display.currency"
-                        @update:value="patchDisplay({ currency: $event })"
+                        :options="currencyOptions"
+                        @update:value="patchDisplay({ currency: String($event) })"
                       /></label>
                       <label><span>百分比存储</span><NSelect
                         :value="store.draft.display.percentStorage"
@@ -1350,6 +1539,9 @@ small{color:var(--vt-fg-muted);line-height:1.4}.top-alert{margin-bottom:14px}
 label{display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:650}.wide{grid-column:1/-1}
 .settings-section,.plan-card,.migration-card{padding:16px;margin:12px 0;display:grid;gap:14px}
 .two-column{display:grid;grid-template-columns:1fr 1fr;gap:12px}.default-editor{padding:12px;border-radius:10px;background:var(--vt-bg-subtle)}
+.display-preview{display:grid;gap:4px;padding:10px 12px;border:1px dashed var(--vt-border);border-radius:10px;background:var(--vt-bg-subtle)}
+.display-preview>code{font-size:15px}
+.display-preview>.preview-hint{color:var(--vt-fg-muted)}
 .option-row{display:grid;grid-template-columns:34px 1fr auto;gap:8px;align-items:center}.option-row input[type=color]{width:30px;height:30px;border:0;background:none}
 .emphasis{border-color:color-mix(in srgb,var(--vt-fg-accent) 45%,var(--vt-border))}
 .danger-zone{display:grid;gap:12px;margin-top:18px;padding:16px;border:1px solid color-mix(in srgb,#ef4444 40%,var(--vt-border));border-radius:14px;background:color-mix(in srgb,#ef4444 5%,var(--vt-bg-elevated))}

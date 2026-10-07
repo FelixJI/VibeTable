@@ -1483,6 +1483,7 @@ useKeyboard({
                 :view="activePresetView"
                 :interaction-enabled="kanbanInteraction.enabled"
                 :lane-options="kanbanInteraction.lanes"
+                :lookup-definitions="relationLookup.lookups"
                 @card-move="alternativeViewInteractionController.dispatch({ type: 'kanban.card.move', ...$event })"
               />
               <RecordGalleryView
@@ -1490,6 +1491,7 @@ useKeyboard({
                 :rows="projectedPresetRows"
                 :schema="tableStore.schema ?? []"
                 :view="activePresetView"
+                :lookup-definitions="relationLookup.lookups"
               />
             </template>
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">

@@ -11,7 +11,7 @@ public sealed record ColumnFilterOption(string Value, string Label);
 /// One column's read-side schema. Mirrors
 /// <c>backend.contracts.table.ColumnSchema</c> (camelCase wire form):
 /// <c>{"name","title","dataType","editable","nullable","scale","precision",</c>
-/// <c>"fieldId","kind","relationId","lookupId","attachmentPolicy"}</c>.
+/// <c>"fieldId","kind","relationId","lookupId","attachmentPolicy","display","resultElementType"}</c>.
 /// </summary>
 public sealed record ColumnSchema(
     string Name,
@@ -28,7 +28,9 @@ public sealed record ColumnSchema(
     IReadOnlyDictionary<string, object?>? AttachmentPolicy = null,
     IReadOnlyList<string>? FilterOperators = null,
     string FilterInput = "text",
-    IReadOnlyList<ColumnFilterOption>? FilterOptions = null);
+    IReadOnlyList<ColumnFilterOption>? FilterOptions = null,
+    FieldDisplayV2? Display = null,
+    string? ResultElementType = null);
 
 /// <summary>
 /// Result of opening the configured logical source through the table gateway:

@@ -745,7 +745,13 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                     : null,
                 RequiredStringArray(capability, "filterOperators"),
                 filterInput,
-                filterOptions));
+                filterOptions,
+                ReadDisplaySpec(field),
+                kind == "formula"
+                    && field.TryGetProperty("formula", out JsonElement formula)
+                    && formula.TryGetProperty("resultElementType", out JsonElement elementType)
+                    ? elementType.GetString()
+                    : null));
         }
         if (!hasRecordId)
         {
@@ -1058,9 +1064,10 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         IDictionary<string, object?> editor,
         JsonElement field)
     {
-        JsonElement display = RequiredProperty(field, "display");
-        editor["scale"] = ToObject(RequiredProperty(display, "displayScale"));
-        editor["precision"] = RequiredString(display, "precision");
+        // Display-only settings (displayScale, precision) must never constrain
+        // input: a column shown with 2 decimals still accepts 1.234567. Real
+        // storage constraints come from storage.onlyInt and constraints.range
+        // only, so the editor carries no scale/precision here.
         JsonElement range = RequiredProperty(RequiredProperty(field, "constraints"), "range");
         JsonElement minimum = RequiredProperty(range, "min");
         JsonElement maximum = RequiredProperty(range, "max");
@@ -1072,6 +1079,14 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         {
             editor["maxValue"] = ToObject(maximum);
         }
+    }
+
+    private static FieldDisplayV2? ReadDisplaySpec(JsonElement field)
+    {
+        return field.TryGetProperty("display", out JsonElement display)
+            && display.ValueKind == JsonValueKind.Object
+            ? JsonSerializer.Deserialize<FieldDisplayV2>(display, JsonOptions)
+            : null;
     }
 
     private static string FieldIdentityString(JsonElement field, string name)

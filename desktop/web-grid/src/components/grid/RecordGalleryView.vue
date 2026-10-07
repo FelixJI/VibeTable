@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { GalleryHorizontal } from "@lucide/vue";
-import type { ColumnSchema, PresetView } from "@/contracts";
+import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { displayValue, metadataFields, rowTitle, safeImageUrl } from "./recordViewUtils";
 
@@ -9,6 +9,7 @@ const props = defineProps<{
   rows: readonly Record<string, unknown>[];
   schema: readonly ColumnSchema[];
   view: PresetView;
+  lookupDefinitions?: readonly LookupDefinition[];
 }>();
 
 const details = computed(() => metadataFields(
@@ -40,7 +41,7 @@ function markCoverFailed(key: string): void {
           <strong>{{ rowTitle(card.row, view) }}</strong>
           <dl v-if="details.length">
             <template v-for="field in details" :key="field.name">
-              <dt>{{ field.title }}</dt><dd>{{ displayValue(card.row[field.name]) }}</dd>
+              <dt>{{ field.title }}</dt><dd>{{ displayValue(card.row[field.name], field, lookupDefinitions) }}</dd>
             </template>
           </dl>
         </div>

@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { calculationChainUiFixture, calculationChainUiOracle } from "./calculation_chain_journey.mjs";
+import {
+  calculationChainDisplayText, calculationChainUiFixture, calculationChainUiOracle,
+} from "./calculation_chain_journey.mjs";
+
+test("S38 independent display oracle pins the default grouped DOM number text", () => {
+  assert.equal(calculationChainDisplayText(1982), "1,982");
+  assert.equal(calculationChainDisplayText(1983), "1,983");
+  assert.equal(calculationChainDisplayText(2982), "2,982");
+  assert.equal(calculationChainDisplayText(2983), "2,983");
+  assert.equal(calculationChainDisplayText(991), "991");
+  assert.equal(calculationChainDisplayText(7), "7");
+  assert.equal(calculationChainDisplayText(0), "0");
+  const raw = [["合同甲", 991, 1982], ["合同丙", 0, 0]];
+  const displayed = raw.map(row => row.map(calculationChainDisplayText));
+  assert.deepEqual(displayed, [["合同甲", "991", "1,982"], ["合同丙", "0", "0"]]);
+  assert.deepEqual(raw, [["合同甲", 991, 1982], ["合同丙", 0, 0]]);
+});
 
 test("S38 independent oracle pins 199/1/0 sources and both UI edits", () => {
   const sources = calculationChainUiFixture();

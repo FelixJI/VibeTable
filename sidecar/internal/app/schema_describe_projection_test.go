@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/relation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
@@ -107,6 +108,11 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			assertColumnDisplayWiring(t, corpus.Tables[sample.TableID], got)
+			// The frozen wire predates the column `display` field. Project away
+			// exactly that new key so every historical field stays compared;
+			// the display contract itself is asserted separately below.
+			stripColumnDisplayField(got)
 			actual, err := json.Marshal(got)
 			if err != nil {
 				t.Fatal(err)
@@ -135,4 +141,160 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 			}
 		})
 	}
+}
+
+// stripColumnDisplayField removes only the newly added `display` key from
+// every projected column. It must not touch any historical wire field.
+func stripColumnDisplayField(result map[string]any) {
+	columns := result["schema"].(map[string]any)["columns"].([]any)
+	for _, column := range columns {
+		if record, ok := column.(map[string]any); ok {
+			delete(record, "display")
+		}
+	}
+}
+
+// assertColumnDisplayWiring pins the new column `display` contract against
+// the frozen corpus inputs: every field column carries the authoritative
+// DisplaySpec of its field verbatim, and the system id column stays null.
+func assertColumnDisplayWiring(t *testing.T, snapshot v2.SchemaSnapshot, result map[string]any) {
+	t.Helper()
+	columns := result["schema"].(map[string]any)["columns"].([]any)
+	byFieldID := map[string]map[string]any{}
+	for _, column := range columns {
+		record := column.(map[string]any)
+		if fieldID, ok := record["fieldId"].(string); ok {
+			byFieldID[fieldID] = record
+		}
+	}
+	for _, field := range snapshot.Fields {
+		column, found := byFieldID[field.Identity.FieldID]
+		if !found {
+			t.Fatalf("column for field %s missing", field.Identity.FieldID)
+		}
+		got, err := json.Marshal(column["display"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(field.Display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotValue, wantValue any
+		if err := json.Unmarshal(got, &gotValue); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(want, &wantValue); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(gotValue, wantValue) {
+			t.Fatalf("column display for %s: got %s want %s", field.Identity.FieldID, got, want)
+		}
+	}
+	if idColumn, found := byFieldID["id"]; found {
+		if idColumn["display"] != nil {
+			t.Fatalf("system id column must not carry a display spec: %v", idColumn["display"])
+		}
+	}
+}
+
+// TestSchemaDescribeProjectsDisplaySpecWithExplicitShape locks the complete
+// wire shape of the projected column display by decoding the actual JSON wire
+// and comparing it against a hand-written expectation, independent of the
+// projection implementation.
+func TestSchemaDescribeProjectsDisplaySpecWithExplicitShape(t *testing.T) {
+	wire, err := os.ReadFile("testdata/schema_describe_oracle.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus describeOracleCorpus
+	if err := json.Unmarshal(wire, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	sample := corpus.Cases[0]
+	got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) {
+		table, found := corpus.Tables[id]
+		if !found {
+			return v2.SchemaSnapshot{}, fmt.Errorf("uncaptured target %s", id)
+		}
+		return table, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultWire, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(resultWire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	displayByField := map[string]any{}
+	for _, column := range decoded["schema"].(map[string]any)["columns"].([]any) {
+		record := column.(map[string]any)
+		displayByField[record["fieldId"].(string)] = record["display"]
+	}
+	// Hand-written wire expectation for the captured number field with
+	// displayScale 4 (frozen corpus input), decoded through the same JSON path.
+	wantNumber := `{
+		"kind": "number", "preset": "number", "displayScale": 4, "scaleMode": "max",
+		"trimTrailingZeros": true, "useGrouping": true, "currency": "CNY",
+		"percentStorage": "ratio", "unit": null, "precision": "minute",
+		"timezone": "system", "mode": "default", "indent": 0,
+		"trueLabel": "是", "falseLabel": "否"
+	}`
+	var wantNumberValue any
+	if err := json.Unmarshal([]byte(wantNumber), &wantNumberValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(displayByField["fld_pt602dxd6ayafnq2n1f4"], wantNumberValue) {
+		t.Fatalf("number column display = %#v", displayByField["fld_pt602dxd6ayafnq2n1f4"])
+	}
+	formulaDisplay, _ := displayByField["fld_2mjn8rpxh8gbc4hwh322"].(map[string]any)
+	if formulaDisplay == nil || formulaDisplay["kind"] != "readonly" || formulaDisplay["displayScale"] != float64(2) {
+		t.Fatalf("formula column display = %#v", formulaDisplay)
+	}
+	if displayByField["id"] != nil {
+		t.Fatalf("system id column must not carry a display spec: %#v", displayByField["id"])
+	}
+}
+
+func TestSchemaDescribeProjectsFormulaListElementType(t *testing.T) {
+	raw, err := os.ReadFile("testdata/schema_describe_oracle.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus describeOracleCorpus
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	sample := corpus.Cases[0]
+	snapshot := corpus.Tables[sample.TableID]
+	compiler := formula.NewCompiler(formula.DefaultLimits())
+	inferred, failure := compiler.InferV2Value(formula.V2Table{TableID: snapshot.TableID, Fields: snapshot.Fields}, "UNIQUE([1.0, 2.0, 1.0])")
+	if failure != nil || inferred.LogicalType != v2.LogicalJSON || inferred.ElementType != v2.LogicalNumber {
+		t.Fatalf("real list inference = %#v, %v", inferred, failure)
+	}
+	for i := range snapshot.Fields {
+		field := &snapshot.Fields[i]
+		if field.LogicalType == v2.LogicalFormula {
+			field.Formula = &v2.FormulaSpec{Language: "cel-v2", Source: "UNIQUE([1.0, 2.0, 1.0])", ResultType: inferred.LogicalType, ResultElementType: inferred.ElementType}
+			field.Storage.Options.OnlyInt = false
+		}
+	}
+	got, err := projectSchemaDescribe(snapshot, sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) { return corpus.Tables[id], nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range got["schema"].(map[string]any)["columns"].([]any) {
+		column := item.(map[string]any)
+		if column["kind"] == "formula" {
+			if column["dataType"] != "json" || column["resultElementType"] != v2.LogicalNumber || column["editable"] != false {
+				t.Fatalf("typed Formula list projection = %#v", column)
+			}
+			return
+		}
+	}
+	t.Fatal("Formula list column missing")
 }

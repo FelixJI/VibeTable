@@ -210,7 +210,11 @@
         "indent": {"type": "integer", "enum": [0, 2, 4]},
         "trueLabel": {"type": "string"},
         "falseLabel": {"type": "string"}
-      }
+      },
+      "allOf": [{
+        "if": {"properties": {"preset": {"const": "currency"}}, "required": ["preset"]},
+        "then": {"properties": {"currency": {"minLength": 3, "maxLength": 3, "pattern": "^[A-Za-z]{3}$"}}}
+      }]
     },
     "SelectOption": {
       "type": "object",

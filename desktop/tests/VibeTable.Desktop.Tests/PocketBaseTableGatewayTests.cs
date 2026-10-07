@@ -461,6 +461,120 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
+    public async Task NumberEditorKeepsOnlyRealStorageConstraints()
+    {
+        var transport = new ProductTransport();
+        JsonObject price = V2Field("price0000", "price0000", "Price", "number");
+        price["display"]!["displayScale"] = 2;
+        price["display"]!["precision"] = "exact";
+        price["constraints"]!["range"] = new JsonObject { ["min"] = 0, ["max"] = 1000 };
+        transport.Respond("schema.getTable", SchemaWithFields("items", price));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client));
+
+        EditSchemaResult schema = await gateway.GetEditSchemaAsync(
+            "items", CancellationToken.None);
+        ColumnEditSchema column = schema.Columns.Single(item => item.Name == "f_price0000");
+
+        Assert.AreEqual("number", column.Editor["kind"]);
+        Assert.AreEqual("decimal", column.Editor["storage"]);
+        // Display-only scale/precision must not leak into the editor: a column
+        // shown with 2 decimals still accepts raw input like 1.234567.
+        Assert.IsFalse(column.Editor.ContainsKey("scale"));
+        Assert.IsFalse(column.Editor.ContainsKey("precision"));
+        Assert.AreEqual(0L, column.Editor["minValue"]);
+        Assert.AreEqual(1000L, column.Editor["maxValue"]);
+    }
+
+    [TestMethod]
+    public async Task NumericColumnCarriesCompleteDisplaySpec()
+    {
+        var transport = new ProductTransport();
+        JsonObject price = V2Field("price0000", "price0000", "Price", "number");
+        price["display"] = new JsonObject
+        {
+            ["kind"] = "number",
+            ["preset"] = "currency",
+            ["displayScale"] = 4,
+            ["scaleMode"] = "fixed",
+            ["trimTrailingZeros"] = false,
+            ["useGrouping"] = true,
+            ["currency"] = "CNY",
+            ["percentStorage"] = "ratio",
+            ["unit"] = null,
+            ["precision"] = "exact",
+            ["timezone"] = "system",
+            ["mode"] = "default",
+            ["indent"] = 0,
+            ["trueLabel"] = "是",
+            ["falseLabel"] = "否",
+        };
+        transport.Respond("schema.getTable", SchemaWithFields("items", price));
+        transport.Respond(
+            "query.view",
+            ViewResponse("""
+            {"rows":[],"offset":0,"limit":100,"filteredRows":0,"totalRows":0,
+             "snapshot":{"snapshotId":"00000000000000000000000000000000",
+             "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+             "databaseId":"local","table":"items","schemaRevision":"schema_0001",
+             "dataRevision":1,"normalizedQuery":{"offset":0,"limit":100}}}
+            """));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(
+            new JsonRpcProductDataGateway(client));
+
+        var page = await QueryViewAsync(gateway, "items", 0, 100);
+
+        var column = page.Columns.Single(item => item.Name == "f_price0000");
+        Assert.IsNotNull(column.Display);
+        Assert.AreEqual("currency", column.Display.Preset);
+        Assert.AreEqual(4L, column.Display.DisplayScale);
+        Assert.AreEqual("fixed", column.Display.ScaleMode);
+        Assert.IsFalse(column.Display.TrimTrailingZeros);
+        Assert.IsTrue(column.Display.UseGrouping);
+        Assert.AreEqual("CNY", column.Display.Currency);
+        Assert.AreEqual("ratio", column.Display.PercentStorage);
+        Assert.IsNull(column.Display.Unit);
+    }
+
+    [TestMethod]
+    public async Task FormulaListColumnCarriesDeclaredElementType()
+    {
+        var transport = new ProductTransport();
+        JsonObject numbers = V2Field("numbers0", "numbers0", "Numbers", "formula");
+        numbers["formula"] = new JsonObject
+        {
+            ["language"] = "cel-v2", ["source"] = "UNIQUE([1.0, 2.0, 1.0])",
+            ["resultType"] = "json", ["resultElementType"] = "number",
+        };
+        numbers["storage"]!["kind"] = "computed";
+        numbers["display"]!["kind"] = "readonly";
+        JsonObject schema = JsonNode.Parse(SchemaWithFields("items", numbers))!.AsObject();
+        JsonObject jsonCapability = schema["capabilities"]!.AsArray()[0]!.DeepClone().AsObject();
+        jsonCapability["logicalType"] = "json";
+        schema["capabilities"]!.AsArray().Add(jsonCapability);
+        transport.Respond("schema.getTable", schema.ToJsonString());
+        transport.Respond("query.view", ViewResponse("""
+            {"rows":[{"id":"row-1","f_numbers0":[1,2]}],
+             "offset":0,"limit":100,"filteredRows":1,"totalRows":1,
+             "snapshot":{"snapshotId":"00000000000000000000000000000000",
+             "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+             "databaseId":"local","table":"items","schemaRevision":"schema_0001",
+             "dataRevision":1,"normalizedQuery":{"offset":0,"limit":100}}}
+            """));
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var page = await QueryViewAsync(gateway, "items", 0, 100);
+        var column = page.Columns.Single(item => item.Name == "f_numbers0");
+        Assert.AreEqual("json", column.DataType);
+        Assert.IsFalse(column.Editable);
+        using var wire = JsonDocument.Parse(JsonSerializer.Serialize(column, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.AreEqual("number", wire.RootElement.GetProperty("resultElementType").GetString());
+        Assert.AreEqual("[1,2]", JsonSerializer.Serialize(page.Rows[0]["f_numbers0"]));
+    }
+
+    [TestMethod]
     public async Task FormulaColumnUsesDeclaredResultTypeInsteadOfNumberStorage()
     {
         var transport = new ProductTransport();

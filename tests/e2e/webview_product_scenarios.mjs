@@ -8,7 +8,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -1108,6 +1109,162 @@ async function scenario02(page, recorder, _network, runtime) {
   await page.getByTestId("formula-editor-cancel").click();
   await closeFieldSettingsDrawer(page);
 
+  // 数字显示贯通：权威 Schema 保存货币/百分比显示后，列投影携带完整
+  // DisplaySpec，网格按显示渲染，且显示位数不再约束输入（AC1/AC2/AC3）。
+  // 与后续断言一样：脱离可见网格做 schema/值变更，避免 UI 刷新前触发 Lookup 读。
+  await selectTable(page, "E2E Relation Target V2");
+  const amountDisplayCurrency = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "currency",
+          displayScale: 2,
+          scaleMode: "fixed",
+          trimTrailingZeros: false,
+          useGrouping: true,
+          currency: "CNY",
+        };
+        return draft;
+      },
+    },
+  );
+  const currencySeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 1234.56789 },
+  }], "e2e-number-display-currency");
+  if (currencySeed.payload?.status !== "applied"
+    || amountDisplayCurrency.applied?.type === "operation.failed") {
+    throw new Error(`currency display change was not committed: ${JSON.stringify([amountDisplayCurrency, currencySeed])}`);
+  }
+  await selectTable(page, "E2E Field Settings V2");
+  const describedDisplay = await rawBridgeRequest(page, "schema.describe", {
+    collection: tableId,
+    requestGeneration: 1,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  const describedAmountColumn = describedDisplay.payload?.schema?.columns
+    ?.find((column) => column.fieldId === amountField.fieldId);
+  recorder.check(
+    "schema.describe projects the complete DisplaySpec for the number column",
+    describedAmountColumn?.display?.preset === "currency"
+      && describedAmountColumn?.display?.displayScale === 2
+      && describedAmountColumn?.display?.scaleMode === "fixed"
+      && describedAmountColumn?.display?.currency === "CNY",
+    { describedAmountColumn },
+  );
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("¥1,234.57"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  recorder.check(
+    "grid renders the stored 1234.56789 as ¥1,234.57 under currency display",
+    true,
+  );
+  // 显示 2 位不得拒绝 1.234567：真实编辑路径提交原值（旧实现把
+  // displayScale 注入编辑器 scale 会在本地拒绝该输入）。
+  const amountCell = page.locator(`.tabulator-cell[tabulator-field="${amountField.physicalName}"]`).first();
+  const amountEditor = await beginCellEdit(amountCell);
+  await amountEditor.fill("1.234567");
+  await amountEditor.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.length === 1
+      && payload.rows[0]?.[amountField.physicalName] === 1.234567,
+  );
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("¥1.23"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  const editRejectionsAfterDisplay = await page.evaluate(
+    () => window.__vibetableE2eEditSchemaRejections,
+  );
+  recorder.check(
+    "display scale never rejects raw input 1.234567 (¥1.23 shown, raw value preserved)",
+    editRejectionsAfterDisplay.length === 0,
+    { editRejectionsAfterDisplay },
+  );
+
+  // 百分比：ratio 存储 0.125 显示 12.5%，原值不被缩放改写。
+  await selectTable(page, "E2E Relation Target V2");
+  const amountDisplayPercent = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "percent",
+          percentStorage: "ratio",
+          displayScale: 1,
+          scaleMode: "max",
+        };
+        return draft;
+      },
+    },
+  );
+  const percentSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 0.125 },
+  }], "e2e-number-display-percent");
+  if (percentSeed.payload?.status !== "applied"
+    || amountDisplayPercent.applied?.type === "operation.failed") {
+    throw new Error(`percent display change was not committed: ${JSON.stringify([amountDisplayPercent, percentSeed])}`);
+  }
+  await selectTable(page, "E2E Field Settings V2");
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("12.5%"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  recorder.check(
+    "ratio 0.125 renders as 12.5% without rescaling the stored value",
+    true,
+  );
+
+  // 准确恢复共享旅程的原值与默认显示，避免污染后续既有断言。
+  const amountRestore = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "number",
+          displayScale: 2,
+          scaleMode: "max",
+          trimTrailingZeros: true,
+          useGrouping: true,
+          percentStorage: "ratio",
+          unit: null,
+        };
+        return draft;
+      },
+    },
+  );
+  const amountRestoreSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 21 },
+  }], "e2e-number-display-restore");
+  if (amountRestoreSeed.payload?.status !== "applied"
+    || amountRestore.applied?.type === "operation.failed") {
+    throw new Error(`amount restore failed: ${JSON.stringify([amountRestore, amountRestoreSeed])}`);
+  }
+
   // The remaining assertions intentionally mutate this table through raw
   // bridge requests. Keep the visible grid on a different table so it cannot
   // issue Lookup reads between an out-of-band schema apply and its UI refresh.
@@ -1267,7 +1424,415 @@ async function scenario02(page, recorder, _network, runtime) {
     { legacyWrite },
   );
   await acknowledgeExpectedBridgeFailure(page, legacyWrite);
+
+  // AC1/AC2/AC3/AC5（UI 驱动）：独立合成表，经真实抽屉控件设置/保存/重开，
+  // 覆盖 0/2/9/12/15 持久化、固定/最多、千分位、货币/单位、百分比两种存储、
+  // 显示-only 不变量与默认 CSV 原值导出；不污染上面的共享旅程。
+  const numberUiTableId = await createEmptyTable(page, "E2E Number Display UI");
+  // createEmptyTable 的建表流程会打开统一字段设置抽屉；下面这次 close 关闭它。
+  const uiAmount = await createV2Field(page, numberUiTableId, "金额", "number");
+  await closeFieldSettingsDrawer(page);
+  // createV2Field 是纯 raw RPC（describe/plan/apply），不打开抽屉；此处不能
+  // 再关一次不存在的抽屉（field-close-button 会等到超时）。
+  const uiFormula = await createV2Field(page, numberUiTableId, "翻倍", "formula", (draft) => {
+    draft.formula = { language: "cel-v1", source: `${uiAmount.physicalName} * 2.0` };
+    return draft;
+  });
+  const uiSeed = await applyProductMutation(page, numberUiTableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [uiAmount.physicalName]: 1234.56789 },
+  }], "e2e-number-display-ui-seed");
+  if (uiSeed.payload?.status !== "applied") {
+    throw new Error(`number display UI seed was not committed: ${JSON.stringify(uiSeed)}`);
+  }
+  await selectTable(page, "E2E Number Display UI");
+  await waitForVisibleRowCount(page, 1);
+
+  const uiQuery = () => rawBridgeRequest(page, "query.page", {
+    tableId: numberUiTableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const uiDescribeDisplay = async () => {
+    const described = await rawBridgeRequest(page, "field.settings.describe", {
+      tableId: numberUiTableId,
+      fieldId: uiAmount.fieldId,
+    });
+    return described.payload?.definition?.display ?? null;
+  };
+  const waitAmountCellText = async (expectedText) => {
+    // 金额 formatter 只输出 span 文本（无辅助 DOM），用 trim() 全等断言，
+    // 避免子串匹配掩盖残留单位/币符。
+    await page.waitForFunction(
+      ({ field, expected }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === expected,
+      { field: uiAmount.physicalName, expected: expectedText },
+      { timeout: 30_000 },
+    );
+  };
+  const openAmountSettings = async () => {
+    const header = page.locator(`.tabulator-col[tabulator-field="${uiAmount.physicalName}"]`);
+    await header.waitFor({ state: "visible" });
+    await header.locator(".tabulator-col-title").click({ button: "right" });
+    await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+    await page.getByTestId("field-display-name").waitFor();
+  };
+  const saveAmountSettings = async () => {
+    await page.getByTestId("field-plan-button").click();
+    const planCard = page.getByTestId("field-change-plan");
+    await planCard.waitFor({ state: "visible", timeout: 30_000 });
+    for (const checkbox of await planCard.getByRole("checkbox").all()) {
+      if (!await checkbox.isChecked()) await checkbox.check();
+    }
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+    await page.getByTestId("field-apply-button").click();
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`number display UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    await closeFieldSettingsDrawer(page);
+    return applied;
+  };
+  const setDisplayScaleInput = async (value) => {
+    const input = page.getByTestId("number-display-scale").locator("input");
+    await input.fill(String(value));
+    await input.press("Enter");
+  };
+  const readPersistedScale = async () => {
+    await openAmountSettings();
+    const value = Number(await page.getByTestId("number-display-scale").locator("input").inputValue());
+    await closeFieldSettingsDrawer(page);
+    return value;
+  };
+  const previewTexts = async () => (await page
+    .locator('[data-testid="number-display-preview"] code')
+    .allTextContents());
+
+  // 基准：record id + 业务 data revision（后续显示-only 变更的不变量基准）。
+  const beforeDisplayOnly = await uiQuery();
+  const beforeRowId = beforeDisplayOnly.payload?.rows?.[0]?.id;
+  const beforeDataRevision = beforeDisplayOnly.payload?.snapshot?.dataRevision;
+  const beforeSchemaRevision = beforeDisplayOnly.payload?.snapshot?.schemaRevision;
+
+  // A) 真实抽屉：预设“数字”+固定 2 位，保存前实时预览已生效。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await setDisplayScaleInput(2);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  recorder.check(
+    "drawer preview shows fixed two digits before saving",
+    (await previewTexts()).join("|") === "1,234.57|12.00",
+    { previews: await previewTexts() },
+  );
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.57");
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-fixed.png"),
+    fullPage: true,
+  });
+  const afterFirstDisplayChange = await uiQuery();
+  const fixedDisplay = await uiDescribeDisplay();
+  recorder.check(
+    "display-only change keeps record id and business data revision while schema revision advances",
+    afterFirstDisplayChange.payload?.rows?.[0]?.id === beforeRowId
+      && afterFirstDisplayChange.payload?.snapshot?.dataRevision === beforeDataRevision
+      && afterFirstDisplayChange.payload?.snapshot?.schemaRevision !== beforeSchemaRevision,
+    {
+      before: { beforeRowId, beforeDataRevision, beforeSchemaRevision },
+      after: {
+        rowId: afterFirstDisplayChange.payload?.rows?.[0]?.id,
+        dataRevision: afterFirstDisplayChange.payload?.snapshot?.dataRevision,
+        schemaRevision: afterFirstDisplayChange.payload?.snapshot?.schemaRevision,
+      },
+    },
+  );
+  recorder.check(
+    "saved fixed-2 display persists through drawer reopen and authority describe",
+    await readPersistedScale() === 2
+      && fixedDisplay?.scaleMode === "fixed"
+      && fixedDisplay?.displayScale === 2,
+    { fixedDisplay },
+  );
+
+  // B) 最多 9 位：全精度显示并持久化。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await setDisplayScaleInput(9);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.56789");
+  recorder.check("max-9 display persists", await readPersistedScale() === 9, {});
+
+  // C) 0 位：四舍五入到整数显示，持久化。
+  await openAmountSettings();
+  await setDisplayScaleInput(0);
+  await saveAmountSettings();
+  await waitAmountCellText("1,235");
+  recorder.check("scale-0 display persists", await readPersistedScale() === 0, {});
+
+  // D) 关闭千分位 + 2 位：无分隔符。
+  await openAmountSettings();
+  await setDisplayScaleInput(2);
+  await page.getByTestId("number-display-grouping").click();
+  await saveAmountSettings();
+  await waitAmountCellText("1234.57");
+
+  // E) 货币预设：币符附着并持久化（重新打开千分位）。
+  await openAmountSettings();
+  await page.getByTestId("number-display-grouping").click();
+  await selectVisibleNOption(page, "number-display-preset", "货币");
+  await saveAmountSettings();
+  await waitAmountCellText("¥1,234.57");
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-currency.png"),
+    fullPage: true,
+  });
+  const currencyDisplay = await uiDescribeDisplay();
+  recorder.check(
+    "currency preset persists with code and fixed scale",
+    currencyDisplay?.preset === "currency"
+      && currencyDisplay?.currency === "CNY"
+      && currencyDisplay?.displayScale === 2,
+    { currencyDisplay },
+  );
+
+  // F) 单位预设：单位直接附着。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "单位");
+  await fillNInput(page, "number-display-unit", "kg");
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.57kg");
+
+  // G) 百分比：ratio 0.125 与 percent 12.5 同显 12.5%，编辑/粘贴/重开不改原值。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "百分比");
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await saveAmountSettings();
+  const percentEdit = await beginCellEdit(
+    page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
+  );
+  await percentEdit.fill("0.125");
+  await percentEdit.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.[0]?.[uiAmount.physicalName] === 0.125,
+  );
+  await waitAmountCellText("12.5%");
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-percent-storage", "百分数（12.5 显示 12.5%）");
+  await saveAmountSettings();
+  // 切换存储解释后、编辑前：原值仍是 0.125，显示语义从不缩放已存值。
+  const rawBeforePercentEdit = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  recorder.check(
+    "switching percentStorage never rescales the stored 0.125 before editing",
+    rawBeforePercentEdit === 0.125,
+    { rawBeforePercentEdit },
+  );
+  const percentStorageEdit = await beginCellEdit(
+    page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
+  );
+  // 真实剪贴板粘贴：授予权限→写入剪贴板→编辑器 Ctrl+V（同文件既有模式）。
+  await page.context().grantPermissions(
+    ["clipboard-read", "clipboard-write"],
+    { origin: "https://app.vibetable.local" },
+  );
+  await page.evaluate(async (value) => navigator.clipboard.writeText(value), "12.5");
+  await percentStorageEdit.press("Control+a");
+  await percentStorageEdit.press("Control+V");
+  await percentStorageEdit.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.[0]?.[uiAmount.physicalName] === 12.5,
+  );
+  await waitAmountCellText("12.5%");
+  await openAmountSettings();
+  const rawAfterReopen = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  await closeFieldSettingsDrawer(page);
+  recorder.check(
+    "real clipboard paste of 12.5 into percent storage keeps the raw value while ratio 0.125 shows the same 12.5%",
+    rawAfterReopen === 12.5,
+    { rawAfterReopen },
+  );
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-percent.png"),
+    fullPage: true,
+  });
+
+  // H) 小数位 5→2→5：原值与同一 Go 公式结果不变。逐轮直接查询权威
+  // query.page 的公式裸值（Go query 端口对 ready 公式结果直接返回裸值，
+  // computed_envelope_test 固定 12.5 裸值），断言 === 2469.13578，
+  // 不用 2 位显示文本掩盖计算变化。
+  const amountReset = await applyProductMutation(page, numberUiTableId, [{
+    kind: "update",
+    recordId: beforeRowId,
+    values: { [uiAmount.physicalName]: 1234.56789 },
+  }], "e2e-number-display-formula-invariance");
+  if (amountReset.payload?.status !== "applied") {
+    throw new Error(`formula invariance seed failed: ${JSON.stringify(amountReset)}`);
+  }
+  const formulaRawValue = async () => (await uiQuery()).payload?.rows?.[0]?.[uiFormula.physicalName];
+  const waitFormulaRawValue = async () => {
+    const deadline = Date.now() + 30_000;
+    let value = await formulaRawValue();
+    while (Date.now() < deadline && value !== 2469.13578) {
+      await page.waitForTimeout(100);
+      value = await formulaRawValue();
+    }
+    return value;
+  };
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await setDisplayScaleInput(5);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.56789");
+  const formulaAtScale5 = await waitFormulaRawValue();
+  await page.waitForFunction(
+    (field) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === "2,469.14",
+    uiFormula.physicalName,
+    { timeout: 30_000 },
+  );
+  await openAmountSettings();
+  await setDisplayScaleInput(2);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.57");
+  const formulaAtScale2 = await waitFormulaRawValue();
+  await openAmountSettings();
+  await setDisplayScaleInput(5);
+  await saveAmountSettings();
+  await waitAmountCellText("1,234.56789");
+  const formulaBackAtScale5 = await waitFormulaRawValue();
+  const rawAfterScaleCycle = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  recorder.check(
+    "displayScale 5→2→5 never changes the raw value or the Go formula result (bare ready value 2469.13578)",
+    rawAfterScaleCycle === 1234.56789
+      && formulaAtScale5 === 2469.13578
+      && formulaAtScale2 === 2469.13578
+      && formulaBackAtScale5 === 2469.13578,
+    { formulaAtScale5, formulaAtScale2, formulaBackAtScale5, rawAfterScaleCycle },
+  );
+
+  // I) 高位持久化：12 与 15 均为有效保存值（重开回读，不逐格截图）。
+  await openAmountSettings();
+  await setDisplayScaleInput(12);
+  await saveAmountSettings();
+  const scale12Readback = await readPersistedScale();
+  await openAmountSettings();
+  await setDisplayScaleInput(15);
+  await saveAmountSettings();
+  const scale15Readback = await readPersistedScale();
+  recorder.check(
+    "displayScale 12 and 15 both persist through the authoritative schema",
+    scale12Readback === 12 && scale15Readback === 15,
+    { scale12Readback, scale15Readback },
+  );
+
+  // 全部 ordinary 业务（含分组 UI 旅程）完成后、首次导出前：同一闭合契约的
+  // zero-worker 断言仍在 scenario02 流内执行；02 因刻意唤醒 Python 不再列入
+  // ORDINARY_WORKER_FREE_SCENARIOS 的公共 dispatch 断言（集合注释的既定规则）。
   await verifyQueryViewGroupingUI(page, recorder);
+  await assertOrdinaryWorkerFreeTopology(recorder, runtime, "02-all-field-schema");
+
+  // 分组旅程把可见网格留在它自己的表上；导出前显式切回数字显示合成表，
+  // 核实抽屉保持关闭且选中表正确（I 结束态：最多 15 位渲染原值）。
+  await selectTable(page, "E2E Number Display UI");
+  await waitForVisibleRowCount(page, 1);
+  await waitAmountCellText("1,234.56789");
+  recorder.check(
+    "field settings drawer stays closed and the display table is selected before export",
+    !(await page.getByTestId("field-display-name").isVisible()),
+    {},
+  );
+
+  // J) 默认 CSV 导出：数值列保持原值文本，不携带币符/百分号/千分位。
+  await chooseToolbarMore(page, "export-csv");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const csvTarget = path.join(runtime.controlsDir, "export-result.csv");
+  const csvDeadline = Date.now() + 60_000;
+  let exportedCsv = "";
+  while (Date.now() < csvDeadline) {
+    try {
+      exportedCsv = await fs.readFile(csvTarget, "utf8");
+      if (exportedCsv.includes("1234.56789")) break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const csvRows = parseCsv(exportedCsv);
+  const csvAmountIndex = csvRows[0]?.indexOf(uiAmount.physicalName) ?? -1;
+  const csvAmountValue = csvAmountIndex >= 0 ? csvRows[1]?.[csvAmountIndex] : undefined;
+  recorder.check(
+    "default CSV export keeps the raw numeric value without currency/percent/grouping decorations",
+    csvAmountValue === "1234.56789"
+      && !exportedCsv.includes("¥")
+      && !exportedCsv.includes("%"),
+    { csvAmountIndex, csvAmountValue, exportedCsvHead: exportedCsv.slice(0, 400) },
+  );
+
+  // J2) 同一合成表真实 export-xlsx：经 export-target.txt 指定唯一路径与既有 UI
+  // 确认流程，用仓库 data_io_workbook.py 的 verify-values CLI 证明数值单元格
+  // 原样（1234.56789 的 double 原值），而非币符/百分号文本。
+  const executeFile = promisify(execFile);
+  const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
+  const xlsxTarget = path.join(runtime.controlsDir, "export-result.xlsx");
+  await fs.rm(xlsxTarget, { force: true });
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "export-target.txt"),
+    `${xlsxTarget}\r\n`,
+    "utf8",
+  );
+  await chooseToolbarMore(page, "export-xlsx");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const xlsxDeadline = Date.now() + 60_000;
+  while (Date.now() < xlsxDeadline) {
+    try {
+      await fs.readFile(xlsxTarget);
+      break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
+  const xlsxVerification = await executeFile(
+    runtime.pythonExecutable,
+    [
+      workbookHelper,
+      "verify-values",
+      xlsxTarget,
+      JSON.stringify({ columns: [uiAmount.physicalName], rows: [[1234.56789]] }),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, PYTHONUTF8: "1" },
+    },
+  );
+  const xlsxResult = JSON.parse(xlsxVerification.stdout);
+  recorder.check(
+    "default XLSX export stores the raw numeric cell (verified by data_io_workbook verify-values)",
+    xlsxResult?.format === "xlsx"
+      && xlsxResult?.rows === 1
+      && xlsxResult?.columns?.[0] === uiAmount.physicalName,
+    { xlsxResult },
+  );
+
+  // 导出后沿用真实 dataIO 拓扑：惰性 Python backend 恰好驻留一个，
+  // Host/sidecar 唯一；observePackagedPythonCount 不约束 Node，复用同一成员
+  // 快照断言导出不产生 Node worker（不新建框架，fail-closed 契约不变）。
+  const postExportProcesses = await observePackagedPythonCount(runtime, 1);
+  recorder.check(
+    "exports lazily start exactly one Python backend and zero Node workers",
+    countProcessMembers(postExportProcesses.members, "vibetable.next.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "vibetable-pb.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "vibetable-backend.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "node.exe") === 0,
+    { postExportProcesses },
+  );
   return;
 }
 
@@ -4918,7 +5483,8 @@ function findCatalogEntry(catalogPayload, pluginId) {
 // here; their topology is asserted inside their own flows instead.
 const ORDINARY_WORKER_FREE_SCENARIOS = new Set([
   "01-offline-first-start",
-  "02-all-field-schema",
+  // 02-all-field-schema 在流内（首次导出前）执行同一 zero-worker 契约；
+  // 它的导出段刻意唤醒 Python，按本集合规则不得列入公共 dispatch 断言。
   "03-schema-errors",
   "05-formula-lifecycle",
   "06-relation-fanout",

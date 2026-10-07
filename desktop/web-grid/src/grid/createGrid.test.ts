@@ -12,6 +12,28 @@ import {
 } from "./createGrid";
 import type { GridColumnDefinition } from "./createGrid";
 import type { ColumnEditSchema, TablePage } from "@/contracts";
+import type { DisplaySpec } from "@/contracts/generated/schemaV2";
+
+function displaySpec(patch: Partial<DisplaySpec> = {}): DisplaySpec {
+  return {
+    kind: "number",
+    preset: "number",
+    displayScale: 2,
+    scaleMode: "max",
+    trimTrailingZeros: true,
+    useGrouping: true,
+    currency: "CNY",
+    percentStorage: "ratio",
+    unit: null,
+    precision: "exact",
+    timezone: "system",
+    mode: "default",
+    indent: 0,
+    trueLabel: "是",
+    falseLabel: "否",
+    ...patch,
+  };
+}
 
 /** A representative Phase-A page: text/integer/decimal/boolean/date + rowKey. */
 function samplePage(): TablePage {
@@ -56,6 +78,106 @@ it("allows actual column reordering while retaining authoritative remote queries
   expect(options.movableColumns).toBe(true);
   expect(options.sortMode).toBe("remote");
   expect(options.filterMode).toBe("remote");
+});
+
+describe("authoritative column display formatting", () => {
+  function numericColumn(display: DisplaySpec) {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [{
+        name: "amount", title: "Amount", dataType: "decimal",
+        editable: false, nullable: true, display,
+      }],
+    };
+    const column = buildColumns(page)[0];
+    return column?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+  }
+
+  it("renders fixed/max/grouping from the column display without mutating raw values (AC2)", () => {
+    const fixed = numericColumn(displaySpec({ scaleMode: "fixed", trimTrailingZeros: false }));
+    expect(fixed({ getValue: () => 1234.56789 }).textContent).toBe("1,234.57");
+    expect(fixed({ getValue: () => 12 }).textContent).toBe("12.00");
+    const max = numericColumn(displaySpec({ scaleMode: "max" }));
+    expect(max({ getValue: () => 12 }).textContent).toBe("12");
+    const noGrouping = numericColumn(displaySpec({ scaleMode: "fixed", trimTrailingZeros: false, useGrouping: false }));
+    expect(noGrouping({ getValue: () => 1234.56789 }).textContent).toBe("1234.57");
+    // Display never rewrites the stored value.
+    const value = 1234.56789;
+    fixed({ getValue: () => value });
+    expect(value).toBe(1234.56789);
+  });
+
+  it("keeps raw rendering for non-numeric values even with a display spec (AC4)", () => {
+    const formatter = numericColumn(displaySpec());
+    expect(formatter({ getValue: () => null }).textContent).toBe("—");
+    expect(formatter({ getValue: () => "12.5" }).textContent).toBe("12.5");
+    expect(formatter({ getValue: () => Number.NaN }).textContent).toBe("NaN");
+  });
+
+  it("attaches currency/unit/percent presentations from the display spec (AC2)", () => {
+    const currency = numericColumn(displaySpec({ preset: "currency", scaleMode: "fixed", trimTrailingZeros: false }));
+    expect(currency({ getValue: () => 1234.56789 }).textContent).toBe("¥1,234.57");
+    const unit = numericColumn(displaySpec({ unit: "kg" }));
+    expect(unit({ getValue: () => 1234.56789 }).textContent).toBe("1,234.57kg");
+    const percent = numericColumn(displaySpec({ preset: "percent" }));
+    expect(percent({ getValue: () => 0.125 }).textContent).toBe("12.5%");
+  });
+
+  it("formats authoritative Formula numeric lists in bare query values and ready envelopes", () => {
+    const column = {
+      name: "numbers", title: "Numbers", kind: "formula" as const, dataType: "json" as const,
+      resultElementType: "number" as const, editable: false, nullable: true,
+      display: displaySpec({ preset: "currency", scaleMode: "fixed", trimTrailingZeros: false }),
+    };
+    const formatter = buildColumns({ ...samplePage(), columns: [column] })[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    const raw = Object.freeze([1234.56789, null, 0]);
+    expect(formatter({ getValue: () => raw }).textContent).toBe("¥1,234.57 ·  · ¥0.00");
+    expect(formatter({ getValue: () => ({ state: "ready", value: raw }) }).textContent).toBe("¥1,234.57 ·  · ¥0.00");
+    expect(raw).toEqual([1234.56789, null, 0]);
+    expect(formatter({ getValue: () => [] }).textContent).toBe("");
+    expect(formatter({ getValue: () => null }).textContent).toBe("—");
+    expect(formatter({ getValue: () => 1234.56789 }).textContent).toBe("1234.56789");
+    expect(formatter({ getValue: () => ({ state: "updating", value: raw }) }).textContent).toBe("计算中");
+    const untyped = buildColumns({ ...samplePage(), columns: [{ ...column, resultElementType: undefined }] })[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    expect(untyped({ getValue: () => raw }).textContent).toBe("1234.56789,,0");
+  });
+
+  it("formats ready formula numbers by declared result type, never by runtime shape", () => {
+    const page: TablePage = {
+      ...samplePage(),
+      columns: [{
+        name: "total", title: "Total", kind: "formula", dataType: "decimal",
+        editable: false, nullable: true,
+        display: displaySpec({ scaleMode: "fixed", trimTrailingZeros: false }),
+      }],
+    };
+    const formatter = buildColumns(page)[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    expect(formatter({ getValue: () => ({ state: "ready", value: 1234.56789 }) }).textContent)
+      .toBe("1,234.57");
+    // The Go query port delivers ready formula results as bare values; the
+    // bare number must take the same authoritative formatting path.
+    expect(formatter({ getValue: () => 1234.56789 }).textContent).toBe("1,234.57");
+    expect(formatter({ getValue: () => 12 }).textContent).toBe("12.00");
+    // A JSON-result formula keeps raw rendering even when the ready value is
+    // a number: the authoritative result type decides, not the observed value.
+    const jsonPage: TablePage = {
+      ...samplePage(),
+      columns: [{
+        name: "payload", title: "Payload", kind: "formula", dataType: "json",
+        editable: false, nullable: true,
+        display: displaySpec({ preset: "currency", scaleMode: "fixed", trimTrailingZeros: false }),
+      }],
+    };
+    const jsonFormatter = buildColumns(jsonPage)[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
+    expect(jsonFormatter({ getValue: () => ({ state: "ready", value: 1234 }) }).textContent)
+      .toBe("1234");
+    expect(jsonFormatter({ getValue: () => 1234 }).textContent).toBe("1234");
+    // Non-fresh states still render their state labels with display attached.
+    expect(formatter({ getValue: () => ({ state: "updating", value: 1234.5 }) }).textContent)
+      .toBe("计算中");
+    // Bare null keeps the empty marker.
+    expect(formatter({ getValue: () => null }).textContent).toBe("—");
+  });
 });
 
 describe("buildColumns (read-only Tabulator column defs)", () => {

@@ -5,6 +5,8 @@ import type {
   NormalizedRelationDescriptor,
   RelationTargetRef,
 } from "@/contracts";
+import type { DisplaySpec } from "@/contracts/generated/schemaV2";
+import { formatLookupDisplayValue } from "./computedValueDisplay";
 import { t } from "@/i18n";
 
 export function relationFormatter(descriptor: NormalizedRelationDescriptor, field = descriptor.fieldRef) {
@@ -53,6 +55,7 @@ export function lookupFormatter(
   unavailableReason?: string | null,
   onSourceRequested?: (source: LookupValueProvenance) => void,
 	onSourcePageRequested?: (intent: import("@/contracts").LookupSourcePageIntent) => void,
+  columnDisplay?: DisplaySpec | null,
 ) {
 	return (cell: {
 		getValue(): unknown;
@@ -90,8 +93,8 @@ export function lookupFormatter(
       root.append(badge);
       return root;
     }
-    const display = formatLookupValue(value.value);
-    root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
+    const rendered = formatLookupDisplayValue(value.value, definition, columnDisplay);
+    root.append(element("span", rendered === "" ? "vt-cell-empty" : "vt-lookup-text", rendered || "—"));
     if (value.provenance.length > 0) {
       root.title = t("grid.lookup.sourceCount", {
         count: value.provenanceTotalKnown ? value.provenanceTotal : `${value.provenanceTotal}+`,
@@ -180,15 +183,6 @@ function normalizeLookupCell(value: unknown): LookupCellValue {
     state: "ok", value, provenance: [], provenanceTotal: 0, provenanceTotalKnown: true,
     provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false,
   };
-}
-
-function formatLookupValue(value: unknown): string {
-  if (value == null) return "";
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item)).join(t("grid.valueSeparator"));
-  }
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
 }
 
 function stateBadge(label: string, state: string): HTMLElement {

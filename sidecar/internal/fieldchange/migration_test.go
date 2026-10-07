@@ -719,3 +719,55 @@ func TestSelectOptionDeletionRulesReplaceOrClearStoredOptionIDs(t *testing.T) {
 		t.Fatalf("multiSelect clear = %#v, %v, %v", cleared, supplied, err)
 	}
 }
+
+func TestCurrencyDisplayRejectsBeforePocketBaseWrites(t *testing.T) {
+	app, fixture, collection := migrationFixture(t)
+	ctx := context.Background()
+	catalog := NewCatalog(app)
+	planner := NewPlanner(catalog, catalog, NewPocketBasePlanStore(app), nil)
+	// Include durable plans, field metadata, revisions and provider rows.
+	snapshot := func() string {
+		t.Helper()
+		state := make(map[string]any)
+		for _, name := range []string{"vibetable_schema_change_plans", "vibetable_fields", "vibetable_tables", collection.Name} {
+			records, err := app.FindAllRecords(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state[name] = records
+		}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+	before := snapshot()
+	for _, code := range []string{"人民币", "BADCODE", "", "US1"} {
+		t.Run(code, func(t *testing.T) {
+			recommended, err := v2.RecommendedDefaults(v2.LogicalNumber)
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft := v2.FieldDraft{
+				DisplayName: "Currency", LogicalType: v2.LogicalNumber,
+				Value: recommended.Value, Constraints: recommended.Constraints,
+				Storage: recommended.Storage, Display: recommended.Display,
+			}
+			draft.Display.Preset = "currency"
+			draft.Display.Currency = code
+			plan, err := planner.Plan(ctx, v2.FieldChangeIntent{
+				Action: v2.ActionCreate, TableID: fixture.Intent.TableID,
+				ExpectedSchemaRev: fixture.ExpectedSchemaRev, Draft: &draft, Actor: fixture.Intent.Actor,
+			})
+			var productErr *v2.ProductError
+			if !errors.As(err, &productErr) || productErr.Code != "field.contract.invalid" ||
+				productErr.Path != "display.currency" || plan.PlanID != "" {
+				t.Errorf("invalid currency %q plan=%#v error=%#v", code, plan, err)
+			}
+			if after := snapshot(); after != before {
+				t.Error("invalid currency changed durable plans, metadata, revisions or provider rows")
+			}
+		})
+	}
+}

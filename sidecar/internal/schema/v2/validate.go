@@ -458,11 +458,16 @@ func jsonRootMatches(root string, value any) bool {
 	}
 }
 
+var currencyCodePattern = regexp.MustCompile(`^[A-Za-z]{3}$`)
+
 func validateDisplay(
 	definition FieldDefinition,
 	capability Capability,
 ) error {
 	display := definition.Display
+	if display.Preset == "currency" && !currencyCodePattern.MatchString(display.Currency) {
+		return invalid("display.currency", "currency must contain exactly three ASCII letters")
+	}
 	if display.Kind != capability.Recommended.Display.Kind {
 		return invalid("display.kind", "display kind does not match logical type")
 	}

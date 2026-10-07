@@ -13725,6 +13725,14 @@
                 ],
                 "default": null
               },
+              "resultCardinality": {
+                "default": "one",
+                "enum": [
+                  "one",
+                  "many"
+                ],
+                "type": "string"
+              },
               "revision": {
                 "default": 1,
                 "minimum": 1,
@@ -23780,6 +23788,23 @@
                 ],
                 "type": "string"
               },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "editable": {
                 "default": false,
                 "type": "boolean"
@@ -23803,6 +23828,17 @@
                 "anyOf": [
                   {
                     "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "display": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DisplaySpec"
                   },
                   {
                     "type": "null"
@@ -23836,6 +23872,127 @@
               "name",
               "title",
               "dataType"
+            ],
+            "type": "object"
+          },
+          "DisplaySpec": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "text",
+                  "editor",
+                  "number",
+                  "bool",
+                  "date",
+                  "dateTime",
+                  "time",
+                  "email",
+                  "url",
+                  "select",
+                  "relation",
+                  "file",
+                  "geoPoint",
+                  "json",
+                  "readonly"
+                ],
+                "type": "string"
+              },
+              "preset": {
+                "type": "string"
+              },
+              "displayScale": {
+                "maximum": 15,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "scaleMode": {
+                "enum": [
+                  "max",
+                  "fixed"
+                ],
+                "type": "string"
+              },
+              "trimTrailingZeros": {
+                "type": "boolean"
+              },
+              "useGrouping": {
+                "type": "boolean"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "percentStorage": {
+                "enum": [
+                  "ratio",
+                  "percent"
+                ],
+                "type": "string"
+              },
+              "unit": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "precision": {
+                "enum": [
+                  "exact",
+                  "day",
+                  "minute",
+                  "second",
+                  "millisecond"
+                ],
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "indent": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      0,
+                      2,
+                      4
+                    ],
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "trueLabel": {
+                "type": "string"
+              },
+              "falseLabel": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "preset",
+              "displayScale",
+              "scaleMode",
+              "trimTrailingZeros",
+              "useGrouping",
+              "currency",
+              "percentStorage",
+              "unit",
+              "precision",
+              "timezone",
+              "mode",
+              "trueLabel",
+              "falseLabel"
             ],
             "type": "object"
           },
@@ -24175,10 +24332,12 @@
                 "relationId": null,
                 "lookupId": null,
                 "dataType": "text",
+                "resultElementType": null,
                 "editable": false,
                 "nullable": true,
                 "scale": null,
                 "precision": null,
+                "display": null,
                 "filterOperators": []
               }
             ],
