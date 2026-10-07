@@ -135,6 +135,10 @@ describe("authoritative column display formatting", () => {
     const formatter = buildColumns(page)[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
     expect(formatter({ getValue: () => ({ state: "ready", value: 1234.56789 }) }).textContent)
       .toBe("1,234.57");
+    // The Go query port delivers ready formula results as bare values; the
+    // bare number must take the same authoritative formatting path.
+    expect(formatter({ getValue: () => 1234.56789 }).textContent).toBe("1,234.57");
+    expect(formatter({ getValue: () => 12 }).textContent).toBe("12.00");
     // A JSON-result formula keeps raw rendering even when the ready value is
     // a number: the authoritative result type decides, not the observed value.
     const jsonPage: TablePage = {
@@ -148,9 +152,12 @@ describe("authoritative column display formatting", () => {
     const jsonFormatter = buildColumns(jsonPage)[0]?.formatter as (cell: { getValue(): unknown }) => HTMLElement;
     expect(jsonFormatter({ getValue: () => ({ state: "ready", value: 1234 }) }).textContent)
       .toBe("1234");
+    expect(jsonFormatter({ getValue: () => 1234 }).textContent).toBe("1234");
     // Non-fresh states still render their state labels with display attached.
     expect(formatter({ getValue: () => ({ state: "updating", value: 1234.5 }) }).textContent)
       .toBe("计算中");
+    // Bare null keeps the empty marker.
+    expect(formatter({ getValue: () => null }).textContent).toBe("—");
   });
 });
 

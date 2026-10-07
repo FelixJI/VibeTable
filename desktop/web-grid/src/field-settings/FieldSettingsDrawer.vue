@@ -298,7 +298,8 @@ function applyDisplayPreset(preset: string): void {
   const current = store.draft?.display;
   switch (preset) {
     case "integer":
-      patchDisplay({ preset: "integer", displayScale: 0 });
+      // 整数显示只改呈现；同时清掉残留单位，不触碰存储 onlyInt。
+      patchDisplay({ preset: "integer", displayScale: 0, unit: null });
       break;
     case "currency":
       patchDisplay({
@@ -317,7 +318,9 @@ function applyDisplayPreset(preset: string): void {
       patchDisplay({ preset: "unit", unit: current?.unit ?? "" });
       break;
     default:
-      patchDisplay({ preset: "number" });
+      // unit 是独立合法的 DisplaySpec 字段；切回“数字”时显式清除残留，
+      // 避免隐藏的单位输入框留下 kg 继续附着在显示值上。
+      patchDisplay({ preset: "number", unit: null });
   }
 }
 

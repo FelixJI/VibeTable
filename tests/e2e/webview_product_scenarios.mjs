@@ -1427,13 +1427,15 @@ async function scenario02(page, recorder, _network, runtime) {
   // 覆盖 0/2/9/12/15 持久化、固定/最多、千分位、货币/单位、百分比两种存储、
   // 显示-only 不变量与默认 CSV 原值导出；不污染上面的共享旅程。
   const numberUiTableId = await createEmptyTable(page, "E2E Number Display UI");
+  // createEmptyTable 的建表流程会打开统一字段设置抽屉；下面这次 close 关闭它。
   const uiAmount = await createV2Field(page, numberUiTableId, "金额", "number");
   await closeFieldSettingsDrawer(page);
+  // createV2Field 是纯 raw RPC（describe/plan/apply），不打开抽屉；此处不能
+  // 再关一次不存在的抽屉（field-close-button 会等到超时）。
   const uiFormula = await createV2Field(page, numberUiTableId, "翻倍", "formula", (draft) => {
     draft.formula = { language: "cel-v1", source: `${uiAmount.physicalName} * 2.0` };
     return draft;
   });
-  await closeFieldSettingsDrawer(page);
   const uiSeed = await applyProductMutation(page, numberUiTableId, [{
     kind: "insert",
     recordId: null,
@@ -1457,8 +1459,10 @@ async function scenario02(page, recorder, _network, runtime) {
     return described.payload?.definition?.display ?? null;
   };
   const waitAmountCellText = async (expectedText) => {
+    // 金额 formatter 只输出 span 文本（无辅助 DOM），用 trim() 全等断言，
+    // 避免子串匹配掩盖残留单位/币符。
     await page.waitForFunction(
-      ({ field, expected }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes(expected),
+      ({ field, expected }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === expected,
       { field: uiAmount.physicalName, expected: expectedText },
       { timeout: 30_000 },
     );
@@ -1653,7 +1657,8 @@ async function scenario02(page, recorder, _network, runtime) {
   });
 
   // H) 小数位 5→2→5：原值与同一 Go 公式结果不变。逐轮直接查询权威
-  // query.page 的公式 envelope（state=ready 且 value=2469.13578），
+  // query.page 的公式裸值（Go query 端口对 ready 公式结果直接返回裸值，
+  // computed_envelope_test 固定 12.5 裸值），断言 === 2469.13578，
   // 不用 2 位显示文本掩盖计算变化。
   const amountReset = await applyProductMutation(page, numberUiTableId, [{
     kind: "update",
@@ -1663,19 +1668,15 @@ async function scenario02(page, recorder, _network, runtime) {
   if (amountReset.payload?.status !== "applied") {
     throw new Error(`formula invariance seed failed: ${JSON.stringify(amountReset)}`);
   }
-  const formulaEnvelope = async () => {
-    const rows = (await uiQuery()).payload?.rows;
-    return rows?.[0]?.[uiFormula.physicalName] ?? null;
-  };
-  const waitFormulaReadyValue = async () => {
+  const formulaRawValue = async () => (await uiQuery()).payload?.rows?.[0]?.[uiFormula.physicalName];
+  const waitFormulaRawValue = async () => {
     const deadline = Date.now() + 30_000;
-    let envelope = await formulaEnvelope();
-    while (Date.now() < deadline
-      && (envelope?.state !== "ready" || envelope?.value !== 2469.13578)) {
+    let value = await formulaRawValue();
+    while (Date.now() < deadline && value !== 2469.13578) {
       await page.waitForTimeout(100);
-      envelope = await formulaEnvelope();
+      value = await formulaRawValue();
     }
-    return envelope;
+    return value;
   };
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-preset", "数字");
@@ -1683,9 +1684,9 @@ async function scenario02(page, recorder, _network, runtime) {
   await setDisplayScaleInput(5);
   await saveAmountSettings();
   await waitAmountCellText("1,234.56789");
-  const envelopeAtScale5 = await waitFormulaReadyValue();
+  const formulaAtScale5 = await waitFormulaRawValue();
   await page.waitForFunction(
-    (field) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("2,469.14"),
+    (field) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === "2,469.14",
     uiFormula.physicalName,
     { timeout: 30_000 },
   );
@@ -1693,20 +1694,20 @@ async function scenario02(page, recorder, _network, runtime) {
   await setDisplayScaleInput(2);
   await saveAmountSettings();
   await waitAmountCellText("1,234.57");
-  const envelopeAtScale2 = await waitFormulaReadyValue();
+  const formulaAtScale2 = await waitFormulaRawValue();
   await openAmountSettings();
   await setDisplayScaleInput(5);
   await saveAmountSettings();
   await waitAmountCellText("1,234.56789");
-  const envelopeBackAtScale5 = await waitFormulaReadyValue();
+  const formulaBackAtScale5 = await waitFormulaRawValue();
   const rawAfterScaleCycle = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
   recorder.check(
-    "displayScale 5→2→5 never changes the raw value or the Go formula envelope (ready, 2469.13578)",
+    "displayScale 5→2→5 never changes the raw value or the Go formula result (bare ready value 2469.13578)",
     rawAfterScaleCycle === 1234.56789
-      && envelopeAtScale5?.state === "ready" && envelopeAtScale5?.value === 2469.13578
-      && envelopeAtScale2?.state === "ready" && envelopeAtScale2?.value === 2469.13578
-      && envelopeBackAtScale5?.state === "ready" && envelopeBackAtScale5?.value === 2469.13578,
-    { envelopeAtScale5, envelopeAtScale2, envelopeBackAtScale5, rawAfterScaleCycle },
+      && formulaAtScale5 === 2469.13578
+      && formulaAtScale2 === 2469.13578
+      && formulaBackAtScale5 === 2469.13578,
+    { formulaAtScale5, formulaAtScale2, formulaBackAtScale5, rawAfterScaleCycle },
   );
 
   // I) 高位持久化：12 与 15 均为有效保存值（重开回读，不逐格截图）。

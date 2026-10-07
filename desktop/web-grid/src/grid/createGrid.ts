@@ -508,22 +508,12 @@ function formulaValueFormatter(
 ): HTMLElement {
   const raw = cell.getValue();
   const root = document.createElement("span");
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const envelope = raw as Record<string, unknown>;
-    if (envelope.state === "ready") {
-      const value = envelope.value;
-      // Only declared decimal/integer results take the numeric display path;
-      // the runtime shape of the value never decides the type.
-      const formatted = (dataType === "decimal" || dataType === "integer")
-        ? formatNumberDisplay(value, display, getLocale())
-        : null;
-      root.textContent = value == null
-        ? "—"
-        : formatted !== null
-          ? formatted
-          : String(value);
-      return root;
-    }
+  const envelope = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : null;
+  // Non-ready computed states render their real state first; a stale value
+  // never leaks as a new result.
+  if (envelope && envelope.state !== "ready") {
     const label = formulaStateLabel(envelope.state);
     if (label) {
       root.className = `vt-lookup-state vt-lookup-state--${envelope.state}`;
@@ -536,7 +526,19 @@ function formulaValueFormatter(
       return root;
     }
   }
-  root.textContent = raw == null ? "—" : String(raw);
+  // The Go query port delivers ready formula results as bare values; legacy
+  // envelopes carrying state=ready unwrap to the same unified value branch.
+  const value = envelope && envelope.state === "ready" ? envelope.value : raw;
+  // Only declared decimal/integer results take the numeric display path; the
+  // runtime shape of the value never decides the type.
+  const formatted = (dataType === "decimal" || dataType === "integer")
+    ? formatNumberDisplay(value, display, getLocale())
+    : null;
+  root.textContent = value == null
+    ? "—"
+    : formatted !== null
+      ? formatted
+      : String(value);
   return root;
 }
 

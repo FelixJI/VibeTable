@@ -574,6 +574,37 @@ describe("FieldSettingsDrawer", () => {
     expect(store.dirty).toBe(true);
   });
 
+  it("切回数字/整数显示预设会清掉残留单位，且不改存储 onlyInt", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    select("number-display-preset").vm.$emit("update:value", "unit");
+    await flushPromises();
+    wrapper.get('[data-testid="number-display-unit"]').find("input").setValue("kg");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBe("kg");
+    // 切回“数字”：残留单位被清除，预览不再附着 kg（控件隐藏但值不残留）。
+    select("number-display-preset").vm.$emit("update:value", "number");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBeNull();
+    expect(wrapper.findAll('[data-testid="number-display-preview"] code')[0].text())
+      .toBe("1,234.57");
+    // 整数显示同样清单位，且不触碰存储 onlyInt。
+    select("number-display-preset").vm.$emit("update:value", "unit");
+    await flushPromises();
+    wrapper.get('[data-testid="number-display-unit"]').find("input").setValue("kg");
+    await flushPromises();
+    select("number-display-preset").vm.$emit("update:value", "integer");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBeNull();
+    expect(store.draft?.display.displayScale).toBe(0);
+    expect(store.draft?.storage.options.onlyInt).toBe(false);
+  });
+
   it("小数位控件限 0..15 并稳定钳制非法输入（AC1）", async () => {
     const store = useFieldSettingsStore();
     store.beginOpen();
