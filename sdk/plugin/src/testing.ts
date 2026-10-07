@@ -21,6 +21,11 @@ export interface OfflineHostOptions {
   };
   readonly collections?: Readonly<Record<string, readonly JsonObject[]>>;
   readonly fields?: Readonly<Record<string, readonly string[]>>;
+  /** Synthetic product profile; write tests must configure each used operation. */
+  readonly writableFields?: Readonly<Record<string, {
+    readonly create?: readonly string[];
+    readonly update?: readonly string[];
+  }>>;
   /** Go-owned guards supplied as test inputs; this helper never hashes rows. */
   readonly rowGuards?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly readFiles?: readonly { readonly name: string; readonly mediaType: string; readonly content: Uint8Array }[];
@@ -248,10 +253,15 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
       const plan = planFromWire(raw);
       const permission = grant(plan.collection, "write");
       if (!permission) reject("plugin_worker_failed", "mutation permission was not declared");
+      const writableProfile = options.writableFields?.[plan.collection];
       for (const operation of plan.operations) {
         if (!permission.operations.includes(operation.kind)
           || Object.keys(operation.values).some(field => !allowedFields(plan.collection, permission.fields).includes(field))) reject("plugin_worker_failed", "mutation permission was not declared");
+        const writable = writableProfile?.[operation.kind];
+        if (!writable) reject("plugin_action_failed", `synthetic writable profile is unavailable for ${operation.kind}`);
+        if (Object.keys(operation.values).some(field => !writable.includes(field))) reject("plugin_action_failed", `fields are not allowed for ${operation.kind}`);
       }
+      if (!writableProfile) reject("plugin_action_failed", "synthetic writable profile is unavailable");
       if (risk === "read") reject("plugin_action_failed", "read plugin must return a plugin result");
       if (context.collection !== null && plan.collection !== context.collection) reject("plugin_action_failed", "mutation plan collection is outside the action context");
       mutationPlans.push(structuredClone(plan));

@@ -5,7 +5,7 @@ import { sdk, testing } from "./load-sdk.mjs";
 
 const corpus = JSON.parse(await readFile(new URL("../../../tests/contract/fixtures/plugin-capabilities-v1.json", import.meta.url), "utf8"));
 const permissions = { data: [{ collection: "$active", operations: ["read", "update"], fields: ["$configured"] }], privateStorage: true };
-const options = { context: { collection: "articles" }, permissions, fields: { articles: corpus.fields } };
+const options = { context: { collection: "articles" }, permissions, fields: { articles: corpus.fields }, writableFields: corpus.writableFields };
 
 test("offline reads follow the shared real Worker corpus", async () => {
   for (const item of corpus.readCases) {
@@ -112,6 +112,29 @@ test("valid wire members, model defaults and legacy aliases remain accepted", as
       }
       if (item.risk === "write") assert.equal(host.mutationPlans[0].preview.affectedCount,
         item.value.operations.length);
+    });
+  }
+});
+
+
+test("mutation simulation requires an explicit writable profile", async t => {
+  const { writableFields, ...unprofiled } = options;
+  for (const [name, plan, profile] of [
+    ["missing collection profile", corpus.returns[1], {}],
+    ["missing operation profile", corpus.returns[1], { articles: { create: ["title"] } }],
+    ["empty plan missing profile", { ...corpus.returns[1], operations: [], preview: { affectedCount: 0 } }, {}],
+  ]) {
+    await t.test(name, async () => {
+      let confirmations = 0;
+      let commits = 0;
+      const host = testing.createOfflineHost({ ...unprofiled, writableFields: profile,
+        approveMutation: () => { confirmations++; return true; },
+        applyMutation: async () => { commits++; return corpus.returns[0]; } });
+      const result = await testing.startOfflineAction(async () => plan, {}, host, { risk: "write" }).result;
+      assert.equal(result.table.code, "plugin_action_failed");
+      assert.equal(confirmations, 0);
+      assert.equal(commits, 0);
+      assert.equal(host.mutationPlans.length, 0);
     });
   }
 });

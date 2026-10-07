@@ -1295,7 +1295,8 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
     profile = CollectionProfile(
         collection="articles",
         fields=corpus["fields"],
-        update_fields=["title"],
+        create_fields=corpus["writableFields"]["articles"]["create"],
+        update_fields=corpus["writableFields"]["articles"]["update"],
         archive_field=None,
         date_updated_field=None,
     )

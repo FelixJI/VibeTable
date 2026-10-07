@@ -179,8 +179,11 @@ operations,preview:{affectedCount}}`。返回额外未声明 wire 字段会被 c
 风险错配不会进入确认或提交；返回计划先按 Worker 校验写权限，空计划也不例外。
 
 离线 `createOfflineHost` 显式输入合成 collections、fields、permissions、rowGuards；默认不
-授权读写。write 测试还必须提供 approveMutation 与合成 applyMutation，它不会默认伪造提交
-成功，也不能连接真实业务库。`startOfflineAction` 支持挂起动作取消/超时、确认拒绝和未知
+授权读写。write 测试还必须提供合成产品可写 profile，例如
+`writableFields: { articles: { create: [], update: ["title"] } }`；集合与本次操作的字段列表须显式
+配置，缺少时在确认前以 `plugin_action_failed` 拒绝。它独立于读取 `fields` 和 manifest 权限，
+不会从字段名称推断可写性。write 测试还须提供 approveMutation 与合成 applyMutation，它不会
+默认伪造提交成功，也不能连接真实业务库。`startOfflineAction` 支持挂起动作取消/超时、确认拒绝和未知
 提交结果；离线 helper 不替代真实 Host 的 task registry。
 
 ## 6. GitHub Release 安装契约

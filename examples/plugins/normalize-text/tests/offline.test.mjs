@@ -8,6 +8,7 @@ const options = {
   context: { collection: "articles", selectedKeys: ["1", "2", "3"] },
   permissions: { data: [{ collection: "$active", operations: ["read", "update"], fields: ["$configured"] }] },
   collections: { articles: [{ id: "1", title: "  Vibe   Table  " }, { id: "2", title: 0 }, { id: "3", title: "clean" }, { id: "4", title: " keep " }] },
+  writableFields: { articles: { create: [], update: ["title"] } },
   rowGuards: { articles: { "1": digest } },
 };
 
