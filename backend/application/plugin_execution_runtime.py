@@ -79,7 +79,16 @@ class MutationPort(Protocol):
 class _ExecutionHandle:
     """Internal execution context for one host-owned task."""
 
-    __slots__ = ("cancel", "plugin_id", "project_key", "run_id", "task", "task_id")
+    __slots__ = (
+        "cancel",
+        "cancel_timer",
+        "plugin_id",
+        "project_key",
+        "run_id",
+        "task",
+        "task_id",
+        "worker_running",
+    )
 
     def __init__(
         self,
@@ -97,6 +106,8 @@ class _ExecutionHandle:
         self.project_key = project_key
         self.task = task
         self.cancel = cancel
+        self.cancel_timer: asyncio.TimerHandle | None = None
+        self.worker_running = True
 
 
 class PluginExecutionRuntime:
@@ -255,12 +266,27 @@ class PluginExecutionRuntime:
         try:
             if self._worker is None:
                 raise ValueError("plugin worker is unavailable")
-            raw = await self._worker.run(
-                action.worker_entry,
-                context.model_dump(mode="json", by_alias=True),
-                input_payload,
-                execution=execution,
-            )
+            handle = self._executions[initial.task_id]
+            try:
+                if cancel.cancelled:
+                    raise asyncio.CancelledError
+                try:
+                    raw = await self._worker.run(
+                        action.worker_entry,
+                        context.model_dump(mode="json", by_alias=True),
+                        input_payload,
+                        execution=execution,
+                    )
+                except Exception:
+                    if cancel.cancelled:
+                        raise asyncio.CancelledError from None
+                    raise
+                if cancel.cancelled:
+                    raise asyncio.CancelledError
+            finally:
+                handle.worker_running = False
+                if handle.cancel_timer is not None:
+                    handle.cancel_timer.cancel()
             result = await self._finalize_result(action, context, raw, execution)
             completed = running.model_copy(update={"state": "succeeded", "result": result})
         except asyncio.CancelledError:
@@ -369,18 +395,27 @@ class PluginExecutionRuntime:
         handle = self._executions.get(task_id)
         if handle is None:
             return False
+        if handle.cancel.cancelled:
+            return True
         handle.cancel.cancel()
-        handle.task.cancel()
+        if handle.worker_running:
+            # Allow one progress receipt and cooperative cleanup before killing Node.
+            handle.cancel_timer = asyncio.get_running_loop().call_later(1.0, handle.task.cancel)
+        else:
+            # Confirmation/submission keeps its existing cancellation boundary.
+            handle.task.cancel()
         return True
 
     async def cancel_plugin_tasks(self, project_key: str, plugin_id: str) -> int:
         targets = [
-            handle.task_id
+            handle
             for handle in self._executions.values()
             if handle.project_key == project_key and handle.plugin_id == plugin_id
         ]
-        for task_id in targets:
-            await self.request_cancel(task_id)
+        for handle in targets:
+            await self.request_cancel(handle.task_id)
+        # Uninstall must not remove settings/packages while cooperative cleanup uses them.
+        await asyncio.gather(*(handle.task for handle in targets))
         return len(targets)
 
     async def _emit(self, snapshot: PluginTaskSnapshot) -> None:

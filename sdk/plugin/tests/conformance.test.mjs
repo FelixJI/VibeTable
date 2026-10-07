@@ -16,6 +16,7 @@ test("offline reads follow the shared real Worker corpus", async () => {
       const page = await host.capabilities.data.read(item.request);
       assert.equal(page.items.length, item.count, item.name);
       assert.equal(page.nextCursor, item.nextCursor, item.name);
+      assert.equal(page.totalRows, item.rowCount ?? 1, item.name);
       if (item.first) assert.deepEqual(page.items[0], item.first, item.name);
     }
   }
@@ -56,6 +57,87 @@ test("cancel and timeout settle even when the action never cooperates", async ()
   assert.deepEqual((await run.result).warnings, ["cancel_requested"]);
   const timeout = testing.startOfflineAction(async () => new Promise(() => {}), {}, testing.createOfflineHost(options), { timeoutMs: 1 });
   assert.equal((await timeout.result).table.code, "plugin_timeout");
+});
+
+test("cancel and progress state never leak into later executions", async () => {
+  const host = testing.createOfflineHost(options);
+  let releaseCancelled;
+  const gate = new Promise(resolve => { releaseCancelled = resolve; });
+  const cancelled = testing.startOfflineAction(async (_input, capabilities) => {
+    await capabilities.ui.reportProgress({ current: 5, total: 0 });
+    await gate;
+    await capabilities.ui.reportProgress({ current: 9, total: 0 });
+    return corpus.returns[0];
+  }, {}, host);
+  cancelled.cancel();
+  releaseCancelled();
+  assert.equal((await cancelled.result).status, "error");
+  const timedOut = testing.startOfflineAction(async () => new Promise(() => {}), {}, host, { timeoutMs: 1 });
+  assert.equal((await timedOut.result).table.code, "plugin_timeout");
+  const later = testing.startOfflineAction(async (_input, capabilities) => {
+    await capabilities.storage.set("later", true);
+    const receipt = await capabilities.ui.reportProgress({ current: 1, total: 2 });
+    assert.equal(receipt.cancelRequested, false);
+    return corpus.returns[0];
+  }, {}, host);
+  assert.equal((await later.result).status, "success");
+  assert.equal(await host.capabilities.storage.get("later"), true);
+  assert.deepEqual(host.progressEvents.map(event => event.current), [5, 9, 1]);
+});
+
+test("parallel executions keep isolated cancel and progress state", async () => {
+  const host = testing.createOfflineHost(options);
+  let releaseFirst;
+  let releaseSecond;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  const secondGate = new Promise(resolve => { releaseSecond = resolve; });
+  const first = testing.startOfflineAction(async (_input, capabilities) => {
+    await capabilities.ui.reportProgress({ current: 3, total: 0 });
+    await firstGate;
+    return corpus.returns[0];
+  }, {}, host);
+  const second = testing.startOfflineAction(async (_input, capabilities) => {
+    await secondGate;
+    const receipt = await capabilities.ui.reportProgress({ current: 1, total: 1 });
+    assert.equal(receipt.cancelRequested, false);
+    return corpus.returns[0];
+  }, {}, host);
+  first.cancel();
+  releaseSecond();
+  assert.equal((await second.result).status, "success");
+  releaseFirst();
+  assert.equal((await first.result).status, "error");
+  assert.deepEqual(host.progressEvents.map(event => event.current), [3, 1]);
+});
+
+test("cancelling a pending confirmation never leaks into a later write execution", async () => {
+  const firstPlan = structuredClone(corpus.returns[1]);
+  firstPlan.operations[0].values.title = "first";
+  const secondPlan = structuredClone(corpus.returns[1]);
+  secondPlan.operations[0].values.title = "second";
+  let releaseApproval;
+  const approval = new Promise(resolve => { releaseApproval = resolve; });
+  let approvalEntered;
+  const entered = new Promise(resolve => { approvalEntered = resolve; });
+  const applied = [];
+  const host = testing.createOfflineHost({ ...options, approveMutation: plan => {
+    if (plan.operations[0].values.title !== "first") return true;
+    approvalEntered();
+    return approval;
+  }, applyMutation: async plan => {
+    applied.push(plan.operations[0].values.title);
+    return corpus.returns[0];
+  } });
+  const cancelled = testing.startOfflineAction(async () => firstPlan, {}, host, { risk: "write" });
+  await entered;
+  cancelled.cancel();
+  assert.deepEqual((await cancelled.result).warnings, ["cancel_requested"]);
+  const later = testing.startOfflineAction(async () => secondPlan, {}, host, { risk: "write" });
+  assert.equal((await later.result).status, "success");
+  releaseApproval(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(applied, ["second"]);
+  assert.equal(host.mutationPlans.length, 2);
 });
 
 test("conflict and unknown commit are explicit, with no replay", async () => {
