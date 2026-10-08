@@ -53,7 +53,7 @@ func (compiler *Compiler) collectionQuery(definition schemaexecution.Table, sour
 		return nil
 	}
 	switch field.LogicalType {
-	case v2.LogicalText, v2.LogicalBool:
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalBool:
 		if op != queryfilter.OperatorEqual {
 			return nil
 		}

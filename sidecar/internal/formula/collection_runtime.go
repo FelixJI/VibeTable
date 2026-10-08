@@ -362,7 +362,7 @@ func collectionCanonicalElement(value any, elementType v2.LogicalType) (any, *Er
 		if typed, ok := value.(bool); ok {
 			return typed, nil
 		}
-	case v2.LogicalText:
+	case v2.LogicalAutoNumber, v2.LogicalText:
 		if typed, ok := value.(string); ok {
 			return typed, nil
 		}

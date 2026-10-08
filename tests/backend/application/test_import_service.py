@@ -1551,3 +1551,26 @@ async def test_plan_owner_lifecycle_uses_the_frozen_http_contract() -> None:
         "outcome": "committed",
         "attempt": 1,
     }
+
+
+def test_auto_number_import_mapping_explains_readonly_and_text_preservation() -> None:
+    profile = CollectionProfile(
+        collection="contracts",
+        fields=["id", "number", "source_number"],
+        create_fields=["source_number"],
+        update_fields=["source_number"],
+        archive_field=None,
+        date_updated_field=None,
+        field_schemas={"number": {"dataType": "autoNumber"}},
+    )
+    for explicit in ([], [ImportColumnMapping(source_column="number", target_field="number")]):
+        with pytest.raises(ImportFlowError, match="普通文本") as raised:
+            auto_map_columns(["number"], profile, explicit)
+        assert raised.value.code == "mutation.field.read_only"
+    mapping, unmatched = auto_map_columns(
+        ["number"],
+        profile,
+        [ImportColumnMapping(source_column="number", target_field="source_number")],
+    )
+    assert mapping == {0: "source_number"}
+    assert unmatched == []

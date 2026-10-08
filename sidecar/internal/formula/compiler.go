@@ -624,6 +624,9 @@ func valueTypeForField(field v2.FieldDefinition) ValueType {
 	if field.LogicalType == v2.LogicalFormula && field.Formula != nil {
 		logicalType = field.Formula.ResultType
 	}
+	if logicalType == v2.LogicalAutoNumber {
+		logicalType = v2.LogicalText
+	}
 	result := ValueType{LogicalType: logicalType, OnlyInt: field.Storage.Options.OnlyInt}
 	if field.Formula != nil {
 		result.ElementType = field.Formula.ResultElementType
@@ -654,7 +657,7 @@ func celTypeForValueType(valueType ValueType) (*cel.Type, error) {
 	case v2.LogicalJSON, v2.LogicalGeoPoint, v2.LogicalRelation, v2.LogicalFile,
 		v2.LogicalLookup:
 		return cel.DynType, nil
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail,
 		v2.LogicalURL, v2.LogicalSelect:
 		return cel.StringType, nil
 	default:

@@ -8,7 +8,7 @@ export type JsonValue =
   | ReadonlyArray<JsonValue>
   | { readonly [key: string]: JsonValue };
 
-export type LogicalType = "text" | "editor" | "number" | "bool" | "date" | "dateTime" | "time" | "autoDate" | "email" | "url" | "select" | "multiSelect" | "relation" | "file" | "geoPoint" | "json" | "formula" | "lookup";
+export type LogicalType = "text" | "editor" | "number" | "bool" | "date" | "dateTime" | "time" | "autoDate" | "autoNumber" | "email" | "url" | "select" | "multiSelect" | "relation" | "file" | "geoPoint" | "json" | "formula" | "lookup";
 
 export interface FieldIdentity {
   readonly fieldId: string;
@@ -156,6 +156,12 @@ export interface JSONSpec {
   readonly schema: Readonly<Record<string, JsonValue>>;
 }
 
+export interface AutoNumberSpec {
+  readonly prefix: string;
+  readonly start: number;
+  readonly width: number;
+}
+
 export interface AutoDateSpec {
   readonly role: "createdAt" | "updatedAt";
 }
@@ -220,6 +226,7 @@ export interface FieldDefinition {
   readonly file?: FileSpec;
   readonly json?: JSONSpec;
   readonly autoDate?: AutoDateSpec;
+  readonly autoNumber?: AutoNumberSpec;
   readonly formula?: FormulaSpec;
   readonly lookup?: LookupSpec;
 }
@@ -237,6 +244,7 @@ export interface FieldDraft {
   readonly file?: FileSpec;
   readonly json?: JSONSpec;
   readonly autoDate?: AutoDateSpec;
+  readonly autoNumber?: AutoNumberSpec;
   readonly formula?: FormulaDraftSpec;
   readonly lookup?: LookupSpec;
 }

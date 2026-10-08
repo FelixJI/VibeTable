@@ -184,6 +184,13 @@ func (planner *Planner) plan(
 			map[string]any{"expected": *intent.ExpectedDataRevision, "actual": revisions.Data},
 		)
 	}
+	// Numbering previews freeze data before cache lookup as well as execution.
+	// An omitted client revision must not reuse a plan for older rows.
+	if intent.ExpectedDataRevision == nil && intent.Action == v2.ActionCreate &&
+		intent.Draft != nil && intent.Draft.LogicalType == v2.LogicalAutoNumber {
+		frozen := revisions.Data
+		intent.ExpectedDataRevision = &frozen
+	}
 	now := planner.clock()
 	var before, after *v2.FieldDefinition
 	var relatedChanges []v2.RelatedFieldChange
@@ -321,6 +328,11 @@ func (planner *Planner) plan(
 		confirmations = append(confirmations, "relationPair")
 	}
 	steps := planSteps(intent.Action, classes, before, after, intent.TableID)
+	for _, warning := range warnings {
+		if warning.Code == "field.auto_number.backfill" {
+			steps = append(steps, v2.PlanStep{Kind: "autoNumberBackfill", Details: warning.Details})
+		}
+	}
 	if len(relatedChanges) != 0 {
 		steps = append(steps, v2.PlanStep{
 			Kind: "applyRelationPair",
@@ -632,6 +644,9 @@ func (planner *Planner) normalize(
 	case v2.ActionPurge:
 		return before, nil, nil
 	case v2.ActionBackfill:
+		if before.LogicalType == v2.LogicalAutoNumber {
+			return nil, nil, productError("field.auto_number.immutable", "action", "automatic numbers cannot be renumbered", nil)
+		}
 		return before, cloneDefinition(before), nil
 	default:
 		return nil, nil, productError(
@@ -647,6 +662,9 @@ func (planner *Planner) definitionFromDraft(
 	before *v2.FieldDefinition,
 	draft *v2.FieldDraft,
 ) (*v2.FieldDefinition, error) {
+	if before != nil && before.LogicalType == v2.LogicalAutoNumber && draft != nil && !reflect.DeepEqual(before.AutoNumber, draft.AutoNumber) {
+		return nil, productError("field.auto_number.immutable", "draft.autoNumber", "numbering rules cannot change after creation", nil)
+	}
 	if draft == nil {
 		return nil, productError("field.contract.invalid", "draft", "draft is required", nil)
 	}
@@ -763,7 +781,7 @@ func (planner *Planner) definitionFromDraft(
 		Storage: normalizedDraft.Storage, Display: normalizedDraft.Display,
 		Select: normalizedDraft.Select, Relation: normalizedDraft.Relation,
 		File: normalizedDraft.File, JSON: normalizedDraft.JSON,
-		AutoDate: normalizedDraft.AutoDate, Formula: formulaDefinition,
+		AutoDate: normalizedDraft.AutoDate, AutoNumber: normalizedDraft.AutoNumber, Formula: formulaDefinition,
 		Lookup: normalizedDraft.Lookup,
 	}
 	if normalizer, ok := planner.source.(DefinitionNormalizer); ok {

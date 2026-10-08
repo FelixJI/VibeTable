@@ -1316,6 +1316,7 @@ def persist_product_e2e_evidence(
                 "02-number-display-fixed.png",
                 "02-number-display-currency.png",
                 "02-number-display-percent.png",
+                "02-auto-number-readonly.png",
             ),
             "35-data-io-interoperability": (
                 "35-import-management-history.png",

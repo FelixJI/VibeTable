@@ -55,7 +55,7 @@ func compileValueField(
 	// Required is intentionally false for all nullable product fields so zero,
 	// false, empty containers, and (0,0) remain valid explicit values.
 	switch definition.LogicalType {
-	case LogicalText, LogicalTime:
+	case LogicalText, LogicalAutoNumber, LogicalTime:
 		return &core.TextField{
 			Name: name, Help: definition.Help, Presentable: options.Presentable,
 			Min: dereferenceInt(minLength), Max: dereferenceInt(maxLength), Pattern: pattern,
@@ -169,14 +169,14 @@ func CompileUniqueIndex(
 	tablePhysicalName string,
 	definition FieldDefinition,
 ) (string, bool, error) {
-	if !definition.Constraints.Unique.Enabled {
+	if !definition.Constraints.Unique.Enabled && definition.LogicalType != LogicalAutoNumber {
 		return "", false, nil
 	}
 	capability, err := CapabilityFor(definition.LogicalType)
 	if err != nil {
 		return "", false, err
 	}
-	if !capability.SupportsUnique {
+	if !capability.SupportsUnique && definition.LogicalType != LogicalAutoNumber {
 		return "", false, unsupported(
 			"constraints.unique.enabled", "logical type cannot enforce a stable unique index",
 		)
@@ -189,6 +189,9 @@ func CompileUniqueIndex(
 	}
 	indexName := "uniq_" + tablePhysicalName + "_" + definition.Identity.PhysicalName
 	where := ""
+	if definition.LogicalType == LogicalAutoNumber {
+		where = fmt.Sprintf(" WHERE `%s` != ''", definition.Identity.PhysicalName)
+	}
 	if definition.Value.Presence.Mode == PresenceCompanion {
 		where = fmt.Sprintf(
 			" WHERE `%s` = 1",
