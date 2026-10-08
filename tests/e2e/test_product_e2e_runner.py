@@ -4862,6 +4862,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("data_io_interoperability.test.mjs"),
         runner.NODE_RUNNER.with_name("calculation_chain_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_history_capacity_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
     ]
     try:
         completed = subprocess.run(

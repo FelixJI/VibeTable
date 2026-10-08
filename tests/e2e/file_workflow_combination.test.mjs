@@ -54,3 +54,138 @@ test("restored current search rejects stale bindings and a missing file index", 
   assert.equal(fileWorkflowHasCurrentBinding([restored, stale], "doc", "restored"), false);
   assert.equal(fileWorkflowHasCurrentBinding([], "doc", "restored"), false);
 });
+
+function documentDiffBridge() {
+  const listeners = new Set();
+  const waiters = new Set();
+  let waiting;
+  const waitStarted = new Promise(resolve => { waiting = resolve; });
+  const pump = () => {
+    for (const waiter of [...waiters]) {
+      if (waiter.predicate(waiter.argument)) {
+        waiters.delete(waiter);
+        waiter.resolve();
+      }
+    }
+  };
+  const webview = {
+    postMessage() {},
+    addEventListener(_type, listener) { listeners.add(listener); },
+    removeEventListener(_type, listener) { listeners.delete(listener); },
+  };
+  const dispatch = message => {
+    for (const listener of [...listeners]) listener({ data: JSON.stringify(message) });
+    pump();
+  };
+  const page = {
+    async evaluate(callback, argument) { return callback(argument); },
+    async waitForFunction(predicate, argument, options) {
+      assert.equal(options.timeout, 30_000);
+      if (predicate(argument)) return;
+      waiting();
+      await new Promise(resolve => { waiters.add({ predicate, argument, resolve }); });
+    },
+    getByTestId(testId) {
+      assert.equal(testId, "diff-close");
+      return { async click() {
+        webview.postMessage({ type: "document.diffCloseRequested", requestId: "close-current",
+          payload: { sessionId: "retry-session" } });
+        dispatch({ type: "document.diffCloseCompleted", requestId: "close-current",
+          payload: { sessionId: "retry-session" } });
+      } };
+    },
+  };
+  return { webview, page, dispatch, waitStarted, waiters, listeners };
+}
+
+test("S14/S39 close waits for the retry session's actual page terminal", async () => {
+  const { installDocumentDiffReadCaptureInPage, closeDocumentDiffThroughUi } =
+    await import("./webview_product_scenarios.mjs");
+  const bridge = documentDiffBridge();
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  const previousPostMessage = bridge.webview.postMessage;
+  try {
+    installDocumentDiffReadCaptureInPage();
+    installDocumentDiffReadCaptureInPage();
+    assert.equal(bridge.listeners.size, 1);
+    for (const [requestId, sessionId] of [["page-retry", "retry-session"], ["page-old", "old-session"]]) {
+      bridge.webview.postMessage(JSON.stringify({ type: "document.diffPageRequested", requestId,
+        payload: { sessionId, cursor: null, limit: 50 } }));
+    }
+    const closed = closeDocumentDiffThroughUi(bridge.page, "retry-session");
+    const reached = await Promise.race([
+      closed.then(() => "closed"), bridge.waitStarted.then(() => "waiting"),
+    ]);
+    assert.equal(reached, "waiting", "closeCompleted alone must not authorize the cleanup assertion");
+    bridge.dispatch({ type: "document.diffPageCompleted", requestId: "page-old",
+      payload: { outcome: "success" } });
+    bridge.dispatch({ type: "document.diffPageCompleted", requestId: "unrelated-request",
+      payload: { outcome: "failure", failure: "sessionExpired" } });
+    bridge.dispatch({ type: "document.diffCompleted", requestId: "page-retry" });
+    assert.equal(bridge.waiters.size, 1, "another session or terminal cannot release the active reader wait");
+    bridge.dispatch({ type: "document.diffPageCompleted", requestId: "page-retry",
+      payload: { outcome: "failure", failure: "sessionExpired" } });
+    assert.equal((await closed).payload.sessionId, "retry-session");
+    window.__vibetableE2EDocumentDiffReads.release();
+    assert.equal(bridge.listeners.size, 0);
+    assert.equal(bridge.webview.postMessage, previousPostMessage);
+    assert.equal(window.__vibetableE2EDocumentDiffReads, undefined);
+  } finally {
+    window.__vibetableE2EDocumentDiffReads?.release();
+    delete globalThis.window;
+  }
+});
+
+test("S14/S39 close completes immediately when its page already terminated", async () => {
+  const { installDocumentDiffReadCaptureInPage, closeDocumentDiffThroughUi } =
+    await import("./webview_product_scenarios.mjs");
+  const bridge = documentDiffBridge();
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  try {
+    installDocumentDiffReadCaptureInPage();
+    bridge.webview.postMessage({ type: "document.diffPageRequested", requestId: "page-retry",
+      payload: { sessionId: "retry-session" } });
+    bridge.dispatch({ type: "document.diffPageCompleted", requestId: "page-retry" });
+    bridge.webview.postMessage({ type: "document.diffPageRequested", requestId: "page-old",
+      payload: { sessionId: "old-session" } });
+    assert.equal((await closeDocumentDiffThroughUi(bridge.page, "retry-session")).payload.sessionId,
+      "retry-session");
+    assert.equal(bridge.waiters.size, 0);
+    await assert.rejects(closeDocumentDiffThroughUi(bridge.page, "old-session"), /session identity/);
+  } finally {
+    window.__vibetableE2EDocumentDiffReads?.release();
+    delete globalThis.window;
+  }
+});
+
+
+test("S14/S39 close rejects an uncorrelated close and propagates a missing page terminal", async () => {
+  const { installDocumentDiffReadCaptureInPage, closeDocumentDiffThroughUi } =
+    await import("./webview_product_scenarios.mjs");
+  const bridge = documentDiffBridge();
+  globalThis.window = { chrome: { webview: bridge.webview } };
+  const previousPostMessage = bridge.webview.postMessage;
+  try {
+    installDocumentDiffReadCaptureInPage();
+    const actualClick = bridge.page.getByTestId;
+    bridge.page.getByTestId = () => ({ async click() {
+      bridge.dispatch({ type: "document.diffCloseCompleted", requestId: "unknown-close",
+        payload: { sessionId: "retry-session" } });
+    } });
+    await assert.rejects(closeDocumentDiffThroughUi(bridge.page, "retry-session"), /session identity/);
+    bridge.page.getByTestId = actualClick;
+    bridge.webview.postMessage({ type: "document.diffPageRequested", requestId: "page-retry",
+      payload: { sessionId: "retry-session" } });
+    const timeout = Object.assign(new Error("page terminal timed out"), { name: "TimeoutError" });
+    bridge.page.waitForFunction = async (predicate, argument, options) => {
+      assert.equal(options.timeout, 30_000);
+      if (!predicate(argument)) throw timeout;
+    };
+    await assert.rejects(closeDocumentDiffThroughUi(bridge.page, "retry-session"), error => error === timeout);
+  } finally {
+    window.__vibetableE2EDocumentDiffReads?.release();
+    assert.equal(bridge.listeners.size, 0);
+    assert.equal(bridge.webview.postMessage, previousPostMessage);
+    delete globalThis.window;
+  }
+});
