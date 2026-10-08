@@ -32,7 +32,7 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   await configure();
   const preview = await page.getByTestId("auto-number-backfill-preview").innerText();
   recorder.check("autoNumber preview exposes deterministic count, id order and examples",
-    preview.includes("3") && preview.includes("id") && preview.includes("HT-000001"), { preview });
+    preview.includes("按记录 ID 升序原子回填 3 条记录") && preview.includes("HT-000001"), { preview });
   await closeFieldSettingsDrawer(page);
   const cancelled = await rawBridgeRequest(page, "schema.getTable", { tableId: populated.tableId });
   recorder.check("closing the numbering preview leaves schema and data untouched",
