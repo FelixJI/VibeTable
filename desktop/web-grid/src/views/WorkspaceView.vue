@@ -852,9 +852,7 @@ const historyFieldOptions = computed(() => (tableStore.schema ?? []).map((column
   value: column.name,
 })));
 
-const insertRowDisabled = computed(() =>
-  !tableStore.revision?.schemaRevision
-  || !tableStore.editSchema?.some((column) => column.editable));
+const insertRowDisabled = computed(() => !mutationService.canInsertRow());
 
 function onHistorySelection(payload: {
   scope: "row" | "cell" | "multiple";

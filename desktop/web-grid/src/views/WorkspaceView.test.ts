@@ -3138,7 +3138,7 @@ describe("WorkspaceView", () => {
     expect(ui.createModalOpen).toBe(true);
   });
 
-  it("routes the zero-row CTA through the existing insert-row mutation", async () => {
+  it.each(["text", "autoNumber"] as const)("routes zero-row and toolbar insertion for %s through the shared mutation", async (dataType) => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     const workspace = useWorkspaceStore();
@@ -3148,8 +3148,8 @@ describe("WorkspaceView", () => {
     table.setEditSchema([{
       name: "name",
       storageName: "name",
-      dataType: "text",
-      editable: true,
+      dataType,
+      editable: dataType === "text",
       nullable: true,
       primaryKey: false,
       editor: { kind: "text" },
@@ -3165,7 +3165,7 @@ describe("WorkspaceView", () => {
         name: "name",
         title: "Name",
         dataType: "text",
-        editable: true,
+        editable: dataType === "text",
         nullable: true,
       }],
       rows: [],
@@ -3182,7 +3182,14 @@ describe("WorkspaceView", () => {
 
     const wrapper = mountView();
     await flushPromises();
-    await wrapper.get('[data-testid="grid-add-first-row"]').trigger("click");
+    const firstRow = wrapper.get('[data-testid="grid-add-first-row"]');
+    const toolbar = wrapper.get('[data-testid="toolbar-insert-row"]');
+    expect(firstRow.attributes("disabled")).toBeUndefined();
+    expect(toolbar.attributes("disabled")).toBeUndefined();
+    await firstRow.trigger("click");
+    await toolbar.trigger("click");
+    expect(table.editSchema?.[0].editable).toBe(dataType === "text");
+    expect(posted.filter(message => message.type === "table.insertRowRequested")).toHaveLength(2);
 
     expect(posted).toContainEqual({
       type: "table.insertRowRequested",
@@ -3193,6 +3200,17 @@ describe("WorkspaceView", () => {
       },
       requestId: undefined,
     });
+    table.setEditSchema([{ ...table.editSchema![0]!, dataType: "text", editable: false }], table.revision!);
+    await flushPromises();
+    expect(firstRow.attributes("disabled")).toBeDefined();
+    expect(toolbar.attributes("disabled")).toBeDefined();
+    table.setEditSchema([{ ...table.editSchema![0]!, dataType: "autoNumber" }], table.revision!);
+    workspace.setCollections([{ collection: "orders", metadata: { kind: "view" } }], { orders: "Orders" });
+    await flushPromises();
+    expect(toolbar.attributes("disabled")).toBeDefined();
+    table.revision = null;
+    await flushPromises();
+    expect(firstRow.attributes("disabled")).toBeDefined();
   });
 
   it("wires sidebar requestDelete -> ui.openDelete(name)", async () => {

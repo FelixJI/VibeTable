@@ -2611,6 +2611,7 @@ SCENARIO_SCREENSHOTS = {
         "02-number-display-fixed.png",
         "02-number-display-currency.png",
         "02-number-display-percent.png",
+        "02-auto-number-readonly.png",
     ),
     "28-relation-delta-preview": (
         "28-contract-grid.png",

@@ -38,6 +38,7 @@ class PocketBasePluginMutationAdapter:
     ) -> dict[str, Any]:
         schema_revision = self._schema_revisions.get(plan.collection)
         allowed = self._writable_fields.get(plan.collection)
+        readonly_numbers: frozenset[str] = frozenset()
         if self._dynamic_schema or schema_revision is None or allowed is None:
             if not self._dynamic_schema:
                 raise ValueError("plugin mutation collection is not granted")
@@ -45,6 +46,11 @@ class PocketBasePluginMutationAdapter:
             profile = collection_profile_from_definition(definition)
             schema_revision = profile.schema_revision
             allowed = frozenset(profile.create_fields) | frozenset(profile.update_fields)
+            readonly_numbers = frozenset(
+                name
+                for name, field in profile.field_schemas.items()
+                if field.get("dataType") == "autoNumber"
+            )
             if schema_revision is None:
                 raise ValueError("plugin mutation collection is not granted")
             self._schema_revisions[plan.collection] = schema_revision
@@ -52,6 +58,11 @@ class PocketBasePluginMutationAdapter:
 
         operations: list[dict[str, Any]] = []
         for index, operation in enumerate(plan.operations):
+            if set(operation.values) & readonly_numbers:
+                raise PluginExecutionError(
+                    "自动编号由服务端生成，插件不能覆盖；创建记录时请省略该字段。",
+                    code="mutation.field.read_only",
+                )
             forbidden = set(operation.values) - allowed
             if forbidden:
                 name = sorted(forbidden)[0]

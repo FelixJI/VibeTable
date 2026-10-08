@@ -336,6 +336,7 @@ public sealed class SourceImportWindowTests
     [DataRow("formula", "json", DisplayName = "formula 快照目标转 json")]
     [DataRow("lookup", "json", DisplayName = "lookup 快照目标转 json")]
     [DataRow("autoDate", "json", DisplayName = "autoDate 快照目标转 json")]
+    [DataRow("autoNumber", "text", DisplayName = "autoNumber 原编号保留为 text")]
     [DataRow("number", "number", DisplayName = "number 快照目标保持 number")]
     [DataRow("dateTime", "dateTime", DisplayName = "dateTime 快照目标保持 dateTime")]
     [DataRow("", "", DisplayName = "空 ValueKind 留空由引擎默认 json")]

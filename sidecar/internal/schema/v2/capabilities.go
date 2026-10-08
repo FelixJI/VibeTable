@@ -38,6 +38,11 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		RelationDeletePolicies:    []string{},
 		FormulaRelationAggregates: []string{},
 	}
+	if logicalType == LogicalAutoNumber {
+		capability.SupportsRequired = false
+		capability.SupportsDefault = false
+		capability.SupportsUnique = false
+	}
 	if logicalType == LogicalAutoDate || logicalType == LogicalFormula || logicalType == LogicalLookup {
 		capability.SupportsRequired = false
 		capability.SupportsDefault = false
@@ -104,6 +109,8 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 		capability.AdvancedSettings = []string{"displayScale"}
 	case LogicalJSON:
 		capability.AdvancedSettings = []string{"rootType", "maxSize", "jsonSchema", "editorMode", "indent"}
+	case LogicalAutoNumber:
+		capability.AdvancedSettings = []string{"prefix", "start", "width"}
 	case LogicalAutoDate:
 		capability.AdvancedSettings = []string{"role"}
 	case LogicalFormula:
@@ -120,7 +127,7 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 func filterOperators(logicalType LogicalType) []string {
 	common := []string{"eq", "ne", "isEmpty", "isNotEmpty"}
 	switch logicalType {
-	case LogicalText, LogicalEditor, LogicalEmail, LogicalURL:
+	case LogicalText, LogicalAutoNumber, LogicalEditor, LogicalEmail, LogicalURL:
 		return append(common, "contains", "startsWith")
 	case LogicalNumber, LogicalDate, LogicalDateTime, LogicalTime, LogicalAutoDate:
 		return append(common, "gt", "gte", "lt", "lte")
@@ -224,6 +231,8 @@ func recommendedStorageDisplay(logicalType LogicalType) (StorageSpec, DisplaySpe
 		storage.Kind, display.Kind = StorageDate, DisplayDateTime
 	case LogicalTime:
 		storage.Kind, display.Kind = StorageText, DisplayTime
+	case LogicalAutoNumber:
+		storage.Kind, display.Kind = StorageText, DisplayReadonly
 	case LogicalAutoDate:
 		storage.Kind, display.Kind = StorageAutoDate, DisplayReadonly
 	case LogicalEmail:

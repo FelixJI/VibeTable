@@ -1,3 +1,4 @@
+import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
@@ -1830,6 +1831,13 @@ async function scenario02(page, recorder, _network, runtime) {
       && countProcessMembers(postExportProcesses.members, "node.exe") === 0,
     { postExportProcesses },
   );
+  await runAutoNumberJourney(page, recorder, runtime, {
+    createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
+    rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
+    waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
+    applyV2FieldChange, chooseToolbarMore, parseCsv,
+  });
   return;
 }
 
@@ -6828,6 +6836,10 @@ async function scenario12(page, recorder, _network, runtime) {
       return draft;
     },
   );
+  const autoNumberField = await createV2Field(page, tableId, "合同编号", "autoNumber", draft => {
+    draft.autoNumber = { prefix: "HT-", start: 1, width: 6 };
+    return draft;
+  });
   const attachmentField = await createV2Field(
     page,
     tableId,
@@ -6948,6 +6960,9 @@ async function scenario12(page, recorder, _network, runtime) {
   await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
   await panel.locator("header button").click();
 
+  await prepareAutoNumberSnapshot(page, recorder, tableId, autoNumberField, {
+    applyProductMutation, rawBridgeRequest,
+  });
   const beforeBackupQuery = await rawBridgeRequest(page, "query.page", {
     tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
@@ -7395,6 +7410,9 @@ async function scenario12(page, recorder, _network, runtime) {
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "12-dark-popover.png"),
     fullPage: true,
+  });
+  await verifyAutoNumberSnapshot(page, recorder, tableId, autoNumberField, {
+    applyProductMutation, rawBridgeRequest,
   });
 }
 

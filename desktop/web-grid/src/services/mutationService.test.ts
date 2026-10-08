@@ -71,6 +71,39 @@ describe("mutationService", () => {
     setHostBridgeForTesting(null);
   });
 
+  it("creates rows with readonly autoNumber while rejecting missing schema, readonly text and views", () => {
+    const { bridge } = makeShimBridge();
+    setHostBridgeForTesting(bridge);
+    const spy = vi.spyOn(bridge, "notify");
+    const table = useTableStore();
+    const ws = useWorkspaceStore();
+    ws.selectTable("numbers");
+    const service = useMutationService();
+    service.insertRow({});
+    expect(spy).not.toHaveBeenCalled();
+    const column = {
+      name: "number", storageName: "number", dataType: "autoNumber" as const,
+      editable: false, nullable: false, primaryKey: false,
+      editor: { kind: "text" as const }, validation: [],
+    };
+    const revision = { databaseSessionId: "s", schemaRevision: "sr1", dataRevision: 1 };
+    table.setEditSchema([column], revision);
+    expect(service.canInsertRow()).toBe(true);
+    service.insertRow({});
+    expect(spy).toHaveBeenLastCalledWith("table.insertRowRequested", {
+      table: "numbers", values: {}, schemaRevision: "sr1",
+    });
+    expect(table.editSchema?.[0].editable).toBe(false);
+    spy.mockClear();
+    table.setEditSchema([{ ...column, dataType: "text" }], revision);
+    service.insertRow({});
+    expect(spy).not.toHaveBeenCalled();
+    table.setEditSchema([column], revision);
+    ws.setOpened([{ collection: "numbers", metadata: { kind: "view" } }], {});
+    service.insertRow({});
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it("forwards shared corpus product values unchanged for inline edits", () => {
     const { bridge } = makeShimBridge();
     setHostBridgeForTesting(bridge);
