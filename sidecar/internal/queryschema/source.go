@@ -381,7 +381,7 @@ func queryFieldType(field v2.FieldDefinition) (query.FieldType, error) {
 		logicalType = field.Formula.ResultType
 	}
 	switch logicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalTime,
 		v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect:
 		return query.FieldTypeText, nil
 	case v2.LogicalBool:
@@ -417,7 +417,7 @@ func isSearchable(field v2.FieldDefinition) bool {
 		logicalType = field.Formula.ResultType
 	}
 	switch logicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
 		v2.LogicalURL, v2.LogicalSelect:
 		return true
 	default:

@@ -342,7 +342,7 @@ func (formula *CompiledFormula) validateRuntimeResult(value any) *Error {
 		if _, ok := value.(bool); !ok {
 			return formulaError("formula.type", "formula returned a non-boolean value", nil)
 		}
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail,
 		v2.LogicalURL, v2.LogicalSelect:
 		if _, ok := value.(string); !ok {
 			return formulaError("formula.type", "formula returned a non-string value", nil)

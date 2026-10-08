@@ -674,6 +674,7 @@ export const messages: Record<string, string> = {
   "createTable.fieldType.date": "日期（Date）",
   "createTable.fieldType.dateTime": "日期时间（DateTime）",
   "createTable.fieldType.autoDate": "系统时间",
+  "createTable.fieldType.autoNumber": "自动编号",
   "schema.autoDate.createdAt": "创建时间",
   "schema.autoDate.createdAt.help": "记录首次成功保存的时间",
   "schema.autoDate.updatedAt": "最后更新时间",

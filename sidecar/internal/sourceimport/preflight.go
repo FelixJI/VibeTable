@@ -415,10 +415,10 @@ func planField(field Field, decision Decision) (FieldPlan, error) {
 			kind = v2.LogicalJSON
 		}
 	} else if field.Kind == "person" || field.Kind == "system" || field.Kind == "unknown" ||
-		kind == v2.LogicalFormula || kind == v2.LogicalLookup || kind == v2.LogicalAutoDate {
+		kind == v2.LogicalFormula || kind == v2.LogicalLookup || kind == v2.LogicalAutoNumber || kind == v2.LogicalAutoDate {
 		return fp, fmt.Errorf("本版本未验证该来源类型的可执行转换，请确认值快照或跳过")
 	}
-	if kind == v2.LogicalFormula || kind == v2.LogicalLookup || kind == v2.LogicalAutoDate ||
+	if kind == v2.LogicalFormula || kind == v2.LogicalLookup || kind == v2.LogicalAutoNumber || kind == v2.LogicalAutoDate ||
 		(decision.Policy == PolicySnapshot && (kind == v2.LogicalRelation || kind == v2.LogicalFile)) {
 		return fp, fmt.Errorf("快照目标必须是普通可写值字段")
 	}

@@ -152,6 +152,36 @@ async function openTab(wrapper: VueWrapper, text: string): Promise<void> {
 }
 
 describe("FieldSettingsDrawer", () => {
+  it("shows immutable numbering settings and deterministic backfill samples", async () => {
+    const store = useFieldSettingsStore();
+    const result = described("number");
+    const current = definition("number");
+    const numberField: FieldDefinitionV2 = {
+      ...current, logicalType: "autoNumber", autoNumber: { prefix: "HT-", start: 1, width: 6 },
+      display: { ...current.display, kind: "readonly" },
+      storage: { ...current.storage, kind: "pocketbase-text" },
+      value: { ...current.value, presence: { mode: "native" } },
+    };
+    store.beginOpen();
+    store.load({ ...result, definition: numberField, capabilities: [capability("autoNumber")] });
+    const wrapper = mountDrawer();
+    await openTab(wrapper, "高级");
+    expect(wrapper.get('[data-testid="auto-number-settings"]').text()).toContain("只读");
+    expect(wrapper.get('[data-testid="auto-number-prefix"] input').attributes("disabled")).toBeDefined();
+    const previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    const planned = plan();
+    store.plan = { ...planned, after: numberField,
+      intent: { ...planned.intent, action: "create" },
+      steps: [{ kind: "autoNumberBackfill", details: { order: "id asc", count: 12,
+        samples: [{ recordId: "record-a", value: "HT-000001" }] } }],
+    };
+    await flushPromises();
+    expect(wrapper.get('[data-testid="auto-number-backfill-preview"]').text()).toContain("record-a → HT-000001");
+    if (previousScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previousScroll);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
+
   beforeEach(() => {
     document.body.innerHTML = "";
     setActivePinia(createPinia());

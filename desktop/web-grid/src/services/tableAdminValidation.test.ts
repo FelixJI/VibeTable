@@ -73,7 +73,7 @@ describe("TABLE_FIELD_TYPES / TABLE_NAME_PATTERN", () => {
     expect(TABLE_FIELD_TYPES).toEqual([
       "shortText", "longText", "richText", "boolean",
       "integer", "float", "decimal",
-      "date", "dateTime", "autoDate", "time",
+      "date", "dateTime", "autoDate", "autoNumber", "time",
       "email", "url", "uuid", "select", "multiSelect",
       "json", "geoPoint", "geoJson", "file",
       "relation", "lookup", "formula", "list", "hash", "secret",

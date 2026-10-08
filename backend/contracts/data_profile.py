@@ -211,6 +211,7 @@ def collection_profile_from_definition(
                 "formula",
                 "lookup",
                 "autoDate",
+                "autoNumber",
             }
         ):
             writable.append(name)
