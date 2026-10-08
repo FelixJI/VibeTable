@@ -794,8 +794,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         AssertStagedFailureTrace(
             traces,
             "field.change.apply",
-            "protection",
-            "rlzhp8xk-7-3f2a8d1e-0c4b-4f8a-9d2e-1a2b3c4d5e6f");
+            "protection");
         Assert.AreEqual(
             "PRODUCT_DATA_FAILED",
             JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
@@ -832,8 +831,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         AssertStagedFailureTrace(
             traces,
             "field.change.apply",
-            "dispatch",
-            "rlzhp8xk-8-9d8c7b6a-5e4f-4032-b1a0-9f8e7d6c5b4a");
+            "dispatch");
         Assert.AreEqual(
             "PRODUCT_DATA_FAILED",
             JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
@@ -1030,8 +1028,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     private static void AssertStagedFailureTrace(
         List<string> traces,
         string operation,
-        string stage,
-        string requestId)
+        string stage)
     {
         string line = traces.Single();
         using JsonDocument document = JsonDocument.Parse(line);
@@ -1045,7 +1042,10 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual(
             "PRODUCT_RPC_FAILED:TimeoutException",
             root.GetProperty("errorCode").GetString());
-        Assert.AreEqual(requestId, root.GetProperty("requestId").GetString());
+        // No renderer-controlled identifier is trusted into persisted diagnostics.
+        Assert.AreEqual(
+            JsonValueKind.Null,
+            root.GetProperty("requestId").ValueKind);
         Assert.AreEqual(JsonValueKind.Number, root.GetProperty("durationMs").ValueKind);
         Assert.IsTrue(root.GetProperty("durationMs").GetDouble() >= 0);
         foreach (string closedField in new[]

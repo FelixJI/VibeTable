@@ -17,13 +17,16 @@ public sealed class SurfaceRequestController
 {
     private readonly IWebReplySink _reply;
     private readonly CorrelatedRequestRunner<ISurfaceRpcGateway> _runner;
+    private readonly Action<string> _traceError;
 
     public SurfaceRequestController(
         IWebReplySink reply,
         TimeSpan requestTimeout,
-        Func<CancellationToken>? sessionToken = null)
+        Func<CancellationToken>? sessionToken = null,
+        Action<string>? traceError = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
+        _traceError = traceError ?? (message => Trace.TraceError(message));
         _runner = new CorrelatedRequestRunner<ISurfaceRpcGateway>(
             _reply,
             requestTimeout,
@@ -44,7 +47,7 @@ public sealed class SurfaceRequestController
                     SurfaceErrorMapper.Failure failure = SurfaceErrorMapper.Map(exception);
                     return new CorrelatedRequestFailure(failure.Message, failure.Code);
                 },
-                (requestType, code) => Trace.TraceError(DiagnosticEvent.Failure(
+                (requestType, code) => _traceError(DiagnosticEvent.Failure(
                     "VibeTable.Desktop.SurfaceRequestController",
                     requestType,
                     code))));

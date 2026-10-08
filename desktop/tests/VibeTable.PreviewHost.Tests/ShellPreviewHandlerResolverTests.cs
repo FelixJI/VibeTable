@@ -474,6 +474,68 @@ public sealed class ShellPreviewHandlerResolverTests
         }
     }
 
+    [TestMethod]
+    public void PreviewDiagnosticsFailureNeverReplacesTheProductError()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(), "vibetable-preview-io-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string documentPath = Path.Combine(root, "report.docx");
+            File.WriteAllText(documentPath, "test");
+            var missingHelperResolver = new ShellPreviewHandlerResolver(
+                key => key.EndsWith(
+                    $@".docx\shellex\{ShellPreviewHandlerResolver.PreviewHandlerAssociation}",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? PreviewClsid.ToString("B")
+                    : null);
+            var failingResolver = new ShellPreviewHandlerResolver(
+                _ => throw new InvalidOperationException(@"C:\Users\customer\机密-report.docx"));
+            using (var missingHelperPreview = new ShellDocumentPreview(missingHelperResolver, root))
+            using (var resolvePreview = new ShellDocumentPreview(failingResolver, root))
+            using (var listener = new ThrowingPreviewTraceListener())
+            {
+                Trace.Listeners.Add(listener);
+                try
+                {
+                    var missing = Assert.Throws<DocumentPreviewException>(
+                        () => missingHelperPreview.Show(documentPath));
+                    Assert.AreEqual("PREVIEW_HOST_CREATE_FAILED", missing.Code);
+
+                    var resolve = Assert.Throws<DocumentPreviewException>(
+                        () => resolvePreview.Show(documentPath));
+                    Assert.AreEqual("PREVIEW_HANDLER_UNAVAILABLE", resolve.Code);
+                }
+                finally
+                {
+                    Trace.Listeners.Remove(listener);
+                }
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); }
+            catch { }
+        }
+    }
+
+    private sealed class ThrowingPreviewTraceListener : TraceListener
+    {
+        public override void Write(string? message) => ThrowForPreview(message);
+
+        public override void WriteLine(string? message) => ThrowForPreview(message);
+
+        // Only the document-preview diagnostics may throw; unrelated parallel
+        // trace traffic from other test classes must stay untouched.
+        private static void ThrowForPreview(string? message)
+        {
+            if (message is not null &&
+                message.Contains("\"module\":\"document-preview\"", StringComparison.Ordinal))
+                throw new IOException("diagnostic sink failure");
+        }
+    }
+
     private sealed class PreviewTraceCaptureListener : TraceListener
     {
         private readonly object _gate = new();

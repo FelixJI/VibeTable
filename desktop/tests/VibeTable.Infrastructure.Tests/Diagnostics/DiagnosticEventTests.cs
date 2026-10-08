@@ -7,61 +7,56 @@ namespace VibeTable.Infrastructure.Tests.Diagnostics;
 public sealed class DiagnosticEventTests
 {
     [TestMethod]
-    [DataRow("secret-token-value")]
-    [DataRow("customer-salary-9000")]
-    [DataRow(@"C:\Users\customer\机密-report.docx")]
-    [DataRow("token=eyJhbGciOi.issuer/laptop?redirect=https://evil.example")]
-    [DataRow("update customers set salary=9000 where name='张三'")]
-    [DataRow("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
-    public void Failure_DropsRendererControlledRequestIds(string requestId)
+    public void Failure_EmitsTheClosedSchemaWithoutAnyTrustedRequestId()
     {
         string line = DiagnosticEvent.Failure(
             "VibeTable.Desktop.ProductDataRequestController",
-            "productData.query.failed",
-            "PRODUCT_DATA_TIMEOUT",
-            requestId);
+            "productData.query.dispatch",
+            "PRODUCT_RPC_FAILED:TimeoutException",
+            durationMs: 12.5);
+
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(line), line);
+        using JsonDocument document = JsonDocument.Parse(line);
+        JsonElement root = document.RootElement;
+        Assert.AreEqual(11, root.EnumerateObject().Count());
+        Assert.AreEqual("error", root.GetProperty("level").GetString());
+        Assert.AreEqual(
+            "productData.query.dispatch",
+            root.GetProperty("event").GetString());
+        Assert.AreEqual(
+            "PRODUCT_RPC_FAILED:TimeoutException",
+            root.GetProperty("errorCode").GetString());
+        // No renderer-controlled identifier is ever persisted.
+        Assert.AreEqual(JsonValueKind.Null, root.GetProperty("requestId").ValueKind);
+        foreach (string closedField in new[]
+                 {
+                     "operationId", "workspaceId", "sessionEpoch", "jobId",
+                 })
+            Assert.AreEqual(
+                JsonValueKind.Null,
+                root.GetProperty(closedField).ValueKind,
+                closedField);
+        Assert.AreEqual(12.5, root.GetProperty("durationMs").GetDouble());
+    }
+
+    [TestMethod]
+    public void Failure_NullDurationStaysNullInTheClosedSchema()
+    {
+        string line = DiagnosticEvent.Failure("product", "data.request.failed", "X");
 
         Assert.IsTrue(DiagnosticLogLine.IsSafe(line), line);
         using JsonDocument document = JsonDocument.Parse(line);
         Assert.AreEqual(
             JsonValueKind.Null,
-            document.RootElement.GetProperty("requestId").ValueKind,
-            line);
-        Assert.IsFalse(
-            line.Contains(
-                requestId[..Math.Min(16, requestId.Length)],
-                StringComparison.Ordinal),
-            line);
-    }
-
-    [TestMethod]
-    [DataRow("rlzhp8xk-7-3f2a8d1e-0c4b-4f8a-9d2e-1a2b3c4d5e6f")]
-    [DataRow("rlzhp8xk-42-khdmfi42")]
-    [DataRow("rlzhp8xk-42-7")]
-    [DataRow("rlzhp8xk-42-")]
-    [DataRow("84f66100-ff7c-4fb4-b0c0-02cd7fb668fe")]
-    [DataRow("84f66100ff7c4fb4b0c002cd7fb668fe")]
-    [DataRow("e2e-84f66100-ff7c-4fb4-b0c0-02cd7fb668fe")]
-    public void Failure_PreservesOpaqueProducerRequestIds(string requestId)
-    {
-        string line = DiagnosticEvent.Failure(
-            "VibeTable.Desktop.ProductDataRequestController",
-            "productData.query.failed",
-            "PRODUCT_DATA_TIMEOUT",
-            requestId);
-
-        Assert.IsTrue(DiagnosticLogLine.IsSafe(line), line);
-        using JsonDocument document = JsonDocument.Parse(line);
+            document.RootElement.GetProperty("durationMs").ValueKind);
         Assert.AreEqual(
-            requestId,
-            document.RootElement.GetProperty("requestId").GetString(),
-            line);
+            JsonValueKind.Null,
+            document.RootElement.GetProperty("requestId").ValueKind);
     }
 
     [TestMethod]
-    public void Failure_SensitiveRequestIdNeverReachesThePersistedLogFile()
+    public void Failure_PersistsExactlyOnceThroughTheRealListener()
     {
-        const string Sensitive = @"C:\Users\customer\机密-report.docx";
         string root = Path.Combine(
             Path.GetTempPath(),
             "vibetable-diagnostic-event-" + Guid.NewGuid().ToString("N"));
@@ -73,9 +68,9 @@ public sealed class DiagnosticEventTests
             {
                 listener.WriteLine(DiagnosticEvent.Failure(
                     "VibeTable.Desktop.ProductDataRequestController",
-                    "productData.query.failed",
-                    "PRODUCT_DATA_TIMEOUT",
-                    Sensitive));
+                    "productData.query.dispatch",
+                    "PRODUCT_RPC_FAILED:TimeoutException",
+                    durationMs: 3.25));
             }
 
             string[] lines = File.ReadAllLines(path);
@@ -86,10 +81,7 @@ public sealed class DiagnosticEventTests
                 JsonValueKind.Null,
                 document.RootElement.GetProperty("requestId").ValueKind);
             Assert.IsFalse(
-                lines[0].Contains(@"C:\Users\customer", StringComparison.Ordinal),
-                lines[0]);
-            Assert.IsFalse(
-                lines[0].Contains("机密-report", StringComparison.Ordinal),
+                lines[0].Contains("requestId\":\"", StringComparison.Ordinal),
                 lines[0]);
         }
         finally

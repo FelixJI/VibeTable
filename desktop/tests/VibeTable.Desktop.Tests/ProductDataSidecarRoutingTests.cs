@@ -255,10 +255,13 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
-    public async Task FailedRpcKeepsReplyCorrelationButDropsNonProducerRequestIdDiagnostics()
+    public async Task FailedRpcPersistsNoRequestIdAndKeepsRendererCorrelation()
     {
         foreach (string requestId in new[]
         {
+            "rlzhp8xk-1-password",
+            $"rlzhp8xk-7-{Guid.NewGuid():D}",
+            $"e2e-{Guid.NewGuid():D}",
             "customer-salary-9000",
             @"C:\Users\customer\机密-report.docx",
         })
@@ -298,31 +301,42 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
-    public async Task FailedRpcKeepsProducerRequestIdInDiagnostics()
+    public async Task ThrowingTraceCallbackKeepsTheProductReply()
     {
-        string requestId = $"rlzhp8xk-7-{Guid.NewGuid():D}";
         var sink = new FakeWebReplySink();
-        var traces = new List<string>();
-        var sidecar = new ControlledProductSidecarForwarder((_, _) =>
-            throw new InvalidOperationException("sensitive failure detail"));
         var controller = new ProductDataRequestController(
             sink,
             SelectorFor("query.page", "goSidecar"),
-            traceError: traces.Add);
-        controller.SetProductSidecarForwarder(sidecar);
+            traceError: _ => throw new IOException("diagnostic sink failure"));
+        controller.SetProductSidecarForwarder(FailureForwarder(new ProductSidecarRpcError(
+            -32000,
+            "sensitive sidecar failure",
+            null)));
 
-        await controller.DispatchAsync(QueryRequest(requestId));
+        await controller.DispatchAsync(QueryRequest("rlzhp8xk-1-password"));
 
         FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
         Assert.IsNotNull(reply);
-        Assert.AreEqual(requestId, reply.RequestId);
-        Assert.HasCount(1, traces);
-        Assert.IsTrue(DiagnosticLogLine.IsSafe(traces[0]), traces[0]);
-        using JsonDocument document = JsonDocument.Parse(traces[0]);
-        Assert.AreEqual(
-            requestId,
-            document.RootElement.GetProperty("requestId").GetString(),
-            traces[0]);
+        Assert.AreEqual("rlzhp8xk-1-password", reply.RequestId);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(reply.Payload),
+            @"""code"":""PRODUCT_DATA_FAILED""");
+
+        var secondSink = new FakeWebReplySink();
+        var secondController = new ProductDataRequestController(
+            secondSink,
+            SelectorFor("query.page", "goSidecar"),
+            traceError: _ => throw new IOException("diagnostic sink failure"));
+        secondController.SetProductSidecarForwarder(new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("sensitive failure detail")));
+
+        await secondController.DispatchAsync(QueryRequest("rlzhp8xk-1-password"));
+
+        FakeWebReplySink.Reply? secondReply = await secondSink.WaitForFailedAsync();
+        Assert.IsNotNull(secondReply);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(secondReply.Payload),
+            @"""code"":""PRODUCT_DATA_FAILED""");
     }
 
     [TestMethod]
@@ -365,8 +379,8 @@ public sealed class ProductDataSidecarRoutingTests
             root.GetProperty("errorCode").GetString(),
             traces[0]);
         Assert.AreEqual(
-            requestId,
-            root.GetProperty("requestId").GetString(),
+            JsonValueKind.Null,
+            root.GetProperty("requestId").ValueKind,
             traces[0]);
         Assert.AreEqual(
             JsonValueKind.Number,

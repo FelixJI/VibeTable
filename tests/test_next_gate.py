@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -1228,11 +1229,26 @@ def test_product_e2e_failure_evidence_copies_scenario_desktop_log_only(
     (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
     desktop_logs = runtime_root / "desktop-logs"
     desktop_logs.mkdir()
-    (desktop_logs / "desktop.log").write_text("scenario host diagnostics", encoding="utf-8")
+    (desktop_logs / "desktop.log").write_text("current host diagnostics", encoding="utf-8")
+    (desktop_logs / "desktop-20260816-010203040.log").write_text("rotated one", encoding="utf-8")
+    (desktop_logs / "desktop-20260817-050607089.log").write_text("rotated two", encoding="utf-8")
+    (desktop_logs / "desktop-notes.log").write_text("unrelated", encoding="utf-8")
+    (desktop_logs / "desktop-20260816-01020304x.log").write_text("bad stamp", encoding="utf-8")
+    nested = desktop_logs / "nested-logs"
+    nested.mkdir()
+    (nested / "desktop-20260818-000000000.log").write_text(
+        "nested must not be read", encoding="utf-8"
+    )
     (runtime_root / "desktop.log").write_text("stale readiness-root log", encoding="utf-8")
     outside_root = tmp_path / "elsewhere"
     outside_root.mkdir()
     (outside_root / "desktop.log").write_text("external user log", encoding="utf-8")
+    # Same-name re-archive overwrites like every other evidence path in this function.
+    archived_runtime = tmp_path / "destination" / run_root.name / "_runtime" / "17" / "host"
+    archived_runtime.mkdir(parents=True)
+    (archived_runtime / "desktop-20260816-010203040.log").write_text(
+        "archived first-phase evidence", encoding="utf-8"
+    )
     copied_sources: list[Path] = []
     original_copy = next_gate._copy_if_file
 
@@ -1250,14 +1266,153 @@ def test_product_e2e_failure_evidence_copies_scenario_desktop_log_only(
     assert destination is not None
     copied_runtime = destination / "_runtime" / "17" / "host"
     assert (copied_runtime / "desktop.log").read_text(encoding="utf-8") == (
-        "scenario host diagnostics"
+        "current host diagnostics"
     )
-    desktop_logs = list(destination.rglob("desktop.log"))
-    assert desktop_logs == [copied_runtime / "desktop.log"]
+    assert (copied_runtime / "desktop-20260817-050607089.log").read_text(encoding="utf-8") == (
+        "rotated two"
+    )
+    assert (copied_runtime / "desktop-20260816-010203040.log").read_text(encoding="utf-8") == (
+        "rotated one"
+    )
+    assert sorted(path.name for path in copied_runtime.glob("desktop*")) == [
+        "desktop-20260816-010203040.log",
+        "desktop-20260817-050607089.log",
+        "desktop.log",
+    ]
+    assert not (copied_runtime / "desktop-notes.log").exists()
+    assert not (copied_runtime / "desktop-20260816-01020304x.log").exists()
+    assert not (copied_runtime / "nested-logs").exists()
+    assert not list(destination.rglob("desktop-20260818-000000000.log"))
     assert copied_sources, "failure evidence must have been archived"
     assert all(run_root == source or run_root in source.parents for source in copied_sources), (
         "scenario evidence must only be read from the scenario run directory"
     )
+
+
+def test_product_e2e_failure_evidence_without_desktop_logs_still_archives_report_and_trace(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+    assert not (runtime_root / "desktop-logs").exists()
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    assert (destination / "product-e2e-report.json").is_file()
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "vibetable-trace.log").read_text(encoding="utf-8") == "trace"
+    assert not any(copied_runtime.glob("desktop*"))
+
+
+def _create_junction(link: Path, target: Path) -> None:
+    subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(link),
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_product_e2e_failure_evidence_rejects_a_junctioned_desktop_logs_directory(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    outside = tmp_path / "outside-evidence"
+    outside.mkdir()
+    (outside / "desktop.log").write_text("outside current log", encoding="utf-8")
+    (outside / "desktop-20260101-010101111.log").write_text("outside rotated log", encoding="utf-8")
+    junction = runtime_root / "desktop-logs"
+    _create_junction(junction, outside)
+    try:
+        destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+    finally:
+        with suppress(OSError):
+            os.rmdir(junction)
+
+    assert destination is not None
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert not any(copied_runtime.glob("desktop*"))
+    assert (outside / "desktop.log").read_text(encoding="utf-8") == "outside current log"
+    assert (outside / "desktop-20260101-010101111.log").read_text(encoding="utf-8") == (
+        "outside rotated log"
+    )
+
+
+def test_product_e2e_failure_evidence_rejects_a_symlinked_rotated_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    desktop_logs = runtime_root / "desktop-logs"
+    desktop_logs.mkdir()
+    (desktop_logs / "desktop.log").write_text("current host diagnostics", encoding="utf-8")
+    (desktop_logs / "desktop-20260102-020202222.log").write_text(
+        "good rotated log", encoding="utf-8"
+    )
+    linked = desktop_logs / "desktop-20260103-030303333.log"
+    linked.write_text("link body would follow an external target", encoding="utf-8")
+    real_is_symlink = Path.is_symlink
+
+    def precise_is_symlink(path: Path) -> bool:
+        return True if path == linked else real_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", precise_is_symlink)
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "desktop.log").read_text(
+        encoding="utf-8"
+    ) == "current host diagnostics"
+    assert (copied_runtime / "desktop-20260102-020202222.log").read_text(encoding="utf-8") == (
+        "good rotated log"
+    )
+    assert not (copied_runtime / "desktop-20260103-030303333.log").exists()
 
 
 def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(

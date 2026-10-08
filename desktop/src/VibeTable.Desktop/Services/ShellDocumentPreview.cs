@@ -235,16 +235,24 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
     }
 
     private static void TraceSafeFailure(string operation, Exception exception)
-        => Trace.TraceError(DiagnosticEvent.Failure(
-            "document-preview",
-            $"preview.host.{operation}.failed",
-            $"{exception.GetType().Name}(0x{exception.HResult:X8})"));
+        => TraceFixedFailure(
+            operation,
+            $"{exception.GetType().Name}(0x{exception.HResult:X8})");
 
     private static void TraceFixedFailure(string operation, string errorCode)
-        => Trace.TraceError(DiagnosticEvent.Failure(
-            "document-preview",
-            $"preview.host.{operation}.failed",
-            errorCode));
+    {
+        try
+        {
+            Trace.TraceError(DiagnosticEvent.Failure(
+                "document-preview",
+                $"preview.host.{operation}.failed",
+                errorCode));
+        }
+        catch
+        {
+            // A diagnostics failure must never replace the original product error.
+        }
+    }
 }
 
 internal sealed record PreviewHostLaunchSpec(

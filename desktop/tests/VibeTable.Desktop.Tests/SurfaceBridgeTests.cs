@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Diagnostics;
-using System.Text;
 using VibeTable.Contracts.Generated;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Diagnostics;
@@ -136,33 +135,47 @@ public sealed class SurfaceBridgeTests
     public async Task ControllerLogsOnlySafeFailureMetadata()
     {
         const string SensitiveMessage = @"C:\private\customer-name.txt";
+        var traces = new List<string>();
         var gateway = new FakeSurfaceGateway
         {
-            LoadHandler = (_, _) => throw new InvalidOperationException(SensitiveMessage),
+            // A controlled, closed coexisting event on the global listeners: it
+            // must never reach the instance-scoped trace capture.
+            LoadHandler = (_, _) =>
+            {
+                Trace.TraceError(DiagnosticEvent.Failure(
+                    "VibeTable.Desktop.Tests.SurfaceBridgeProbe",
+                    "probe.coexisting",
+                    "PROBE_COEXISTING"));
+                throw new InvalidOperationException(SensitiveMessage);
+            },
         };
         var sink = new FakeWebReplySink();
-        var controller = new SurfaceRequestController(sink, TimeSpan.FromSeconds(1));
+        var controller = new SurfaceRequestController(
+            sink,
+            TimeSpan.FromSeconds(1),
+            traceError: traces.Add);
         controller.SetGateway(gateway);
-        var listener = new CapturingTraceListener();
-        Trace.Listeners.Add(listener);
-        try
-        {
-            await controller.DispatchAsync(Request(
-                "interface.loadRequested", "failure-1", """{"interfaceId":"if-orders"}"""));
-        }
-        finally
-        {
-            Trace.Listeners.Remove(listener);
-        }
 
-        StringAssert.Contains(listener.Text, "SURFACE_OPERATION_FAILED");
-        string json = listener.Text[listener.Text.IndexOf('{')..].Trim();
+        await controller.DispatchAsync(Request(
+            "interface.loadRequested", "failure-1", """{"interfaceId":"if-orders"}"""));
+
+        Assert.HasCount(1, traces);
+        string json = traces[0];
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(json), json);
         using JsonDocument logged = JsonDocument.Parse(json);
         Assert.AreEqual(
             "interface.loadRequested",
             logged.RootElement.GetProperty("event").GetString());
-        Assert.IsTrue(DiagnosticLogLine.IsSafe(json));
-        Assert.IsFalse(listener.Text.Contains(SensitiveMessage, StringComparison.Ordinal));
+        Assert.AreEqual(
+            "SURFACE_OPERATION_FAILED",
+            logged.RootElement.GetProperty("errorCode").GetString());
+        Assert.AreEqual(
+            "VibeTable.Desktop.SurfaceRequestController",
+            logged.RootElement.GetProperty("module").GetString());
+        Assert.AreEqual(
+            JsonValueKind.Null,
+            logged.RootElement.GetProperty("requestId").ValueKind);
+        Assert.IsFalse(json.Contains(SensitiveMessage, StringComparison.Ordinal), json);
         var failure = await sink.WaitForFailedAsync();
         Assert.AreEqual("SURFACE_OPERATION_FAILED", ((dynamic)failure!.Payload!).code);
     }
@@ -249,14 +262,6 @@ public sealed class SurfaceBridgeTests
             Deletes.Add(parameters);
             return Task.FromResult(new InterfaceDeleteResult { InterfaceId = parameters.InterfaceId });
         }
-    }
-
-    private sealed class CapturingTraceListener : TraceListener
-    {
-        private readonly StringBuilder _text = new();
-        public string Text => _text.ToString();
-        public override void Write(string? message) => _text.Append(message);
-        public override void WriteLine(string? message) => _text.AppendLine(message);
     }
 
     private const string Revision =

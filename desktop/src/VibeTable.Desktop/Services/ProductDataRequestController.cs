@@ -410,7 +410,6 @@ public sealed class ProductDataRequestController
                 request.Type,
                 $"PRODUCT_RPC_FAILED:{exception.GetType().Name}",
                 stage,
-                request.RequestId,
                 Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds);
             _reply.PostOperationFailed(
                 request.RequestId,
@@ -501,7 +500,6 @@ public sealed class ProductDataRequestController
             request.Type,
             $"PRODUCT_RPC_FAILED:{error.Code}",
             "dispatch",
-            request.RequestId,
             elapsedMs);
         _reply.PostOperationFailed(
             request.RequestId,
@@ -557,17 +555,24 @@ public sealed class ProductDataRequestController
             operation,
             code));
 
-    /// <summary>Emits the closed staged failure event; only exception type, code, requestId, and duration.</summary>
+    /// <summary>Emits the closed staged failure event; only stage, code, and duration.</summary>
     private void TraceFailure(
         string operation,
         string code,
         string stage,
-        string? requestId,
         double durationMs)
-        => _traceError(DiagnosticEvent.Failure(
-            "VibeTable.Desktop.ProductDataRequestController",
-            $"{operation}.{stage}",
-            code,
-            requestId,
-            durationMs));
+    {
+        try
+        {
+            _traceError(DiagnosticEvent.Failure(
+                "VibeTable.Desktop.ProductDataRequestController",
+                $"{operation}.{stage}",
+                code,
+                durationMs));
+        }
+        catch
+        {
+            // A diagnostics failure must never replace the product reply.
+        }
+    }
 }
