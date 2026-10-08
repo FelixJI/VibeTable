@@ -11967,6 +11967,7 @@ async function scenario36(page, recorder, _network, runtime) {
 // 独立预算避免完整字段旅程与 S02 叠加超时。
 async function scenario45(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
   await runCommonFieldDisplayJourney(page, recorder, runtime, {
     createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
     rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
