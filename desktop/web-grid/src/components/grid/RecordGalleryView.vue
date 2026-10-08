@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { GalleryHorizontal } from "@lucide/vue";
-import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
+import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { displayValue, metadataFields, rowTitle, safeImageUrl } from "./recordViewUtils";
 
@@ -10,6 +10,7 @@ const props = defineProps<{
   schema: readonly ColumnSchema[];
   view: PresetView;
   lookupDefinitions?: readonly LookupDefinition[];
+  relations?: readonly NormalizedRelationDescriptor[];
 }>();
 
 const details = computed(() => metadataFields(
@@ -19,7 +20,7 @@ const details = computed(() => metadataFields(
 ));
 const failedCovers = ref(new Set<string>());
 const cards = computed(() => props.rows.map((row, index) => {
-  const key = String(row.rowKey ?? `${index}-${rowTitle(row, props.view)}`);
+  const key = String(row.rowKey ?? `${index}-${rowTitle(row, props.view, props.schema, props.relations)}`);
   const cover = props.view.coverField ? safeImageUrl(row[props.view.coverField]) : null;
   return { row, key, cover };
 }));
@@ -38,10 +39,10 @@ function markCoverFailed(key: string): void {
           <span v-else data-testid="gallery-cover-placeholder"><GalleryHorizontal :size="28" /><small>{{ t("views.gallery.noCover") }}</small></span>
         </div>
         <div class="gallery-copy">
-          <strong>{{ rowTitle(card.row, view) }}</strong>
+          <strong>{{ rowTitle(card.row, view, schema, relations) }}</strong>
           <dl v-if="details.length">
             <template v-for="field in details" :key="field.name">
-              <dt>{{ field.title }}</dt><dd>{{ displayValue(card.row[field.name], field, lookupDefinitions) }}</dd>
+              <dt>{{ field.title }}</dt><dd>{{ displayValue(card.row[field.name], field, lookupDefinitions, card.row, relations) }}</dd>
             </template>
           </dl>
         </div>

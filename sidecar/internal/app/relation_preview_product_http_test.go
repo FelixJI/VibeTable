@@ -276,7 +276,7 @@ func TestRelationPreviewProductHTTPPreservesAuthorityOnSuccessAndFailure(t *test
 		t.Fatal(response.Error)
 	}
 	result := viewWireJSON(t, response.Result)
-	expected := []any{map[string]any{"collection": table.TableID, "itemId": "previewtarget01", "label": "previewtarget01", "secondaryLabel": nil}}
+	expected := []any{map[string]any{"collection": table.TableID, "itemId": "previewtarget01", "label": "中文 A", "secondaryLabel": nil, "displayValue": "中文 A"}}
 	if len(result) != 4 || result["canApply"] != true || !reflect.DeepEqual(result["current"], expected) {
 		t.Fatal(result)
 	}
@@ -324,4 +324,102 @@ func previewAuthorityState(t *testing.T, pb *pocketbase.PocketBase, physical str
 		result[name] = string(previewJSON(t, records))
 	}
 	return result
+}
+
+// TestRelationApplyDeltaProjectsAddedTargetLabels proves the real write path
+// resolves labels for the post-delta union: a target that is only being added
+// (absent from the current links) still returns the projected display label
+// and its raw typed scalar instead of degrading to the record ID, while the
+// relation IDs and digest semantics stay unchanged.
+func TestRelationApplyDeltaProjectsAddedTargetLabels(t *testing.T) {
+	pb := schemaProductStore(t)
+	lifecycle, err := schemacore.NewTableLifecycle(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{DisplayName: "应用候选", OperationID: "apply-table", Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	label := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "标题", "apply-label")
+	defaults, err := v2.RecommendedDefaults(v2.LogicalRelation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	related := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
+		Draft: &v2.FieldDraft{DisplayName: "应用关系", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "many", DeletePolicy: "setNull", DisplayField: label.FieldID}},
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "反向", ReciprocalCardinality: "many", SourceDisplayFieldID: label.FieldID}}, "apply-relation")
+	description, err := schemaexecution.Describe(context.Background(), pb, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := pb.FindCollectionByNameOrId(description.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, seed := range [][2]string{{"applytarget0001", "中文 A"}, {"applytarget0002", "Cafe\u0301 B"}, {"applysource0001", "来源"}} {
+		row := core.NewRecord(collection)
+		row.Id = seed[0]
+		row.Set(label.Definition.Identity.PhysicalName, seed[1])
+		if label.Definition.Value.Presence.Mode == v2.PresenceCompanion {
+			row.Set(label.Definition.Value.Presence.PhysicalName, true)
+		}
+		if seed[0] == "applysource0001" {
+			row.Set(related.Definition.Identity.PhysicalName, []string{"applytarget0001"})
+			if related.Definition.Value.Presence.Mode == v2.PresenceCompanion {
+				row.Set(related.Definition.Value.Presence.PhysicalName, true)
+			}
+		}
+		if err := pb.Save(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source, err := queryschema.New(pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := query.NewPort(pb, source)
+	service := relation.New(pb, port, mutation.New(pb, mutation.MetadataSchemaSource{}))
+	writeMethods := map[string]productrpc.Registration{}
+	for _, registration := range relationWriteRegistrations(service, port) {
+		writeMethods[registration.Method] = registration
+	}
+	dispatcher := relationWriteDispatcher(t, writeMethods)
+	raw, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": "apply", "method": "relation.applyDelta",
+		"params": map[string]any{
+			"relationId": table.TableID + "." + related.FieldID, "sourceItemId": "applysource0001",
+			"expectedSchemaRevision": description.Snapshot.SchemaRevision,
+			"adds":                   []any{map[string]any{"collection": table.TableID, "itemId": "applytarget0002"}},
+			"removes":                []any{map[string]any{"collection": table.TableID, "itemId": "applytarget0001"}},
+			"idempotencyKey":         "apply-once",
+		},
+		"wire": json.RawMessage(schemaListWire),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := dispatcher.Dispatch(context.Background(), raw)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	got := viewWireJSON(t, response.Result)
+	current, ok := got["current"].([]any)
+	if !ok || len(current) != 1 {
+		t.Fatalf("current = %#v", got["current"])
+	}
+	added := current[0].(map[string]any)
+	if added["itemId"] != "applytarget0002" || added["label"] != "Cafe\u0301 B" ||
+		added["displayValue"] != "Cafe\u0301 B" || added["secondaryLabel"] != nil {
+		t.Fatalf("added target must carry the projected label and typed scalar: %#v", added)
+	}
+	// The relation value itself only ever stores stable IDs.
+	record, err := pb.FindRecordById(collection, "applysource0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(record.Get(related.Definition.Identity.PhysicalName), []string{"applytarget0002"}) {
+		t.Fatalf("stored relation value = %#v", record.Get(related.Definition.Identity.PhysicalName))
+	}
 }

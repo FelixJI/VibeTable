@@ -268,7 +268,7 @@ describe("relationLookupService", () => {
     }));
   });
 
-  it("refreshes target labels without resetting the active relation draft", () => {
+  it("refreshes target labels without resetting the active relation draft", async () => {
     const store = useRelationLookupStore();
     store.beginContext("orders");
     store.schema = {
@@ -298,13 +298,76 @@ describe("relationLookupService", () => {
     };
     changed?.({ ...event, tableId: "unrelated" });
     expect(invalidated).not.toHaveBeenCalled();
+    request.mockResolvedValue({
+      contract: "vibetable.schema-describe.v1", collection: "orders", requestGeneration: generation,
+      schema: store.schema,
+    });
     changed?.(event);
+    await vi.waitFor(() => expect(invalidated).toHaveBeenCalledTimes(1));
     expect(invalidated).toHaveBeenCalledTimes(1);
     expect(store.generation).toBe(generation);
     expect(store.draft?.selected).toEqual([{ collection: "contracts", itemId: "target-1", label: "Unsaved" }]);
-    expect(request).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledWith("schema.describe", expect.objectContaining({ collection: "orders" }));
     service.dispose();
   });
+  it("retired target schema responses cannot replace a newer display contract", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    const snapshot: SchemaSnapshot = {
+      collection: "orders", primaryKey: "id", columns: [], schemaRevision: "s", permissionRevision: "p", capabilityHash: "c", lookupRevision: "l",
+      normalizedRelations: [{ relationId: "orders.contract", fieldRef: "contract", sourceCollection: "orders", kind: "m2o", relatedCollection: "contracts", unique: false, nullable: true, onDelete: "nullify", selfRelation: false, managed: true, state: "valid", diagnostics: [] }],
+    };
+    store.schema = snapshot;
+    let changed: ((change: DataChangedEvent) => void) | undefined;
+    let oldResolve!: (value: unknown) => void;
+    let newResolve!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { oldResolve = resolve; }))
+      .mockReturnValueOnce(new Promise(resolve => { newResolve = resolve; }));
+    setHostBridgeForTesting({ request, on: vi.fn((_type, handler) => { changed = handler as (change: DataChangedEvent) => void; return vi.fn(); }) } as unknown as HostBridge);
+    const invalidated = vi.fn();
+    const service = useRelationLookupService();
+    service.init(invalidated);
+    const event: DataChangedEvent = { contractVersion: "2.0", topic: "data.changed", eventId: "old", sequence: 1, occurredAt: "2026-10-08T00:00:00Z", schemaRevision: "target", dataRevision: "data_1", changeSetId: "change", tableId: "contracts", recordIds: [], operation: "update" };
+    changed?.(event);
+    changed?.({ ...event, eventId: "new", sequence: 2 });
+    const reply = (schema: SchemaSnapshot) => ({ contract: "vibetable.schema-describe.v1", collection: "orders", requestGeneration: generation, schema });
+    newResolve(reply({ ...snapshot, capabilityHash: "new" }));
+    await vi.waitFor(() => expect(invalidated).toHaveBeenCalledTimes(1));
+    oldResolve(reply(snapshot));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.schema?.capabilityHash).toBe("new");
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    service.dispose();
+  });
+
+  it("overlapping context refreshes retain draft and reject the older schema reply", async () => {
+    const store = useRelationLookupStore();
+    const generation = store.beginContext("orders");
+    const snapshot: SchemaSnapshot = { collection: "orders", primaryKey: "id", columns: [], normalizedRelations: [], schemaRevision: "s", permissionRevision: "p", capabilityHash: "old", lookupRevision: "l" };
+    store.schema = snapshot;
+    store.openDraft("orders.customer", "order", [{ collection: "customers", itemId: "target", label: "Draft" }]);
+    let oldResolve!: (value: unknown) => void;
+    let newResolve!: (value: unknown) => void;
+    const old = new Promise(resolve => { oldResolve = resolve; });
+    const fresh = new Promise(resolve => { newResolve = resolve; });
+    let described = 0;
+    request.mockImplementation((method: string) => method === "schema.describe"
+      ? (++described === 1 ? old : fresh)
+      : Promise.resolve({ collection: "orders", definitions: [], lookupRevision: "l" }));
+    const service = useRelationLookupService();
+    const first = service.loadContext("orders");
+    const second = service.loadContext("orders");
+    const reply = (schema: SchemaSnapshot) => ({ contract: "vibetable.schema-describe.v1", collection: "orders", requestGeneration: generation, schema, capabilities: { contract: "vibetable.relation-capabilities.v1", relationReadV1: true, relationEditV1: true, lookupQueryV1: true } });
+    newResolve(reply({ ...snapshot, capabilityHash: "new" }));
+    await expect(second).resolves.toBe(true);
+    oldResolve(reply(snapshot));
+    await expect(first).resolves.toBe(false);
+    expect(store.schema?.capabilityHash).toBe("new");
+    expect(store.generation).toBe(generation);
+    expect(store.draft?.selected[0]?.label).toBe("Draft");
+  });
+
   it("invalidates an active deep Lookup for a change beyond the first-hop schema", async () => {
     const store = useRelationLookupStore();
     const generation = store.beginContext("orders");

@@ -188,6 +188,14 @@ func TestRelationSearchProductHTTPReplaysFrozenPython(t *testing.T) {
 				t.Fatal("wire changed")
 			}
 			delete(got, "wire")
+			// The frozen Python wire predates the relation display projection keys.
+			// Project away exactly those three explicitly authorized additive keys
+			// so every historical field — including the filtered authority `extra`
+			// and `snapshot` canaries — stays compared byte-for-byte; the new keys'
+			// values, types, 0/false handling and controlled producer are asserted
+			// by TestRelationSearchProductDefaultsAndProjection and the real-authority
+			// display projection tests below.
+			stripRelationDisplayProjectionKeys(got)
 			if want := relationSearchWireJSON(t, sample.Response); !reflect.DeepEqual(got, want) {
 				t.Fatalf("frozen Python mismatch\ngot=%v\nwant=%v", got, want)
 			}
@@ -201,7 +209,7 @@ func TestRelationSearchProductHTTPReplaysFrozenPython(t *testing.T) {
 				if err := json.Unmarshal(sample.AuthorityRequests[0], &authority); err != nil {
 					t.Fatal(err)
 				}
-				if probe.request != authority.Body {
+				if !reflect.DeepEqual(probe.request, authority.Body) {
 					t.Fatalf("authority input %v want %v", probe.request, authority.Body)
 				}
 			}
@@ -276,7 +284,13 @@ func TestRelationSearchProductHTTPUsesRealRelationAuthority(t *testing.T) {
 	}
 	for index, item := range items {
 		target := item.(map[string]any)
-		if len(target) != 3 || target["collection"] != table.TableID || target["itemId"] != fmt.Sprintf("searchtarget%03d", index+1) {
+		if len(target) != 4 || target["collection"] != table.TableID || target["itemId"] != fmt.Sprintf("searchtarget%03d", index+1) {
+			t.Fatal(target)
+		}
+		// The relation display field IS the target's global primary display
+		// field here; the label still carries its raw typed scalar so every
+		// surface formats it through the shared display contract.
+		if target["displayValue"] == nil || target["secondaryLabel"] != nil {
 			t.Fatal(target)
 		}
 	}
@@ -285,7 +299,7 @@ func TestRelationSearchProductHTTPUsesRealRelationAuthority(t *testing.T) {
 		t.Fatal(filtered.Error)
 	}
 	got := relationSearchWireJSON(t, filtered.Result)
-	if got["total"] != json.Number("2") || !reflect.DeepEqual(got["items"], []any{map[string]any{"collection": table.TableID, "itemId": "searchtarget002", "label": "中文 Beta"}}) {
+	if got["total"] != json.Number("2") || !reflect.DeepEqual(got["items"], []any{map[string]any{"collection": table.TableID, "itemId": "searchtarget002", "label": "中文 Beta", "displayValue": "中文 Beta"}}) {
 		t.Fatal(got)
 	}
 	empty := read(map[string]any{"relationId": relationID, "query": "does not exist"})
@@ -309,6 +323,196 @@ func TestRelationSearchProductHTTPUsesRealRelationAuthority(t *testing.T) {
 		}
 		if relationSearchWireJSON(t, data)["code"] != "relation.request.invalid" {
 			t.Fatal(string(data))
+		}
+	}
+}
+
+// stripRelationDisplayProjectionKeys removes only the three explicitly
+// authorized display projection keys (secondaryLabel, displayValue,
+// secondaryValue) from every mapped result item. It must not touch any other
+// key: the frozen corpus keeps proving that authority-only fields such as
+// `extra` and `snapshot` never reach the public response.
+func stripRelationDisplayProjectionKeys(response map[string]any) {
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return
+	}
+	items, ok := result["items"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		if record, ok := item.(map[string]any); ok {
+			delete(record, "secondaryLabel")
+			delete(record, "displayValue")
+			delete(record, "secondaryValue")
+		}
+	}
+}
+
+// TestRelationSearchUsesRelationDisplayFieldProjection proves with the real
+// Go service that search labels follow the relation's own displayFieldId
+// (contract name), the target table's global primary display field (contract
+// number) only backs the auxiliary label and the empty-label fallback, 0 and
+// false are valid typed display values, and IDs remain the fallback — never
+// a passthrough of arbitrary authority data.
+func TestRelationSearchUsesRelationDisplayFieldProjection(t *testing.T) {
+	pb := schemaProductStore(t)
+	lifecycle, err := schemacore.NewTableLifecycle(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{DisplayName: "合同", OperationID: "contracts-table", Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	number := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "合同编号", "contract-number")
+	name := createSchemaProductField(t, pb, table.TableID, v2.LogicalText, "合同名称", "contract-name")
+	units := createSchemaProductField(t, pb, table.TableID, v2.LogicalNumber, "数量", "contract-units")
+	defaults, err := v2.RecommendedDefaults(v2.LogicalRelation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
+		Draft: &v2.FieldDraft{DisplayName: "按名称", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: name.FieldID}},
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-name-relation")
+	byUnits := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
+		Draft: &v2.FieldDraft{DisplayName: "按数量", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: units.FieldID}},
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-units-relation")
+	// 同字段：显示字段即目标表全局主显示字段，仍必须携带 raw typed scalar。
+	byCode := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
+		Draft: &v2.FieldDraft{DisplayName: "按编号", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: number.FieldID}},
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: number.FieldID}}, "by-code-relation")
+	description, err := schemaexecution.Describe(context.Background(), pb, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collection, err := pb.FindCollectionByNameOrId(description.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := func(id string, values map[string]any) {
+		record := core.NewRecord(collection)
+		record.Id = id
+		for physical, value := range values {
+			record.Set(physical, value)
+		}
+		for _, field := range description.Snapshot.Fields {
+			if field.Value.Presence.Mode == v2.PresenceCompanion {
+				_, seeded := values[field.Identity.PhysicalName]
+				if seeded {
+					record.Set(field.Value.Presence.PhysicalName, true)
+				}
+			}
+		}
+		if err := pb.Save(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("srchnmfull00001", map[string]any{number.Definition.Identity.PhysicalName: "CT-001", name.Definition.Identity.PhysicalName: "城轨一期"})
+	seed("srchnmmiss00002", map[string]any{number.Definition.Identity.PhysicalName: "CT-002"})
+	seed("srchbothmiss003", map[string]any{})
+	seed("srchzerounit004", map[string]any{number.Definition.Identity.PhysicalName: "CT-004", units.Definition.Identity.PhysicalName: 0})
+	source, err := queryschema.New(pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := relation.New(pb, query.NewPort(pb, source), nil)
+	mux := relationSearchHTTPMux(t, pb, relationSearchTargetsRegistration(service))
+	read := func(relationID string) map[string]any {
+		t.Helper()
+		response := schemaProductRequestForMethod(t, mux, context.Background(), "relation.searchTargets",
+			string(previewJSON(t, map[string]any{"relationId": relationID, "limit": 50})), schemaListWire)
+		if response.Error != nil {
+			t.Fatal(response.Error)
+		}
+		return relationSearchWireJSON(t, response.Result)
+	}
+	byNameResult := read(table.TableID + "." + byName.FieldID)
+	items := byNameResult["items"].([]any)
+	if len(items) != 4 {
+		t.Fatal(byNameResult)
+	}
+	byID := map[string]map[string]any{}
+	for _, item := range items {
+		target := item.(map[string]any)
+		byID[target["itemId"].(string)] = target
+	}
+	if got := byID["srchnmfull00001"]; got["label"] != "城轨一期" || got["secondaryLabel"] != "CT-001" ||
+		got["displayValue"] != "城轨一期" || got["secondaryValue"] != "CT-001" {
+		t.Fatalf("configured display field projection: %#v", got)
+	}
+	if got := byID["srchnmmiss00002"]; got["label"] != "CT-002" || got["secondaryLabel"] != nil ||
+		got["displayValue"] != nil || got["secondaryValue"] != "CT-002" {
+		t.Fatalf("empty display label falls back to the valid global primary display value: %#v", got)
+	}
+	if got := byID["srchbothmiss003"]; got["label"] != "srchbothmiss003" || got["secondaryLabel"] != nil ||
+		got["displayValue"] != nil || got["secondaryValue"] != nil {
+		t.Fatalf("empty labels fall back to the record ID: %#v", got)
+	}
+	byUnitsResult := read(table.TableID + "." + byUnits.FieldID)
+	unitItems := byUnitsResult["items"].([]any)
+	zero := map[string]any{}
+	for _, item := range unitItems {
+		if target, ok := item.(map[string]any); ok && target["itemId"] == "srchzerounit004" {
+			zero = target
+		}
+	}
+	if zero["label"] != "0" || zero["displayValue"] != json.Number("0") {
+		t.Fatalf("numeric 0 is a valid typed display value: %#v", zero)
+	}
+	if zero["secondaryLabel"] != "CT-004" {
+		t.Fatalf("numeric display keeps the global primary display as auxiliary: %#v", zero)
+	}
+	byCodeResult := read(table.TableID + "." + byCode.FieldID)
+	codeItems := byCodeResult["items"].([]any)
+	codeByID := map[string]map[string]any{}
+	for _, item := range codeItems {
+		if target, ok := item.(map[string]any); ok {
+			codeByID[target["itemId"].(string)] = target
+		}
+	}
+	if got := codeByID["srchnmfull00001"]; got["label"] != "CT-001" || got["displayValue"] != "CT-001" ||
+		got["secondaryLabel"] != nil || got["secondaryValue"] != nil {
+		t.Fatalf("same-field display projection must still carry the raw typed scalar: %#v", got)
+	}
+	// 直接按已选 ID 批量刷新（AC2）：与关键词搜索分离，同一投影与预算。
+	idsResponse := schemaProductRequestForMethod(t, mux, context.Background(), "relation.searchTargets",
+		string(previewJSON(t, map[string]any{
+			"relationId": table.TableID + "." + byName.FieldID,
+			"targetItemIds": []string{"srchnmmiss00002", "srchnmfull00001"},
+			"limit":         2,
+		})), schemaListWire)
+	if idsResponse.Error != nil {
+		t.Fatal(idsResponse.Error)
+	}
+	idsResult := relationSearchWireJSON(t, idsResponse.Result)
+	idItems, _ := idsResult["items"].([]any)
+	if len(idItems) != 2 {
+		t.Fatalf("id refresh items = %#v", idsResult)
+	}
+	refreshed := map[string]map[string]any{}
+	for _, item := range idItems {
+		if target, ok := item.(map[string]any); ok {
+			refreshed[target["itemId"].(string)] = target
+		}
+	}
+	if got := refreshed["srchnmfull00001"]; got["label"] != "城轨一期" || got["secondaryLabel"] != "CT-001" {
+		t.Fatalf("id refresh display projection: %#v", got)
+	}
+	if got := refreshed["srchnmmiss00002"]; got["label"] != "CT-002" || got["displayValue"] != nil || got["secondaryValue"] != "CT-002" {
+		t.Fatalf("id refresh fallback projection: %#v", got)
+	}
+	for _, item := range items {
+		for key := range item.(map[string]any) {
+			switch key {
+			case "collection", "itemId", "label", "secondaryLabel", "displayValue", "secondaryValue":
+			default:
+				t.Fatalf("authority-only field %q leaked into the public response", key)
+			}
 		}
 	}
 }

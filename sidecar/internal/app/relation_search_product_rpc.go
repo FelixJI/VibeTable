@@ -56,7 +56,7 @@ func relationSearchTargetsRegistration(port interface {
 				if item.TableID == "" || item.RecordID == "" || item.Label == "" {
 					return nil, errors.New("PocketBase returned an invalid relation target")
 				}
-				items = append(items, map[string]any{"collection": item.TableID, "itemId": item.RecordID, "label": item.Label})
+				items = append(items, relationTargetResult(item))
 			}
 			return map[string]any{"items": items, "total": result.Total}, nil
 		},
@@ -117,6 +117,19 @@ func decodeRelationSearchParams(raw json.RawMessage) (map[string]any, error) {
 			number, ok := item.(json.Number)
 			if !ok || strings.ContainsAny(number.String(), ".eE") {
 				return nil, errors.New("relation search paging must be integer")
+			}
+		case "targetItemIds":
+			// Direct ID refresh for already-selected targets: batched through the
+			// same projection and budget, never a per-record protocol.
+			ids, ok := item.([]any)
+			if !ok || len(ids) < 1 || len(ids) > 100 {
+				return nil, errors.New("relation search target ids must be 1 to 100 text items")
+			}
+			for _, id := range ids {
+				text, ok := id.(string)
+				if !ok || text == "" {
+					return nil, errors.New("relation search target ids must be 1 to 100 text items")
+				}
 			}
 		default:
 			return nil, errors.New("relation search contains an unknown parameter")

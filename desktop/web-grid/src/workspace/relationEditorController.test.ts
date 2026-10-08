@@ -648,3 +648,189 @@ describe("relationEditorController", () => {
     scope.stop();
   });
 });
+
+describe("relationEditorController targets.refresh", () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it("目标写入后按已选ID刷新标签（不依赖当前搜索候选），保留未提交暂选集合", async () => {
+    const stale: RelationTargetRef = {
+      collection: "customers", itemId: "customer0000001", label: "旧名称",
+      secondaryLabel: "CT-001", displayValue: "旧名称", secondaryValue: "CT-001",
+    };
+    const fresh: RelationTargetRef = {
+      collection: "customers", itemId: "customer0000001", label: "新名称",
+      secondaryLabel: "CT-001", displayValue: "新名称", secondaryValue: "CT-001",
+    };
+    const unrelated: RelationTargetRef = {
+      collection: "customers", itemId: "customer0000002", label: "无关候选",
+    };
+    const searchTargets = vi.fn()
+      .mockResolvedValueOnce({ items: [stale], total: 1 })
+      .mockResolvedValueOnce({ items: [unrelated], total: 1 })
+      .mockResolvedValueOnce({ items: [unrelated], total: 1 })
+      .mockResolvedValueOnce({ items: [fresh], total: 1 });
+    const service = servicePort({
+      searchTargets,
+      describeCollection: vi.fn(async () => ({
+        ...useRelationLookupStore().schema!, normalizedRelations: [],
+      })),
+      loadDraft: vi.fn(async () => ({
+        delta: {}, current: [stale], diagnostics: [], canApply: true,
+      }) as unknown as import("@/contracts").RelationDeltaPreview),
+    });
+    const { controller, relations } = setup(service);
+
+    await controller.dispatch({
+      type: "editor.open",
+      rowKey: "row-1",
+      field: "customer",
+      descriptor: { ...descriptor, kind: "m2m", relatedCollection: "customers" },
+      value: [{ collection: "customers", itemId: "customer0000001", label: "customer0000001" }],
+    });
+    await flushPromises();
+    relations.openDraft("orders.customer", "row-1", [stale]);
+    expect(relations.draft?.selected.map(target => target.label)).toEqual(["旧名称"]);
+    // 搜索无关词：当前候选不再包含已选目标。
+    await controller.dispatch({ type: "targets.search", query: "无关词" });
+    await flushPromises();
+    // 用户在刷新前暂选（toggle 掉既有项）：
+    controller.dispatch({ type: "target.select", target: relations.draft!.selected[0] });
+    await flushPromises();
+    expect(relations.draft?.selected).toHaveLength(0);
+
+    await controller.dispatch({ type: "targets.refresh" });
+    await flushPromises();
+    // 暂选集合（空）未被替换；已选/原始标签按ID批量刷新，不静默沿用旧标签。
+    expect(relations.draft?.selected).toHaveLength(0);
+    expect(relations.draft?.original[0]).toMatchObject({ itemId: "customer0000001", label: "新名称" });
+    // 候选仍由关键词搜索结果提供，未被 ID 刷新覆盖。
+    expect(searchTargets).toHaveBeenCalledTimes(4);
+    expect(searchTargets.mock.calls[3][0]).toMatchObject({
+      relationId: "orders.customer",
+      targetItemIds: ["customer0000001"],
+    });
+  });
+
+  it("显示字段配置变化后 picker 采用新渲染契约", async () => {
+    const updatedDescriptor: NormalizedRelationDescriptor = {
+      ...descriptor, kind: "m2m", relatedCollection: "customers",
+      displayFieldId: "fld_amount",
+      displayFieldInfo: { fieldId: "fld_amount", dataType: "decimal", display: null },
+    };
+    const service = servicePort({
+      searchTargets: vi.fn(async () => ({ items: [], total: 0 })),
+      describeCollection: vi.fn(async () => ({
+        collection: "orders",
+        primaryKey: "id",
+        primaryDisplayFieldId: "",
+        columns: [],
+        normalizedRelations: [updatedDescriptor],
+        schemaRevision: "schema-2",
+        permissionRevision: "permission",
+        capabilityHash: "capability",
+        lookupRevision: "lookup",
+      })),
+    });
+    const { controller } = setup(service);
+    await controller.dispatch({
+      type: "editor.open",
+      rowKey: "row-1",
+      field: "customer",
+      descriptor: { ...descriptor, kind: "m2m", relatedCollection: "customers" },
+      value: [],
+    });
+    await flushPromises();
+    await controller.dispatch({ type: "targets.refresh" });
+    await flushPromises();
+    expect(controller.state.descriptor).toBe(updatedDescriptor);
+    expect(service.describeCollection).toHaveBeenLastCalledWith("orders");
+  });
+
+  it("关键词变化不取消已选标签刷新，关闭重开拒绝迟到刷新", async () => {
+    const pending = deferred<RelationSearchResult>();
+    const stale = { collection: "customers", itemId: "CT001", label: "旧名称" };
+    const searchTargets = vi.fn(async (request: import("@/contracts").RelationSearchParams): Promise<RelationSearchResult> =>
+      request.targetItemIds ? { items: [stale], total: 1 } : { items: [], total: 0 });
+    const service = servicePort({
+      searchTargets,
+      describeCollection: vi.fn(async () => ({ ...useRelationLookupStore().schema!, normalizedRelations: [] })),
+    });
+    const { controller, relations } = setup(service);
+    const open = () => controller.dispatch({
+      type: "editor.open", rowKey: "row-1", field: "customer", descriptor, value: [stale],
+    });
+    await open();
+    searchTargets.mockImplementation(async request => request.targetItemIds ? pending.promise : { items: [], total: 0 });
+    const refresh = controller.dispatch({ type: "targets.refresh" });
+    await flushPromises();
+    await controller.dispatch({ type: "targets.search", query: "无关词" });
+    pending.resolve({ items: [{ ...stale, label: "城轨一期" }], total: 1 });
+    await refresh;
+    expect(relations.draft?.selected[0]?.label).toBe("城轨一期");
+    expect(controller.state.query).toBe("无关词");
+    const late = deferred<RelationSearchResult>();
+    searchTargets.mockImplementation(async request => request.targetItemIds ? late.promise : { items: [], total: 0 });
+    const retired = controller.dispatch({ type: "targets.refresh" });
+    await flushPromises();
+    await controller.dispatch({ type: "editor.close" });
+    searchTargets.mockImplementation(async request => request.targetItemIds ? { items: [stale], total: 1 } : { items: [], total: 0 });
+    await open();
+    late.resolve({ items: [{ ...stale, label: "迟到名称" }], total: 1 });
+    await retired;
+    expect(relations.draft?.selected[0]?.label).toBe("旧名称");
+  });
+
+  it("已选目标被删除后保留暂选身份并退回ID，不保留旧标签", async () => {
+    const service = servicePort({ searchTargets: vi.fn(async () => ({ items: [], total: 0 })) });
+    const { controller, relations } = setup(service);
+    await controller.dispatch({ type: "editor.open", rowKey: "row-1", field: "customer", descriptor,
+      value: [{ collection: "customers", itemId: "missing", label: "已删除的旧名称" }],
+    });
+    expect(relations.draft?.selected[0]).toMatchObject({ itemId: "missing", label: "missing" });
+  });
+
+  it("显示契约刷新不使正在提交的同一关系回包失效", async () => {
+    const pending = deferred<import("@/contracts").RelationSingleUpdateResult>();
+    const target = { collection: "customers", itemId: "CT001", label: "城轨一期" };
+    const service = servicePort({
+      searchTargets: vi.fn(async () => ({ items: [target], total: 1 })),
+      updateSingle: vi.fn(() => pending.promise),
+      describeCollection: vi.fn(async () => ({ ...useRelationLookupStore().schema!, normalizedRelations: [{ ...descriptor, displayFieldId: "name" }] })),
+    });
+    const { controller, table } = setup(service);
+    await controller.dispatch({ type: "editor.open", rowKey: "row-1", field: "customer", descriptor, value: null });
+    const applying = controller.dispatch({ type: "target.select", target });
+    await controller.dispatch({ type: "targets.refresh" });
+    pending.resolve({ outcome: "committed", current: target, schemaRevision: "schema", requestId: "commit" });
+    await applying;
+    expect(table.allRows[0]?.customer).toEqual(target);
+    expect(controller.state.show).toBe(false);
+  });
+
+  it("初次打开的迟到已选标签不能覆盖后来的目标刷新", async () => {
+    const initial = deferred<RelationSearchResult>();
+    const target = { collection: "customers", itemId: "CT001", label: "城轨一期更新" };
+    const related = { ...descriptor, relatedCollection: "customers" };
+    let idReads = 0;
+    const service = servicePort({
+      searchTargets: vi.fn(async request => request.targetItemIds
+        ? (++idReads === 1 ? initial.promise : { items: [target], total: 1 })
+        : { items: [], total: 0 }),
+      describeCollection: vi.fn(async () => ({ ...useRelationLookupStore().schema!, normalizedRelations: [related] })),
+    });
+    const { controller, relations } = setup(service);
+    const opening = controller.dispatch({ type: "editor.open", rowKey: "row-1", field: "customer", descriptor: related, value: [target.itemId] });
+    await flushPromises();
+    await controller.dispatch({ type: "targets.refresh" });
+    initial.resolve({ items: [{ ...target, label: "迟到旧名称" }], total: 1 });
+    await opening;
+    expect(relations.draft?.selected[0]?.label).toBe("城轨一期更新");
+  });
+
+  it("编辑器未打开时 refresh 不发起搜索", async () => {
+    const service = servicePort({ searchTargets: vi.fn() });
+    const { controller } = setup(service);
+    await controller.dispatch({ type: "targets.refresh" });
+    expect(service.searchTargets).not.toHaveBeenCalled();
+  });
+});

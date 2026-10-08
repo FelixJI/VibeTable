@@ -90,6 +90,45 @@ describe("relation / Lookup grid renderers", () => {
     expect(node.textContent).toContain("Launch");
   });
 
+  it("formats typed numeric labels with the owning source field's own display spec", () => {
+    const percentCurrency: NormalizedRelationDescriptor = {
+      ...relation,
+      displayFieldInfo: {
+        fieldId: "fld_rate", dataType: "decimal",
+        display: {
+          kind: "number", preset: "percent", displayScale: 1, scaleMode: "fixed",
+          trimTrailingZeros: false, useGrouping: true, currency: "",
+          percentStorage: "ratio", unit: null, precision: "exact",
+          timezone: "local", mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+        },
+      },
+      fallbackDisplayFieldInfo: {
+        fieldId: "fld_amount", dataType: "decimal",
+        display: {
+          kind: "number", preset: "currency", displayScale: 2, scaleMode: "fixed",
+          trimTrailingZeros: false, useGrouping: true, currency: "CNY",
+          percentStorage: "ratio", unit: null, precision: "exact",
+          timezone: "local", mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+        },
+      },
+    };
+    const cell = {
+      getValue: () => ["p1", "p2"],
+      getRow: () => ({ getData: () => ({
+        contract: ["p1", "p2"],
+        __vibetableRelationLabels: {
+          contract: {
+            p1: { value: 0.125, source: "display" },
+            // 配置的百分比显示字段为空：回退主字段，并按主字段货币格式渲染。
+            p2: { value: 1982, source: "primary" },
+          },
+        },
+      }) }),
+    };
+    const node = relationFormatter(percentCurrency)(cell);
+    expect(node.textContent).toBe("12.5%¥1,982.00");
+  });
+
   it.each([
     ["restricted", "受限"],
     ["invalid", "无效"],

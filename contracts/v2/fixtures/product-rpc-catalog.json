@@ -22748,6 +22748,46 @@
                   }
                 ],
                 "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -22811,7 +22851,9 @@
               "collection": "orders",
               "itemId": "00000000-0000-4000-8000-000000000001",
               "label": "sample-value",
-              "secondaryLabel": null
+              "secondaryLabel": null,
+              "displayValue": null,
+              "secondaryValue": null
             }
           ],
           "schemaRevision": "schema_0001",
@@ -22854,6 +22896,46 @@
                 "anyOf": [
                   {
                     "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
                   },
                   {
                     "type": "null"
@@ -22908,7 +22990,9 @@
             "collection": "orders",
             "itemId": "00000000-0000-4000-8000-000000000001",
             "label": "sample-value",
-            "secondaryLabel": null
+            "secondaryLabel": null,
+            "displayValue": null,
+            "secondaryValue": null
           },
           "requestId": "00000000-0000-4000-8000-000000000001"
         }
@@ -23347,6 +23431,46 @@
                   }
                 ],
                 "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -23490,6 +23614,46 @@
                   }
                 ],
                 "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -23536,7 +23700,9 @@
               "collection": "orders",
               "itemId": "00000000-0000-4000-8000-000000000001",
               "label": "sample-value",
-              "secondaryLabel": null
+              "secondaryLabel": null,
+              "displayValue": null,
+              "secondaryValue": null
             }
           ],
           "total": 1
@@ -23578,6 +23744,46 @@
                 "anyOf": [
                   {
                     "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
                   },
                   {
                     "type": "null"
@@ -24137,6 +24343,39 @@
                   "$ref": "#/$defs/RelationDiagnostic"
                 },
                 "type": "array"
+              },
+              "displayFieldId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "displayFieldInfo": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RelationDisplayFieldInfo"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "fallbackDisplayFieldInfo": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RelationDisplayFieldInfo"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -24172,6 +24411,45 @@
             "required": [
               "code",
               "message"
+            ],
+            "type": "object"
+          },
+          "RelationDisplayFieldInfo": {
+            "additionalProperties": false,
+            "properties": {
+              "fieldId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "dataType": {
+                "enum": [
+                  "text",
+                  "integer",
+                  "decimal",
+                  "boolean",
+                  "date",
+                  "datetime",
+                  "time",
+                  "json"
+                ],
+                "type": "string"
+              },
+              "display": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DisplaySpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "fieldId",
+              "dataType"
             ],
             "type": "object"
           },

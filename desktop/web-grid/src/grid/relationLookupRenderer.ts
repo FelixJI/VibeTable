@@ -7,6 +7,7 @@ import type {
 } from "@/contracts";
 import type { DisplaySpec } from "@/contracts/generated/schemaV2";
 import { formatLookupDisplayValue } from "./computedValueDisplay";
+import { coerceLegacyLabelEntry, formatRelationLabelEntry, relationRowLabels } from "./relationDisplay";
 import { t } from "@/i18n";
 
 export function relationFormatter(descriptor: NormalizedRelationDescriptor, field = descriptor.fieldRef) {
@@ -31,15 +32,13 @@ export function relationFormatter(descriptor: NormalizedRelationDescriptor, fiel
       root.append(element("span", "vt-cell-empty", "—"));
       return root;
     }
-    const metadata = cell.getRow?.().getData().__vibetableRelationLabels;
-    const labels = isRecord(metadata) && isRecord(metadata[field]) ? metadata[field] : {};
+    const labels = relationRowLabels(cell.getRow?.().getData(), field);
     for (const target of targets.slice(0, 3)) {
       const token = element("span", "vt-relation-token");
-      const label = labels[target.itemId];
+      const entry = coerceLegacyLabelEntry(labels[target.itemId]);
+      const formatted = entry !== null ? formatRelationLabelEntry(entry, descriptor) : null;
       token.append(document.createTextNode(
-        typeof label === "string" && label.trim() !== ""
-          ? label
-          : target.label || target.itemId,
+        formatted ?? (target.label && target.label.trim() !== "" ? target.label : target.itemId),
       ));
       token.title = `${target.collection || descriptor.relatedCollection || ""} · ${target.itemId}`;
       root.append(token);

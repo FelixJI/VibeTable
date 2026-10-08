@@ -3811,7 +3811,144 @@ async function runRelationScenario(page, recorder, searchTargets) {
   return;
 }
 
-async function scenario28(page, recorder) {
+async function relationContractDisplayJourney(page, recorder, runtime) {
+  await page.getByTestId("nav-tables").click();
+  const contracts = await createSimpleTable(page, "合同显示案例", "合同编号");
+  const name = await createV2Field(page, contracts.tableId, "合同名称", "text");
+  const lines = await createSimpleTable(page, "合同明细案例", "明细");
+  await createV2Field(page, lines.tableId, "封面", "file");
+  const byName = await createV2Field(page, lines.tableId, "关联名称", "relation", draft => {
+    draft.relation = { ...draft.relation, targetTableId: contracts.tableId, displayFieldId: name.fieldId, cardinality: "many" };
+    return draft;
+  });
+  const byCode = await createV2Field(page, lines.tableId, "关联编号", "relation", draft => {
+    draft.relation = { ...draft.relation, targetTableId: contracts.tableId, displayFieldId: contracts.field.fieldId };
+    return draft;
+  });
+  const firstId = "contractcase001", secondId = "contractcase002", sourceId = "contractline001";
+  const seeded = await applyProductMutation(page, contracts.tableId, [
+    { kind: "insert", recordId: firstId, values: { [contracts.field.physicalName]: "CT-001", [name.physicalName]: "城轨一期" } },
+    { kind: "insert", recordId: secondId, values: { [contracts.field.physicalName]: "CT-002", [name.physicalName]: "城轨一期" } },
+  ], "contract-case-targets");
+  const source = await applyProductMutation(page, lines.tableId, [{
+    kind: "insert", recordId: sourceId,
+    values: { [lines.field.physicalName]: "合成合同明细", [byCode.physicalName]: firstId },
+  }], "contract-case-source");
+  if (seeded.payload?.status !== "applied" || source.payload?.status !== "applied") throw new Error("contract display fixture did not commit");
+  const read = async tableId => {
+    const result = await rawBridgeRequest(page, "query.page", { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } });
+    if (!result.payload?.snapshot || !Array.isArray(result.payload.rows)) throw new Error(`contract read failed: ${JSON.stringify(result)}`);
+    return result.payload;
+  };
+  await selectTable(page, "合同明细案例");
+  await waitForVisibleRowCount(page, 1);
+  const cell = page.locator(`.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${byName.physicalName}"]`).first();
+  const panel = page.locator(".relation-editor:visible");
+  await cell.dblclick();
+  await panel.waitFor();
+  const search = panel.getByRole("textbox", { name: /^(搜索目标记录|Search target records)$/u });
+  const candidates = panel.locator(".relation-editor__candidate");
+  for (const query of ["CT-001", "城轨一期"]) {
+    await search.fill(query);
+    await page.waitForFunction(({ query }) => {
+      const rows = [...document.querySelectorAll(".relation-editor .relation-editor__candidate")];
+      return rows.length === (query === "CT-001" ? 1 : 2) && rows.every(row => row.textContent.includes("城轨一期"));
+    }, { query });
+    recorder.check(`contract search ${query} keeps identity with configured name and auxiliary code`,
+      await candidates.filter({ hasText: "CT-001" }).count() === 1);
+  }
+  await candidates.filter({ hasText: "CT-001" }).click();
+  await panel.locator(".relation-editor__token").filter({ hasText: "城轨一期" }).waitFor();
+  await panel.getByRole("button", { name: /^(应用 1 项|Apply 1 items)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const waitLabels = async expected => page.waitForFunction(({ field, codeField, expected }) =>
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)?.textContent === expected
+      && document.querySelector(`.tabulator-cell[tabulator-field="${codeField}"] .vt-relation-token`)?.textContent === "CT-001",
+  { field: byName.physicalName, codeField: byCode.physicalName, expected });
+  await waitLabels("城轨一期");
+  const committed = await read(lines.tableId);
+  recorder.check("two relations to one contract keep separate configured labels and stable IDs",
+    JSON.stringify(committed.rows[0][byName.physicalName]) === JSON.stringify([firstId])
+      && committed.rows[0][byCode.physicalName] === firstId);
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-grid.png"), fullPage: true });
+  await cell.dblclick();
+  await panel.waitFor();
+  await search.fill("CT-002");
+  await candidates.filter({ hasText: "CT-002" }).waitFor();
+  await candidates.filter({ hasText: "CT-002" }).click();
+  const targetBefore = (await read(contracts.tableId)).rows.find(row => row.id === firstId);
+  const renamed = await applyProductMutation(page, contracts.tableId, [{
+    kind: "update", recordId: firstId, values: { [name.physicalName]: "城轨一期更新" }, expectedDigest: targetBefore.__vibetableDigest,
+  }], "contract-case-rename");
+  if (renamed.payload?.status !== "applied") throw new Error("contract rename failed");
+  await panel.locator(".relation-editor__token").filter({ hasText: "城轨一期更新" }).waitFor();
+  recorder.check("target rename refreshes selected outside search and retains uncommitted second selection",
+    await panel.locator(".relation-editor__token").count() === 2 && await search.inputValue() === "CT-002");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-picker-refresh.png"), fullPage: true });
+  await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  await waitLabels("城轨一期更新");
+  const afterRename = await read(lines.tableId);
+  recorder.check("label refresh and cancelled draft preserve source value, digest and data revision",
+    afterRename.rows[0].__vibetableDigest === committed.rows[0].__vibetableDigest
+      && afterRename.snapshot.dataRevision === committed.snapshot.dataRevision
+      && JSON.stringify(afterRename.rows[0][byName.physicalName]) === JSON.stringify([firstId]));
+  const pairBefore = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
+  await openRelationPairEditor(page, byName.physicalName, pairBefore[1].definition.displayName);
+  await selectVisibleNOption(page, "relation-target-display-field", "合同编号");
+  await planRelationPairThroughUi(page);
+  await applyRelationPairThroughUi(page);
+  await closeFieldSettingsDrawer(page);
+  await waitLabels("CT-001");
+  const pairAfter = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
+  recorder.check("changing source display advances metadata while keeping both pair identities and links",
+    pairAfter[0].schemaRevision !== pairBefore[0].schemaRevision
+      && pairAfter[0].dataRevision === pairBefore[0].dataRevision
+      && canonicalJsonText(relationPairIdentitiesAndLinks(pairBefore)) === canonicalJsonText(relationPairIdentitiesAndLinks(pairAfter))
+      && pairAfter[1].definition.relation.displayFieldId === pairBefore[1].definition.relation.displayFieldId);
+  await openRelationPairEditor(page, byName.physicalName, pairAfter[1].definition.displayName);
+  await selectVisibleNOption(page, "relation-target-display-field", "合同名称");
+  await planRelationPairThroughUi(page);
+  await applyRelationPairThroughUi(page);
+  await closeFieldSettingsDrawer(page);
+  await waitLabels("城轨一期更新");
+  await page.getByTestId("view-create").click();
+  const dialog = page.locator(".view-dialog:visible");
+  await dialog.waitFor();
+  await dialog.locator(".n-input input").fill("合同卡片");
+  await page.getByTestId("view-kind-gallery").click();
+  await selectVisibleNOption(page, "view-gallery-cover-field", "封面");
+  await selectVisibleNOption(page, "view-gallery-title-field", "明细");
+  await page.getByTestId("view-dialog-confirm").click();
+  await waitForGalleryProjection(page, 1);
+  const card = page.getByTestId("gallery-card");
+  await card.filter({ hasText: "城轨一期更新" }).waitFor();
+  recorder.check("contract card shares configured name and independent code with the grid",
+    (await card.innerText()).includes("CT-001") && !(await card.innerText()).includes(firstId));
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-cards.png"), fullPage: true });
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () => page.getByTestId("workspace-center")
+    .getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
+  if (closed.result?.state !== "closed") throw new Error("contract offline workspace close failed");
+  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  await selectTable(page, "合同明细案例");
+  const persisted = await read(lines.tableId);
+  const savedPair = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
+  recorder.check("offline reopen keeps contract IDs, independent display settings and renamed values in a fresh epoch",
+    reopened.payload.session.workspaceId === session.workspaceId && reopened.payload.session.sessionEpoch > session.sessionEpoch
+      && JSON.stringify(persisted.rows[0][byName.physicalName]) === JSON.stringify([firstId])
+      && persisted.rows[0][byCode.physicalName] === firstId
+      && savedPair[0].definition.relation.displayFieldId === name.fieldId
+      && savedPair[1].definition.relation.displayFieldId === pairBefore[1].definition.relation.displayFieldId
+      && (await read(contracts.tableId)).rows.find(row => row.id === firstId)?.[name.physicalName] === "城轨一期更新");
+  await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-offline-reopened.png"), fullPage: true });
+}
+
+async function scenario28(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const authors = await createSimpleTable(page, "Preview Authors", "Name");
@@ -3872,11 +4009,11 @@ async function scenario28(page, recorder) {
   const panel = page.locator(".relation-editor:visible");
   await panel.waitFor();
   const selected = panel.locator(".relation-editor__token");
-  await selected.filter({ hasText: targetId }).waitFor();
+  await selected.filter({ hasText: "AUTHOR-001" }).waitFor();
   recorder.check("many relation preview hydrates the authority's existing target",
-    await selected.count() === 1 && (await selected.first().innerText()).trim() === targetId);
+    await selected.count() === 1 && (await selected.first().innerText()).trim() === "AUTHOR-001");
   await panel.locator(".relation-editor__candidate").filter({ hasText: "候选作者" }).click();
-  await panel.locator(".relation-editor__token").filter({ hasText: "候选作者" }).waitFor();
+  await panel.locator(".relation-editor__token").filter({ hasText: "AUTHOR-002" }).waitFor();
   recorder.check("many relation editor holds a second selection as an uncommitted draft",
     await selected.count() === 2 && await panel.locator(".relation-editor__error").count() === 0);
   await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
@@ -3984,7 +4121,7 @@ async function scenario28(page, recorder) {
       && persistedTargets.rows.some(row => row.id === newTarget.id && row[authors.field.physicalName] === createdLabel),
     { reopened, persisted, persistedTargets });
   await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
-
+  await relationContractDisplayJourney(page, recorder, runtime);
 }
 
 async function scenario29(page, recorder) {

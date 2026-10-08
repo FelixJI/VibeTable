@@ -2,13 +2,28 @@
 
 状态：本地相关质量检查与定向真实产品验证通过；fresh PR CI、squash 和 main CI/CD 待完成。整体 Relation / Lookup / Formula 资格仍为 Partial。
 
+## #447 增量：类型化条目与受控来源
+
+本节是本次增量；下文原始质量/产品结果为历史基线，不作为本次修改后的完整 WPF 验收。真实 S28 已接入 CT-001/城轨一期、两显示字段、目标改名/草稿、卡片、双向设置与离线重开，并注册四张截图输出；执行结果由本次 QA 报告确认。
+
+`__vibetableRelationLabels` 的条目由字符串扩展为 typed entry `{value, source}`：`value` 为
+raw scalar（数字保持数字，0/false 有效），`source` 为受控来源（`display`=关系配置的
+显示字段，`primary`=目标表全局主显示字段回退）。每个标签用它实际来源字段自己的
+DisplaySpec 格式化（复用 #445 `formatNumberDisplay`，例如百分比显示字段为空回退货币主
+字段时按货币格式渲染，不共用单一数值权威）。空标签回退链为有效显示值→全局主显示值→
+客户端回退 record ID；非 fresh 计算结果不显示旧值。全部消费者（Grid token、卡片
+Gallery/Kanban、Picker 选择/候选/已选）已同步为同一 `src/grid/relationDisplay.ts` 共享
+投影；旧主机的纯字符串标签兼容渲染。目标表写入后已打开的 Picker 通过现有 data.changed
+→ 来源表 `schema.describe` → `targets.refresh` 刷新候选与按 ID 批量读取的已选标签，保留未提交暂选集合。字段渲染契约刷新同样保留草稿；Picker 的标签刷新使用独立代次，搜索词变化不会取消已选刷新。导出/复制插入/mutation 仍排除
+此元数据。
+
 ## 单一意图
 
 Grid 使用既有 Relation.DisplayField 读取目标记录的标量展示值。原关系字段仍是稳定 ID 或 ID 数组；标签是 QueryPort 只读行元数据 __vibetableRelationLabels，不参与 Mutation、digest 或关系身份。Host 整行复制插入排除此元数据，其他未知业务字段仍拒绝。
 
 按目标表/显示字段分组、去重并分块读取，每单元格只为实际展示的前三个目标取标签；不会递归调用 QueryPage 解析自关联。值的 presence 与计算 freshness 复用查询编译契约。空值、缺失目标、不支持的对象/数组或失效计算结果不作为有效标签，退回原记录 ID；不会 stringify 旧计算状态或递归展开另一条关系。
 
-纯 Relation 页在目标变化时复用现有 lookup.query 空投影，按所有已加载行键每批最多200条刷新标签，不重用首窗口的筛选/offset。只替换标签与必要的行/page引用，保留业务值、分页、游标与未提交草稿；使用已有 generation/revision 守卫和编辑期间的渲染队列。含 Lookup 的现有查询行为保持原路径。Picker 继续使用目标表主显示字段，未切换 owner 或新增 RPC。
+纯 Relation 页在目标变化时复用现有 lookup.query 空投影，按所有已加载行键每批最多200条刷新标签，不重用首窗口的筛选/offset。只替换标签与必要的行/page引用，保留业务值、分页、游标与未提交草稿；使用已有 generation/revision 守卫和编辑期间的渲染队列。直接目标表标签/显示配置事件使用独立 `refreshLabels` 与标签代次，即使来源有 Lookup 定义也按已加载 ID 批次仅替换标签。来源变更、深层 Lookup 依赖与显式视图重算保留既有排序/筛选查询路径和独立代次。历史资格验证时 Picker 使用目标表主显示字段；#447 已切换为关系自身显示字段，并以目标表主显示字段作辅助与回退，复用既有 RPC。
 
 ## 测试与审查
 

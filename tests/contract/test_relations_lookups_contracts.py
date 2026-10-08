@@ -11,7 +11,11 @@ from backend.contracts.lookup import (
     LookupQueryResult,
     LookupValuePageParams,
 )
-from backend.contracts.relation_admin import RelationSingleUpdateResult, SchemaSnapshot
+from backend.contracts.relation_admin import (
+    RelationSearchParams,
+    RelationSingleUpdateResult,
+    SchemaSnapshot,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "table-relations-lookups-contracts.json"
 
@@ -134,3 +138,14 @@ def test_lookup_query_accepts_empty_projection_for_relation_display_labels() -> 
     assert dumped["fieldRefs"] == []
     assert dumped["query"]["filters"][0]["value"] == ["order-1"]
     assert dumped["query"]["limit"] == 1
+
+
+def test_relation_selected_id_refresh_budget_matches_go_boundary() -> None:
+    omitted = RelationSearchParams(relation_id="source.link")
+    assert "targetItemIds" not in omitted.model_dump(by_alias=True)
+    for ids in ([], [""], ["record"] * 101):
+        with pytest.raises(ValueError, match="target"):
+            RelationSearchParams(relation_id="source.link", target_item_ids=ids)
+    assert RelationSearchParams(
+        relation_id="source.link", target_item_ids=["first", "second"]
+    ).target_item_ids == ["first", "second"]

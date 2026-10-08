@@ -2,18 +2,40 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
 from backend.contracts.data_profile import RelationDeletePolicy
-from backend.contracts.table import CamelModel, ColumnSchema
+from backend.contracts.table import CamelModel, ColumnSchema, DisplaySpec
 
 
 class RelationDiagnostic(CamelModel):
     code: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=1024)
     severity: Literal["warning", "error"] = "error"
+
+
+class RelationDisplayFieldInfo(CamelModel):
+    """Render contract of one relation label source field (#447).
+
+    Numeric labels format through the canonical DisplaySpec of the field that
+    actually produced the value (configured display field or global primary
+    display fallback); never a second numeric authority.
+    """
+
+    field_id: str = Field(min_length=1, max_length=128)
+    data_type: Literal[
+        "text",
+        "integer",
+        "decimal",
+        "boolean",
+        "date",
+        "datetime",
+        "time",
+        "json",
+    ]
+    display: DisplaySpec | None = None
 
 
 class NormalizedRelationDescriptor(CamelModel):
@@ -37,6 +59,11 @@ class NormalizedRelationDescriptor(CamelModel):
     state: Literal["valid", "readonly", "invalid"] = "valid"
     display_template: str | None = None
     diagnostics: list[RelationDiagnostic] = Field(default_factory=list)
+    # Relation label display projection (#447): the relation's own display
+    # field in the target table plus both render contracts.
+    display_field_id: str | None = None
+    display_field_info: RelationDisplayFieldInfo | None = None
+    fallback_display_field_info: RelationDisplayFieldInfo | None = None
 
 
 class SchemaSnapshot(CamelModel):
@@ -86,6 +113,12 @@ class RelationTargetRef(CamelModel):
     item_id: str
     label: str
     secondary_label: str | None = None
+    # Raw typed scalars behind label/secondary_label (display-only; 0 and
+    # false are valid values). Clients render them through the shared field
+    # display contract instead of re-parsing the label text; they never join
+    # mutation business values.
+    display_value: str | int | float | bool | None = None
+    secondary_value: str | int | float | bool | None = None
 
 
 class RelationSearchParams(CamelModel):
@@ -93,6 +126,11 @@ class RelationSearchParams(CamelModel):
     query: str = Field(default="", max_length=256)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=200)
+    # Direct batched refresh for already-selected targets (#447): resolves the
+    # same label projection by stable record IDs, independent of the keyword.
+    target_item_ids: list[Annotated[str, Field(min_length=1)]] = Field(
+        default_factory=list, min_length=1, max_length=100, exclude_if=lambda value: not value
+    )
 
 
 class RelationSearchResult(CamelModel):

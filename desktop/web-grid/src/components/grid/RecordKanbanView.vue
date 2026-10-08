@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Kanban } from "@lucide/vue";
-import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
+import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
 import { t } from "@/i18n";
 import { displayValue, metadataFields, rowTitle } from "./recordViewUtils";
 
@@ -12,6 +12,7 @@ const props = defineProps<{
   interactionEnabled?: boolean;
   laneOptions?: readonly { readonly optionId: string; readonly label: string }[];
   lookupDefinitions?: readonly LookupDefinition[];
+  relations?: readonly NormalizedRelationDescriptor[];
 }>();
 const emit = defineEmits<{
   cardMove: [intent: {
@@ -129,17 +130,17 @@ function onDrop(event: DragEvent, targetOptionId: string | null): void {
         <div class="kanban-cards">
           <article
             v-for="row in lane.records"
-            :key="String(row.rowKey ?? rowTitle(row, view))"
+            :key="String(row.rowKey ?? rowTitle(row, view, schema, relations))"
             data-testid="kanban-card"
             :data-row-key="String(row.rowKey ?? '')"
             :draggable="canDrag(row)"
             @dragstart="onDragStart($event, row)"
             @dragend="draggedCard = null"
           >
-            <strong>{{ rowTitle(row, view) }}</strong>
+            <strong>{{ rowTitle(row, view, schema, relations) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">
-                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name], field, lookupDefinitions) }}</dd>
+                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name], field, lookupDefinitions, row, relations) }}</dd>
               </template>
             </dl>
           </article>
