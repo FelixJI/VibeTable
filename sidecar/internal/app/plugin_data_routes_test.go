@@ -411,6 +411,11 @@ func TestPluginDataRealAuthorityPaginationAndGrants(t *testing.T) {
 	}
 }
 
+// Keep real enqueueing without a runner racing the manually staged formula state.
+type pluginComputedBackfillQueue struct{ *jobs.Service }
+
+func (pluginComputedBackfillQueue) Start(string) bool { return false }
+
 func TestPluginDataComputedFreshnessAndDependencyCursor(t *testing.T) {
 	pb := schemaProductStore(t)
 	ctx := context.Background()
@@ -443,7 +448,7 @@ func TestPluginDataComputedFreshnessAndDependencyCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := fieldchange.NewExecutor(pb, plans, fieldchange.WithFormulaBackfillScheduler(backfill)).Apply(ctx, v2.ApplyRequest{PlanID: plan.PlanID, PlanHash: plan.PlanHash, OperationID: "plugin-computed-apply", Actor: actor})
+	receipt, err := fieldchange.NewExecutor(pb, plans, fieldchange.WithFormulaBackfillScheduler(pluginComputedBackfillQueue{backfill})).Apply(ctx, v2.ApplyRequest{PlanID: plan.PlanID, PlanHash: plan.PlanHash, OperationID: "plugin-computed-apply", Actor: actor})
 	if err != nil {
 		t.Fatal(err)
 	}
