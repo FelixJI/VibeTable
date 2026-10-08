@@ -329,7 +329,10 @@ public sealed class ProductDataRequestController
                     return;
                 if (forwarded is ProductSidecarFailure failure)
                 {
-                    PostSidecarFailure(request, failure.Error);
+                    PostSidecarFailure(
+                        request,
+                        failure.Error,
+                        Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds);
                     return;
                 }
                 if (forwarded is not ProductSidecarSuccess success)
@@ -462,7 +465,8 @@ public sealed class ProductDataRequestController
 
     private void PostSidecarFailure(
         RoutedWebRequest request,
-        ProductSidecarRpcError error)
+        ProductSidecarRpcError error,
+        double elapsedMs)
     {
         if (error.Code == -32602)
         {
@@ -492,7 +496,13 @@ public sealed class ProductDataRequestController
             _reply.PostResponse(request.Type, request.RequestId, mapped);
             return;
         }
-        TraceFailure(request.Type, "PRODUCT_RPC_FAILED");
+        // Only the numeric code is safe to persist; sidecar message and data may contain content.
+        TraceFailure(
+            request.Type,
+            $"PRODUCT_RPC_FAILED:{error.Code}",
+            "dispatch",
+            request.RequestId,
+            elapsedMs);
         _reply.PostOperationFailed(
             request.RequestId,
             "Product data operation failed.",

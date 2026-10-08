@@ -326,6 +326,64 @@ public sealed class ProductDataSidecarRoutingTests
     }
 
     [TestMethod]
+    public async Task UnmappedSidecarFailureTracesDispatchStageWithNumericCodeOnly()
+    {
+        string requestId = $"rlzhp8xk-9-{Guid.NewGuid():D}";
+        JsonElement sensitiveData = JsonSerializer.SerializeToElement(new
+        {
+            secret = @"C:\Users\customer\机密-report.docx",
+        });
+        var sink = new FakeWebReplySink();
+        var traces = new List<string>();
+        var controller = new ProductDataRequestController(
+            sink,
+            SelectorFor("query.page", "goSidecar"),
+            traceError: traces.Add);
+        controller.SetProductSidecarForwarder(FailureForwarder(new ProductSidecarRpcError(
+            -32000,
+            @"sensitive sidecar failure C:\Users\customer\机密-report.docx",
+            sensitiveData)));
+
+        await controller.DispatchAsync(QueryRequest(requestId));
+
+        FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(reply);
+        Assert.AreEqual(requestId, reply.RequestId);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(reply.Payload),
+            @"""code"":""PRODUCT_DATA_FAILED""");
+        Assert.HasCount(1, traces);
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(traces[0]), traces[0]);
+        using JsonDocument document = JsonDocument.Parse(traces[0]);
+        JsonElement root = document.RootElement;
+        Assert.AreEqual(
+            "query.page.dispatch",
+            root.GetProperty("event").GetString(),
+            traces[0]);
+        Assert.AreEqual(
+            "PRODUCT_RPC_FAILED:-32000",
+            root.GetProperty("errorCode").GetString(),
+            traces[0]);
+        Assert.AreEqual(
+            requestId,
+            root.GetProperty("requestId").GetString(),
+            traces[0]);
+        Assert.AreEqual(
+            JsonValueKind.Number,
+            root.GetProperty("durationMs").ValueKind,
+            traces[0]);
+        Assert.IsTrue(
+            root.GetProperty("durationMs").GetDouble() >= 0,
+            traces[0]);
+        Assert.IsFalse(
+            traces[0].Contains("sensitive sidecar failure", StringComparison.Ordinal),
+            traces[0]);
+        Assert.IsFalse(
+            traces[0].Contains("机密-report", StringComparison.Ordinal),
+            traces[0]);
+    }
+
+    [TestMethod]
     public async Task GoInvalidParamsMapsToBadPayload()
     {
         var sink = new FakeWebReplySink();
