@@ -717,8 +717,7 @@ func (service *Service) prepareDelta(
 		resultIDs = append(resultIDs, recordID)
 	}
 	sort.Strings(resultIDs)
-	unionIDs := make([]string, 0, len(currentIDs)+len(resultIDs))
-	unionIDs = append(unionIDs, currentIDs...)
+	unionIDs := append([]string(nil), currentIDs...)
 	unionIDs = append(unionIDs, resultIDs...)
 	rowsByID, err := service.readTargetRows(
 		ctx, resolved.descriptor.TargetTableID, unionIDs,
