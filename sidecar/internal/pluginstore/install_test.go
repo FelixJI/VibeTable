@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/pocketbase/dbx"
-	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -115,7 +114,9 @@ func TestWholeDatabaseSnapshotRestoresFourKindsAndMigrationMarkerAtNewPath(t *te
 	if _, err := service.app.DB().NewQuery("VACUUM INTO {:destination}").Bind(dbx.Params{"destination": filepath.Join(root, "data.db")}).Execute(); err != nil {
 		t.Fatal(err)
 	}
-	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: root, HideStartBanner: true})
+	// Plain core app: the CLI launcher's background modernc dependency check
+	// would read Settings().Logs concurrently with the MaxDays write below.
+	app := core.NewBaseApp(core.BaseAppConfig{DataDir: root})
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
