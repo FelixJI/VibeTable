@@ -435,7 +435,9 @@ func (s *pluginQuerySource) DescribeSelectionTable(ctx context.Context, app core
 		}
 		if field.Relation != nil {
 			copy := *field.Relation
+			// Strip every label source so this port returns raw relation IDs only.
 			copy.DisplayField = ""
+			copy.PrimaryDisplayField = ""
 			copy.Fields = map[string]query.FieldDescriptor{}
 			copy.PresenceFields = nil
 			field.Relation = &copy
