@@ -108,6 +108,22 @@ describe("field settings service", () => {
     vi.unstubAllGlobals();
   });
 
+  it("accepts progress parameters from real describe and plan parser paths", async () => {
+    const original = definition();
+    const progress = { ...original, display: { ...original.display, preset: "progress", progressStart: 1, progressTarget: 2 } };
+    request.mockResolvedValueOnce({ ...describeResult(), definition: progress })
+      .mockResolvedValueOnce({ ...plan(), before: progress, after: progress });
+    const service = useFieldSettingsService(); const store = useFieldSettingsStore();
+    await service.openEdit("tbl_opaque", progress.identity.fieldId);
+    expect(store.phase).toBe("editing");
+    expect(store.draft?.display.progressTarget).toBe(2);
+    store.patchDraft({ displayName: "进度" });
+    await service.plan();
+    expect(store.phase).toBe("planned");
+    expect(request.mock.calls[1]?.[0]).toBe("field.change.plan");
+    service.dispose();
+  });
+
   it("keeps the requested diagnosis identity after describe fails and clears it for create/close", async () => {
     request.mockResolvedValueOnce(describeResult(true));
     const service = useFieldSettingsService();

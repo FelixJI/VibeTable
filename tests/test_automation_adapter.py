@@ -1101,6 +1101,7 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     assert {name for name in ("uv", "node", "dotnet", "go") if data_io.get(name)} == {
         "uv",
         "node",
+        "go",
     }
     assert shards["handoff_paths"] == [
         "build/automation/artifacts",

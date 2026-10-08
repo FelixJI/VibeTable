@@ -1,3 +1,4 @@
+import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
 import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
@@ -5494,6 +5495,7 @@ const ORDINARY_WORKER_FREE_SCENARIOS = new Set([
   "05-formula-lifecycle",
   "06-relation-fanout",
   "08-stale-conflict",
+  "45-common-field-display",
 ]);
 
 // One closed-set topology observation at the common dispatch entry: after a
@@ -7912,8 +7914,72 @@ async function scenario13(page, recorder, _network, runtime) {
   await page.screenshot({ path: path.join(runtime.evidenceDir, "13-protection-policy.png"), fullPage: true });
 }
 
+export function installDocumentDiffReadCaptureInPage() {
+  if (window.__vibetableE2EDocumentDiffReads) return;
+  const webview = window.chrome.webview;
+  const previousPostMessage = webview.postMessage;
+  const parse = candidate => {
+    if (typeof candidate !== "string") return candidate;
+    try { return JSON.parse(candidate); } catch { return null; }
+  };
+  const capture = { pending: new Map(), closes: new Map() };
+  const onMessage = event => {
+    const message = parse(event.data);
+    if (message?.type === "document.diffPageCompleted") {
+      capture.pending.delete(message.requestId);
+    }
+  };
+  function postMessage(...args) {
+    const message = parse(args[0]);
+    if (message?.type === "document.diffPageRequested") {
+      capture.pending.set(message.requestId, message.payload.sessionId);
+    } else if (message?.type === "document.diffCloseRequested") {
+      capture.closes.set(message.requestId, message.payload.sessionId);
+    }
+    return previousPostMessage.apply(this, args);
+  }
+  capture.release = () => {
+    webview.removeEventListener("message", onMessage);
+    if (webview.postMessage === postMessage) webview.postMessage = previousPostMessage;
+    if (window.__vibetableE2EDocumentDiffReads === capture) {
+      delete window.__vibetableE2EDocumentDiffReads;
+    }
+  };
+  window.__vibetableE2EDocumentDiffReads = capture;
+  webview.addEventListener("message", onMessage);
+  webview.postMessage = postMessage;
+}
+
+export async function closeDocumentDiffThroughUi(page, sessionId) {
+  await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+  await page.getByTestId("diff-close").click();
+  const closed = await waitForCapturedBridgeMessage(page, 30_000);
+  const matchesRequest = await page.evaluate(({ requestId, sessionId }) =>
+    window.__vibetableE2EDocumentDiffReads?.closes.get(requestId) === sessionId,
+  { requestId: closed.requestId, sessionId });
+  if (closed.payload?.sessionId !== sessionId || !matchesRequest) {
+    throw new Error("document diff close session identity does not match its UI request");
+  }
+  // Closing revokes metadata immediately; active page readers release artifacts at their terminal.
+  await page.waitForFunction(sessionId => {
+    const capture = window.__vibetableE2EDocumentDiffReads;
+    if (!capture) throw new Error("document diff read capture was released before cleanup");
+    return [...capture.pending.values()].every(id => id !== sessionId);
+  }, closed.payload.sessionId, { timeout: 30_000 });
+  return closed;
+}
+
 async function scenario14(page, recorder, _network, runtime, shell = waitForShell) {
   await shell(page, recorder, { requireDatabaseOpened: true });
+  await page.evaluate(installDocumentDiffReadCaptureInPage);
+  try {
+    return await qualifyDocumentDiff(page, recorder, runtime);
+  } finally {
+    await page.evaluate(() => window.__vibetableE2EDocumentDiffReads?.release());
+  }
+}
+
+async function qualifyDocumentDiff(page, recorder, runtime) {
   const qualifiedFiles = [];
   const sourcePath = path.join(runtime.controlsDir, "document-diff-source.txt");
   const beforeLines = ["deleted-only", "start"];
@@ -8043,11 +8109,9 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       && text.includes("deleted-only") && text.includes("inserted-only"), { ids });
   await page.getByTestId("diff-result").scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(runtime.evidenceDir, "14-diff-details.png"), fullPage: true });
-  await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-  await page.getByTestId("diff-close").click();
-  await waitForCapturedBridgeMessage(page, 30_000);
+  const closed = await closeDocumentDiffThroughUi(page, changed.payload.session.sessionId);
   const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
-    sessionId: changed.payload.session.sessionId, cursor: null, limit: 50,
+    sessionId: closed.payload.sessionId, cursor: null, limit: 50,
   }, 30_000, ["document.diffPageCompleted"]);
   const artifactRoot = path.join(runtime.dataRoot, "document-diff");
   const remaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
@@ -8193,9 +8257,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       isDeepStrictEqual(unchangedHistorical, originalHistorical)
         && newTree.result.effectiveRevisionId === session.effectiveRevisionId,
     { originalHistorical, unchangedHistorical, effectiveRevisionId: newTree.result.effectiveRevisionId });
-    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-    await page.getByTestId("diff-close").click();
-    await waitForCapturedBridgeMessage(page, 30_000);
+    let closed = await closeDocumentDiffThroughUi(page, session.sessionId);
     if (!normalized) {
       await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
       await page.getByTestId("compare-revision").first().click();
@@ -8211,12 +8273,10 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       recorder.check("DOCX retries after cancellation with a fresh valid session", retried.payload?.outcome === "ready"
         && retried.payload?.session?.sessionId !== session.sessionId
         && retried.payload?.session?.summary?.totalChangeGroups === 3, { retried });
-      await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-      await page.getByTestId("diff-close").click();
-      await waitForCapturedBridgeMessage(page, 30_000);
+      closed = await closeDocumentDiffThroughUi(page, retried.payload.session.sessionId);
     }
     const closedPage = await rawBridgeRequest(page, "document.diffPageRequested", {
-      sessionId: session.sessionId, cursor: null, limit: 50,
+      sessionId: closed.payload.sessionId, cursor: null, limit: 50,
     }, 30_000, ["document.diffPageCompleted"]);
     const knownRemaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
     recorder.check(`DOCX ${name} closes its session and cleans Worker files`,
@@ -8348,11 +8408,9 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
         oldTree.result.revisions.find(item => item.revisionId === historical))
       && newTree.result.effectiveRevisionId === session.effectiveRevisionId
       && sourceBytes.equals(await fs.readFile(syntheticSource)));
-    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-    await page.getByTestId("diff-close").click();
-    await waitForCapturedBridgeMessage(page, 30_000);
+    const closed = await closeDocumentDiffThroughUi(page, session.sessionId);
     const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
-      sessionId: session.sessionId, cursor: null, limit: 50,
+      sessionId: closed.payload.sessionId, cursor: null, limit: 50,
     }, 30_000, ["document.diffPageCompleted"]);
     const artifactRoot = path.join(runtime.dataRoot, "document-diff");
     recorder.check(`XLSX ${caseName} expires and cleans known outputs`, expired.payload?.failure === "sessionExpired"
@@ -11962,6 +12020,17 @@ async function scenario36(page, recorder, _network, runtime) {
   });
 }
 
+// 独立预算避免完整字段旅程与 S02 叠加超时。
+async function scenario45(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  await runCommonFieldDisplayJourney(page, recorder, runtime, {
+    createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
+    rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -12062,6 +12131,7 @@ const scenarios = {
   "44-file-restore-crash": () => {
     throw new Error("Restore crash requires the owned seed and normal cold-Host resume phases");
   },
+  "45-common-field-display": scenario45,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

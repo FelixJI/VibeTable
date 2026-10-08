@@ -315,10 +315,12 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
         "39-file-workflow-combination",
+        "40-file-history-capacity",
         "41-file-document-operations",
         "42-file-document-native-operations",
         "43-file-revision-leaves",
         "44-file-restore-crash",
+        "45-common-field-display",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
@@ -2612,6 +2614,12 @@ SCENARIO_SCREENSHOTS = {
         "02-number-display-currency.png",
         "02-number-display-percent.png",
         "02-auto-number-readonly.png",
+    ),
+    "45-common-field-display": (
+        "45-common-field-display.png",
+        "45-common-field-display-reopened.png",
+        "45-common-field-display-restored.png",
+        "45-common-field-display-cards.png",
     ),
     "35-data-io-interoperability": (
         "35-import-management-history.png",

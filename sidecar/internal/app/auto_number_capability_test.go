@@ -89,6 +89,7 @@ func assertDescribeAutoNumberRevision(t *testing.T, snapshot v2.SchemaSnapshot, 
 	if schema["capabilityHash"] != current {
 		t.Fatal("production revision does not include the current capabilities")
 	}
+	assertAndStripCommonDisplayPresets(t, definition)
 	assertAndStripAutoNumberCapability(t, definition)
 	historical, err := describeRevision(definition)
 	if err != nil {

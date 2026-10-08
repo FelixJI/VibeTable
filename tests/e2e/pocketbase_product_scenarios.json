@@ -267,5 +267,11 @@
     "file-history.branches",
     "workspace.recovery"
   ]
-}
+},
+  {
+    "id": "45-common-field-display",
+    "title": "常用字段显示、重开与快照恢复旅程",
+    "requirement": "独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。",
+    "capabilities": ["schema.v2", "release.smoke"]
+  }
 ]

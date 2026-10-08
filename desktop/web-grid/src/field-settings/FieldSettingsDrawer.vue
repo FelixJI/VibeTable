@@ -33,6 +33,7 @@ import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
 import type { LookupConditionFieldOption } from "./lookup/lookupCondition";
 import { useFieldSettingsStore } from "./store";
 import { formatNumberDisplay } from "@/number/numberDisplay";
+import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { getLocale } from "@/i18n";
 
 const emit = defineEmits<{
@@ -117,9 +118,10 @@ const typeOptions = computed(() => {
   const allowed = currentType
     ? new Set([currentType, ...(store.sourceCapability?.conversionTargets ?? [])])
     : null;
-  return store.capabilities
-    .filter((item) => item.userCreatable && (!allowed || allowed.has(item.logicalType)))
-    .map((item) => ({ label: typeLabel(item.logicalType), value: item.logicalType }));
+  const capabilities = store.capabilities.filter((item) => item.userCreatable && (!allowed || allowed.has(item.logicalType)));
+  return [...capabilities.map((item) => ({ label: typeLabel(item.logicalType), value: String(item.logicalType) })),
+    ...capabilities.flatMap((item) => item.displayPresets.filter(preset => ["phone", "progress", "rating"].includes(preset))
+      .map(preset => ({ label: { phone: "电话号码", progress: "进度", rating: "评分" }[preset] ?? preset, value: preset })))];
 });
 const conversionRuleOptions = computed(() => (store.capability?.conversionRules ?? [])
   .map((value) => ({ label: value, value })));
@@ -276,6 +278,7 @@ const displayPresetOptions = computed(() => {
     : ["number", "integer", "currency", "percent", "unit"];
   const labels: Record<string, string> = {
     number: "数字", integer: "整数显示", currency: "货币", percent: "百分比", unit: "单位",
+    progress: "进度", rating: "评分",
   };
   return presets.map((value) => ({ label: labels[value] ?? value, value }));
 });
@@ -298,8 +301,16 @@ function clampDisplayScale(value: number | null): number {
  * 呈现层信息，切换预设不会缩放或重写任何已存值。
  */
 function applyDisplayPreset(preset: string): void {
-  const current = store.draft?.display;
+  if (!store.draft) return;
+  const { progressStart: _start, progressTarget: _target, ratingMax: _rating, ...current } = store.draft.display;
+  patch({ display: current });
   switch (preset) {
+    case "progress":
+      patchDisplay({ preset: "progress", percentStorage: "ratio", progressStart: 0, progressTarget: 1, unit: null });
+      break;
+    case "rating":
+      applyRatingMaximum(5);
+      break;
     case "integer":
       // 整数显示只改呈现；同时清掉残留单位，不触碰存储 onlyInt。
       patchDisplay({ preset: "integer", displayScale: 0, unit: null });
@@ -326,6 +337,23 @@ function applyDisplayPreset(preset: string): void {
       patchDisplay({ preset: "number", unit: null });
   }
 }
+
+function applyRatingMaximum(value: number | null): void {
+  if (!store.draft) return;
+  const maximum = value ?? 5;
+  patch({ display: { ...store.draft.display, preset: "rating", ratingMax: maximum, unit: null },
+    storage: { ...store.draft.storage, options: { ...store.draft.storage.options, onlyInt: true } },
+    constraints: { ...store.draft.constraints, range: { min: 0, max: maximum } } });
+}
+
+const commonPreview = computed(() => {
+  const draft = store.draft;
+  if (!draft) return "";
+  const dataType = draft.logicalType === "bool" ? "boolean" : draft.logicalType === "dateTime" || draft.logicalType === "autoDate" ? "datetime" : draft.logicalType === "time" ? "time" : draft.logicalType === "date" ? "date" : "text";
+  const value = dataType === "boolean" ? true : dataType === "date" ? "2026-03-08" : dataType === "datetime" ? "2026-03-08T07:00:00Z" : dataType === "time" ? "09:30:15.125" : draft.logicalType === "select" || draft.logicalType === "multiSelect" ? draft.select?.options[0]?.optionId ?? "" : draft.display.preset === "phone" ? "+86 010-0012 ext.03" : "示例文本";
+  return formatFieldDisplay(value, { dataType, display: draft.display,
+    enumOptions: draft.select?.options.filter((option): option is SelectOptionV2 => Boolean(option.optionId)) }, getLocale());
+});
 
 /** 切换到“固定”时规范化尾零规则；固定始终保留尾零，最多自动去零。 */
 function applyScaleMode(mode: string): void {
@@ -382,17 +410,19 @@ const numericDisplayHint = computed(() => {
 
 const numberPreviewLarge = computed(() => {
   if (!numericDisplayApplicable.value || !store.draft) return "";
-  return formatNumberDisplay(1234.56789, store.draft.display, getLocale()) ?? "";
+  return formatNumberDisplay(store.draft.display.preset === "rating" ? 0 : store.draft.display.preset === "progress" ? 0.125 : 1234.56789, store.draft.display, getLocale()) ?? "";
 });
 
 const numberPreviewSmall = computed(() => {
   if (!numericDisplayApplicable.value || !store.draft) return "";
-  return formatNumberDisplay(12, store.draft.display, getLocale()) ?? "";
+  return formatNumberDisplay(store.draft.display.preset === "rating" ? store.draft.display.ratingMax ?? 5 : store.draft.display.preset === "progress" ? 1.5 : 12, store.draft.display, getLocale()) ?? "";
 });
 
 const displayPreviewHint = computed(() => {
   const display = store.draft?.display;
   if (!display) return "";
+  if (display.preset === "progress") return "起点/目标仅控制条宽，百分比始终显示真实 ratio；编辑按原值保存，不重复乘除 100";
+  if (display.preset === "rating") return "评分显式启用整数与 0–上限约束，旧值不兼容时零写入拒绝；0 与空值分开";
   if (display.preset === "percent") {
     return display.percentStorage === "percent"
       ? "存储 12.5 显示 12.5%；输入按原值保存，不自动乘除 100，也不带百分号输入"
@@ -538,8 +568,14 @@ function isJsonObject(
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function changeType(value: LogicalTypeV2): void {
-  store.changeType(value);
+function changeType(value: string): void {
+  const presetType = value === "phone" ? "text" : value === "progress" || value === "rating" ? "number" : null;
+  const logicalType = presetType ?? value as LogicalTypeV2;
+  if (store.draft?.logicalType !== logicalType) store.changeType(logicalType);
+  if (value === "phone") patchDisplay({ preset: "phone" });
+  if (value === "progress" || value === "rating") applyDisplayPreset(value);
+  if (value === "text" && store.draft?.display.preset === "phone") patchDisplay({ preset: "plain" });
+  if (value === "number" && ["progress", "rating"].includes(store.draft?.display.preset ?? "")) applyDisplayPreset("number");
 }
 
 function addSelectOption(): void {
@@ -702,7 +738,7 @@ function isTextual(type: LogicalTypeV2): boolean {
               <label>
                 <span>字段类型</span>
                 <NSelect
-                  :value="store.draft.logicalType"
+                  :value="['phone', 'progress', 'rating'].includes(store.draft.display.preset) ? store.draft.display.preset : store.draft.logicalType"
                   :options="typeOptions"
                   filterable
                   data-testid="field-logical-type"
@@ -899,8 +935,14 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div class="switch-row">
                     <div><strong>尾零规则</strong><small data-testid="number-display-trailing-zeros-hint">{{ trailingZeroHint }}</small></div>
                   </div>
+                  <div v-if="store.draft.display.preset === 'progress'" class="two-column">
+                    <label><span>显示起点</span><NInputNumber data-testid="progress-start" :value="store.draft.display.progressStart ?? 0" @update:value="patchDisplay({ progressStart: $event ?? 0 })" /></label>
+                    <label><span>显示目标</span><NInputNumber data-testid="progress-target" :value="store.draft.display.progressTarget ?? 1" @update:value="patchDisplay({ progressTarget: $event ?? 1 })" /></label>
+                    <small>仅控制进度条，不限制值域；负值和超出目标的值保持原值百分比。</small>
+                  </div>
+                  <label v-if="store.draft.display.preset === 'rating'"><span>评分上限（整数 1–10）</span><NInputNumber data-testid="rating-max" :min="1" :max="10" :precision="0" :value="store.draft.display.ratingMax ?? 5" @update:value="applyRatingMaximum" /><small>显式启用整数及 0–上限值域；不兼容旧值会预检拒绝。</small></label>
                   <div class="display-preview" data-testid="number-display-preview">
-                    <small>预览（示例 1234.56789 与 12）</small>
+                    <small>{{ store.draft.display.preset === "rating" ? "预览（零与评分上限）" : store.draft.display.preset === "progress" ? "预览（原值 0.125 与 1.5）" : "预览（示例 1234.56789 与 12）" }}</small>
                     <code>{{ numberPreviewLarge }}</code>
                     <code>{{ numberPreviewSmall }}</code>
                     <small class="preview-hint">{{ displayPreviewHint }}</small>
@@ -1024,37 +1066,42 @@ function isTextual(type: LogicalTypeV2): boolean {
                   </div>
                 </section>
 
+                <section v-if="!numericDisplayApplicable" class="settings-section">
+                  <div class="display-preview" data-testid="common-display-preview"><strong>显示预览</strong><code>{{ commonPreview }}</code><small>预览与网格、记录卡片共用显示规则；原值保持不变。</small></div>
+                </section>
+                <section v-if="store.draft.logicalType === 'text'" class="settings-section"><label><span>文本预设</span><NSelect data-testid="text-display-preset" :value="store.draft.display.preset || 'plain'" :options="[{label:'单行文本',value:'plain'},{label:'电话号码',value:'phone'}]" @update:value="patchDisplay({ preset: $event })" /></label></section>
                 <section v-if="store.draft.logicalType === 'bool'" class="settings-section">
                   <div class="section-title"><div><strong>布尔显示</strong><small>未填写、false 和 true 保持三种状态</small></div></div>
                   <div class="two-column">
                     <label><span>显示方式</span><NSelect
-                      :value="store.draft.display.mode"
+                      data-testid="bool-display-mode" :value="store.draft.display.mode"
                       :options="[{label:'复选框',value:'checkbox'},{label:'开关',value:'switch'},{label:'文字',value:'text'}]"
                       @update:value="patchDisplay({ mode: $event })"
                     /></label>
                     <span />
                     <label><span>真值标签</span><NInput
-                      :value="store.draft.display.trueLabel"
+                      data-testid="bool-true-label" :value="store.draft.display.trueLabel"
                       @update:value="patchDisplay({ trueLabel: $event })"
                     /></label>
                     <label><span>假值标签</span><NInput
-                      :value="store.draft.display.falseLabel"
+                      data-testid="bool-false-label" :value="store.draft.display.falseLabel"
                       @update:value="patchDisplay({ falseLabel: $event })"
                     /></label>
                   </div>
                 </section>
 
-                <section v-if="['date', 'dateTime', 'time'].includes(store.draft.logicalType)" class="settings-section">
+                <section v-if="['date', 'dateTime', 'time', 'autoDate'].includes(store.draft.logicalType)" class="settings-section">
                   <div class="section-title"><div><strong>时间显示</strong><small>精度和时区仅影响呈现</small></div></div>
                   <div class="two-column">
                     <label><span>显示精度</span><NSelect
-                      :value="store.draft.display.precision"
+                      data-testid="field-display-precision" :value="store.draft.display.precision"
                       :options="[
                         {label:'日期',value:'day'},{label:'分钟',value:'minute'},
                         {label:'秒',value:'second'},{label:'毫秒',value:'millisecond'}]"
                       @update:value="patchDisplay({ precision: $event })"
                     /></label>
-                    <label v-if="store.draft.logicalType === 'dateTime'"><span>显示时区</span><NSelect
+                    <label v-if="['dateTime', 'autoDate'].includes(store.draft.logicalType)"><span>显示时区</span><NSelect
+                      data-testid="field-display-timezone" filterable tag
                       :value="store.draft.display.timezone"
                       :options="[{label:'系统时区',value:'system'},{label:'UTC',value:'UTC'}]"
                       @update:value="patchDisplay({ timezone: $event })"
@@ -1471,6 +1518,16 @@ function isTextual(type: LogicalTypeV2): boolean {
                 <span><b>{{ store.plan.impact.ambiguous }}</b>歧义</span>
                 <span><b>{{ store.plan.impact.dependencies.length }}</b>依赖</span>
               </div>
+              <NAlert
+                v-if="store.plan.impact.failures.length !== 0"
+                type="error"
+                :show-icon="false"
+              >
+                <strong>不兼容样本</strong>
+                <div v-for="sample in store.plan.impact.failures" :key="sample.recordId">
+                  {{ sample.recordId }} · {{ sample.reason }}
+                </div>
+              </NAlert>
               <NAlert v-for="warning in store.plan.warnings" :key="warning.code + warning.path" type="warning" :show-icon="false">
                 <strong>{{ warning.code }}</strong> · {{ warning.message }}
               </NAlert>

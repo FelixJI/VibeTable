@@ -1653,13 +1653,17 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationClient
+[Console]::Error.WriteLine("UIA_STAGE client-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
 Add-Type -AssemblyName UIAutomationTypes
+[Console]::Error.WriteLine("UIA_STAGE types-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
 # The default-proxy loader scans callers' ReflectedType. Public MethodInfo.Invoke
 # supplies a named framework frame without compiling C# inside the 5s budget.
 $assembly = [System.Windows.Automation.AutomationElement].Assembly.GetName()
 $assembly.Name = "UIAutomationClientsideProviders"
+[Console]::Error.WriteLine("UIA_STAGE provider-registration begin elapsedMs=$($clock.ElapsedMilliseconds)")
 [System.Windows.Automation.ClientSettings].GetMethod(
     "RegisterClientSideProviderAssembly").Invoke($null, @($assembly))
+[Console]::Error.WriteLine("UIA_STAGE provider-registration end elapsedMs=$($clock.ElapsedMilliseconds)")
 [Console]::Error.WriteLine("UIA_STAGE assemblies end elapsedMs=$($clock.ElapsedMilliseconds)")
 [Console]::Error.WriteLine("UIA_STAGE root begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $root = [System.Windows.Automation.AutomationElement]::FromHandle(
