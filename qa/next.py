@@ -1324,6 +1324,12 @@ def persist_product_e2e_evidence(
                 "28-contract-cards.png",
                 "28-contract-offline-reopened.png",
             ),
+            "45-common-field-display": (
+                "45-common-field-display.png",
+                "45-common-field-display-reopened.png",
+                "45-common-field-display-restored.png",
+                "45-common-field-display-cards.png",
+            ),
             "35-data-io-interoperability": (
                 "35-import-management-history.png",
                 "35-import-management-reopened.png",

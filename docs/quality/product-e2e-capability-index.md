@@ -7,10 +7,10 @@
 
 ## 当前声明范围
 
-- 场景：43
+- 场景：44
 - 唯一能力：64
-- 场景—能力关联：101
-- `release.smoke` 场景：4
+- 场景—能力关联：103
+- `release.smoke` 场景：5
 
 ## 能力到场景
 
@@ -66,11 +66,11 @@
 | `relation.preview` | <code>28-relation-delta-preview</code>（关系预览、选择器写入与重开） |
 | `relation.search` | <code>27-relation-target-search</code>（关系目标搜索） |
 | `relation.write` | <code>28-relation-delta-preview</code>（关系预览、选择器写入与重开） |
-| `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `release.smoke` | <code>01-offline-first-start</code>（干净数据目录离线首次启动）、<code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>08-stale-conflict</code>（两次过期编辑显示明确冲突）、<code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环）、<code>45-common-field-display</code>（常用字段显示、重开与快照恢复旅程） |
 | `replica.conflict` | <code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
 | `replica.recovery` | <code>23-directory-replica-recovery</code>（目录副本释放、重开与进程恢复）、<code>24-directory-replica-conflict</code>（双端目录副本冲突与败方恢复） |
 | `schema.query` | <code>30-query-snapshot-validation</code>（查询快照只读校验） |
-| `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（常用公式界面、重算重开与迁移回滚）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
+| `schema.v2` | <code>02-all-field-schema</code>（Schema v2 字段家族与稳定身份）、<code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>05-formula-lifecycle</code>（常用公式界面、重算重开与迁移回滚）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开）、<code>45-common-field-display</code>（常用字段显示、重开与快照恢复旅程） |
 | `snapshot.package` | <code>15-workspace-snapshot-package</code>（工作区切换与快照包） |
 | `snapshot.restore` | <code>12-backup-consistency</code>（工作区快照恢复一致性） |
 | `timeline.lifecycle` | <code>22-timeline-date-move</code>（Timeline 单日期拖动持久化） |
@@ -128,3 +128,4 @@
 | <code>42-file-document-native-operations</code> | FileDocument真实Windows打开预览与拖出 | 真实FileDocument picker导入合成TXT并核manifest UUID/documentId/path/effective与字面bytes；真实UI拖出由生产DoDragDrop与FileDrop到本次合成drop目标，Copy核相关operationId/source/path及实际目标bytes，Escape取消不冒充Copy；真实默认打开观察TXT对应新进程/窗口；独立固定纯文本、无脚本/外联的合成HTML经真实picker导入，按真实capability调用系统Preview Handler并观察独立host的COM DoPreview结果。无默认打开或HTML预览handler时明确能力失败，禁止Fake成功或修改系统关联/COM注册；TXT与HTML的原导入源、物化字节、完整元数据与有效修订均保持。不覆盖排序分页/版本叶子。 | `file-document.native-operations` |
 | <code>43-file-revision-leaves</code> | 文件autosave正式分支与叶子恢复激活 | 真实Host picker导入formal V1，同UUID正常关闭/外部保存/重开两次由真实startup watcher追加autosave；真实树从首autosave升级formal V2生成兄弟分支，分别从非当前叶子恢复为新formal V3与设为当前分支，核parent/effective/ordinal/formal/source、旧修订全对象不变及独立字面物化bytes；再次同UUID重开核权威树和列表有效指针。不用上传替代叶子恢复，不声称覆盖Restore异常或崩溃。 | `history.restore`、`file-history.branches` |
 | <code>44-file-restore-crash</code> | 真实Restore提交断点崩溃与同UUID冷恢复 | 合成TXT经真实picker导入并经既有picker RPC契约准备较新formal fixture后（真实UI升级独立由S43验收），从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。 | `history.restore`、`file-history.branches`、`workspace.recovery` |
+| <code>45-common-field-display</code> | 常用字段显示、重开与快照恢复旅程 | 独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。 | `schema.v2`、`release.smoke` |

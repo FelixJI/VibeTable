@@ -12,12 +12,13 @@ import (
 
 // DisplayFieldInfo is the read-only render contract for one relation label
 // source. DataType uses the schema-describe column vocabulary so the web can
-// reuse the merged #445 formatting contract (formatNumberDisplay with the
-// canonical DisplaySpec) instead of a second numeric authority.
+// reuse the merged #445 formatting contract (formatFieldDisplay with the
+// canonical DisplaySpec and select options) instead of a second authority.
 type DisplayFieldInfo struct {
-	FieldID  string          `json:"fieldId"`
-	DataType string          `json:"dataType"`
-	Display  *v2.DisplaySpec `json:"display,omitempty"`
+	FieldID     string            `json:"fieldId"`
+	DataType    string            `json:"dataType"`
+	Display     *v2.DisplaySpec   `json:"display,omitempty"`
+	EnumOptions []v2.SelectOption `json:"enumOptions,omitempty"`
 }
 
 // targetDisplayProjection resolves the label sources of one relation field:
@@ -64,11 +65,17 @@ func (service *Service) displayFieldInfoFor(
 		}
 	}
 	display := field.Display
-	return &DisplayFieldInfo{
+	info := &DisplayFieldInfo{
 		FieldID:  field.Identity.FieldID,
 		DataType: dataType,
 		Display:  &display,
 	}
+	// Canonical select options (incl. retired identities) travel verbatim from
+	// the same producer as column enumOptions; no second option model.
+	if field.Select != nil {
+		info.EnumOptions = field.Select.Options
+	}
+	return info
 }
 
 // displayFieldInfoByID resolves a display field info by field ID, returning

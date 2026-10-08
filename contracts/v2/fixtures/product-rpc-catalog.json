@@ -1960,6 +1960,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -3081,7 +3116,10 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
@@ -3532,6 +3570,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -5226,7 +5299,10 @@
                 "mode": "sample-value",
                 "indent": null,
                 "trueLabel": "sample-value",
-                "falseLabel": "sample-value"
+                "falseLabel": "sample-value",
+                "progressStart": null,
+                "progressTarget": null,
+                "ratingMax": null
               },
               "select": null,
               "relation": null,
@@ -5329,7 +5405,10 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
@@ -5422,7 +5501,10 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
@@ -5855,6 +5937,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -6875,7 +6992,10 @@
                 "mode": "sample-value",
                 "indent": null,
                 "trueLabel": "sample-value",
-                "falseLabel": "sample-value"
+                "falseLabel": "sample-value",
+                "progressStart": null,
+                "progressTarget": null,
+                "ratingMax": null
               },
               "select": null,
               "relation": null,
@@ -7260,6 +7380,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -8369,7 +8524,10 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
@@ -8462,7 +8620,10 @@
                   "mode": "sample-value",
                   "indent": null,
                   "trueLabel": "sample-value",
-                  "falseLabel": "sample-value"
+                  "falseLabel": "sample-value",
+                  "progressStart": null,
+                  "progressTarget": null,
+                  "ratingMax": null
                 },
                 "file": null,
                 "json": null
@@ -20632,6 +20793,44 @@
               "falseLabel": {
                 "title": "Falselabel",
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Progressstart"
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Progresstarget"
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Ratingmax"
               }
             },
             "required": [
@@ -21987,7 +22186,10 @@
                   "mode": "sample-value",
                   "indent": null,
                   "trueLabel": "sample-value",
-                  "falseLabel": "sample-value"
+                  "falseLabel": "sample-value",
+                  "progressStart": null,
+                  "progressTarget": null,
+                  "ratingMax": null
                 },
                 "select": null,
                 "relation": null,
@@ -22081,7 +22283,10 @@
                     "mode": "sample-value",
                     "indent": null,
                     "trueLabel": "sample-value",
-                    "falseLabel": "sample-value"
+                    "falseLabel": "sample-value",
+                    "progressStart": null,
+                    "progressTarget": null,
+                    "ratingMax": null
                   },
                   "file": null,
                   "json": null
@@ -24264,6 +24469,20 @@
                 ],
                 "default": null
               },
+              "enumOptions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/SelectOption"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "filterOperators": {
                 "items": {
                   "enum": [
@@ -24394,6 +24613,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -24657,6 +24911,20 @@
                   }
                 ],
                 "default": null
+              },
+              "enumOptions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/SelectOption"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -24762,6 +25030,40 @@
               "lookupRevision"
             ],
             "type": "object"
+          },
+          "SelectOption": {
+            "additionalProperties": false,
+            "properties": {
+              "optionId": {
+                "pattern": "^opt_[A-Za-z0-9_-]{8,}$",
+                "type": "string"
+              },
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "color": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "active",
+                  "retired"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "optionId",
+              "label",
+              "color",
+              "order",
+              "state"
+            ],
+            "type": "object"
           }
         },
         "additionalProperties": false,
@@ -24828,6 +25130,7 @@
                 "scale": null,
                 "precision": null,
                 "display": null,
+                "enumOptions": null,
                 "filterOperators": []
               }
             ],
@@ -25251,6 +25554,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -26371,7 +26709,10 @@
                 "mode": "sample-value",
                 "indent": null,
                 "trueLabel": "sample-value",
-                "falseLabel": "sample-value"
+                "falseLabel": "sample-value",
+                "progressStart": null,
+                "progressTarget": null,
+                "ratingMax": null
               },
               "select": null,
               "relation": null,
@@ -26465,7 +26806,10 @@
                   "mode": "sample-value",
                   "indent": null,
                   "trueLabel": "sample-value",
-                  "falseLabel": "sample-value"
+                  "falseLabel": "sample-value",
+                  "progressStart": null,
+                  "progressTarget": null,
+                  "ratingMax": null
                 },
                 "file": null,
                 "json": null

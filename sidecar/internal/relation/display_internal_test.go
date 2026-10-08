@@ -136,6 +136,40 @@ func TestDisplayFieldInfoCarriesCanonicalSpecs(t *testing.T) {
 	}
 }
 
+// TestDisplayFieldInfoCarriesCanonicalEnumOptions proves select-typed label
+// sources carry the canonical option list (including retired identities)
+// from the same producer as column enumOptions, so the web renders select
+// labels through the shared formatter without a second option model. A
+// boolean-typed source carries none.
+func TestDisplayFieldInfoCarriesCanonicalEnumOptions(t *testing.T) {
+	options := []v2.SelectOption{
+		{OptionID: "opt_a", Label: "进行中", Color: "#ffaa00", Order: 0, State: v2.OptionActive},
+		{OptionID: "opt_b", Label: "旧状态", Color: "", Order: 1, State: v2.OptionRetired},
+	}
+	target := schemaexecution.Table{
+		Snapshot: v2.SchemaSnapshot{
+			Fields: []v2.FieldDefinition{
+				{Identity: v2.FieldIdentity{FieldID: "fld_status", PhysicalName: "f_status"},
+					LogicalType: v2.LogicalSelect, Select: &v2.SelectSpec{Options: options}},
+				{Identity: v2.FieldIdentity{FieldID: "fld_signed", PhysicalName: "f_signed"},
+					LogicalType: v2.LogicalBool},
+			},
+		},
+	}
+	service := &Service{}
+	status := service.displayFieldInfoByID(context.Background(), target, "fld_status")
+	if status == nil || status.DataType != "text" {
+		t.Fatalf("select display field info = %#v", status)
+	}
+	if !reflect.DeepEqual(status.EnumOptions, options) {
+		t.Fatalf("enum options = %#v, want canonical options verbatim", status.EnumOptions)
+	}
+	signed := service.displayFieldInfoByID(context.Background(), target, "fld_signed")
+	if signed == nil || len(signed.EnumOptions) != 0 {
+		t.Fatalf("boolean display field info must carry no enum options: %#v", signed)
+	}
+}
+
 func TestProjectTargetRefKeepsNumericPrimaryForSameAndMissingDisplay(t *testing.T) {
 	for _, display := range []string{"amount", ""} {
 		projection := targetDisplayProjection{displayPhysical: display, primaryPhysical: "amount"}

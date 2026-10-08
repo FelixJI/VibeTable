@@ -6,7 +6,7 @@
  */
 import type { ColumnDataType, ColumnSchema, FilterExpression, SortCondition } from "./index";
 import type { LookupAggregationV2 } from "./schemaV2";
-import type { DisplaySpec } from "./generated/schemaV2";
+import type { DisplaySpec, SelectOption } from "./generated/schemaV2";
 
 export type RelationKind = "m2o" | "o2m" | "m2m";
 export type RelationPreset = "standard" | "file" | "files" | "translations";
@@ -26,6 +26,8 @@ export interface RelationDisplayFieldInfo {
   readonly dataType: ColumnDataType;
   /** Canonical Schema V2 DisplaySpec of that field, verbatim from the producer. */
   readonly display?: DisplaySpec | null;
+  /** Canonical select options of that field (incl. retired), verbatim from the producer. */
+  readonly enumOptions?: readonly SelectOption[] | null;
 }
 
 export interface NormalizedRelationDescriptor {

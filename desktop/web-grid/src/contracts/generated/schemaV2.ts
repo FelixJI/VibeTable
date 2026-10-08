@@ -107,6 +107,9 @@ export interface DisplaySpec {
   readonly indent?: 0 | 2 | 4;
   readonly trueLabel: string;
   readonly falseLabel: string;
+  readonly progressStart?: number;
+  readonly progressTarget?: number;
+  readonly ratingMax?: number;
 }
 
 export interface SelectOption {

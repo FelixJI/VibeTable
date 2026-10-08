@@ -117,6 +117,9 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 		if field.Formula != nil && field.Formula.ResultElementType != "" {
 			column["resultElementType"] = field.Formula.ResultElementType
 		}
+		if field.Select != nil {
+			column["enumOptions"] = field.Select.Options
+		}
 		columns = append(columns, column)
 	}
 	if primary == "" && len(snapshot.Fields) > 0 {
@@ -234,6 +237,9 @@ func displayInfoValue(info *relation.DisplayFieldInfo) any {
 	}
 	if info.Display != nil {
 		result["display"] = *info.Display
+	}
+	if len(info.EnumOptions) > 0 {
+		result["enumOptions"] = info.EnumOptions
 	}
 	return result
 }

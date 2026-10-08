@@ -1,8 +1,8 @@
 import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
 import { findLookupDefinition, formatFormulaDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
+import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { normalizeTargets } from "@/grid/relationLookupRenderer";
 import { coerceLegacyLabelEntry, formatRelationLabelEntry, relationRowLabels } from "@/grid/relationDisplay";
-import { formatNumberDisplay } from "@/number/numberDisplay";
 import { getLocale, t } from "@/i18n";
 
 function isEnvelope(value: unknown): value is Record<string, unknown> {
@@ -42,21 +42,10 @@ export function displayValue(
     && column.resultElementType === "number" && Array.isArray(value)) {
     return formatFormulaDisplayValue(value, column);
   }
-  if (typeof value === "number") {
-    const formatted = column
-      && (column.dataType === "decimal" || column.dataType === "integer")
-      ? formatNumberDisplay(value, column.display, getLocale())
-      : null;
-    if (formatted !== null) return formatted;
-    return String(value);
-  }
+  if (column) return formatFieldDisplay(value, column, getLocale());
   if (typeof value === "boolean") return value ? "✓" : "✕";
   if (typeof value === "object") {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
+    try { return JSON.stringify(value); } catch { return String(value); }
   }
   return String(value);
 }
@@ -118,13 +107,12 @@ function relationSummaryText(
 }
 
 function rowTitle(
-  row: Record<string, unknown>, view: PresetView,
-  schema?: readonly ColumnSchema[], relations?: readonly NormalizedRelationDescriptor[],
+  row: Record<string, unknown>, view: PresetView, schema: readonly ColumnSchema[] = [],
+  lookups?: readonly LookupDefinition[], relations?: readonly NormalizedRelationDescriptor[],
 ): string {
   const value = view.titleField ? row[view.titleField] : null;
   if (value !== null && value !== undefined && String(value).trim()) {
-    const column = schema?.find(field => field.name === view.titleField);
-    return column?.kind === "relation" ? displayValue(value, column, undefined, row, relations) : String(value);
+    return displayValue(value, schema.find(column => column.name === view.titleField), lookups, row, relations);
   }
   return t("views.recordFallback", { id: String(row.rowKey ?? "—") });
 }

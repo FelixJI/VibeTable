@@ -346,3 +346,46 @@ func TestCollectionResourceFailureKeepsSourceField(t *testing.T) {
 		t.Fatalf("source details replaced: %#v", failure.Details)
 	}
 }
+
+func TestCollectionTypedFailureCannotHideExpiredContext(t *testing.T) {
+	for _, reason := range []string{"cancelled", "deadline", "dependency"} {
+		t.Run(reason, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				plan, failure := NewCompiler(DefaultLimits()).CompileExecutionTable(collectionRuntimeDefinition(numberType,
+					`IFERROR(SUM(PROJECT(TABLE("shipments"), CurrentValue.amount)), 7.0)`,
+					scalarField("amount_id", "amount", numberType)))
+				if failure != nil {
+					t.Fatal(failure)
+				}
+				parent, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				read := false
+				dependency := formulaError("formula.dependency", "collection source schema is unavailable", map[string]any{"sourceTableId": "shipments"})
+				ctx := WithCollectionSourceReader(parent, func(ctx context.Context, _ CollectionReadRequest, _ func(map[string]any) error) error {
+					read = true
+					switch reason {
+					case "cancelled":
+						cancel()
+					case "deadline":
+						<-ctx.Done()
+					}
+					return dependency
+				})
+				_, failure = plan.Evaluate(ctx, map[string]any{"contract": "A"}, nil)
+				if !read {
+					t.Fatal("source reader was not reached")
+				}
+				if reason == "dependency" {
+					if failure != dependency {
+						t.Fatalf("live-context metadata failure = %#v; want original dependency failure", failure)
+					}
+					return
+				}
+				assertFormulaCode(t, failure, "formula.resource_limit")
+				if failure.Details["reason"] != reason || failure.Details["evaluationFieldId"] != "runtime_id" {
+					t.Fatalf("context failure details = %#v", failure.Details)
+				}
+			})
+		})
+	}
+}

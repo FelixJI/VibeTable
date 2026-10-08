@@ -12,6 +12,7 @@ from backend.contracts.lookup import (
     LookupValuePageParams,
 )
 from backend.contracts.relation_admin import (
+    RelationDisplayFieldInfo,
     RelationSearchParams,
     RelationSingleUpdateResult,
     SchemaSnapshot,
@@ -138,6 +139,55 @@ def test_lookup_query_accepts_empty_projection_for_relation_display_labels() -> 
     assert dumped["fieldRefs"] == []
     assert dumped["query"]["filters"][0]["value"] == ["order-1"]
     assert dumped["query"]["limit"] == 1
+
+
+def test_relation_display_field_info_carries_canonical_enum_options() -> None:
+    """#447×#459：select 标签来源字段带 canonical enumOptions，不建第二套选项模型。"""
+    info = RelationDisplayFieldInfo.model_validate(
+        {
+            "fieldId": "fld_status01",
+            "dataType": "text",
+            "display": {
+                "kind": "select",
+                "preset": "",
+                "displayScale": 2,
+                "scaleMode": "fixed",
+                "trimTrailingZeros": False,
+                "useGrouping": True,
+                "currency": "",
+                "percentStorage": "ratio",
+                "unit": None,
+                "precision": "exact",
+                "timezone": "system",
+                "mode": "default",
+                "trueLabel": "是",
+                "falseLabel": "否",
+            },
+            "enumOptions": [
+                {
+                    "optionId": "opt_status01",
+                    "label": "进行中",
+                    "color": "#ffaa00",
+                    "order": 0,
+                    "state": "active",
+                },
+                {
+                    "optionId": "opt_status02",
+                    "label": "旧状态",
+                    "color": "",
+                    "order": 1,
+                    "state": "retired",
+                },
+            ],
+        }
+    )
+    dumped = info.model_dump(by_alias=True, exclude_none=True)
+    assert [option["label"] for option in dumped["enumOptions"]] == ["进行中", "旧状态"]
+    assert dumped["enumOptions"][1]["state"] == "retired"
+    omitted = RelationDisplayFieldInfo.model_validate(
+        {"fieldId": "fld_amount01", "dataType": "decimal"}
+    )
+    assert "enumOptions" not in omitted.model_dump(by_alias=True, exclude_none=True)
 
 
 def test_relation_selected_id_refresh_budget_matches_go_boundary() -> None:

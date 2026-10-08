@@ -7,7 +7,8 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from backend.contracts.data_profile import RelationDeletePolicy
-from backend.contracts.table import CamelModel, ColumnSchema, DisplaySpec
+from backend.contracts.generated_schema_v2 import DisplaySpec, SelectOption
+from backend.contracts.table import CamelModel, ColumnSchema
 
 
 class RelationDiagnostic(CamelModel):
@@ -19,9 +20,9 @@ class RelationDiagnostic(CamelModel):
 class RelationDisplayFieldInfo(CamelModel):
     """Render contract of one relation label source field (#447).
 
-    Numeric labels format through the canonical DisplaySpec of the field that
-    actually produced the value (configured display field or global primary
-    display fallback); never a second numeric authority.
+    Labels format through the canonical DisplaySpec (and select options) of
+    the field that actually produced the value (configured display field or
+    global primary display fallback); never a second display authority.
     """
 
     field_id: str = Field(min_length=1, max_length=128)
@@ -36,6 +37,7 @@ class RelationDisplayFieldInfo(CamelModel):
         "json",
     ]
     display: DisplaySpec | None = None
+    enum_options: list[SelectOption] | None = None
 
 
 class NormalizedRelationDescriptor(CamelModel):

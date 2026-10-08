@@ -26,6 +26,25 @@ function view(input: Partial<PresetView>): PresetView {
 }
 
 describe("alternative record views", () => {
+  it("formats configured title fields on gallery and kanban cards", () => {
+    const numeric: ColumnSchema = { name: "title", title: "标题", dataType: "decimal", editable: true, nullable: true,
+      display: { kind: "number", preset: "progress", displayScale: 2, scaleMode: "max", trimTrailingZeros: true,
+        useGrouping: false, currency: "CNY", percentStorage: "ratio", unit: null, precision: "exact",
+        timezone: "system", mode: "default", trueLabel: "是", falseLabel: "否" } };
+    const select: ColumnSchema = { ...numeric, dataType: "text", display: { ...numeric.display!, kind: "select", preset: "" },
+      enumOptions: [{ optionId: "a", label: "标签", color: "blue", order: 0, state: "active" }] };
+    const rich: ColumnSchema = { ...select, display: { ...select.display!, kind: "editor" } };
+    for (const component of [RecordGalleryView, RecordKanbanView]) {
+      for (const [column, value, expected] of [[numeric, 1.5, "150%"], [select, "a", "标签"],
+        [rich, "<b>摘要</b><script>alert(1)</script>", "摘要"]] as const) {
+        const card = mount(component, { props: { rows: [{ rowKey: "one", title: value, status: "open" }], schema: [column, schema[1]],
+          view: view({ kind: component === RecordGalleryView ? "gallery" : "kanban", titleField: "title", groupField: "status" }) } });
+        expect(card.find("article strong").text()).toBe(expected);
+        expect(card.find("script").exists()).toBe(false); card.unmount();
+      }
+    }
+  });
+
   it("renders authoritative Formula numeric lists on cards from bare query values", () => {
     const column = {
       name: "numbers", title: "数值", kind: "formula", dataType: "json", resultElementType: "number",

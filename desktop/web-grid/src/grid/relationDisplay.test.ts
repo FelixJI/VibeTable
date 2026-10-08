@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { NormalizedRelationDescriptor } from "@/contracts";
+import type { NormalizedRelationDescriptor, RelationDisplayFieldInfo } from "@/contracts";
 import {
   coerceLegacyLabelEntry,
   formatRelationLabelEntry,
@@ -74,6 +74,84 @@ describe("formatRelationLabelValue", () => {
     expect(formatRelationLabelEntry(coerceLegacyLabelEntry(" 城轨一期 "), null)).toBe("城轨一期");
     expect(coerceLegacyLabelEntry("  ")).toBeNull();
     expect(formatRelationLabelEntry(coerceLegacyLabelEntry("Beta"), null)).toBe("Beta");
+  });
+});
+
+const labelDisplayBase = {
+  displayScale: 2, scaleMode: "fixed" as const, trimTrailingZeros: false, useGrouping: true,
+  currency: "", percentStorage: "ratio" as const, unit: null, indent: 0 as const,
+  mode: "default", trueLabel: "是", falseLabel: "否",
+};
+
+// 与 grid/commonFieldDisplay 的 #459 契约一致：日期/时间/自定义 bool/select
+// 标签用来源字段自己的 DisplaySpec/enumOptions 渲染，而不是第二套规则。
+describe("formatRelationLabelValue × commonFieldDisplay", () => {
+  it("日期与时间标签按来源字段 precision/timezone 一致显示", () => {
+    expect(formatRelationLabelValue("2026-03-08T07:00:00Z", {
+      fieldId: "fld_at", dataType: "datetime",
+      display: { ...labelDisplayBase, kind: "dateTime", preset: "", precision: "millisecond", timezone: "UTC" },
+    })).toBe("2026-03-08 07:00:00.000");
+    expect(formatRelationLabelValue("2026-03-08T06:59:59Z", {
+      fieldId: "fld_at", dataType: "datetime",
+      display: { ...labelDisplayBase, kind: "dateTime", preset: "", precision: "second", timezone: "America/New_York" },
+    })).toBe("2026-03-08 01:59:59");
+    expect(formatRelationLabelValue("09:30:15", {
+      fieldId: "fld_time", dataType: "time",
+      display: { ...labelDisplayBase, kind: "time", preset: "", precision: "minute", timezone: "UTC" },
+    })).toBe("09:30");
+  });
+
+  it("布尔标签只在来源字段本身是布尔时使用自定义标签", () => {
+    expect(formatRelationLabelValue(true, {
+      fieldId: "fld_signed", dataType: "boolean",
+      display: { ...labelDisplayBase, kind: "bool", preset: "", precision: "exact", timezone: "system", mode: "text", trueLabel: "已签约", falseLabel: "未签约" },
+    })).toBe("已签约");
+    expect(formatRelationLabelValue(false, {
+      fieldId: "fld_signed", dataType: "boolean",
+      display: { ...labelDisplayBase, kind: "bool", preset: "", precision: "exact", timezone: "system", mode: "text", trueLabel: "已签约", falseLabel: "未签约" },
+    })).toBe("未签约");
+    // 声明类型不是布尔时保持旧契约 ✓/✕，不因运行时形状套用自定义标签。
+    expect(formatRelationLabelValue(false, numericDescriptor().displayFieldInfo)).toBe("✕");
+  });
+
+  it("select 标签按 canonical enumOptions 渲染并标注停用，缺选项回退原始值", () => {
+    const info: RelationDisplayFieldInfo = {
+      fieldId: "fld_status", dataType: "text",
+      display: { ...labelDisplayBase, kind: "select", preset: "", precision: "exact", timezone: "system" },
+      enumOptions: [
+        { optionId: "opt_a", label: "进行中", color: "#ffaa00", order: 0, state: "active" },
+        { optionId: "opt_b", label: "旧状态", color: "", order: 1, state: "retired" },
+      ],
+    };
+    expect(formatRelationLabelValue("opt_a", info)).toBe("进行中");
+    expect(formatRelationLabelValue("opt_b", info)).toBe("旧状态（已停用）");
+    expect(formatRelationLabelValue("opt_missing", info)).toBe("opt_missing");
+    expect(formatRelationLabelValue("opt_a", { ...info, enumOptions: null })).toBe("opt_a");
+  });
+
+  it("数组/对象标签资格不因通用 formatter 扩大，空白与缺失仍回退", () => {
+    const info: RelationDisplayFieldInfo = {
+      fieldId: "fld_status", dataType: "text",
+      display: { ...labelDisplayBase, kind: "select", preset: "", precision: "exact", timezone: "system" },
+      enumOptions: [{ optionId: "opt_a", label: "进行中", color: "", order: 0, state: "active" }],
+    };
+    expect(formatRelationLabelValue(["opt_a"], info)).toBeNull();
+    expect(formatRelationLabelValue({ value: "opt_a", source: "display" }, info)).toBeNull();
+    expect(formatRelationLabelValue("   ", info)).toBeNull();
+    expect(formatRelationLabelValue(null, info)).toBeNull();
+  });
+
+  it("NaN 与 ±Infinity 保持缺失（回退记录 ID），不得渲染成文本", () => {
+    const numeric = numericDescriptor().displayFieldInfo;
+    // 共享 formatter 会把非有限数变成 "NaN"/"Infinity" 文本；关系标签沿
+    // 用旧契约（formatNumberDisplay null），非有限数直接回退。
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(formatRelationLabelValue(value, numeric)).toBeNull();
+      expect(formatRelationLabelValue(value, { fieldId: "f", dataType: "text" })).toBeNull();
+    }
+    expect(relationTargetLabel({
+      collection: "c", itemId: "rec_bad", label: "rec_bad", displayValue: Number.NaN,
+    }, numericDescriptor())).toBe("rec_bad");
   });
 });
 

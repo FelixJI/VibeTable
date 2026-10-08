@@ -17,6 +17,7 @@
 import type { ColumnSchema, LookupDefinition } from "@/contracts";
 import type { DisplaySpec } from "@/contracts/generated/schemaV2";
 import { formatNumberDisplay } from "@/number/numberDisplay";
+import { formatFieldDisplay } from "./commonFieldDisplay";
 import { getLocale, t } from "@/i18n";
 
 export function formulaStateLabel(state: unknown): string | null {
@@ -67,8 +68,12 @@ export function formatFormulaDisplayValue(
     return value.map((item) => formatComputedScalar(item, true, options.display))
       .join(t("grid.valueSeparator"));
   }
-  return numericText(value, options.dataType === "decimal" || options.dataType === "integer", options.display)
-    ?? String(value);
+  if (options.dataType === "json" && Array.isArray(value) && options.resultElementType) {
+    const dataType = options.resultElementType === "bool" ? "boolean" : options.resultElementType === "dateTime" ? "datetime" : "text";
+    return value.map(item => item == null ? "" : formatFieldDisplay(item, { dataType, display: options.display }, getLocale())).join(t("grid.valueSeparator"));
+  }
+  if (["date", "datetime", "time", "boolean"].includes(options.dataType)) return formatFieldDisplay(value, options, getLocale());
+  return numericText(value, options.dataType === "decimal" || options.dataType === "integer", options.display) ?? String(value);
 }
 
 const LOOKUP_STATE_LABELS: Readonly<Record<string, string>> = {
@@ -110,16 +115,23 @@ export function formatLookupDisplayValue(
 ): string {
   const numeric = !!definition
     && (definition.outputType === "decimal" || definition.outputType === "integer");
+  const typedScalar = (item: unknown): string => {
+    if (item == null) return "";
+    if (!numeric && definition && ["boolean", "date", "datetime", "time"].includes(definition.outputType)) {
+      return formatFieldDisplay(item, { dataType: definition.outputType as ColumnSchema["dataType"], display }, getLocale());
+    }
+    return formatComputedScalar(item, numeric, display);
+  };
   const cardinality = definition?.resultCardinality;
   const list = cardinality === "many"
     || (cardinality === undefined && Array.isArray(value));
   if (list) {
     const items = Array.isArray(value) ? value : [value];
     return items
-      .map((item) => formatComputedScalar(item, numeric, display))
+      .map(typedScalar)
       .join(t("grid.valueSeparator"));
   }
-  return formatComputedScalar(value, numeric, display);
+  return typedScalar(value);
 }
 
 function formatComputedScalar(

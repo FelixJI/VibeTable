@@ -44,7 +44,7 @@ func TestSchemaDescribeProjectionPreservesLookupLoadError(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	// The second captured table has real cross-table lookup paths.
 	sample := corpus.Cases[1]
@@ -95,7 +95,7 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	for _, sample := range corpus.Cases {
 		t.Run(sample.TableID, func(t *testing.T) {
@@ -159,6 +159,7 @@ func stripColumnDisplayField(result map[string]any) {
 	for _, column := range columns {
 		if record, ok := column.(map[string]any); ok {
 			delete(record, "display")
+			delete(record, "enumOptions")
 		}
 	}
 }
@@ -180,6 +181,13 @@ func assertColumnDisplayWiring(t *testing.T, snapshot v2.SchemaSnapshot, result 
 		column, found := byFieldID[field.Identity.FieldID]
 		if !found {
 			t.Fatalf("column for field %s missing", field.Identity.FieldID)
+		}
+		if field.Select != nil {
+			if !reflect.DeepEqual(column["enumOptions"], field.Select.Options) {
+				t.Fatalf("canonical enum display omitted for %s", field.Identity.FieldID)
+			}
+		} else if _, found := column["enumOptions"]; found {
+			t.Fatalf("enum metadata invented for %s", field.Identity.FieldID)
 		}
 		got, err := json.Marshal(column["display"])
 		if err != nil {
@@ -234,7 +242,9 @@ func TestSchemaDescribeProjectsRelationDisplayInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+		// 冻结 oracle 早于 autoNumber 与 phone/progress/rating 预设：
+		// 仅按 #458/#459 实际新增能力升级捕获输入，其余能力仍逐项 DeepEqual。
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	sample := corpus.Cases[0]
 	catalog := sample.Catalog
@@ -246,6 +256,9 @@ func TestSchemaDescribeProjectsRelationDisplayInfo(t *testing.T) {
 		catalog.Relations[index].DisplayFieldID = "fld_pt602dxd6ayafnq2n1f4"
 		catalog.Relations[index].DisplayFieldInfo = &relation.DisplayFieldInfo{
 			FieldID: "fld_pt602dxd6ayafnq2n1f4", DataType: "decimal", Display: &spec,
+			EnumOptions: []v2.SelectOption{
+				{OptionID: "opt_a", Label: "进行中", Color: "#ffaa00", Order: 0, State: v2.OptionActive},
+			},
 		}
 		catalog.Relations[index].FallbackDisplayFieldInfo = nil
 		break
@@ -264,6 +277,13 @@ func TestSchemaDescribeProjectsRelationDisplayInfo(t *testing.T) {
 	info := first["displayFieldInfo"].(map[string]any)
 	if info["fieldId"] != "fld_pt602dxd6ayafnq2n1f4" || info["dataType"] != "decimal" || info["display"] == nil {
 		t.Fatalf("displayFieldInfo = %#v", info)
+	}
+	options, ok := info["enumOptions"].([]v2.SelectOption)
+	if !ok || len(options) != 1 {
+		t.Fatalf("enumOptions = %#v", info["enumOptions"])
+	}
+	if option := options[0]; option.OptionID != "opt_a" || option.Label != "进行中" || option.State != v2.OptionActive {
+		t.Fatalf("enumOptions[0] = %#v", option)
 	}
 	if first["fallbackDisplayFieldInfo"] != nil {
 		t.Fatalf("fallbackDisplayFieldInfo = %#v", first["fallbackDisplayFieldInfo"])
@@ -290,7 +310,7 @@ func TestSchemaDescribeProjectsDisplaySpecWithExplicitShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	sample := corpus.Cases[0]
 	got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) {
@@ -351,7 +371,7 @@ func TestSchemaDescribeProjectsFormulaListElementType(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	sample := corpus.Cases[0]
 	snapshot := corpus.Tables[sample.TableID]

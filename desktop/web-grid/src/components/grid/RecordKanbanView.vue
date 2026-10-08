@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { Kanban } from "@lucide/vue";
 import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
 import { t } from "@/i18n";
+import RecordFieldValue from "./RecordFieldValue.vue";
 import { displayValue, metadataFields, rowTitle } from "./recordViewUtils";
 
 const props = defineProps<{
@@ -130,17 +131,17 @@ function onDrop(event: DragEvent, targetOptionId: string | null): void {
         <div class="kanban-cards">
           <article
             v-for="row in lane.records"
-            :key="String(row.rowKey ?? rowTitle(row, view, schema, relations))"
+            :key="String(row.rowKey ?? rowTitle(row, view, schema, lookupDefinitions, relations))"
             data-testid="kanban-card"
             :data-row-key="String(row.rowKey ?? '')"
             :draggable="canDrag(row)"
             @dragstart="onDragStart($event, row)"
             @dragend="draggedCard = null"
           >
-            <strong>{{ rowTitle(row, view, schema, relations) }}</strong>
+            <strong>{{ rowTitle(row, view, schema, lookupDefinitions, relations) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">
-                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name], field, lookupDefinitions, row, relations) }}</dd>
+                <dt>{{ field.title }}</dt><dd><RecordFieldValue :value="row[field.name]" :column="field" :lookups="lookupDefinitions" :row="row" :relations="relations" /></dd>
               </template>
             </dl>
           </article>

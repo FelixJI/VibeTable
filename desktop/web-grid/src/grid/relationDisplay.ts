@@ -9,12 +9,16 @@
  *     false are valid values), together with the controlled source that
  *     produced them ("display" = the relation's configured displayFieldId,
  *     "primary" = the target table's global primary display fallback).
- *   - Numeric labels format through the merged #445 contract
- *     (`formatNumberDisplay`) keyed off the *source field's own* DisplaySpec,
- *     so a percentage display field falling back to a currency primary never
- *     formats with one shared spec.
- *   - Missing labels fall back to the record ID; record IDs remain the only
- *     relation identity and never join mutation business values.
+ *   - Labels format through the merged #459 contract (`formatFieldDisplay`)
+ *     keyed off the *source field's own* DisplaySpec/enumOptions, so a
+ *     percentage display field falling back to a currency primary never
+ *     formats with one shared spec, while date/time/custom-bool/select
+ *     labels render exactly like their grid columns.
+ *   - Eligibility stays scalar-only (string/number/boolean): the general
+ *     formatter's array/object handling never widens which relation label
+ *     values may surface, and empty text still falls back to the record ID.
+ *     Record IDs remain the only relation identity and never join mutation
+ *     business values.
  */
 
 import type {
@@ -23,11 +27,11 @@ import type {
   RelationLabelEntry,
   RelationTargetRef,
 } from "@/contracts";
-import { formatNumberDisplay } from "@/number/numberDisplay";
+import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { getLocale } from "@/i18n";
 
-function isNumeric(info: RelationDisplayFieldInfo | null | undefined): boolean {
-  return info?.dataType === "decimal" || info?.dataType === "integer";
+function isScalarLabelValue(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
 /** Format one raw label scalar with the owning field's render contract. */
@@ -35,15 +39,38 @@ export function formatRelationLabelValue(
   value: unknown,
   info: RelationDisplayFieldInfo | null | undefined,
 ): string | null {
-  if (typeof value === "number" && isNumeric(info)) {
-    return formatNumberDisplay(value, info?.display ?? undefined, getLocale());
+  // Scalar eligibility only: arrays/objects/envelopes never surface as
+  // relation labels, and empty text is missing (falls back to the record ID).
+  if (!isScalarLabelValue(value)) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const scalar = typeof value === "string" ? value.trim() : value;
+  // Booleans keep the legacy ✓/✕ contract unless the source field itself is
+  // boolean-typed, where the shared formatter applies custom true/false
+  // labels; eligibility stays driven by the declared dataType, not the
+  // runtime shape of the value.
+  if (typeof value === "boolean" && info?.dataType !== "boolean") {
+    return value ? "✓" : "✕";
   }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed !== "" ? trimmed : null;
+  // Numbers stay bounded to numerically-typed sources: a number under any
+  // other declared type is not a formatted label and falls back to the
+  // record ID chain, exactly like the grid's type-driven numeric contract.
+  // Non-finite numbers stay missing too: the shared formatter would render
+  // "NaN"/"Infinity", but the old relation contract (formatNumberDisplay
+  // null) keeps them out of labels entirely.
+  if (typeof value === "number"
+    && (!Number.isFinite(value) || (info?.dataType !== "decimal" && info?.dataType !== "integer"))) {
+    return null;
   }
-  if (typeof value === "boolean") return value ? "✓" : "✕";
-  return null;
+  if (!info) return String(scalar);
+  return formatFieldDisplay(
+    scalar,
+    {
+      dataType: info.dataType,
+      display: info.display ?? undefined,
+      enumOptions: info.enumOptions ?? undefined,
+    },
+    getLocale(),
+  );
 }
 
 function displayInfoFor(
