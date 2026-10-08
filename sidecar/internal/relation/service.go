@@ -790,7 +790,7 @@ func targetLabelField(definition schemaexecution.Table) string {
 			continue
 		}
 		switch field.LogicalType {
-		case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail:
+		case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail:
 			return field.Identity.PhysicalName
 		}
 	}
@@ -839,7 +839,7 @@ func hasFieldDefault(field v2.FieldDefinition) bool {
 }
 
 func fieldReadOnly(field v2.FieldDefinition) bool {
-	return field.LogicalType == v2.LogicalAutoDate ||
+	return field.LogicalType == v2.LogicalAutoNumber || field.LogicalType == v2.LogicalAutoDate ||
 		field.LogicalType == v2.LogicalFormula ||
 		field.LogicalType == v2.LogicalLookup
 }
@@ -874,7 +874,7 @@ func outputTypeFor(field v2.FieldDefinition) lookupOutputType {
 
 func lookupOutputStorage(output lookupOutputType) string {
 	switch output.logicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
 		v2.LogicalURL, v2.LogicalSelect, v2.LogicalMultiSelect,
 		v2.LogicalRelation, v2.LogicalFile:
 		return "text"

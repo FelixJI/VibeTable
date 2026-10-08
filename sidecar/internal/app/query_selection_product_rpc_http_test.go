@@ -309,11 +309,13 @@ func TestQuerySelectionProductHTTPReplaysTypedPythonOracle(t *testing.T) {
 			if err := decoder.Decode(&probe.result); err != nil {
 				t.Fatal(err)
 			}
+			probe.result.SchemaSnapshot = withAutoNumberCapability(t, probe.result.SchemaSnapshot)
 			actual := selectionOracleResponse(t, mux, sample)
 			if !reflect.DeepEqual(actual["wire"], mustSelectionJSON(t, schemaListWire)) {
 				t.Fatal("response changed wire")
 			}
 			delete(actual, "wire")
+			assertAndStripAutoNumberCapability(t, actual["result"].(map[string]any)["schemaSnapshot"].(map[string]any))
 			if want := mustSelectionJSON(t, string(sample.Response)); !reflect.DeepEqual(actual, want) {
 				t.Fatalf("frozen canonical response mismatch\ngot=%v\nwant=%v", actual, want)
 			}
@@ -349,6 +351,7 @@ func TestQuerySelectionProductRejectsCanonicalBaselineMutations(t *testing.T) {
 			if err := decoder.Decode(&value); err != nil {
 				t.Fatal(err)
 			}
+			value.SchemaSnapshot = withAutoNumberCapability(t, value.SchemaSnapshot)
 			baseline := &querySelectionProbe{result: value}
 			if _, err := querySelectionOpenRegistration(baseline).Handler(context.Background(), sample.Request.Params); err != nil {
 				t.Fatalf("canonical baseline rejected before %s mutation: %v", name, err)

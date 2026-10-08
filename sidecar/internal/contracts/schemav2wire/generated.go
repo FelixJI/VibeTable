@@ -35,6 +35,7 @@ const (
 	LogicalTypeDateTime    LogicalType = "dateTime"
 	LogicalTypeTime        LogicalType = "time"
 	LogicalTypeAutoDate    LogicalType = "autoDate"
+	LogicalTypeAutoNumber  LogicalType = "autoNumber"
 	LogicalTypeEmail       LogicalType = "email"
 	LogicalTypeUrl         LogicalType = "url"
 	LogicalTypeSelect      LogicalType = "select"
@@ -193,6 +194,12 @@ type JSONSpec struct {
 	Schema   map[string]json.RawMessage `json:"schema"`
 }
 
+type AutoNumberSpec struct {
+	Prefix string `json:"prefix"`
+	Start  int64  `json:"start"`
+	Width  int64  `json:"width"`
+}
+
 type AutoDateSpec struct {
 	Role string `json:"role"`
 }
@@ -254,23 +261,24 @@ type LookupPathStep struct {
 }
 
 type FieldDefinition struct {
-	Contract    string         `json:"contract"`
-	Identity    FieldIdentity  `json:"identity"`
-	DisplayName string         `json:"displayName"`
-	Help        string         `json:"help"`
-	LogicalType LogicalType    `json:"logicalType"`
-	Lifecycle   Lifecycle      `json:"lifecycle"`
-	Value       ValueSpec      `json:"value"`
-	Constraints ConstraintSpec `json:"constraints"`
-	Storage     StorageSpec    `json:"storage"`
-	Display     DisplaySpec    `json:"display"`
-	Select      *SelectSpec    `json:"select,omitempty"`
-	Relation    *RelationSpec  `json:"relation,omitempty"`
-	File        *FileSpec      `json:"file,omitempty"`
-	Json        *JSONSpec      `json:"json,omitempty"`
-	AutoDate    *AutoDateSpec  `json:"autoDate,omitempty"`
-	Formula     *FormulaSpec   `json:"formula,omitempty"`
-	Lookup      *LookupSpec    `json:"lookup,omitempty"`
+	Contract    string          `json:"contract"`
+	Identity    FieldIdentity   `json:"identity"`
+	DisplayName string          `json:"displayName"`
+	Help        string          `json:"help"`
+	LogicalType LogicalType     `json:"logicalType"`
+	Lifecycle   Lifecycle       `json:"lifecycle"`
+	Value       ValueSpec       `json:"value"`
+	Constraints ConstraintSpec  `json:"constraints"`
+	Storage     StorageSpec     `json:"storage"`
+	Display     DisplaySpec     `json:"display"`
+	Select      *SelectSpec     `json:"select,omitempty"`
+	Relation    *RelationSpec   `json:"relation,omitempty"`
+	File        *FileSpec       `json:"file,omitempty"`
+	Json        *JSONSpec       `json:"json,omitempty"`
+	AutoDate    *AutoDateSpec   `json:"autoDate,omitempty"`
+	AutoNumber  *AutoNumberSpec `json:"autoNumber,omitempty"`
+	Formula     *FormulaSpec    `json:"formula,omitempty"`
+	Lookup      *LookupSpec     `json:"lookup,omitempty"`
 }
 
 type FieldDraft struct {
@@ -286,6 +294,7 @@ type FieldDraft struct {
 	File        *FileSpec         `json:"file,omitempty"`
 	Json        *JSONSpec         `json:"json,omitempty"`
 	AutoDate    *AutoDateSpec     `json:"autoDate,omitempty"`
+	AutoNumber  *AutoNumberSpec   `json:"autoNumber,omitempty"`
 	Formula     *FormulaDraftSpec `json:"formula,omitempty"`
 	Lookup      *LookupSpec       `json:"lookup,omitempty"`
 }

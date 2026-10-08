@@ -245,7 +245,7 @@ func validateRelations(plan *Plan, add addDiagnostic) {
 			primary.Draft.LogicalType == v2.LogicalRelation ||
 			primary.Draft.LogicalType == v2.LogicalFormula ||
 			primary.Draft.LogicalType == v2.LogicalLookup ||
-			primary.Draft.LogicalType == v2.LogicalAutoDate {
+			primary.Draft.LogicalType == v2.LogicalAutoNumber || primary.Draft.LogicalType == v2.LogicalAutoDate {
 			add("source_import.primary_field", table.SourceID, table.PrimaryFieldID, "", "主显示字段必须是可迁移的普通值字段（关系、公式、查找、自动日期不可作为主显示）", true)
 		}
 		for _, field := range table.Fields {
