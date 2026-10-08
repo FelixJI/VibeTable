@@ -225,6 +225,9 @@ func (source *Source) describeField(
 			field.Identity.FieldID, 1,
 		)
 		if expectationErr != nil {
+			if errors.Is(expectationErr, context.Canceled) || errors.Is(expectationErr, context.DeadlineExceeded) {
+				return query.FieldDescriptor{}, expectationErr
+			}
 			return query.FieldDescriptor{}, &query.ProductError{
 				Code:    "query.computed.version_unavailable",
 				Path:    "fields." + field.Identity.PhysicalName,

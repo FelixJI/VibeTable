@@ -192,7 +192,9 @@ func (node *collectionNode) evaluate(ctx context.Context, row map[string]any, ev
 		})
 		if err != nil {
 			var typed *Error
-			if errors.As(err, &typed) {
+			// The caller's expired context wins over an already mapped
+			// dependency failure; retain typed diagnostics while it is live.
+			if errors.As(err, &typed) && ctx.Err() == nil {
 				return nil, typed
 			}
 			// Cancellation and bounded-reader resource failures are runtime
