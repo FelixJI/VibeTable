@@ -6340,12 +6340,9 @@ def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
         guard = r"""
 # The production success path must avoid the serializer that timed out in CI.
 function ConvertTo-Json { throw 'generic JSON serialization is unavailable' }
-# An observation must not need a compiler to initialize the system provider.
-function Add-Type {
-    param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
-    if ($TypeDefinition) { throw 'runtime C# compilation is unavailable' }
-    Microsoft.PowerShell.Utility\Add-Type -AssemblyName $AssemblyName
-}
+# An observation initializes the system provider without the Add-Type
+# utility cmdlet at all: known framework assemblies load by strong name.
+function Add-Type { throw 'Add-Type is unavailable' }
 """
         command = [
             *command[:-1],

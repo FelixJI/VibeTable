@@ -50,7 +50,7 @@ describe("alternative record views", () => {
       name: "numbers", title: "数值", kind: "formula", dataType: "json", resultElementType: "number",
       editable: false, nullable: true,
       display: { kind: "readonly", preset: "currency", displayScale: 2, scaleMode: "fixed",
-        trimTrailingZeros: false, useGrouping: true, currency: "CNY", percentStorage: "ratio",
+        trimTrailingZeros: false, useGrouping: true, currency: "CNY" as const, percentStorage: "ratio" as const,
         unit: null, precision: "exact", timezone: "system", mode: "default", indent: 0,
         trueLabel: "是", falseLabel: "否" },
     } as ColumnSchema;
@@ -69,6 +69,60 @@ describe("alternative record views", () => {
     expect(cards[2].text()).toContain("计算失败");
     expect(cards[2].text()).not.toContain("1,234");
     expect(values).toEqual([1234.56789, null, 0]);
+  });
+
+  it("renders relation card fields through the shared typed label projection with fallback spec", async () => {
+    const relationColumn = {
+      name: "contract", title: "合同", kind: "relation" as const, dataType: "text" as const,
+      relationId: "lines.contract", editable: true, nullable: true,
+    } as ColumnSchema;
+    const relations = [{
+      relationId: "lines.contract",
+      fieldRef: "contract",
+      sourceCollection: "lines",
+      kind: "m2m" as const,
+      relatedCollection: "contracts",
+      unique: false,
+      nullable: true,
+      onDelete: "nullify" as const,
+      preset: "standard" as const,
+      selfRelation: false,
+      managed: true,
+      state: "valid" as const,
+      diagnostics: [],
+      displayFieldInfo: {
+        fieldId: "fld_rate", dataType: "decimal" as const,
+        display: { kind: "number" as const, preset: "percent" as const, displayScale: 1, scaleMode: "fixed" as const,
+          trimTrailingZeros: false, useGrouping: true, currency: "" as const, percentStorage: "ratio" as const,
+          unit: null, precision: "exact" as const, timezone: "system" as const,
+          mode: "default" as const, indent: 0 as const, trueLabel: "是", falseLabel: "否" },
+      },
+      fallbackDisplayFieldInfo: {
+        fieldId: "fld_amount", dataType: "decimal" as const,
+        display: { kind: "number" as const, preset: "currency" as const, displayScale: 2, scaleMode: "fixed" as const,
+          trimTrailingZeros: false, useGrouping: true, currency: "CNY" as const, percentStorage: "ratio" as const,
+          unit: null, precision: "exact" as const, timezone: "system" as const,
+          mode: "default" as const, indent: 0 as const, trueLabel: "是", falseLabel: "否" },
+      },
+    }];
+    const ids = ["t1", "t2", "t3", "t4"];
+    const gallery = mount(RecordGalleryView, { props: {
+      rows: [{
+        rowKey: "1", title: "A", contract: ids,
+        __vibetableRelationLabels: {
+          contract: {
+            t1: { value: 0.125, source: "display" },
+            t2: { value: 1982, source: "primary" },
+            t3: { value: false, source: "display" },
+          },
+        },
+      }], schema: [...schema, relationColumn], relations,
+      view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "contract"] }),
+    } });
+    const card = gallery.get('[data-testid="gallery-card"]').text();
+    expect(card).toContain("12.5% · ¥1,982.00 · ✕ +1");
+    await gallery.setProps({ view: view({ kind: "gallery", titleField: "contract" }) });
+    expect(gallery.get(".gallery-copy > strong").text()).toBe("12.5% · ¥1,982.00 · ✕ +1");
   });
 
   it("renders formula envelopes on cards by authoritative result type, never stale values (AC4)", () => {

@@ -158,8 +158,8 @@ func testRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T, reciproca
 		t.Fatal(err)
 	}
 	relationName := relationReceipt.Definition.Identity.PhysicalName
-	labels, ok := sourceRows[0][query.RelationLabelsField].(map[string]map[string]string)
-	if !ok || labels[relationName][targetRecordID] != "Acme" || sourceRows[0][relationName] != targetRecordID {
+	labels, ok := sourceRows[0][query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)
+	if !ok || labels[relationName][targetRecordID].Value != "Acme" || labels[relationName][targetRecordID].Source != "display" || sourceRows[0][relationName] != targetRecordID {
 		t.Fatalf("product DisplayField projection lost target label or raw ID: %#v", sourceRows[0])
 	}
 	targetRows, err := port.ReadRows(ctx, target.TableID, []string{targetRecordID})
@@ -167,8 +167,8 @@ func testRelationDisplayFieldBlocksTargetLifecycleChange(t *testing.T, reciproca
 		t.Fatal(err)
 	}
 	reciprocalName := relationReceipt.Related[0].Definition.Identity.PhysicalName
-	reciprocalLabels, ok := targetRows[0][query.RelationLabelsField].(map[string]map[string]string)
-	if !ok || reciprocalLabels[reciprocalName][sourceRecordID] != "SO-1001" {
+	reciprocalLabels, ok := targetRows[0][query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)
+	if !ok || reciprocalLabels[reciprocalName][sourceRecordID].Value != "SO-1001" || reciprocalLabels[reciprocalName][sourceRecordID].Source != "display" {
 		t.Fatalf("reciprocal DisplayField projection = %#v", targetRows[0])
 	}
 	targetCollection, err := app.FindCollectionByNameOrId(target.PhysicalName)

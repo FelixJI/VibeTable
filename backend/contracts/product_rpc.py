@@ -444,13 +444,14 @@ PRODUCT_RPC_REGISTRY: dict[str, type[ProductParams]] = {
     "relation.inspectPair": RelationInspectPairParams,
     "relation.searchTargets": _closed_params(
         "RelationSearchTargetsParams",
-        allowed=("relationId", "query", "offset", "limit"),
+        allowed=("relationId", "query", "offset", "limit", "targetItemIds"),
         required=("relationId",),
         field_types={
             "relationId": (str,),
             "query": (str,),
             "offset": (int,),
             "limit": (int,),
+            "targetItemIds": (list,),
         },
     ),
     "relation.createTarget": _closed_params(

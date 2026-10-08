@@ -152,6 +152,9 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 			"pairId": descriptor.PairID, "reciprocalFieldId": descriptor.ReciprocalFieldID,
 			"quickCreateEligible": descriptor.QuickCreateEligible, "quickCreateReason": descriptor.QuickCreateReason,
 			"state": "valid", "displayTemplate": nil, "diagnostics": []any{},
+			"displayFieldId":           displayFieldIDValue(descriptor.DisplayFieldID),
+			"displayFieldInfo":         displayInfoValue(descriptor.DisplayFieldInfo),
+			"fallbackDisplayFieldInfo": displayInfoValue(descriptor.FallbackDisplayFieldInfo),
 		})
 	}
 	schema["normalizedRelations"] = relations
@@ -213,6 +216,32 @@ func describeLookupType(source v2.SchemaSnapshot, field v2.FieldDefinition, tabl
 		return target.Formula.ResultType, nil
 	}
 	return target.LogicalType, nil
+}
+
+// displayFieldIDValue exposes the relation's display field id as a nullable
+// wire value; display info objects project the render contract shared with
+// the web display formatter.
+func displayFieldIDValue(fieldID string) any {
+	if fieldID == "" {
+		return nil
+	}
+	return fieldID
+}
+
+func displayInfoValue(info *relation.DisplayFieldInfo) any {
+	if info == nil {
+		return nil
+	}
+	result := map[string]any{
+		"fieldId": info.FieldID, "dataType": info.DataType,
+	}
+	if info.Display != nil {
+		result["display"] = *info.Display
+	}
+	if len(info.EnumOptions) > 0 {
+		result["enumOptions"] = info.EnumOptions
+	}
+	return result
 }
 
 func describeFieldByID(table v2.SchemaSnapshot, id string) (v2.FieldDefinition, error) {

@@ -29,8 +29,10 @@ export function useRelationLookupService() {
   const store = useRelationLookupStore();
   let unsubscribe: (() => void) | null = null;
   let invalidateAllCollections = false;
+  let displayGeneration = 0;
+  let contextGeneration = 0;
 
-  function init(onDataInvalidated?: (change: DataChangedEvent) => void): void {
+  function init(onDataInvalidated?: (change: DataChangedEvent, labelsOnly?: boolean) => void): void {
     if (unsubscribe) return;
     unsubscribe = bridge.on("data.changed", (change) => {
       const active = store.collection;
@@ -44,17 +46,22 @@ export function useRelationLookupService() {
       // This may refresh more often, but it cannot leave a deep Lookup stale.
       const hasLookup = invalidateAllCollections || store.lookups.length > 0;
       if (hasLookup) invalidateAllCollections = true;
-      if (!hasLookup) {
-        if (!snapshot) return;
-        const relatedCollections = new Set(snapshot.normalizedRelations.flatMap((relation) => [
-          relation.relatedCollection,
-        ].filter((item): item is string => !!item)));
-        if (change.tableId !== active && !relatedCollections.has(change.tableId)) return;
-      }
-      if (!hasLookup && change.tableId !== active && onDataInvalidated) {
+      const relatedCollections = new Set((snapshot?.normalizedRelations ?? []).flatMap(relation =>
+        relation.relatedCollection ? [relation.relatedCollection] : []));
+      if (!hasLookup && (!snapshot || (change.tableId !== active && !relatedCollections.has(change.tableId)))) return;
+      if (change.tableId !== active && relatedCollections.has(change.tableId) && onDataInvalidated) {
         // A target data write changes display labels, not this table's schema.
         // Refresh that read projection without beginContext clearing a draft.
-        onDataInvalidated(change);
+        const generation = store.generation;
+        const contextRequest = contextGeneration;
+        const displayRequest = ++displayGeneration;
+        void describeCollection(active).then(schema => {
+          if (displayRequest !== displayGeneration || contextRequest !== contextGeneration || !store.isCurrent(generation, active)) return;
+          store.schema = schema;
+          onDataInvalidated(change, true);
+        }).catch(error => {
+          if (displayRequest === displayGeneration && contextRequest === contextGeneration && store.isCurrent(generation, active)) store.error = error instanceof Error ? error.message : String(error);
+        });
         return;
       }
       // Related writes can invalidate realtime Lookup values. Let the
@@ -68,14 +75,17 @@ export function useRelationLookupService() {
   function dispose(): void {
     unsubscribe?.();
     unsubscribe = null;
+    displayGeneration += 1;
+    contextGeneration += 1;
     invalidateAllCollections = false;
   }
 
   async function loadContext(collection: string): Promise<boolean> {
     // `beginContext` intentionally resets its context. Do not turn an
     // authoritative background refresh into an implicit discard of an edit.
-    if (store.draft) return false;
-    const requestGeneration = store.beginContext(collection);
+    if (store.draft && store.collection !== collection) return false;
+    const contextRequest = ++contextGeneration;
+    const requestGeneration = store.draft ? store.generation : store.beginContext(collection);
     try {
       const [described, listed] = await Promise.all([
         bridge.request("schema.describe", { collection, requestGeneration, accepts: ACCEPTS }),
@@ -94,6 +104,7 @@ export function useRelationLookupService() {
       if (lookupResult.lookupRevision !== schemaResult.schema.lookupRevision) {
         throw new Error("Lookup 定义已变化，请重试");
       }
+      if (contextRequest !== contextGeneration) return false;
       const accepted = store.acceptContext(
         requestGeneration,
         schemaResult.schema,
@@ -103,6 +114,7 @@ export function useRelationLookupService() {
       if (accepted) invalidateAllCollections = lookupResult.definitions.length > 0;
       return accepted;
     } catch (error) {
+      if (contextRequest !== contextGeneration) return false;
       store.rejectContext(
         requestGeneration,
         collection,

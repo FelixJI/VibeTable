@@ -129,3 +129,20 @@ S26/S27/S28与旧S02/S17并存，历史23场景source/run未改写，manifest ga
 
 本次更新后的产品包未重建，S27历史包证据不充当新端点验收；最终fresh CI与合并后的main
 CI/CD仍须验证。上述清理失败保留待独立判断，不能写成本地全组通过。
+
+## 关系显示投影扩展（#447）
+
+`relation.searchTargets` 现按关系自身 `displayFieldId` 解析主标签，目标表全局主显示值
+仅作辅助与空标签回退（有效显示值→全局主显示值→record ID；0/false 为有效值；非 fresh
+计算结果不显示旧值），并在结果项携带 `secondaryLabel/displayValue/secondaryValue`
+（受控 raw typed scalar，仅来自 relation service 的 schema 驱动投影，不透传 authority
+任意字段；`extra`/`snapshot` 继续不公开）。
+
+冻结的 `relation-search-python-oracle.json` 30例语料一字未改，只捕获旧 Python 投影；
+`TestRelationSearchProductHTTPReplaysFrozenPython` 比较时仅剥离上述三个本次明确授权的
+新增键（沿 #445 `stripColumnDisplayField` 同构模式），其余历史字段（含 authority 过滤
+canary）逐字节比较。新语义由 `TestRelationSearchProductDefaultsAndProjection` 与
+`TestRelationSearchUsesRelationDisplayFieldProjection`（真实 Go producer：双字段分离、
+回退链、0 typed、无 authority 泄漏）单独负责。`RelationTargetRef` 契约模型新增
+`display_value/secondary_value`（backend/contracts/relation_admin.py），catalog 由既有
+`generate_product_rpc_catalog.py` 再生。

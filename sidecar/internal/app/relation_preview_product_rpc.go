@@ -54,17 +54,11 @@ func relationPreviewDeltaRegistration(port interface {
 			}
 			current := make([]any, 0, len(result.Current))
 			for _, target := range result.Current {
-				if target.TableID == "" || target.RecordID == "" || target.Label == "" {
-					return nil, errors.New("PocketBase returned an invalid relation preview target")
+				item, err := relationWriteTargetResult(target)
+				if err != nil {
+					return nil, err
 				}
-				var secondary any
-				if target.SecondaryLabel != "" {
-					secondary = target.SecondaryLabel
-				}
-				current = append(current, map[string]any{
-					"collection": target.TableID, "itemId": target.RecordID,
-					"label": target.Label, "secondaryLabel": secondary,
-				})
+				current = append(current, item)
 			}
 			return map[string]any{
 				"delta": original, "current": current, "diagnostics": []any{}, "canApply": result.CanApply,

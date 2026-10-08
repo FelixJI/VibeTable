@@ -1318,6 +1318,12 @@ def persist_product_e2e_evidence(
                 "02-number-display-percent.png",
                 "02-auto-number-readonly.png",
             ),
+            "28-relation-delta-preview": (
+                "28-contract-grid.png",
+                "28-contract-picker-refresh.png",
+                "28-contract-cards.png",
+                "28-contract-offline-reopened.png",
+            ),
             "45-common-field-display": (
                 "45-common-field-display.png",
                 "45-common-field-display-reopened.png",

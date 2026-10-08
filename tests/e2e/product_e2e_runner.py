@@ -1652,9 +1652,11 @@ $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
-Add-Type -AssemblyName UIAutomationClient
+# Known framework assemblies load by their strong names; the Add-Type
+# utility cmdlet (and its module bootstrap) stays unloaded on this path.
+[void][Reflection.Assembly]::Load('UIAutomationClient, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
 [Console]::Error.WriteLine("UIA_STAGE client-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
-Add-Type -AssemblyName UIAutomationTypes
+[void][Reflection.Assembly]::Load('UIAutomationTypes, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
 [Console]::Error.WriteLine("UIA_STAGE types-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
 # The default-proxy loader scans callers' ReflectedType. Public MethodInfo.Invoke
 # supplies a named framework frame without compiling C# inside the 5s budget.

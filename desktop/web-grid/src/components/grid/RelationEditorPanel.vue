@@ -8,6 +8,7 @@ import type {
   RelationTargetRef,
 } from "@/contracts";
 import { targetKey } from "@/stores/relationLookupStore";
+import { relationTargetLabel, relationTargetSecondaryLabel } from "@/grid/relationDisplay";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -124,8 +125,11 @@ function relationFor(field: FieldDefinitionV2): NormalizedRelationDescriptor | u
 }
 
 function relationOptions(field: FieldDefinitionV2): Array<{ label: string; value: string }> {
+  const fieldRelation = relationFor(field);
   return (props.targetRelationOptions?.[field.identity.physicalName] ?? []).map(target => ({
-    label: target.secondaryLabel ? `${target.label} · ${target.secondaryLabel}` : target.label,
+    label: relationTargetSecondaryLabel(target, fieldRelation)
+      ? `${relationTargetLabel(target, fieldRelation)} · ${relationTargetSecondaryLabel(target, fieldRelation)}`
+      : relationTargetLabel(target, fieldRelation),
     value: target.itemId,
   }));
 }
@@ -295,8 +299,11 @@ function onQuery(value: string): void {
 
       <div v-if="selected.length" class="relation-editor__selected">
         <div v-for="target in selected" :key="targetKey(target)" class="relation-editor__selected-row">
-          <span class="relation-editor__token">
-            {{ target.label }}
+          <span class="relation-editor__token" :title="`${target.collection || descriptor.relatedCollection || ''} · ${target.itemId}`">
+            {{ relationTargetLabel(target, descriptor) }}
+            <small v-if="relationTargetSecondaryLabel(target, descriptor)" class="relation-editor__token-secondary">
+              {{ relationTargetSecondaryLabel(target, descriptor) }}
+            </small>
           </span>
           <NButton
             quaternary
@@ -326,9 +333,11 @@ function onQuery(value: string): void {
               <Link2 :size="14" />
               <span class="relation-editor__candidate-label">
                 <span>
-                  {{ target.label }}
+                  {{ relationTargetLabel(target, descriptor) }}
                 </span>
-                <small v-if="target.secondaryLabel">{{ target.secondaryLabel }}</small>
+                <small v-if="relationTargetSecondaryLabel(target, descriptor)">
+                  {{ relationTargetSecondaryLabel(target, descriptor) }}
+                </small>
               </span>
               <Check v-if="selectedKeys.has(targetKey(target))" :size="14" />
             </button>
@@ -402,6 +411,7 @@ function onQuery(value: string): void {
   background: var(--vt-bg-subtle);
 }
 .relation-editor__token { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relation-editor__token-secondary { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); margin-left: 5px; }
 .relation-editor__results {
   display: grid; gap: 3px; min-height: 100px; max-height: 280px; padding: 2px; overflow: auto;
 }

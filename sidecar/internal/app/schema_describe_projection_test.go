@@ -115,10 +115,12 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 				t.Fatal(err)
 			}
 			assertColumnDisplayWiring(t, corpus.Tables[sample.TableID], got)
-			// The frozen wire predates the column `display` field. Project away
-			// exactly that new key so every historical field stays compared;
-			// the display contract itself is asserted separately below.
+			// The frozen wire predates the column `display` field and the relation
+			// display projection keys. Project away exactly those new keys so every
+			// historical field stays compared; both new contracts are asserted
+			// separately below.
 			stripColumnDisplayField(got)
+			stripRelationDisplayFields(got)
 			assertDescribeAutoNumberRevision(t, corpus.Tables[sample.TableID], got)
 			actual, err := json.Marshal(got)
 			if err != nil {
@@ -209,6 +211,87 @@ func assertColumnDisplayWiring(t *testing.T, snapshot v2.SchemaSnapshot, result 
 	if idColumn, found := byFieldID["id"]; found {
 		if idColumn["display"] != nil {
 			t.Fatalf("system id column must not carry a display spec: %v", idColumn["display"])
+		}
+	}
+}
+
+// stripRelationDisplayFields removes only the newly added relation display
+// projection keys (displayFieldId, displayFieldInfo, fallbackDisplayFieldInfo)
+// from every normalized relation. It must not touch any historical field.
+func stripRelationDisplayFields(result map[string]any) {
+	relations := result["schema"].(map[string]any)["normalizedRelations"].([]any)
+	for _, item := range relations {
+		if record, ok := item.(map[string]any); ok {
+			delete(record, "displayFieldId")
+			delete(record, "displayFieldInfo")
+			delete(record, "fallbackDisplayFieldInfo")
+		}
+	}
+}
+
+// TestSchemaDescribeProjectsRelationDisplayInfo pins that the normalized
+// relation entries forward the relation catalog's display projection keys
+// verbatim, null when the catalog descriptor carries none.
+func TestSchemaDescribeProjectsRelationDisplayInfo(t *testing.T) {
+	wire, err := os.ReadFile("testdata/schema_describe_oracle.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus describeOracleCorpus
+	if err := json.Unmarshal(wire, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	for id, snapshot := range corpus.Tables {
+		// 冻结 oracle 早于 autoNumber 与 phone/progress/rating 预设：
+		// 仅按 #458/#459 实际新增能力升级捕获输入，其余能力仍逐项 DeepEqual。
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
+	}
+	sample := corpus.Cases[0]
+	catalog := sample.Catalog
+	spec := v2.DisplaySpec{Kind: v2.DisplayNumber, Preset: "number", DisplayScale: 4, ScaleMode: "max", UseGrouping: true}
+	for index := range catalog.Relations {
+		if catalog.Relations[index].SourceFieldID == "" {
+			continue
+		}
+		catalog.Relations[index].DisplayFieldID = "fld_pt602dxd6ayafnq2n1f4"
+		catalog.Relations[index].DisplayFieldInfo = &relation.DisplayFieldInfo{
+			FieldID: "fld_pt602dxd6ayafnq2n1f4", DataType: "decimal", Display: &spec,
+			EnumOptions: []v2.SelectOption{
+				{OptionID: "opt_a", Label: "进行中", Color: "#ffaa00", Order: 0, State: v2.OptionActive},
+			},
+		}
+		catalog.Relations[index].FallbackDisplayFieldInfo = nil
+		break
+	}
+	got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) {
+		return corpus.Tables[id], nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relations := got["schema"].(map[string]any)["normalizedRelations"].([]any)
+	first := relations[0].(map[string]any)
+	if first["displayFieldId"] != "fld_pt602dxd6ayafnq2n1f4" {
+		t.Fatalf("displayFieldId = %#v", first["displayFieldId"])
+	}
+	info := first["displayFieldInfo"].(map[string]any)
+	if info["fieldId"] != "fld_pt602dxd6ayafnq2n1f4" || info["dataType"] != "decimal" || info["display"] == nil {
+		t.Fatalf("displayFieldInfo = %#v", info)
+	}
+	options, ok := info["enumOptions"].([]v2.SelectOption)
+	if !ok || len(options) != 1 {
+		t.Fatalf("enumOptions = %#v", info["enumOptions"])
+	}
+	if option := options[0]; option.OptionID != "opt_a" || option.Label != "进行中" || option.State != v2.OptionActive {
+		t.Fatalf("enumOptions[0] = %#v", option)
+	}
+	if first["fallbackDisplayFieldInfo"] != nil {
+		t.Fatalf("fallbackDisplayFieldInfo = %#v", first["fallbackDisplayFieldInfo"])
+	}
+	for _, item := range relations[1:] {
+		record := item.(map[string]any)
+		if record["displayFieldId"] != nil || record["displayFieldInfo"] != nil || record["fallbackDisplayFieldInfo"] != nil {
+			t.Fatalf("undescribed relation carried display info: %#v", record)
 		}
 	}
 }

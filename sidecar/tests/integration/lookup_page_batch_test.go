@@ -121,9 +121,11 @@ func TestLookupQueryPageSharesTargetReads(t *testing.T) {
 			}
 			for _, row := range result.Rows {
 				expectedTarget := expectedTargets[row["id"].(string)]
-				labels, ok := row[query.RelationLabelsField].(map[string]map[string]string)
+				labels, ok := row[query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)
 				linkName := link.Definition.Identity.PhysicalName
-				if !ok || labels[linkName][expectedTarget] != targetLabels[expectedTarget] || row[linkName] != expectedTarget {
+				entry, hasEntry := labels[linkName][expectedTarget]
+				if !ok || !hasEntry || entry.Value != targetLabels[expectedTarget] ||
+					entry.Source != "display" || row[linkName] != expectedTarget {
 					t.Fatalf("lookup projection lost relation label or raw ID: %#v", row)
 				}
 				for _, physicalName := range lookupNames {

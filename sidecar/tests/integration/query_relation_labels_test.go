@@ -51,7 +51,7 @@ func TestQueryRelationDisplayLabelsPreserveIDsAndLimitVisibleTargets(t *testing.
 	if row["owner"] != "b" || !reflect.DeepEqual(row["watchers"], []any{"b", "c", "missing", "a"}) {
 		t.Fatalf("relation IDs changed: %#v", row)
 	}
-	want := map[string]map[string]string{"owner": {"b": "Beta"}, "watchers": {"b": "Beta"}}
+	want := map[string]map[string]query.RelationLabelEntry{"owner": {"b": {Value: "Beta", Source: "display"}}, "watchers": {"b": {Value: "Beta", Source: "display"}}}
 	if !reflect.DeepEqual(row["__vibetableRelationLabels"], want) {
 		t.Fatalf("labels = %#v; want %#v", row["__vibetableRelationLabels"], want)
 	}
@@ -59,7 +59,7 @@ func TestQueryRelationDisplayLabelsPreserveIDsAndLimitVisibleTargets(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := rows[0]["__vibetableRelationLabels"]; !reflect.DeepEqual(got, map[string]map[string]string{"owner": {"a": "Alpha"}, "watchers": {}}) {
+	if got := rows[0]["__vibetableRelationLabels"]; !reflect.DeepEqual(got, map[string]map[string]query.RelationLabelEntry{"owner": {"a": {Value: "Alpha", Source: "display"}}, "watchers": {}}) {
 		t.Fatalf("self relation read labels = %#v", got)
 	}
 }
@@ -112,7 +112,7 @@ func TestQueryRelationDisplayLabelsBatchOnlyVisibleIDs(t *testing.T) {
 		}
 	}
 	for _, row := range page.Rows {
-		labels := row[query.RelationLabelsField].(map[string]map[string]string)
+		labels := row[query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)
 		if len(labels["watchers"]) != 3 || len(labels["duplicate"]) != 3 {
 			t.Fatalf("visible labels=%#v", labels)
 		}
@@ -149,12 +149,12 @@ func TestQueryRelationDisplayLabelsRespectPresenceComputedFreshnessAndScalarFall
 	port := query.NewPort(app, source)
 	for _, test := range []struct {
 		field string
-		want  map[string]string
+		want  map[string]query.RelationLabelEntry
 	}{
-		{"title", map[string]string{"a": "Visible"}},
-		{"payload", map[string]string{"a": "false"}},
-		{"computed", map[string]string{"a": "Fresh"}},
-		{"missing", map[string]string{}},
+		{"title", map[string]query.RelationLabelEntry{"a": {Value: "Visible", Source: "display"}}},
+		{"payload", map[string]query.RelationLabelEntry{"a": {Value: false, Source: "display"}}},
+		{"computed", map[string]query.RelationLabelEntry{"a": {Value: "Fresh", Source: "display"}}},
+		{"missing", map[string]query.RelationLabelEntry{}},
 	} {
 		t.Run(test.field, func(t *testing.T) {
 			relation.DisplayField = test.field
@@ -162,7 +162,7 @@ func TestQueryRelationDisplayLabelsRespectPresenceComputedFreshnessAndScalarFall
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := page.Rows[0][query.RelationLabelsField].(map[string]map[string]string)["links"]
+			got := page.Rows[0][query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)["links"]
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("labels=%#v, want %#v", got, test.want)
 			}
@@ -170,6 +170,22 @@ func TestQueryRelationDisplayLabelsRespectPresenceComputedFreshnessAndScalarFall
 	}
 	relation.DisplayField = "computed"
 	computed := relation.Fields["computed"]
+	for _, mutate := range []func(*query.FieldDescriptor){
+		func(field *query.FieldDescriptor) { field.ComputedDependencyWatermark = "changed-target-watermark" },
+		func(field *query.FieldDescriptor) { field.ComputedDefinitionVersion = 3 },
+	} {
+		stale := computed
+		mutate(&stale)
+		relation.Fields["computed"] = stale
+		page, err := port.QueryPage(context.Background(), "scalar", query.TableQuery{Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := page.Rows[0][query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)["links"]; len(got) != 0 {
+			t.Fatalf("ready but version-stale formula leaked labels: %#v", got)
+		}
+	}
+
 	computed.ComputedReady = false
 	computed.ComputedStatus = "updating"
 	relation.Fields["computed"] = computed
@@ -177,12 +193,75 @@ func TestQueryRelationDisplayLabelsRespectPresenceComputedFreshnessAndScalarFall
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := page.Rows[0][query.RelationLabelsField].(map[string]map[string]string)["links"]; len(got) != 0 {
+	if got := page.Rows[0][query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)["links"]; len(got) != 0 {
 		t.Fatalf("pending formula leaked labels: %#v", got)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := port.QueryPage(ctx, "scalar", query.TableQuery{Limit: 1}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled label query: %v", err)
+	}
+}
+
+// TestQueryRelationDisplayLabelsFallBackToTargetPrimaryDisplay pins the
+// frozen fallback chain: a valid relation display value wins, an empty or
+// missing display value falls back to the target's global primary display
+// value before the client resolves the record ID; 0 and false are valid
+// typed scalars, never "missing".
+func TestQueryRelationDisplayLabelsFallBackToTargetPrimaryDisplay(t *testing.T) {
+	app := newBootstrappedApp(t)
+	defer resetApp(t, app)
+	for _, sql := range []string{
+		`CREATE TABLE fallback_targets(id TEXT PRIMARY KEY, name TEXT, code TEXT, units INTEGER, enabled BOOLEAN)`,
+		`INSERT INTO fallback_targets VALUES
+   ('d','','PD-004',NULL,NULL),
+   ('e','','',NULL,NULL),
+   ('f','零值目标','PD-006',0,0)`,
+		`CREATE TABLE fallback_rows(id TEXT PRIMARY KEY, links JSON)`,
+		`INSERT INTO fallback_rows VALUES ('source','["d","e","f"]')`,
+	} {
+		if _, err := app.DB().NewQuery(sql).Execute(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fields := map[string]query.FieldDescriptor{
+		"name":    {PhysicalName: "name", Type: query.FieldTypeText},
+		"code":    {PhysicalName: "code", Type: query.FieldTypeText},
+		"units":   {PhysicalName: "units", Type: query.FieldTypeNumber},
+		"enabled": {PhysicalName: "enabled", Type: query.FieldTypeBool},
+	}
+	source := &staticQuerySource{descriptor: query.TableDescriptor{
+		DatabaseID: "local", TableID: "fallback", PhysicalName: "fallback_rows", PrimaryKey: "id", SchemaRevision: "s", DataRevision: 1,
+		Fields: map[string]query.FieldDescriptor{
+			"id": {PhysicalName: "id", Type: query.FieldTypeText},
+			"links": {PhysicalName: "links", Type: query.FieldTypeMultiRelation, Relation: &query.RelationDescriptor{
+				TableName: "fallback_targets", PrimaryKey: "id", DisplayField: "name",
+				PrimaryDisplayField: "code", Fields: fields,
+			}},
+		},
+	}}
+	port := query.NewPort(app, source)
+	expectations := []struct {
+		display string
+		want    map[string]query.RelationLabelEntry
+	}{
+		{"name", map[string]query.RelationLabelEntry{"d": {Value: "PD-004", Source: "primary"}, "f": {Value: "零值目标", Source: "display"}}},
+		{"units", map[string]query.RelationLabelEntry{"d": {Value: "PD-004", Source: "primary"}, "f": {Value: int64(0), Source: "display"}}},
+		{"enabled", map[string]query.RelationLabelEntry{"d": {Value: "PD-004", Source: "primary"}, "f": {Value: false, Source: "display"}}},
+		{"missing", map[string]query.RelationLabelEntry{"d": {Value: "PD-004", Source: "primary"}, "f": {Value: "PD-006", Source: "primary"}}},
+	}
+	for _, expectation := range expectations {
+		t.Run(expectation.display, func(t *testing.T) {
+			relation := source.descriptor.Fields["links"].Relation
+			relation.DisplayField = expectation.display
+			page, err := port.QueryPage(context.Background(), "fallback", query.TableQuery{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := page.Rows[0][query.RelationLabelsField].(map[string]map[string]query.RelationLabelEntry)["links"]
+			if !reflect.DeepEqual(got, expectation.want) {
+				t.Fatalf("display=%s labels=%#v, want %#v", expectation.display, got, expectation.want)
+			}
+		})
 	}
 }

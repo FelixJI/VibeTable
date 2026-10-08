@@ -681,9 +681,9 @@ const authoritativeLookups = createAuthoritativeLookupController({
   resetContext: () => relationLookup.reset(),
   loadContext: collection => relationLookupService.loadContext(collection),
   queryLookups: request => relationLookupService.queryLookups(request),
-  acceptResult: (result, currentDataRevision) => {
+  acceptResult: (result, currentDataRevision, labelsOnly) => {
     if (!relationLookup.acceptLookup(result, currentDataRevision)) return false;
-    return tableStore.applyLookupQueryResult(result, { labelsOnly: relationLookup.lookups.length === 0 });
+    return tableStore.applyLookupQueryResult(result, { labelsOnly: labelsOnly ?? relationLookup.lookups.length === 0 });
   },
   clearEditRejection: () => { editRejection.value = null; },
   reportError: content => message.error(content),
@@ -987,9 +987,19 @@ function initializeBusinessConsumers(): void {
   // Source writes reconcile through tableService/mutationService. Target-only
   // writes refresh Relation display metadata in place; a full table reload
   // would discard cursor windows and interfere with edits awaiting receipts.
-  relationLookupService.init((change) => {
-    if (change.tableId !== workspace.currentTable && relationLookup.lookups.length === 0) {
+  relationLookupService.init((change, labelsOnly) => {
+    if (labelsOnly) {
+      void authoritativeLookups.refreshLabels();
+    } else if (change.tableId !== workspace.currentTable && relationLookup.lookups.length === 0) {
       void authoritativeLookups.refresh();
+    }
+    // Target-table writes change relation labels, not the current table's
+    // schema: refresh the open picker's candidates and staged labels without
+    // replacing the user's selection.
+    const relatedCollection = relationEditor.value.descriptor?.relatedCollection;
+    if (relationEditor.value.show && relatedCollection
+      && [relatedCollection, workspace.currentTable].includes(change.tableId)) {
+      void relationEditorController.dispatch({ type: "targets.refresh" });
     }
   });
   pasteService.init();
@@ -1482,6 +1492,7 @@ useKeyboard({
                 :interaction-enabled="kanbanInteraction.enabled"
                 :lane-options="kanbanInteraction.lanes"
                 :lookup-definitions="relationLookup.lookups"
+                :relations="relationLookup.schema?.normalizedRelations ?? []"
                 @card-move="alternativeViewInteractionController.dispatch({ type: 'kanban.card.move', ...$event })"
               />
               <RecordGalleryView
@@ -1490,6 +1501,7 @@ useKeyboard({
                 :schema="tableStore.schema ?? []"
                 :view="activePresetView"
                 :lookup-definitions="relationLookup.lookups"
+                :relations="relationLookup.schema?.normalizedRelations ?? []"
               />
             </template>
             <div v-if="workspace.currentTable && tableStore.datasetReady" class="table-summary" data-testid="table-summary">
