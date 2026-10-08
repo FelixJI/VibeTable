@@ -183,7 +183,10 @@ public partial class App : Application
         {
             try
             {
-                return Path.GetFullPath(startup.ReadinessDir!);
+                // A dedicated subdirectory keeps rotation pruning scoped to desktop.log, away from readiness-root diagnostics.
+                return Path.Combine(
+                    Path.GetFullPath(startup.ReadinessDir!),
+                    "desktop-logs");
             }
             catch
             {

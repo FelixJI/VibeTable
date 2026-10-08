@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
@@ -251,6 +252,77 @@ public sealed class ProductDataSidecarRoutingTests
             @"""code"":""BACKEND_UNAVAILABLE""");
         Assert.AreEqual(1, sidecar.CallCount);
         Assert.AreEqual(0, pythonTransport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task FailedRpcKeepsReplyCorrelationButDropsNonProducerRequestIdDiagnostics()
+    {
+        foreach (string requestId in new[]
+        {
+            "customer-salary-9000",
+            @"C:\Users\customer\机密-report.docx",
+        })
+        {
+            var sink = new FakeWebReplySink();
+            var traces = new List<string>();
+            var sidecar = new ControlledProductSidecarForwarder((_, _) =>
+                throw new InvalidOperationException("sensitive failure detail"));
+            var controller = new ProductDataRequestController(
+                sink,
+                SelectorFor("query.page", "goSidecar"),
+                traceError: traces.Add);
+            controller.SetProductSidecarForwarder(sidecar);
+
+            await controller.DispatchAsync(QueryRequest(requestId));
+
+            FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
+            Assert.IsNotNull(reply, requestId);
+            Assert.AreEqual(
+                requestId,
+                reply.RequestId,
+                "Renderer correlation must stay untouched on the reply path.");
+            StringAssert.Contains(
+                JsonSerializer.Serialize(reply.Payload),
+                @"""code"":""PRODUCT_DATA_FAILED""");
+            Assert.HasCount(1, traces, requestId);
+            Assert.IsTrue(DiagnosticLogLine.IsSafe(traces[0]), traces[0]);
+            using JsonDocument document = JsonDocument.Parse(traces[0]);
+            Assert.AreEqual(
+                JsonValueKind.Null,
+                document.RootElement.GetProperty("requestId").ValueKind,
+                traces[0]);
+            Assert.IsFalse(
+                traces[0].Contains(requestId, StringComparison.Ordinal),
+                traces[0]);
+        }
+    }
+
+    [TestMethod]
+    public async Task FailedRpcKeepsProducerRequestIdInDiagnostics()
+    {
+        string requestId = $"rlzhp8xk-7-{Guid.NewGuid():D}";
+        var sink = new FakeWebReplySink();
+        var traces = new List<string>();
+        var sidecar = new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("sensitive failure detail"));
+        var controller = new ProductDataRequestController(
+            sink,
+            SelectorFor("query.page", "goSidecar"),
+            traceError: traces.Add);
+        controller.SetProductSidecarForwarder(sidecar);
+
+        await controller.DispatchAsync(QueryRequest(requestId));
+
+        FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(reply);
+        Assert.AreEqual(requestId, reply.RequestId);
+        Assert.HasCount(1, traces);
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(traces[0]), traces[0]);
+        using JsonDocument document = JsonDocument.Parse(traces[0]);
+        Assert.AreEqual(
+            requestId,
+            document.RootElement.GetProperty("requestId").GetString(),
+            traces[0]);
     }
 
     [TestMethod]

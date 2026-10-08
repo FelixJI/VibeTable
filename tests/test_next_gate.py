@@ -1226,7 +1226,10 @@ def test_product_e2e_failure_evidence_copies_scenario_desktop_log_only(
     runtime_root = run_root / "_runtime" / "17" / "host"
     runtime_root.mkdir(parents=True)
     (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
-    (runtime_root / "desktop.log").write_text("scenario host diagnostics", encoding="utf-8")
+    desktop_logs = runtime_root / "desktop-logs"
+    desktop_logs.mkdir()
+    (desktop_logs / "desktop.log").write_text("scenario host diagnostics", encoding="utf-8")
+    (runtime_root / "desktop.log").write_text("stale readiness-root log", encoding="utf-8")
     outside_root = tmp_path / "elsewhere"
     outside_root.mkdir()
     (outside_root / "desktop.log").write_text("external user log", encoding="utf-8")

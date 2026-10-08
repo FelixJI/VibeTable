@@ -88,10 +88,11 @@ public sealed class TestModeReadinessWriterTests
             "logs");
 
         Assert.AreEqual(
-            Path.GetFullPath(readiness),
+            Path.Combine(Path.GetFullPath(readiness), "desktop-logs"),
             App.DesktopLogDirectory(
                 new HostStartupOptions { TestMode = true, ReadinessDir = readiness }),
-            "Test mode with a readiness directory isolates desktop.log per scenario.");
+            "Test mode keeps desktop.log in a dedicated readiness subdirectory "
+                + "so log rotation can never prune readiness-root diagnostics.");
         Assert.AreEqual(
             userDirectory,
             App.DesktopLogDirectory(

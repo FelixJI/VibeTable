@@ -779,7 +779,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
         await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
-            "protection-stage",
+            "rlzhp8xk-7-3f2a8d1e-0c4b-4f8a-9d2e-1a2b3c4d5e6f",
             FieldApplyRequest(confirmations: []),
             ScopeFor(fixture.Opened, 1)));
 
@@ -788,9 +788,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual(0, fixture.PythonWriteCount, "The Python gateway must not be entered.");
         FakeWebReplySink.Reply? failure = await fixture.Sink.WaitForFailedAsync();
         Assert.IsNotNull(failure);
-        Assert.AreEqual("protection-stage", failure.RequestId);
+        Assert.AreEqual(
+            "rlzhp8xk-7-3f2a8d1e-0c4b-4f8a-9d2e-1a2b3c4d5e6f",
+            failure.RequestId);
         AssertStagedFailureTrace(
-            traces, "field.change.apply", "protection", "protection-stage");
+            traces,
+            "field.change.apply",
+            "protection",
+            "rlzhp8xk-7-3f2a8d1e-0c4b-4f8a-9d2e-1a2b3c4d5e6f");
         Assert.AreEqual(
             "PRODUCT_DATA_FAILED",
             JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
@@ -812,7 +817,7 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
         await fixture.Controller.DispatchAsync(FieldRequest(
             "field.change.apply",
-            "dispatch-stage",
+            "rlzhp8xk-8-9d8c7b6a-5e4f-4032-b1a0-9f8e7d6c5b4a",
             FieldApplyRequest(confirmations: []),
             ScopeFor(fixture.Opened, 1)));
 
@@ -821,9 +826,14 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         Assert.AreEqual(0, fixture.Forwarder.CallCount);
         FakeWebReplySink.Reply? failure = await fixture.Sink.WaitForFailedAsync();
         Assert.IsNotNull(failure);
-        Assert.AreEqual("dispatch-stage", failure.RequestId);
+        Assert.AreEqual(
+            "rlzhp8xk-8-9d8c7b6a-5e4f-4032-b1a0-9f8e7d6c5b4a",
+            failure.RequestId);
         AssertStagedFailureTrace(
-            traces, "field.change.apply", "dispatch", "dispatch-stage");
+            traces,
+            "field.change.apply",
+            "dispatch",
+            "rlzhp8xk-8-9d8c7b6a-5e4f-4032-b1a0-9f8e7d6c5b4a");
         Assert.AreEqual(
             "PRODUCT_DATA_FAILED",
             JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
