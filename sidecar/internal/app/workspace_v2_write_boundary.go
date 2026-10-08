@@ -15,6 +15,7 @@ const maxRejectedWriteBodyBytes = 1 << 20
 const workspaceV2FieldCancelPrefix = "/api/vibetable/v2/field-change/cancel/"
 
 var workspaceV2ReadOnlyPosts = map[string]struct{}{
+	pluginDataPath:                               {},
 	sourceImportPath + "/preview":                {},
 	sourceImportPath + "/upload":                 {},
 	sourceImportPath + "/discard":                {},

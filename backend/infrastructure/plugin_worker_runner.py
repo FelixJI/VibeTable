@@ -128,6 +128,8 @@ async function main() {
       const api = {
         data: {
           read: (request) => call("data.read", request),
+          describe: (request) => call("data.describe", request),
+          query: (request) => call("data.query", request),
           mutate: (plan) => call("data.mutate", plan),
         },
         file: {

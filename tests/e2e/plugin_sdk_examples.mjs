@@ -20,7 +20,7 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
   })), "sdk-example-seed");
   const [selectedId, otherId] = seed.payload.affectedRows.map(row => row.recordId);
   const readRows = async () => (await rawBridgeRequest(page, "query.page", {
-    tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+    tableId: table.tableId, query: { filters: [{ field: "id", operator: "in", value: [selectedId, otherId] }], sorts: [], offset: 0, limit: 100 },
   })).payload.rows;
   const valueOf = (rows, id) => rows.find(row => row.id === id)?.[field];
   const context = { contract: "vibetable.command-context.v1", projectKey, collection: table.tableId,
@@ -55,10 +55,17 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
     } while (Date.now() < deadline);
     throw new Error(`SDK example Host task did not settle: ${taskId}`);
   }
+  await applyProductMutation(page, table.tableId, Array.from({ length: 548 }, (_, index) => ({
+    kind: "insert", recordId: null, values: { [field]: `row-${String(index).padStart(3, "0")}` },
+  })), "sdk-example-550-seed");
   await install("data-overview");
   const read = await terminal((await start("data-overview", "open-overview", {})).taskId);
   recorder.check("real data-overview package returns the synthetic table count",
-    read.state === "succeeded" && read.result?.table?.data?.count === 2, { read });
+    read.state === "succeeded" && read.result?.table?.data?.count === 550 && read.result?.table?.data?.complete === true, { read });
+  const filtered = await terminal((await start("data-overview", "open-overview", { fieldId: table.field.fieldId, contains: "row-" })).taskId);
+  recorder.check("real overview filters through Go across three pages", filtered.state === "succeeded" && filtered.result?.table?.data?.count === 548 && filtered.result?.table?.data?.totalRows === 550, { filtered });
+  const denied = await terminal((await start("data-overview", "open-overview", { fieldId: "fld_unauthorized" })).taskId);
+  recorder.check("real overview rejects unavailable fields", denied.state === "failed" && denied.error?.code === "plugin_read_denied", { denied });
   await install("normalize-text");
   for (const decision of ["rejected", "cancelled", "conflict", "approved"]) {
     await beginBridgeMessageCapture(page, ["plugin.interaction.requested"]);

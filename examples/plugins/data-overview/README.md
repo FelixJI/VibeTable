@@ -3,8 +3,11 @@
 使用同一固定 VibeTable commit 的 SDK、CLI 和构建后的 Host。`minHostVersion` 只用于产品
 兼容范围判断，不保证已发布同版本 Host 实现当前 commit 的新合同。
 
-从 `context.collection` 读取当前表，仅授权 id 字段。Worker 逐页计数，包括空表和 200 条
-满页边界，最终返回真实 `PluginResult` 的 table.data.count；不申请写、文件或网络权限。
+从 `context.collection` 读取当前表，显式声明 Plugin API 2.x 与 read/query，授权当前配置字段。
+Worker 用 data.describe 选择可排序字段，通过 Go 查询逐页读取完整结果；支持 fieldId/contains 输入。
+输出 count/filteredRows/totalRows/nonNullCount/complete 与最多5条样本，清楚区分筛选范围和全表。
+游标或修订失效即明确失败；不拿首屏冒充全量，也不申请写、文件或网络权限。
+单页200、能力调用最多64；6200条在预算内，12400条会明确拒绝而不返回成功全量统计。
 
 在仓库锁定工具链中执行 `npm ci`、`npm run typecheck`、`npm test`。test 先通过实际 CLI
 编译 Worker，再运行分页测试。根目录执行：

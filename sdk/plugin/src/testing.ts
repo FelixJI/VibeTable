@@ -1,3 +1,4 @@
+import type { DataDescription, DataQueryRequest, DataQueryPage } from "./data.js";
 import {
   createCapabilityClient, PluginCapabilityError,
   type DataPage, type DataReadRequest, type MutationPlan, type PluginCapabilities,
@@ -8,7 +9,7 @@ import type { CommandContext, JsonObject, JsonValue, PluginAction, PluginResult 
 
 export interface DataGrant {
   readonly collection: string;
-  readonly operations: readonly ("read" | "create" | "update")[];
+  readonly operations: readonly ("read" | "query" | "create" | "update")[];
   readonly fields: readonly string[];
 }
 
@@ -19,6 +20,12 @@ export interface OfflineHostOptions {
     readonly files?: readonly ("pickRead" | "pickWrite")[];
     readonly privateStorage?: boolean;
   };
+  readonly pluginApi?: "1.x" | "2.x";
+  /** Synthetic Go-produced metadata; no logical type inference. */
+  readonly descriptions?: Readonly<Record<string, DataDescription>>;
+  /** Closed synthetic port: supply Go conformance outputs, never business data. */
+  readonly queryAdapter?: (request: DataQueryRequest) => Promise<DataQueryPage>;
+  readonly revision?: () => string;
   readonly collections?: Readonly<Record<string, readonly JsonObject[]>>;
   readonly fields?: Readonly<Record<string, readonly string[]>>;
   /** Synthetic product profile; write tests must configure each used operation. */
@@ -57,6 +64,8 @@ export interface OfflineExecution {
 interface ExecutionState {
   cancelRequested: boolean;
   lastProgress: number;
+  cursors: Map<string, { binding: string; cursor: string; revision: string }>;
+  calls: number;
 }
 
 export interface OfflineRun {
@@ -160,7 +169,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   const mutationPlans: MutationPlan[] = [];
   const progressEvents: PluginProgress[] = [];
   const writtenFiles = new Map<string, Uint8Array>();
-  const grant = (collection: string, operation: "read" | "create" | "update" | "write") =>
+  const grant = (collection: string, operation: "read" | "query" | "create" | "update" | "write") =>
     options.permissions?.data?.find(item => (operation === "write"
       ? item.operations.some(kind => kind === "create" || kind === "update")
       : item.operations.includes(operation))
@@ -177,8 +186,92 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   const requireFile = (operation: "pickRead" | "pickWrite") => {
     if (!options.permissions?.files?.includes(operation)) reject("plugin_worker_failed", `plugin did not declare file.${operation}`);
   };
+  const trackCall = (state: ExecutionState) => {
+    if (options.pluginApi === "2.x" && ++state.calls > 64) reject("plugin_worker_failed", "plugin capability budget exceeded");
+  };
+  const requireV2 = (state: ExecutionState) => {
+    if ((options.pluginApi ?? "1.x") !== "2.x") reject("plugin_api_unsupported", "plugin API v2 was not declared");
+    if (state.cancelRequested) reject("plugin_cancel_requested", "plugin cancellation requested");
+    trackCall(state);
+  };
+  const requireQueryGrant = (collection: string) => {
+    const permission = grant(collection, "query");
+    if (!permission?.operations.includes("read")) reject("plugin_read_denied", "plugin read permission is unavailable");
+    return permission;
+  };
   const capabilitiesFor = (state: ExecutionState): PluginCapabilities => createCapabilityClient({
+    async dataDescribe(request) {
+      requireV2(state);
+      if (!wireObject(request, ["accepts", "collection"]) || JSON.stringify(request.accepts) !== '["vibetable.plugin-data.v2"]') reject("plugin_api_unsupported", "plugin data contract is unavailable");
+      const descriptions = Object.values(options.descriptions ?? {});
+      if (request.collection === undefined) return { contract: "vibetable.plugin-data.v2", tables: descriptions
+        .filter(table => grant(table.collection, "query")?.operations.includes("read"))
+        .map(({ collection, displayName, schemaRevision }) => ({ collection, displayName, schemaRevision })) };
+      const permission = requireQueryGrant(request.collection);
+      const table = options.descriptions?.[request.collection];
+      if (!table) reject("plugin_read_denied", "plugin read permission is unavailable");
+      return { ...table, fields: table.fields.filter(field => permission.fields.includes("*")
+        || permission.fields.includes("$configured") || permission.fields.includes(field.fieldId)) };
+    },
+    async dataQuery(request) {
+      requireV2(state);
+      if (!wireObject(request, ["contract", "collection", "fields", "ids", "filters", "sorts", "pageSize", "cursor"])
+        || request.contract !== "vibetable.plugin-query.v2" || !Array.isArray(request.fields)
+        || request.fields.some(field => typeof field !== "string")) reject("plugin_capability_invalid", "plugin query request is invalid");
+      const permission = requireQueryGrant(request.collection);
+      if (["ids", "filters", "sorts", "pageSize"].some(key => (request as unknown as Record<string, unknown>)[key] === null)) reject("plugin_capability_invalid", "plugin query request is invalid");
+      const size = request.pageSize ?? 100;
+      if (!Number.isInteger(size) || size < 1 || size > 200 || request.ids !== undefined
+        && (!Array.isArray(request.ids) || request.ids.length > 200)) reject("plugin_query_limit", "plugin query limit exceeded");
+      const fields = options.descriptions?.[request.collection]?.fields ?? [];
+      const requireField = (id: string) => {
+        const field = fields.find(item => item.fieldId === id);
+        if (!field || !(permission.fields.includes("*") || permission.fields.includes("$configured")
+          || permission.fields.includes(id)) || id.includes(".")) reject("plugin_read_denied", "plugin read permission is unavailable");
+        return field;
+      };
+      request.fields.forEach(requireField);
+      if (request.ids !== undefined) requireField("id");
+      const walk = (filters: NonNullable<DataQueryRequest["filters"]>) => {
+        if (!Array.isArray(filters)) reject("plugin_capability_invalid", "plugin query filters are invalid");
+        for (const filter of filters) {
+          if (!wireObject(filter as unknown, ["field", "operator", "value", "logic", "filters", "groupLogic"])) reject("plugin_capability_invalid", "plugin query filter is invalid");
+          if (filter.filters?.length) { walk(filter.filters); continue; }
+          const field = requireField(filter.field ?? "");
+          if (["formula", "lookup"].includes(field.logicalType)) reject("plugin_query_computed_unsupported", "computed predicates are unavailable");
+          if (!field.filterOperators.includes(filter.operator!)) reject("query.operator.unsupported", "plugin query operator is unavailable");
+        }
+      };
+      walk(request.filters ?? []);
+      if (request.sorts !== undefined && !Array.isArray(request.sorts)) reject("plugin_capability_invalid", "plugin query sorts are invalid");
+      for (const sort of request.sorts ?? []) {
+        if (!wireObject(sort as unknown, ["field", "direction", "nullsLast"])) reject("plugin_capability_invalid", "plugin query sort is invalid");
+        if (!requireField(sort.field).sortable) reject("query.cursor.unsupported_sort", "plugin query sort is unavailable");
+      }
+      const { cursor, ...query } = request;
+      const revision = `${context.projectKey}:${context.collection}:${options.descriptions?.[request.collection]?.schemaRevision}:${options.revision?.() ?? "1"}`;
+      const binding = JSON.stringify(query);
+      let previous: string | undefined;
+      if (cursor !== undefined) {
+        const saved = state.cursors.get(cursor);
+        state.cursors.delete(cursor);
+        if (!saved || saved.binding !== binding) reject("plugin_cursor_invalid", "plugin cursor is invalid");
+        if (saved.revision !== revision) reject("plugin_cursor_stale", "plugin cursor is stale");
+        previous = saved.cursor;
+      }
+      if (!options.queryAdapter) reject("plugin_query_failed", "synthetic query adapter is unavailable");
+      const page = await options.queryAdapter(previous === undefined ? query : { ...query, cursor: previous });
+      if (state.cancelRequested) reject("plugin_cancel_requested", "plugin cancellation requested");
+      if (new TextEncoder().encode(JSON.stringify(page)).length > 1_048_576) reject("plugin_query_limit", "plugin response budget exceeded");
+      let nextCursor: string | null = null;
+      if (page.nextCursor !== null) {
+        nextCursor = globalThis.crypto.randomUUID();
+        state.cursors.set(nextCursor, { binding, cursor: page.nextCursor, revision });
+      }
+      return { ...page, nextCursor };
+    },
     async dataRead<T extends JsonObject>(request: DataReadRequest): Promise<DataPage<T>> {
+      trackCall(state);
       if (Object.keys(request).some(key => !["collection", "fields", "filter", "cursor", "pageSize"].includes(key))
         || typeof request.collection !== "string" || !request.collection
         || !Array.isArray(request.fields) || request.fields.some(field => typeof field !== "string")) {
@@ -215,6 +308,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
     },
     async dataMutate() { return reject("plugin_direct_mutation_unsupported", "data.mutate cannot write directly; return a mutation plan from the action"); },
     async filePickRead() {
+      trackCall(state);
       requireFile("pickRead");
       const file = options.readFiles?.[readIndex++];
       if (!file) return null;
@@ -227,6 +321,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
       };
     },
     async filePickWrite(request) {
+      trackCall(state);
       requireFile("pickWrite");
       if (!request.suggestedName || !request.mediaType) reject("plugin_capability_invalid", "plugin write picker requires suggestedName and mediaType");
       return {
@@ -238,17 +333,21 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
       };
     },
     async storageGet<T extends JsonValue>(key: string): Promise<T | null> {
+      trackCall(state);
       requireStorage(key);
       return structuredClone(storage.get(key) ?? null) as T | null;
     },
     async storageSet(key, value) {
+      trackCall(state);
       requireStorage(key);
       if (new TextEncoder().encode(JSON.stringify(value)).length > 65_536) reject("plugin_worker_failed", "private storage value exceeds the size limit");
       storage.set(key, structuredClone(value));
     },
-    async storageDelete(key) { requireStorage(key); storage.delete(key); },
+    async storageDelete(key) {
+      trackCall(state); requireStorage(key); storage.delete(key); },
     async uiEmitResult() { return reject("plugin_emit_result_unsupported", "ui.emitResult is unsupported; return the final result from the action"); },
     async uiReportProgress(progress) {
+      trackCall(state);
       if (!Number.isInteger(progress.current) || !Number.isInteger(progress.total)
         || progress.current < 0 || progress.total < 0 || (progress.total > 0 && progress.current > progress.total)) {
         reject("plugin_capability_invalid", "progress is out of bounds");
@@ -257,7 +356,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
       progressEvents.push({ ...progress, current: state.lastProgress });
       return { cancelRequested: state.cancelRequested };
     },
-    async contextRead() { return structuredClone(context); },
+    async contextRead() { trackCall(state); return structuredClone(context); },
   });
   const finalizeFor = (state: ExecutionState) => async (
     raw: MutationPlan, onSubmit: () => void, risk: "read" | "write" | "destructive" = "write",
@@ -285,13 +384,13 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
     onSubmit();
     return options.applyMutation(plan);
   };
-  const hostState: ExecutionState = { cancelRequested: false, lastProgress: 0 };
+  const hostState: ExecutionState = { cancelRequested: false, lastProgress: 0, cursors: new Map(), calls: 0 };
   return {
     capabilities: capabilitiesFor(hostState), mutationPlans, progressEvents, writtenFiles,
     setContext(patch) { context = { ...context, ...patch }; },
     requestCancel() { hostState.cancelRequested = true; },
     createExecution() {
-      const state: ExecutionState = { cancelRequested: false, lastProgress: 0 };
+      const state: ExecutionState = { cancelRequested: false, lastProgress: 0, cursors: new Map(), calls: 0 };
       return {
         capabilities: capabilitiesFor(state),
         requestCancel() { state.cancelRequested = true; },

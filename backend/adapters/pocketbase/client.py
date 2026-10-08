@@ -176,6 +176,11 @@ class PocketBaseClient:
             "import plan settlement",
         )
 
+    async def plugin_data(self, request: JsonObject) -> JsonObject:
+        return _object(
+            await self._post("/api/vibetable/v2/plugins/data", request), "plugin data response"
+        )
+
     async def query_page(
         self,
         *,
