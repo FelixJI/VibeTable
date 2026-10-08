@@ -27,7 +27,7 @@ export function progressDisplay(value: unknown, display: DisplaySpec): { width: 
 /** Bounded plain text only; user values never become markup. */
 export function textSummary(value: unknown, rich = false): string {
   let text = String(value);
-  if (rich) text = text.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, "")
+  if (rich) text = text.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, " ")
     .replace(/<[^>]*>/gu, " ").replace(/&nbsp;/gu, " ").replace(/&lt;/gu, "<")
     .replace(/&gt;/gu, ">").replace(/&amp;/gu, "&");
   text = text.replace(/\s+/gu, " ").trim();

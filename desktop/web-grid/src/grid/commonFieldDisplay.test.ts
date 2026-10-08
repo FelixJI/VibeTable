@@ -48,6 +48,9 @@ describe("common field display stays separate from stored values", () => {
     expect(format("+86 010-0012 ext.03", "text", { preset: "phone" })).toBe("+86 010-0012 ext.03");
     expect(format("<p>你好</p><script>alert(1)</script><b>世界</b>", "text", { kind: "editor" })).toBe("你好 世界");
     expect(format("x".repeat(300), "text")).toHaveLength(240);
+    expect(format("a<script>x</script>b", "text", { kind: "editor" })).toBe("a b");
+    expect(format("a<style>x</style>b", "text", { kind: "editor" })).toBe("a b");
+    expect(format("a<script>outer<script>inner</script>tail</script>b", "text", { kind: "editor" })).toBe("a tail b");
   });
   it("grid and cards share text, colors and safe values; only http/https become links", () => {
     const render = (value: unknown, column: ColumnSchema): HTMLElement => {
@@ -81,6 +84,9 @@ describe("common field display stays separate from stored values", () => {
     const richColumn = { ...urlColumn, display: { ...display, kind: "editor" as const, preset: "" } };
     expect(render("<b>你好</b><script>alert(1)</script>", richColumn).querySelector("script")).toBeNull();
     expect(render("<b>你好</b><script>alert(1)</script>", richColumn).textContent).toBe("你好");
+    const nested = render("a<script>outer<script>inner</script>tail</script>b", richColumn);
+    expect(nested.textContent).toBe("a tail b");
+    expect(nested.children).toHaveLength(0);
   });
 
 });
