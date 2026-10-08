@@ -180,6 +180,15 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
       && snapshotDisplay.progressStart === 1 && snapshotDisplay.progressTarget === 2
       && (await query()).payload.rows.some(row => row[progress.physicalName] === 1.5), { snapshotId, restoredBootstrap, snapshotDisplay });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "02-common-field-display-restored.png"), fullPage: true });
+  // New Gallery views inherit the current visible fields; select the tested summaries.
+  await page.getByTestId("view-hidden-trigger").click();
+  await page.getByTestId("view-hidden-hide-filtered").click();
+  for (const summaryField of ["进度", "评分", "电话"]) {
+    await page.getByTestId("view-hidden-search").locator("input").fill(summaryField);
+    await page.getByTestId("view-hidden-show-filtered").click();
+  }
+  await page.getByTestId("view-hidden-search").locator("input").fill("");
+  await page.getByTestId("view-hidden-apply").click();
 
   await page.getByTestId("view-create").click();
   const galleryDialog = page.locator(".view-dialog:visible"); await galleryDialog.waitFor();
@@ -189,6 +198,11 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await page.getByTestId("view-dialog-confirm").click();
   await page.getByTestId("record-gallery-view").waitFor({ state: "visible", timeout: 30_000 });
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="gallery-card"]').length === 6);
+  // Wait for the selected summaries to render before capturing the cards.
+  await page.waitForFunction(wanted => {
+    const texts = [...document.querySelectorAll('[data-testid="gallery-card"]')].map(card => card.textContent ?? "");
+    return wanted.every(text => texts.some(card => card.includes(text)));
+  }, ["150%", "☆☆☆☆☆ 0/5", "★★★★★ 5/5"], { timeout: 30_000 });
   const cards = await page.getByTestId("gallery-card").allInnerTexts();
   recorder.check("real record cards share progress and rating display with the grid after snapshot restore",
     cards.some(text => text.includes("150%")) && cards.some(text => text.includes("☆☆☆☆☆ 0/5"))
