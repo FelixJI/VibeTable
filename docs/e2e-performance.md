@@ -26,7 +26,7 @@
 - 结果：39/39 passed、0 failed、0 skipped。
 - 当前 manifest gap：5（`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`）。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：无。
+- 当前 manifest changed：1（`28-relation-delta-preview`）。
 
 同一 main 候选的 data-io 7 场与 resilience 32 场精确覆盖当时 manifest 的 39 场，两 lane 的原报告全部通过，六 lane 的 commit/source/candidate/资产绑定一致，required 成功。报告内部路径分别为 `lane-evidence/data-io/20261002T043152Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261002T043620Z/product-e2e-report.json`。普通 CD36970691192 成功，正式 Publish 与 attestation 均 skipped；[PR423 合并后证据](https://github.com/FelixJI/VibeTable/pull/423#issuecomment-5946519425)保留核验范围。此样本不代表 #415/#409 全部 AC/GAC 已通过。
 

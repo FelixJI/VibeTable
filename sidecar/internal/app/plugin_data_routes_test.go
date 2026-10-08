@@ -234,6 +234,31 @@ func TestPluginDataRealAuthorityPaginationAndGrants(t *testing.T) {
 		}
 	}
 
+	// The narrowed plugin descriptor must strip every relation label source
+	// (raw-ID projection is asserted by the pagination loop above, target
+	// privacy by the metadata secret scan near the top).
+	scoped := &pluginQuerySource{
+		source: source,
+		grant: pluginReadGrant{
+			Collection: table.TableID,
+			Operations: []string{"read", "query"},
+			Fields:     []string{"id", number.Identity.FieldID, date.Identity.FieldID, boolean.Identity.FieldID, link.Identity.FieldID},
+		},
+		request: pluginQueryRequest{
+			Contract:   "vibetable.plugin-query.v2",
+			Collection: table.TableID,
+			Fields:     []string{"id", link.Identity.FieldID},
+		},
+	}
+	narrowed, _, err := scoped.DescribeSelectionTable(ctx, pb, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation := narrowed.Fields[link.Identity.PhysicalName].Relation
+	if relation == nil || relation.DisplayField != "" || relation.PrimaryDisplayField != "" || len(relation.Fields) != 0 || len(relation.PresenceFields) != 0 {
+		t.Fatalf("plugin relation descriptor kept ungranted label sources: %#v", relation)
+	}
+
 	fixtureRaw, err := os.ReadFile("../../../tests/contract/fixtures/plugin-capabilities-v2.json")
 	if err != nil {
 		t.Fatal(err)

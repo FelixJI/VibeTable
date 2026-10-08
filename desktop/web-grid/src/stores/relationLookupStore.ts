@@ -126,6 +126,30 @@ export const useRelationLookupStore = defineStore("relationLookup", () => {
     draft.value = null;
   }
 
+  /** Refresh display labels of the staged selection after target writes. */
+  function refreshDraftLabels(targets: readonly RelationTargetRef[], requestedIds: readonly string[] = []): void {
+    const current = draft.value;
+    if (!current) return;
+    const fresh = new Map(targets.map((target) => [targetKey(target), target]));
+    const requested = new Set(requestedIds);
+    const relabel = (target: RelationTargetRef): RelationTargetRef => {
+      const updated = fresh.get(targetKey(target));
+      return updated
+        ? {
+          ...target, label: updated.label, secondaryLabel: updated.secondaryLabel,
+          displayValue: updated.displayValue, secondaryValue: updated.secondaryValue,
+        }
+        : requested.has(target.itemId)
+          ? { ...target, label: target.itemId, secondaryLabel: undefined, displayValue: undefined, secondaryValue: undefined }
+          : target;
+    };
+    draft.value = {
+      ...current,
+      original: current.original.map(relabel),
+      selected: current.selected.map(relabel),
+    };
+  }
+
   function reset(): void {
     generation.value += 1;
     collection.value = null;
@@ -160,6 +184,7 @@ export const useRelationLookupStore = defineStore("relationLookup", () => {
     openDraft,
     toggleDraftTarget,
     closeDraft,
+    refreshDraftLabels,
     reset,
   };
 });

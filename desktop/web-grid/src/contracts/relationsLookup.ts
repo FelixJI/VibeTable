@@ -4,8 +4,9 @@
  * Keep these names aligned with backend/contracts/{relation_admin,lookup}.py.
  * Only direct PocketBase relation fields are exposed on the product wire.
  */
-import type { ColumnSchema, FilterExpression, SortCondition } from "./index";
+import type { ColumnDataType, ColumnSchema, FilterExpression, SortCondition } from "./index";
 import type { LookupAggregationV2 } from "./schemaV2";
+import type { DisplaySpec, SelectOption } from "./generated/schemaV2";
 
 export type RelationKind = "m2o" | "o2m" | "m2m";
 export type RelationPreset = "standard" | "file" | "files" | "translations";
@@ -16,6 +17,17 @@ export interface RelationDiagnostic {
   readonly code: string;
   readonly message: string;
   readonly severity: "warning" | "error";
+}
+
+export interface RelationDisplayFieldInfo {
+  /** Stable field id of the label source in the target table. */
+  readonly fieldId: string;
+  /** Schema-describe column data type vocabulary (decimal/integer/text/...). */
+  readonly dataType: ColumnDataType;
+  /** Canonical Schema V2 DisplaySpec of that field, verbatim from the producer. */
+  readonly display?: DisplaySpec | null;
+  /** Canonical select options of that field (incl. retired), verbatim from the producer. */
+  readonly enumOptions?: readonly SelectOption[] | null;
 }
 
 export interface NormalizedRelationDescriptor {
@@ -40,6 +52,12 @@ export interface NormalizedRelationDescriptor {
   /** Explicit display template. Never inferred by the renderer. */
   readonly displayTemplate?: string | null;
   readonly diagnostics: readonly RelationDiagnostic[];
+  /** The relation's own display field in the target table. */
+  readonly displayFieldId?: string | null;
+  /** Render contract for labels produced by the configured display field. */
+  readonly displayFieldInfo?: RelationDisplayFieldInfo | null;
+  /** Render contract for the target's global primary display fallback. */
+  readonly fallbackDisplayFieldInfo?: RelationDisplayFieldInfo | null;
 }
 
 export interface RelationTargetRef {
@@ -47,6 +65,17 @@ export interface RelationTargetRef {
   readonly itemId: string;
   readonly label: string;
   readonly secondaryLabel?: string | null;
+  /** Raw typed scalar behind `label` when it came from the display field. */
+  readonly displayValue?: string | number | boolean | null;
+  /** Raw typed scalar behind the auxiliary/fallback global primary value. */
+  readonly secondaryValue?: string | number | boolean | null;
+}
+
+/** One typed row label entry from `__vibetableRelationLabels`. */
+export interface RelationLabelEntry {
+  readonly value: string | number | boolean;
+  /** Controlled source: the configured display field or the fallback primary. */
+  readonly source: "display" | "primary";
 }
 
 export interface RelationSearchParams {
@@ -54,6 +83,8 @@ export interface RelationSearchParams {
   readonly query?: string;
   readonly offset?: number;
   readonly limit?: number;
+  /** Batched refresh of already-selected targets by stable record IDs. */
+  readonly targetItemIds?: readonly string[];
 }
 
 export interface RelationSearchResult {

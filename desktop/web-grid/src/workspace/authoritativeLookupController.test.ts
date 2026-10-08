@@ -200,7 +200,7 @@ describe("authoritativeLookupController", () => {
         limit: 500,
       } : { filters: [{ field: "id", operator: "in", value: ["visible"] }], sorts: [], groups: [], offset: 0, limit: 1 },
     });
-    expect(acceptResult).toHaveBeenCalledWith(result(2), 1);
+    expect(acceptResult).toHaveBeenCalledWith(result(2), 1, !hasLookup);
     scope.stop();
   });
 
@@ -284,7 +284,7 @@ describe("authoritativeLookupController", () => {
     }));
     current.resolve(result(2));
     await currentRefresh;
-    expect(acceptResult).toHaveBeenCalledWith(result(2), 1);
+    expect(acceptResult).toHaveBeenCalledWith(result(2), 1, false);
     scope.stop();
   });
 
@@ -522,7 +522,7 @@ function receiptHarness(labelsOnly = false) {
   });
   const collection = ref("orders");
   const pending = deferred<LookupQueryResult>();
-  const queryLookups = vi.fn(() => pending.promise);
+  const queryLookups = vi.fn<AuthoritativeLookupDependencies["queryLookups"]>(() => pending.promise);
   const reportError = vi.fn();
   const scope = effectScope();
   const controller = scope.run(() => createAuthoritativeLookupController({
@@ -541,8 +541,8 @@ function receiptHarness(labelsOnly = false) {
     resetContext: () => relations.reset(),
     loadContext: vi.fn(async () => true),
     queryLookups,
-    acceptResult: (response, revision) => relations.acceptLookup(response, revision)
-      && table.applyLookupQueryResult(response, { labelsOnly }),
+    acceptResult: (response, revision, projectionOnly) => relations.acceptLookup(response, revision)
+      && table.applyLookupQueryResult(response, { labelsOnly: projectionOnly ?? labelsOnly }),
     clearEditRejection: vi.fn(), reportError,
   }))!;
   return { scope, controller, table, relations, collection, pending, queryLookups, reportError };
@@ -587,5 +587,41 @@ it("keeps appended cursor windows instead of refreshing and replacing only the f
     expect(h.table.pages).toHaveLength(2);
     expect(h.table.nextCursor).toBe("third");
     expect(h.queryLookups).toHaveBeenCalledTimes(calls);
+  } finally { h.scope.stop(); }
+});
+it("label refresh has its own generation and preserves loaded windows with Lookup definitions", async () => {
+  const h = receiptHarness(true);
+  try {
+    h.relations.lookups = [lookup];
+    const first = { ...h.table.pages[0]!, querySnapshot: result(1).snapshot, nextCursor: "second", hasMore: true };
+    h.table.setDatasetReady({ ...first, mode: "remote" });
+    h.pending.resolve({ ...result(h.relations.generation), rows: [{ rowKey: "original", price: "draft" }] });
+    await nextTick();
+    await Promise.resolve();
+    expect(h.table.appendWindow({ ...first, offset: 500, rows: [{ rowKey: "second", price: "second draft" }], nextCursor: "third" })).toBe(true);
+    await nextTick();
+    h.relations.openDraft("orders.customer", "original", [{ collection: "customers", itemId: "target", label: "Draft target" }]);
+    const viewRead = deferred<LookupQueryResult>();
+    const labelsRead = deferred<LookupQueryResult>();
+    h.queryLookups.mockImplementationOnce(() => viewRead.promise).mockImplementationOnce(() => labelsRead.promise);
+    const viewRefresh = h.controller.refresh();
+    const labelsRefresh = h.controller.refreshLabels();
+    const lastRequest = h.queryLookups.mock.calls.at(-1)?.[0];
+    expect(lastRequest).toMatchObject({ fieldRefs: [], query: { filters: [{ field: "id", operator: "in", value: ["original", "second"] }], limit: 2 } });
+    labelsRead.resolve({ ...result(h.relations.generation), rows: [
+      { rowKey: "original", price: "stored", __vibetableRelationLabels: { price: { target: { value: "城轨一期", source: "display" } } } },
+      { rowKey: "second", price: "stored", __vibetableRelationLabels: { price: { target: { value: 1982, source: "display" } } } },
+    ] });
+    await expect(labelsRefresh).resolves.toBe(true);
+    expect(h.table.pages).toHaveLength(2);
+    expect(h.table.nextCursor).toBe("third");
+    expect(h.table.allRows.map(row => row.price)).toEqual(["draft", "second draft"]);
+    expect(h.table.allRows[1]?.__vibetableRelationLabels).toEqual({ price: { target: { value: 1982, source: "display" } } });
+    expect(h.relations.draft?.selected[0]?.label).toBe("Draft target");
+    // A separately requested view recomputation keeps its authority to replace
+    // rows/order; starting label refresh must not cancel that request.
+    viewRead.resolve({ ...result(h.relations.generation), rows: [{ rowKey: "view-result", price: 10 }] });
+    await expect(viewRefresh).resolves.toBe(true);
+    expect(h.table.allRows[0]?.rowKey).toBe("view-result");
   } finally { h.scope.stop(); }
 });
