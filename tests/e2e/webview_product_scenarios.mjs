@@ -1,3 +1,4 @@
+import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
@@ -1730,6 +1731,11 @@ async function scenario02(page, recorder, _network, runtime) {
   // 全部 ordinary 业务（含分组 UI 旅程）完成后、首次导出前：同一闭合契约的
   // zero-worker 断言仍在 scenario02 流内执行；02 因刻意唤醒 Python 不再列入
   // ORDINARY_WORKER_FREE_SCENARIOS 的公共 dispatch 断言（集合注释的既定规则）。
+  await runCommonFieldDisplayJourney(page, recorder, runtime, {
+    createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
+    rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
+  });
   await verifyQueryViewGroupingUI(page, recorder);
   await assertOrdinaryWorkerFreeTopology(recorder, runtime, "02-all-field-schema");
 

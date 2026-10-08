@@ -187,6 +187,12 @@ public sealed record FieldDisplayV2
     [JsonRequired] public required string TrueLabel { get; init; }
     [JsonPropertyName("falseLabel")]
     [JsonRequired] public required string FalseLabel { get; init; }
+    [JsonPropertyName("progressStart")]
+    public double? ProgressStart { get; init; }
+    [JsonPropertyName("progressTarget")]
+    public double? ProgressTarget { get; init; }
+    [JsonPropertyName("ratingMax")]
+    public long? RatingMax { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

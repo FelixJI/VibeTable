@@ -129,21 +129,24 @@ type StorageSpec struct {
 }
 
 type DisplaySpec struct {
-	Kind              string  `json:"kind"`
-	Preset            string  `json:"preset"`
-	DisplayScale      int64   `json:"displayScale"`
-	ScaleMode         string  `json:"scaleMode"`
-	TrimTrailingZeros bool    `json:"trimTrailingZeros"`
-	UseGrouping       bool    `json:"useGrouping"`
-	Currency          string  `json:"currency"`
-	PercentStorage    string  `json:"percentStorage"`
-	Unit              *string `json:"unit"`
-	Precision         string  `json:"precision"`
-	Timezone          string  `json:"timezone"`
-	Mode              string  `json:"mode"`
-	Indent            *int64  `json:"indent,omitempty"`
-	TrueLabel         string  `json:"trueLabel"`
-	FalseLabel        string  `json:"falseLabel"`
+	Kind              string   `json:"kind"`
+	Preset            string   `json:"preset"`
+	DisplayScale      int64    `json:"displayScale"`
+	ScaleMode         string   `json:"scaleMode"`
+	TrimTrailingZeros bool     `json:"trimTrailingZeros"`
+	UseGrouping       bool     `json:"useGrouping"`
+	Currency          string   `json:"currency"`
+	PercentStorage    string   `json:"percentStorage"`
+	Unit              *string  `json:"unit"`
+	Precision         string   `json:"precision"`
+	Timezone          string   `json:"timezone"`
+	Mode              string   `json:"mode"`
+	Indent            *int64   `json:"indent,omitempty"`
+	TrueLabel         string   `json:"trueLabel"`
+	FalseLabel        string   `json:"falseLabel"`
+	ProgressStart     *float64 `json:"progressStart,omitempty"`
+	ProgressTarget    *float64 `json:"progressTarget,omitempty"`
+	RatingMax         *int64   `json:"ratingMax,omitempty"`
 }
 
 type SelectOption struct {

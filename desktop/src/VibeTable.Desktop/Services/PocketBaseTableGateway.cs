@@ -751,6 +751,11 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                     && field.TryGetProperty("formula", out JsonElement formula)
                     && formula.TryGetProperty("resultElementType", out JsonElement elementType)
                     ? elementType.GetString()
+                    : null,
+                field.TryGetProperty("select", out JsonElement selectSpec)
+                    && selectSpec.ValueKind == JsonValueKind.Object
+                    ? JsonSerializer.Deserialize<IReadOnlyList<FieldSelectOptionV2>>(
+                        selectSpec.GetProperty("options").GetRawText(), JsonOptions)
                     : null));
         }
         if (!hasRecordId)

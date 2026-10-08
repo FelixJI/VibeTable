@@ -45,6 +45,9 @@ func TestSchemaDescribeProjectionPreservesLookupLoadError(t *testing.T) {
 	}
 	// The second captured table has real cross-table lookup paths.
 	sample := corpus.Cases[1]
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
+	}
 	for _, failure := range []error{context.Canceled, fmt.Errorf("field storage failure")} {
 		got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(string) (v2.SchemaSnapshot, error) { return v2.SchemaSnapshot{}, failure })
 		if got != nil || err != failure {
@@ -91,6 +94,9 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 	if err := json.Unmarshal(wire, &corpus); err != nil {
 		t.Fatal(err)
 	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
+	}
 	for _, sample := range corpus.Cases {
 		t.Run(sample.TableID, func(t *testing.T) {
 			reads := map[string]int{}
@@ -109,6 +115,7 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 				t.Fatal(err)
 			}
 			assertColumnDisplayWiring(t, corpus.Tables[sample.TableID], got)
+			assertDescribeCommonDisplayRevision(t, corpus.Tables[sample.TableID], got)
 			// The frozen wire predates the column `display` field. Project away
 			// exactly that new key so every historical field stays compared;
 			// the display contract itself is asserted separately below.
@@ -150,6 +157,7 @@ func stripColumnDisplayField(result map[string]any) {
 	for _, column := range columns {
 		if record, ok := column.(map[string]any); ok {
 			delete(record, "display")
+			delete(record, "enumOptions")
 		}
 	}
 }
@@ -171,6 +179,13 @@ func assertColumnDisplayWiring(t *testing.T, snapshot v2.SchemaSnapshot, result 
 		column, found := byFieldID[field.Identity.FieldID]
 		if !found {
 			t.Fatalf("column for field %s missing", field.Identity.FieldID)
+		}
+		if field.Select != nil {
+			if !reflect.DeepEqual(column["enumOptions"], field.Select.Options) {
+				t.Fatalf("canonical enum display omitted for %s", field.Identity.FieldID)
+			}
+		} else if _, found := column["enumOptions"]; found {
+			t.Fatalf("enum metadata invented for %s", field.Identity.FieldID)
 		}
 		got, err := json.Marshal(column["display"])
 		if err != nil {
@@ -210,6 +225,9 @@ func TestSchemaDescribeProjectsDisplaySpecWithExplicitShape(t *testing.T) {
 	var corpus describeOracleCorpus
 	if err := json.Unmarshal(wire, &corpus); err != nil {
 		t.Fatal(err)
+	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
 	}
 	sample := corpus.Cases[0]
 	got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) {
@@ -268,6 +286,9 @@ func TestSchemaDescribeProjectsFormulaListElementType(t *testing.T) {
 	var corpus describeOracleCorpus
 	if err := json.Unmarshal(raw, &corpus); err != nil {
 		t.Fatal(err)
+	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
 	}
 	sample := corpus.Cases[0]
 	snapshot := corpus.Tables[sample.TableID]

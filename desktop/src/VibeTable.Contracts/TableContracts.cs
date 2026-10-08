@@ -30,7 +30,8 @@ public sealed record ColumnSchema(
     string FilterInput = "text",
     IReadOnlyList<ColumnFilterOption>? FilterOptions = null,
     FieldDisplayV2? Display = null,
-    string? ResultElementType = null);
+    string? ResultElementType = null,
+    IReadOnlyList<FieldSelectOptionV2>? EnumOptions = null);
 
 /// <summary>
 /// Result of opening the configured logical source through the table gateway:

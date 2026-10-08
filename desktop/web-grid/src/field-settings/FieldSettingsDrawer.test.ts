@@ -625,6 +625,28 @@ describe("FieldSettingsDrawer", () => {
     expect(store.draft?.storage.options.onlyInt).toBe(false);
   });
 
+  it("进度只写显示参数，评分显式开启整数范围，电话号码保持文本", async () => {
+    const store = useFieldSettingsStore(); store.beginOpen();
+    const numeric = { ...capability("number"), displayPresets: ["number", "progress", "rating"] };
+    const text = { ...capability("text"), displayPresets: ["phone"] };
+    store.load(described("number", [numeric, text]));
+    const wrapper = mountDrawer(); await flushPromises();
+    const preset = () => wrapper.findAllComponents(NSelect).find(item => item.attributes("data-testid") === "number-display-preset")!;
+    preset().vm.$emit("update:value", "progress"); await flushPromises();
+    expect(store.draft?.display.preset).toBe("progress"); expect(store.draft?.display.progressTarget).toBe(1);
+    expect(store.draft?.constraints.range).toEqual({ min: null, max: null }); expect(store.draft?.storage.options.onlyInt).toBe(false);
+    preset().vm.$emit("update:value", "rating"); await flushPromises();
+    expect(store.draft?.storage.options.onlyInt).toBe(true); expect(store.draft?.constraints.range).toEqual({ min: 0, max: 5 });
+    expect(store.draft?.display.progressTarget).toBeUndefined();
+    wrapper.findAllComponents(NInputNumber).find(item => item.attributes("data-testid") === "rating-max")!.vm.$emit("update:value", 10);
+    await flushPromises(); expect(store.draft?.constraints.range.max).toBe(10); expect(store.draft?.display.ratingMax).toBe(10);
+    wrapper.findAllComponents(NSelect).find(item => item.attributes("data-testid") === "field-logical-type")!.vm.$emit("update:value", "phone");
+    await flushPromises(); expect(store.draft?.logicalType).toBe("text"); expect(store.draft?.display.preset).toBe("phone");
+    expect(wrapper.get('[data-testid="common-display-preview"]').text()).toContain("+86 010-0012 ext.03");
+    wrapper.findAllComponents(NSelect).find(item => item.attributes("data-testid") === "field-logical-type")!.vm.$emit("update:value", "text");
+    await flushPromises(); expect(store.draft?.logicalType).toBe("text"); expect(store.draft?.display.preset).toBe("plain");
+  });
+
   it("小数位控件限 0..15 并稳定钳制非法输入（AC1）", async () => {
     const store = useFieldSettingsStore();
     store.beginOpen();

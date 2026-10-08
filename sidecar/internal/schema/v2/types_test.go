@@ -3,6 +3,7 @@ package v2_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"testing"
 
@@ -233,7 +234,8 @@ func TestValidateRejectsUnsupportedUniqueAndUnstableSelectOptions(t *testing.T) 
 	selectField := validNumberDefinition()
 	selectField.LogicalType = v2.LogicalSelect
 	selectField.Storage.Kind = v2.StorageSelect
-	selectField.Display.Kind = v2.DisplaySelect
+	recommended, _ := v2.RecommendedDefaults(v2.LogicalSelect)
+	selectField.Display = recommended.Display
 	one := 1
 	selectField.Constraints.Selection.Max = &one
 	selectField.Select = &v2.SelectSpec{Options: []v2.SelectOption{{
@@ -374,5 +376,65 @@ func TestValidateCurrencyDisplayCode(t *testing.T) {
 	}
 	if err := validateWire(definition.Display); err != nil {
 		t.Errorf("canonical schema rejected unused legacy currency: %v", err)
+	}
+}
+
+func TestBusinessDisplayPresetsValidateCanonicalParameters(t *testing.T) {
+	progress := validNumberDefinition()
+	progress.Display.Preset = "progress"
+	if err := v2.Validate(progress); err != nil {
+		t.Fatal(err)
+	}
+	if progress.Constraints.Range.Min != nil || progress.Constraints.Range.Max != nil {
+		t.Fatal("progress introduced a value range")
+	}
+	start, target := 1.0, 2.0
+	progress.Display.ProgressStart, progress.Display.ProgressTarget = &start, &target
+	if err := v2.Validate(progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]float64{{1, 1}, {2, 1}, {-1e308, 1e308}, {math.NaN(), 1}, {0, math.Inf(1)}} {
+		progress.Display.ProgressStart, progress.Display.ProgressTarget = &pair[0], &pair[1]
+		var productErr *v2.ProductError
+		if err := v2.Validate(progress); !errors.As(err, &productErr) || productErr.Path != "display.progressTarget" {
+			t.Fatalf("invalid progress accepted: %v", err)
+		}
+	}
+	rating := validNumberDefinition()
+	rating.Display.Preset = "rating"
+	if err := v2.Validate(rating); err == nil {
+		t.Fatal("rating without explicit constraints accepted")
+	}
+	rating.Storage.Options.OnlyInt = true
+	rating.Constraints.Range.Min, rating.Constraints.Range.Max = 0, 5
+	if err := v2.Validate(rating); err != nil {
+		t.Fatal(err)
+	}
+	badMaximum := 11
+	rating.Display.RatingMax = &badMaximum
+	if err := v2.Validate(rating); err == nil {
+		t.Fatal("invalid rating maximum accepted")
+	}
+	unknown := validNumberDefinition()
+	unknown.Display.Preset = "future"
+	if err := v2.Validate(unknown); err == nil {
+		t.Fatal("unknown preset accepted")
+	}
+	for _, preset := range []string{"", "plain", "number", "integer", "currency", "percent", "unit"} {
+		legacy := validNumberDefinition()
+		legacy.Display.Preset = preset
+		if err := v2.Validate(legacy); err != nil {
+			t.Fatalf("legacy preset %s rejected: %v", preset, err)
+		}
+	}
+	for _, timezone := range []string{"system", "UTC", "America/New_York", "Asia/Shanghai", "Not/AZone", ""} {
+		date := validNumberDefinition()
+		recommended, _ := v2.RecommendedDefaults(v2.LogicalDateTime)
+		date.LogicalType, date.Storage, date.Display = v2.LogicalDateTime, recommended.Storage, recommended.Display
+		date.Display.Timezone = timezone
+		err := v2.Validate(date)
+		if (timezone == "Not/AZone" || timezone == "") != (err != nil) {
+			t.Fatalf("timezone %q = %v", timezone, err)
+		}
 	}
 }

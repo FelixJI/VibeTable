@@ -209,7 +209,10 @@
         "mode": {"type": "string"},
         "indent": {"type": "integer", "enum": [0, 2, 4]},
         "trueLabel": {"type": "string"},
-        "falseLabel": {"type": "string"}
+        "falseLabel": {"type": "string"},
+        "progressStart": {"type": "number"},
+        "progressTarget": {"type": "number"},
+        "ratingMax": {"type": "integer", "minimum": 1, "maximum": 10}
       },
       "allOf": [{
         "if": {"properties": {"preset": {"const": "currency"}}, "required": ["preset"]},

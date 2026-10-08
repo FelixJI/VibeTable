@@ -1,6 +1,6 @@
 import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
 import { findLookupDefinition, formatFormulaDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
-import { formatNumberDisplay } from "@/number/numberDisplay";
+import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { getLocale, t } from "@/i18n";
 
 function isEnvelope(value: unknown): value is Record<string, unknown> {
@@ -34,21 +34,10 @@ export function displayValue(
     && column.resultElementType === "number" && Array.isArray(value)) {
     return formatFormulaDisplayValue(value, column);
   }
-  if (typeof value === "number") {
-    const formatted = column
-      && (column.dataType === "decimal" || column.dataType === "integer")
-      ? formatNumberDisplay(value, column.display, getLocale())
-      : null;
-    if (formatted !== null) return formatted;
-    return String(value);
-  }
+  if (column) return formatFieldDisplay(value, column, getLocale());
   if (typeof value === "boolean") return value ? "✓" : "✕";
   if (typeof value === "object") {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
+    try { return JSON.stringify(value); } catch { return String(value); }
   }
   return String(value);
 }

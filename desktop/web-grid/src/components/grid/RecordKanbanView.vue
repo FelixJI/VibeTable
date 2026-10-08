@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { Kanban } from "@lucide/vue";
 import type { ColumnSchema, LookupDefinition, PresetView } from "@/contracts";
 import { t } from "@/i18n";
+import RecordFieldValue from "./RecordFieldValue.vue";
 import { displayValue, metadataFields, rowTitle } from "./recordViewUtils";
 
 const props = defineProps<{
@@ -139,7 +140,7 @@ function onDrop(event: DragEvent, targetOptionId: string | null): void {
             <strong>{{ rowTitle(row, view) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">
-                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name], field, lookupDefinitions) }}</dd>
+                <dt>{{ field.title }}</dt><dd><RecordFieldValue :value="row[field.name]" :column="field" :lookups="lookupDefinitions" /></dd>
               </template>
             </dl>
           </article>

@@ -67,6 +67,7 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 	}
 	switch logicalType {
 	case LogicalText:
+		capability.DisplayPresets = []string{"phone"}
 		capability.AdvancedSettings = []string{"length", "pattern"}
 		capability.ConversionRules = []string{
 			"strict", "round", "floor", "ceil", "truncate", "clear", "block",
@@ -78,7 +79,7 @@ func CapabilityFor(logicalType LogicalType) (Capability, error) {
 			"range", "onlyInt", "displayScale", "scaleMode", "trimTrailingZeros",
 			"useGrouping", "currency", "percentStorage", "unit",
 		}
-		capability.DisplayPresets = []string{"number", "integer", "currency", "percent", "unit"}
+		capability.DisplayPresets = []string{"number", "integer", "currency", "percent", "unit", "progress", "rating"}
 		capability.ConversionRules = []string{"round", "floor", "ceil", "truncate", "block"}
 	case LogicalBool:
 		capability.AdvancedSettings = []string{"displayMode", "trueLabel", "falseLabel"}

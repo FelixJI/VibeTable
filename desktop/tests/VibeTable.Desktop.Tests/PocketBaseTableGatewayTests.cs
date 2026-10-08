@@ -434,6 +434,11 @@ public sealed class PocketBaseTableGatewayTests
         CollectionAssert.AreEqual(
             new[] { "opt_aaaaaaaa", "opt_bbbbbbbb" },
             tagsColumn.FilterOptions!.Select(option => option.Value).ToArray());
+        Assert.IsNotNull(tagsColumn.EnumOptions);
+        CollectionAssert.AreEqual(new[] { "opt_aaaaaaaa", "opt_bbbbbbbb" },
+            tagsColumn.EnumOptions.Select(option => option.OptionId).ToArray());
+        Assert.AreEqual("blue", tagsColumn.EnumOptions[1].Color);
+        Assert.AreEqual("active", tagsColumn.EnumOptions[1].State);
     }
 
     [TestMethod]

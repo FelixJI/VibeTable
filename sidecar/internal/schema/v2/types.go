@@ -264,6 +264,9 @@ const (
 )
 
 type DisplaySpec struct {
+	ProgressStart     *float64    `json:"progressStart,omitempty"`
+	ProgressTarget    *float64    `json:"progressTarget,omitempty"`
+	RatingMax         *int        `json:"ratingMax,omitempty"`
 	Kind              DisplayKind `json:"kind"`
 	Preset            string      `json:"preset"`
 	DisplayScale      int         `json:"displayScale"`
