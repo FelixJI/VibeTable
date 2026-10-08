@@ -174,7 +174,7 @@ func (projection targetDisplayProjection) projectTargetRef(
 		if displayValue, valid := targetLabelValue(row[projection.displayPhysical]); valid {
 			ref.Label = labelString(displayValue)
 			ref.DisplayValue = displayValue
-			if separateDisplay && primaryValid && labelString(primaryValue) != ref.Label {
+			if separateDisplay && primaryValid {
 				ref.SecondaryLabel = labelString(primaryValue)
 				ref.SecondaryValue = primaryValue
 			}

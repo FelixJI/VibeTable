@@ -482,7 +482,7 @@ func TestRelationSearchUsesRelationDisplayFieldProjection(t *testing.T) {
 	// 直接按已选 ID 批量刷新（AC2）：与关键词搜索分离，同一投影与预算。
 	idsResponse := schemaProductRequestForMethod(t, mux, context.Background(), "relation.searchTargets",
 		string(previewJSON(t, map[string]any{
-			"relationId": table.TableID + "." + byName.FieldID,
+			"relationId":    table.TableID + "." + byName.FieldID,
 			"targetItemIds": []string{"srchnmmiss00002", "srchnmfull00001"},
 			"limit":         2,
 		})), schemaListWire)
@@ -514,5 +514,81 @@ func TestRelationSearchUsesRelationDisplayFieldProjection(t *testing.T) {
 				t.Fatalf("authority-only field %q leaked into the public response", key)
 			}
 		}
+	}
+}
+
+func TestRelationSearchKeepsEqualRawValuesFromDistinctDisplayFields(t *testing.T) {
+	pb := schemaProductStore(t)
+	lifecycle, err := schemacore.NewTableLifecycle(pb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := lifecycle.Create(context.Background(), v2.TableCreateIntent{DisplayName: "数值合同", OperationID: "equal-numeric-table", Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createNumber := func(name, operation, preset string) v2.ApplyReceipt {
+		defaults, err := v2.RecommendedDefaults(v2.LogicalNumber)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defaults.Display.Preset = preset
+		defaults.Display.DisplayScale = 0
+		defaults.Display.ScaleMode = "fixed"
+		defaults.Display.Currency = "CNY"
+		defaults.Display.PercentStorage = "percent"
+		return applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
+			Draft: &v2.FieldDraft{DisplayName: name, LogicalType: v2.LogicalNumber, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display}}, operation)
+	}
+	amount := createNumber("金额", "equal-amount", "currency")
+	rate := createNumber("比例", "equal-rate", "percent")
+	defaults, err := v2.RecommendedDefaults(v2.LogicalRelation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRate := applySchemaProductField(t, pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: table.TableID,
+		Draft: &v2.FieldDraft{DisplayName: "按比例", LogicalType: v2.LogicalRelation, Value: defaults.Value, Constraints: defaults.Constraints, Storage: defaults.Storage, Display: defaults.Display,
+			Relation: &v2.RelationSpec{TargetTableID: table.TableID, Cardinality: "one", DeletePolicy: "setNull", DisplayField: rate.FieldID}},
+		RelationPair: &v2.RelationPairDraft{ReciprocalDisplayName: "来源", ReciprocalCardinality: "many", SourceDisplayFieldID: amount.FieldID}}, "equal-by-rate")
+	description, err := schemaexecution.Describe(context.Background(), pb, table.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if description.PrimaryDisplayFieldID != amount.FieldID {
+		t.Fatal("amount must own the global primary display")
+	}
+	collection, err := pb.FindCollectionByNameOrId(description.PhysicalName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := core.NewRecord(collection)
+	record.Id = "equalrawvalue01"
+	for _, field := range []*v2.FieldDefinition{amount.Definition, rate.Definition} {
+		record.Set(field.Identity.PhysicalName, 1)
+		if field.Value.Presence.Mode == v2.PresenceCompanion {
+			record.Set(field.Value.Presence.PhysicalName, true)
+		}
+	}
+	if err := pb.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	source, err := queryschema.New(pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := relation.New(pb, query.NewPort(pb, source), nil)
+	mux := relationSearchHTTPMux(t, pb, relationSearchTargetsRegistration(service))
+	response := schemaProductRequestForMethod(t, mux, context.Background(), "relation.searchTargets",
+		string(previewJSON(t, map[string]any{"relationId": table.TableID + "." + byRate.FieldID, "limit": 50})), schemaListWire)
+	if response.Error != nil {
+		t.Fatal(response.Error)
+	}
+	items := relationSearchWireJSON(t, response.Result)["items"].([]any)
+	if len(items) != 1 {
+		t.Fatal(items)
+	}
+	got := items[0].(map[string]any)
+	if got["displayValue"] != json.Number("1") || got["secondaryValue"] != json.Number("1") || got["secondaryLabel"] != "1" {
+		t.Fatalf("percent main and currency auxiliary must survive equal raw values: %#v", got)
 	}
 }

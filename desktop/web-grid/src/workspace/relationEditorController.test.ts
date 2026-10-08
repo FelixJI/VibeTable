@@ -227,6 +227,47 @@ describe("relationEditorController", () => {
     scope.stop();
   });
 
+  it("多选初开预览晚于目标刷新时保留成员并重新投影已选标签", async () => {
+    const pending = deferred<void>();
+    const relations = useRelationLookupStore();
+    const multi = { ...descriptor, kind: "m2m" as const, relatedCollection: "customers" };
+    const oldTarget = { collection: "customers", itemId: "c1", label: "旧名称" };
+    const freshTarget = { ...oldTarget, label: "新名称", displayValue: "新名称" };
+    const service = servicePort({
+      describeCollection: vi.fn(async collection => ({
+        collection, primaryKey: "id", columns: [], normalizedRelations: [multi],
+        schemaRevision: "schema", permissionRevision: "permission",
+        capabilityHash: "capability", lookupRevision: "lookup",
+      })),
+      loadDraft: vi.fn(async (relationId, sourceItemId, _expected, isCurrent) => {
+        await pending.promise;
+        if (isCurrent?.()) relations.openDraft(relationId, sourceItemId, [oldTarget]);
+        return {
+          delta: { relationId, sourceItemId, expectedSchemaRevision: "schema",
+            adds: [], removes: [], idempotencyKey: "operation" },
+          current: [oldTarget], diagnostics: [], canApply: true,
+        };
+      }),
+      searchTargets: vi.fn(async request => ({
+        items: request.targetItemIds ? [freshTarget] : [], total: request.targetItemIds ? 1 : 0,
+      })),
+    });
+    const { controller, scope } = setup(service);
+    const opening = controller.dispatch({
+      type: "editor.open", rowKey: "row-1", field: "customer", descriptor: multi, value: [],
+    });
+    await flushPromises();
+    expect(relations.draft).toBeNull();
+    await controller.dispatch({ type: "targets.refresh" });
+    pending.resolve();
+    await opening;
+    expect(relations.draft?.original).toEqual([freshTarget]);
+    expect(relations.draft?.selected).toEqual([freshTarget]);
+    expect(service.searchTargets).toHaveBeenCalledWith(expect.objectContaining({ targetItemIds: ["c1"] }));
+    expect(controller.state.error).toBeNull();
+    scope.stop();
+  });
+
   it("A 的草稿晚到时不得覆盖关闭后打开的 B 编辑器草稿", async () => {
     const pending = deferred<void>();
     const relations = useRelationLookupStore();

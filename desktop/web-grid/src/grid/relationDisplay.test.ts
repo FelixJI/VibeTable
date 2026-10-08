@@ -103,6 +103,11 @@ describe("relationTargetLabel", () => {
     expect(relationTargetSecondaryLabel({
       collection: "c", itemId: "i", label: "1982", secondaryValue: 1982,
     }, descriptor)).toBe("");
+    const equalRaw = {
+      collection: "c", itemId: "i", label: "1", displayValue: 1, secondaryValue: 1,
+    };
+    expect(relationTargetLabel(equalRaw, descriptor)).toBe("100.0%");
+    expect(relationTargetSecondaryLabel(equalRaw, descriptor)).toBe("¥1.00");
   });
 });
 

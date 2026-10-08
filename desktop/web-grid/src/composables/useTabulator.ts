@@ -438,22 +438,7 @@ export function useTabulator(
   );
 
   watch(
-    [
-      () => relationLookupStore.schema?.collection,
-      () => relationLookupStore.schema?.schemaRevision,
-      () => relationLookupStore.schema?.permissionRevision,
-      () => relationLookupStore.schema?.lookupRevision,
-      () => relationLookupStore.schema?.normalizedRelations
-        .map((relation) => relation.relationId)
-        .sort()
-        .join("|"),
-      () => relationLookupStore.lookups
-        .map((lookup) => lookup.lookupId)
-        .sort()
-        .join("|"),
-      () => relationLookupStore.capabilities?.relationEditV1,
-      () => relationLookupStore.capabilities?.lookupQueryV1,
-    ],
+    relationSignature,
     () => {
       if (!tabulator.value) return;
       const signature = relationSignature();
@@ -733,10 +718,13 @@ export function useTabulator(
       current?.schemaRevision ?? "",
       current?.permissionRevision ?? "",
       current?.lookupRevision ?? "",
-      (current?.normalizedRelations ?? [])
-        .map((relation) => relation.relationId)
-        .sort()
-        .join(","),
+      JSON.stringify((current?.normalizedRelations ?? [])
+        .map(relation => ({
+          relationId: relation.relationId,
+          displayFieldInfo: relation.displayFieldInfo,
+          fallbackDisplayFieldInfo: relation.fallbackDisplayFieldInfo,
+        }))
+        .sort((left, right) => left.relationId.localeCompare(right.relationId))),
       relationLookupStore.lookups
         .map((lookup) => lookup.lookupId)
         .sort()

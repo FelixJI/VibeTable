@@ -287,6 +287,7 @@ export function createRelationEditorController(
     }
     state.value.loading = true;
     const capturedEpoch = editorEpoch;
+    const initialRefreshGeneration = refreshGeneration;
     const isCurrent = () => capturedEpoch === editorEpoch
       && state.value.show
       && state.value.descriptor?.relationId === intent.descriptor.relationId;
@@ -299,6 +300,13 @@ export function createRelationEditorController(
       );
       if (!isCurrent()) return;
       await searchTargets("");
+      // A target refresh may finish before previewDelta initializes membership.
+      // Keep that membership, then project its labels using the latest refresh.
+      if (isCurrent() && initialRefreshGeneration !== refreshGeneration) {
+        const generation = refreshGeneration;
+        await refreshSelectedLabels(intent.descriptor.relationId, () =>
+          isCurrent() && generation === refreshGeneration);
+      }
     } catch (error) {
       if (!isCurrent()) return;
       state.value.loading = false;

@@ -120,6 +120,11 @@ func TestDisplayFieldInfoCarriesCanonicalSpecs(t *testing.T) {
 			},
 		},
 	}
+	projection := targetDisplayProjection{displayPhysical: "f_rate", primaryPhysical: "f_amount"}
+	ref := projection.projectTargetRef("contracts", "equalraw", map[string]any{"f_rate": float64(1), "f_amount": float64(1)})
+	if ref.DisplayValue != float64(1) || ref.SecondaryValue != float64(1) || ref.SecondaryLabel != "1" {
+		t.Fatalf("different percent/currency fields with equal raw values must retain both typed scalars: %#v", ref)
+	}
 	service := &Service{}
 	rate := service.displayFieldInfoByID(context.Background(), target, "fld_rate")
 	if rate == nil || rate.DataType != "decimal" || rate.Display == nil || rate.Display.Preset != "percent" || rate.Display.PercentStorage != "percent" {

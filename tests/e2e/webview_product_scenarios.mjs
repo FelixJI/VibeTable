@@ -4010,8 +4010,12 @@ async function scenario28(page, recorder, _network, runtime) {
   await panel.waitFor();
   const selected = panel.locator(".relation-editor__token");
   await selected.filter({ hasText: "AUTHOR-001" }).waitFor();
+  const selectedMainLabel = await selected.first().evaluate(token => Array.from(token.childNodes)
+    .filter(node => node.nodeType === Node.TEXT_NODE)
+    .map(node => node.textContent).join("").trim());
   recorder.check("many relation preview hydrates the authority's existing target",
-    await selected.count() === 1 && (await selected.first().innerText()).trim() === "AUTHOR-001");
+    await selected.count() === 1 && selectedMainLabel === "AUTHOR-001"
+      && (await selected.first().locator(".relation-editor__token-secondary").innerText()).trim() === "已有作者");
   await panel.locator(".relation-editor__candidate").filter({ hasText: "候选作者" }).click();
   await panel.locator(".relation-editor__token").filter({ hasText: "AUTHOR-002" }).waitFor();
   recorder.check("many relation editor holds a second selection as an uncommitted draft",
