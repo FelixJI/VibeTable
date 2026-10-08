@@ -26,7 +26,7 @@
       "type": "string",
       "enum": [
         "text", "editor", "number", "bool", "date", "dateTime", "time",
-        "autoDate", "email", "url", "select", "multiSelect", "relation",
+        "autoDate", "autoNumber", "email", "url", "select", "multiSelect", "relation",
         "file", "geoPoint", "json", "formula", "lookup"
       ]
     },
@@ -302,6 +302,16 @@
         "schema": {"type": "object"}
       }
     },
+    "AutoNumberSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prefix", "start", "width"],
+      "properties": {
+        "prefix": {"type": "string", "maxLength": 64, "pattern": "^[^\u0000\r\n]*$"},
+        "start": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "width": {"type": "integer", "minimum": 1, "maximum": 16}
+      }
+    },
     "AutoDateSpec": {
       "type": "object",
       "additionalProperties": false,
@@ -428,6 +438,7 @@
         "file": {"$ref": "#/$defs/FileSpec"},
         "json": {"$ref": "#/$defs/JSONSpec"},
         "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
+        "autoNumber": {"$ref": "#/$defs/AutoNumberSpec"},
         "formula": {"$ref": "#/$defs/FormulaSpec"},
         "lookup": {"$ref": "#/$defs/LookupSpec"}
       },
@@ -453,6 +464,7 @@
         "file": {"$ref": "#/$defs/FileSpec"},
         "json": {"$ref": "#/$defs/JSONSpec"},
         "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
+        "autoNumber": {"$ref": "#/$defs/AutoNumberSpec"},
         "formula": {"$ref": "#/$defs/FormulaDraftSpec"},
         "lookup": {"$ref": "#/$defs/LookupSpec"}
       },
@@ -484,6 +496,11 @@
           "if": {"properties": {"logicalType": {"const": "autoDate"}}, "required": ["logicalType"]},
           "then": {"required": ["autoDate"]},
           "else": {"not": {"required": ["autoDate"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "autoNumber"}}, "required": ["logicalType"]},
+          "then": {"required": ["autoNumber"]},
+          "else": {"not": {"required": ["autoNumber"]}}
         },
         {
           "if": {"properties": {"logicalType": {"const": "formula"}}, "required": ["logicalType"]},

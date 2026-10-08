@@ -15,6 +15,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/filehistory"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshot"
 	"github.com/vibetable/vibetable/sidecar/internal/snapshotpkg"
+	"github.com/vibetable/vibetable/sidecar/migrations"
 )
 
 func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
@@ -26,9 +27,14 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: dataDir, HideStartBanner: true,
 	})
+	migrations.Register(app)
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
+	if err := app.RunAllMigrations(); err != nil {
+		t.Fatal(err)
+	}
+	numberFixture := seedAutoNumberPackageFixture(t, app)
 	if _, err := app.DB().NewQuery(`
 		CREATE TABLE IF NOT EXISTS _vibetable_sidecar_meta (
 			key TEXT PRIMARY KEY NOT NULL,
@@ -42,7 +48,6 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	`).Execute(); err != nil {
 		t.Fatal(err)
 	}
-	createAuditOutbox(t, app)
 	ledger, err := auditledger.Open(
 		filepath.Join(root, ".vibetable", "audit"),
 	)
@@ -420,4 +425,5 @@ func TestInspectPackagePlanImportsWithoutTreatingPlanIDAsPathGrant(
 	if err != nil || verification.(map[string]any)["state"] != "verified" {
 		t.Fatalf("repository after imported restore = %#v err=%v", verification, err)
 	}
+	assertImportedAutoNumberContinues(t, reopenedRuntime, reopenedApp, numberFixture)
 }

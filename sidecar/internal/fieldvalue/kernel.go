@@ -68,7 +68,7 @@ func (kernel *Kernel) NormalizeWrite(
 	if mode != Insert && mode != Update {
 		return Result{}, productError("field.value.invalid_mode", "", "write mode is invalid")
 	}
-	if definition.LogicalType == v2.LogicalAutoDate ||
+	if definition.LogicalType == v2.LogicalAutoNumber || definition.LogicalType == v2.LogicalAutoDate ||
 		definition.LogicalType == v2.LogicalFormula ||
 		definition.LogicalType == v2.LogicalLookup {
 		if input.Supplied {

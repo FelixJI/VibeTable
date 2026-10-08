@@ -118,6 +118,7 @@ def _validate_field_settings(value: wire.FieldDefinition | wire.FieldDraft) -> N
         "file": "file",
         "json": "json_",
         "autoDate": "auto_date",
+        "autoNumber": "auto_number",
         "formula": "formula",
         "lookup": "lookup",
     }.get(value.logical_type)
@@ -127,6 +128,7 @@ def _validate_field_settings(value: wire.FieldDefinition | wire.FieldDraft) -> N
         "file": value.file,
         "json_": value.json_,
         "auto_date": value.auto_date,
+        "auto_number": value.auto_number,
         "formula": value.formula,
         "lookup": value.lookup,
     }

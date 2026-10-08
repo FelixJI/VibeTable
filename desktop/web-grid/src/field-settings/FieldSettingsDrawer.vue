@@ -607,10 +607,23 @@ function deleteSelectOption(index: number): void {
   });
 }
 
+const autoNumberPreview = computed(() => {
+  const step = store.plan?.steps.find(item => item.kind === "autoNumberBackfill");
+  const samples = step?.details.samples;
+  return Array.isArray(samples) ? samples.flatMap(item => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return [];
+    return typeof item.recordId === "string" && typeof item.value === "string" ? [{ recordId: item.recordId, value: item.value }] : [];
+  }) : [];
+});
+
+function patchAutoNumber(patchValue: Partial<NonNullable<FieldDraftV2["autoNumber"]>>): void {
+  if (store.draft?.autoNumber) patch({ autoNumber: { ...store.draft.autoNumber, ...patchValue } });
+}
+
 function typeLabel(type: LogicalTypeV2): string {
   const labels: Partial<Record<LogicalTypeV2, string>> = {
     text: "单行文本", editor: "富文本", number: "数字", bool: "勾选",
-    date: "日期", dateTime: "日期时间", time: "时间", autoDate: "自动日期",
+    date: "日期", dateTime: "日期时间", time: "时间", autoDate: "自动日期", autoNumber: "自动编号",
     email: "邮箱", url: "网址", select: "单选", multiSelect: "多选",
     relation: "关联", file: "附件", geoPoint: "地理坐标", json: "JSON",
     formula: "公式", lookup: "查找引用",
@@ -1119,6 +1132,16 @@ function isTextual(type: LogicalTypeV2): boolean {
               </NTabPane>
 
               <NTabPane name="advanced" tab="高级">
+                <section v-if="store.draft.autoNumber" class="settings-section" data-testid="auto-number-settings">
+                  <div class="section-title"><div><strong>业务自动编号</strong><small>由本地服务生成，只读；创建后规则固定，删除记录不回收号码</small></div></div>
+                  <div class="two-column">
+                    <label><span>前缀</span><NInput data-testid="auto-number-prefix" :value="store.draft.autoNumber.prefix" :disabled="!!store.result?.definition" @update:value="patchAutoNumber({ prefix: $event })" /></label>
+                    <label><span>起始值（步长固定为 1）</span><NInputNumber data-testid="auto-number-start" :value="store.draft.autoNumber.start" :min="1" :max="Number.MAX_SAFE_INTEGER" :precision="0" :disabled="!!store.result?.definition" @update:value="patchAutoNumber({ start: $event ?? 1 })" /></label>
+                    <label><span>最小补零宽度</span><NInputNumber data-testid="auto-number-width" :value="store.draft.autoNumber.width" :min="1" :max="16" :precision="0" :disabled="!!store.result?.definition" @update:value="patchAutoNumber({ width: $event ?? 6 })" /></label>
+                  </div>
+                </section>
+
+
                 <section v-if="store.result?.definition" class="settings-section">
                   <div class="section-title"><div><strong>只读身份诊断</strong><small>重命名、迁移和恢复不会改变产品字段身份</small></div></div>
                   <div class="two-column">
@@ -1437,6 +1460,11 @@ function isTextual(type: LogicalTypeV2): boolean {
                   <div>变更后：{{ relationPlanSummary(change.after) }}</div>
                 </div>
               </template>
+              <div v-if="store.plan.after?.autoNumber && store.plan.intent.action === 'create'" data-testid="auto-number-backfill-preview">
+                <strong>按记录 ID 升序原子回填 {{ store.plan.impact.records }} 条记录</strong>
+                <p>取消不会分配编号；不会按当前网格排序编号。</p>
+                <div v-for="sample in autoNumberPreview" :key="sample.recordId">{{ sample.recordId }} → {{ sample.value }}</div>
+              </div>
               <div class="impact-grid">
                 <span><b>{{ store.plan.impact.records }}</b>记录</span>
                 <span><b>{{ store.plan.impact.missing }}</b>空白</span>

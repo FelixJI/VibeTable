@@ -425,7 +425,7 @@ func pasteEditable(table schemaexecution.Table) ([]string, []string, map[string]
 		name := field.Identity.PhysicalName
 		fieldIDs[field.Identity.FieldID] = name
 		if table.Kind == "base" && field.Lifecycle.State == v2.LifecycleActive &&
-			field.LogicalType != v2.LogicalFormula && field.LogicalType != v2.LogicalLookup && field.LogicalType != v2.LogicalAutoDate {
+			field.LogicalType != v2.LogicalAutoNumber && field.LogicalType != v2.LogicalFormula && field.LogicalType != v2.LogicalLookup && field.LogicalType != v2.LogicalAutoDate {
 			editable = append(editable, name)
 		} else {
 			readonly = append(readonly, name)

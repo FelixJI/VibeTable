@@ -48,7 +48,7 @@ const fullCreateOpen = ref(false);
 const fullValues = ref<Record<string, unknown>>({});
 const writableCreateFields = computed(() => (props.targetFields ?? []).filter(field =>
   field.lifecycle.state === "active"
-  && !["formula", "lookup", "autoDate", "file"].includes(field.logicalType)));
+  && !["formula", "lookup", "autoDate", "autoNumber", "file"].includes(field.logicalType)));
 const unsupportedRequiredFields = computed(() => (props.targetFields ?? []).filter(field =>
   isRequired(field) && !hasDefault(field)
   && field.lifecycle.state === "active"

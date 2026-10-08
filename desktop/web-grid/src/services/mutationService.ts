@@ -51,6 +51,7 @@ export function useMutationService(): {
     newValue: unknown,
     expectedDigest?: string | null,
   ) => void;
+  canInsertRow: () => boolean;
   insertRow: (values: Readonly<Record<string, unknown>>) => void;
   deleteRows: (rows: readonly DeleteRowReqItem[]) => void;
   /**
@@ -649,7 +650,16 @@ export function useMutationService(): {
     return pendingCellEdits.splice(index, 1)[0];
   }
 
+  function canInsertRow(): boolean {
+    return !!ws.currentTable
+      && !ws.collections.some((collection) => collection.collection === ws.currentTable
+        && collection.metadata?.kind === "view")
+      && !!table.revision?.schemaRevision
+      && !!table.editSchema?.some((column) => column.editable || column.dataType === "autoNumber");
+  }
+
   function insertRow(values: Readonly<Record<string, unknown>>): void {
+    if (!canInsertRow()) return;
     bridge.notify("table.insertRowRequested", {
       table: ws.currentTable ?? "",
       values,
@@ -684,7 +694,7 @@ export function useMutationService(): {
     await history.redo();
   }
 
-  return { init, updateCell, insertRow, deleteRows, performUndo, performRedo };
+  return { init, updateCell, canInsertRow, insertRow, deleteRows, performUndo, performRedo };
 }
 
 /** Local shape mirror of `DeleteRowRequestItem` to keep the public surface typed. */

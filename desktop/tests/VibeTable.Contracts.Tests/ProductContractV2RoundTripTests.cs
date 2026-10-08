@@ -451,6 +451,38 @@ public sealed class ProductContractV2RoundTripTests
     }
 
     [TestMethod]
+    public void AutoNumberRequiresBoundedConfigurationOnlyOnItsOwnLogicalType()
+    {
+        JsonObject field = ReadSchemaV2Node("field-definition.json").AsObject();
+        field["logicalType"] = "autoNumber";
+        Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        var spec = new JsonObject { ["prefix"] = "HT-", ["start"] = 1, ["width"] = 6 };
+        field["autoNumber"] = spec;
+        Assert.IsTrue(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out string reason), reason);
+        foreach (long start in new long[] { 0, 9007199254740992 })
+        {
+            spec["start"] = start;
+            Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        }
+        spec["start"] = 9007199254740991;
+        foreach (long width in new long[] { 0, 17 })
+        {
+            spec["width"] = width;
+            Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        }
+        spec["width"] = 16;
+        foreach (string prefix in new[] { "HT-\n", "HT-\r", "HT-\0", new string('x', 65) })
+        {
+            spec["prefix"] = prefix;
+            Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+        }
+        spec["prefix"] = string.Concat(Enumerable.Repeat("😀", 64));
+        Assert.IsTrue(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out reason), reason);
+        field["logicalType"] = "text";
+        Assert.IsFalse(SchemaV2Contract.ValidateResult(CreateSchemaSnapshotWithField(field), out _));
+    }
+
+    [TestMethod]
     public void LookupAggregationRoundTripsConditionAndRejectsConflictingDefinitions()
     {
         JsonObject field = ReadSchemaV2Node("field-definition.json").AsObject();

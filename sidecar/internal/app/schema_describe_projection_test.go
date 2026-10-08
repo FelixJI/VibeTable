@@ -43,6 +43,9 @@ func TestSchemaDescribeProjectionPreservesLookupLoadError(t *testing.T) {
 	if err := json.Unmarshal(wire, &corpus); err != nil {
 		t.Fatal(err)
 	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+	}
 	// The second captured table has real cross-table lookup paths.
 	sample := corpus.Cases[1]
 	for _, failure := range []error{context.Canceled, fmt.Errorf("field storage failure")} {
@@ -91,6 +94,9 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 	if err := json.Unmarshal(wire, &corpus); err != nil {
 		t.Fatal(err)
 	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+	}
 	for _, sample := range corpus.Cases {
 		t.Run(sample.TableID, func(t *testing.T) {
 			reads := map[string]int{}
@@ -113,6 +119,7 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 			// exactly that new key so every historical field stays compared;
 			// the display contract itself is asserted separately below.
 			stripColumnDisplayField(got)
+			assertDescribeAutoNumberRevision(t, corpus.Tables[sample.TableID], got)
 			actual, err := json.Marshal(got)
 			if err != nil {
 				t.Fatal(err)
@@ -211,6 +218,9 @@ func TestSchemaDescribeProjectsDisplaySpecWithExplicitShape(t *testing.T) {
 	if err := json.Unmarshal(wire, &corpus); err != nil {
 		t.Fatal(err)
 	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
+	}
 	sample := corpus.Cases[0]
 	got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) {
 		table, found := corpus.Tables[id]
@@ -268,6 +278,9 @@ func TestSchemaDescribeProjectsFormulaListElementType(t *testing.T) {
 	var corpus describeOracleCorpus
 	if err := json.Unmarshal(raw, &corpus); err != nil {
 		t.Fatal(err)
+	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withAutoNumberCapability(t, snapshot)
 	}
 	sample := corpus.Cases[0]
 	snapshot := corpus.Tables[sample.TableID]
