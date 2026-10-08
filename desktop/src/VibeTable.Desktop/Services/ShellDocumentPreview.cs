@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using Microsoft.Win32;
+using VibeTable.Infrastructure.Diagnostics;
 
 namespace VibeTable.Desktop.Services;
 
@@ -140,6 +141,7 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
             if (_disposed)
             {
                 StopHelper(next);
+                TraceFixedFailure("start", "PREVIEW_HOST_DISPOSED");
                 throw new DocumentPreviewException(
                     "预览服务已关闭。",
                     "PREVIEW_HOST_CREATE_FAILED");
@@ -166,19 +168,25 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
     private static Process StartHelper(PreviewHostLaunchSpec launchSpec)
     {
         if (!File.Exists(launchSpec.ExecutablePath))
+        {
+            TraceFixedFailure("spawn", "PREVIEW_HOST_EXECUTABLE_MISSING");
             throw new DocumentPreviewException(
                 "系统预览组件不可用，请重新安装或修复应用。",
                 "PREVIEW_HOST_CREATE_FAILED");
+        }
+        string stage = "spawn";
         try
         {
             Process process = Process.Start(launchSpec.CreateStartInfo())
                 ?? throw new InvalidOperationException("preview host returned no process");
             try
             {
+                stage = "input-idle";
                 if (!process.WaitForInputIdle(PreviewStartupTimeoutMilliseconds))
                 {
                     throw new TimeoutException("preview host did not become responsive");
                 }
+                stage = "exit-check";
                 if (process.HasExited && process.ExitCode != 0)
                 {
                     int exitCode = process.ExitCode;
@@ -195,7 +203,7 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
         }
         catch (Exception ex)
         {
-            TraceSafeFailure("start", ex);
+            TraceSafeFailure(stage, ex);
             throw new DocumentPreviewException(
                 "无法启动系统预览进程，请稍后重试。",
                 "PREVIEW_HOST_CREATE_FAILED");
@@ -227,9 +235,16 @@ public sealed class ShellDocumentPreview : ILocalDocumentPreview
     }
 
     private static void TraceSafeFailure(string operation, Exception exception)
-        => Trace.TraceError(
-            $"Preview host {operation} failed ({exception.GetType().Name}, "
-            + $"0x{exception.HResult:X8}).");
+        => Trace.TraceError(DiagnosticEvent.Failure(
+            "document-preview",
+            $"preview.host.{operation}.failed",
+            $"{exception.GetType().Name}(0x{exception.HResult:X8})"));
+
+    private static void TraceFixedFailure(string operation, string errorCode)
+        => Trace.TraceError(DiagnosticEvent.Failure(
+            "document-preview",
+            $"preview.host.{operation}.failed",
+            errorCode));
 }
 
 internal sealed record PreviewHostLaunchSpec(

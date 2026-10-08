@@ -1,5 +1,8 @@
+using System.Diagnostics;
+using System.Text.Json;
 using VibeTable.Desktop.Services;
 using VibeTable.PreviewHost;
+using VibeTable.Infrastructure.Diagnostics;
 using System.Windows;
 
 namespace VibeTable.PreviewHost.Tests;
@@ -128,6 +131,142 @@ public sealed class ShellPreviewHandlerResolverTests
             try { Directory.Delete(temp, recursive: true); }
             catch { }
         }
+    }
+
+    [TestMethod]
+    public void Show_MissingHelperKeepsPublicCodeAndEmitsClosedFixedDiagnostic()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(), "vibetable-preview-missing-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string documentPath = Path.Combine(root, "report.docx");
+            File.WriteAllText(documentPath, "test");
+            var resolver = new ShellPreviewHandlerResolver(
+                key => key.EndsWith(
+                    $@".docx\shellex\{ShellPreviewHandlerResolver.PreviewHandlerAssociation}",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? PreviewClsid.ToString("B")
+                    : null);
+            using var preview = new ShellDocumentPreview(resolver, root);
+            using var listener = new PreviewTraceCaptureListener();
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var error = Assert.Throws<DocumentPreviewException>(
+                    () => preview.Show(documentPath));
+
+                Assert.AreEqual("PREVIEW_HOST_CREATE_FAILED", error.Code);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+            }
+
+            Assert.HasCount(1, listener.Lines);
+            string line = listener.Lines[0];
+            Assert.IsTrue(DiagnosticLogLine.IsSafe(line), line);
+            using JsonDocument document = JsonDocument.Parse(line);
+            Assert.AreEqual(
+                "document-preview",
+                document.RootElement.GetProperty("module").GetString());
+            Assert.AreEqual(
+                "preview.host.spawn.failed",
+                document.RootElement.GetProperty("event").GetString());
+            Assert.AreEqual(
+                "PREVIEW_HOST_EXECUTABLE_MISSING",
+                document.RootElement.GetProperty("errorCode").GetString());
+            Assert.IsFalse(line.Contains(root, StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); }
+            catch { }
+        }
+    }
+
+    [TestMethod]
+    public void Show_ResolverFailureEmitsClosedEventWithoutSensitiveContent()
+    {
+        const string SensitiveMessage = @"C:\Users\customer\private-report.docx";
+        string root = Path.Combine(
+            Path.GetTempPath(), "vibetable-preview-resolve-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string documentPath = Path.Combine(root, "secret quarter.docx");
+            File.WriteAllText(documentPath, "test");
+            var resolver = new ShellPreviewHandlerResolver(
+                _ => throw new InvalidOperationException(SensitiveMessage));
+            using var preview = new ShellDocumentPreview(resolver, root);
+            using var listener = new PreviewTraceCaptureListener();
+            Trace.Listeners.Add(listener);
+            try
+            {
+                var error = Assert.Throws<DocumentPreviewException>(
+                    () => preview.Show(documentPath));
+
+                Assert.AreEqual("PREVIEW_HANDLER_UNAVAILABLE", error.Code);
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+            }
+
+            Assert.HasCount(1, listener.Lines);
+            string line = listener.Lines[0];
+            Assert.IsTrue(DiagnosticLogLine.IsSafe(line), line);
+            using JsonDocument document = JsonDocument.Parse(line);
+            Assert.AreEqual(
+                "document-preview",
+                document.RootElement.GetProperty("module").GetString());
+            Assert.AreEqual(
+                "preview.host.resolve.failed",
+                document.RootElement.GetProperty("event").GetString());
+            Assert.AreEqual(
+                $"InvalidOperationException(0x{new InvalidOperationException().HResult:X8})",
+                document.RootElement.GetProperty("errorCode").GetString());
+            Assert.IsFalse(line.Contains(SensitiveMessage, StringComparison.Ordinal));
+            Assert.IsFalse(line.Contains(documentPath, StringComparison.Ordinal));
+            Assert.IsFalse(line.Contains("secret quarter", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); }
+            catch { }
+        }
+    }
+
+    [TestMethod]
+    public void PreviewStartDiagnostics_LegacyPlainTextIsDroppedWhileClosedEventsPersist()
+    {
+        DirectoryInfo? repository = new(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "qa", "next.py")))
+            repository = repository.Parent;
+        Assert.IsNotNull(
+            repository, "Preview start diagnostics must stay inside the repository build tree.");
+        string root = Path.Combine(
+            repository.FullName,
+            "build", "qa", "preview-start-diagnostics",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        string logPath = Path.Combine(root, "desktop.log");
+
+        using (var listener = new RotatingDiagnosticTraceListener(logPath))
+        {
+            listener.WriteLine(
+                $"Preview host start failed (TimeoutException, 0x{new TimeoutException().HResult:X8}).");
+            listener.WriteLine(DiagnosticEvent.Failure(
+                "document-preview",
+                "preview.host.input-idle.failed",
+                $"TimeoutException(0x{new TimeoutException().HResult:X8})"));
+        }
+
+        string[] persisted = File.ReadAllLines(logPath);
+        Assert.HasCount(1, persisted);
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(persisted[0]));
+        Assert.IsFalse(persisted[0].Contains("Preview host", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -332,6 +471,28 @@ public sealed class ShellPreviewHandlerResolverTests
         finally
         {
             Directory.Delete(link);
+        }
+    }
+
+    private sealed class PreviewTraceCaptureListener : TraceListener
+    {
+        private readonly object _gate = new();
+        private readonly List<string> _lines = [];
+
+        public IReadOnlyList<string> Lines
+        {
+            get { lock (_gate) return [.. _lines]; }
+        }
+
+        public override void Write(string? message) => WriteLine(message);
+
+        public override void WriteLine(string? message)
+        {
+            if (message is null ||
+                (!message.Contains("document-preview", StringComparison.Ordinal) &&
+                 !message.Contains("Preview host ", StringComparison.Ordinal)))
+                return;
+            lock (_gate) _lines.Add(message);
         }
     }
 
