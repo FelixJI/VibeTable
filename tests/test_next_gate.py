@@ -2668,6 +2668,10 @@ SCENARIO_SCREENSHOTS = {
         "02-number-display-fixed.png",
         "02-number-display-currency.png",
         "02-number-display-percent.png",
+        "02-computed-display-grid.png",
+        "02-computed-display-cards.png",
+        "02-computed-display-percent-cards.png",
+        "02-computed-display-reopened.png",
         "02-auto-number-readonly.png",
     ),
     "28-relation-delta-preview": (
