@@ -94,7 +94,7 @@ func PrepareLookupCondition(ctx context.Context, app core.App, source schemaexec
 
 func conditionType(field v2.FieldDefinition) string {
 	switch field.LogicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail, v2.LogicalURL:
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail, v2.LogicalURL:
 		return "text"
 	case v2.LogicalNumber:
 		return "number"

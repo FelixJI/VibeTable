@@ -4763,6 +4763,42 @@ def test_schema_scenario_uses_authoritative_capabilities_and_stable_identities()
     assert 'legacyWrite.type === "operation.failed"' in scenario
 
 
+def test_auto_number_journey_is_bound_to_schema_scenario_runtime_and_restore_boundary() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    schema = source[
+        source.index("async function scenario02") : source.index(
+            "async function verifyQueryViewGroupingUI"
+        )
+    ]
+    grouping = source[
+        source.index("async function verifyQueryViewGroupingUI") : source.index(
+            "async function rawBridgeRequest"
+        )
+    ]
+    assert "runAutoNumberJourney(page, recorder, runtime" in schema
+    assert "runAutoNumberJourney" not in grouping
+    assert source.count("await runAutoNumberJourney(") == 1
+    create_table = source[
+        source.index("async function createEmptyTable") : source.index(
+            "async function createV2Field"
+        )
+    ]
+    assert 'getByTestId("field-display-name").waitFor' in create_table
+    journey = runner.NODE_RUNNER.with_name("auto_number_journey.mjs").read_text(encoding="utf-8")
+    assert "await acknowledgeExpectedBridgeFailure(page, override)" in journey
+    assert "await insertRowFromToolbar(page)" in journey
+    assert 'getByTestId("grid-add-first-row").click()' in journey
+    backup = source[
+        source.index("async function scenario12") : source.index("async function scenario33")
+    ]
+    assert backup.index("prepareAutoNumberSnapshot(") < backup.index(
+        'getByTestId("snapshot-create")'
+    )
+    assert backup.index("verifyAutoNumberSnapshot(") > backup.index(
+        "const restoredBootstrap = await waitForCapturedBridgeMessage"
+    )
+
+
 def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[

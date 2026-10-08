@@ -230,7 +230,7 @@ func ValidateSnapshot(
 			)
 		}
 	}
-	return nil
+	return validateAutoNumberSnapshot(ctx, connection)
 }
 
 func optionalSnapshotTableColumns(

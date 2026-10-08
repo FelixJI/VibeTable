@@ -1399,7 +1399,7 @@ func schemaIdentity(definition schemaexecution.Table) any {
 }
 
 func isGeneratedField(field v2.FieldDefinition) bool {
-	return field.LogicalType == v2.LogicalAutoDate ||
+	return field.LogicalType == v2.LogicalAutoNumber || field.LogicalType == v2.LogicalAutoDate ||
 		field.LogicalType == v2.LogicalFormula ||
 		field.LogicalType == v2.LogicalLookup
 }

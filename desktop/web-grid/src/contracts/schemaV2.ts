@@ -11,6 +11,7 @@ export const SCHEMA_V2_LOGICAL_TYPES = [
   "dateTime",
   "time",
   "autoDate",
+  "autoNumber",
   "email",
   "url",
   "select",
@@ -86,6 +87,7 @@ const FIELD_KEYS = [
   "file",
   "json",
   "autoDate",
+  "autoNumber",
   "formula",
   "lookup",
 ] as const;
@@ -102,7 +104,7 @@ function parseFieldDefinition(
     ...exactObject(value, "$", FIELD_KEYS, FIELD_KEYS.slice(0, 10)),
   };
   for (const key of [
-    "select", "relation", "file", "json", "autoDate", "formula", "lookup",
+    "select", "relation", "file", "json", "autoDate", "autoNumber", "formula", "lookup",
   ]) {
     if (field[key] === null) delete field[key];
   }
@@ -463,6 +465,14 @@ function validateOptionalFieldSpecs(
       [],
     );
   }
+  if (field.autoNumber !== undefined) {
+    const spec = exactObject(field.autoNumber, "$.autoNumber", ["prefix", "start", "width"]);
+    expectString(spec.prefix, "$.autoNumber.prefix", true);
+    if (Array.from(spec.prefix as string).length > 64 || /[\0\r\n]/.test(spec.prefix as string)) fail("$.autoNumber.prefix", "invalid prefix");
+    expectSafeInteger(spec.start, "$.autoNumber.start");
+    expectSafeInteger(spec.width, "$.autoNumber.width");
+    if ((spec.start as number) < 1 || (spec.width as number) < 1 || (spec.width as number) > 16) fail("$.autoNumber", "invalid numbering range");
+  }
   if (field.autoDate !== undefined) {
     const autoDate = exactObject(field.autoDate, "$.autoDate", ["role"]);
     expectEnum(autoDate.role, "$.autoDate.role", ["createdAt", "updatedAt"]);
@@ -555,6 +565,7 @@ function validateLogicalTypeSpec(
     file: "file",
     json: "json",
     autoDate: "autoDate",
+    autoNumber: "autoNumber",
     formula: "formula",
     lookup: "lookup",
   };
@@ -562,7 +573,7 @@ function validateLogicalTypeSpec(
   if (expected && field[expected] === undefined) {
     fail(`$.${expected}`, `required for logicalType ${logicalType}`);
   }
-  for (const key of ["select", "relation", "file", "json", "autoDate", "formula", "lookup"]) {
+  for (const key of ["select", "relation", "file", "json", "autoDate", "autoNumber", "formula", "lookup"]) {
     if (field[key] !== undefined && key !== expected) {
       fail(`$.${key}`, `not allowed for logicalType ${logicalType}`);
     }
@@ -655,7 +666,8 @@ function parseIntent(value: unknown, path: string): void {
       [
         "displayName", "help", "logicalType", "value", "constraints",
         "storage", "display", "select", "relation", "file", "json",
-        "autoDate", "formula", "lookup",
+        "autoDate",
+  "autoNumber", "formula", "lookup",
       ],
       ["displayName", "help", "logicalType", "value", "constraints", "storage", "display"],
     );

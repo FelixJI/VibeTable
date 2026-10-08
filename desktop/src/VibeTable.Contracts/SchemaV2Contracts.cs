@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json;
 
 namespace VibeTable.Contracts;
@@ -162,6 +163,7 @@ public static class SchemaV2Contract
             "file" => nameof(field.File),
             "json" => nameof(field.Json),
             "autoDate" => nameof(field.AutoDate),
+            "autoNumber" => nameof(field.AutoNumber),
             "formula" => nameof(field.Formula),
             "lookup" => nameof(field.Lookup),
             _ => null,
@@ -173,6 +175,7 @@ public static class SchemaV2Contract
             [nameof(field.File)] = field.File is not null,
             [nameof(field.Json)] = field.Json is not null,
             [nameof(field.AutoDate)] = field.AutoDate is not null,
+            [nameof(field.AutoNumber)] = field.AutoNumber is not null,
             [nameof(field.Formula)] = field.Formula is not null,
             [nameof(field.Lookup)] = field.Lookup is not null,
         };
@@ -188,6 +191,15 @@ public static class SchemaV2Contract
                 reason = $"{item.Key} settings are not allowed for {field.LogicalType}";
                 return false;
             }
+        }
+        if (field.AutoNumber is { } number
+            && (number.Prefix is null || number.Prefix.EnumerateRunes().Count() > 64
+                || number.Prefix.IndexOfAny(['\0', '\r', '\n']) >= 0
+                || number.Start is < 1 or > 9007199254740991
+                || number.Width is < 1 or > 16))
+        {
+            reason = "invalid autoNumber prefix, start, or width";
+            return false;
         }
         if (field.Lookup is { } lookup)
         {
@@ -220,7 +232,7 @@ public static class SchemaV2Contract
 
     private static bool IsSupportedLogicalType(string logicalType)
         => logicalType is "text" or "editor" or "number" or "bool"
-            or "date" or "dateTime" or "time" or "autoDate"
+            or "date" or "dateTime" or "time" or "autoDate" or "autoNumber"
             or "email" or "url" or "select" or "multiSelect"
             or "relation" or "file" or "geoPoint" or "json"
             or "formula" or "lookup";

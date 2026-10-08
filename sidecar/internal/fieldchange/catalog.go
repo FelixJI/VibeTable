@@ -440,6 +440,31 @@ func (catalog *Catalog) Check(
 	impact := v2.Impact{
 		Failures: []v2.FailureSample{}, Dependencies: []v2.DependencyRef{},
 	}
+	if before == nil && after != nil && after.AutoNumber != nil {
+		table, err := catalog.tableRecord(catalog.app, intent.TableID)
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		records, err := catalog.app.FindRecordsByFilter(table.GetString("collection_id"), "", "id", 0, 0)
+		if err != nil {
+			return impact, nil, nil, err
+		}
+		impact.Records = int64(len(records))
+		if impact.Records > v2.MaxAutoNumber-after.AutoNumber.Start+1 {
+			return impact, nil, []v2.Diagnostic{{Code: "field.auto_number.exhausted", Path: "draft.autoNumber.start", Message: "backfill exceeds the safe sequence range"}}, nil
+		}
+		samples := []map[string]any{}
+		for index, record := range records {
+			if err := ctx.Err(); err != nil {
+				return impact, nil, nil, err
+			}
+			if index >= 5 {
+				break
+			}
+			samples = append(samples, map[string]any{"recordId": record.Id, "value": v2.AutoNumberValue(*after.AutoNumber, after.AutoNumber.Start+int64(index))})
+		}
+		return impact, []v2.Diagnostic{{Code: "field.auto_number.backfill", Path: "draft.autoNumber", Message: "existing records are numbered atomically in record ID order", Details: map[string]any{"order": "id asc", "count": impact.Records, "samples": samples, "atomic": true}}}, []v2.Diagnostic{}, nil
+	}
 	if after != nil && after.Relation != nil {
 		diagnostics, err := catalog.checkRelationTarget(ctx, *after)
 		if err != nil {
