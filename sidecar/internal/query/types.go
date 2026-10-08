@@ -204,6 +204,7 @@ type FieldDescriptor struct {
 	Type                        FieldType           `json:"type"`
 	AutoDate                    bool                `json:"autoDate,omitempty"`
 	Searchable                  bool                `json:"searchable,omitempty"`
+	PreserveComputedEnvelope    bool                `json:"-"`
 	ComputedEnvelope            bool                `json:"computedEnvelope,omitempty"`
 	ComputedReady               bool                `json:"computedReady,omitempty"`
 	ComputedStatus              string              `json:"computedStatus,omitempty"`

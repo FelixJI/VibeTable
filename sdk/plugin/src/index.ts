@@ -32,3 +32,5 @@ export type {
   PluginSuccess,
   ThemeMode,
 } from "./types.js";
+
+export type { DataOperator, DataFilter, DataSort, DataField, DataTable, DataCatalog, DataDescription, DataDescribeRequest, DataQueryRequest, DataQueryPage, ComputedCell } from "./data.js";

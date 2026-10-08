@@ -10,6 +10,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
@@ -243,6 +244,12 @@ async def _build_server() -> tuple[
             client=client,
             package_lifecycle=package_lifecycle,
             file_adapter=file_capability,
+            expected_project_key=(
+                "local:" + UUID(os.environ["VIBETABLE_WORKSPACE_ID"]).hex
+                if os.environ.get("VIBETABLE_WORKSPACE_ID")
+                else None
+            ),
+            session_epoch=int(os.environ.get("VIBETABLE_WORKSPACE_SESSION_EPOCH", "0")),
         )
         mutation = PocketBasePluginMutationAdapter(
             client=client,

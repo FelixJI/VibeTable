@@ -11,17 +11,18 @@
   },
   "compatibility": {
     "minHostVersion": "0.5.1",
-    "pluginApi": "1.x"
+    "pluginApi": "2.x"
   },
   "permissions": {
     "data": [
       {
         "collection": "$active",
         "operations": [
-          "read"
+          "read",
+          "query"
         ],
         "fields": [
-          "id"
+          "$configured"
         ]
       }
     ],
@@ -50,7 +51,9 @@
       {
         "viewId": "overview",
         "actionId": "open-overview",
-        "displayName": { "zh-CN": "数据概览" },
+        "displayName": {
+          "zh-CN": "数据概览"
+        },
         "entry": "dist/views/overview/index.html"
       }
     ]
