@@ -463,7 +463,8 @@ internal sealed class SourceImportWindow : Window
         new(StringComparer.Ordinal) { "relation", "file", "formula", "lookup", "autoDate" };
 
     private static string SnapshotTargetKind(NativeSourceField field) =>
-        NonWritableSnapshotKinds.Contains(field.ValueKind) ? "json" : field.ValueKind;
+        field.ValueKind == "autoNumber" ? "text"
+            : NonWritableSnapshotKinds.Contains(field.ValueKind) ? "json" : field.ValueKind;
 
     // Explicit snapshot target choice: keep the source kind (converted where
     // the Go guards reject it as a snapshot target), exact text for values

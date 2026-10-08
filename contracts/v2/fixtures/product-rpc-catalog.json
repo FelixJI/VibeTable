@@ -1772,6 +1772,32 @@
             ],
             "type": "object"
           },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
+            ],
+            "type": "object"
+          },
           "ConstraintSpec": {
             "additionalProperties": false,
             "properties": {
@@ -2101,6 +2127,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -2342,6 +2379,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -3088,6 +3126,7 @@
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -3291,6 +3330,32 @@
             },
             "required": [
               "role"
+            ],
+            "type": "object"
+          },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
             ],
             "type": "object"
           },
@@ -3784,6 +3849,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -3894,6 +3970,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -4197,6 +4284,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -5221,6 +5309,7 @@
               "file": null,
               "json": null,
               "autoDate": null,
+              "autoNumber": null,
               "formula": null,
               "lookup": null
             },
@@ -5326,6 +5415,7 @@
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -5421,6 +5511,7 @@
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -5655,6 +5746,32 @@
             },
             "required": [
               "role"
+            ],
+            "type": "object"
+          },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
             ],
             "type": "object"
           },
@@ -5987,6 +6104,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -6228,6 +6356,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -6873,6 +7002,7 @@
               "file": null,
               "json": null,
               "autoDate": null,
+              "autoNumber": null,
               "formula": null,
               "lookup": null
             }
@@ -6912,6 +7042,32 @@
             },
             "required": [
               "role"
+            ],
+            "type": "object"
+          },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
             ],
             "type": "object"
           },
@@ -7391,6 +7547,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -7632,6 +7799,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -8366,6 +8534,7 @@
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -20244,6 +20413,36 @@
             "title": "AutoDateSpec",
             "type": "object"
           },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "title": "Prefix",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Start",
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "title": "Width",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
+            ],
+            "title": "AutoNumberSpec",
+            "type": "object"
+          },
           "Capability": {
             "additionalProperties": false,
             "properties": {
@@ -20771,6 +20970,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -21037,6 +21247,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -21985,6 +22196,7 @@
                 "file": null,
                 "json": null,
                 "autoDate": null,
+                "autoNumber": null,
                 "formula": null,
                 "lookup": null
               }
@@ -24715,6 +24927,32 @@
             ],
             "type": "object"
           },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
+            ],
+            "type": "object"
+          },
           "Capability": {
             "additionalProperties": false,
             "properties": {
@@ -25191,6 +25429,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -25432,6 +25681,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -26177,6 +26427,7 @@
               "file": null,
               "json": null,
               "autoDate": null,
+              "autoNumber": null,
               "formula": null,
               "lookup": null
             }

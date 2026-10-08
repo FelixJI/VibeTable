@@ -55,6 +55,24 @@ describe("Schema v2 contracts", () => {
       expect(() => parseFieldDefinitionV2(field)).toThrow("field.contract.invalid");
     }
   });
+  it("accepts fixed readonly auto-number metadata and rejects invalid rules", () => {
+    const field = mutableObject(fixture());
+    field.logicalType = "autoNumber";
+    field.autoNumber = { prefix: "HT-", start: 1, width: 6 };
+    mutableObject(field.display).kind = "readonly";
+    mutableObject(field.storage).kind = "pocketbase-text";
+    mutableObject(field.value).presence = { mode: "native" };
+    expect(parseFieldDefinitionV2(field).autoNumber).toEqual(field.autoNumber);
+    for (const invalid of [
+      { prefix: "bad\n", start: 1, width: 6 },
+      { prefix: "", start: 0, width: 6 },
+      { prefix: "", start: 1, width: 17 },
+      { prefix: "", start: 1.5, width: 6 },
+    ]) {
+      field.autoNumber = invalid;
+      expect(() => parseFieldDefinitionV2(field)).toThrow("field.contract.invalid");
+    }
+  });
 
   it("accepts pair patch plans and frozen reciprocal data revisions", () => {
     const plan = mutableObject(fixture("field-change-plan.json"));

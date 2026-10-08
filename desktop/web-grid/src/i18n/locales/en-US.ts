@@ -674,6 +674,7 @@ export const messages: Record<string, string> = {
   "createTable.fieldType.date": "Date",
   "createTable.fieldType.dateTime": "Date and time",
   "createTable.fieldType.autoDate": "System time",
+  "createTable.fieldType.autoNumber": "Auto number",
   "schema.autoDate.createdAt": "Created at",
   "schema.autoDate.createdAt.help": "Time when the record was first saved successfully",
   "schema.autoDate.updatedAt": "Last updated at",

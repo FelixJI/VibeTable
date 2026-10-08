@@ -132,6 +132,12 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
       || !!draft.value.lookup?.path.length
         && draft.value.lookup.path.length <= lookupMaxDepth.value
         && draft.value.lookup.path.every(step => !!step.relationFieldId))
+    && (draft.value?.logicalType !== "autoNumber" || !!draft.value.autoNumber
+      && Array.from(draft.value.autoNumber.prefix).length <= 64
+      && !/[\u0000\r\n]/.test(draft.value.autoNumber.prefix)
+      && Number.isSafeInteger(draft.value.autoNumber.start) && draft.value.autoNumber.start >= 1
+      && Number.isInteger(draft.value.autoNumber.width)
+      && draft.value.autoNumber.width >= 1 && draft.value.autoNumber.width <= 16)
     && (draft.value?.logicalType !== "formula" || !!draft.value.formula?.source.trim())
     && (action.value !== "create" || draft.value?.logicalType !== "relation"
       || !!relationPair.value?.reciprocalDisplayName.trim()
@@ -451,6 +457,7 @@ export const useFieldSettingsStore = defineStore("field-settings", () => {
       ...(current.select ? { select: current.select } : {}),
       ...(current.relation ? { relation: current.relation } : {}),
       ...(current.autoDate ? { autoDate: current.autoDate } : {}),
+      ...(current.autoNumber ? { autoNumber: current.autoNumber } : {}),
       ...(current.formula ? { formula: current.formula } : {}),
       ...(current.lookup ? { lookup: current.lookup } : {}),
     };

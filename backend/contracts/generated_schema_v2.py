@@ -30,6 +30,7 @@ type LogicalType = Literal[
     "dateTime",
     "time",
     "autoDate",
+    "autoNumber",
     "email",
     "url",
     "select",
@@ -223,6 +224,12 @@ class JSONSpec(SchemaV2WireModel):
     schema_: dict[str, JsonValue] = Field(alias="schema")
 
 
+class AutoNumberSpec(SchemaV2WireModel):
+    prefix: Annotated[str, Field(max_length=64, pattern="^[^\x00\r\n]*$")]
+    start: Annotated[int, Field(ge=1, le=9007199254740991)]
+    width: Annotated[int, Field(ge=1, le=16)]
+
+
 class AutoDateSpec(SchemaV2WireModel):
     role: Literal["createdAt", "updatedAt"]
 
@@ -298,6 +305,7 @@ class FieldDefinition(SchemaV2WireModel):
     file: FileSpec | None = None
     json_: JSONSpec | None = Field(None, alias="json")
     auto_date: AutoDateSpec | None = None
+    auto_number: AutoNumberSpec | None = None
     formula: FormulaSpec | None = None
     lookup: LookupSpec | None = None
 
@@ -315,6 +323,7 @@ class FieldDraft(SchemaV2WireModel):
     file: FileSpec | None = None
     json_: JSONSpec | None = Field(None, alias="json")
     auto_date: AutoDateSpec | None = None
+    auto_number: AutoNumberSpec | None = None
     formula: FormulaDraftSpec | None = None
     lookup: LookupSpec | None = None
 

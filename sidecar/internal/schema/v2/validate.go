@@ -699,6 +699,9 @@ func validateTypeSpecific(definition FieldDefinition) error {
 	if definition.JSON != nil && definition.LogicalType != LogicalJSON {
 		return invalid("json", "JSON settings are not allowed for this logical type")
 	}
+	if definition.AutoNumber != nil && definition.LogicalType != LogicalAutoNumber {
+		return invalid("autoNumber", "autoNumber settings are not allowed for this logical type")
+	}
 	if definition.AutoDate != nil && definition.LogicalType != LogicalAutoDate {
 		return invalid("autoDate", "autoDate settings are not allowed for this logical type")
 	}
@@ -777,6 +780,15 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		}
 		if definition.Display.Indent != 2 && definition.Display.Indent != 4 {
 			return invalid("display.indent", "JSON indent must be 2 or 4")
+		}
+	case LogicalAutoNumber:
+		if err := ValidateAutoNumberSpec(definition.AutoNumber); err != nil {
+			return err
+		}
+		recommended, _ := RecommendedDefaults(LogicalAutoNumber)
+		if !reflect.DeepEqual(definition.Constraints, recommended.Constraints) ||
+			!reflect.DeepEqual(definition.Storage, recommended.Storage) {
+			return unsupported("autoNumber", "autoNumber storage and constraints are system-owned")
 		}
 	case LogicalAutoDate:
 		if definition.AutoDate == nil ||

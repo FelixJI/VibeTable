@@ -283,6 +283,17 @@ public sealed record FieldJsonV2
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record AutoNumberSpecV2
+{
+    [JsonPropertyName("prefix")]
+    [JsonRequired] public required string Prefix { get; init; }
+    [JsonPropertyName("start")]
+    [JsonRequired] public required long Start { get; init; }
+    [JsonPropertyName("width")]
+    [JsonRequired] public required long Width { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record FieldAutoDateV2
 {
     [JsonPropertyName("role")]
@@ -399,6 +410,8 @@ public sealed record FieldDefinitionV2
     public FieldJsonV2? Json { get; init; }
     [JsonPropertyName("autoDate")]
     public FieldAutoDateV2? AutoDate { get; init; }
+    [JsonPropertyName("autoNumber")]
+    public AutoNumberSpecV2? AutoNumber { get; init; }
     [JsonPropertyName("formula")]
     public FieldFormulaV2? Formula { get; init; }
     [JsonPropertyName("lookup")]
@@ -432,6 +445,8 @@ public sealed record FieldDraftV2
     public FieldJsonV2? Json { get; init; }
     [JsonPropertyName("autoDate")]
     public FieldAutoDateV2? AutoDate { get; init; }
+    [JsonPropertyName("autoNumber")]
+    public AutoNumberSpecV2? AutoNumber { get; init; }
     [JsonPropertyName("formula")]
     public FieldFormulaDraftV2? Formula { get; init; }
     [JsonPropertyName("lookup")]

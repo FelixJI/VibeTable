@@ -300,6 +300,7 @@ export interface ColumnEditSchema {
   readonly name: string;
   readonly storageName: string;
   readonly dataType:
+    | "autoNumber"
     | "text"
     | "integer"
     | "decimal"
@@ -665,6 +666,7 @@ export const TABLE_FIELD_TYPES = [
   "date",
   "dateTime",
   "autoDate",
+  "autoNumber",
   "time",
   "email",
   "url",
@@ -698,7 +700,7 @@ export interface ProductErrorPayload {
 export interface FormulaDefinition {
   readonly language: "cel-v1" | "cel-v2";
   readonly source: string;
-  readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate">;
+  readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate" | "autoNumber">;
   readonly version: number;
   readonly status: "draft" | "ready" | "backfilling" | "failed" | "cancelled";
 }

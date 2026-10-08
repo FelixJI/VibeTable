@@ -43,11 +43,11 @@ func TestSchemaDescribeProjectionPreservesLookupLoadError(t *testing.T) {
 	if err := json.Unmarshal(wire, &corpus); err != nil {
 		t.Fatal(err)
 	}
+	for id, snapshot := range corpus.Tables {
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
+	}
 	// The second captured table has real cross-table lookup paths.
 	sample := corpus.Cases[1]
-	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
-	}
 	for _, failure := range []error{context.Canceled, fmt.Errorf("field storage failure")} {
 		got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(string) (v2.SchemaSnapshot, error) { return v2.SchemaSnapshot{}, failure })
 		if got != nil || err != failure {
@@ -95,7 +95,7 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	for _, sample := range corpus.Cases {
 		t.Run(sample.TableID, func(t *testing.T) {
@@ -115,11 +115,11 @@ func assertDescribeOracle(t *testing.T, wire []byte) {
 				t.Fatal(err)
 			}
 			assertColumnDisplayWiring(t, corpus.Tables[sample.TableID], got)
-			assertDescribeCommonDisplayRevision(t, corpus.Tables[sample.TableID], got)
 			// The frozen wire predates the column `display` field. Project away
 			// exactly that new key so every historical field stays compared;
 			// the display contract itself is asserted separately below.
 			stripColumnDisplayField(got)
+			assertDescribeAutoNumberRevision(t, corpus.Tables[sample.TableID], got)
 			actual, err := json.Marshal(got)
 			if err != nil {
 				t.Fatal(err)
@@ -227,7 +227,7 @@ func TestSchemaDescribeProjectsDisplaySpecWithExplicitShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	sample := corpus.Cases[0]
 	got, err := projectSchemaDescribe(corpus.Tables[sample.TableID], sample.Catalog, sample.Generation, func(id string) (v2.SchemaSnapshot, error) {
@@ -288,7 +288,7 @@ func TestSchemaDescribeProjectsFormulaListElementType(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, snapshot := range corpus.Tables {
-		corpus.Tables[id] = withCommonDisplayPresets(t, snapshot)
+		corpus.Tables[id] = withAutoNumberCapability(t, withCommonDisplayPresets(t, snapshot))
 	}
 	sample := corpus.Cases[0]
 	snapshot := corpus.Tables[sample.TableID]

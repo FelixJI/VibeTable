@@ -17,6 +17,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
+	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/backupreceipt"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldresource"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -505,6 +506,11 @@ func (executor *Executor) applyFrozenPlan(
 		}
 		if err := saveDefinitionMetadata(app, plan.Intent.TableID, *plan.After); err != nil {
 			return nil, err
+		}
+		if plan.After.AutoNumber != nil {
+			if err := autonumber.Backfill(ctx, app, plan.Intent.TableID, collection, *plan.After); err != nil {
+				return nil, err
+			}
 		}
 		return cloneDefinition(plan.After), nil
 	case v2.ActionUpdate, v2.ActionConvert:

@@ -80,7 +80,9 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
             return new ColumnEditSchema(
                 column.Name,
                 column.Name,
-                column.DataType,
+                hasField && RequiredString(field, "logicalType") == "autoNumber"
+                    ? "autoNumber"
+                    : column.DataType,
                 column.Editable,
                 column.Nullable,
                 string.Equals(column.Name, primaryKey, StringComparison.Ordinal),
@@ -943,7 +945,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         return value switch
         {
             "text" or "editor" or "email" or "url" or "select"
-                or "multiSelect" => "text",
+                or "multiSelect" or "autoNumber" => "text",
             "integer" => "integer",
             "number" => "decimal",
             "bool" => "boolean",
@@ -1113,7 +1115,7 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         string logicalType = RequiredString(field, "logicalType");
         JsonElement lifecycle = RequiredProperty(field, "lifecycle");
         return RequiredString(schema, "kind") == "view"
-            || logicalType is "autoDate" or "formula" or "lookup"
+            || logicalType is "autoDate" or "autoNumber" or "formula" or "lookup"
             || RequiredString(lifecycle, "state") != "active";
     }
 

@@ -337,11 +337,26 @@ def auto_map_columns(
         clean = name.strip()
         if clean in explicit_by_source:
             target = explicit_by_source[clean]
+            if profile.field_schemas.get(target, {}).get("dataType") == "autoNumber":
+                raise ImportFlowError(
+                    "自动编号只读，不能导入覆盖；请映射到普通文本以保存来源编号，"
+                    "或移除该映射并由本地编号字段重新生成。",
+                    code="mutation.field.read_only",
+                )
             if target in create_fields:
                 mapping[index] = target
                 matched_sources.add(clean)
             continue
         lowered = clean.lower().replace(" ", "_")
+        if any(
+            field.lower() == lowered and spec.get("dataType") == "autoNumber"
+            for field, spec in profile.field_schemas.items()
+        ):
+            raise ImportFlowError(
+                "来源包含自动编号列；请明确映射到普通文本保存来源编号，"
+                "或移除该来源列并由本地编号字段重新生成。",
+                code="mutation.field.read_only",
+            )
         for field in profile.create_fields:
             if field.lower() == lowered:
                 mapping[index] = field

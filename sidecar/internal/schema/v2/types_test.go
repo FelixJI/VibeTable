@@ -59,7 +59,7 @@ func TestValidateRejectsEnabledDefaultOutsideFieldSemantics(t *testing.T) {
 
 func TestCapabilityMatrixCoversEveryLogicalTypeWithExplicitDefaults(t *testing.T) {
 	t.Parallel()
-	if len(v2.LogicalTypes) != 18 {
+	if len(v2.LogicalTypes) != 19 {
 		t.Fatalf("logical type matrix drifted: %d", len(v2.LogicalTypes))
 	}
 	for _, logicalType := range v2.LogicalTypes {

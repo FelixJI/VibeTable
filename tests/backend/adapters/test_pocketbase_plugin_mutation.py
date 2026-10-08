@@ -274,3 +274,20 @@ async def test_http_receipt_preserves_unknown_or_explicit_rejection_without_repl
         "plugin_mutation_rejected" if rejected else "plugin_commit_unknown"
     )
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_number_plugin_override_is_readonly_before_submission() -> None:
+    number = field_v2("number")
+    number.update(logicalType="autoNumber", autoNumber={"prefix": "HT-", "start": 1, "width": 6})
+    number["display"]["kind"] = "readonly"
+    number["value"]["presence"] = {"mode": "native"}
+    client = FakeClient()
+    client.definitions = [snapshot_v2("orders", [number], revision="schema-7")]
+    adapter = PocketBasePluginMutationAdapter(
+        client=client, schema_revisions={}, writable_fields={}
+    )
+    with pytest.raises(PluginExecutionError, match="不能覆盖") as raised:
+        await adapter.apply(_plan(values={number["identity"]["physicalName"]: "HT-999999"}))
+    assert raised.value.code == "mutation.field.read_only"
+    assert client.requests == []

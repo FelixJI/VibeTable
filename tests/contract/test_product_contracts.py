@@ -56,6 +56,7 @@ EXPECTED_LOGICAL_TYPES = [
     "dateTime",
     "time",
     "autoDate",
+    "autoNumber",
     "email",
     "url",
     "select",

@@ -442,6 +442,44 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
+    public async Task AutoNumberIsReadonlyTextAndSupportsEmptyRecordInsertion()
+    {
+        var transport = new ProductTransport();
+        JsonObject number = V2Field("number00", "number00", "Contract number", "autoNumber");
+        number["autoNumber"] = new JsonObject
+        {
+            ["prefix"] = "HT-", ["start"] = 1, ["width"] = 6,
+        };
+        number["display"]!["kind"] = "readonly";
+        transport.Respond("schema.getTable", SchemaWithFields("items", number));
+        transport.Respond("mutation.apply", """
+            {"contractVersion":"2.0","status":"applied","changeSetId":"change-1",
+             "affectedRows":[{"recordId":"numberrow000001","operation":"insert","revision":"row_0002",
+             "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+             "computedFields":{},"newRevision":"data_0002","emittedEvents":[],"warnings":[]}
+            """);
+        transport.Respond("query.readRows", """
+            {"rows":[{"id":"numberrow000001","f_number00":"HT-000001"}]}
+            """);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        EditSchemaResult schema = await gateway.GetEditSchemaAsync("items", CancellationToken.None);
+        ColumnEditSchema column = schema.Columns.Single(item => item.Name == "f_number00");
+        Assert.AreEqual("autoNumber", column.DataType);
+        Assert.IsFalse(column.Editable);
+        Assert.IsFalse(schema.Editable);
+        InsertRowResult inserted = await gateway.InsertRowAsync("items",
+            new Dictionary<string, object?> { ["id"] = "numberrow000001" },
+            "schema_0001", CancellationToken.None);
+        Assert.AreEqual("HT-000001", inserted.Row["f_number00"]);
+        StringAssert.Contains(transport.Serialized, "\"values\":{}");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => gateway.InsertRowAsync("items",
+            new Dictionary<string, object?> { ["f_number00"] = "HT-999999" },
+            "schema_0001", CancellationToken.None));
+        Assert.AreEqual(1, transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
     public async Task EditSchemaAcceptsGeoPointWithNullJsonSpecification()
     {
         var transport = new ProductTransport();

@@ -69,6 +69,8 @@ function specializedDefaults(
           displayFieldId: "",
         },
       };
+    case "autoNumber":
+      return { autoNumber: { prefix: "", start: 1, width: 6 } };
     case "formula":
       return {
         formula: {
