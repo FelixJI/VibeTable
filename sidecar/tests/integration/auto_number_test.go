@@ -9,6 +9,7 @@ import (
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/audit"
 	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/computed"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldchange"
@@ -356,5 +357,87 @@ func TestAutoNumberSafeRangeBatchExhaustionRollsBack(t *testing.T) {
 	records, err = app.FindAllRecords(table.PhysicalName)
 	if err != nil || len(records) != 2 {
 		t.Fatalf("final rows: %d %v", len(records), err)
+	}
+}
+
+func TestAutoNumberHistoryRestoresDeletedWholeRowWithFreshNumber(t *testing.T) {
+	app := bootstrapApp(t, queryTempDir(t))
+	defer resetApp(t, app)
+	ctx := context.Background()
+	table := createV2IntegrationTable(t, ctx, app, "Number history", "number_history_table")
+	field := createV2IntegrationField(t, ctx, app, table.TableID, autoNumberDraft(t), "number_history_field")
+	physical := field.Definition.Identity.PhysicalName
+	kernel := mutation.New(app, mutation.MetadataSchemaSource{})
+	recordID := "numberhistory01"
+	for _, step := range []struct {
+		key       string
+		operation mutation.Operation
+	}{
+		{"number-history-insert", mutation.Operation{Kind: mutation.OperationInsert, RecordID: &recordID, Values: map[string]any{}}},
+		{"number-history-delete", mutation.Operation{Kind: mutation.OperationDelete, RecordID: &recordID}},
+	} {
+		if _, err := kernel.Apply(ctx, mutationRequest(table.TableID, field.SchemaRevision, step.key, step.operation)); err != nil {
+			t.Fatalf("%s: %v", step.key, err)
+		}
+	}
+	target, err := app.FindFirstRecordByFilter("vibetable_audit_events", "request_id='req-number-history-delete'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := audit.New(app, kernel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := audit.PreviewParams{TableID: table.TableID, ItemID: recordID, TargetRevision: target.Id, Scope: "row"}
+	preview, err := service.PreviewRestore(ctx, params)
+	if err != nil || !preview.CanApply || len(preview.Restorable) != 0 {
+		t.Fatalf("generated-only deleted whole row preview: %#v %v", preview, err)
+	}
+	conflictPreview, err := service.PreviewRestore(ctx, params)
+	if err != nil || !conflictPreview.CanApply {
+		t.Fatalf("second deleted preview: %#v %v", conflictPreview, err)
+	}
+	requireRejected := func(preview audit.Preview, want string) {
+		t.Helper()
+		_, err := service.ApplyRestore(ctx, audit.ApplyParams{TableID: table.TableID, ItemID: recordID, Token: preview.Token})
+		var failure *audit.Error
+		if !errors.As(err, &failure) || failure.Code != want {
+			t.Fatalf("restore rejection: got %v want %s", err, want)
+		}
+	}
+	for _, scope := range []string{"cell", "row"} {
+		selected := params
+		selected.Scope, selected.Field = scope, &field.FieldID
+		single, err := service.PreviewRestore(ctx, selected)
+		if err != nil || single.CanApply {
+			t.Fatalf("field-specific restore must stay blocked: %#v %v", single, err)
+		}
+		requireRejected(single, "restore_no_fields")
+	}
+	result, err := service.ApplyRestore(ctx, audit.ApplyParams{TableID: table.TableID, ItemID: recordID, Token: preview.Token})
+	if err != nil {
+		t.Fatalf("restore generated-only deleted row: %v", err)
+	}
+	if result.ItemID != recordID || result.Item["id"] != recordID || result.Item[physical] != "HT-000002" || result.NewRevisionID == nil {
+		t.Fatalf("restore did not preserve identity and allocate a fresh number: %#v", result)
+	}
+	record, err := app.FindRecordById(table.PhysicalName, recordID)
+	if err != nil || record.GetString(physical) != "HT-000002" {
+		t.Fatalf("authority stored wrong restored number: %#v %v", record, err)
+	}
+	requireRejected(preview, "restore_token_unknown")
+	requireRejected(conflictPreview, "restore_conflict")
+	unchanged, err := service.PreviewRestore(ctx, params)
+	if err != nil || unchanged.CanApply {
+		t.Fatalf("existing row generated-only patch must stay blocked: %#v %v", unchanged, err)
+	}
+	requireRejected(unchanged, "restore_no_fields")
+	next, err := kernel.Apply(ctx, mutationRequest(table.TableID, field.SchemaRevision, "number-history-next", mutation.Operation{Kind: mutation.OperationInsert, Values: map[string]any{}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextRecord, err := app.FindRecordById(table.PhysicalName, next.AffectedRows[0].RecordID)
+	if err != nil || nextRecord.GetString(physical) != "HT-000003" {
+		t.Fatalf("blocked restores consumed a number: %#v %v", nextRecord, err)
 	}
 }

@@ -70,6 +70,7 @@ type restoreState struct {
 	currentDigest  string
 	patch          map[string]any
 	insert         bool
+	recreateRow    bool
 	scope          string
 	archiveField   string
 	attachments    []attachments.RestorePlan
@@ -397,6 +398,10 @@ func (service *Service) PreviewRestore(
 		tableID: params.TableID, recordID: params.ItemID,
 		targetRevision: params.TargetRevision, schemaRevision: definition.Snapshot.SchemaRevision,
 		currentDigest: currentDigest, patch: storedPatch, insert: !exists,
+		// A deleted whole-row image can recreate identity with generated values only.
+		// Field-scoped previews must never turn an empty patch into a new row.
+		recreateRow: !exists && operation == mutation.OperationDelete &&
+			params.Scope == "row" && fieldName == nil && target["id"] == params.ItemID,
 		scope: params.Scope, archiveField: archiveField,
 		attachments: attachmentPlans, size: patchSize,
 		expiresAt: service.now().UTC().Add(restoreTTL),
@@ -416,7 +421,7 @@ func (service *Service) PreviewRestore(
 		RelationChanges: relationChanges, Diagnostics: diagnostics,
 		Token: token, ExpiresAt: state.expiresAt.Format(time.RFC3339),
 		Scope: params.Scope, Field: params.Field,
-		CanApply:   len(patch) > 0 || len(attachmentPlans) > 0,
+		CanApply:   len(patch) > 0 || len(attachmentPlans) > 0 || state.recreateRow,
 		Restorable: restorable,
 	}, nil
 }
@@ -443,7 +448,7 @@ func (service *Service) applyRestore(ctx context.Context, params ApplyParams, co
 		return RestoreResult{}, err
 	}
 	defer service.discardClaim(params.Token)
-	if len(state.patch) == 0 && len(state.attachments) == 0 {
+	if len(state.patch) == 0 && len(state.attachments) == 0 && !state.recreateRow {
 		return RestoreResult{}, historyError("restore_no_fields", "restore preview has no writable changes", false)
 	}
 	definition, err := service.describe(ctx, state.tableID)
