@@ -1883,6 +1883,13 @@ async function scenario02(page, recorder, _network, runtime) {
   };
   await createComputedView("E2E Computed Grid", "table");
   await createComputedView("E2E Computed Cards", "gallery");
+  // 默认视图按钮含“默认”标签；沿用持久 preset ID，避免完整可访问名称匹配。
+  const computedViews = await rawBridgeRequest(page, "preset.list", { collection: numberUiTableId });
+  const computedGridId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Grid")?.id;
+  const computedCardsId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Cards")?.id;
+  if (!computedGridId || !computedCardsId) throw new Error(`computed presets are unavailable: ${JSON.stringify(computedViews)}`);
+  const computedGridTab = page.getByTestId(`view-tab-${computedGridId}`);
+  const computedCardsTab = page.getByTestId(`view-tab-${computedCardsId}`);
   const waitComputedCard = async formulaText => {
     await waitForGalleryProjection(page, 1);
     await page.waitForFunction(formulaText => {
@@ -1894,8 +1901,7 @@ async function scenario02(page, recorder, _network, runtime) {
   };
   await waitComputedCard("2,469.136");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-cards.png"), fullPage: true });
-  const viewBar = page.getByTestId("data-source-view-bar");
-  await viewBar.getByRole("button", { name: "E2E Computed Grid", exact: true }).click();
+  await computedGridTab.click();
   await waitForVisibleRowCount(page, 1);
   await openFieldSettingsFromHeader(page, uiFormula.physicalName);
   await selectVisibleNOption(page, "number-display-preset", "百分比");
@@ -1903,7 +1909,7 @@ async function scenario02(page, recorder, _network, runtime) {
   await saveNumberSettings();
   await waitAmountCellText("246,913.578%", uiFormula.physicalName);
   await waitForLookupCellText(page, uiLookup.physicalName, "¥1,234.57");
-  await viewBar.getByRole("button", { name: "E2E Computed Cards", exact: true }).click();
+  await computedCardsTab.click();
   await waitComputedCard("246,913.578%");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-percent-cards.png"), fullPage: true });
   const computedDefinitions = async () => Promise.all([uiFormula, uiLookup].map(field =>
@@ -1935,7 +1941,7 @@ async function scenario02(page, recorder, _network, runtime) {
   });
   // 复用 AutoNumber 已执行的真实工作区重开，保留相同字段/记录身份和格式。
   await selectTable(page, "E2E Number Display UI");
-  await page.getByTestId("data-source-view-bar").getByRole("button", { name: "E2E Computed Cards", exact: true }).click();
+  await computedCardsTab.click();
   await waitComputedCard("246,913.578%");
   const reopenedComputedValues = (await uiQuery()).payload;
   const reopenedComputedDefinitions = await computedDefinitions();
