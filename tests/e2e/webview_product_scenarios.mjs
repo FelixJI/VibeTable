@@ -1883,13 +1883,6 @@ async function scenario02(page, recorder, _network, runtime) {
   };
   await createComputedView("E2E Computed Grid", "table");
   await createComputedView("E2E Computed Cards", "gallery");
-  // 默认视图按钮含“默认”标签；沿用持久 preset ID，避免完整可访问名称匹配。
-  const computedViews = await rawBridgeRequest(page, "preset.list", { collection: numberUiTableId });
-  const computedGridId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Grid")?.id;
-  const computedCardsId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Cards")?.id;
-  if (!computedGridId || !computedCardsId) throw new Error(`computed presets are unavailable: ${JSON.stringify(computedViews)}`);
-  const computedGridTab = page.getByTestId(`view-tab-${computedGridId}`);
-  const computedCardsTab = page.getByTestId(`view-tab-${computedCardsId}`);
   const waitComputedCard = async formulaText => {
     await waitForGalleryProjection(page, 1);
     await page.waitForFunction(formulaText => {
@@ -1901,6 +1894,13 @@ async function scenario02(page, recorder, _network, runtime) {
   };
   await waitComputedCard("2,469.136");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-cards.png"), fullPage: true });
+  // 默认视图按钮含“默认”标签；沿用持久 preset ID，避免完整可访问名称匹配。
+  const computedViews = await rawBridgeRequest(page, "preset.list", { collection: numberUiTableId });
+  const computedGridId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Grid")?.id;
+  const computedCardsId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Cards")?.id;
+  if (!computedGridId || !computedCardsId) throw new Error(`computed presets are unavailable: ${JSON.stringify(computedViews)}`);
+  const computedGridTab = page.getByTestId(`view-tab-${computedGridId}`);
+  const computedCardsTab = page.getByTestId(`view-tab-${computedCardsId}`);
   await computedGridTab.click();
   await waitForVisibleRowCount(page, 1);
   await openFieldSettingsFromHeader(page, uiFormula.physicalName);
