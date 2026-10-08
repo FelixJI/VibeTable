@@ -396,7 +396,7 @@ def test_manifest_validation_accepts_custom_view_with_valid_entry() -> None:
         ({}, "compatibility_invalid"),
         ({"minHostVersion": "0.5.1"}, "compatibility_invalid"),
         ({"minHostVersion": "not-semver", "pluginApi": "1.x"}, "compatibility_invalid"),
-        ({"minHostVersion": "0.5.1", "pluginApi": "2.x"}, "version_incompatible"),
+        ({"minHostVersion": "0.5.1", "pluginApi": "3.x"}, "version_incompatible"),
     ],
 )
 def test_validate_compatibility_rejects_invalid(compatibility: Any, code: str) -> None:

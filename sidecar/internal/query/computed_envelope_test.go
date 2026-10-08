@@ -172,3 +172,17 @@ func TestRelationPathUsesDecodedComputedTargetAndHidesPendingTarget(t *testing.T
 		t.Fatalf("pending relation target did not become NULL: %s", compiled.SQL)
 	}
 }
+
+func TestPluginEnvelopePreservationKeepsDefaultScalarDecoding(t *testing.T) {
+	field := FieldDescriptor{ComputedEnvelope: true, ComputedReady: true, Type: FieldTypeJSON}
+	raw := `{"state":"ready","value":{"state":"domain state"},"version":{"definitionVersion":1,"sourceDataRevision":1,"dependencyWatermark":"authority"}}`
+	value := decodeFieldValue(raw, field).(map[string]any)
+	if value["state"] != "domain state" {
+		t.Fatalf("ordinary product changed=%#v", value)
+	}
+	field.PreserveComputedEnvelope = true
+	envelope := decodeFieldValue(raw, field).(map[string]any)
+	if envelope["state"] != "ready" || envelope["value"].(map[string]any)["state"] != "domain state" {
+		t.Fatalf("preserved envelope=%#v", envelope)
+	}
+}
