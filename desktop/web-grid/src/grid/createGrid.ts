@@ -37,8 +37,7 @@ import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
 import { formatFormulaDisplayValue, formulaStateLabel } from "./computedValueDisplay";
-import type { DisplaySpec } from "@/contracts/generated/schemaV2";
-import { formatNumberDisplay } from "@/number/numberDisplay";
+import { formatFieldDisplay, enumDisplayParts, progressDisplay } from "./commonFieldDisplay";
 import { getLocale, t } from "@/i18n";
 
 /**
@@ -435,7 +434,7 @@ function toColumnDef(
       if (col.display) {
         return {
           ...def,
-          formatter: numericDisplayFormatter(col.display),
+          formatter: commonFieldFormatter(col),
         };
       }
       if (col.dataType === "integer") {
@@ -456,12 +455,12 @@ function toColumnDef(
         },
       };
     case "boolean":
-      return { ...def, formatter: "tickCross" };
+      return { ...def, formatter: commonFieldFormatter(col) };
     case "date":
     case "datetime":
-      return { ...def, formatter: temporalValueFormatter };
+      return { ...def, formatter: col.display ? commonFieldFormatter(col) : temporalValueFormatter };
     case "time":
-      return { ...def, formatter: "plaintext" };
+      return { ...def, formatter: col.display ? commonFieldFormatter(col) : "plaintext" };
     case "json":
       return {
         ...def,
@@ -471,31 +470,48 @@ function toColumnDef(
       };
     case "text":
     default:
-      return { ...def, formatter: "plaintext" };
+      return { ...def, formatter: commonFieldFormatter(col) };
   }
 }
 
-/**
- * Shared numeric cell formatter for scalar number columns. The authoritative
- * column DisplaySpec drives scale/grouping/currency/percent/unit; values that
- * are not finite numbers (null, text, malformed host data) fall back to the
- * previous raw rendering instead of being coerced into a number.
- */
-function numericDisplayFormatter(display: DisplaySpec): GridCellFormatter {
+/** Render the shared display text and safe enum/progress decorations without writing values. */
+function commonFieldFormatter(column: ColumnSchema): GridCellFormatter {
   return (cell) => {
-    const element = document.createElement("span");
-    const formatted = formatNumberDisplay(cell.getValue(), display, getLocale());
-    if (formatted !== null) {
-      element.textContent = formatted;
-      return element;
-    }
     const raw = cell.getValue();
-    if (raw === null || raw === undefined || raw === "") {
-      element.classList.add("vt-cell-empty");
-      element.textContent = "—";
-      return element;
+    const element = document.createElement("span");
+    element.textContent = formatFieldDisplay(raw, column, getLocale());
+    if (raw === null || raw === undefined || raw === "" || (column.display?.kind === "select" && Array.isArray(raw) && raw.length === 0)) { element.className = "vt-cell-empty"; return element; }
+    if (column.display?.kind === "select") {
+      element.textContent = "";
+      for (const [index, part] of enumDisplayParts(raw, column.enumOptions).entries()) {
+        if (index > 0) element.append(document.createTextNode("、"));
+        const tag = document.createElement("span");
+        tag.textContent = part.text;
+        if (part.color) { tag.style.borderBottom = `3px solid ${part.color}`; }
+        tag.style.marginRight = "6px";
+        element.append(tag);
+      }
     }
-    element.textContent = String(raw);
+    const progress = column.display ? progressDisplay(raw, column.display) : null;
+    if (progress) {
+      element.title = progress.outside ? `超出显示范围 · 原值 ${String(raw)}` : String(raw);
+      element.style.background = `linear-gradient(to right, var(--vt-color-primary-100) ${progress.width}%, transparent ${progress.width}%)`;
+      element.style.display = "block";
+      element.dataset.progressOutside = String(progress.outside);
+      if (progress.outside) element.setAttribute("aria-label", `${element.textContent}，超出显示范围`);
+    }
+    if (column.display?.kind === "url" && typeof raw === "string") {
+      try {
+        const url = new URL(raw);
+        if (url.protocol === "http:" || url.protocol === "https:") {
+          const link = document.createElement("a"); link.href = url.href;
+          link.target = "_blank"; link.rel = "noreferrer";
+          link.textContent = element.textContent; link.title = raw;
+          link.addEventListener("click", (event) => event.stopPropagation());
+          element.replaceChildren(link);
+        }
+      } catch { /* malformed values remain safe text */ }
+    }
     return element;
   };
 }

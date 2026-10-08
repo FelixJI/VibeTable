@@ -68,10 +68,27 @@ export function formatNumberDisplay(
 ): string | null {
   if (display === null || display === undefined) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  if (!["", "plain", "number", "integer", "currency", "percent", "unit", "progress", "rating"].includes(display.preset)) return null;
   const numeric = Object.is(value, -0) ? 0 : value;
   const { min, max } = fractionDigits(display);
   const grouping: boolean = display.useGrouping === true;
   try {
+    if (display.preset === "rating") {
+      const maximum = display.ratingMax ?? 5;
+      if (!Number.isInteger(maximum) || maximum < 1 || maximum > 10
+        || !Number.isInteger(numeric) || numeric < 0 || numeric > maximum) return null;
+      return `${"★".repeat(numeric)}${"☆".repeat(maximum - numeric)} ${numeric}/${maximum}`;
+    }
+    if (display.preset === "progress") {
+      if (display.percentStorage !== "ratio") return null;
+      const start = display.progressStart ?? 0;
+      const target = display.progressTarget ?? 1;
+      if (!Number.isFinite(start) || !Number.isFinite(target) || start >= target) return null;
+      if (!Number.isFinite(target - start)) return null;
+      const ratio = numeric;
+      return cachedFormatter(locale, { style: "percent", minimumFractionDigits: min,
+        maximumFractionDigits: max, useGrouping: grouping }).format(ratio);
+    }
     if (display.preset === "percent") {
       // Both storages render through Intl percent styling so spacing and sign
       // position stay locale-correct. percent storage means the stored figure

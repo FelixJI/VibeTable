@@ -129,6 +129,8 @@ export interface ColumnSchema {
 	readonly filterInput?: "text" | "number" | "boolean" | "date" | "dateTime" | "time" | "select" | "multiSelect" | "relation";
 	/** Closed enum options published by SchemaCore for select-like fields. */
 	readonly filterOptions?: readonly { readonly value: string; readonly label: string }[];
+  /** Canonical options, including retired identities, for display only. */
+  readonly enumOptions?: readonly import("./generated/schemaV2").SelectOption[];
 	/** Authoritative QueryPort grouping support; never inferred in a surface editor. */
 	readonly groupable?: boolean;
 	/** Authoritative aggregate operations accepted for this field. */

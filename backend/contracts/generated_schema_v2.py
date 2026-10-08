@@ -172,6 +172,9 @@ class DisplaySpec(SchemaV2WireModel):
     indent: Literal[0, 2, 4] | None = None
     true_label: str
     false_label: str
+    progress_start: float | None = None
+    progress_target: float | None = None
+    rating_max: Annotated[int, Field(ge=1, le=10)] | None = None
 
 
 class SelectOption(SchemaV2WireModel):

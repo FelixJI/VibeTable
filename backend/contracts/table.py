@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-from backend.contracts.generated_schema_v2 import DisplaySpec
+from backend.contracts.generated_schema_v2 import DisplaySpec, SelectOption
 
 FilterOperator = Literal[
     "eq",
@@ -92,4 +92,5 @@ class ColumnSchema(CamelModel):
     # columns. Pure presentation: editors, sorting, filters and exports keep
     # consuming the raw value.
     display: DisplaySpec | None = None
+    enum_options: list[SelectOption] | None = None
     filter_operators: list[FilterOperator] = Field(default_factory=list)

@@ -42,7 +42,8 @@ func TestCompilerStoresStableSelectOptionIDsInsteadOfLabels(t *testing.T) {
 	definition := validNumberDefinition()
 	definition.LogicalType = v2.LogicalSelect
 	definition.Storage.Kind = v2.StorageSelect
-	definition.Display.Kind = v2.DisplaySelect
+	recommended, _ := v2.RecommendedDefaults(v2.LogicalSelect)
+	definition.Display = recommended.Display
 	one := 1
 	definition.Constraints.Selection.Max = &one
 	definition.Select = &v2.SelectSpec{Options: []v2.SelectOption{
