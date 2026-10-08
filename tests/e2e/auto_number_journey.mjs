@@ -7,7 +7,7 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   const { createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
-    waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
+    waitForCapturedBridgeMessage, insertRowFromToolbar,
     applyV2FieldChange, chooseToolbarMore, parseCsv } = ports;
   const populated = await createSimpleTable(page, "E2E AutoNumber Backfill", "Title");
   await applyProductMutation(page, populated.tableId, Array.from({ length: 3 }, () => ({
@@ -119,11 +119,20 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
         && original[field.identity.physicalName] === row[field.identity.physicalName])), { renamed, afterRename });
   const highest = rows.payload.rows.find(row => row[field.identity.physicalName] === "HT-000004");
   await applyProductMutation(page, tableId, [{ kind: "delete", recordId: highest.id }], "number-delete-highest");
-  const override = await applyProductMutation(page, tableId, [{ kind: "update", recordId: rows.payload.rows[0].id,
+  const remaining = rows.payload.rows.filter(row => row.id !== highest.id);
+  const override = await applyProductMutation(page, tableId, [{ kind: "update", recordId: remaining[0].id,
     values: { [field.identity.physicalName]: "HT-999999" } }], "number-override", true);
   recorder.check("manual numbering override is rejected at the authority boundary",
-    override.type === "operation.failed", { override });
-  await acknowledgeExpectedBridgeFailure(page, override);
+    override.type === "mutation.apply"
+      && override.payload?.error?.code === "mutation.field.read_only"
+      && override.payload?.error?.details?.fieldId === field.identity.fieldId
+      && override.payload?.error?.retryable === false, { override });
+  const afterOverride = await rawBridgeRequest(page, "query.page", { tableId, query });
+  recorder.check("the rejected override leaves every authoritative number untouched",
+    afterOverride.payload.rows.length === remaining.length
+      && afterOverride.payload.rows.every(row => remaining.some(original => original.id === row.id
+        && original[field.identity.physicalName] === row[field.identity.physicalName])),
+    { afterOverride });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "02-auto-number-readonly.png"), fullPage: true });
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await openWorkspaceCenterFromSwitcher(page);

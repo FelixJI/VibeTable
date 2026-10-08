@@ -4785,7 +4785,11 @@ def test_auto_number_journey_is_bound_to_schema_scenario_runtime_and_restore_bou
     ]
     assert 'getByTestId("field-display-name").waitFor' in create_table
     journey = runner.NODE_RUNNER.with_name("auto_number_journey.mjs").read_text(encoding="utf-8")
-    assert "await acknowledgeExpectedBridgeFailure(page, override)" in journey
+    assert 'override.type === "mutation.apply"' in journey
+    assert 'override.payload?.error?.code === "mutation.field.read_only"' in journey
+    # 领域型拒绝在请求类型 envelope 内返回 payload.error，不进入 operation.failed
+    # 台账；对它调用 acknowledgeExpectedBridgeFailure 会在真实运行时抛错。
+    assert "await acknowledgeExpectedBridgeFailure(page, override)" not in journey
     assert "await insertRowFromToolbar(page)" in journey
     assert 'getByTestId("grid-add-first-row").click()' in journey
     backup = source[
