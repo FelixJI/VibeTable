@@ -1,6 +1,6 @@
 import path from "node:path";
 
-/** Real WPF/WebView2 settings path; only the existing scenario 02 owns dispatch. */
+/** Real WPF/WebView2 settings journey for the common field display families (scenario 45). */
 export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps) {
   const { createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable,
     applyProductMutation, rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture,
@@ -138,7 +138,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   recorder.check("rich text is a bounded inert summary and multi-select original order remains canonical",
     !await page.evaluate(() => window.__fieldDisplayExecuted === true)
       && (await query()).payload.rows.every(row => JSON.stringify(row[choices.physicalName]) === JSON.stringify([manyIds[1], manyIds[0]])), {});
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-common-field-display.png"), fullPage: true });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display.png"), fullPage: true });
   const originalSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await openWorkspaceCenterFromSwitcher(page);
   const closed = await replicaUiMethod(page, recorder, "workspace.close", () => page.getByTestId("workspace-center").getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
@@ -152,7 +152,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
       && reopened.payload.session.sessionEpoch > originalSession.sessionEpoch
       && restored.payload.definition.display.progressStart === 1 && restored.payload.definition.display.progressTarget === 2
       && (await query()).payload.rows.some(row => row[progress.physicalName] === 1.5), { reopened, restored });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-common-field-display-reopened.png"), fullPage: true });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-reopened.png"), fullPage: true });
   // Current-format Snapshot captures the canonical display JSON, then real
   // restore must recover it after a visible settings change.
   await page.getByTestId("nav-settings").click();
@@ -179,7 +179,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
     restoredBootstrap.payload.session.sessionEpoch > sourceEpoch
       && snapshotDisplay.progressStart === 1 && snapshotDisplay.progressTarget === 2
       && (await query()).payload.rows.some(row => row[progress.physicalName] === 1.5), { snapshotId, restoredBootstrap, snapshotDisplay });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-common-field-display-restored.png"), fullPage: true });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-restored.png"), fullPage: true });
   // New Gallery views inherit the current visible fields; select the tested summaries.
   await page.getByTestId("view-hidden-trigger").click();
   await page.getByTestId("view-hidden-hide-filtered").click();
@@ -196,6 +196,8 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await page.getByTestId("view-kind-gallery").click();
   await selectVisibleNOption(page, "view-gallery-title-field", "电话");
   await page.getByTestId("view-dialog-confirm").click();
+  // Wait out the create-view dialog exit animation so the cards screenshot keeps the settled gallery.
+  await galleryDialog.waitFor({ state: "hidden", timeout: 30_000 });
   await page.getByTestId("record-gallery-view").waitFor({ state: "visible", timeout: 30_000 });
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="gallery-card"]').length === 6);
   // Wait for the selected summaries to render before capturing the cards.
@@ -207,6 +209,6 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   recorder.check("real record cards share progress and rating display with the grid after snapshot restore",
     cards.some(text => text.includes("150%")) && cards.some(text => text.includes("☆☆☆☆☆ 0/5"))
       && cards.some(text => text.includes("★★★★★ 5/5")) && cards.every(text => text.includes("+86 010-0012 ext.03")), { cards });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-common-field-display-cards.png"), fullPage: true });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-cards.png"), fullPage: true });
 
 }

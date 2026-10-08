@@ -20,7 +20,7 @@
 - GitHub run：[main CI 36963790989](https://github.com/FelixJI/VibeTable/actions/runs/36963790989)
 - 报告契约：`contractVersion=2.0`
 - 结果：39/39 passed、0 failed、0 skipped。
-- 当前 manifest gap：4（`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`）。
+- 当前 manifest gap：5（`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：无。
 

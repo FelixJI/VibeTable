@@ -2611,10 +2611,12 @@ SCENARIO_SCREENSHOTS = {
         "02-number-display-fixed.png",
         "02-number-display-currency.png",
         "02-number-display-percent.png",
-        "02-common-field-display.png",
-        "02-common-field-display-reopened.png",
-        "02-common-field-display-restored.png",
-        "02-common-field-display-cards.png",
+    ),
+    "45-common-field-display": (
+        "45-common-field-display.png",
+        "45-common-field-display-reopened.png",
+        "45-common-field-display-restored.png",
+        "45-common-field-display-cards.png",
     ),
     "35-data-io-interoperability": (
         "35-import-management-history.png",

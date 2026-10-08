@@ -1728,11 +1728,6 @@ async function scenario02(page, recorder, _network, runtime) {
   // 全部 ordinary 业务（含分组 UI 旅程）完成后、首次导出前：同一闭合契约的
   // zero-worker 断言仍在 scenario02 流内执行；02 因刻意唤醒 Python 不再列入
   // ORDINARY_WORKER_FREE_SCENARIOS 的公共 dispatch 断言（集合注释的既定规则）。
-  await runCommonFieldDisplayJourney(page, recorder, runtime, {
-    createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
-    rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
-    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
-  });
   await verifyQueryViewGroupingUI(page, recorder);
   await assertOrdinaryWorkerFreeTopology(recorder, runtime, "02-all-field-schema");
 
@@ -5492,6 +5487,7 @@ const ORDINARY_WORKER_FREE_SCENARIOS = new Set([
   "05-formula-lifecycle",
   "06-relation-fanout",
   "08-stale-conflict",
+  "45-common-field-display",
 ]);
 
 // One closed-set topology observation at the common dispatch entry: after a
@@ -11950,6 +11946,16 @@ async function scenario36(page, recorder, _network, runtime) {
   });
 }
 
+// 独立预算避免完整字段旅程与 S02 叠加超时。
+async function scenario45(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await runCommonFieldDisplayJourney(page, recorder, runtime, {
+    createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
+    rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -12050,6 +12056,7 @@ const scenarios = {
   "44-file-restore-crash": () => {
     throw new Error("Restore crash requires the owned seed and normal cold-Host resume phases");
   },
+  "45-common-field-display": scenario45,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

@@ -1751,6 +1751,7 @@ def test_capability_selection_drives_the_release_smoke_subset() -> None:
         "02-all-field-schema",
         "08-stale-conflict",
         "16-dashboard-lifecycle",
+        "45-common-field-display",
     ]
 
 
