@@ -1459,12 +1459,12 @@ async function scenario02(page, recorder, _network, runtime) {
     });
     return described.payload?.definition?.display ?? null;
   };
-  const waitAmountCellText = async (expectedText) => {
+  const waitAmountCellText = async (expectedText, field = uiAmount.physicalName) => {
     // 金额 formatter 只输出 span 文本（无辅助 DOM），用 trim() 全等断言，
     // 避免子串匹配掩盖残留单位/币符。
     await page.waitForFunction(
       ({ field, expected }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === expected,
-      { field: uiAmount.physicalName, expected: expectedText },
+      { field, expected: expectedText },
       { timeout: 30_000 },
     );
   };
@@ -1475,7 +1475,7 @@ async function scenario02(page, recorder, _network, runtime) {
     await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
     await page.getByTestId("field-display-name").waitFor();
   };
-  const saveAmountSettings = async () => {
+  const saveNumberSettings = async () => {
     await page.getByTestId("field-plan-button").click();
     const planCard = page.getByTestId("field-change-plan");
     await planCard.waitFor({ state: "visible", timeout: 30_000 });
@@ -1522,7 +1522,7 @@ async function scenario02(page, recorder, _network, runtime) {
     (await previewTexts()).join("|") === "1,234.57|12.00",
     { previews: await previewTexts() },
   );
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,234.57");
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "02-number-display-fixed.png"),
@@ -1556,14 +1556,14 @@ async function scenario02(page, recorder, _network, runtime) {
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
   await setDisplayScaleInput(9);
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,234.56789");
   recorder.check("max-9 display persists", await readPersistedScale() === 9, {});
 
   // C) 0 位：四舍五入到整数显示，持久化。
   await openAmountSettings();
   await setDisplayScaleInput(0);
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,235");
   recorder.check("scale-0 display persists", await readPersistedScale() === 0, {});
 
@@ -1571,14 +1571,14 @@ async function scenario02(page, recorder, _network, runtime) {
   await openAmountSettings();
   await setDisplayScaleInput(2);
   await page.getByTestId("number-display-grouping").click();
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1234.57");
 
   // E) 货币预设：币符附着并持久化（重新打开千分位）。
   await openAmountSettings();
   await page.getByTestId("number-display-grouping").click();
   await selectVisibleNOption(page, "number-display-preset", "货币");
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("¥1,234.57");
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "02-number-display-currency.png"),
@@ -1597,14 +1597,14 @@ async function scenario02(page, recorder, _network, runtime) {
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-preset", "单位");
   await fillNInput(page, "number-display-unit", "kg");
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,234.57kg");
 
   // G) 百分比：ratio 0.125 与 percent 12.5 同显 12.5%，编辑/粘贴/重开不改原值。
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-preset", "百分比");
   await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
-  await saveAmountSettings();
+  await saveNumberSettings();
   const percentEdit = await beginCellEdit(
     page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
   );
@@ -1618,7 +1618,7 @@ async function scenario02(page, recorder, _network, runtime) {
   await waitAmountCellText("12.5%");
   await openAmountSettings();
   await selectVisibleNOption(page, "number-display-percent-storage", "百分数（12.5 显示 12.5%）");
-  await saveAmountSettings();
+  await saveNumberSettings();
   // 切换存储解释后、编辑前：原值仍是 0.125，显示语义从不缩放已存值。
   const rawBeforePercentEdit = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
   recorder.check(
@@ -1683,7 +1683,7 @@ async function scenario02(page, recorder, _network, runtime) {
   await selectVisibleNOption(page, "number-display-preset", "数字");
   await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
   await setDisplayScaleInput(5);
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,234.56789");
   const formulaAtScale5 = await waitFormulaRawValue();
   await page.waitForFunction(
@@ -1693,12 +1693,12 @@ async function scenario02(page, recorder, _network, runtime) {
   );
   await openAmountSettings();
   await setDisplayScaleInput(2);
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,234.57");
   const formulaAtScale2 = await waitFormulaRawValue();
   await openAmountSettings();
   await setDisplayScaleInput(5);
-  await saveAmountSettings();
+  await saveNumberSettings();
   await waitAmountCellText("1,234.56789");
   const formulaBackAtScale5 = await waitFormulaRawValue();
   const rawAfterScaleCycle = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
@@ -1714,11 +1714,11 @@ async function scenario02(page, recorder, _network, runtime) {
   // I) 高位持久化：12 与 15 均为有效保存值（重开回读，不逐格截图）。
   await openAmountSettings();
   await setDisplayScaleInput(12);
-  await saveAmountSettings();
+  await saveNumberSettings();
   const scale12Readback = await readPersistedScale();
   await openAmountSettings();
   await setDisplayScaleInput(15);
-  await saveAmountSettings();
+  await saveNumberSettings();
   const scale15Readback = await readPersistedScale();
   recorder.check(
     "displayScale 12 and 15 both persist through the authoritative schema",
@@ -1832,6 +1832,100 @@ async function scenario02(page, recorder, _network, runtime) {
       && countProcessMembers(postExportProcesses.members, "node.exe") === 0,
     { postExportProcesses },
   );
+  // GAC1：复用同一原值与 Formula，Lookup 只读本表金额，不新增记录或重开。
+  const uiLookup = await createV2Field(page, numberUiTableId, "金额列表", "lookup", draft => {
+    draft.lookup = {
+      path: [], targetFieldId: uiAmount.fieldId, aggregation: "values",
+      condition: { sourceTableId: numberUiTableId, match: "all", distinct: false,
+        rules: [{ sourceFieldId: uiAmount.fieldId, operator: "eq",
+          operand: { kind: "field", fieldId: uiAmount.fieldId } }] },
+    };
+    return draft;
+  });
+  await waitForQueryPage(page, {
+    tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, payload => payload?.rows?.[0]?.[uiFormula.physicalName] === 2469.13578
+    && isDeepStrictEqual(payload?.rows?.[0]?.[uiLookup.physicalName], [1234.56789]));
+  const beforeComputedDisplay = (await uiQuery()).payload;
+  await chooseToolbarMore(page, "refresh");
+  await waitForVisibleRowCount(page, 1);
+  await openFieldSettingsFromHeader(page, uiFormula.physicalName);
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await setDisplayScaleInput(3);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  await saveNumberSettings();
+  await waitAmountCellText("2,469.136", uiFormula.physicalName);
+  await openFieldSettingsFromHeader(page, uiLookup.physicalName);
+  await page.getByTestId("number-display-preset").waitFor({ state: "visible" });
+  await selectVisibleNOption(page, "number-display-preset", "货币");
+  await setDisplayScaleInput(2);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  await saveNumberSettings();
+  await waitForLookupCellText(page, uiLookup.physicalName, "¥1,234.57");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-grid.png"), fullPage: true });
+  // 卡片只展示两个被验证的计算字段，避免前三个摘要字段截断 Lookup。
+  await page.getByTestId("view-hidden-trigger").click();
+  await page.getByTestId("view-hidden-hide-filtered").click();
+  for (const label of ["翻倍", "金额列表"]) {
+    await page.getByTestId("view-hidden-search").locator("input").fill(label);
+    await page.getByTestId("view-hidden-show-filtered").click();
+  }
+  await page.getByTestId("view-hidden-search").locator("input").fill("");
+  await page.getByTestId("view-hidden-apply").click();
+  const createComputedView = async (name, kind) => {
+    await page.getByTestId("view-create").click();
+    const dialog = page.locator(".view-dialog:visible");
+    await dialog.waitFor();
+    await dialog.locator(".n-input input").fill(name);
+    await page.getByTestId(`view-kind-${kind}`).click();
+    await page.getByTestId("view-dialog-confirm").click();
+    await dialog.waitFor({ state: "hidden" });
+  };
+  await createComputedView("E2E Computed Grid", "table");
+  await createComputedView("E2E Computed Cards", "gallery");
+  const waitComputedCard = async formulaText => {
+    await waitForGalleryProjection(page, 1);
+    await page.waitForFunction(formulaText => {
+      const card = document.querySelector('[data-testid="gallery-card"]');
+      const values = [...(card?.querySelectorAll("dd") ?? [])].map(node => node.textContent.trim());
+      return values.length === 2 && values.includes(formulaText) && values.includes("¥1,234.57");
+    }, formulaText, { timeout: 30_000 });
+    recorder.check(`computed card shares exact grid display: ${formulaText} and ¥1,234.57`, true);
+  };
+  await waitComputedCard("2,469.136");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-cards.png"), fullPage: true });
+  const viewBar = page.getByTestId("data-source-view-bar");
+  await viewBar.getByRole("button", { name: "E2E Computed Grid", exact: true }).click();
+  await waitForVisibleRowCount(page, 1);
+  await openFieldSettingsFromHeader(page, uiFormula.physicalName);
+  await selectVisibleNOption(page, "number-display-preset", "百分比");
+  await selectVisibleNOption(page, "number-display-percent-storage", "小数（0.125 显示 12.5%）");
+  await saveNumberSettings();
+  await waitAmountCellText("246,913.578%", uiFormula.physicalName);
+  await waitForLookupCellText(page, uiLookup.physicalName, "¥1,234.57");
+  await viewBar.getByRole("button", { name: "E2E Computed Cards", exact: true }).click();
+  await waitComputedCard("246,913.578%");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-percent-cards.png"), fullPage: true });
+  const computedDefinitions = async () => Promise.all([uiFormula, uiLookup].map(field =>
+    rawBridgeRequest(page, "field.settings.describe", { tableId: numberUiTableId, fieldId: field.fieldId })));
+  const savedComputedDefinitions = await computedDefinitions();
+  const savedComputedValues = (await uiQuery()).payload;
+  recorder.check("computed display-only settings preserve raw Formula, numeric Lookup list, record ID and business revision",
+    savedComputedValues.rows[0].id === beforeComputedDisplay.rows[0].id
+      && savedComputedValues.rows[0][uiAmount.physicalName] === 1234.56789
+      && savedComputedValues.rows[0][uiFormula.physicalName] === 2469.13578
+      && isDeepStrictEqual(savedComputedValues.rows[0][uiLookup.physicalName], [1234.56789])
+      && savedComputedValues.snapshot.dataRevision === beforeComputedDisplay.snapshot.dataRevision
+      && savedComputedDefinitions[0].payload.definition.display.preset === "percent"
+      && savedComputedDefinitions[0].payload.definition.display.percentStorage === "ratio"
+      && savedComputedDefinitions[0].payload.definition.display.displayScale === 3
+      && savedComputedDefinitions[0].payload.definition.display.scaleMode === "fixed"
+      && savedComputedDefinitions[1].payload.definition.display.preset === "currency"
+      && savedComputedDefinitions[1].payload.definition.display.currency === "CNY"
+      && savedComputedDefinitions[1].payload.definition.display.displayScale === 2
+      && savedComputedDefinitions[1].payload.definition.display.scaleMode === "fixed",
+    { savedComputedValues, savedComputedDefinitions });
+  const computedSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await runAutoNumberJourney(page, recorder, runtime, {
     createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
@@ -1839,6 +1933,22 @@ async function scenario02(page, recorder, _network, runtime) {
     waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
     applyV2FieldChange, chooseToolbarMore, parseCsv,
   });
+  // 复用 AutoNumber 已执行的真实工作区重开，保留相同字段/记录身份和格式。
+  await selectTable(page, "E2E Number Display UI");
+  await page.getByTestId("data-source-view-bar").getByRole("button", { name: "E2E Computed Cards", exact: true }).click();
+  await waitComputedCard("246,913.578%");
+  const reopenedComputedValues = (await uiQuery()).payload;
+  const reopenedComputedDefinitions = await computedDefinitions();
+  const reopenedComputedSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  recorder.check("real offline reopen keeps computed displays, raw values and field identities without recomputing business data",
+    reopenedComputedSession.workspaceId === computedSession.workspaceId
+      && reopenedComputedSession.sessionEpoch > computedSession.sessionEpoch
+      && isDeepStrictEqual(reopenedComputedValues.rows, savedComputedValues.rows)
+      && reopenedComputedValues.snapshot.dataRevision === savedComputedValues.snapshot.dataRevision
+      && reopenedComputedDefinitions.every((item, index) =>
+        isDeepStrictEqual(item.payload.definition, savedComputedDefinitions[index].payload.definition)),
+    { reopenedComputedValues, reopenedComputedDefinitions, reopenedComputedSession });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-reopened.png"), fullPage: true });
   return;
 }
 
@@ -3864,8 +3974,13 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
       await candidates.filter({ hasText: "CT-001" }).count() === 1);
   }
   await candidates.filter({ hasText: "CT-001" }).click();
-  await panel.locator(".relation-editor__token").filter({ hasText: "城轨一期" }).waitFor();
-  await panel.getByRole("button", { name: /^(应用 1 项|Apply 1 items)$/u }).click();
+  await candidates.filter({ hasText: "CT-002" }).click();
+  const sameNameTokens = panel.locator(".relation-editor__token");
+  recorder.check("same-name contract candidates select two distinct IDs disambiguated by their codes",
+    await sameNameTokens.count() === 2
+      && await sameNameTokens.filter({ hasText: "CT-001" }).getAttribute("title") === `${contracts.tableId} · ${firstId}`
+      && await sameNameTokens.filter({ hasText: "CT-002" }).getAttribute("title") === `${contracts.tableId} · ${secondId}`);
+  await panel.getByRole("button", { name: /^(应用 2 项|Apply 2 items)$/u }).click();
   await panel.waitFor({ state: "hidden" });
   const waitLabels = async expected => page.waitForFunction(({ field, codeField, expected }) =>
     document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)?.textContent === expected
@@ -3873,8 +3988,8 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   { field: byName.physicalName, codeField: byCode.physicalName, expected });
   await waitLabels("城轨一期");
   const committed = await read(lines.tableId);
-  recorder.check("two relations to one contract keep separate configured labels and stable IDs",
-    JSON.stringify(committed.rows[0][byName.physicalName]) === JSON.stringify([firstId])
+  recorder.check("committing same-name contracts keeps both original IDs and the independent code relation",
+    JSON.stringify(committed.rows[0][byName.physicalName]) === JSON.stringify([firstId, secondId])
       && committed.rows[0][byCode.physicalName] === firstId);
   await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-grid.png"), fullPage: true });
   await cell.dblclick();
@@ -3888,8 +4003,8 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   }], "contract-case-rename");
   if (renamed.payload?.status !== "applied") throw new Error("contract rename failed");
   await panel.locator(".relation-editor__token").filter({ hasText: "城轨一期更新" }).waitFor();
-  recorder.check("target rename refreshes selected outside search and retains uncommitted second selection",
-    await panel.locator(".relation-editor__token").count() === 2 && await search.inputValue() === "CT-002");
+  recorder.check("target rename refreshes selected outside search while keeping the uncommitted second removal",
+    await panel.locator(".relation-editor__token").count() === 1 && await search.inputValue() === "CT-002");
   await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-picker-refresh.png"), fullPage: true });
   await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
   await panel.waitFor({ state: "hidden" });
@@ -3898,7 +4013,7 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   recorder.check("label refresh and cancelled draft preserve source value, digest and data revision",
     afterRename.rows[0].__vibetableDigest === committed.rows[0].__vibetableDigest
       && afterRename.snapshot.dataRevision === committed.snapshot.dataRevision
-      && JSON.stringify(afterRename.rows[0][byName.physicalName]) === JSON.stringify([firstId]));
+      && JSON.stringify(afterRename.rows[0][byName.physicalName]) === JSON.stringify([firstId, secondId]));
   const pairBefore = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
   await openRelationPairEditor(page, byName.physicalName, pairBefore[1].definition.displayName);
   await selectVisibleNOption(page, "relation-target-display-field", "合同编号");
@@ -3932,6 +4047,13 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   recorder.check("contract card shares configured name and independent code with the grid",
     (await card.innerText()).includes("CT-001") && !(await card.innerText()).includes(firstId));
   await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-cards.png"), fullPage: true });
+  // 两个合同在真实重开时仍同名，避免改名后的不同标签掩盖按名称合并的回归。
+  const secondTarget = (await read(contracts.tableId)).rows.find(row => row.id === secondId);
+  const sameNameAgain = await applyProductMutation(page, contracts.tableId, [{
+    kind: "update", recordId: secondId, values: { [name.physicalName]: "城轨一期更新" },
+    expectedDigest: secondTarget.__vibetableDigest,
+  }], "contract-case-same-name-reopen");
+  if (sameNameAgain.payload?.status !== "applied") throw new Error("contract same-name reopen fixture failed");
   const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
   await openWorkspaceCenterFromSwitcher(page);
   const closed = await replicaUiMethod(page, recorder, "workspace.close", () => page.getByTestId("workspace-center")
@@ -3943,13 +4065,14 @@ async function relationContractDisplayJourney(page, recorder, runtime) {
   await selectTable(page, "合同明细案例");
   const persisted = await read(lines.tableId);
   const savedPair = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
-  recorder.check("offline reopen keeps contract IDs, independent display settings and renamed values in a fresh epoch",
+  const reopenedContracts = await read(contracts.tableId);
+  recorder.check("offline reopen keeps both same-name contract IDs distinct, independent displays and renamed values in a fresh epoch",
     reopened.payload.session.workspaceId === session.workspaceId && reopened.payload.session.sessionEpoch > session.sessionEpoch
-      && JSON.stringify(persisted.rows[0][byName.physicalName]) === JSON.stringify([firstId])
+      && JSON.stringify(persisted.rows[0][byName.physicalName]) === JSON.stringify([firstId, secondId])
       && persisted.rows[0][byCode.physicalName] === firstId
       && savedPair[0].definition.relation.displayFieldId === name.fieldId
       && savedPair[1].definition.relation.displayFieldId === pairBefore[1].definition.relation.displayFieldId
-      && (await read(contracts.tableId)).rows.find(row => row.id === firstId)?.[name.physicalName] === "城轨一期更新");
+      && [firstId, secondId].every(id => reopenedContracts.rows.find(row => row.id === id)?.[name.physicalName] === "城轨一期更新"));
   await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
   await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-offline-reopened.png"), fullPage: true });
 }
