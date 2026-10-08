@@ -1234,7 +1234,9 @@ async function scenario02(page, recorder, _network, runtime) {
     true,
   );
 
-  // 准确恢复共享旅程的原值与默认显示，避免污染后续既有断言。
+  // 以下原始 bridge 修改从恢复数字配置开始。先切离可见网格，避免
+  // schema apply 与尚未刷新上下文的 Lookup 读取并发；保留所有错误断言。
+  await selectTable(page, "E2E Relation Target V2");
   const amountRestore = await applyV2FieldChange(
     page,
     tableId,
@@ -1265,11 +1267,6 @@ async function scenario02(page, recorder, _network, runtime) {
     || amountRestore.applied?.type === "operation.failed") {
     throw new Error(`amount restore failed: ${JSON.stringify([amountRestore, amountRestoreSeed])}`);
   }
-
-  // The remaining assertions intentionally mutate this table through raw
-  // bridge requests. Keep the visible grid on a different table so it cannot
-  // issue Lookup reads between an out-of-band schema apply and its UI refresh.
-  await selectTable(page, "E2E Relation Target V2");
 
   const status = created.find((field) => field.definition?.logicalType === "select");
   const draftOption = status.definition.select.options.find((option) => option.label === "Draft");
