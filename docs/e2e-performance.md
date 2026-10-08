@@ -4,7 +4,7 @@
 
 ## 当前 CI 分片
 
-`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作与 S37/S38 公式/计算链旅程；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。两 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复覆盖。
+`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S37–39 公式/计算链与文件组合、S41–44 文件旅程及 S45 常用字段显示旅程；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。两 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复覆盖。
 
 分片调整依据为：
 
@@ -13,6 +13,8 @@
 - resilience 失败样本 run 36792999964（原始失败见 [PR #419](https://github.com/FelixJI/VibeTable/pull/419#issuecomment-5922504924)）：同为 33 场，01–37 已计约 1665.3 秒，机器时长增量累积耗尽余量，S38 执行中被 1800 秒外层预算终止。
 
 因此将 S37/S38 迁入原仅 4 场、约 8 分钟的 `data-io` 分片。以下已发布样本的分片数量与路径保留其原时点事实。
+
+[PR459 的 CI run 37741159454](https://github.com/FelixJI/VibeTable/actions/runs/37741159454)（source `f8606322`）中，`product-e2e` 前 32 场累计约 1715.1 秒，S45 的业务结果与四份截图已完成，但 Host 收尾时被该 stage 的 1800 秒外层预算终止，聚合报告仍为 32/33。相同候选的 `data-io` 11 场全部通过、累计约 1156.4 秒，prepare 中 S45 完整运行约 86.1 秒。因此把完整 S45 分配到既有 `data-io` 分片，当前两分区为 32/12 场；保留 `release.smoke` 预合并旅程、全部断言、截图、零 Worker 门禁与两 stage 的原预算。该分配仍需后续完整 CI 验证，不把本次被截断报告视为通过。
 
 ## 当前产品 E2E 证据
 

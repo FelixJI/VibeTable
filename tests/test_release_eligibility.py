@@ -132,6 +132,7 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
         "42-file-document-native-operations",
         "43-file-revision-leaves",
         "44-file-restore-crash",
+        "45-common-field-display",
     }
 
 

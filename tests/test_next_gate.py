@@ -319,6 +319,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "42-file-document-native-operations",
         "43-file-revision-leaves",
         "44-file-restore-crash",
+        "45-common-field-display",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
