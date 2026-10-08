@@ -903,6 +903,9 @@ func decodeFieldValue(value any, field FieldDescriptor) any {
 		}
 		if envelope, ok := value.(map[string]any); ok {
 			if envelope["state"] == "ready" {
+				if field.PreserveComputedEnvelope {
+					return envelope
+				}
 				return envelope["value"]
 			}
 			return map[string]any{

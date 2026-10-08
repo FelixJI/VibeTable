@@ -14,13 +14,13 @@ MutationPlan 请求修改；由 Host 展示最终确认后交给 Go 提交。Wor
 - 包解析与完整性契约：`backend/infrastructure/plugin_package.py`
 - 可运行示例：`examples/plugins/data-overview/`、`examples/plugins/normalize-text/`
 
-当前 1.x SDK 标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
+当前 SDK 支持 Plugin API 1.x/2.x，包标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
 外部插件仓库不得声明一个并不存在的 npm 版本；应在 CI 中 checkout 明确的 VibeTable commit，
 并用该 commit 的 SDK/CLI 完成最终 validate/build/pack。固定 commit 需要由插件维护者显式更新，
 这样一次 Release 的包契约不会随 `main` 漂移。
 
 Host 产品版本取唯一版本源 `backend/_version.py`；SDK 的 `1.0.0` 和 manifest 的
-`pluginApi: "1.x"` 是不同的版本边界。示例当前 `minHostVersion: "0.5.1"`，不要求不存在的
+`pluginApi: "1.x"` / `"2.x"` 是不同的版本边界。示例当前 `minHostVersion: "0.5.1"`，不要求不存在的
 Host 1.0。该最低版本号不承诺已发布的 0.5.1 包实现本分支新增合同；新增 rowGuards /
 expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 Host 配套验证。本 Task
 不升级产品版本、不发版。使用仓库锁定的 Python、Node/npm；Python 环境通过 `uv sync --frozen --group dev
@@ -229,3 +229,41 @@ WebView。远程包下载后仍使用与本地 `.vtplugin` 相同的“检查计
 [FelixJI/VibeTable-WeRead-Notes-Dashboard](https://github.com/FelixJI/VibeTable-WeRead-Notes-Dashboard)。
 它展示了最小权限 manifest、独立 lock、聚焦测试、固定 VibeTable commit 的 CI，以及只把
 `.vtplugin` 上传到正式 GitHub Release 的交付方式。
+
+
+## Plugin API v2 受控读取
+
+新插件声明 `compatibility.pluginApi: "2.x"`，同一 data grant 的 operations 同时声明 `read`、`query`。旧版 `1.x` 的 `data.read` 继续使用物理字段、空 filter 和原有分页契约；非空 filter 仍明确拒绝。旧 Host 会拒绝 v2 包，不能静默降级。
+
+先调用 `data.describe({ accepts: ["vibetable.plugin-data.v2"] })` 查看授权表，再传 `collection` 查看授权字段。查询使用返回的稳定 `fieldId`。元数据包含 logicalType、resultType、resultElementType、readonly、nullable、display、options、constraints、filterOperators、sortable；不返回公式源码、lookup 路径或 relation 目标字段。
+
+```ts
+const description = await capabilities.data.describe({
+  accepts: ["vibetable.plugin-data.v2"], collection,
+});
+const request = { contract: "vibetable.plugin-query.v2" as const, collection,
+  fields: ["id", fieldId], filters: [{ field: fieldId, operator: "gte" as const, value: 0 }],
+  sorts: [{ field: fieldId, direction: "asc" as const }], pageSize: 200 };
+let cursor: string | undefined;
+do {
+  const page = await capabilities.data.query(cursor ? { ...request, cursor } : request);
+  // items 保留原始 ID、0、false、null；不要用 truthy 判断缺值。
+  consume(page.items);
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+```
+
+每个投影、筛选、排序字段都需授权；`ids` 需授权 `id`，最多 200 个。单页 1–200 条，默认 100；未知参数、raw SQL、关系路径、keyword/RPC 均不接受。筛选直接使用 Go QueryPort 的 operators：text 的 eq/ne/in/contains/starts_with/ends_with；number/date 的 eq/ne/in/gt/lt/gte/lte/between；bool/relation 的 eq/ne/in；select 的 eq/ne/in、multiSelect 的 contains；JSON 的 contains。普通字段均支持 is_null/is_not_null。实际字段能力以元数据为准。首版 text/number/bool/date 可稳定排序；select/relation/JSON/computed 不支持排序。
+
+Formula/lookup 首版可投影、不可筛选和排序，结果为 `{state,value,fresh}`。非 fresh 时 value 为 null，page.complete 为 false；不会返回旧计算值和内部 diagnostic。关联字段返回原始关联 ID（多关联返回 ID 数组），不展开未授权目标表的标签。
+
+游标是执行内随机、单次句柄；继续页必须保留相同 query。另一次 run、查询变化、workspace/session、安装修订或 schema/data/computed dependency 变化会失败，调用方应开始新查询。沿用执行超时、取消、64 次能力调用和 1 MiB 消息预算，不保证无限大表能在一次执行中完成。
+
+Go 在同一读取事务中读取 pluginstore 的 installation/status/grants/revision 并执行查询；BFF 只传 Host 可信 projectKey/sessionEpoch，插件不能传 scope。闭合 REST `/api/vibetable/v2/plugins/data` 只由 Host 的已鉴权会话使用，没有 renderer RPC 注册。
+
+离线测试显式配置 `pluginApi: "2.x"`、Go 元数据 fixture 和 `queryAdapter`。adapter 接收闭合请求、返回 synthetic 权威分页结果；offlineHost 不实现另一套筛选引擎。缺少 adapter 明确失败。`data-overview` 示例展示元数据、筛选、稳定排序、全量分页、完整性与进度。
+
+
+v2 错误包括 `plugin_api_unsupported`（未协商/旧插件）、`plugin_read_denied`（授权不足/安装禁用）、`plugin_capability_invalid`（未知键/请求形态）、`plugin_query_limit`（页或ID上限）、`query.operator.unsupported`、`query.cursor.unsupported_sort`、`plugin_query_computed_unsupported`、`plugin_cursor_invalid`（句柄不存在/已消费/请求改变）、`plugin_cursor_stale`（安装或computed依赖修订改变）和 Go 的 `query.cursor_stale`（schema/data/clock变化）。执行取消、超时、总调用数和消息上限继续使用 v1 的 `plugin_cancel_requested` / `plugin_timeout` / `plugin_worker_failed`，不得把失败结果解释为成功全量。
+
+Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capabilities-v2.json`，SDK/offlineHost/BFF 均使用它。以合成库重建：在根目录设置 `VIBETABLE_PLUGIN_DATA_CAPTURE=../../../tests/contract/fixtures/plugin-capabilities-v2.json` 后，从 sidecar 执行 `go test ./internal/app -run '^TestPluginDataRealAuthorityPaginationAndGrants$' -count=1`；只归一化表/字段/记录/游标标识及schema修订，保留Go原值和元数据。真实跨进程本地合同设置 `VIBETABLE_PLUGIN_HOST_CONTRACT=1` 后运行 `go test ./internal/app -run '^TestPluginData' -count=1 -v`，需要仓库已同步Python依赖与Node；完整WPF安装执行由 `11-plugin-mutation` 产品场景覆盖。

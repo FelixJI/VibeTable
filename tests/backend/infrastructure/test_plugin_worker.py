@@ -46,6 +46,7 @@ class FakePluginStore:
         manifest = SimpleNamespace(
             plugin_id="com.example.safe-worker",
             permissions=permissions,
+            compatibility={"pluginApi": "1.x"},
             actions=[
                 SimpleNamespace(
                     action_id="safe-action",
@@ -56,6 +57,8 @@ class FakePluginStore:
         self.installation = SimpleNamespace(
             plugin_id="com.example.safe-worker",
             version="1.0.0",
+            revision=1,
+            status="enabled",
             package_hash=package_hash,
             manifest=manifest,
         )
@@ -418,12 +421,7 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
 async def test_example_overview_worker_counts_large_table_within_capability_budget(
     tmp_path: Path, total: int
 ) -> None:
-    """The shipped data-overview worker counts any table in one authoritative read.
-
-    Running the generated example artifact keeps this regression bound to the
-    real 6200-row failure: paging the whole table 200 rows at a time needs
-    1 + 32 + 32 = 65 capability calls and exceeds the default limit of 64.
-    """
+    """The v2 overview consumes full pages and fails explicitly at the 64-call bound."""
     _require_node()
     worker_entry = (
         Path(__file__).parents[3]
@@ -438,11 +436,28 @@ async def test_example_overview_worker_counts_large_table_within_capability_budg
         pytest.fail("data-overview dist worker is missing; run the plugin build script")
 
     class LargeTableClient(FakeProductReadClient):
-        async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
-            self.calls.append((table_id, query))
-            offset, limit = query["offset"], query["limit"]
-            rows = [{"id": str(index + 1)} for index in range(offset, min(offset + limit, total))]
-            return FakeQueryPage(rows=rows, total_rows=total)
+        async def plugin_data(self, request: dict[str, Any]) -> dict[str, Any]:
+            if request["operation"] == "describe":
+                return {
+                    "contract": "vibetable.plugin-data.v2",
+                    "collection": "articles",
+                    "fields": [],
+                }
+            query = request["request"]
+            self.calls.append(("articles", query))
+            offset, limit = int(request.get("cursor", "0")), query["pageSize"]
+            items = [{"id": str(i + 1)} for i in range(offset, min(offset + limit, total))]
+            return {
+                "contract": "vibetable.plugin-query-page.v2",
+                "items": items,
+                "nextCursor": str(offset + len(items)) if offset + len(items) < total else None,
+                "totalRows": total,
+                "filteredRows": total,
+                "schemaRevision": "schema-1",
+                "dataRevision": 1,
+                "complete": True,
+                "dependencies": {},
+            }
 
     client = LargeTableClient()
     adapter, store = _retained_worker(
@@ -452,7 +467,7 @@ async def test_example_overview_worker_counts_large_table_within_capability_budg
             "data": [
                 {
                     "collection": "$active",
-                    "operations": ["read"],
+                    "operations": ["read", "query"],
                     "fields": ["id"],
                 }
             ],
@@ -467,7 +482,10 @@ async def test_example_overview_worker_counts_large_table_within_capability_budg
             )
         },
         client=client,
+        expected_project_key="project-a",
+        session_epoch=7,
     )
+    store.installation.manifest.compatibility = {"pluginApi": "2.x"}
     reporter = FakeReporter()
     execution = {
         **_execution(package_hash=store.installation.package_hash),
@@ -476,19 +494,19 @@ async def test_example_overview_worker_counts_large_table_within_capability_budg
         "_hostCancel": SimpleNamespace(cancelled=False),
     }
 
+    if total == 12400:
+        with pytest.raises(PluginWorkerError, match="capability-call limit"):
+            await adapter.run("dist/worker.js", _context(), {}, execution=execution)
+        assert len(client.calls) == 62
+        return
     result = await adapter.run("dist/worker.js", _context(), {}, execution=execution)
-
     assert result["metrics"] == [{"label": "记录", "value": total}]
-    assert result["table"] == {"data": {"count": total}}
+    assert result["table"]["data"]["count"] == total
+    assert result["table"]["data"]["complete"] is True
     assert reporter.updates == [
         {"done": total, "total": total, "message": f"已统计 {total} 条记录"}
     ]
-    assert client.calls == [
-        (
-            "articles",
-            {"keyword": None, "filters": [], "limit": 1, "offset": 0, "sorts": []},
-        )
-    ]
+    assert len(client.calls) == 31
 
 
 @pytest.mark.asyncio
@@ -1594,3 +1612,102 @@ async def test_deprecated_capability_errors_are_typed_in_the_vm(
             execution=_execution(package_hash=store.installation.package_hash),
         )
     assert raised.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_v2_go_corpus_cursor_ownership_and_live_authorization() -> None:
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contract/fixtures/plugin-capabilities-v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    installation = SimpleNamespace(status="enabled", revision=1)
+
+    class Store:
+        async def get_installation(self, _project: str, _plugin: str) -> Any:
+            return installation
+
+    class Client:
+        async def plugin_data(self, request: dict[str, Any]) -> dict[str, Any]:
+            index = int(str(request.get("cursor", "page-1")).split("-")[-1]) - 1
+            page = dict(corpus["pages"][index])
+            page["nextCursor"] = f"page-{index + 2}" if index < 2 else None
+            page["dependencies"] = {"computed": {"definition": 1, "watermark": "authority"}}
+            return page
+
+    adapter = _make_adapter(
+        store=Store(), client=Client(), expected_project_key="project-a", session_epoch=7
+    )
+    resolved = _ResolvedWorker("project-a", "com.example.safe-worker", {}, "", 1, "2.x")
+    context = {"collection": "articles"}
+    execution: dict[str, Any] = {"runId": "v2-corpus"}
+    first = await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+    assert "dependencies" not in first
+    handle = first["nextCursor"]
+    assert isinstance(handle, str)
+    assert len(handle) == 32
+    assert handle != corpus["pages"][0]["nextCursor"]
+    with pytest.raises(PluginWorkerError) as foreign:
+        await adapter._data_v2(
+            resolved,
+            context,
+            {"runId": "other"},
+            "data.query",
+            {**corpus["request"], "cursor": handle},
+        )
+    assert foreign.value.code == "plugin_cursor_invalid"
+    second = await adapter._data_v2(
+        resolved, context, execution, "data.query", {**corpus["request"], "cursor": handle}
+    )
+    with pytest.raises(PluginWorkerError) as reused:
+        await adapter._data_v2(
+            resolved, context, execution, "data.query", {**corpus["request"], "cursor": handle}
+        )
+    assert reused.value.code == "plugin_cursor_invalid"
+    installation.revision = 2
+    with pytest.raises(PluginWorkerError) as stale:
+        await adapter._data_v2(
+            resolved,
+            context,
+            execution,
+            "data.query",
+            {**corpus["request"], "cursor": second["nextCursor"]},
+        )
+    assert stale.value.code == "plugin_cursor_stale"
+    installation.status = "disabled"
+    with pytest.raises(PluginWorkerError) as revoked:
+        await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+    assert revoked.value.code == "plugin_read_denied"
+    installation.status, installation.revision = "enabled", 1
+    first = await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+    for changed in ({**corpus["request"], "sorts": []}, corpus["request"]):
+        execution["runId"] = "changed-run"
+        with pytest.raises(PluginWorkerError) as changed_owner:
+            await adapter._data_v2(
+                resolved,
+                context,
+                execution,
+                "data.query",
+                {**changed, "cursor": first["nextCursor"]},
+            )
+        assert changed_owner.value.code == "plugin_cursor_invalid"
+
+
+@pytest.mark.asyncio
+async def test_v2_worker_denies_legacy_workspace_mismatch_and_cancel() -> None:
+    adapter = _make_adapter(expected_project_key="project-a", session_epoch=7)
+    with pytest.raises(PluginWorkerError) as legacy:
+        await adapter._data_v2(
+            _resolved(), {}, {}, "data.describe", {"accepts": ["vibetable.plugin-data.v2"]}
+        )
+    assert legacy.value.code == "plugin_api_unsupported"
+    resolved = _ResolvedWorker("foreign", "plugin", {}, "", 1, "2.x")
+    with pytest.raises(PluginWorkerError) as workspace:
+        await adapter._data_v2(resolved, {}, {}, "data.query", {})
+    assert workspace.value.code == "plugin_read_denied"
+    resolved = _ResolvedWorker("project-a", "plugin", {}, "", 1, "2.x")
+    with pytest.raises(PluginWorkerError) as cancelled:
+        await adapter._data_v2(
+            resolved, {}, {"_hostCancel": SimpleNamespace(cancelled=True)}, "data.query", {}
+        )
+    assert cancelled.value.code == "plugin_cancel_requested"

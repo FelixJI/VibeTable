@@ -1,3 +1,4 @@
+import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryRequest, DataQueryPage } from "./data.js";
 import type { CommandContext, JsonObject, JsonValue, PluginResult } from "./types.js";
 
 export interface DataPage<T extends JsonObject = JsonObject> {
@@ -89,6 +90,8 @@ export interface WriteGrant {
 export interface PluginCapabilities {
   readonly data: {
     read<T extends JsonObject = JsonObject>(request: DataReadRequest): Promise<DataPage<T>>;
+    describe(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
+    query(request: DataQueryRequest): Promise<DataQueryPage>;
     /** @deprecated Unsupported. Return a MutationPlan from a write action. */
     mutate(plan: MutationPlan): Promise<never>;
   };
@@ -113,6 +116,8 @@ export interface PluginCapabilities {
 
 /** Closed host adapter: every callable capability is explicitly named and typed. */
 export interface CapabilityAdapter {
+  dataDescribe?(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
+  dataQuery?(request: DataQueryRequest): Promise<DataQueryPage>;
   dataRead<T extends JsonObject = JsonObject>(request: DataReadRequest): Promise<DataPage<T>>;
   dataMutate(plan: MutationPlan): Promise<never>;
   filePickRead(options?: { readonly mediaTypes?: readonly string[] }): Promise<ReadGrant | null>;
@@ -129,6 +134,18 @@ export function createCapabilityClient(adapter: CapabilityAdapter): PluginCapabi
   return {
     data: {
       read: (request) => adapter.dataRead(request),
+      describe: async (request) => {
+        if (!adapter.dataDescribe) {
+          throw new PluginCapabilityError("plugin_api_unsupported", "The host does not support data.describe.");
+        }
+        return adapter.dataDescribe(request);
+      },
+      query: async (request) => {
+        if (!adapter.dataQuery) {
+          throw new PluginCapabilityError("plugin_api_unsupported", "The host does not support data.query.");
+        }
+        return adapter.dataQuery(request);
+      },
       mutate: (plan) => adapter.dataMutate(plan),
     },
     file: {

@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -66,6 +67,8 @@ class _PluginDataClient(Protocol):
 
     async def describe_table(self, table_id: str) -> dict[str, JsonValue]: ...
 
+    async def plugin_data(self, request: dict[str, JsonValue]) -> dict[str, JsonValue]: ...
+
 
 class _PluginInstallationStore(Protocol):
     """The closed shared-state reads/writes the Worker boundary needs."""
@@ -97,6 +100,8 @@ class _ResolvedWorker:
     plugin_id: str
     permissions: dict[str, Any]
     source: str
+    revision: int = 1
+    plugin_api: str = "1.x"
 
 
 class NodePluginWorkerAdapter:
@@ -122,8 +127,12 @@ class NodePluginWorkerAdapter:
         max_message_bytes: int = 1_048_576,
         max_capability_calls: int = 64,
         file_adapter: Any | None = None,
+        expected_project_key: str | None = None,
+        session_epoch: int = 0,
     ) -> None:
         self._store = store
+        self._expected_project_key = expected_project_key
+        self._session_epoch = session_epoch
         self._profiles = profiles
         self._dynamic_profiles = not profiles
         self._client = client
@@ -310,6 +319,8 @@ class NodePluginWorkerAdapter:
     ) -> Any:
         if name == "context.read":
             return context
+        if name in {"data.describe", "data.query"}:
+            return await self._data_v2(resolved, context, execution, name, args)
         if name == "data.read":
             return await self._data_read(resolved, context, args)
         if name == "data.mutate":
@@ -385,6 +396,114 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError("plugin file content is required")
         await self._file_adapter.write(execution, grant_id, encoded)
         return None
+
+    async def _data_v2(
+        self,
+        resolved: _ResolvedWorker,
+        context: dict[str, Any],
+        execution: dict[str, Any],
+        name: str,
+        request: Any,
+    ) -> dict[str, JsonValue]:
+        if resolved.plugin_api != "2.x":
+            raise PluginWorkerError("plugin API v2 was not declared", code="plugin_api_unsupported")
+        if self._expected_project_key != resolved.project_key or self._session_epoch < 1:
+            raise PluginWorkerError(
+                "plugin workspace binding is unavailable", code="plugin_read_denied"
+            )
+        if not isinstance(request, dict):
+            raise PluginWorkerError(
+                "plugin data request is invalid", code="plugin_capability_invalid"
+            )
+        describe = name == "data.describe"
+        allowed = (
+            {"accepts", "collection"}
+            if describe
+            else {
+                "contract",
+                "collection",
+                "fields",
+                "ids",
+                "filters",
+                "sorts",
+                "pageSize",
+                "cursor",
+            }
+        )
+        if set(request) - allowed:
+            raise PluginWorkerError(
+                "plugin data request is invalid", code="plugin_capability_invalid"
+            )
+        if getattr(execution.get("_hostCancel"), "cancelled", False):
+            raise PluginWorkerError("plugin cancellation requested", code="plugin_cancel_requested")
+        installation = await self._store.get_installation(resolved.project_key, resolved.plugin_id)
+        if installation is None or installation.status != "enabled":
+            raise PluginWorkerError(
+                "plugin read permission is unavailable", code="plugin_read_denied"
+            )
+        if installation.revision != resolved.revision:
+            raise PluginWorkerError("plugin read authorization changed", code="plugin_cursor_stale")
+        # One execution owns these handles. No cursor or authorization survives a run.
+        handles = execution.setdefault("_pluginQueryCursors", {})
+        query_request = {key: value for key, value in request.items() if key != "cursor"}
+        binding = self._bounded_json(
+            {
+                "query": query_request,
+                "projectKey": resolved.project_key,
+                "pluginId": resolved.plugin_id,
+                "installationRevision": resolved.revision,
+                "runId": execution.get("runId"),
+                "sessionEpoch": self._session_epoch,
+                "activeCollection": context.get("collection"),
+            },
+            "plugin query request",
+        )
+        cursor = request.get("cursor")
+        previous = None
+        if cursor is not None:
+            if describe or not isinstance(cursor, str) or cursor not in handles:
+                raise PluginWorkerError("plugin cursor is invalid", code="plugin_cursor_invalid")
+            previous = handles.pop(cursor)
+            if previous["binding"] != binding:
+                raise PluginWorkerError("plugin cursor query changed", code="plugin_cursor_invalid")
+        body = {
+            "operation": "describe" if describe else "query",
+            "projectKey": resolved.project_key,
+            "pluginId": resolved.plugin_id,
+            "sessionEpoch": self._session_epoch,
+            "installationRevision": resolved.revision,
+            "activeCollection": context.get("collection") or "",
+            "request": query_request,
+        }
+        if previous is not None:
+            body["cursor"] = previous["cursor"]
+            body["dependencies"] = previous["dependencies"]
+        try:
+            value = await self._client.plugin_data(body)
+        except Exception as exc:
+            code = getattr(exc, "code", "plugin_query_failed")
+            raise PluginWorkerError(
+                "plugin data request could not be completed", code=code
+            ) from exc
+        if getattr(execution.get("_hostCancel"), "cancelled", False):
+            raise PluginWorkerError("plugin cancellation requested", code="plugin_cancel_requested")
+        if not describe:
+            dependencies = value.pop("dependencies", {})
+            next_cursor = value.get("nextCursor")
+            if next_cursor is not None:
+                if len(handles) >= self._max_capability_calls:
+                    raise PluginWorkerError(
+                        "plugin cursor budget exceeded", code="plugin_query_limit"
+                    )
+                handle = secrets.token_urlsafe(24)
+                handles[handle] = {
+                    "binding": binding,
+                    "cursor": next_cursor,
+                    "dependencies": dependencies,
+                }
+                value["nextCursor"] = handle
+        self._bounded_json(value, "plugin data response")
+        return value
 
     async def _data_read(
         self,
@@ -612,6 +731,8 @@ class NodePluginWorkerAdapter:
             plugin_id=installation.plugin_id,
             permissions=installation.manifest.permissions,
             source=source,
+            revision=installation.revision,
+            plugin_api=str(installation.manifest.compatibility.get("pluginApi", "")),
         )
 
     @staticmethod

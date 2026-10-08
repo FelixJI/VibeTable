@@ -1,6 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "properties": {},
+  "properties": {
+    "fieldId": {
+      "type": "string"
+    },
+    "contains": {
+      "type": "string"
+    }
+  },
   "additionalProperties": false
 }
