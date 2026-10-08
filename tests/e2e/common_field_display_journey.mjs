@@ -108,7 +108,15 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await page.getByTestId("bool-true-label").locator("input").fill("已完成");
   await page.getByTestId("bool-false-label").locator("input").fill("未完成"); await save();
   await waitTexts(bool, ["—", "已完成", "未完成"]);
-  await open(calendarDate); await selectVisibleNOption(page, "field-display-precision", "日期"); await save();
+  // Calendar dates already use the recommended day precision.
+  // Reselecting it must keep the unchanged draft ineligible for planning.
+  await open(calendarDate);
+  const datePrecisionLabel = (await page.getByTestId("field-display-precision").innerText()).trim();
+  await selectVisibleNOption(page, "field-display-precision", "日期");
+  recorder.check("date field keeps the recommended day precision and a same-value reselection cannot bypass the required plan",
+    datePrecisionLabel.includes("日期") && await page.getByTestId("field-plan-button").isDisabled(),
+    { datePrecisionLabel });
+  await closeFieldSettingsDrawer(page);
   await open(clock); await selectVisibleNOption(page, "field-display-precision", "毫秒"); await save();
   // Canonical time storage normalizes to whole seconds; millisecond display pads zero.
   await waitTexts(clock, ["09:30:15.000"]);
