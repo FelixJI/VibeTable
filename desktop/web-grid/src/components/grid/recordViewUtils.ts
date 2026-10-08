@@ -69,8 +69,13 @@ export function safeImageUrl(value: unknown): string | null {
 
 export { rowTitle };
 
-function rowTitle(row: Record<string, unknown>, view: PresetView): string {
+function rowTitle(
+  row: Record<string, unknown>, view: PresetView, schema: readonly ColumnSchema[] = [],
+  lookups?: readonly LookupDefinition[],
+): string {
   const value = view.titleField ? row[view.titleField] : null;
-  if (value !== null && value !== undefined && String(value).trim()) return String(value);
+  if (value !== null && value !== undefined && String(value).trim()) {
+    return displayValue(value, schema.find(column => column.name === view.titleField), lookups);
+  }
   return t("views.recordFallback", { id: String(row.rowKey ?? "—") });
 }

@@ -480,7 +480,7 @@ function commonFieldFormatter(column: ColumnSchema): GridCellFormatter {
     const raw = cell.getValue();
     const element = document.createElement("span");
     element.textContent = formatFieldDisplay(raw, column, getLocale());
-    if (raw === null || raw === undefined || raw === "") { element.className = "vt-cell-empty"; return element; }
+    if (raw === null || raw === undefined || raw === "" || (column.display?.kind === "select" && Array.isArray(raw) && raw.length === 0)) { element.className = "vt-cell-empty"; return element; }
     if (column.display?.kind === "select") {
       element.textContent = "";
       for (const [index, part] of enumDisplayParts(raw, column.enumOptions).entries()) {
@@ -505,6 +505,7 @@ function commonFieldFormatter(column: ColumnSchema): GridCellFormatter {
         const url = new URL(raw);
         if (url.protocol === "http:" || url.protocol === "https:") {
           const link = document.createElement("a"); link.href = url.href;
+          link.target = "_blank"; link.rel = "noreferrer";
           link.textContent = element.textContent; link.title = raw;
           link.addEventListener("click", (event) => event.stopPropagation());
           element.replaceChildren(link);

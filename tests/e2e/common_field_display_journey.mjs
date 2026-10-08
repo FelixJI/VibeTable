@@ -103,7 +103,8 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await waitTexts(bool, ["—", "已完成", "未完成"]);
   await open(calendarDate); await selectVisibleNOption(page, "field-display-precision", "日期"); await save();
   await open(clock); await selectVisibleNOption(page, "field-display-precision", "毫秒"); await save();
-  await waitTexts(clock, ["09:30:15.125"]);
+  // Canonical time storage normalizes to whole seconds; millisecond display pads zero.
+  await waitTexts(clock, ["09:30:15.000"]);
   await open(choice);
   const optionRows = page.locator(".option-row");
   await optionRows.first().locator(".n-input input").fill("进行中（已改名）");

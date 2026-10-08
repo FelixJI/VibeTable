@@ -36,6 +36,26 @@ function mutableObject(value: unknown): MutableJsonObject {
 }
 
 describe("Schema v2 contracts", () => {
+  it("parses optional display parameters through plan and describe result parsers", () => {
+    for (const settings of [{ preset: "progress", progressStart: 1, progressTarget: 2 }, { preset: "rating", ratingMax: 7 }]) {
+      const field = mutableObject(fixture());
+      Object.assign(mutableObject(field.display), settings);
+      const plan = mutableObject(fixture("field-change-plan.json")); plan.after = field;
+      const described = mutableObject(fixture("field-settings-describe.json")); described.definition = field;
+      expect(parseFieldChangePlanV2(plan).after?.display).toMatchObject(settings);
+      expect(parseFieldSettingsDescribeResultV2(described).definition?.display).toMatchObject(settings);
+      mutableObject(field.display).futureDisplayParameter = 1;
+      expect(() => parseFieldChangePlanV2(plan)).toThrow("unknown property");
+      expect(() => parseFieldSettingsDescribeResultV2(described)).toThrow("unknown property");
+    }
+  });
+  it("rejects malformed optional display parameters", () => {
+    for (const settings of [{ progressStart: "1" }, { progressTarget: Infinity }, { ratingMax: 1.5 }, { ratingMax: 11 }]) {
+      const field = mutableObject(fixture()); Object.assign(mutableObject(field.display), settings);
+      expect(() => parseFieldDefinitionV2(field)).toThrow("field.contract.invalid");
+    }
+  });
+
   it("accepts pair patch plans and frozen reciprocal data revisions", () => {
     const plan = mutableObject(fixture("field-change-plan.json"));
     const intent = mutableObject(plan.intent);

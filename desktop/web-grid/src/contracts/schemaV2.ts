@@ -160,6 +160,7 @@ function parseFieldDefinition(
     "kind", "preset", "displayScale", "scaleMode", "trimTrailingZeros",
     "useGrouping", "currency", "percentStorage", "unit", "precision",
     "timezone", "mode", "indent", "trueLabel", "falseLabel",
+    "progressStart", "progressTarget", "ratingMax",
   ], [
     "kind", "preset", "displayScale", "scaleMode", "trimTrailingZeros",
     "useGrouping", "currency", "percentStorage", "unit", "precision",
@@ -220,6 +221,17 @@ function parseFieldDefinition(
     "exact", "day", "minute", "second", "millisecond",
   ]);
   expectSafeInteger(display.displayScale, "$.display.displayScale");
+  for (const key of ["progressStart", "progressTarget"] as const) {
+    if (display[key] !== undefined && (typeof display[key] !== "number" || !Number.isFinite(display[key]))) {
+      fail(`$.display.${key}`, "expected finite number");
+    }
+  }
+  if (display.ratingMax !== undefined) {
+    expectSafeInteger(display.ratingMax, "$.display.ratingMax");
+    if ((display.ratingMax as number) < 1 || (display.ratingMax as number) > 10) {
+      fail("$.display.ratingMax", "expected integer from 1 to 10");
+    }
+  }
   if (display.indent !== undefined) {
     expectSafeInteger(display.indent, "$.display.indent");
     if (![0, 2, 4].includes(display.indent as number)) {

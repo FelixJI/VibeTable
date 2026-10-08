@@ -130,14 +130,14 @@ function onDrop(event: DragEvent, targetOptionId: string | null): void {
         <div class="kanban-cards">
           <article
             v-for="row in lane.records"
-            :key="String(row.rowKey ?? rowTitle(row, view))"
+            :key="String(row.rowKey ?? rowTitle(row, view, schema, lookupDefinitions))"
             data-testid="kanban-card"
             :data-row-key="String(row.rowKey ?? '')"
             :draggable="canDrag(row)"
             @dragstart="onDragStart($event, row)"
             @dragend="draggedCard = null"
           >
-            <strong>{{ rowTitle(row, view) }}</strong>
+            <strong>{{ rowTitle(row, view, schema, lookupDefinitions) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">
                 <dt>{{ field.title }}</dt><dd><RecordFieldValue :value="row[field.name]" :column="field" :lookups="lookupDefinitions" /></dd>

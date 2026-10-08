@@ -64,10 +64,18 @@ describe("common field display stays separate from stored values", () => {
         { optionId: "b", label: "旧值", color: "blue", order: 1, state: "retired" }] };
     const raw = ["b", "unknown", "a"];
     expect(render(raw, enumColumn).textContent).toBe(displayValue(raw, enumColumn));
+    expect(render([], enumColumn).textContent).toBe("—");
+    expect(render([], enumColumn).classList.contains("vt-cell-empty")).toBe(true);
+    const jsonColumn: ColumnSchema = { ...base, dataType: "json", display: { ...display, kind: "json", preset: "" } };
+    const jsonArray = render([], jsonColumn);
+    expect(jsonArray.textContent).toBe("[…] · 0 项");
+    expect(jsonArray.classList.contains("vt-cell-empty")).toBe(false);
     const card = mount(RecordFieldValue, { props: { value: raw, column: enumColumn } });
     expect(card.text()).toBe(displayValue(raw, enumColumn)); expect(card.html()).toContain("border-bottom: 3px solid blue"); card.unmount();
     const urlColumn = { ...base, dataType: "text" as const, display: { ...display, kind: "url" as const, preset: "" } };
     expect(render("https://example.com/path", urlColumn).querySelector("a")?.href).toBe("https://example.com/path");
+    expect(render("https://example.com/path", urlColumn).querySelector("a")?.target).toBe("_blank");
+    expect(render("https://example.com/path", urlColumn).querySelector("a")?.rel).toBe("noreferrer");
     expect(render("javascript:alert(1)", urlColumn).querySelector("a")).toBeNull();
     expect(render("mailto:user@example.com", urlColumn).querySelector("a")).toBeNull();
     const richColumn = { ...urlColumn, display: { ...display, kind: "editor" as const, preset: "" } };
