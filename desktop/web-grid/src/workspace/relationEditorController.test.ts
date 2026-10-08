@@ -268,6 +268,56 @@ describe("relationEditorController", () => {
     scope.stop();
   });
 
+  it("多选初开的迟到初始化不得覆盖用户已输入的搜索与候选分页", async () => {
+    const pending = deferred<void>();
+    const relations = useRelationLookupStore();
+    const multi = { ...descriptor, kind: "m2m" as const, relatedCollection: "customers" };
+    const first = { collection: "customers", itemId: "c1", label: "CT-001" };
+    const second = { collection: "customers", itemId: "c2", label: "CT-002" };
+    const third = { collection: "customers", itemId: "c3", label: "CT-002 备选" };
+    const searchTargets = vi.fn(async (
+      request: import("@/contracts").RelationSearchParams,
+    ): Promise<RelationSearchResult> => {
+      if (request.targetItemIds) return { items: [], total: 0 };
+      if (request.query === "CT-002" && request.offset === 0) return { items: [second], total: 2 };
+      if (request.query === "CT-002" && request.offset === 1) return { items: [third], total: 2 };
+      return { items: [first, second, third], total: 3 };
+    });
+    const service = servicePort({
+      searchTargets,
+      loadDraft: vi.fn(async (relationId, sourceItemId, _expected, isCurrent) => {
+        await pending.promise;
+        if (isCurrent?.()) relations.openDraft(relationId, sourceItemId, []);
+        return {
+          delta: { relationId, sourceItemId, expectedSchemaRevision: "schema",
+            adds: [], removes: [], idempotencyKey: "operation" },
+          current: [], diagnostics: [], canApply: true,
+        };
+      }),
+    });
+    const { controller, scope } = setup(service);
+    const opening = controller.dispatch({
+      type: "editor.open", rowKey: "row-1", field: "customer", descriptor: multi, value: [],
+    });
+    await flushPromises();
+    // previewDelta 尚未返回，用户已经在搜索框输入并翻页。
+    await controller.dispatch({ type: "targets.search", query: "CT-002" });
+    await controller.dispatch({ type: "targets.loadMore" });
+    expect(controller.state.query).toBe("CT-002");
+    expect(controller.state.candidates).toEqual([second, third]);
+
+    pending.resolve();
+    await opening;
+    await flushPromises();
+
+    expect(controller.state.query).toBe("CT-002");
+    expect(controller.state.candidates).toEqual([second, third]);
+    expect(controller.state.loading).toBe(false);
+    expect(controller.state.error).toBeNull();
+    expect(searchTargets).not.toHaveBeenCalledWith(expect.objectContaining({ query: "" }));
+    scope.stop();
+  });
+
   it("A 的草稿晚到时不得覆盖关闭后打开的 B 编辑器草稿", async () => {
     const pending = deferred<void>();
     const relations = useRelationLookupStore();

@@ -288,6 +288,7 @@ export function createRelationEditorController(
     state.value.loading = true;
     const capturedEpoch = editorEpoch;
     const initialRefreshGeneration = refreshGeneration;
+    const initialSearchGeneration = searchGeneration;
     const isCurrent = () => capturedEpoch === editorEpoch
       && state.value.show
       && state.value.descriptor?.relationId === intent.descriptor.relationId;
@@ -299,7 +300,10 @@ export function createRelationEditorController(
         isCurrent,
       );
       if (!isCurrent()) return;
-      await searchTargets("");
+      // Preserve searches or pages started while previewDelta was pending.
+      if (searchGeneration === initialSearchGeneration) {
+        await searchTargets("");
+      }
       // A target refresh may finish before previewDelta initializes membership.
       // Keep that membership, then project its labels using the latest refresh.
       if (isCurrent() && initialRefreshGeneration !== refreshGeneration) {
