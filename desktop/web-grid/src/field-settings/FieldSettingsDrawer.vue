@@ -1490,6 +1490,16 @@ function isTextual(type: LogicalTypeV2): boolean {
                 <span><b>{{ store.plan.impact.ambiguous }}</b>歧义</span>
                 <span><b>{{ store.plan.impact.dependencies.length }}</b>依赖</span>
               </div>
+              <NAlert
+                v-if="store.plan.impact.failures.length !== 0"
+                type="error"
+                :show-icon="false"
+              >
+                <strong>不兼容样本</strong>
+                <div v-for="sample in store.plan.impact.failures" :key="sample.recordId">
+                  {{ sample.recordId }} · {{ sample.reason }}
+                </div>
+              </NAlert>
               <NAlert v-for="warning in store.plan.warnings" :key="warning.code + warning.path" type="warning" :show-icon="false">
                 <strong>{{ warning.code }}</strong> · {{ warning.message }}
               </NAlert>

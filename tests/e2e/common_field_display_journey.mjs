@@ -84,9 +84,16 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   await open(progress); await selectVisibleNOption(page, "number-display-preset", "评分");
   const ratingRejected = await plan();
   await page.getByTestId("field-change-plan").waitFor();
+  const rejectedPlan = ratingRejected.payload ?? {};
+  const blockedCard = await page.getByTestId("field-change-plan").textContent();
   recorder.check("real rating preflight explains incompatible fractional/out-of-range samples and prevents apply",
-    await page.getByTestId("field-apply-button").isDisabled()
-      && /1.5|不兼容|失败|整数/.test(await page.getByTestId("field-change-plan").textContent()), { ratingRejected });
+    rejectedPlan.canApply === false
+      && (rejectedPlan.errors ?? []).some(error => error.code === "field.constraint.existing_data_invalid")
+      && (rejectedPlan.impact?.failures ?? []).length === 4
+      && rejectedPlan.impact.failures.every(sample => /integer|range/i.test(sample.reason))
+      && await page.getByTestId("field-apply-button").isDisabled()
+      && blockedCard.includes("已阻止")
+      && blockedCard.includes("value must be an integer"), { ratingRejected });
   await closeFieldSettingsDrawer(page);
   const afterReject = await query();
   recorder.check("rating preflight writes neither schema nor data",

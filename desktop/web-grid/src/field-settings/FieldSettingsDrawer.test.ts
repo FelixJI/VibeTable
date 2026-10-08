@@ -429,6 +429,38 @@ describe("FieldSettingsDrawer", () => {
     expect(wrapper.emitted("restore")?.[0]).toEqual(["fld_amount"]);
   });
 
+  it("被阻止的计划渲染不兼容样本并保持保存禁用", () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described());
+    const base = plan();
+    const blocked: FieldChangePlanV2 = {
+      ...base,
+      canApply: false,
+      impact: {
+        ...base.impact,
+        failures: [
+          { recordId: "rec_15", reason: "field.value.invalid at value: value must be an integer" },
+          { recordId: "rec_23", reason: "field.value.invalid at value: value must be an integer" },
+        ],
+      },
+      errors: [{
+        code: "field.constraint.existing_data_invalid", path: "draft.constraints",
+        message: "existing records do not satisfy the requested field settings",
+        details: { failed: 2, scanned: 6 },
+      }],
+    };
+    store.setPlan(blocked);
+    const wrapper = mountDrawer();
+
+    const card = wrapper.get('[data-testid="field-change-plan"]');
+    expect(card.text()).toContain("已阻止");
+    expect(card.text()).toContain("不兼容样本");
+    expect(card.text()).toContain("rec_15 · field.value.invalid at value: value must be an integer");
+    expect(card.text()).toContain("rec_23 · field.value.invalid at value: value must be an integer");
+    expect(wrapper.get('[data-testid="field-apply-button"]').attributes("disabled")).toBeDefined();
+  });
+
   it("用单人场景解释字段元数据，并在计划生成后滚动到预览", async () => {
     const scrollIntoView = vi.fn();
     vi.stubGlobal("HTMLElement", HTMLElement);
