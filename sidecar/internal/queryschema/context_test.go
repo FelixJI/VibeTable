@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"github.com/pocketbase/dbx"
-	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
+	// Registers the PocketBase system migrations, mirroring the CLI package's
+	// own blank import because core.NewBaseApp does not import them itself.
+	_ "github.com/pocketbase/pocketbase/migrations"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
@@ -29,7 +31,10 @@ func (app versionFailureApp) FindFirstRecordByFilter(collection any, filter stri
 }
 
 func TestResolvedDescriptorPreservesComputedVersionContextFailures(t *testing.T) {
-	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: t.TempDir(), HideStartBanner: true})
+	// Plain core app (like PocketBase tests/app.go): the CLI launcher's
+	// fire-and-forget modernc dependency check logs from a background
+	// goroutine and races the Settings().Logs MaxDays write below.
+	app := core.NewBaseApp(core.BaseAppConfig{DataDir: t.TempDir()})
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
