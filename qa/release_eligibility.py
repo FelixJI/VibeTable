@@ -91,6 +91,7 @@ DATA_IO_SCENARIO_IDS = (
     "37-collection-formula-journey",
     "38-calculation-chain-journey",
     "39-file-workflow-combination",
+    "40-file-history-capacity",
     "41-file-document-operations",
     "42-file-document-native-operations",
     "43-file-revision-leaves",
