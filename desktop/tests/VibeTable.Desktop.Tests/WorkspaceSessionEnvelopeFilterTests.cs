@@ -769,6 +769,70 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
+    public async Task ProtectionFailureTracesProtectionStageWithoutEnteringGateway()
+    {
+        var traces = new List<string>();
+        await using FieldProtectionHarness fixture =
+            await FieldProtectionHarness.CreateAsync(
+                protectionFailure: new TimeoutException("protection snapshot timed out"),
+                traceError: traces.Add);
+
+        await fixture.Controller.DispatchAsync(FieldRequest(
+            "field.change.apply",
+            "protection-stage",
+            FieldApplyRequest(confirmations: []),
+            ScopeFor(fixture.Opened, 1)));
+
+        Assert.AreEqual(1, fixture.Protection.CallCount);
+        Assert.AreEqual(0, fixture.Forwarder.CallCount, "The sidecar gateway must not be entered.");
+        Assert.AreEqual(0, fixture.PythonWriteCount, "The Python gateway must not be entered.");
+        FakeWebReplySink.Reply? failure = await fixture.Sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        Assert.AreEqual("protection-stage", failure.RequestId);
+        AssertStagedFailureTrace(
+            traces, "field.change.apply", "protection", "protection-stage");
+        Assert.AreEqual(
+            "PRODUCT_DATA_FAILED",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
+        Assert.AreEqual(
+            "Product data operation failed.",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("message").GetString());
+    }
+
+    [TestMethod]
+    public async Task DispatchFailureTracesDispatchStageAndKeepsRendererReply()
+    {
+        var traces = new List<string>();
+        await using FieldProtectionHarness fixture =
+            await FieldProtectionHarness.CreateAsync(traceError: traces.Add);
+        var throwingForwarder = new ControlledProductSidecarForwarder((_, _) =>
+            Task.FromException<ProductSidecarForwardResult>(
+                new TimeoutException("dispatch timed out")));
+        fixture.Controller.SetProductSidecarForwarder(throwingForwarder);
+
+        await fixture.Controller.DispatchAsync(FieldRequest(
+            "field.change.apply",
+            "dispatch-stage",
+            FieldApplyRequest(confirmations: []),
+            ScopeFor(fixture.Opened, 1)));
+
+        Assert.AreEqual(1, fixture.Protection.CallCount, "Protection must have completed first.");
+        Assert.AreEqual(1, throwingForwarder.CallCount);
+        Assert.AreEqual(0, fixture.Forwarder.CallCount);
+        FakeWebReplySink.Reply? failure = await fixture.Sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        Assert.AreEqual("dispatch-stage", failure.RequestId);
+        AssertStagedFailureTrace(
+            traces, "field.change.apply", "dispatch", "dispatch-stage");
+        Assert.AreEqual(
+            "PRODUCT_DATA_FAILED",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("code").GetString());
+        Assert.AreEqual(
+            "Product data operation failed.",
+            JsonSerializer.SerializeToElement(failure.Payload).GetProperty("message").GetString());
+    }
+
+    [TestMethod]
     public async Task GatewayReplacementDoesNotReuseOrdinaryFieldPlanAdmission()
     {
         await using FieldProtectionHarness fixture =
@@ -950,6 +1014,35 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         StringAssert.Contains(
             JsonSerializer.Serialize(failure.Payload),
             @"""code"":""BAD_PAYLOAD""");
+    }
+
+    /// <summary>Asserts the closed 11-field staged failure schema with no content leakage.</summary>
+    private static void AssertStagedFailureTrace(
+        List<string> traces,
+        string operation,
+        string stage,
+        string requestId)
+    {
+        string line = traces.Single();
+        using JsonDocument document = JsonDocument.Parse(line);
+        JsonElement root = document.RootElement;
+        Assert.AreEqual(11, root.EnumerateObject().Count());
+        Assert.AreEqual("error", root.GetProperty("level").GetString());
+        Assert.AreEqual(
+            "VibeTable.Desktop.ProductDataRequestController",
+            root.GetProperty("module").GetString());
+        Assert.AreEqual($"{operation}.{stage}", root.GetProperty("event").GetString());
+        Assert.AreEqual(
+            "PRODUCT_RPC_FAILED:TimeoutException",
+            root.GetProperty("errorCode").GetString());
+        Assert.AreEqual(requestId, root.GetProperty("requestId").GetString());
+        Assert.AreEqual(JsonValueKind.Number, root.GetProperty("durationMs").ValueKind);
+        Assert.IsTrue(root.GetProperty("durationMs").GetDouble() >= 0);
+        foreach (string closedField in new[]
+                 {
+                     "operationId", "workspaceId", "sessionEpoch", "jobId",
+                 })
+            Assert.AreEqual(JsonValueKind.Null, root.GetProperty(closedField).ValueKind);
     }
 
     private static void AssertRetiredReply(FakeWebReplySink sink, string requestId)
@@ -1453,9 +1546,11 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             => _forwarder.Calls.Last(call => call.Method == method).Parameters;
 
         public static async Task<FieldProtectionHarness> CreateAsync(
-            bool holdPlanResponse = false)
+            bool holdPlanResponse = false,
+            Exception? protectionFailure = null,
+            Action<string>? traceError = null)
         {
-            var session = new SessionFixture();
+            var session = new SessionFixture(protectionFailure: protectionFailure);
             WorkspaceRegistryEntryV2 first = session.AddWorkspace("Fields", "Fields");
             WorkspaceSessionV2 opened = await session.Manager.OpenAsync(
                 first.WorkspaceId,
@@ -1467,7 +1562,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             var sink = new FakeWebReplySink();
             var controller = new ProductDataRequestController(
                 sink,
-                sessionEnvelopeFilter: filter);
+                sessionEnvelopeFilter: filter,
+                traceError: traceError);
             controller.SetGateway(gateway);
             var planForwarded = new TaskCompletionSource<bool>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1651,14 +1747,16 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
 
     private sealed class SessionFixture : IDisposable
     {
-        public SessionFixture(bool blockProtection = false)
+        public SessionFixture(
+            bool blockProtection = false,
+            Exception? protectionFailure = null)
         {
             Root = Path.Combine(
                 Path.GetTempPath(),
                 "vibetable-envelope-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Root);
             Registry = new WorkspaceRegistry(Root);
-            Protection = new BlockingProtectionHook(blockProtection);
+            Protection = new BlockingProtectionHook(blockProtection, protectionFailure);
             RuntimeFactory = new FakeRuntimeFactory();
             Manager = new WorkspaceSessionManager(
                 Registry,
@@ -1713,7 +1811,9 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         }
     }
 
-    private sealed class BlockingProtectionHook(bool blocked)
+    private sealed class BlockingProtectionHook(
+        bool blocked,
+        Exception? throwOnCapture = null)
         : IWorkspaceProtectionReceiptHook
     {
         private readonly TaskCompletionSource<bool> _entered =
@@ -1746,6 +1846,8 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
         {
             CallCount++;
             _entered.TrySetResult(true);
+            if (throwOnCapture is not null)
+                throw throwOnCapture;
             if (blocked)
                 await _release.Task.WaitAsync(cancellationToken);
             var receipt = new ProtectionSnapshotReceipt(

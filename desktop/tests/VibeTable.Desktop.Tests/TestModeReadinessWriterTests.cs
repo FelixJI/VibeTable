@@ -76,4 +76,35 @@ public sealed class TestModeReadinessWriterTests
             }
         }
     }
+
+    [TestMethod]
+    public void DesktopLogDirectoryRedirectsToReadinessDirOnlyForTestModeLaunch()
+    {
+        string readiness = Path.Combine(
+            Path.GetTempPath(), "readiness-" + Guid.NewGuid().ToString("N"));
+        string userDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "VibeTable",
+            "logs");
+
+        Assert.AreEqual(
+            Path.GetFullPath(readiness),
+            App.DesktopLogDirectory(
+                new HostStartupOptions { TestMode = true, ReadinessDir = readiness }),
+            "Test mode with a readiness directory isolates desktop.log per scenario.");
+        Assert.AreEqual(
+            userDirectory,
+            App.DesktopLogDirectory(
+                new HostStartupOptions { TestMode = true }),
+            "Test mode without a readiness directory keeps the shared user directory.");
+        Assert.AreEqual(
+            userDirectory,
+            App.DesktopLogDirectory(
+                new HostStartupOptions { ReadinessDir = readiness }),
+            "A non-test launch with a readiness argument keeps the user directory.");
+        Assert.AreEqual(
+            userDirectory,
+            App.DesktopLogDirectory(new HostStartupOptions()),
+            "A plain launch keeps the shared user directory.");
+    }
 }

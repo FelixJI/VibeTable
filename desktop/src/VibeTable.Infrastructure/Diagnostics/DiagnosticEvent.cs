@@ -4,7 +4,12 @@ namespace VibeTable.Infrastructure.Diagnostics;
 
 public static class DiagnosticEvent
 {
-    public static string Failure(string module, string eventName, string errorCode) =>
+    public static string Failure(
+        string module,
+        string eventName,
+        string errorCode,
+        string? requestId = null,
+        double? durationMs = null) =>
         JsonSerializer.Serialize(new
         {
             timestamp = DateTimeOffset.UtcNow,
@@ -12,11 +17,11 @@ public static class DiagnosticEvent
             module,
             @event = eventName,
             errorCode,
-            requestId = (string?)null,
+            requestId,
             operationId = (string?)null,
             workspaceId = (string?)null,
             sessionEpoch = (long?)null,
             jobId = (string?)null,
-            durationMs = (double?)null,
+            durationMs,
         });
 }

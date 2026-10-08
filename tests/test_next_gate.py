@@ -1205,6 +1205,58 @@ def test_main_reports_retained_evidence_when_a_stage_raises(
     assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
 
 
+def test_product_e2e_failure_evidence_copies_scenario_desktop_log_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    report = {
+        "status": "failed",
+        "scenarios": [{"scenario": failed_id, "status": "failed"}],
+    }
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(report),
+        encoding="utf-8",
+    )
+    (failed_root / "runner-stdout.log").write_text("runner", encoding="utf-8")
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+    (runtime_root / "desktop.log").write_text("scenario host diagnostics", encoding="utf-8")
+    outside_root = tmp_path / "elsewhere"
+    outside_root.mkdir()
+    (outside_root / "desktop.log").write_text("external user log", encoding="utf-8")
+    copied_sources: list[Path] = []
+    original_copy = next_gate._copy_if_file
+
+    def recording_copy(source: Path, destination: Path) -> bool:
+        copied_sources.append(source)
+        return original_copy(source, destination)
+
+    monkeypatch.setattr(next_gate, "_copy_if_file", recording_copy)
+
+    destination = next_gate.persist_product_e2e_evidence(
+        source_root,
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "desktop.log").read_text(encoding="utf-8") == (
+        "scenario host diagnostics"
+    )
+    desktop_logs = list(destination.rglob("desktop.log"))
+    assert desktop_logs == [copied_runtime / "desktop.log"]
+    assert copied_sources, "failure evidence must have been archived"
+    assert all(run_root == source or run_root in source.parents for source in copied_sources), (
+        "scenario evidence must only be read from the scenario run directory"
+    )
+
+
 def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     tmp_path: Path,
 ) -> None:
