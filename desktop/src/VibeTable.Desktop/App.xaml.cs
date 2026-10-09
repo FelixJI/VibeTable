@@ -76,7 +76,8 @@ public partial class App : Application
         _ = SetCurrentProcessExplicitAppUserModelID(
             ApplicationUserModelId);
         base.OnStartup(e);
-        InstallDesktopDiagnosticTrace();
+        var options = Services.HostStartupOptions.Current();
+        InstallDesktopDiagnosticTrace(options);
         InstallCrashDiagnostics();
         if (e.Args is ["--preview-host", .. var previewArguments])
         {
@@ -90,7 +91,6 @@ public partial class App : Application
             return;
         }
 
-        var options = Services.HostStartupOptions.Current();
         if (options.TestMode)
         {
             var dir = string.IsNullOrWhiteSpace(options.ReadinessDir)
@@ -158,12 +158,13 @@ public partial class App : Application
             WriteCrashDiagnostic("desktop.dispatcher_unhandled", args.Exception);
     }
 
-    private static void InstallDesktopDiagnosticTrace()
+    private static void InstallDesktopDiagnosticTrace(
+        Services.HostStartupOptions startup)
     {
         try
         {
             Trace.Listeners.Add(new RotatingDiagnosticTraceListener(
-                Path.Combine(DesktopLogDirectory(), "desktop.log")));
+                Path.Combine(DesktopLogDirectory(startup), "desktop.log")));
         }
         catch
         {
@@ -171,10 +172,32 @@ public partial class App : Application
         }
     }
 
-    internal static string DesktopLogDirectory() => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "VibeTable",
-        "logs");
+    internal static string DesktopLogDirectory()
+        => DesktopLogDirectory(Services.HostStartupOptions.Current());
+
+    /// <summary>Scenario-isolates desktop.log in test mode so QA failure evidence stays per-scenario.</summary>
+    internal static string DesktopLogDirectory(
+        Services.HostStartupOptions startup)
+    {
+        if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
+        {
+            try
+            {
+                // A dedicated subdirectory keeps rotation pruning scoped to desktop.log, away from readiness-root diagnostics.
+                return Path.Combine(
+                    Path.GetFullPath(startup.ReadinessDir!),
+                    "desktop-logs");
+            }
+            catch
+            {
+                // Invalid path falls back to the shared user directory.
+            }
+        }
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "VibeTable",
+            "logs");
+    }
 
     private static void WriteCrashDiagnostic(string eventName, Exception? exception)
     {

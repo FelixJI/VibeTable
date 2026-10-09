@@ -17,6 +17,7 @@ public sealed class ProductDataRequestController
     private readonly IWebReplySink _reply;
     private readonly ProductRpcRouteSelector _routeSelector;
     private readonly WorkspaceSessionEnvelopeFilter? _sessionEnvelopeFilter;
+    private readonly Action<string> _traceError;
     private readonly object _gatewayGate = new();
     private readonly FieldChangeProtectionPlanLedger _fieldChangePlans = new();
     private IProductDataRpcGateway? _gateway;
@@ -24,23 +25,27 @@ public sealed class ProductDataRequestController
 
     public ProductDataRequestController(
         IWebReplySink reply,
-        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null,
+        Action<string>? traceError = null)
         : this(
             reply,
             ProductRpcRouteSelector.Default,
-            sessionEnvelopeFilter)
+            sessionEnvelopeFilter,
+            traceError)
     {
     }
 
     internal ProductDataRequestController(
         IWebReplySink reply,
         ProductRpcRouteSelector routeSelector,
-        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null)
+        WorkspaceSessionEnvelopeFilter? sessionEnvelopeFilter = null,
+        Action<string>? traceError = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
         _routeSelector = routeSelector
             ?? throw new ArgumentNullException(nameof(routeSelector));
         _sessionEnvelopeFilter = sessionEnvelopeFilter;
+        _traceError = traceError ?? (message => Trace.TraceError(message));
     }
 
     public IProductDataRpcGateway? CurrentGateway
@@ -288,6 +293,8 @@ public sealed class ProductDataRequestController
             IProductSidecarRpcForwarder? sidecarForwarder,
             FieldChangeProtectionLedgerContext protectionContext) =
             CaptureProductContext(request.Scope);
+        long startedTimestamp = Stopwatch.GetTimestamp();
+        string stage = "protection";
         try
         {
             JsonElement forwardedPayload = await ProtectMutationAsync(
@@ -295,6 +302,7 @@ public sealed class ProductDataRequestController
                 endpoint,
                 epochLease,
                 protectionContext).ConfigureAwait(false);
+            stage = "dispatch";
             if (!CanCompleteRequest(request, epochLease))
                 return;
             JsonElement result;
@@ -321,7 +329,10 @@ public sealed class ProductDataRequestController
                     return;
                 if (forwarded is ProductSidecarFailure failure)
                 {
-                    PostSidecarFailure(request, failure.Error);
+                    PostSidecarFailure(
+                        request,
+                        failure.Error,
+                        Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds);
                     return;
                 }
                 if (forwarded is not ProductSidecarSuccess success)
@@ -390,11 +401,16 @@ public sealed class ProductDataRequestController
                 "Local data service is reconnecting.",
                 "BACKEND_UNAVAILABLE");
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             if (!CanCompleteRequest(request, epochLease))
                 return;
-            TraceFailure(request.Type, "PRODUCT_RPC_FAILED");
+            // The stage token separates a pre-routing protection snapshot failure from dispatch.
+            TraceFailure(
+                request.Type,
+                $"PRODUCT_RPC_FAILED:{exception.GetType().Name}",
+                stage,
+                Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds);
             _reply.PostOperationFailed(
                 request.RequestId,
                 "Product data operation failed.",
@@ -448,7 +464,8 @@ public sealed class ProductDataRequestController
 
     private void PostSidecarFailure(
         RoutedWebRequest request,
-        ProductSidecarRpcError error)
+        ProductSidecarRpcError error,
+        double elapsedMs)
     {
         if (error.Code == -32602)
         {
@@ -478,7 +495,12 @@ public sealed class ProductDataRequestController
             _reply.PostResponse(request.Type, request.RequestId, mapped);
             return;
         }
-        TraceFailure(request.Type, "PRODUCT_RPC_FAILED");
+        // Only the numeric code is safe to persist; sidecar message and data may contain content.
+        TraceFailure(
+            request.Type,
+            $"PRODUCT_RPC_FAILED:{error.Code}",
+            "dispatch",
+            elapsedMs);
         _reply.PostOperationFailed(
             request.RequestId,
             "Product data operation failed.",
@@ -532,4 +554,25 @@ public sealed class ProductDataRequestController
             "VibeTable.Desktop.ProductDataRequestController",
             operation,
             code));
+
+    /// <summary>Emits the closed staged failure event; only stage, code, and duration.</summary>
+    private void TraceFailure(
+        string operation,
+        string code,
+        string stage,
+        double durationMs)
+    {
+        try
+        {
+            _traceError(DiagnosticEvent.Failure(
+                "VibeTable.Desktop.ProductDataRequestController",
+                $"{operation}.{stage}",
+                code,
+                durationMs));
+        }
+        catch
+        {
+            // A diagnostics failure must never replace the product reply.
+        }
+    }
 }

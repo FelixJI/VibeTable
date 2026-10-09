@@ -4841,6 +4841,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("field_settings_drawer.test.mjs"),
         runner.NODE_RUNNER.with_name("dashboard_panel_editor_completion.test.mjs"),
         runner.NODE_RUNNER.with_name("import_fault_outcome.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),

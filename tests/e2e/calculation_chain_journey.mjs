@@ -39,6 +39,17 @@ export function calculationChainDisplayText(value) {
   }).format(value);
 }
 
+// Computed apply receipts precede their asynchronous backfill. A subsequent
+// drawer must describe after all fixture rows expose current materialized values.
+export function waitForApplyBackfillFreshness(page, waitForQueryPage, tableId, query, receipt) {
+  const field = receipt.definition.identity.physicalName;
+  return waitForQueryPage(page, { tableId, query }, payload =>
+    payload?.snapshot?.schemaRevision === receipt.schemaRevision
+      && payload.rows?.length === 3
+      && new Set(payload.rows.map(row => row.id)).size === 3
+      && payload.rows.every(row => typeof row[field] === "number" && Number.isFinite(row[field])));
+}
+
 // S38 / #396: UI qualification is deliberately separate from 10k/50k timing.
 // Fixture imports use the visible toolbar and native picker. Computed field
 // creation/editing, source edits, queries, provenance and exports are UI actions;
@@ -105,6 +116,9 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     if (applied.payload?.migrationJobId) {
       const migration = await waitForFieldMigration(page, applied.payload.migrationJobId);
       if (migration.payload?.phase !== "completed") throw new Error(JSON.stringify(migration));
+    }
+    if (["formula", "lookup"].includes(applied.payload?.definition?.logicalType)) {
+      await waitForApplyBackfillFreshness(page, waitForQueryPage, tableId, query, applied.payload);
     }
     await closeFieldSettingsDrawer(page);
     const described = await request("field.settings.describe", { tableId, fieldId: applied.payload.fieldId });

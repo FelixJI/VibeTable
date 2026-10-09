@@ -1453,10 +1453,28 @@ def persist_product_e2e_evidence(
                 )
 
         def copy_runtime_diagnostics(runtime_source: Path, runtime_destination: Path) -> None:
+            # Fixed readiness-root diagnostics only; the shared user desktop.log is never read.
             _copy_if_file(
                 runtime_source / "vibetable-trace.log",
                 runtime_destination / "vibetable-trace.log",
             )
+            # Optional isolated desktop logs: a missing or linked desktop-logs directory is simply skipped.
+            desktop_logs = runtime_source / "desktop-logs"
+            if desktop_logs.is_dir() and not (
+                desktop_logs.is_symlink() or desktop_logs.is_junction()
+            ):
+                current = desktop_logs / "desktop.log"
+                if not (current.is_symlink() or current.is_junction()):
+                    _copy_if_file(current, runtime_destination / "desktop.log")
+                for rotated in sorted(desktop_logs.iterdir()):
+                    if (
+                        rotated.is_symlink()
+                        or rotated.is_junction()
+                        or re.fullmatch(r"desktop-\d{8}-\d{9}\.log", rotated.name) is None
+                        or not rotated.is_file()
+                    ):
+                        continue
+                    _copy_if_file(rotated, runtime_destination / rotated.name)
             workspace_root = runtime_source / "local-data" / "workspaces"
             for log_name in PRODUCT_E2E_RUNTIME_LOGS:
                 for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
