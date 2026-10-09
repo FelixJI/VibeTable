@@ -1651,6 +1651,7 @@ class _DocumentNativeWindows:
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+try {
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
 # Known framework assemblies load by their strong names; the Add-Type
 # utility cmdlet (and its module bootstrap) stays unloaded on this path.
@@ -1746,6 +1747,12 @@ $frame = "VIBETABLE_UIA1" + $tab +
 [Console]::Error.WriteLine("UIA_STAGE encode end elapsedMs=$($clock.ElapsedMilliseconds) length=$($frame.Length)")
 [Console]::Out.Write($frame)
 [Console]::Error.WriteLine("UIA_STAGE output end elapsedMs=$($clock.ElapsedMilliseconds)")
+} catch {
+    # Bypass PowerShell error formatting so failures retain the observation budget.
+    $reason = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+    [Console]::Error.WriteLine("UIA_SCRIPT_ERROR " + $reason.Substring(0, [Math]::Min(1024, $reason.Length)))
+    exit 1
+}
 """
         environment = os.environ.copy()
         environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)

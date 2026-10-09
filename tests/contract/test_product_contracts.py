@@ -82,6 +82,26 @@ def test_product_rpc_catalog_is_current_with_pep695_schema_aliases() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_product_rpc_catalog_is_independent_of_application_version() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys; import backend._version; "
+            "backend._version.__version__ = '9.8.7'; "
+            "sys.argv = [sys.argv[1], '--check']; "
+            "runpy.run_path(sys.argv[0], run_name='__main__')",
+            str(PRODUCT_RPC_CATALOG_GENERATOR.resolve()),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_schema_rpc_result_logical_types_are_closed_string_enums() -> None:
     catalog = _load(FIXTURES / "product-rpc-catalog.json")
     cases = {case["method"]: case for case in catalog["rpcCases"]}
