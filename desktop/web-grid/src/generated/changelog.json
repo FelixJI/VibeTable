@@ -1,6 +1,836 @@
 {
   "entries": [
     {
+      "subject": "feat(import): 接入飞书与 WPS 只读来源和原生迁移向导 (#441)",
+      "commit": "a0a18f8b",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(import): 增加受控多表来源迁移内核 (#440)",
+      "commit": "c7767076",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(import): 统一导入管理并持久化权威结果",
+      "commit": "3c26f3b0",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(search): 修复投影并发写入并收紧恢复验收 (#432)",
+      "commit": "4606fc50",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 修复退役读并升级恢复工具依赖",
+      "commit": "a1b04f7a",
+      "category": "changes"
+    },
+    {
+      "subject": "deps(toolchain): 升级稳定依赖与多栈 SDK 并适配兼容变化",
+      "commit": "06ff8620",
+      "category": "dependencies"
+    },
+    {
+      "subject": "fix(files): 修复文件确认边界并补齐全流程验收",
+      "commit": "99e2afdb",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(files): 贯通历史恢复与文件容量组合验收 (#423)",
+      "commit": "b17c7a6b",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(diff): 补齐 XLSX 类型公式样式差异与定位 (#420)",
+      "commit": "4f722328",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(diff): 接通 DOCX 语义差异与受限 Worker 生产链",
+      "commit": "4a09493f",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 修复计算链夹具清理与分片预算 (#421)",
+      "commit": "f818679a",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(computation): 修复关系生命周期重算并补充组合资格 (#416)",
+      "commit": "044755b5",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(search): 按格式提取 OOXML 可见文本 (#418)",
+      "commit": "0e721d0a",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(diff): 接通 V2 文本差异会话与分页生产链",
+      "commit": "6db8c6b3",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(computation): 完善跨表计算一致性与组合资格 (#404)",
+      "commit": "5744228d",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(formula): 校准预览求值期限并复用来源结构 (#402)",
+      "commit": "a63d5201",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(formula): 支持跨表筛选与类型化集合公式",
+      "commit": "d3bffacc",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(lookup): 增加完整集合计数与数值汇总",
+      "commit": "2fc75d2e",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(formula): 增加日期格式函数与分钟级时钟刷新 (#399)",
+      "commit": "35697f72",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(lookup): 支持无关联字段的条件查找与预览 (#398)",
+      "commit": "c38bfeb3",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(formula): 扩展常用函数与稳定引用编辑体验 (#397)",
+      "commit": "703349c8",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(snapshot): 修复纯表冲突后的关闭保护快照 (#386)",
+      "commit": "c2e6052b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(runtime): 校正按需启动就绪与更新进程退出门禁 (#384)",
+      "commit": "61d4b407",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(paste): 将粘贴计划与单次消费迁入 Go (#366)",
+      "commit": "041fac87",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(data-io): 补齐关系导入映射与 Lookup 导出选列 UI 闭环 (#361)",
+      "commit": "3abaaf89",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(files): 将路径授权和本机文件交互收敛到 Host (#360)",
+      "commit": "981ab213",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(commands): 补齐 Host 命令与持久快捷方式界面 (#359)",
+      "commit": "1640b4fb",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(version): 迁移命名修订至 Go 并接入历史抽屉 (#358)",
+      "commit": "42593596",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(relation): 将三个关系写入方法迁至 Go Product owner (#357)",
+      "commit": "4a078f84",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(grid): 修复同会话 bootstrap 刷新误清冲突详情 (#354)",
+      "commit": "98829eb9",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(runtime): 修复副本重试与工作区就绪竞态 (#353)",
+      "commit": "c37bd7e0",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(replica): 完成目录副本冲突应用与重启恢复可达性 (#333)",
+      "commit": "4742755b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(grid): 丢弃跨表迟到的数据通知防止版本地板毒化 (#337)",
+      "commit": "77712397",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(host): 接管网格呈现状态并完成跨表与进程恢复 (#334)",
+      "commit": "41b68400",
+      "category": "changes"
+    },
+    {
+      "subject": "chore(deps): bump google.golang.org/grpc from 1.83.1 to 1.83.2 in /sidecar (#311)",
+      "commit": "27541152",
+      "category": "dependencies"
+    },
+    {
+      "subject": "fix(data-io): 在写入前校验文件授权并补齐准入资格 (#335)",
+      "commit": "e90889c1",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(dashboard): 由 Go 完整拥有仪表板生命周期与持久重放 (#331)",
+      "commit": "f4bbe7db",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(calendar): 将共享工作日历收敛到工作区权威与真实消费者 (#332)",
+      "commit": "90eaf375",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(data-io): 对齐关系身份并补齐双格式互操作资格",
+      "commit": "d0607872",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(content): 将内容配置与文档关联迁移到 Go 权威路由 (#326)",
+      "commit": "3c713988",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(preset): 将持久视图配置迁移到 Go 权威路由 (#327)",
+      "commit": "c139da63",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(build): 消除自更新锁竞态并可靠判定终态",
+      "commit": "f88e856e",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(surface): 将界面生命周期迁移到 Go 权威路由 (#325)",
+      "commit": "5ff28ac0",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 保留 race 编译超时诊断并有界交回证据 (#328)",
+      "commit": "9fa626a1",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(e2e): 将搜索终态绑定到提交查询 (#323)",
+      "commit": "27e51198",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(workbench): 集成交付计算预检与副本准入 (#320)",
+      "commit": "58032b97",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(mutation): 成对迁移预览应用到 Go 权威路由 (#306)",
+      "commit": "146a9c2c",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(coverage): 在测试会话结束时同步收集覆盖率 (#321)",
+      "commit": "79c2ce4f",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(relation): 提供双端关系只读完整性检查 (#319)",
+      "commit": "25b26039",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(workbench): 集成交付计算与关系配置 (#312)",
+      "commit": "3cd6f832",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(relation): 集成交付关系标签与已验证修复 (#304)",
+      "commit": "3bf03bc6",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(realtime): 将桌面恢复消费切换到 Go 权威流 (#300)",
+      "commit": "dc943980",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(relations): 同步反向关联值与存在标记 (#301)",
+      "commit": "7966cef5",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(realtime): 完成 Go 权威恢复流与订阅水位隔离 (#297)",
+      "commit": "f7c0ad57",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(schema): 完成字段描述与查询快照只读迁移 (#293)",
+      "commit": "38098da2",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 等待完整候选下载后再验证 (#296)",
+      "commit": "a8f00e7c",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(lookup): 将分组查询迁移到 Go authority (#295)",
+      "commit": "f1fb4a2a",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(lookup): 将来源分页迁移到 Go authority (#292)",
+      "commit": "2f02bfcb",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(lookup): 恢复工作区来源面板的完整分页 (#291)",
+      "commit": "187390c7",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 隔离主题探针启动预算并收尾迟到浏览器 (#289)",
+      "commit": "2c211088",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(runtime): 整合已验证只读迁移与资格证据 (#273)",
+      "commit": "f9e3662c",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 串行发送宿主与网页工作区请求 (#270)",
+      "commit": "c97c8333",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 打开新登记工作区时推进持久会话序号 (#253)",
+      "commit": "7092b311",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(rpc): 为 Product 参数预留信封传输空间 (#264)",
+      "commit": "06174eb2",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 将表选择绑定到原工作区请求生命周期 (#259)",
+      "commit": "e825e8d1",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(updater): 释放激活日志锁后再通知完成 (#260)",
+      "commit": "fa2e3f83",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(snapshot): 为导入确认保留可见焦点目标 (#258)",
+      "commit": "b31d6c6d",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 为退休数据请求返回关联终态 (#256)",
+      "commit": "62be3dbf",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 为退休会话请求返回唯一关联终态 (#255)",
+      "commit": "cc0754ed",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(retention): 按快照独立保留对象根集合 (#248)",
+      "commit": "494f8043",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(replica): 单次状态查询超时后继续会话轮询 (#249)",
+      "commit": "e053904d",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(snapshot): 每次检查恢复包重新选择来源 (#247)",
+      "commit": "6ee29a68",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(snapshot): 导入时迁移已完成业务记录并隔离源会话 (#232)",
+      "commit": "4be7c93d",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(snapshot): 接受加密包解锁前的未知工作区标识 (#245)",
+      "commit": "a0b0f535",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(quality): 固定 Go 差异覆盖率共同基线 (#244)",
+      "commit": "aceaf739",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(migrations): 恢复旧数据库计算依赖图 (#233)",
+      "commit": "17ed1639",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(search): 截断 PDF 正文后继续验证流预算 (#238)",
+      "commit": "9a67d74b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(objectrepo): 关闭持有的 Kopia 写入会话",
+      "commit": "bfac4f97",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(build): 标明回退证据读取失败位置 (#231)",
+      "commit": "770fb96e",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(replica): 修复恢复目录晋升后的仓库连接 (#225)",
+      "commit": "ff4f9389",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(data-io): 完善导入容器标量与往返契约 (#224)",
+      "commit": "5074f10b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(updater): 保留首次回退失败原因 (#223)",
+      "commit": "684abb11",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(grid): 保留同表刷新后的有效单元格选区 (#220)",
+      "commit": "2f2cf23a",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 以稳定句柄观测 Job 成员退出 (#219)",
+      "commit": "fbbc8318",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(diff): 建立安全工件边界与源对象零写入契约",
+      "commit": "22896da9",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(contract): 增加公式作者文档与统一计算状态",
+      "commit": "e1a55c7f",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(diff): 建立文档差异 V2 契约 (#214)",
+      "commit": "35967974",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(attachments): 串行化硬删除文件清理 (#202)",
+      "commit": "cc42b91b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(snapshot): 恢复快照附件对象 (#208)",
+      "commit": "57cbad60",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 分离主题探针清理预算 (#204)",
+      "commit": "62710ec0",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(search): 收紧 PDF 提取资源与错误契约 (#203)",
+      "commit": "dc9ff537",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(lookup): 接受权威时间类型映射 (#199)",
+      "commit": "89cf6dec",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 补齐候选分片的插件质量检查 (#194)",
+      "commit": "b9ae6df2",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 同步采样已连接的表格主题 (#195)",
+      "commit": "095a91de",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 保留搜索资格完整诊断报告 (#196)",
+      "commit": "e7cc3ebf",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 正确观测已退出的 Job 成员 (#193)",
+      "commit": "9db30799",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 补齐候选分片的 Python 质量门禁 (#191)",
+      "commit": "12f9c450",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(workspace): 就绪后初始化工作区投影 (#187)",
+      "commit": "f56d3ede",
+      "category": "changes"
+    },
+    {
+      "subject": "chore(deps): bump google.golang.org/grpc from 1.82.1 to 1.83.1 in /sidecar (#178)",
+      "commit": "a5d87f3a",
+      "category": "dependencies"
+    },
+    {
+      "subject": "fix(desktop): 收敛最新 Sidecar 代际恢复 (#181)",
+      "commit": "e2cf370c",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 绑定 Sidecar 代际快照 (#180)",
+      "commit": "d1d6cd3e",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 串行化 Sidecar 代际准入 (#179)",
+      "commit": "8244b0a4",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 固定 Sidecar 代际上下文 (#177)",
+      "commit": "458bfef5",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 回收 Sidecar 代际输出泵 (#176)",
+      "commit": "ed4531ba",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 围栏 Sidecar 代际生命周期 (#175)",
+      "commit": "980891f0",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 统一 Sidecar 退休完成所有权 (#174)",
+      "commit": "672b0b71",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 串行化 Sidecar 生命周期受理 (#173)",
+      "commit": "412c8739",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 隔离 Sidecar 状态观察者 (#172)",
+      "commit": "8f75b272",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 隔离 Python 后端进程代际 (#171)",
+      "commit": "b19a77cb",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 原子发布镜像恢复目录 (#168)",
+      "commit": "756d9fac",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 等待可信辅助进程退出 (#167)",
+      "commit": "c53ec0b6",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(desktop): 绑定固定代际产品侧车 (#165)",
+      "commit": "f90f5e6d",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(sidecar): 保持附件清理幂等 (#166)",
+      "commit": "bfaa641d",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(desktop): 建立产品 RPC 单选路由 (#164)",
+      "commit": "7611ff48",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(desktop): 建立产品 RPC 侧车传输 (#163)",
+      "commit": "32b540e1",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(sidecar): 接入产品 RPC 私有端点 (#162)",
+      "commit": "75f95b83",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(sidecar): 建立产品 RPC 调度核心 (#161)",
+      "commit": "3046fa65",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(contracts): 生成产品 RPC 描述符 (#160)",
+      "commit": "29fa04c7",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(replica): 修复单次恢复布局与迁移 (#159)",
+      "commit": "ce094ebd",
+      "category": "changes"
+    },
+    {
+      "subject": "perf(search): 在全量重建后优化全文索引 (#158)",
+      "commit": "d5a710ee",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(rpc): 防止请求取消截断帧",
+      "commit": "52c579d1",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(update): 修复激活日志并发读取 (#154)",
+      "commit": "171f54ab",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(contracts): 建立产品能力路由策略 (#152)",
+      "commit": "51ce8739",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(sidecar): 区分探测与启动超时 (#150)",
+      "commit": "b0818738",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 稳定结构化弹窗焦点恢复 (#149)",
+      "commit": "d34b060f",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(contracts): 支持 PEP 695 类型别名生成 (#135)",
+      "commit": "0b35f58b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(search): 区分 Unicode emoji 序列 (#133)",
+      "commit": "0f012604",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(retention): 忽略已过期保护 pin (#132)",
+      "commit": "07a45ef8",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 收敛公开 workspace RPC 消费面 (#131)",
+      "commit": "8cba6631",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(updater): 为回滚恢复宿主传递隔离测试参数 (#127)",
+      "commit": "17b28d6c",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(data-io): 保持 XLSX 公式样文本语义 (#126)",
+      "commit": "f5ae0eca",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(workspace): 冻结版本兼容策略 (#128)",
+      "commit": "0091b5b1",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(contracts): 公开 workspace RPC 能力清单 (#125)",
+      "commit": "d1c5938c",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(updater): 自动恢复健康失败更新 (#124)",
+      "commit": "14305c88",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(dashboard): 规避 Windows 保留设备名 (#123)",
+      "commit": "7472de70",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(data-io): 公开 XLSX 导出入口 (#122)",
+      "commit": "ffdab9ca",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(updater): 增加更新后工作区健康确认",
+      "commit": "9e7c1e92",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(updater): 持久化更新激活状态 (#119)",
+      "commit": "eb9c4cc8",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(updater): 延迟清理直到启动确认 (#118)",
+      "commit": "0c580b6f",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(timeline): 支持单日期记录拖动 (#116)",
+      "commit": "24c7d3ec",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 适配 Go 1.27 CodeQL 扫描 (#114)",
+      "commit": "554773bc",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(calendar): 支持日期拖动并保存 (#113)",
+      "commit": "9fd4c4d3",
+      "category": "changes"
+    },
+    {
+      "subject": "chore(deps): 升级多栈依赖并迁移 CodeQL (#68)",
+      "commit": "4a8d3668",
+      "category": "dependencies"
+    },
+    {
+      "subject": "feat(kanban): 支持单选泳道权威拖拽",
+      "commit": "c069294b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(quality): 支持产品 E2E 证据演进",
+      "commit": "2d8de85c",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 保留成功产品 E2E 证据",
+      "commit": "f9f83cbb",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(query): 对齐筛选算子能力映射 (#106)",
+      "commit": "2950c92d",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(dashboard): 阻止不兼容的筛选字段绑定 (#105)",
+      "commit": "4bc7c503",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(views): 绑定预设保存 revision (#103)",
+      "commit": "cc4e6d01",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(contracts): 拒绝非法字段边界 (#100)",
+      "commit": "0515972f",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 稳定键盘上下文菜单焦点 (#99)",
+      "commit": "372b18e5",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(contracts): 收紧枚举与 Schema 结果校验 (#98)",
+      "commit": "0e929a0b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 闭环检查器键盘导航 (#93)",
+      "commit": "1429c468",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 修复结构化弹窗焦点漂移 (#95)",
+      "commit": "afba7e1f",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(qa): 保留侧车传输失败诊断 (#94)",
+      "commit": "1976a945",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 按重连终态提交草稿丢弃 (#92)",
+      "commit": "c85dfdb7",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 退役工作区旧作用域状态 (#91)",
+      "commit": "581a3a71",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 补齐文件列表键盘与拖出一致性 (#89)",
+      "commit": "07e2beed",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(tooling): 增加 Windows 工具链诊断 (#88)",
+      "commit": "eb2146b7",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(files): 恢复缺失文档历史入口 (#86)",
+      "commit": "2c08a164",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 稳定结构化弹窗焦点恢复 (#62)",
+      "commit": "a5324500",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(recovery): 修复恢复重试与错误保留 (#60)",
+      "commit": "0149afe7",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(web): 对话框焦点恢复改用枚举行快照定位 (#57)",
+      "commit": "c19bd5aa",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(sidecar): 保留恢复校验失败的底层诊断信息 (#56)",
+      "commit": "9038f986",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(workbench): 完成离线数据工作台闭环 (#55)",
+      "commit": "b8c7833f",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(deps): 升级 nanoid 修复拒绝服务漏洞 (#52)",
+      "commit": "61017fc9",
+      "category": "dependencies"
+    },
+    {
       "subject": "fix(data-io): 完善批量导入预检与变化摘要 (#48)",
       "commit": "bf0e3c3c",
       "category": "changes"
