@@ -6,7 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
+from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
 
@@ -95,6 +97,112 @@ def _open_process_for_wait(pid: int) -> tuple[ctypes.WinDLL, int]:
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error(), f"OpenProcess({pid})")
     return kernel32, int(handle)
+
+
+def _wait_for_child_only_job_membership(
+    query_members: Callable[[], set[int]],
+    *,
+    root_pid: int,
+    child_pid: int,
+    deadline: float,
+) -> None:
+    # A signaled root handle can precede its removal from the Job PID list.
+    # Only that known transition is allowed before child-only fault injection.
+    while True:
+        members = query_members()
+        if members == {child_pid}:
+            return
+        assert members == {root_pid, child_pid}, (
+            f"unexpected fixture Job members: {sorted(members)}"
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"root {root_pid} did not leave the fixture Job before the deadline; "
+                f"last members={sorted(members)}"
+            )
+        # Match the existing native E2E observation cadence, capped by the
+        # original root-exit deadline rather than adding another wait budget.
+        time.sleep(min(0.025, remaining))
+
+
+def _fixture_clock(
+    monkeypatch: pytest.MonkeyPatch, initial: float
+) -> tuple[list[float], list[float]]:
+    clock = [initial]
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+    return clock, sleeps
+
+
+def test_fixture_waits_for_job_removal_after_root_is_signaled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clock, sleeps = _fixture_clock(monkeypatch, 10.0)
+    snapshots = iter(({42, 7}, {7}))
+    observed: list[set[int]] = []
+
+    def query_members() -> set[int]:
+        members = next(snapshots)
+        observed.append(members)
+        return members
+
+    _wait_for_child_only_job_membership(query_members, root_pid=42, child_pid=7, deadline=15.0)
+
+    assert observed == [{42, 7}, {7}]
+    assert sleeps == [0.025]
+
+
+@pytest.mark.parametrize(
+    "members", [{42, 7, 99}, {42}, set()], ids=["unknown-pid", "missing-child", "empty"]
+)
+def test_fixture_membership_wait_rejects_other_transitions(
+    monkeypatch: pytest.MonkeyPatch, members: set[int]
+) -> None:
+    _clock, sleeps = _fixture_clock(monkeypatch, 10.0)
+    with pytest.raises(AssertionError, match="unexpected fixture Job members"):
+        _wait_for_child_only_job_membership(
+            lambda: members, root_pid=42, child_pid=7, deadline=15.0
+        )
+    assert sleeps == []
+
+
+def test_fixture_membership_wait_preserves_query_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clock, sleeps = _fixture_clock(monkeypatch, 10.0)
+    failure = OSError("fixture Job query denied")
+
+    def query_members() -> set[int]:
+        raise failure
+
+    with pytest.raises(OSError, match="fixture Job query denied") as error:
+        _wait_for_child_only_job_membership(query_members, root_pid=42, child_pid=7, deadline=15.0)
+    assert error.value is failure
+    assert sleeps == []
+
+
+def test_fixture_membership_wait_uses_the_existing_root_exit_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, sleeps = _fixture_clock(monkeypatch, 14.99)
+    observed: list[set[int]] = []
+
+    def query_members() -> set[int]:
+        observed.append({42, 7})
+        return observed[-1]
+
+    with pytest.raises(TimeoutError, match=r"last members=\[7, 42\]"):
+        _wait_for_child_only_job_membership(query_members, root_pid=42, child_pid=7, deadline=15.0)
+    assert observed == [{42, 7}, {42, 7}]
+    assert sleeps == pytest.approx([0.01])
+    assert clock == [15.0]
 
 
 def _current_process_handle_count() -> int:
@@ -593,8 +701,15 @@ def test_wait_empty_observes_child_without_image_metadata(
         try:
             ready.wait()
             child_pid = _read_pid(pid_path)
+            root_exit_deadline = time.monotonic() + 15
             root_release.set()
-            assert scope.root.wait(timeout=15) == 0
+            assert scope.root.wait(timeout=max(0.0, root_exit_deadline - time.monotonic())) == 0
+            _wait_for_child_only_job_membership(
+                lambda: {member.pid for member in scope.snapshot().members},
+                root_pid=scope.root.pid,
+                child_pid=child_pid,
+                deadline=root_exit_deadline,
+            )
             assert {member.pid for member in scope.snapshot().members} == {child_pid}
             child_wait = _open_process_for_wait(child_pid)
             kernel32, stable_handle = child_wait
