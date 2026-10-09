@@ -798,7 +798,9 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
     const sourceSchema = store.formulaSourceSchema;
     if (!sourceSchema || store.formulaCatalogLoading || store.formulaCatalogError) {
       // Only an installed, current catalog yields a well-formed sample; loadFormulaCatalog reschedules after install.
-      store.setFormulaPreviewNote("正在等待公式字段目录，完成后自动预览样例结果");
+      store.setFormulaPreviewNote(store.formulaCatalogError
+        ? "公式字段目录加载失败，暂时无法预览样例结果"
+        : "正在等待公式字段目录，完成后自动预览样例结果");
       return;
     }
     // The grid adds a primary-key column that is not a Schema V2 formula input.
