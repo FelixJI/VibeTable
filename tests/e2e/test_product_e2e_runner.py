@@ -6151,6 +6151,7 @@ def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed
         ((1,), 5, "Edit"),
         ((2,), 5, "Document"),
         ((0,), 5, "Document"),
+        ((-1,), 0, "Document"),
     ],
 )
 def test_native_document_query_waits_only_for_absent_provider_with_original_budget(
@@ -6192,10 +6193,19 @@ def test_native_document_query_waits_only_for_absent_provider_with_original_budg
     harness = (
         """
 $ErrorActionPreference = 'Stop'
+# Error reporting must finish even when the PowerShell formatter blocks.
+function Out-Default {
+    [Console]::Error.WriteLine("FORMATTER_GUARD_INVOKED")
+    Start-Sleep -Seconds 20
+}
 $script:counts = @(COUNTS)
 $script:call = 0
 $root = [pscustomobject]@{}
 $root | Add-Member ScriptMethod FindAll {
+    # A negative count represents a provider exception.
+    if ($script:counts[0] -lt 0) {
+        throw [InvalidOperationException]::new('synthetic provider failure')
+    }
     $count = $script:counts[[Math]::Min($script:call, $script:counts.Count - 1)]
     $script:call++
     $window = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.Window"}}}
@@ -6212,16 +6222,19 @@ $root | Add-Member ScriptMethod FindAll {
 [Console]::Out.WriteLine("TEST_PROVIDER_READY")
 if ([Console]::ReadLine() -ne "query") { throw "query start was not requested" }
 $clock = [System.Diagnostics.Stopwatch]::StartNew()
+try {
 """.replace("COUNTS", ",".join(map(str, counts)))
         .replace("STATUS_PANES", str(status_panes))
         .replace("CONTROL_TYPE", control_type)
     )
+    # Exercise the production handler for validation and provider errors.
+    catch = script[script.index("} catch {") :]
     command = [
         "powershell.exe",
         "-NoProfile",
         "-NonInteractive",
         "-EncodedCommand",
-        base64.b64encode((harness + query).encode("utf-16-le")).decode("ascii"),
+        base64.b64encode((harness + query + catch).encode("utf-16-le")).decode("ascii"),
     ]
     # This test times the query, not cold PowerShell startup or installation of
     # the fake provider. The complete production process still has the 5s
@@ -6257,6 +6270,10 @@ $clock = [System.Diagnostics.Stopwatch]::StartNew()
                 assert process.returncode == (0 if counts[-1] == 1 else 1), stderr
                 if counts == (2,):
                     assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in stderr
+                if counts == (-1,):
+                    assert "UIA_SCRIPT_ERROR " in stderr
+                    assert "synthetic provider failure" in stderr
+            assert "FORMATTER_GUARD_INVOKED" not in stderr, stderr
         finally:
             if process.poll() is None:
                 process.kill()
