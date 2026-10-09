@@ -622,16 +622,34 @@ async function createV2Field(
   };
 }
 
-async function closeFieldSettingsDrawer(page) {
-  const confirmation = page.waitForEvent("dialog", { timeout: 2_000 })
-    .then(async (dialog) => {
+export async function closeFieldSettingsDrawer(page) {
+  // The drawer fires a native confirm only when dirty; clean closes must not pay a fixed dialog wait.
+  let markDialogSettled;
+  const dialogSettled = new Promise((resolve) => {
+    markDialogSettled = resolve;
+  });
+  let dialogSeen = false;
+  let acceptFailure;
+  const onDialog = async (dialog) => {
+    dialogSeen = true;
+    try {
       await dialog.accept();
-      return dialog.message();
-    })
-    .catch(() => null);
-  await page.getByTestId("field-close-button").click();
-  await confirmation;
-  await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
+    } catch (error) {
+      acceptFailure ??= error;
+    } finally {
+      markDialogSettled();
+    }
+  };
+  page.on("dialog", onDialog);
+  try {
+    await page.getByTestId("field-close-button").click();
+    if (dialogSeen) await dialogSettled;
+    if (acceptFailure) throw acceptFailure;
+    await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
+    if (acceptFailure) throw acceptFailure;
+  } finally {
+    page.off("dialog", onDialog);
+  }
 }
 
 async function applyV2FieldChange(
