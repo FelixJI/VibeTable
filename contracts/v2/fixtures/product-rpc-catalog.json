@@ -16271,7 +16271,7 @@
             "theme": "light",
             "density": "comfortable",
             "user": {},
-            "hostVersion": "0.5.1"
+            "hostVersion": "1.0.0"
           }
         }
       },
@@ -18316,7 +18316,7 @@
             "theme": "light",
             "density": "comfortable",
             "user": {},
-            "hostVersion": "0.5.1"
+            "hostVersion": "1.0.0"
           },
           "input": {},
           "taskId": "00000000-0000-4000-8000-000000000001",

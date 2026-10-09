@@ -194,7 +194,7 @@ def _text(name: str) -> str:
         return "data_0001"
     if "revision" in name.lower():
         return "a" * 64
-    if name in {"version", "plugin_version", "pluginVersion"}:
+    if name in {"version", "plugin_version", "pluginVersion", "host_version", "hostVersion"}:
         return "1.0.0"
     if name in {"project_key", "projectKey"}:
         return "local:default"
@@ -364,7 +364,8 @@ def _model_payload(
         return model.model_validate(value).model_dump(mode="json")
     raw: dict[str, object] = {}
     for name, field in model.model_fields.items():
-        if field.is_required() or name.endswith("_at"):
+        # Golden examples must not inherit the running application version.
+        if field.is_required() or name.endswith("_at") or name == "host_version":
             if model.__module__ == "backend.contracts.backup" and name == "name":
                 value: object = "manual_20260724_083100.zip"
             elif model.__module__ == "backend.contracts.backup" and name == "sha256":
