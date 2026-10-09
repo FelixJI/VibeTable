@@ -1102,6 +1102,286 @@ describe("field settings service", () => {
     },
   );
 
+  /** S38 catalog/preview race: source catalog resolves, relation target defers. */
+  async function deferredFormulaCatalog() {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    const lookupColumn = {
+      name: "f_lookup", title: "匹配金额", fieldId: "fld_lookup", kind: "lookup" as const,
+      dataType: "decimal" as const, editable: false, nullable: true,
+    };
+    const relationColumn = {
+      name: "f_lines", title: "明细", fieldId: "fld_lines", kind: "relation" as const,
+      dataType: "relation" as const, editable: true, nullable: true,
+      relationId: "tbl_opaque.fld_lines",
+    };
+    const sourceSchema = {
+      contract: "vibetable.schema-describe.v1",
+      collection: "tbl_opaque",
+      requestGeneration: 0,
+      schema: {
+        collection: "tbl_opaque", primaryKey: "id", primaryDisplayFieldId: "fld_lookup",
+        columns: [lookupColumn, relationColumn],
+        normalizedRelations: [{
+          relationId: "tbl_opaque.fld_lines", kind: "o2m" as const,
+          relatedCollection: "tbl_lines", relatedCollectionDisplayName: "明细",
+          junction: null,
+        }],
+        schemaRevision: "schema_7", permissionRevision: "schema_7",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    };
+    const document = { displaySource: "{匹配金额} + 1", documentRevision: 1, tokens: [] };
+    let resolveTargetValue!: (value: unknown) => void;
+    const targetSchemaDescribe = new Promise<unknown>(resolve => {
+      resolveTargetValue = resolve;
+    });
+    request.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "schema.describe") {
+        return params.collection === "tbl_lines"
+          ? targetSchemaDescribe
+          : Promise.resolve(sourceSchema);
+      }
+      if (method === "formula.draft.validate") {
+        if (params.restoreSource === true) {
+          return Promise.resolve({
+            canonicalSource: "0", resultType: "number", dependencies: [],
+            relationAggregatePaths: [], authorDocument: document, functions: [],
+          });
+        }
+        if (params.displaySource !== document.displaySource) {
+          return Promise.resolve({
+            error: {
+              code: "formula.parse", message: "公式无法解析", details: {}, retryable: false,
+            },
+          });
+        }
+        return Promise.resolve({
+          canonicalSource: "f_lookup + 1", resultType: "number",
+          dependencies: ["fld_lookup"], relationAggregatePaths: [], authorDocument: document,
+        });
+      }
+      if (method === "formula.preview") {
+        return Promise.resolve({ values: { f_formula_preview: 1 } });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque",
+      columns: [lookupColumn],
+      rows: [{
+        rowKey: "r1", id: "r1",
+        f_lookup: {
+          state: "ok", value: 0, provenance: [], provenanceTotal: 0,
+          provenanceTotalKnown: true, provenanceOffset: 0, provenanceLimit: 100,
+          provenanceHasMore: false,
+        },
+      }],
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    await service.openCreate("tbl_opaque", "formula");
+    const catalogLoad = service.loadFormulaCatalog();
+    const previewCalls = () => request.mock.calls
+      .filter(([method]) => method === "formula.preview");
+    const restoreCalls = () => request.mock.calls
+      .filter(([method, params]) => method === "formula.draft.validate"
+        && (params as Record<string, unknown>).restoreSource === true);
+    return {
+      service, store, document, catalogLoad,
+      resolveTarget: resolveTargetValue, previewCalls, restoreCalls,
+    };
+  }
+
+  it("defers the sample preview until the formula catalog is installed", async () => {
+    const { service, store, document, catalogLoad, resolveTarget, previewCalls, restoreCalls }
+      = await deferredFormulaCatalog();
+
+    await service.validateFormulaDraft({
+      kind: "document", displaySource: document.displaySource, authorDocument: document,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+
+    // The relation-target catalog is still loading: the committed validation
+    // must not leave with an empty activation row.
+    expect(previewCalls()).toEqual([]);
+    expect(restoreCalls()).toEqual([]);
+    expect(store.formulaValidation?.canonicalSource).toBe("f_lookup + 1");
+    expect(store.formulaPreviewNote).toContain("公式字段目录");
+
+    resolveTarget(relationSchema("tbl_lines"));
+    await catalogLoad;
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(previewCalls()).toHaveLength(1);
+    expect(previewCalls()[0]?.[1]).toEqual(expect.objectContaining({
+      row: { f_lookup: 0 },
+      changedFieldIds: [],
+    }));
+    expect(store.formulaPreviewReady).toBe(true);
+    expect(store.formulaPreviewValue).toBe(1);
+    expect(store.formulaValidatedSource).toBe(document.displaySource);
+  });
+
+  it("does not replay the deferred validation preview after the drawer closes", async () => {
+    const { service, store, document, catalogLoad, resolveTarget, previewCalls, restoreCalls }
+      = await deferredFormulaCatalog();
+    await service.validateFormulaDraft({
+      kind: "document", displaySource: document.displaySource, authorDocument: document,
+    });
+    vi.stubGlobal("confirm", () => true);
+    service.requestClose();
+
+    resolveTarget(relationSchema("tbl_lines"));
+    await catalogLoad;
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.open).toBe(false);
+    expect(store.formulaValidation).toBeNull();
+    expect(previewCalls()).toEqual([]);
+    expect(restoreCalls()).toEqual([]);
+  });
+
+  it("does not replay the deferred validation preview after a newer document fails", async () => {
+    const { service, store, document, catalogLoad, resolveTarget, previewCalls, restoreCalls }
+      = await deferredFormulaCatalog();
+    await service.validateFormulaDraft({
+      kind: "document", displaySource: document.displaySource, authorDocument: document,
+    });
+    await service.validateFormulaDraft({
+      kind: "document", displaySource: "{匹配金额} +",
+      authorDocument: { displaySource: "{匹配金额} +", documentRevision: 2, tokens: [] },
+    });
+
+    resolveTarget(relationSchema("tbl_lines"));
+    await catalogLoad;
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(store.formulaValidation).toBeNull();
+    expect(store.formulaValidationError).toBe("公式无法解析");
+    expect(previewCalls()).toEqual([]);
+    expect(restoreCalls()).toEqual([]);
+  });
+
+  it("does not preview from the stale source while the catalog reloads", async () => {
+    const described = { ...describeResult(false), capabilities: [formulaCapability()] };
+    const priceColumn = {
+      name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar" as const,
+      dataType: "decimal" as const, editable: true, nullable: false,
+    };
+    const lookupColumn = {
+      name: "f_lookup", title: "匹配金额", fieldId: "fld_lookup", kind: "lookup" as const,
+      dataType: "decimal" as const, editable: false, nullable: true,
+    };
+    const relationColumn = {
+      name: "f_lines", title: "明细", fieldId: "fld_lines", kind: "relation" as const,
+      dataType: "relation" as const, editable: true, nullable: true,
+      relationId: "tbl_opaque.fld_lines",
+    };
+    const schemaDescribe = (
+      columns: readonly unknown[],
+      normalizedRelations: readonly unknown[],
+    ) => ({
+      contract: "vibetable.schema-describe.v1",
+      collection: "tbl_opaque",
+      requestGeneration: 0,
+      schema: {
+        collection: "tbl_opaque", primaryKey: "id", primaryDisplayFieldId: "fld_price",
+        columns, normalizedRelations,
+        schemaRevision: "schema_7", permissionRevision: "schema_7",
+        capabilityHash: "cap", lookupRevision: "lookup",
+      },
+      capabilities: {
+        contract: "vibetable.relation-capabilities.v1",
+        relationReadV1: true, relationEditV1: true, lookupQueryV1: true, reason: null,
+      },
+    });
+    let catalogSource = schemaDescribe([priceColumn], []);
+    let resolveTargetValue!: (value: unknown) => void;
+    const targetSchemaDescribe = new Promise<unknown>(resolve => {
+      resolveTargetValue = resolve;
+    });
+    const document = { displaySource: "{单价} + {匹配金额}", documentRevision: 1, tokens: [] };
+    request.mockImplementation((method: string, params: Record<string, unknown>) => {
+      if (method === "field.settings.describe") return Promise.resolve(described);
+      if (method === "schema.describe") {
+        return params.collection === "tbl_lines" ? targetSchemaDescribe
+          : Promise.resolve(catalogSource);
+      }
+      if (method === "formula.draft.validate") {
+        if (params.restoreSource === true) {
+          return Promise.resolve({
+            canonicalSource: "0", resultType: "number", dependencies: [],
+            relationAggregatePaths: [], authorDocument: document, functions: [],
+          });
+        }
+        return Promise.resolve({
+          canonicalSource: "f_price + f_lookup", resultType: "number",
+          dependencies: ["fld_price", "fld_lookup"], relationAggregatePaths: [],
+          authorDocument: document,
+        });
+      }
+      if (method === "formula.preview") {
+        return Promise.resolve({ values: { f_formula_preview: 21 } });
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const service = useFieldSettingsService();
+    const store = useFieldSettingsStore();
+    const table = useTableStore();
+    table.beginLoad();
+    table.appendPage({
+      table: "tbl_opaque",
+      columns: [priceColumn, lookupColumn],
+      rows: [{
+        rowKey: "r2", id: "r2", f_price: 21,
+        f_lookup: {
+          state: "ok", value: 0, provenance: [], provenanceTotal: 0,
+          provenanceTotalKnown: true, provenanceOffset: 0, provenanceLimit: 100,
+          provenanceHasMore: false,
+        },
+      }],
+      offset: 0, limit: 1, totalRows: 1, mode: "remote",
+    });
+    await service.openCreate("tbl_opaque", "formula");
+    await service.loadFormulaCatalog();
+    expect(store.formulaSourceSchema?.columns).toHaveLength(1);
+
+    catalogSource = schemaDescribe([priceColumn, lookupColumn, relationColumn], [{
+      relationId: "tbl_opaque.fld_lines", kind: "o2m" as const,
+      relatedCollection: "tbl_lines", relatedCollectionDisplayName: "明细",
+      junction: null,
+    }]);
+    const reload = service.loadFormulaCatalog();
+    await service.validateFormulaDraft({
+      kind: "document", displaySource: document.displaySource, authorDocument: document,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(request.mock.calls.filter(([method]) => method === "formula.preview")).toEqual([]);
+    expect(store.formulaCatalogLoading).toBe(true);
+    expect(store.formulaValidation?.canonicalSource).toBe("f_price + f_lookup");
+
+    resolveTargetValue(relationSchema("tbl_lines"));
+    await reload;
+    await vi.advanceTimersByTimeAsync(300);
+
+    const previews = request.mock.calls.filter(([method]) => method === "formula.preview");
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.[1]).toEqual(expect.objectContaining({
+      row: { f_price: 21, f_lookup: 0 },
+    }));
+    expect(store.formulaSourceSchema?.columns).toHaveLength(3);
+    expect(store.formulaPreviewValue).toBe(21);
+  });
+
   it("invalidates the previous validation and preview as soon as the input changes", async () => {
     const described = { ...describeResult(false), capabilities: [formulaCapability()] };
     request.mockImplementation((method: string) => {
@@ -1134,6 +1414,10 @@ describe("field settings service", () => {
       offset: 0, limit: 1, totalRows: 1, mode: "remote",
     });
     await service.openCreate("tbl_opaque", "formula");
+    store.setFormulaCatalog({ ...relationSchema("tbl_opaque").schema, columns: [{
+      name: "f_price", title: "单价", fieldId: "fld_price", kind: "scalar",
+      dataType: "decimal", editable: true, nullable: false,
+    }] }, {});
 
     await service.validateFormulaDraft({
       kind: "document",
@@ -1188,6 +1472,10 @@ describe("field settings service", () => {
       offset: 0, limit: 1, totalRows: 1, mode: "remote",
     });
     await service.openCreate("tbl_opaque", "formula");
+    store.setFormulaCatalog({ ...relationSchema("tbl_opaque").schema, columns: [{
+      name: "f_due", title: "到期", fieldId: "fld_due", kind: "scalar",
+      dataType: "date", editable: true, nullable: false,
+    }] }, {});
 
     await service.validateFormulaDraft({
       kind: "document",

@@ -651,7 +651,14 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       store.setFormulaCatalog(source, Object.fromEntries(
         resolved.map(item => [item.fieldId, item.schema]),
       ));
-      if (requestGeneration !== formulaValidationGeneration) return;
+      if (requestGeneration !== formulaValidationGeneration) {
+        // Consume the still-current validation for the deferred preview; restoring would overwrite newer user input.
+        if (catalogIsLive() && store.draft?.logicalType === "formula"
+          && store.formulaValidation) {
+          scheduleFormulaPreview(store.formulaValidation);
+        }
+        return;
+      }
       const persisted = store.draft?.formula?.source ?? "";
       if (persisted) {
         // Restore the persisted canonical text into a stable-token document.
@@ -789,10 +796,15 @@ export function useFieldSettingsService(options: FieldSettingsServiceOptions = {
       store.draft?.displayName ?? "公式预览",
     );
     const sourceSchema = store.formulaSourceSchema;
+    if (!sourceSchema || store.formulaCatalogLoading || store.formulaCatalogError) {
+      // Only an installed, current catalog yields a well-formed sample; loadFormulaCatalog reschedules after install.
+      store.setFormulaPreviewNote("正在等待公式字段目录，完成后自动预览样例结果");
+      return;
+    }
     // The grid adds a primary-key column that is not a Schema V2 formula input.
     // Keep declared system fields such as AutoDate in the preview activation.
-    const columns = sourceSchema?.columns
-      .filter(item => item.name !== sourceSchema.primaryKey) ?? [];
+    const columns = sourceSchema.columns
+      .filter(item => item.name !== sourceSchema.primaryKey);
     const sample: Record<string, JsonValueV2> = {};
     store.beginFormulaPreview();
     for (const column of columns) {
