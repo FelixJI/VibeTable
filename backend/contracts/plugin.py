@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend._version import __version__
+
 
 def _camel(value: str) -> str:
     first, *rest = value.split("_")
@@ -169,7 +171,7 @@ class CommandContext(PluginContract):
     theme: Literal["light", "dark"] = "light"
     density: str = "comfortable"
     user: dict[str, Any] = Field(default_factory=dict)
-    host_version: str = "1.0.0"
+    host_version: str = __version__
 
 
 class ActionAvailability(PluginContract):
@@ -196,7 +198,8 @@ class PluginResult(PluginContract):
 class MutationOperation(PluginContract):
     kind: Literal["create", "update"]
     primary_key: str | int | None = None
-    expected_date_updated: str | None = None
+    expected_date_updated: str | None = Field(default=None, pattern=r"^row_[0-9]{4,}$")
+    expected_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     values: dict[str, Any]
 
 
@@ -218,6 +221,23 @@ class PluginSafeError(PluginContract):
     run_id: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
     cause_id: str | None = None
+
+
+class PluginExecutionError(RuntimeError):
+    """A stable diagnostic at the plugin execution boundary."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class PluginCommitUnknownError(PluginExecutionError):
+    """The Go commit may have completed; no automatic replay is safe here."""
+
+    def __init__(
+        self, message: str = "Plugin commit outcome is unknown; inspect the records."
+    ) -> None:
+        super().__init__(message, code="plugin_commit_unknown")
 
 
 class PluginTaskSnapshot(PluginContract):

@@ -26,6 +26,212 @@ function view(input: Partial<PresetView>): PresetView {
 }
 
 describe("alternative record views", () => {
+  it("formats configured title fields on gallery and kanban cards", () => {
+    const numeric: ColumnSchema = { name: "title", title: "标题", dataType: "decimal", editable: true, nullable: true,
+      display: { kind: "number", preset: "progress", displayScale: 2, scaleMode: "max", trimTrailingZeros: true,
+        useGrouping: false, currency: "CNY", percentStorage: "ratio", unit: null, precision: "exact",
+        timezone: "system", mode: "default", trueLabel: "是", falseLabel: "否" } };
+    const select: ColumnSchema = { ...numeric, dataType: "text", display: { ...numeric.display!, kind: "select", preset: "" },
+      enumOptions: [{ optionId: "a", label: "标签", color: "blue", order: 0, state: "active" }] };
+    const rich: ColumnSchema = { ...select, display: { ...select.display!, kind: "editor" } };
+    for (const component of [RecordGalleryView, RecordKanbanView]) {
+      for (const [column, value, expected] of [[numeric, 1.5, "150%"], [select, "a", "标签"],
+        [rich, "<b>摘要</b><script>alert(1)</script>", "摘要"]] as const) {
+        const card = mount(component, { props: { rows: [{ rowKey: "one", title: value, status: "open" }], schema: [column, schema[1]],
+          view: view({ kind: component === RecordGalleryView ? "gallery" : "kanban", titleField: "title", groupField: "status" }) } });
+        expect(card.find("article strong").text()).toBe(expected);
+        expect(card.find("script").exists()).toBe(false); card.unmount();
+      }
+    }
+  });
+
+  it("renders authoritative Formula numeric lists on cards from bare query values", () => {
+    const column = {
+      name: "numbers", title: "数值", kind: "formula", dataType: "json", resultElementType: "number",
+      editable: false, nullable: true,
+      display: { kind: "readonly", preset: "currency", displayScale: 2, scaleMode: "fixed",
+        trimTrailingZeros: false, useGrouping: true, currency: "CNY" as const, percentStorage: "ratio" as const,
+        unit: null, precision: "exact", timezone: "system", mode: "default", indent: 0,
+        trueLabel: "是", falseLabel: "否" },
+    } as ColumnSchema;
+    const values = Object.freeze([1234.56789, null, 0]);
+    const gallery = mount(RecordGalleryView, { props: {
+      rows: [
+        { rowKey: "1", title: "A", numbers: values },
+        { rowKey: "2", title: "B", numbers: { state: "ready", value: values } },
+        { rowKey: "3", title: "C", numbers: { state: "failed", value: values } },
+      ], schema: [...schema, column],
+      view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "numbers"] }),
+    } });
+    const cards = gallery.findAll('[data-testid="gallery-card"]');
+    expect(cards[0].text()).toContain("¥1,234.57 ·  · ¥0.00");
+    expect(cards[1].text()).toContain("¥1,234.57 ·  · ¥0.00");
+    expect(cards[2].text()).toContain("计算失败");
+    expect(cards[2].text()).not.toContain("1,234");
+    expect(values).toEqual([1234.56789, null, 0]);
+  });
+
+  it("renders relation card fields through the shared typed label projection with fallback spec", async () => {
+    const relationColumn = {
+      name: "contract", title: "合同", kind: "relation" as const, dataType: "text" as const,
+      relationId: "lines.contract", editable: true, nullable: true,
+    } as ColumnSchema;
+    const relations = [{
+      relationId: "lines.contract",
+      fieldRef: "contract",
+      sourceCollection: "lines",
+      kind: "m2m" as const,
+      relatedCollection: "contracts",
+      unique: false,
+      nullable: true,
+      onDelete: "nullify" as const,
+      preset: "standard" as const,
+      selfRelation: false,
+      managed: true,
+      state: "valid" as const,
+      diagnostics: [],
+      displayFieldInfo: {
+        fieldId: "fld_rate", dataType: "decimal" as const,
+        display: { kind: "number" as const, preset: "percent" as const, displayScale: 1, scaleMode: "fixed" as const,
+          trimTrailingZeros: false, useGrouping: true, currency: "" as const, percentStorage: "ratio" as const,
+          unit: null, precision: "exact" as const, timezone: "system" as const,
+          mode: "default" as const, indent: 0 as const, trueLabel: "是", falseLabel: "否" },
+      },
+      fallbackDisplayFieldInfo: {
+        fieldId: "fld_amount", dataType: "decimal" as const,
+        display: { kind: "number" as const, preset: "currency" as const, displayScale: 2, scaleMode: "fixed" as const,
+          trimTrailingZeros: false, useGrouping: true, currency: "CNY" as const, percentStorage: "ratio" as const,
+          unit: null, precision: "exact" as const, timezone: "system" as const,
+          mode: "default" as const, indent: 0 as const, trueLabel: "是", falseLabel: "否" },
+      },
+    }];
+    const ids = ["t1", "t2", "t3", "t4"];
+    const gallery = mount(RecordGalleryView, { props: {
+      rows: [{
+        rowKey: "1", title: "A", contract: ids,
+        __vibetableRelationLabels: {
+          contract: {
+            t1: { value: 0.125, source: "display" },
+            t2: { value: 1982, source: "primary" },
+            t3: { value: false, source: "display" },
+          },
+        },
+      }], schema: [...schema, relationColumn], relations,
+      view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "contract"] }),
+    } });
+    const card = gallery.get('[data-testid="gallery-card"]').text();
+    expect(card).toContain("12.5% · ¥1,982.00 · ✕ +1");
+    await gallery.setProps({ view: view({ kind: "gallery", titleField: "contract" }) });
+    expect(gallery.get(".gallery-copy > strong").text()).toBe("12.5% · ¥1,982.00 · ✕ +1");
+  });
+
+  it("renders formula envelopes on cards by authoritative result type, never stale values (AC4)", () => {
+    const formulaColumn = {
+      name: "total", title: "合计", kind: "formula" as const, dataType: "decimal" as const,
+      editable: false, nullable: true,
+      display: {
+        kind: "readonly", preset: "currency", displayScale: 2, scaleMode: "fixed",
+        trimTrailingZeros: false, useGrouping: true, currency: "CNY",
+        percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+        mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+      },
+    } as ColumnSchema;
+    const gallery = mount(RecordGalleryView, {
+      props: {
+        rows: [
+          { rowKey: "1", title: "A", total: { state: "ready", value: 1234.56789 } },
+          { rowKey: "2", title: "B", total: { state: "updating", value: 1234.56789 } },
+        ],
+        schema: [...schema, formulaColumn],
+        view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "total"] }),
+      },
+    });
+    const cards = gallery.findAll('[data-testid="gallery-card"]');
+    expect(cards[0].text()).toContain("¥1,234.57");
+    // 非 fresh 状态显示真实状态，不把旧值当新结果显示。
+    expect(cards[1].text()).toContain("计算中");
+    expect(cards[1].text()).not.toContain("1,234");
+  });
+
+  it("renders lookup envelopes on cards by authoritative output type and state (AC4)", () => {
+    const lookupColumn = {
+      name: "prices", title: "价格", kind: "lookup" as const, dataType: "json" as const,
+      editable: false, nullable: true, lookupId: "orders.prices",
+      display: {
+        kind: "readonly", preset: "", displayScale: 2, scaleMode: "max",
+        trimTrailingZeros: true, useGrouping: true, currency: "CNY",
+        percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+        mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+      },
+    } as ColumnSchema;
+    const definitions = [{
+      lookupId: "orders.prices", collection: "orders", fieldKey: "prices", displayName: "价格",
+      path: [], source: { kind: "target_field" as const, fieldRef: "price" },
+      outputType: "decimal" as const, resultCardinality: "many" as const,
+      revision: 1, state: "valid" as const, diagnostics: [], dependencies: [],
+    }];
+    const gallery = mount(RecordGalleryView, {
+      props: {
+        rows: [
+          { rowKey: "1", title: "A", prices: { state: "ok", value: [1.5, 1234.56789], provenance: [] } },
+          { rowKey: "2", title: "B", prices: { state: "restricted", value: [42], provenance: [] } },
+        ],
+        schema: [...schema, lookupColumn],
+        lookupDefinitions: definitions,
+        view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "prices"] }),
+      },
+    });
+    const cards = gallery.findAll('[data-testid="gallery-card"]');
+    expect(cards[0].text()).toContain("1.5 · 1,234.57");
+    expect(cards[1].text()).toContain("受限");
+    expect(cards[1].text()).not.toContain("42");
+  });
+
+  it("keeps runtime number-looking values unformatted for non-numeric declared columns", () => {
+    const textColumn = { name: "code", title: "代码", dataType: "text", editable: true, nullable: true } as ColumnSchema;
+    const gallery = mount(RecordGalleryView, {
+      props: {
+        rows: [{ rowKey: "1", title: "A", code: 1234.56789 }],
+        schema: [...schema, textColumn],
+        view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "code"] }),
+      },
+    });
+    expect(gallery.get('[data-testid="gallery-card"]').text()).toContain("1234.56789");
+  });
+
+  it("renders numeric fields through the authoritative column display in cards and lanes (AC4)", () => {
+    const amountColumn = {
+      name: "amount", title: "金额", dataType: "decimal" as const, editable: true, nullable: true,
+      display: {
+        kind: "number", preset: "currency", displayScale: 2, scaleMode: "fixed",
+        trimTrailingZeros: false, useGrouping: true, currency: "CNY",
+        percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+        mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+      },
+    } as ColumnSchema;
+    const kanban = mount(RecordKanbanView, {
+      props: {
+        rows: [
+          { rowKey: "1", title: "A", amount: 1234.56789 },
+          { rowKey: "2", title: "B", amount: 12 },
+        ],
+        schema: [...schema, amountColumn],
+        view: view({ kind: "kanban", groupField: "amount", titleField: "title" }),
+      },
+    });
+    // Lane labels share the grid's numeric display contract.
+    expect(kanban.text()).toContain("¥1,234.57");
+    expect(kanban.text()).toContain("¥12.00");
+    const gallery = mount(RecordGalleryView, {
+      props: {
+        rows: [{ rowKey: "1", title: "A", amount: 1234.56789 }],
+        schema: [...schema, amountColumn],
+        view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "amount"] }),
+      },
+    });
+    expect(gallery.get('[data-testid="gallery-card"]').text()).toContain("¥1,234.57");
+  });
+
   it("groups records into kanban lanes and keeps blank values visible", () => {
     const wrapper = mount(RecordKanbanView, {
       props: {

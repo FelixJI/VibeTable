@@ -26,6 +26,7 @@ export interface AuthoritativeLookupController {
   recordQuery(query: TableQuery): void;
   /** True only after all required projections apply, or a ready context needs no query. */
   refresh(): Promise<boolean>;
+  refreshLabels(): Promise<boolean>;
 }
 
 export interface AuthoritativeLookupDependencies {
@@ -44,7 +45,7 @@ export interface AuthoritativeLookupDependencies {
   readonly resetContext: () => void;
   readonly loadContext: (collection: string) => Promise<unknown>;
   readonly queryLookups: QueryLookups;
-  readonly acceptResult: (result: LookupQueryResult, currentDataRevision: number) => boolean;
+  readonly acceptResult: (result: LookupQueryResult, currentDataRevision: number, labelsOnly?: boolean) => boolean;
   readonly clearEditRejection: () => void;
   readonly reportError: (content: string) => void;
 }
@@ -54,11 +55,13 @@ export function createAuthoritativeLookupController(
 ): AuthoritativeLookupController {
   const shouldShowNotification = createNotificationDeduper();
   let requestGeneration = 0;
+  let labelGeneration = 0;
   let interactiveQuery: TableQuery | null = null;
   let disposed = false;
   onScopeDispose(() => {
     disposed = true;
     requestGeneration += 1;
+    labelGeneration += 1;
   });
 
   watch(
@@ -67,6 +70,7 @@ export function createAuthoritativeLookupController(
       dependencies.clearEditRejection();
       interactiveQuery = null;
       requestGeneration += 1;
+      labelGeneration += 1;
       if (!collection) {
         dependencies.resetContext();
         return;
@@ -98,9 +102,9 @@ export function createAuthoritativeLookupController(
     () => { void refresh(); },
   );
 
-  async function refresh(): Promise<boolean> {
+  async function refresh(labelsOnly = false): Promise<boolean> {
     if (disposed) return false;
-    const generation = ++requestGeneration;
+    const generation = labelsOnly ? ++labelGeneration : ++requestGeneration;
     const contextGeneration = dependencies.contextGeneration();
     const collection = dependencies.currentTable();
     const page = dependencies.tablePage();
@@ -124,10 +128,11 @@ export function createAuthoritativeLookupController(
     if (lookups.length === 0 && !columns.some(column => column.kind === "relation")) return true;
     if (!capabilities.lookupQueryV1) return false;
     const stillCurrent = (): boolean =>
-      generation === requestGeneration
+      generation === (labelsOnly ? labelGeneration : requestGeneration)
       && contextGeneration === dependencies.contextGeneration()
       && collection === dependencies.currentTable();
-    const fieldRefs = buildLookupProjectionFieldRefs(lookups);
+    const projectLabelsOnly = labelsOnly || lookups.length === 0;
+    const fieldRefs = projectLabelsOnly ? [] : buildLookupProjectionFieldRefs(lookups);
     // Query AST uses physical column names; stable IDs are schema identities,
     // not query fields. Lookup output projection fieldRefs stay separate.
     const fieldRefByName = new Map(columns.map(column => [
@@ -137,7 +142,7 @@ export function createAuthoritativeLookupController(
     const source = interactiveQuery ?? page.querySnapshot?.normalizedQuery ?? {};
     try {
       const queries: Array<Parameters<QueryLookups>[0]["query"]> = [];
-      if (lookups.length === 0) {
+      if (projectLabelsOnly) {
         // Labels decorate the rows already loaded across all cursor windows.
         // Reapplying the first page's filters/offset would miss later windows
         // or rows whose related display value just stopped matching a filter.
@@ -164,7 +169,7 @@ export function createAuthoritativeLookupController(
           || dependencies.dataRevision() !== dataRevision
           || result.snapshot.dataRevision !== dataRevision
         ) return false;
-        if (!dependencies.acceptResult(result, dataRevision)) return false;
+        if (!dependencies.acceptResult(result, dataRevision, projectLabelsOnly)) return false;
       }
       return true;
     } catch (error) {
@@ -179,8 +184,9 @@ export function createAuthoritativeLookupController(
 
   function recordQuery(query: TableQuery): void {
     requestGeneration += 1;
+    labelGeneration += 1;
     interactiveQuery = query;
   }
 
-  return { recordQuery, refresh };
+  return { recordQuery, refresh, refreshLabels: () => refresh(true) };
 }

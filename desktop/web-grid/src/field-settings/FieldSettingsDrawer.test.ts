@@ -7,7 +7,7 @@ import FieldSettingsDrawer from "./FieldSettingsDrawer.vue";
 import { useFieldSettingsStore } from "./store";
 import FormulaFieldEditor from "./formula/FormulaFieldEditor.vue";
 import LookupFieldEditor from "./lookup/LookupFieldEditor.vue";
-import { NSelect } from "naive-ui";
+import { NInputNumber, NSelect, NSwitch } from "naive-ui";
 import type {
   CapabilityV2,
   FieldChangePlanV2,
@@ -152,6 +152,36 @@ async function openTab(wrapper: VueWrapper, text: string): Promise<void> {
 }
 
 describe("FieldSettingsDrawer", () => {
+  it("shows immutable numbering settings and deterministic backfill samples", async () => {
+    const store = useFieldSettingsStore();
+    const result = described("number");
+    const current = definition("number");
+    const numberField: FieldDefinitionV2 = {
+      ...current, logicalType: "autoNumber", autoNumber: { prefix: "HT-", start: 1, width: 6 },
+      display: { ...current.display, kind: "readonly" },
+      storage: { ...current.storage, kind: "pocketbase-text" },
+      value: { ...current.value, presence: { mode: "native" } },
+    };
+    store.beginOpen();
+    store.load({ ...result, definition: numberField, capabilities: [capability("autoNumber")] });
+    const wrapper = mountDrawer();
+    await openTab(wrapper, "高级");
+    expect(wrapper.get('[data-testid="auto-number-settings"]').text()).toContain("只读");
+    expect(wrapper.get('[data-testid="auto-number-prefix"] input').attributes("disabled")).toBeDefined();
+    const previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    const planned = plan();
+    store.plan = { ...planned, after: numberField,
+      intent: { ...planned.intent, action: "create" },
+      steps: [{ kind: "autoNumberBackfill", details: { order: "id asc", count: 12,
+        samples: [{ recordId: "record-a", value: "HT-000001" }] } }],
+    };
+    await flushPromises();
+    expect(wrapper.get('[data-testid="auto-number-backfill-preview"]').text()).toContain("record-a → HT-000001");
+    if (previousScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previousScroll);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
+
   beforeEach(() => {
     document.body.innerHTML = "";
     setActivePinia(createPinia());
@@ -429,6 +459,38 @@ describe("FieldSettingsDrawer", () => {
     expect(wrapper.emitted("restore")?.[0]).toEqual(["fld_amount"]);
   });
 
+  it("被阻止的计划渲染不兼容样本并保持保存禁用", () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described());
+    const base = plan();
+    const blocked: FieldChangePlanV2 = {
+      ...base,
+      canApply: false,
+      impact: {
+        ...base.impact,
+        failures: [
+          { recordId: "rec_15", reason: "field.value.invalid at value: value must be an integer" },
+          { recordId: "rec_23", reason: "field.value.invalid at value: value must be an integer" },
+        ],
+      },
+      errors: [{
+        code: "field.constraint.existing_data_invalid", path: "draft.constraints",
+        message: "existing records do not satisfy the requested field settings",
+        details: { failed: 2, scanned: 6 },
+      }],
+    };
+    store.setPlan(blocked);
+    const wrapper = mountDrawer();
+
+    const card = wrapper.get('[data-testid="field-change-plan"]');
+    expect(card.text()).toContain("已阻止");
+    expect(card.text()).toContain("不兼容样本");
+    expect(card.text()).toContain("rec_15 · field.value.invalid at value: value must be an integer");
+    expect(card.text()).toContain("rec_23 · field.value.invalid at value: value must be an integer");
+    expect(wrapper.get('[data-testid="field-apply-button"]').attributes("disabled")).toBeDefined();
+  });
+
   it("用单人场景解释字段元数据，并在计划生成后滚动到预览", async () => {
     const scrollIntoView = vi.fn();
     vi.stubGlobal("HTMLElement", HTMLElement);
@@ -501,5 +563,293 @@ describe("FieldSettingsDrawer", () => {
       { label: "金额", value: "fld_amount", logicalType: "number" },
       { label: "备注", value: "fld_note", logicalType: "text" },
     ]);
+  });
+
+  it("高级币种入口复用受限下拉并保留已有合法自定义币种", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    const current = described("number");
+    store.load({ ...current, definition: {
+      ...current.definition!, display: { ...current.definition!.display, preset: "currency", currency: "cHf" },
+    } });
+    const wrapper = mountDrawer();
+    await flushPromises();
+    await openTab(wrapper, "高级");
+    const currency = wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === "advanced-display-currency");
+    expect(currency).toBeDefined();
+    expect(currency!.props("options")).toContainEqual({ label: "cHf", value: "cHf" });
+    expect(currency!.props("tag")).not.toBe(true);
+    currency!.vm.$emit("update:value", "USD");
+    await flushPromises();
+    expect(store.draft?.display.currency).toBe("USD");
+  });
+
+  it("数字显示预设/位数/尾零/币种写入草稿并实时预览（AC1/AC2）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    const previews = () => wrapper.findAll('[data-testid="number-display-preview"] code')
+      .map(item => item.text());
+
+    // 预设选项来自能力声明；未知预设原样透出，已知预设给中文标签。
+    expect(select("number-display-preset").props("options")).toEqual([
+      { label: "plain", value: "plain" }, { label: "货币", value: "currency" },
+    ]);
+    // 默认（max + trim）预览：1234.56789 -> 1,234.57；12 -> 12。
+    expect(previews()).toEqual(["1,234.57", "12"]);
+
+    // 切换“固定”规范化尾零规则，并预览尾零保留。
+    select("number-display-scale-mode").vm.$emit("update:value", "fixed");
+    await flushPromises();
+    expect(store.draft?.display.scaleMode).toBe("fixed");
+    expect(store.draft?.display.trimTrailingZeros).toBe(false);
+    expect(previews()).toEqual(["1,234.57", "12.00"]);
+
+    // 货币预设附带币种并预览币符。
+    select("number-display-preset").vm.$emit("update:value", "currency");
+    await flushPromises();
+    expect(store.draft?.display.preset).toBe("currency");
+    expect(store.draft?.display.currency).toBe("CNY");
+    expect(previews()).toEqual(["¥1,234.57", "¥12.00"]);
+
+    // 整数显示只改呈现，不动存储 onlyInt。
+    select("number-display-preset").vm.$emit("update:value", "integer");
+    await flushPromises();
+    expect(store.draft?.display.displayScale).toBe(0);
+    expect(store.draft?.storage.options.onlyInt).toBe(false);
+    expect(previews()).toEqual(["1,235", "12"]);
+
+    // 百分比预设解释两种存储语义并预览同一显示。
+    select("number-display-preset").vm.$emit("update:value", "percent");
+    await flushPromises();
+    expect(store.draft?.display.percentStorage).toBe("ratio");
+    expect(wrapper.get('[data-testid="number-display-preview"]').text()).toContain("存储 0.125 显示 12.5%");
+    select("number-display-percent-storage").vm.$emit("update:value", "percent");
+    await flushPromises();
+    expect(store.draft?.display.percentStorage).toBe("percent");
+    expect(wrapper.get('[data-testid="number-display-preview"]').text()).toContain("存储 12.5 显示 12.5%");
+
+    // 单位预设附着单位字符串；先把小数位调回 2 再验证附着规则。
+    select("number-display-preset").vm.$emit("update:value", "unit");
+    await flushPromises();
+    wrapper.findAllComponents(NInputNumber)
+      .find(item => item.attributes("data-testid") === "number-display-scale")!
+      .vm.$emit("update:value", 2);
+    await flushPromises();
+    wrapper.get('[data-testid="number-display-unit"]').find("input").setValue("kg");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBe("kg");
+    expect(previews()[0]).toBe("1,234.57kg");
+
+    // 关闭千分位后预览不再有分隔符。
+    wrapper.findAllComponents(NSwitch)
+      .find(item => item.attributes("data-testid") === "number-display-grouping")!
+      .vm.$emit("update:value", false);
+    await flushPromises();
+    expect(store.draft?.display.useGrouping).toBe(false);
+    expect(previews()[0]).toBe("1234.57kg");
+    expect(store.dirty).toBe(true);
+  });
+
+  it("切回数字/整数显示预设会清掉残留单位，且不改存储 onlyInt", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    select("number-display-preset").vm.$emit("update:value", "unit");
+    await flushPromises();
+    wrapper.get('[data-testid="number-display-unit"]').find("input").setValue("kg");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBe("kg");
+    // 切回“数字”：残留单位被清除，预览不再附着 kg（控件隐藏但值不残留）。
+    select("number-display-preset").vm.$emit("update:value", "number");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBeNull();
+    expect(wrapper.findAll('[data-testid="number-display-preview"] code')[0].text())
+      .toBe("1,234.57");
+    // 整数显示同样清单位，且不触碰存储 onlyInt。
+    select("number-display-preset").vm.$emit("update:value", "unit");
+    await flushPromises();
+    wrapper.get('[data-testid="number-display-unit"]').find("input").setValue("kg");
+    await flushPromises();
+    select("number-display-preset").vm.$emit("update:value", "integer");
+    await flushPromises();
+    expect(store.draft?.display.unit).toBeNull();
+    expect(store.draft?.display.displayScale).toBe(0);
+    expect(store.draft?.storage.options.onlyInt).toBe(false);
+  });
+
+  it("进度只写显示参数，评分显式开启整数范围，电话号码保持文本", async () => {
+    const store = useFieldSettingsStore(); store.beginOpen();
+    const numeric = { ...capability("number"), displayPresets: ["number", "progress", "rating"] };
+    const text = { ...capability("text"), displayPresets: ["phone"] };
+    store.load(described("number", [numeric, text]));
+    const wrapper = mountDrawer(); await flushPromises();
+    const preset = () => wrapper.findAllComponents(NSelect).find(item => item.attributes("data-testid") === "number-display-preset")!;
+    preset().vm.$emit("update:value", "progress"); await flushPromises();
+    expect(store.draft?.display.preset).toBe("progress"); expect(store.draft?.display.progressTarget).toBe(1);
+    expect(store.draft?.constraints.range).toEqual({ min: null, max: null }); expect(store.draft?.storage.options.onlyInt).toBe(false);
+    preset().vm.$emit("update:value", "rating"); await flushPromises();
+    expect(store.draft?.storage.options.onlyInt).toBe(true); expect(store.draft?.constraints.range).toEqual({ min: 0, max: 5 });
+    expect(store.draft?.display.progressTarget).toBeUndefined();
+    wrapper.findAllComponents(NInputNumber).find(item => item.attributes("data-testid") === "rating-max")!.vm.$emit("update:value", 10);
+    await flushPromises(); expect(store.draft?.constraints.range.max).toBe(10); expect(store.draft?.display.ratingMax).toBe(10);
+    wrapper.findAllComponents(NSelect).find(item => item.attributes("data-testid") === "field-logical-type")!.vm.$emit("update:value", "phone");
+    await flushPromises(); expect(store.draft?.logicalType).toBe("text"); expect(store.draft?.display.preset).toBe("phone");
+    expect(wrapper.get('[data-testid="common-display-preview"]').text()).toContain("+86 010-0012 ext.03");
+    wrapper.findAllComponents(NSelect).find(item => item.attributes("data-testid") === "field-logical-type")!.vm.$emit("update:value", "text");
+    await flushPromises(); expect(store.draft?.logicalType).toBe("text"); expect(store.draft?.display.preset).toBe("plain");
+  });
+
+  it("小数位控件限 0..15 并稳定钳制非法输入（AC1）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    const scaleInput = wrapper.findAllComponents(NInputNumber)
+      .find(item => item.attributes("data-testid") === "number-display-scale")!;
+    expect(scaleInput.props("min")).toBe(0);
+    expect(scaleInput.props("max")).toBe(15);
+    scaleInput.vm.$emit("update:value", 17);
+    await flushPromises();
+    expect(store.draft?.display.displayScale).toBe(15);
+    scaleInput.vm.$emit("update:value", null);
+    await flushPromises();
+    expect(store.draft?.display.displayScale).toBe(0);
+  });
+
+  it("尾零规则由位数模式唯一决定，不再提供独立开关", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("number"));
+    const wrapper = mountDrawer();
+    await flushPromises();
+    // 只读说明，不提供无效开关；wire 字段在切换模式时规范化。
+    expect(wrapper.find('[data-testid="number-display-trim"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="number-display-trailing-zeros-hint"]').text())
+      .toContain("最多模式按最多位数显示并自动去掉尾零");
+    const select = (id: string) => wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === id)!;
+    select("number-display-scale-mode").vm.$emit("update:value", "fixed");
+    await flushPromises();
+    expect(store.draft?.display.trimTrailingZeros).toBe(false);
+    expect(wrapper.get('[data-testid="number-display-trailing-zeros-hint"]').text())
+      .toContain("固定模式始终保留指定位尾零");
+    select("number-display-scale-mode").vm.$emit("update:value", "max");
+    await flushPromises();
+    expect(store.draft?.display.trimTrailingZeros).toBe(true);
+  });
+
+  it("Formula 数值列表按已提交或Go验证的元素类型开放数字设置", async () => {
+    const store = useFieldSettingsStore();
+    const current = described("formula");
+    store.beginOpen();
+    store.load({ ...current, definition: { ...current.definition!, formula: {
+      language: "cel-v2", source: "UNIQUE([1.0, 2.0, 1.0])", resultType: "json", resultElementType: "number",
+    } } });
+    const wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    store.beginOpen();
+    store.load({ ...current, definition: { ...current.definition!, formula: {
+      language: "cel-v2", source: "UNIQUE([true, false])", resultType: "json", resultElementType: "bool",
+    } } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
+    store.setFormulaValidation("UNIQUE([1.0, 2.0])", {
+      canonicalSource: "UNIQUE([1.0, 2.0])", resultType: "json", resultElementType: "number",
+      dependencies: [], relationAggregatePaths: [],
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+  });
+
+  it("数字显示按权威结果类型对 Formula 开放，文本结果不开放（AC4）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    store.load(described("formula"));
+    let wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("结果数字显示");
+    // 货币预设同样作用于公式结果展示。
+    wrapper.findAllComponents(NSelect)
+      .find(item => item.attributes("data-testid") === "number-display-preset")!
+      .vm.$emit("update:value", "currency");
+    await flushPromises();
+    expect(store.draft?.display.preset).toBe("currency");
+    expect(wrapper.findAll('[data-testid="number-display-preview"] code')[0].text())
+      .toBe("¥1,234.57");
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+
+    // 文本结果的公式不开放数字显示入口。
+    const textFormula = described("formula");
+    const definitionWithTextResult = {
+      ...textFormula.definition!,
+      formula: { ...textFormula.definition!.formula!, resultType: "text" as const },
+    } as FieldDefinitionV2;
+    store.beginOpen();
+    store.load({ ...textFormula, definition: definitionWithTextResult });
+    wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
+  });
+
+  it("数字显示按权威输出类型对 Lookup 开放：SUM 汇总与数值目标（AC4）", async () => {
+    const store = useFieldSettingsStore();
+    store.beginOpen();
+    const lookupDescribed = described("lookup");
+    store.load(lookupDescribed);
+    store.setLookupSchemas([lookupSchemaSnapshot("tbl_customers", [
+      { name: "f_name", fieldId: "fld_name", title: "名称", kind: "scalar", dataType: "text" },
+      { name: "f_balance", fieldId: "fld_balance", title: "余额", kind: "scalar", dataType: "decimal" },
+    ])]);
+    let wrapper = mountDrawer();
+    await flushPromises();
+    // 文本目标且无聚合：不开放。
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
+    // 数值目标：数值列表元素适用数字显示。
+    store.patchDraft({
+      lookup: { ...store.draft!.lookup!, targetFieldId: "fld_balance" },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    // 文本目标 + SUM 数值聚合：结果为 decimal，开放。
+    store.patchDraft({
+      lookup: {
+        ...store.draft!.lookup!,
+        targetFieldId: "fld_name",
+        aggregation: "sum",
+      },
+    });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("结果数字显示");
+    mounted.splice(mounted.indexOf(wrapper), 1);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+
+    // 文本聚合（如 values 保持文本元素）不开放。
+    store.patchDraft({
+      lookup: {
+        ...store.draft!.lookup!,
+        aggregation: "values",
+        targetFieldId: "fld_name",
+      },
+    });
+    wrapper = mountDrawer();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="number-display-preset"]').exists()).toBe(false);
   });
 });

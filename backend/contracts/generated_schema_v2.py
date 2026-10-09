@@ -30,6 +30,7 @@ type LogicalType = Literal[
     "dateTime",
     "time",
     "autoDate",
+    "autoNumber",
     "email",
     "url",
     "select",
@@ -171,6 +172,9 @@ class DisplaySpec(SchemaV2WireModel):
     indent: Literal[0, 2, 4] | None = None
     true_label: str
     false_label: str
+    progress_start: float | None = None
+    progress_target: float | None = None
+    rating_max: Annotated[int, Field(ge=1, le=10)] | None = None
 
 
 class SelectOption(SchemaV2WireModel):
@@ -218,6 +222,12 @@ class JSONSpec(SchemaV2WireModel):
     root_type: Literal["any", "object", "array", "string", "number", "boolean", "null"]
     max_size: Annotated[int, Field(ge=1)]
     schema_: dict[str, JsonValue] = Field(alias="schema")
+
+
+class AutoNumberSpec(SchemaV2WireModel):
+    prefix: Annotated[str, Field(max_length=64, pattern="^[^\x00\r\n]*$")]
+    start: Annotated[int, Field(ge=1, le=9007199254740991)]
+    width: Annotated[int, Field(ge=1, le=16)]
 
 
 class AutoDateSpec(SchemaV2WireModel):
@@ -295,6 +305,7 @@ class FieldDefinition(SchemaV2WireModel):
     file: FileSpec | None = None
     json_: JSONSpec | None = Field(None, alias="json")
     auto_date: AutoDateSpec | None = None
+    auto_number: AutoNumberSpec | None = None
     formula: FormulaSpec | None = None
     lookup: LookupSpec | None = None
 
@@ -312,6 +323,7 @@ class FieldDraft(SchemaV2WireModel):
     file: FileSpec | None = None
     json_: JSONSpec | None = Field(None, alias="json")
     auto_date: AutoDateSpec | None = None
+    auto_number: AutoNumberSpec | None = None
     formula: FormulaDraftSpec | None = None
     lookup: LookupSpec | None = None
 

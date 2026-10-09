@@ -1,14 +1,20 @@
+import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryRequest, DataQueryPage } from "./data.js";
 import type { CommandContext, JsonObject, JsonValue, PluginResult } from "./types.js";
 
 export interface DataPage<T extends JsonObject = JsonObject> {
   readonly items: readonly T[];
   readonly nextCursor: string | null;
+  /** Authoritative total row count for the queried collection, from the same page query. */
+  readonly totalRows: number;
+  /** Existing Go row guards, separate from the requested business fields. */
+  readonly rowGuards: Readonly<Record<string, string>>;
 }
 
 export interface DataReadRequest {
   readonly collection: string;
   readonly fields: readonly string[];
-  readonly filter?: JsonObject;
+  /** API v1 only accepts an empty filter. */
+  readonly filter?: Readonly<Record<string, never>> | null;
   readonly cursor?: string;
   readonly pageSize?: number;
 }
@@ -16,7 +22,9 @@ export interface DataReadRequest {
 export interface MutationOperation {
   readonly kind: "create" | "update";
   readonly primaryKey?: string | number | null;
+  /** @deprecated Only a legacy row_ revision is accepted; never a timestamp. */
   readonly expectedDateUpdated?: string | null;
+  readonly expectedDigest?: string | null;
   readonly values: JsonObject;
 }
 
@@ -39,6 +47,33 @@ export interface MutationResult {
   readonly conflicts: number;
 }
 
+export interface PluginProgress {
+  readonly current: number;
+  readonly total: number;
+  readonly message?: string;
+  readonly cancellable?: boolean;
+}
+
+export interface ProgressReceipt {
+  readonly cancelRequested: boolean;
+}
+
+/** Construct the plan returned by a write action; this does not submit it. */
+export function mutationPlan(
+  collection: string,
+  operations: readonly MutationOperation[],
+  preview: MutationPlan["preview"],
+): MutationPlan {
+  return { contract: "vibetable.mutation-plan.v1", collection, operations, preview };
+}
+
+export class PluginCapabilityError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "PluginCapabilityError";
+  }
+}
+
 export interface ReadGrant {
   readonly grantId: string;
   readonly displayName: string;
@@ -55,7 +90,10 @@ export interface WriteGrant {
 export interface PluginCapabilities {
   readonly data: {
     read<T extends JsonObject = JsonObject>(request: DataReadRequest): Promise<DataPage<T>>;
-    mutate(plan: MutationPlan): Promise<MutationResult>;
+    describe(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
+    query(request: DataQueryRequest): Promise<DataQueryPage>;
+    /** @deprecated Unsupported. Return a MutationPlan from a write action. */
+    mutate(plan: MutationPlan): Promise<never>;
   };
   readonly file: {
     pickRead(options?: { readonly mediaTypes?: readonly string[] }): Promise<ReadGrant | null>;
@@ -67,8 +105,9 @@ export interface PluginCapabilities {
     delete(key: string): Promise<void>;
   };
   readonly ui: {
-    emitResult(result: PluginResult): Promise<void>;
-    reportProgress(progress: { readonly current: number; readonly total: number; readonly message?: string; readonly cancellable?: boolean }): Promise<void>;
+    /** @deprecated Unsupported. Return the final PluginResult from the action. */
+    emitResult(result: PluginResult): Promise<never>;
+    reportProgress(progress: PluginProgress): Promise<ProgressReceipt>;
   };
   readonly context: {
     read(): Promise<CommandContext>;
@@ -77,15 +116,17 @@ export interface PluginCapabilities {
 
 /** Closed host adapter: every callable capability is explicitly named and typed. */
 export interface CapabilityAdapter {
+  dataDescribe?(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
+  dataQuery?(request: DataQueryRequest): Promise<DataQueryPage>;
   dataRead<T extends JsonObject = JsonObject>(request: DataReadRequest): Promise<DataPage<T>>;
-  dataMutate(plan: MutationPlan): Promise<MutationResult>;
+  dataMutate(plan: MutationPlan): Promise<never>;
   filePickRead(options?: { readonly mediaTypes?: readonly string[] }): Promise<ReadGrant | null>;
   filePickWrite(options: { readonly suggestedName: string; readonly mediaType: string }): Promise<WriteGrant | null>;
   storageGet<T extends JsonValue = JsonValue>(key: string): Promise<T | null>;
   storageSet(key: string, value: JsonValue): Promise<void>;
   storageDelete(key: string): Promise<void>;
-  uiEmitResult(result: PluginResult): Promise<void>;
-  uiReportProgress(progress: { readonly current: number; readonly total: number; readonly message?: string; readonly cancellable?: boolean }): Promise<void>;
+  uiEmitResult(result: PluginResult): Promise<never>;
+  uiReportProgress(progress: PluginProgress): Promise<ProgressReceipt>;
   contextRead(): Promise<CommandContext>;
 }
 
@@ -93,6 +134,18 @@ export function createCapabilityClient(adapter: CapabilityAdapter): PluginCapabi
   return {
     data: {
       read: (request) => adapter.dataRead(request),
+      describe: async (request) => {
+        if (!adapter.dataDescribe) {
+          throw new PluginCapabilityError("plugin_api_unsupported", "The host does not support data.describe.");
+        }
+        return adapter.dataDescribe(request);
+      },
+      query: async (request) => {
+        if (!adapter.dataQuery) {
+          throw new PluginCapabilityError("plugin_api_unsupported", "The host does not support data.query.");
+        }
+        return adapter.dataQuery(request);
+      },
       mutate: (plan) => adapter.dataMutate(plan),
     },
     file: {

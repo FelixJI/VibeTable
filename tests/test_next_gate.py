@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -315,10 +316,12 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
         "39-file-workflow-combination",
+        "40-file-history-capacity",
         "41-file-document-operations",
         "42-file-document-native-operations",
         "43-file-revision-leaves",
         "44-file-restore-crash",
+        "45-common-field-display",
     }
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
 
@@ -1203,6 +1206,215 @@ def test_main_reports_retained_evidence_when_a_stage_raises(
     assert f"QA failure evidence retained at {qa_temp}" in capsys.readouterr().err
 
 
+def test_product_e2e_failure_evidence_copies_scenario_desktop_log_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    report = {
+        "status": "failed",
+        "scenarios": [{"scenario": failed_id, "status": "failed"}],
+    }
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(report),
+        encoding="utf-8",
+    )
+    (failed_root / "runner-stdout.log").write_text("runner", encoding="utf-8")
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+    desktop_logs = runtime_root / "desktop-logs"
+    desktop_logs.mkdir()
+    (desktop_logs / "desktop.log").write_text("current host diagnostics", encoding="utf-8")
+    (desktop_logs / "desktop-20260816-010203040.log").write_text("rotated one", encoding="utf-8")
+    (desktop_logs / "desktop-20260817-050607089.log").write_text("rotated two", encoding="utf-8")
+    (desktop_logs / "desktop-notes.log").write_text("unrelated", encoding="utf-8")
+    (desktop_logs / "desktop-20260816-01020304x.log").write_text("bad stamp", encoding="utf-8")
+    nested = desktop_logs / "nested-logs"
+    nested.mkdir()
+    (nested / "desktop-20260818-000000000.log").write_text(
+        "nested must not be read", encoding="utf-8"
+    )
+    (runtime_root / "desktop.log").write_text("stale readiness-root log", encoding="utf-8")
+    outside_root = tmp_path / "elsewhere"
+    outside_root.mkdir()
+    (outside_root / "desktop.log").write_text("external user log", encoding="utf-8")
+    # Same-name re-archive overwrites like every other evidence path in this function.
+    archived_runtime = tmp_path / "destination" / run_root.name / "_runtime" / "17" / "host"
+    archived_runtime.mkdir(parents=True)
+    (archived_runtime / "desktop-20260816-010203040.log").write_text(
+        "archived first-phase evidence", encoding="utf-8"
+    )
+    copied_sources: list[Path] = []
+    original_copy = next_gate._copy_if_file
+
+    def recording_copy(source: Path, destination: Path) -> bool:
+        copied_sources.append(source)
+        return original_copy(source, destination)
+
+    monkeypatch.setattr(next_gate, "_copy_if_file", recording_copy)
+
+    destination = next_gate.persist_product_e2e_evidence(
+        source_root,
+        tmp_path / "destination",
+    )
+
+    assert destination is not None
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "desktop.log").read_text(encoding="utf-8") == (
+        "current host diagnostics"
+    )
+    assert (copied_runtime / "desktop-20260817-050607089.log").read_text(encoding="utf-8") == (
+        "rotated two"
+    )
+    assert (copied_runtime / "desktop-20260816-010203040.log").read_text(encoding="utf-8") == (
+        "rotated one"
+    )
+    assert sorted(path.name for path in copied_runtime.glob("desktop*")) == [
+        "desktop-20260816-010203040.log",
+        "desktop-20260817-050607089.log",
+        "desktop.log",
+    ]
+    assert not (copied_runtime / "desktop-notes.log").exists()
+    assert not (copied_runtime / "desktop-20260816-01020304x.log").exists()
+    assert not (copied_runtime / "nested-logs").exists()
+    assert not list(destination.rglob("desktop-20260818-000000000.log"))
+    assert copied_sources, "failure evidence must have been archived"
+    assert all(run_root == source or run_root in source.parents for source in copied_sources), (
+        "scenario evidence must only be read from the scenario run directory"
+    )
+
+
+def test_product_e2e_failure_evidence_without_desktop_logs_still_archives_report_and_trace(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "vibetable-trace.log").write_text("trace", encoding="utf-8")
+    assert not (runtime_root / "desktop-logs").exists()
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    assert (destination / "product-e2e-report.json").is_file()
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "vibetable-trace.log").read_text(encoding="utf-8") == "trace"
+    assert not any(copied_runtime.glob("desktop*"))
+
+
+def _create_junction(link: Path, target: Path) -> None:
+    subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(link),
+            str(target),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_product_e2e_failure_evidence_rejects_a_junctioned_desktop_logs_directory(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    outside = tmp_path / "outside-evidence"
+    outside.mkdir()
+    (outside / "desktop.log").write_text("outside current log", encoding="utf-8")
+    (outside / "desktop-20260101-010101111.log").write_text("outside rotated log", encoding="utf-8")
+    junction = runtime_root / "desktop-logs"
+    _create_junction(junction, outside)
+    try:
+        destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+    finally:
+        with suppress(OSError):
+            os.rmdir(junction)
+
+    assert destination is not None
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert not any(copied_runtime.glob("desktop*"))
+    assert (outside / "desktop.log").read_text(encoding="utf-8") == "outside current log"
+    assert (outside / "desktop-20260101-010101111.log").read_text(encoding="utf-8") == (
+        "outside rotated log"
+    )
+
+
+def test_product_e2e_failure_evidence_rejects_a_symlinked_rotated_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    failed_id = "17-interface-lifecycle"
+    failed_root = run_root / failed_id
+    failed_root.mkdir(parents=True)
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime_root = run_root / "_runtime" / "17" / "host"
+    runtime_root.mkdir(parents=True)
+    desktop_logs = runtime_root / "desktop-logs"
+    desktop_logs.mkdir()
+    (desktop_logs / "desktop.log").write_text("current host diagnostics", encoding="utf-8")
+    (desktop_logs / "desktop-20260102-020202222.log").write_text(
+        "good rotated log", encoding="utf-8"
+    )
+    linked = desktop_logs / "desktop-20260103-030303333.log"
+    linked.write_text("link body would follow an external target", encoding="utf-8")
+    real_is_symlink = Path.is_symlink
+
+    def precise_is_symlink(path: Path) -> bool:
+        return True if path == linked else real_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", precise_is_symlink)
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    copied_runtime = destination / "_runtime" / "17" / "host"
+    assert (copied_runtime / "desktop.log").read_text(
+        encoding="utf-8"
+    ) == "current host diagnostics"
+    assert (copied_runtime / "desktop-20260102-020202222.log").read_text(encoding="utf-8") == (
+        "good rotated log"
+    )
+    assert not (copied_runtime / "desktop-20260103-030303333.log").exists()
+
+
 def test_product_e2e_failure_evidence_copies_only_failed_scenario_diagnostics(
     tmp_path: Path,
 ) -> None:
@@ -1615,7 +1827,7 @@ def test_passing_product_e2e_report_accepts_exact_scenario_evidence(tmp_path: Pa
     )
     scenario_root = run_root / "35-data-io-interoperability"
     scenario_root.mkdir()
-    for filename in IMPORT_MANAGEMENT_SCREENSHOTS["35-data-io-interoperability"]:
+    for filename in SCENARIO_SCREENSHOTS["35-data-io-interoperability"]:
         (scenario_root / filename).write_bytes(b"synthetic unit-test image payload")
 
     destination = next_gate.persist_product_e2e_evidence(
@@ -1773,7 +1985,7 @@ def _prepare_complete_product_reports(
                     (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
         for scenario_id, filenames in {
             **NATIVE_RESTORE_PASS_EVIDENCE,
-            **IMPORT_MANAGEMENT_SCREENSHOTS,
+            **SCENARIO_SCREENSHOTS,
         }.items():
             if scenario_id not in selected[stage]:
                 continue
@@ -2606,7 +2818,29 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
     }
 
 
-IMPORT_MANAGEMENT_SCREENSHOTS = {
+SCENARIO_SCREENSHOTS = {
+    "02-all-field-schema": (
+        "02-number-display-fixed.png",
+        "02-number-display-currency.png",
+        "02-number-display-percent.png",
+        "02-computed-display-grid.png",
+        "02-computed-display-cards.png",
+        "02-computed-display-percent-cards.png",
+        "02-computed-display-reopened.png",
+        "02-auto-number-readonly.png",
+    ),
+    "28-relation-delta-preview": (
+        "28-contract-grid.png",
+        "28-contract-picker-refresh.png",
+        "28-contract-cards.png",
+        "28-contract-offline-reopened.png",
+    ),
+    "45-common-field-display": (
+        "45-common-field-display.png",
+        "45-common-field-display-reopened.png",
+        "45-common-field-display-restored.png",
+        "45-common-field-display-cards.png",
+    ),
     "35-data-io-interoperability": (
         "35-import-management-history.png",
         "35-import-management-reopened.png",
@@ -2623,7 +2857,7 @@ IMPORT_MANAGEMENT_SCREENSHOTS = {
 }
 
 
-def _import_management_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> Path:
+def _scenario_screenshot_run(tmp_path: Path, scenario_id: str, status: str) -> Path:
     run = tmp_path / "source" / "20261004T050000Z"
     directory = run / scenario_id
     directory.mkdir(parents=True)
@@ -2631,22 +2865,22 @@ def _import_management_screenshot_run(tmp_path: Path, scenario_id: str, status: 
         json.dumps({"status": status, "scenarios": [{"scenario": scenario_id, "status": status}]}),
         encoding="utf-8",
     )
-    for filename in IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id]:
+    for filename in SCENARIO_SCREENSHOTS[scenario_id]:
         (directory / filename).write_bytes(filename.encode())
     (directory / "unrelated.png").write_bytes(b"unrelated")
     (directory / "workspace.db").write_bytes(b"private workspace")
     return run
 
 
-@pytest.mark.parametrize("scenario_id", IMPORT_MANAGEMENT_SCREENSHOTS)
-def test_import_management_screenshots_archive_only_declared_images(
+@pytest.mark.parametrize("scenario_id", SCENARIO_SCREENSHOTS)
+def test_scenario_screenshots_archive_only_declared_images(
     tmp_path: Path, scenario_id: str
 ) -> None:
-    run = _import_management_screenshot_run(tmp_path, scenario_id, "passed")
+    run = _scenario_screenshot_run(tmp_path, scenario_id, "passed")
     retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
     assert retained is not None
     expected = {"product-e2e-report.json"}
-    for filename in IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id]:
+    for filename in SCENARIO_SCREENSHOTS[scenario_id]:
         relative = f"{scenario_id}/{filename}"
         expected.add(relative)
         assert (retained / relative).read_bytes() == filename.encode()
@@ -2655,21 +2889,21 @@ def test_import_management_screenshots_archive_only_declared_images(
     } == expected
 
 
-@pytest.mark.parametrize("scenario_id", IMPORT_MANAGEMENT_SCREENSHOTS)
-def test_import_management_screenshots_missing_image_rejects_passed_report(
+@pytest.mark.parametrize("scenario_id", SCENARIO_SCREENSHOTS)
+def test_scenario_screenshots_missing_image_rejects_passed_report(
     tmp_path: Path, scenario_id: str
 ) -> None:
-    run = _import_management_screenshot_run(tmp_path, scenario_id, "passed")
-    filename = IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id][-1]
+    run = _scenario_screenshot_run(tmp_path, scenario_id, "passed")
+    filename = SCENARIO_SCREENSHOTS[scenario_id][-1]
     (run / scenario_id / filename).unlink()
     with pytest.raises(ValueError, match=filename):
         next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
 
 
-def test_import_management_screenshots_preserve_partial_failed_evidence(tmp_path: Path) -> None:
+def test_scenario_screenshots_preserve_partial_failed_evidence(tmp_path: Path) -> None:
     scenario_id = "36-backend-import-exit"
-    run = _import_management_screenshot_run(tmp_path, scenario_id, "failed")
-    present, missing = IMPORT_MANAGEMENT_SCREENSHOTS[scenario_id]
+    run = _scenario_screenshot_run(tmp_path, scenario_id, "failed")
+    present, missing = SCENARIO_SCREENSHOTS[scenario_id]
     (run / scenario_id / missing).unlink()
     retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
     assert retained is not None

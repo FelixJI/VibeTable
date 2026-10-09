@@ -225,6 +225,9 @@ func (source *Source) describeField(
 			field.Identity.FieldID, 1,
 		)
 		if expectationErr != nil {
+			if errors.Is(expectationErr, context.Canceled) || errors.Is(expectationErr, context.DeadlineExceeded) {
+				return query.FieldDescriptor{}, expectationErr
+			}
 			return query.FieldDescriptor{}, &query.ProductError{
 				Code:    "query.computed.version_unavailable",
 				Path:    "fields." + field.Identity.PhysicalName,
@@ -283,18 +286,26 @@ func (source *Source) describeField(
 		targetFields[targetField.Identity.PhysicalName] = targetDescriptor
 	}
 	displayField := ""
+	primaryDisplayField := ""
 	presenceFields := make(map[string]string)
 	for _, targetField := range target.Snapshot.Fields {
 		if targetField.Identity.FieldID == field.Relation.DisplayField {
 			displayField = targetField.Identity.PhysicalName
 		}
+		if targetField.Identity.FieldID == target.PrimaryDisplayFieldID {
+			primaryDisplayField = targetField.Identity.PhysicalName
+		}
 		if targetField.Value.Presence.Mode == v2.PresenceCompanion {
 			presenceFields[targetField.Identity.PhysicalName] = targetField.Value.Presence.PhysicalName
 		}
 	}
+	if primaryDisplayField == "" {
+		primaryDisplayField = primaryDisplayPhysical(target)
+	}
 	result.Relation = &query.RelationDescriptor{
-		DisplayField: displayField, PresenceFields: presenceFields,
-		TableName: target.PhysicalName, PrimaryKey: "id",
+		DisplayField: displayField, PrimaryDisplayField: primaryDisplayField,
+		PresenceFields: presenceFields,
+		TableName:      target.PhysicalName, PrimaryKey: "id",
 		RowRevisionName: relatedcomputation.RowRevisionField,
 		Fields:          targetFields,
 		Multiple:        field.Relation.Cardinality == "many",
@@ -381,7 +392,7 @@ func queryFieldType(field v2.FieldDefinition) (query.FieldType, error) {
 		logicalType = field.Formula.ResultType
 	}
 	switch logicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalTime,
 		v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect:
 		return query.FieldTypeText, nil
 	case v2.LogicalBool:
@@ -417,7 +428,7 @@ func isSearchable(field v2.FieldDefinition) bool {
 		logicalType = field.Formula.ResultType
 	}
 	switch logicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
 		v2.LogicalURL, v2.LogicalSelect:
 		return true
 	default:
@@ -427,6 +438,29 @@ func isSearchable(field v2.FieldDefinition) bool {
 
 func isComputed(field v2.FieldDefinition) bool {
 	return field.LogicalType == v2.LogicalFormula || field.LogicalType == v2.LogicalLookup
+}
+
+// primaryDisplayPhysical mirrors the relation service's global primary
+// display selection (stored primary display field, else the first writable
+// text-like field) so grid labels and relation picker labels resolve the
+// same fallback field.
+func primaryDisplayPhysical(target schemaexecution.Table) string {
+	for _, field := range target.Snapshot.Fields {
+		if field.Identity.FieldID == target.PrimaryDisplayFieldID {
+			return field.Identity.PhysicalName
+		}
+	}
+	for _, field := range target.Snapshot.Fields {
+		if isComputed(field) || field.LogicalType == v2.LogicalAutoDate ||
+			field.LogicalType == v2.LogicalRelation {
+			continue
+		}
+		switch field.LogicalType {
+		case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail:
+			return field.Identity.PhysicalName
+		}
+	}
+	return ""
 }
 
 func mapSchemaError(err error) error {

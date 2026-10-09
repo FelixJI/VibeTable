@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "build": "uv run --project ../../.. python ../../../scripts/vibetable_plugin.py build ."
   },
   "devDependencies": {
+    "esbuild": "0.28.0",
     "typescript": "7.0.2"
   },
   "packageManager": "npm@12.2.0",

@@ -34,7 +34,7 @@ def _write_local_plugin(root: Path) -> None:
         "version": "1.0.0",
         "displayName": {"en": "Reader"},
         "compatibility": {
-            "minHostVersion": "1.0.0",
+            "minHostVersion": "0.5.1",
             "pluginApi": "1.x",
         },
         "permissions": {
@@ -238,7 +238,7 @@ def _valid_manifest() -> dict[str, Any]:
         "pluginId": "com.example.reader",
         "version": "1.0.0",
         "displayName": {"en": "Reader"},
-        "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+        "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
         "permissions": {
             "data": [{"collection": "$active", "operations": ["read"], "fields": ["*"]}],
             "files": [],
@@ -394,9 +394,9 @@ def test_manifest_validation_accepts_custom_view_with_valid_entry() -> None:
     [
         ("not-a-dict", "compatibility_invalid"),
         ({}, "compatibility_invalid"),
-        ({"minHostVersion": "1.0.0"}, "compatibility_invalid"),
+        ({"minHostVersion": "0.5.1"}, "compatibility_invalid"),
         ({"minHostVersion": "not-semver", "pluginApi": "1.x"}, "compatibility_invalid"),
-        ({"minHostVersion": "1.0.0", "pluginApi": "2.x"}, "version_incompatible"),
+        ({"minHostVersion": "0.5.1", "pluginApi": "3.x"}, "version_incompatible"),
     ],
 )
 def test_validate_compatibility_rejects_invalid(compatibility: Any, code: str) -> None:
@@ -574,7 +574,9 @@ def test_pack_plugin_rejects_oversized_output(tmp_path: Path) -> None:
 
 
 def test_default_compatibility_policy_constants() -> None:
-    assert DEFAULT_COMPATIBILITY_POLICY.host_version == "1.0.0"
+    from backend._version import __version__
+
+    assert DEFAULT_COMPATIBILITY_POLICY.host_version == __version__
     assert DEFAULT_COMPATIBILITY_POLICY.plugin_api == "1.x"
 
 

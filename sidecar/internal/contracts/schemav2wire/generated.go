@@ -35,6 +35,7 @@ const (
 	LogicalTypeDateTime    LogicalType = "dateTime"
 	LogicalTypeTime        LogicalType = "time"
 	LogicalTypeAutoDate    LogicalType = "autoDate"
+	LogicalTypeAutoNumber  LogicalType = "autoNumber"
 	LogicalTypeEmail       LogicalType = "email"
 	LogicalTypeUrl         LogicalType = "url"
 	LogicalTypeSelect      LogicalType = "select"
@@ -129,21 +130,24 @@ type StorageSpec struct {
 }
 
 type DisplaySpec struct {
-	Kind              string  `json:"kind"`
-	Preset            string  `json:"preset"`
-	DisplayScale      int64   `json:"displayScale"`
-	ScaleMode         string  `json:"scaleMode"`
-	TrimTrailingZeros bool    `json:"trimTrailingZeros"`
-	UseGrouping       bool    `json:"useGrouping"`
-	Currency          string  `json:"currency"`
-	PercentStorage    string  `json:"percentStorage"`
-	Unit              *string `json:"unit"`
-	Precision         string  `json:"precision"`
-	Timezone          string  `json:"timezone"`
-	Mode              string  `json:"mode"`
-	Indent            *int64  `json:"indent,omitempty"`
-	TrueLabel         string  `json:"trueLabel"`
-	FalseLabel        string  `json:"falseLabel"`
+	Kind              string   `json:"kind"`
+	Preset            string   `json:"preset"`
+	DisplayScale      int64    `json:"displayScale"`
+	ScaleMode         string   `json:"scaleMode"`
+	TrimTrailingZeros bool     `json:"trimTrailingZeros"`
+	UseGrouping       bool     `json:"useGrouping"`
+	Currency          string   `json:"currency"`
+	PercentStorage    string   `json:"percentStorage"`
+	Unit              *string  `json:"unit"`
+	Precision         string   `json:"precision"`
+	Timezone          string   `json:"timezone"`
+	Mode              string   `json:"mode"`
+	Indent            *int64   `json:"indent,omitempty"`
+	TrueLabel         string   `json:"trueLabel"`
+	FalseLabel        string   `json:"falseLabel"`
+	ProgressStart     *float64 `json:"progressStart,omitempty"`
+	ProgressTarget    *float64 `json:"progressTarget,omitempty"`
+	RatingMax         *int64   `json:"ratingMax,omitempty"`
 }
 
 type SelectOption struct {
@@ -191,6 +195,12 @@ type JSONSpec struct {
 	RootType string                     `json:"rootType"`
 	MaxSize  int64                      `json:"maxSize"`
 	Schema   map[string]json.RawMessage `json:"schema"`
+}
+
+type AutoNumberSpec struct {
+	Prefix string `json:"prefix"`
+	Start  int64  `json:"start"`
+	Width  int64  `json:"width"`
 }
 
 type AutoDateSpec struct {
@@ -254,23 +264,24 @@ type LookupPathStep struct {
 }
 
 type FieldDefinition struct {
-	Contract    string         `json:"contract"`
-	Identity    FieldIdentity  `json:"identity"`
-	DisplayName string         `json:"displayName"`
-	Help        string         `json:"help"`
-	LogicalType LogicalType    `json:"logicalType"`
-	Lifecycle   Lifecycle      `json:"lifecycle"`
-	Value       ValueSpec      `json:"value"`
-	Constraints ConstraintSpec `json:"constraints"`
-	Storage     StorageSpec    `json:"storage"`
-	Display     DisplaySpec    `json:"display"`
-	Select      *SelectSpec    `json:"select,omitempty"`
-	Relation    *RelationSpec  `json:"relation,omitempty"`
-	File        *FileSpec      `json:"file,omitempty"`
-	Json        *JSONSpec      `json:"json,omitempty"`
-	AutoDate    *AutoDateSpec  `json:"autoDate,omitempty"`
-	Formula     *FormulaSpec   `json:"formula,omitempty"`
-	Lookup      *LookupSpec    `json:"lookup,omitempty"`
+	Contract    string          `json:"contract"`
+	Identity    FieldIdentity   `json:"identity"`
+	DisplayName string          `json:"displayName"`
+	Help        string          `json:"help"`
+	LogicalType LogicalType     `json:"logicalType"`
+	Lifecycle   Lifecycle       `json:"lifecycle"`
+	Value       ValueSpec       `json:"value"`
+	Constraints ConstraintSpec  `json:"constraints"`
+	Storage     StorageSpec     `json:"storage"`
+	Display     DisplaySpec     `json:"display"`
+	Select      *SelectSpec     `json:"select,omitempty"`
+	Relation    *RelationSpec   `json:"relation,omitempty"`
+	File        *FileSpec       `json:"file,omitempty"`
+	Json        *JSONSpec       `json:"json,omitempty"`
+	AutoDate    *AutoDateSpec   `json:"autoDate,omitempty"`
+	AutoNumber  *AutoNumberSpec `json:"autoNumber,omitempty"`
+	Formula     *FormulaSpec    `json:"formula,omitempty"`
+	Lookup      *LookupSpec     `json:"lookup,omitempty"`
 }
 
 type FieldDraft struct {
@@ -286,6 +297,7 @@ type FieldDraft struct {
 	File        *FileSpec         `json:"file,omitempty"`
 	Json        *JSONSpec         `json:"json,omitempty"`
 	AutoDate    *AutoDateSpec     `json:"autoDate,omitempty"`
+	AutoNumber  *AutoNumberSpec   `json:"autoNumber,omitempty"`
 	Formula     *FormulaDraftSpec `json:"formula,omitempty"`
 	Lookup      *LookupSpec       `json:"lookup,omitempty"`
 }

@@ -13,14 +13,22 @@ from typing import Any, Never
 
 import pytest
 
+from backend.application.plugin_execution_runtime import PluginExecutionRuntime
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.plugin import (
+    CommandContext,
     ConfirmationPreview,
+    PluginAuditEvent,
+    PluginEventEnvelope,
+    PluginManifest,
     PluginPrivateSetting,
+    PluginSnapshot,
 )
 from backend.infrastructure.plugin_package import inspect_plugin_package
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
 from backend.infrastructure.plugin_worker import (
+    InMemoryBulkMutationAdapter,
+    InMemoryHostConfirmationAdapter,
     InMemoryPluginWorkerAdapter,
     NodePluginWorkerAdapter,
     PluginWorkerError,
@@ -38,6 +46,7 @@ class FakePluginStore:
         manifest = SimpleNamespace(
             plugin_id="com.example.safe-worker",
             permissions=permissions,
+            compatibility={"pluginApi": "1.x"},
             actions=[
                 SimpleNamespace(
                     action_id="safe-action",
@@ -48,6 +57,8 @@ class FakePluginStore:
         self.installation = SimpleNamespace(
             plugin_id="com.example.safe-worker",
             version="1.0.0",
+            revision=1,
+            status="enabled",
             package_hash=package_hash,
             manifest=manifest,
         )
@@ -85,6 +96,7 @@ class FakePluginStore:
 @dataclass(frozen=True)
 class FakeQueryPage:
     rows: list[dict[str, object]]
+    total_rows: int
 
 
 class FakeProductReadClient:
@@ -96,7 +108,7 @@ class FakeProductReadClient:
 
     async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
         self.calls.append((table_id, query))
-        return FakeQueryPage(rows=[{"id": "1", "title": "safe"}])
+        return FakeQueryPage(rows=[{"id": "1", "title": "safe"}], total_rows=1)
 
     async def describe_table(self, table_id: str) -> dict[str, Any]:
         raise AssertionError(f"static plugin read port requested schema for {table_id}")
@@ -193,7 +205,7 @@ def _package(tmp_path: Path, source: str) -> Path:
                 "pluginId": "com.example.safe-worker",
                 "version": "1.0.0",
                 "displayName": {"en": "Safe Worker"},
-                "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+                "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
                 "permissions": {"data": [], "files": [], "privateStorage": False},
                 "actions": [
                     {
@@ -405,6 +417,99 @@ async def test_worker_exposes_only_scoped_product_read_and_private_storage(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("total", [6200, 12400])
+async def test_example_overview_worker_counts_large_table_within_capability_budget(
+    tmp_path: Path, total: int
+) -> None:
+    """The v2 overview consumes full pages and fails explicitly at the 64-call bound."""
+    _require_node()
+    worker_entry = (
+        Path(__file__).parents[3]
+        / "examples"
+        / "plugins"
+        / "data-overview"
+        / "dist"
+        / "workers"
+        / "overview.js"
+    )
+    if not worker_entry.is_file():
+        pytest.fail("data-overview dist worker is missing; run the plugin build script")
+
+    class LargeTableClient(FakeProductReadClient):
+        async def plugin_data(self, request: dict[str, Any]) -> dict[str, Any]:
+            if request["operation"] == "describe":
+                return {
+                    "contract": "vibetable.plugin-data.v2",
+                    "collection": "articles",
+                    "fields": [],
+                }
+            query = request["request"]
+            self.calls.append(("articles", query))
+            offset, limit = int(request.get("cursor", "0")), query["pageSize"]
+            items = [{"id": str(i + 1)} for i in range(offset, min(offset + limit, total))]
+            return {
+                "contract": "vibetable.plugin-query-page.v2",
+                "items": items,
+                "nextCursor": str(offset + len(items)) if offset + len(items) < total else None,
+                "totalRows": total,
+                "filteredRows": total,
+                "schemaRevision": "schema-1",
+                "dataRevision": 1,
+                "complete": True,
+                "dependencies": {},
+            }
+
+    client = LargeTableClient()
+    adapter, store = _retained_worker(
+        tmp_path,
+        worker_entry.read_text(encoding="utf-8"),
+        permissions={
+            "data": [
+                {
+                    "collection": "$active",
+                    "operations": ["read", "query"],
+                    "fields": ["id"],
+                }
+            ],
+            "privateStorage": False,
+        },
+        profiles={
+            "articles": CollectionProfile(
+                collection="articles",
+                fields=["id", "title"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        },
+        client=client,
+        expected_project_key="project-a",
+        session_epoch=7,
+    )
+    store.installation.manifest.compatibility = {"pluginApi": "2.x"}
+    reporter = FakeReporter()
+    execution = {
+        **_execution(package_hash=store.installation.package_hash),
+        "runId": f"run-count-{total}",
+        "_hostReporter": reporter,
+        "_hostCancel": SimpleNamespace(cancelled=False),
+    }
+
+    if total == 12400:
+        with pytest.raises(PluginWorkerError, match="capability-call limit"):
+            await adapter.run("dist/worker.js", _context(), {}, execution=execution)
+        assert len(client.calls) == 62
+        return
+    result = await adapter.run("dist/worker.js", _context(), {}, execution=execution)
+    assert result["metrics"] == [{"label": "记录", "value": total}]
+    assert result["table"]["data"]["count"] == total
+    assert result["table"]["data"]["complete"] is True
+    assert reporter.updates == [
+        {"done": total, "total": total, "message": f"已统计 {total} 条记录"}
+    ]
+    assert len(client.calls) == 31
+
+
+@pytest.mark.asyncio
 async def test_worker_rejects_node_globals_and_undeclared_product_data(
     tmp_path: Path,
 ) -> None:
@@ -484,7 +589,6 @@ async def test_worker_supports_declared_file_and_structured_ui_capabilities(
             summary: `copied ${content.length}`,
             warnings: [],
           };
-          await capabilities.ui.emitResult(result);
           return result;
         }
         """,
@@ -853,6 +957,36 @@ async def test_data_read_rejects_invalid_cursor_type() -> None:
     with pytest.raises(PluginWorkerError, match="cursor is invalid"):
         await adapter._data_read(
             resolved, {}, {"collection": "orders", "fields": ["id"], "cursor": [1, 2]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_data_read_exposes_authoritative_total_rows_behind_read_grant() -> None:
+    """totalRows follows query_page's authoritative count and stays behind the read grant."""
+    adapter = _make_adapter(
+        profiles={
+            "orders": CollectionProfile(
+                collection="orders",
+                fields=["id", "name"],
+                archive_field=None,
+                date_updated_field=None,
+            )
+        },
+        client=FakeProductReadClient(),
+    )
+    granted = _resolved(
+        {"data": [{"collection": "orders", "operations": ["read"], "fields": ["id"]}]}
+    )
+    value = await adapter._data_read(
+        granted, {}, {"collection": "orders", "fields": ["id"], "pageSize": 1}
+    )
+    assert value["items"] == [{"id": "1"}]
+    assert value["totalRows"] == 1
+
+    denied = _resolved({"data": []})
+    with pytest.raises(PluginWorkerError, match="not declared for read"):
+        await adapter._data_read(
+            denied, {}, {"collection": "orders", "fields": ["id"], "pageSize": 1}
         )
 
 
@@ -1263,3 +1397,317 @@ async def test_in_memory_adapter_run_appends_trace() -> None:
 
 def test_in_memory_adapter_is_available() -> None:
     assert InMemoryPluginWorkerAdapter().available is True
+
+
+@pytest.mark.asyncio
+async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path: Path) -> None:
+    _require_node()
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contract/fixtures/plugin-capabilities-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    class ConformanceClient(FakeProductReadClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows: list[dict[str, Any]] = []
+
+        async def query_page(self, *, table_id: str, query: dict[str, Any]) -> FakeQueryPage:
+            assert table_id == "articles"
+            offset, limit = query["offset"], query["limit"]
+            return FakeQueryPage(rows=self.rows[offset : offset + limit], total_rows=len(self.rows))
+
+    client = ConformanceClient()
+    profile = CollectionProfile(
+        collection="articles",
+        fields=corpus["fields"],
+        create_fields=corpus["writableFields"]["articles"]["create"],
+        update_fields=corpus["writableFields"]["articles"]["update"],
+        archive_field=None,
+        date_updated_field=None,
+    )
+    adapter, store = _retained_worker(
+        tmp_path,
+        """
+        export async function run(input, capabilities) {
+          if (Object.hasOwn(input, "returnValue")) return input.returnValue;
+          try {
+            const page = await capabilities.data.read(input.request);
+            return { contract: "vibetable.plugin-result.v1", status: "success",
+              summary: "read", table: page };
+          } catch (error) {
+            return { contract: "vibetable.plugin-result.v1", status: "error",
+              summary: error.message, table: { code: error.code } };
+          }
+        }
+        """,
+        permissions={
+            "data": [
+                {
+                    "collection": "$active",
+                    "operations": ["read", "update"],
+                    "fields": ["$configured"],
+                }
+            ],
+            "files": [],
+            "privateStorage": False,
+        },
+        profiles={"articles": profile},
+        client=client,
+    )
+    execution = _execution(package_hash=store.installation.package_hash)
+    for case in corpus["readCases"]:
+        client.rows = [
+            {**corpus["rows"][0], "id": str(index + 1), "__vibetableDigest": "sha256:" + "a" * 64}
+            for index in range(case.get("rowCount", 1))
+        ]
+        result = await adapter.run(
+            "dist/worker.js", _context(), {"request": case["request"]}, execution=execution
+        )
+        page = result["table"]
+        if "code" in case:
+            assert page["code"] == case["code"], case["name"]
+        else:
+            assert len(page["items"]) == case["count"], case["name"]
+            assert page["nextCursor"] == case["nextCursor"], case["name"]
+            assert page["totalRows"] == case.get("rowCount", 1), case["name"]
+            if "first" in case:
+                assert page["items"][0] == case["first"], case["name"]
+                assert set(page["rowGuards"].values()) == {"sha256:" + "a" * 64}
+    for value in corpus["returns"]:
+        assert (
+            await adapter.run(
+                "dist/worker.js", _context(), {"returnValue": value}, execution=execution
+            )
+            == value
+        )
+    for guard in corpus["invalidGuards"]:
+        plan = json.loads(json.dumps(corpus["returns"][1]))
+        plan["operations"][0].update(guard)
+        with pytest.raises(PluginWorkerError):
+            await adapter.run(
+                "dist/worker.js", _context(), {"returnValue": plan}, execution=execution
+            )
+
+    class ConformanceRegistry:
+        def __init__(self) -> None:
+            self.snapshot = PluginSnapshot(
+                project_key="project-a",
+                plugin_id=store.installation.plugin_id,
+                version="1.0.0",
+                package_hash=store.installation.package_hash,
+                source_type="local-folder",
+                source_location=str(tmp_path / "plugin"),
+                manifest=PluginManifest.model_validate(
+                    json.loads((tmp_path / "plugin/manifest.json").read_text(encoding="utf-8"))
+                ),
+                status="enabled",
+                revision=1,
+            )
+            self.audit: list[PluginAuditEvent] = []
+
+        async def get(self, project_key: str, plugin_id: str) -> PluginSnapshot:
+            assert project_key == self.snapshot.project_key
+            assert plugin_id == self.snapshot.plugin_id
+            return self.snapshot
+
+        async def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
+            self.audit.append(event)
+            return event
+
+    registry = ConformanceRegistry()
+    confirmation = InMemoryHostConfirmationAdapter(decisions=[True])
+    mutation = InMemoryBulkMutationAdapter(result=corpus["returns"][0])
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=adapter,
+        confirmation_adapter=confirmation,
+        mutation_adapter=mutation,
+    )
+    terminal = asyncio.Event()
+    reports: list[PluginEventEnvelope] = []
+
+    async def record_report(event: PluginEventEnvelope) -> None:
+        reports.append(event)
+        if event.snapshot["state"] in {"succeeded", "failed", "aborted", "cancelled"}:
+            terminal.set()
+
+    runtime.set_notification_sink(record_report)
+    default_permissions = store.installation.manifest.permissions
+    for index, case in enumerate(corpus["invalidReturns"]):
+        registry.snapshot.manifest.actions[0].risk = case["risk"]
+        store.installation.manifest.permissions = case.get("permissions", default_permissions)
+        registry.snapshot.manifest.permissions = store.installation.manifest.permissions
+        terminal.clear()
+        await runtime.start(
+            registry.snapshot.plugin_id,
+            "safe-action",
+            CommandContext.model_validate(_context()),
+            {"returnValue": case["value"]},
+            task_id=f"invalid-return-{index}",
+            run_id=f"invalid-return-run-{index}",
+        )
+        await asyncio.wait_for(terminal.wait(), timeout=5)
+        assert reports[-1].snapshot["state"] == "failed", case["name"]
+        assert reports[-1].snapshot["error"]["code"] == case["code"], case["name"]
+        assert reports[-1].snapshot["result"] is None, case["name"]
+        assert registry.audit[-1].error_code == case["code"], case["name"]
+        assert confirmation.previews == [], case["name"]
+        assert mutation.plans == [], case["name"]
+
+    for index, case in enumerate(corpus["validReturns"]):
+        registry.snapshot.manifest.actions[0].risk = case["risk"]
+        store.installation.manifest.permissions = case.get("permissions", default_permissions)
+        registry.snapshot.manifest.permissions = store.installation.manifest.permissions
+        confirmation.decisions.append(True)
+        terminal.clear()
+        confirmations_before, commits_before = len(confirmation.previews), len(mutation.plans)
+        await runtime.start(
+            registry.snapshot.plugin_id,
+            "safe-action",
+            CommandContext.model_validate(_context()),
+            {"returnValue": case["value"]},
+            task_id=f"valid-return-{index}",
+            run_id=f"valid-return-run-{index}",
+        )
+        await asyncio.wait_for(terminal.wait(), timeout=5)
+        assert reports[-1].snapshot["state"] == "succeeded", case["name"]
+        result = reports[-1].snapshot["result"]
+        assert result is not None, case["name"]
+        assert result["status"] == "success", case["name"]
+        expected_commits = int(case["risk"] == "write")
+        assert len(confirmation.previews) - confirmations_before == expected_commits
+        assert len(mutation.plans) - commits_before == expected_commits
+        if case["risk"] == "read" and "metrics" in case["value"]:
+            assert [metric["value"] for metric in result["metrics"]] == [
+                1,
+                1,
+                "text",
+            ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "code"),
+    [
+        ("data.mutate", "plugin_direct_mutation_unsupported"),
+        ("ui.emitResult", "plugin_emit_result_unsupported"),
+    ],
+)
+async def test_deprecated_capability_errors_are_typed_in_the_vm(
+    tmp_path: Path, method: str, code: str
+) -> None:
+    _require_node()
+    adapter, store = _retained_worker(
+        tmp_path,
+        f"export async function run(_input, capabilities) {{ await capabilities.{method}({{}}); }}",
+        permissions={"data": [], "files": [], "privateStorage": False},
+    )
+    with pytest.raises(PluginWorkerError) as raised:
+        await adapter.run(
+            "dist/worker.js",
+            _context(),
+            {},
+            execution=_execution(package_hash=store.installation.package_hash),
+        )
+    assert raised.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_v2_go_corpus_cursor_ownership_and_live_authorization() -> None:
+    corpus = json.loads(
+        (Path(__file__).parents[2] / "contract/fixtures/plugin-capabilities-v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    installation = SimpleNamespace(status="enabled", revision=1)
+
+    class Store:
+        async def get_installation(self, _project: str, _plugin: str) -> Any:
+            return installation
+
+    class Client:
+        async def plugin_data(self, request: dict[str, Any]) -> dict[str, Any]:
+            index = int(str(request.get("cursor", "page-1")).split("-")[-1]) - 1
+            page = dict(corpus["pages"][index])
+            page["nextCursor"] = f"page-{index + 2}" if index < 2 else None
+            page["dependencies"] = {"computed": {"definition": 1, "watermark": "authority"}}
+            return page
+
+    adapter = _make_adapter(
+        store=Store(), client=Client(), expected_project_key="project-a", session_epoch=7
+    )
+    resolved = _ResolvedWorker("project-a", "com.example.safe-worker", {}, "", 1, "2.x")
+    context = {"collection": "articles"}
+    execution: dict[str, Any] = {"runId": "v2-corpus"}
+    first = await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+    assert "dependencies" not in first
+    handle = first["nextCursor"]
+    assert isinstance(handle, str)
+    assert len(handle) == 32
+    assert handle != corpus["pages"][0]["nextCursor"]
+    with pytest.raises(PluginWorkerError) as foreign:
+        await adapter._data_v2(
+            resolved,
+            context,
+            {"runId": "other"},
+            "data.query",
+            {**corpus["request"], "cursor": handle},
+        )
+    assert foreign.value.code == "plugin_cursor_invalid"
+    second = await adapter._data_v2(
+        resolved, context, execution, "data.query", {**corpus["request"], "cursor": handle}
+    )
+    with pytest.raises(PluginWorkerError) as reused:
+        await adapter._data_v2(
+            resolved, context, execution, "data.query", {**corpus["request"], "cursor": handle}
+        )
+    assert reused.value.code == "plugin_cursor_invalid"
+    installation.revision = 2
+    with pytest.raises(PluginWorkerError) as stale:
+        await adapter._data_v2(
+            resolved,
+            context,
+            execution,
+            "data.query",
+            {**corpus["request"], "cursor": second["nextCursor"]},
+        )
+    assert stale.value.code == "plugin_cursor_stale"
+    installation.status = "disabled"
+    with pytest.raises(PluginWorkerError) as revoked:
+        await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+    assert revoked.value.code == "plugin_read_denied"
+    installation.status, installation.revision = "enabled", 1
+    first = await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+    for changed in ({**corpus["request"], "sorts": []}, corpus["request"]):
+        execution["runId"] = "changed-run"
+        with pytest.raises(PluginWorkerError) as changed_owner:
+            await adapter._data_v2(
+                resolved,
+                context,
+                execution,
+                "data.query",
+                {**changed, "cursor": first["nextCursor"]},
+            )
+        assert changed_owner.value.code == "plugin_cursor_invalid"
+
+
+@pytest.mark.asyncio
+async def test_v2_worker_denies_legacy_workspace_mismatch_and_cancel() -> None:
+    adapter = _make_adapter(expected_project_key="project-a", session_epoch=7)
+    with pytest.raises(PluginWorkerError) as legacy:
+        await adapter._data_v2(
+            _resolved(), {}, {}, "data.describe", {"accepts": ["vibetable.plugin-data.v2"]}
+        )
+    assert legacy.value.code == "plugin_api_unsupported"
+    resolved = _ResolvedWorker("foreign", "plugin", {}, "", 1, "2.x")
+    with pytest.raises(PluginWorkerError) as workspace:
+        await adapter._data_v2(resolved, {}, {}, "data.query", {})
+    assert workspace.value.code == "plugin_read_denied"
+    resolved = _ResolvedWorker("project-a", "plugin", {}, "", 1, "2.x")
+    with pytest.raises(PluginWorkerError) as cancelled:
+        await adapter._data_v2(
+            resolved, {}, {"_hostCancel": SimpleNamespace(cancelled=True)}, "data.query", {}
+        )
+    assert cancelled.value.code == "plugin_cancel_requested"

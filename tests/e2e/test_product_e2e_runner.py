@@ -1751,6 +1751,7 @@ def test_capability_selection_drives_the_release_smoke_subset() -> None:
         "02-all-field-schema",
         "08-stale-conflict",
         "16-dashboard-lifecycle",
+        "45-common-field-display",
     ]
 
 
@@ -4763,6 +4764,46 @@ def test_schema_scenario_uses_authoritative_capabilities_and_stable_identities()
     assert 'legacyWrite.type === "operation.failed"' in scenario
 
 
+def test_auto_number_journey_is_bound_to_schema_scenario_runtime_and_restore_boundary() -> None:
+    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
+    schema = source[
+        source.index("async function scenario02") : source.index(
+            "async function verifyQueryViewGroupingUI"
+        )
+    ]
+    grouping = source[
+        source.index("async function verifyQueryViewGroupingUI") : source.index(
+            "async function rawBridgeRequest"
+        )
+    ]
+    assert "runAutoNumberJourney(page, recorder, runtime" in schema
+    assert "runAutoNumberJourney" not in grouping
+    assert source.count("await runAutoNumberJourney(") == 1
+    create_table = source[
+        source.index("async function createEmptyTable") : source.index(
+            "async function createV2Field"
+        )
+    ]
+    assert 'getByTestId("field-display-name").waitFor' in create_table
+    journey = runner.NODE_RUNNER.with_name("auto_number_journey.mjs").read_text(encoding="utf-8")
+    assert 'override.type === "mutation.apply"' in journey
+    assert 'override.payload?.error?.code === "mutation.field.read_only"' in journey
+    # 领域型拒绝在请求类型 envelope 内返回 payload.error，不进入 operation.failed
+    # 台账；对它调用 acknowledgeExpectedBridgeFailure 会在真实运行时抛错。
+    assert "await acknowledgeExpectedBridgeFailure(page, override)" not in journey
+    assert "await insertRowFromToolbar(page)" in journey
+    assert 'getByTestId("grid-add-first-row").click()' in journey
+    backup = source[
+        source.index("async function scenario12") : source.index("async function scenario33")
+    ]
+    assert backup.index("prepareAutoNumberSnapshot(") < backup.index(
+        'getByTestId("snapshot-create")'
+    )
+    assert backup.index("verifyAutoNumberSnapshot(") > backup.index(
+        "const restoredBootstrap = await waitForCapturedBridgeMessage"
+    )
+
+
 def test_schema_scenario_waits_for_submit_completion_without_a_fixed_delay() -> None:
     source = runner.NODE_RUNNER.read_text(encoding="utf-8")
     scenario = source[
@@ -4800,6 +4841,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
+        runner.NODE_RUNNER.with_name("field_settings_drawer.test.mjs"),
         runner.NODE_RUNNER.with_name("dashboard_panel_editor_completion.test.mjs"),
         runner.NODE_RUNNER.with_name("import_fault_outcome.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_raw_request.test.mjs"),
@@ -4821,6 +4863,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("data_io_interoperability.test.mjs"),
         runner.NODE_RUNNER.with_name("calculation_chain_journey.test.mjs"),
         runner.NODE_RUNNER.with_name("file_history_capacity_journey.test.mjs"),
+        runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
     ]
     try:
         completed = subprocess.run(
@@ -6298,12 +6341,9 @@ def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
         guard = r"""
 # The production success path must avoid the serializer that timed out in CI.
 function ConvertTo-Json { throw 'generic JSON serialization is unavailable' }
-# An observation must not need a compiler to initialize the system provider.
-function Add-Type {
-    param($AssemblyName, $ReferencedAssemblies, $TypeDefinition)
-    if ($TypeDefinition) { throw 'runtime C# compilation is unavailable' }
-    Microsoft.PowerShell.Utility\Add-Type -AssemblyName $AssemblyName
-}
+# An observation initializes the system provider without the Add-Type
+# utility cmdlet at all: known framework assemblies load by strong name.
+function Add-Type { throw 'Add-Type is unavailable' }
 """
         command = [
             *command[:-1],

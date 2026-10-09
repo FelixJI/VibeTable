@@ -74,17 +74,23 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
     assert automation_project.main(command[2:]) == 0
     assert calls == [
         (("npm", "run", "typecheck"), "sdk/plugin"),
+        (("npm", "run", "test"), "sdk/plugin"),
         (("npm", "run", "typecheck"), "examples/plugins/data-overview"),
         (("npm", "run", "test"), "examples/plugins/data-overview"),
+        (("npm", "run", "build"), "examples/plugins/data-overview"),
         (("npm", "run", "typecheck"), "examples/plugins/normalize-text"),
         (("npm", "run", "test"), "examples/plugins/normalize-text"),
+        (("npm", "run", "build"), "examples/plugins/normalize-text"),
         (("npm", "run", "test:coverage"), "desktop/web-grid"),
     ]
 
 
 @pytest.mark.parametrize(
     ("project", "script", "expected_calls"),
-    [("examples/plugins/data-overview", "test", 3), ("desktop/web-grid", "test:coverage", 6)],
+    [
+        ("examples/plugins/data-overview", "test", 4),
+        ("desktop/web-grid", "test:coverage", 9),
+    ],
 )
 def test_node_stage_stops_on_plugin_or_web_failure(
     node_quality_checkout: Path,
@@ -1095,6 +1101,7 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     assert {name for name in ("uv", "node", "dotnet", "go") if data_io.get(name)} == {
         "uv",
         "node",
+        "go",
     }
     assert shards["handoff_paths"] == [
         "build/automation/artifacts",
@@ -1133,7 +1140,7 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
         ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci"]),
         ("race-a", ["w64devkit"]),
         ("race-b", ["w64devkit"]),
-        ("resilience", ["uv-sync", "npm-ci"]),
+        ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci"]),
         ("data-io", ["uv-sync", "npm-ci"]),
         ("release", []),
     ],
@@ -1171,6 +1178,47 @@ def test_smoke_lane_prepares_only_its_required_toolchain(
     automation_project._prepare_smoke_lane(lane)
 
     assert observed == expected
+
+
+def test_resilience_prepare_restores_the_example_plugins_its_e2e_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resilience product E2E rebuilds both example plugins through the
+    plugin CLI (scenario 11-plugin-mutation), so the lane prepare must restore
+    each example's local esbuild; the data-io lane's scenarios never build
+    plugins and must stay narrower."""
+    observed: list[tuple[str, str]] = []
+
+    def record_run(*command: str, **kwargs: object) -> None:
+        cwd = kwargs.get("cwd", automation_project.REPO_ROOT)
+        assert isinstance(cwd, Path)
+        observed.append(
+            (" ".join(command), cwd.relative_to(automation_project.REPO_ROOT).as_posix())
+        )
+
+    monkeypatch.setattr(
+        automation_project,
+        "_node_environment",
+        lambda extra=None: {**(extra or {}), "PATH": "C:/locked-node"},
+    )
+    monkeypatch.setattr(automation_project, "_run", record_run)
+
+    automation_project._prepare_smoke_lane("resilience")
+
+    assert observed == [
+        ("uv sync --frozen --group dev --group build", "."),
+        ("npm ci", "desktop/web-grid"),
+        ("npm ci", "examples/plugins/data-overview"),
+        ("npm ci", "examples/plugins/normalize-text"),
+    ]
+
+    observed.clear()
+    automation_project._prepare_smoke_lane("data-io")
+
+    assert observed == [
+        ("uv sync --frozen --group dev --group build", "."),
+        ("npm ci", "desktop/web-grid"),
+    ]
 
 
 def test_smoke_lane_binds_report_to_the_declared_candidate(

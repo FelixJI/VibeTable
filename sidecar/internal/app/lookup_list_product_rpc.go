@@ -153,8 +153,9 @@ func projectLookupList(catalog relation.CatalogResult) (map[string]any, error) {
 			"lookupId": lookup.LookupID, "collection": lookup.TableID,
 			"fieldKey": lookup.PhysicalName, "displayName": lookup.DisplayName,
 			"path": path, "source": map[string]any{"kind": "target_field", "fieldRef": lookup.TargetFieldID},
-			"outputType": outputType, "outputScale": nil, "revision": lookup.Revision,
-			"state": "valid", "diagnostics": []any{}, "dependencies": dependencies,
+			"outputType": outputType, "outputScale": nil, "resultCardinality": lookup.ResultCardinality,
+			"revision": lookup.Revision,
+			"state":    "valid", "diagnostics": []any{}, "dependencies": dependencies,
 		}
 		if lookup.Condition != nil {
 			projected["condition"] = lookup.Condition

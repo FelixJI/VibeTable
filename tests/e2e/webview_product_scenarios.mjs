@@ -1,12 +1,17 @@
+import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
+import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
+import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import fsSync from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { execFile } from "node:child_process";
 import { chromium } from "../../desktop/web-grid/node_modules/playwright-core/index.mjs";
 import {
   acknowledgeExpectedSidecarRecoveryFailure,
@@ -617,16 +622,34 @@ async function createV2Field(
   };
 }
 
-async function closeFieldSettingsDrawer(page) {
-  const confirmation = page.waitForEvent("dialog", { timeout: 2_000 })
-    .then(async (dialog) => {
+export async function closeFieldSettingsDrawer(page) {
+  // The drawer fires a native confirm only when dirty; clean closes must not pay a fixed dialog wait.
+  let markDialogSettled;
+  const dialogSettled = new Promise((resolve) => {
+    markDialogSettled = resolve;
+  });
+  let dialogSeen = false;
+  let acceptFailure;
+  const onDialog = async (dialog) => {
+    dialogSeen = true;
+    try {
       await dialog.accept();
-      return dialog.message();
-    })
-    .catch(() => null);
-  await page.getByTestId("field-close-button").click();
-  await confirmation;
-  await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
+    } catch (error) {
+      acceptFailure ??= error;
+    } finally {
+      markDialogSettled();
+    }
+  };
+  page.on("dialog", onDialog);
+  try {
+    await page.getByTestId("field-close-button").click();
+    if (dialogSeen) await dialogSettled;
+    if (acceptFailure) throw acceptFailure;
+    await page.getByTestId("field-display-name").waitFor({ state: "hidden" });
+    if (acceptFailure) throw acceptFailure;
+  } finally {
+    page.off("dialog", onDialog);
+  }
 }
 
 async function applyV2FieldChange(
@@ -1106,10 +1129,163 @@ async function scenario02(page, recorder, _network, runtime) {
   await page.getByTestId("formula-editor-cancel").click();
   await closeFieldSettingsDrawer(page);
 
-  // The remaining assertions intentionally mutate this table through raw
-  // bridge requests. Keep the visible grid on a different table so it cannot
-  // issue Lookup reads between an out-of-band schema apply and its UI refresh.
+  // 数字显示贯通：权威 Schema 保存货币/百分比显示后，列投影携带完整
+  // DisplaySpec，网格按显示渲染，且显示位数不再约束输入（AC1/AC2/AC3）。
+  // 与后续断言一样：脱离可见网格做 schema/值变更，避免 UI 刷新前触发 Lookup 读。
   await selectTable(page, "E2E Relation Target V2");
+  const amountDisplayCurrency = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "currency",
+          displayScale: 2,
+          scaleMode: "fixed",
+          trimTrailingZeros: false,
+          useGrouping: true,
+          currency: "CNY",
+        };
+        return draft;
+      },
+    },
+  );
+  const currencySeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 1234.56789 },
+  }], "e2e-number-display-currency");
+  if (currencySeed.payload?.status !== "applied"
+    || amountDisplayCurrency.applied?.type === "operation.failed") {
+    throw new Error(`currency display change was not committed: ${JSON.stringify([amountDisplayCurrency, currencySeed])}`);
+  }
+  await selectTable(page, "E2E Field Settings V2");
+  const describedDisplay = await rawBridgeRequest(page, "schema.describe", {
+    collection: tableId,
+    requestGeneration: 1,
+    accepts: ["vibetable.relation-capabilities.v1", "vibetable.lookup-query.v1"],
+  });
+  const describedAmountColumn = describedDisplay.payload?.schema?.columns
+    ?.find((column) => column.fieldId === amountField.fieldId);
+  recorder.check(
+    "schema.describe projects the complete DisplaySpec for the number column",
+    describedAmountColumn?.display?.preset === "currency"
+      && describedAmountColumn?.display?.displayScale === 2
+      && describedAmountColumn?.display?.scaleMode === "fixed"
+      && describedAmountColumn?.display?.currency === "CNY",
+    { describedAmountColumn },
+  );
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("¥1,234.57"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  recorder.check(
+    "grid renders the stored 1234.56789 as ¥1,234.57 under currency display",
+    true,
+  );
+  // 显示 2 位不得拒绝 1.234567：真实编辑路径提交原值（旧实现把
+  // displayScale 注入编辑器 scale 会在本地拒绝该输入）。
+  const amountCell = page.locator(`.tabulator-cell[tabulator-field="${amountField.physicalName}"]`).first();
+  const amountEditor = await beginCellEdit(amountCell);
+  await amountEditor.fill("1.234567");
+  await amountEditor.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.length === 1
+      && payload.rows[0]?.[amountField.physicalName] === 1.234567,
+  );
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("¥1.23"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  const editRejectionsAfterDisplay = await page.evaluate(
+    () => window.__vibetableE2eEditSchemaRejections,
+  );
+  recorder.check(
+    "display scale never rejects raw input 1.234567 (¥1.23 shown, raw value preserved)",
+    editRejectionsAfterDisplay.length === 0,
+    { editRejectionsAfterDisplay },
+  );
+
+  // 百分比：ratio 存储 0.125 显示 12.5%，原值不被缩放改写。
+  await selectTable(page, "E2E Relation Target V2");
+  const amountDisplayPercent = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "percent",
+          percentStorage: "ratio",
+          displayScale: 1,
+          scaleMode: "max",
+        };
+        return draft;
+      },
+    },
+  );
+  const percentSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 0.125 },
+  }], "e2e-number-display-percent");
+  if (percentSeed.payload?.status !== "applied"
+    || amountDisplayPercent.applied?.type === "operation.failed") {
+    throw new Error(`percent display change was not committed: ${JSON.stringify([amountDisplayPercent, percentSeed])}`);
+  }
+  await selectTable(page, "E2E Field Settings V2");
+  await page.waitForFunction(
+    ({ field }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.includes("12.5%"),
+    { field: amountField.physicalName },
+    { timeout: 30_000 },
+  );
+  recorder.check(
+    "ratio 0.125 renders as 12.5% without rescaling the stored value",
+    true,
+  );
+
+  // 以下原始 bridge 修改从恢复数字配置开始。先切离可见网格，避免
+  // schema apply 与尚未刷新上下文的 Lookup 读取并发；保留所有错误断言。
+  await selectTable(page, "E2E Relation Target V2");
+  const amountRestore = await applyV2FieldChange(
+    page,
+    tableId,
+    amountField.fieldId,
+    "update",
+    {
+      mutateDraft: (draft) => {
+        draft.display = {
+          ...draft.display,
+          preset: "number",
+          displayScale: 2,
+          scaleMode: "max",
+          trimTrailingZeros: true,
+          useGrouping: true,
+          percentStorage: "ratio",
+          unit: null,
+        };
+        return draft;
+      },
+    },
+  );
+  const amountRestoreSeed = await applyProductMutation(page, tableId, [{
+    kind: "update",
+    recordId: rowsAfterUndo.rows[0].id,
+    values: { [amountField.physicalName]: 21 },
+  }], "e2e-number-display-restore");
+  if (amountRestoreSeed.payload?.status !== "applied"
+    || amountRestore.applied?.type === "operation.failed") {
+    throw new Error(`amount restore failed: ${JSON.stringify([amountRestore, amountRestoreSeed])}`);
+  }
 
   const status = created.find((field) => field.definition?.logicalType === "select");
   const draftOption = status.definition.select.options.find((option) => option.label === "Draft");
@@ -1265,7 +1441,538 @@ async function scenario02(page, recorder, _network, runtime) {
     { legacyWrite },
   );
   await acknowledgeExpectedBridgeFailure(page, legacyWrite);
+
+  // AC1/AC2/AC3/AC5（UI 驱动）：独立合成表，经真实抽屉控件设置/保存/重开，
+  // 覆盖 0/2/9/12/15 持久化、固定/最多、千分位、货币/单位、百分比两种存储、
+  // 显示-only 不变量与默认 CSV 原值导出；不污染上面的共享旅程。
+  const numberUiTableId = await createEmptyTable(page, "E2E Number Display UI");
+  // createEmptyTable 的建表流程会打开统一字段设置抽屉；下面这次 close 关闭它。
+  const uiAmount = await createV2Field(page, numberUiTableId, "金额", "number");
+  await closeFieldSettingsDrawer(page);
+  // createV2Field 是纯 raw RPC（describe/plan/apply），不打开抽屉；此处不能
+  // 再关一次不存在的抽屉（field-close-button 会等到超时）。
+  const uiFormula = await createV2Field(page, numberUiTableId, "翻倍", "formula", (draft) => {
+    draft.formula = { language: "cel-v1", source: `${uiAmount.physicalName} * 2.0` };
+    return draft;
+  });
+  const uiSeed = await applyProductMutation(page, numberUiTableId, [{
+    kind: "insert",
+    recordId: null,
+    values: { [uiAmount.physicalName]: 1234.56789 },
+  }], "e2e-number-display-ui-seed");
+  if (uiSeed.payload?.status !== "applied") {
+    throw new Error(`number display UI seed was not committed: ${JSON.stringify(uiSeed)}`);
+  }
+  await selectTable(page, "E2E Number Display UI");
+  await waitForVisibleRowCount(page, 1);
+
+  const uiQuery = () => rawBridgeRequest(page, "query.page", {
+    tableId: numberUiTableId,
+    query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  });
+  const uiDescribeDisplay = async () => {
+    const described = await rawBridgeRequest(page, "field.settings.describe", {
+      tableId: numberUiTableId,
+      fieldId: uiAmount.fieldId,
+    });
+    return described.payload?.definition?.display ?? null;
+  };
+  const waitAmountCellText = async (expectedText, field = uiAmount.physicalName) => {
+    // 金额 formatter 只输出 span 文本（无辅助 DOM），用 trim() 全等断言，
+    // 避免子串匹配掩盖残留单位/币符。
+    await page.waitForFunction(
+      ({ field, expected }) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === expected,
+      { field, expected: expectedText },
+      { timeout: 30_000 },
+    );
+  };
+  const openAmountSettings = async () => {
+    const header = page.locator(`.tabulator-col[tabulator-field="${uiAmount.physicalName}"]`);
+    await header.waitFor({ state: "visible" });
+    await header.locator(".tabulator-col-title").click({ button: "right" });
+    await page.locator(".n-dropdown-option-body:visible").getByText("字段设置", { exact: true }).click();
+    await page.getByTestId("field-display-name").waitFor();
+  };
+  const saveNumberSettings = async () => {
+    await page.getByTestId("field-plan-button").click();
+    const planCard = page.getByTestId("field-change-plan");
+    await planCard.waitFor({ state: "visible", timeout: 30_000 });
+    for (const checkbox of await planCard.getByRole("checkbox").all()) {
+      if (!await checkbox.isChecked()) await checkbox.check();
+    }
+    await beginBridgeMessageCapture(page, ["field.change.apply", "operation.failed"]);
+    await page.getByTestId("field-apply-button").click();
+    const applied = await waitForCapturedBridgeMessage(page, 60_000);
+    if (applied.type !== "field.change.apply" || applied.payload?.error) {
+      throw new Error(`number display UI apply failed: ${JSON.stringify(applied)}`);
+    }
+    await closeFieldSettingsDrawer(page);
+    return applied;
+  };
+  const setDisplayScaleInput = async (value) => {
+    const input = page.getByTestId("number-display-scale").locator("input");
+    await input.fill(String(value));
+    await input.press("Enter");
+  };
+  const readPersistedScale = async () => {
+    await openAmountSettings();
+    const value = Number(await page.getByTestId("number-display-scale").locator("input").inputValue());
+    await closeFieldSettingsDrawer(page);
+    return value;
+  };
+  const previewTexts = async () => (await page
+    .locator('[data-testid="number-display-preview"] code')
+    .allTextContents());
+
+  // 基准：record id + 业务 data revision（后续显示-only 变更的不变量基准）。
+  const beforeDisplayOnly = await uiQuery();
+  const beforeRowId = beforeDisplayOnly.payload?.rows?.[0]?.id;
+  const beforeDataRevision = beforeDisplayOnly.payload?.snapshot?.dataRevision;
+  const beforeSchemaRevision = beforeDisplayOnly.payload?.snapshot?.schemaRevision;
+
+  // A) 真实抽屉：预设“数字”+固定 2 位，保存前实时预览已生效。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await setDisplayScaleInput(2);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  recorder.check(
+    "drawer preview shows fixed two digits before saving",
+    (await previewTexts()).join("|") === "1,234.57|12.00",
+    { previews: await previewTexts() },
+  );
+  await saveNumberSettings();
+  await waitAmountCellText("1,234.57");
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-fixed.png"),
+    fullPage: true,
+  });
+  const afterFirstDisplayChange = await uiQuery();
+  const fixedDisplay = await uiDescribeDisplay();
+  recorder.check(
+    "display-only change keeps record id and business data revision while schema revision advances",
+    afterFirstDisplayChange.payload?.rows?.[0]?.id === beforeRowId
+      && afterFirstDisplayChange.payload?.snapshot?.dataRevision === beforeDataRevision
+      && afterFirstDisplayChange.payload?.snapshot?.schemaRevision !== beforeSchemaRevision,
+    {
+      before: { beforeRowId, beforeDataRevision, beforeSchemaRevision },
+      after: {
+        rowId: afterFirstDisplayChange.payload?.rows?.[0]?.id,
+        dataRevision: afterFirstDisplayChange.payload?.snapshot?.dataRevision,
+        schemaRevision: afterFirstDisplayChange.payload?.snapshot?.schemaRevision,
+      },
+    },
+  );
+  recorder.check(
+    "saved fixed-2 display persists through drawer reopen and authority describe",
+    await readPersistedScale() === 2
+      && fixedDisplay?.scaleMode === "fixed"
+      && fixedDisplay?.displayScale === 2,
+    { fixedDisplay },
+  );
+
+  // B) 最多 9 位：全精度显示并持久化。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await setDisplayScaleInput(9);
+  await saveNumberSettings();
+  await waitAmountCellText("1,234.56789");
+  recorder.check("max-9 display persists", await readPersistedScale() === 9, {});
+
+  // C) 0 位：四舍五入到整数显示，持久化。
+  await openAmountSettings();
+  await setDisplayScaleInput(0);
+  await saveNumberSettings();
+  await waitAmountCellText("1,235");
+  recorder.check("scale-0 display persists", await readPersistedScale() === 0, {});
+
+  // D) 关闭千分位 + 2 位：无分隔符。
+  await openAmountSettings();
+  await setDisplayScaleInput(2);
+  await page.getByTestId("number-display-grouping").click();
+  await saveNumberSettings();
+  await waitAmountCellText("1234.57");
+
+  // E) 货币预设：币符附着并持久化（重新打开千分位）。
+  await openAmountSettings();
+  await page.getByTestId("number-display-grouping").click();
+  await selectVisibleNOption(page, "number-display-preset", "货币");
+  await saveNumberSettings();
+  await waitAmountCellText("¥1,234.57");
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-currency.png"),
+    fullPage: true,
+  });
+  const currencyDisplay = await uiDescribeDisplay();
+  recorder.check(
+    "currency preset persists with code and fixed scale",
+    currencyDisplay?.preset === "currency"
+      && currencyDisplay?.currency === "CNY"
+      && currencyDisplay?.displayScale === 2,
+    { currencyDisplay },
+  );
+
+  // F) 单位预设：单位直接附着。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "单位");
+  await fillNInput(page, "number-display-unit", "kg");
+  await saveNumberSettings();
+  await waitAmountCellText("1,234.57kg");
+
+  // G) 百分比：ratio 0.125 与 percent 12.5 同显 12.5%，编辑/粘贴/重开不改原值。
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "百分比");
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await saveNumberSettings();
+  const percentEdit = await beginCellEdit(
+    page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
+  );
+  await percentEdit.fill("0.125");
+  await percentEdit.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.[0]?.[uiAmount.physicalName] === 0.125,
+  );
+  await waitAmountCellText("12.5%");
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-percent-storage", "百分数（12.5 显示 12.5%）");
+  await saveNumberSettings();
+  // 切换存储解释后、编辑前：原值仍是 0.125，显示语义从不缩放已存值。
+  const rawBeforePercentEdit = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  recorder.check(
+    "switching percentStorage never rescales the stored 0.125 before editing",
+    rawBeforePercentEdit === 0.125,
+    { rawBeforePercentEdit },
+  );
+  const percentStorageEdit = await beginCellEdit(
+    page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
+  );
+  // 真实剪贴板粘贴：授予权限→写入剪贴板→编辑器 Ctrl+V（同文件既有模式）。
+  await page.context().grantPermissions(
+    ["clipboard-read", "clipboard-write"],
+    { origin: "https://app.vibetable.local" },
+  );
+  await page.evaluate(async (value) => navigator.clipboard.writeText(value), "12.5");
+  await percentStorageEdit.press("Control+a");
+  await percentStorageEdit.press("Control+V");
+  await percentStorageEdit.press("Enter");
+  await waitForQueryPage(
+    page,
+    { tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } },
+    (payload) => payload?.rows?.[0]?.[uiAmount.physicalName] === 12.5,
+  );
+  await waitAmountCellText("12.5%");
+  await openAmountSettings();
+  const rawAfterReopen = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  await closeFieldSettingsDrawer(page);
+  recorder.check(
+    "real clipboard paste of 12.5 into percent storage keeps the raw value while ratio 0.125 shows the same 12.5%",
+    rawAfterReopen === 12.5,
+    { rawAfterReopen },
+  );
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "02-number-display-percent.png"),
+    fullPage: true,
+  });
+
+  // H) 小数位 5→2→5：原值与同一 Go 公式结果不变。逐轮直接查询权威
+  // query.page 的公式裸值（Go query 端口对 ready 公式结果直接返回裸值，
+  // computed_envelope_test 固定 12.5 裸值），断言 === 2469.13578，
+  // 不用 2 位显示文本掩盖计算变化。
+  const amountReset = await applyProductMutation(page, numberUiTableId, [{
+    kind: "update",
+    recordId: beforeRowId,
+    values: { [uiAmount.physicalName]: 1234.56789 },
+  }], "e2e-number-display-formula-invariance");
+  if (amountReset.payload?.status !== "applied") {
+    throw new Error(`formula invariance seed failed: ${JSON.stringify(amountReset)}`);
+  }
+  const formulaRawValue = async () => (await uiQuery()).payload?.rows?.[0]?.[uiFormula.physicalName];
+  const waitFormulaRawValue = async () => {
+    const deadline = Date.now() + 30_000;
+    let value = await formulaRawValue();
+    while (Date.now() < deadline && value !== 2469.13578) {
+      await page.waitForTimeout(100);
+      value = await formulaRawValue();
+    }
+    return value;
+  };
+  await openAmountSettings();
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await selectVisibleNOption(page, "number-display-scale-mode", "最多（不超过指定位）");
+  await setDisplayScaleInput(5);
+  await saveNumberSettings();
+  await waitAmountCellText("1,234.56789");
+  const formulaAtScale5 = await waitFormulaRawValue();
+  await page.waitForFunction(
+    (field) => document.querySelector(`.tabulator-cell[tabulator-field="${field}"]`)?.textContent?.trim() === "2,469.14",
+    uiFormula.physicalName,
+    { timeout: 30_000 },
+  );
+  await openAmountSettings();
+  await setDisplayScaleInput(2);
+  await saveNumberSettings();
+  await waitAmountCellText("1,234.57");
+  const formulaAtScale2 = await waitFormulaRawValue();
+  await openAmountSettings();
+  await setDisplayScaleInput(5);
+  await saveNumberSettings();
+  await waitAmountCellText("1,234.56789");
+  const formulaBackAtScale5 = await waitFormulaRawValue();
+  const rawAfterScaleCycle = (await uiQuery()).payload?.rows?.[0]?.[uiAmount.physicalName];
+  recorder.check(
+    "displayScale 5→2→5 never changes the raw value or the Go formula result (bare ready value 2469.13578)",
+    rawAfterScaleCycle === 1234.56789
+      && formulaAtScale5 === 2469.13578
+      && formulaAtScale2 === 2469.13578
+      && formulaBackAtScale5 === 2469.13578,
+    { formulaAtScale5, formulaAtScale2, formulaBackAtScale5, rawAfterScaleCycle },
+  );
+
+  // I) 高位持久化：12 与 15 均为有效保存值（重开回读，不逐格截图）。
+  await openAmountSettings();
+  await setDisplayScaleInput(12);
+  await saveNumberSettings();
+  const scale12Readback = await readPersistedScale();
+  await openAmountSettings();
+  await setDisplayScaleInput(15);
+  await saveNumberSettings();
+  const scale15Readback = await readPersistedScale();
+  recorder.check(
+    "displayScale 12 and 15 both persist through the authoritative schema",
+    scale12Readback === 12 && scale15Readback === 15,
+    { scale12Readback, scale15Readback },
+  );
+
+  // 全部 ordinary 业务（含分组 UI 旅程）完成后、首次导出前：同一闭合契约的
+  // zero-worker 断言仍在 scenario02 流内执行；02 因刻意唤醒 Python 不再列入
+  // ORDINARY_WORKER_FREE_SCENARIOS 的公共 dispatch 断言（集合注释的既定规则）。
   await verifyQueryViewGroupingUI(page, recorder);
+  await assertOrdinaryWorkerFreeTopology(recorder, runtime, "02-all-field-schema");
+
+  // 分组旅程把可见网格留在它自己的表上；导出前显式切回数字显示合成表，
+  // 核实抽屉保持关闭且选中表正确（I 结束态：最多 15 位渲染原值）。
+  await selectTable(page, "E2E Number Display UI");
+  await waitForVisibleRowCount(page, 1);
+  await waitAmountCellText("1,234.56789");
+  recorder.check(
+    "field settings drawer stays closed and the display table is selected before export",
+    !(await page.getByTestId("field-display-name").isVisible()),
+    {},
+  );
+
+  // J) 默认 CSV 导出：数值列保持原值文本，不携带币符/百分号/千分位。
+  await chooseToolbarMore(page, "export-csv");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const csvTarget = path.join(runtime.controlsDir, "export-result.csv");
+  const csvDeadline = Date.now() + 60_000;
+  let exportedCsv = "";
+  while (Date.now() < csvDeadline) {
+    try {
+      exportedCsv = await fs.readFile(csvTarget, "utf8");
+      if (exportedCsv.includes("1234.56789")) break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const csvRows = parseCsv(exportedCsv);
+  const csvAmountIndex = csvRows[0]?.indexOf(uiAmount.physicalName) ?? -1;
+  const csvAmountValue = csvAmountIndex >= 0 ? csvRows[1]?.[csvAmountIndex] : undefined;
+  recorder.check(
+    "default CSV export keeps the raw numeric value without currency/percent/grouping decorations",
+    csvAmountValue === "1234.56789"
+      && !exportedCsv.includes("¥")
+      && !exportedCsv.includes("%"),
+    { csvAmountIndex, csvAmountValue, exportedCsvHead: exportedCsv.slice(0, 400) },
+  );
+
+  // J2) 同一合成表真实 export-xlsx：经 export-target.txt 指定唯一路径与既有 UI
+  // 确认流程，用仓库 data_io_workbook.py 的 verify-values CLI 证明数值单元格
+  // 原样（1234.56789 的 double 原值），而非币符/百分号文本。
+  const executeFile = promisify(execFile);
+  const workbookHelper = fileURLToPath(new URL("./data_io_workbook.py", import.meta.url));
+  const xlsxTarget = path.join(runtime.controlsDir, "export-result.xlsx");
+  await fs.rm(xlsxTarget, { force: true });
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "export-target.txt"),
+    `${xlsxTarget}\r\n`,
+    "utf8",
+  );
+  await chooseToolbarMore(page, "export-xlsx");
+  await page.getByTestId("export-lookup-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.getByTestId("export-lookup-confirm").click();
+  const xlsxDeadline = Date.now() + 60_000;
+  while (Date.now() < xlsxDeadline) {
+    try {
+      await fs.readFile(xlsxTarget);
+      break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
+  const xlsxVerification = await executeFile(
+    runtime.pythonExecutable,
+    [
+      workbookHelper,
+      "verify-values",
+      xlsxTarget,
+      JSON.stringify({ columns: [uiAmount.physicalName], rows: [[1234.56789]] }),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, PYTHONUTF8: "1" },
+    },
+  );
+  const xlsxResult = JSON.parse(xlsxVerification.stdout);
+  recorder.check(
+    "default XLSX export stores the raw numeric cell (verified by data_io_workbook verify-values)",
+    xlsxResult?.format === "xlsx"
+      && xlsxResult?.rows === 1
+      && xlsxResult?.columns?.[0] === uiAmount.physicalName,
+    { xlsxResult },
+  );
+
+  // 导出后沿用真实 dataIO 拓扑：惰性 Python backend 恰好驻留一个，
+  // Host/sidecar 唯一；observePackagedPythonCount 不约束 Node，复用同一成员
+  // 快照断言导出不产生 Node worker（不新建框架，fail-closed 契约不变）。
+  const postExportProcesses = await observePackagedPythonCount(runtime, 1);
+  recorder.check(
+    "exports lazily start exactly one Python backend and zero Node workers",
+    countProcessMembers(postExportProcesses.members, "vibetable.next.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "vibetable-pb.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "vibetable-backend.exe") === 1
+      && countProcessMembers(postExportProcesses.members, "node.exe") === 0,
+    { postExportProcesses },
+  );
+  // GAC1：复用同一原值与 Formula，Lookup 只读本表金额，不新增记录或重开。
+  const uiLookup = await createV2Field(page, numberUiTableId, "金额列表", "lookup", draft => {
+    draft.lookup = {
+      path: [], targetFieldId: uiAmount.fieldId, aggregation: "values",
+      condition: { sourceTableId: numberUiTableId, match: "all", distinct: false,
+        rules: [{ sourceFieldId: uiAmount.fieldId, operator: "eq",
+          operand: { kind: "field", fieldId: uiAmount.fieldId } }] },
+    };
+    return draft;
+  });
+  await waitForQueryPage(page, {
+    tableId: numberUiTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, payload => payload?.rows?.[0]?.[uiFormula.physicalName] === 2469.13578
+    && isDeepStrictEqual(payload?.rows?.[0]?.[uiLookup.physicalName], [1234.56789]));
+  const beforeComputedDisplay = (await uiQuery()).payload;
+  await chooseToolbarMore(page, "refresh");
+  await waitForVisibleRowCount(page, 1);
+  await openFieldSettingsFromHeader(page, uiFormula.physicalName);
+  await selectVisibleNOption(page, "number-display-preset", "数字");
+  await setDisplayScaleInput(3);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  await saveNumberSettings();
+  await waitAmountCellText("2,469.136", uiFormula.physicalName);
+  await openFieldSettingsFromHeader(page, uiLookup.physicalName);
+  await page.getByTestId("number-display-preset").waitFor({ state: "visible" });
+  await selectVisibleNOption(page, "number-display-preset", "货币");
+  await setDisplayScaleInput(2);
+  await selectVisibleNOption(page, "number-display-scale-mode", "固定（保留指定位尾零）");
+  await saveNumberSettings();
+  await waitForLookupCellText(page, uiLookup.physicalName, "¥1,234.57");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-grid.png"), fullPage: true });
+  // 卡片只展示两个被验证的计算字段，避免前三个摘要字段截断 Lookup。
+  await page.getByTestId("view-hidden-trigger").click();
+  await page.getByTestId("view-hidden-hide-filtered").click();
+  for (const label of ["翻倍", "金额列表"]) {
+    await page.getByTestId("view-hidden-search").locator("input").fill(label);
+    await page.getByTestId("view-hidden-show-filtered").click();
+  }
+  await page.getByTestId("view-hidden-search").locator("input").fill("");
+  await page.getByTestId("view-hidden-apply").click();
+  const createComputedView = async (name, kind) => {
+    await page.getByTestId("view-create").click();
+    const dialog = page.locator(".view-dialog:visible");
+    await dialog.waitFor();
+    await dialog.locator(".n-input input").fill(name);
+    await page.getByTestId(`view-kind-${kind}`).click();
+    await page.getByTestId("view-dialog-confirm").click();
+    await dialog.waitFor({ state: "hidden" });
+  };
+  await createComputedView("E2E Computed Grid", "table");
+  await createComputedView("E2E Computed Cards", "gallery");
+  const waitComputedCard = async formulaText => {
+    await waitForGalleryProjection(page, 1);
+    await page.waitForFunction(formulaText => {
+      const card = document.querySelector('[data-testid="gallery-card"]');
+      const values = [...(card?.querySelectorAll("dd") ?? [])].map(node => node.textContent.trim());
+      return values.length === 2 && values.includes(formulaText) && values.includes("¥1,234.57");
+    }, formulaText, { timeout: 30_000 });
+    recorder.check(`computed card shares exact grid display: ${formulaText} and ¥1,234.57`, true);
+  };
+  await waitComputedCard("2,469.136");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-cards.png"), fullPage: true });
+  // 默认视图按钮含“默认”标签；沿用持久 preset ID，避免完整可访问名称匹配。
+  const computedViews = await rawBridgeRequest(page, "preset.list", { collection: numberUiTableId });
+  const computedGridId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Grid")?.id;
+  const computedCardsId = computedViews.payload?.presets?.find(item => item.name === "E2E Computed Cards")?.id;
+  if (!computedGridId || !computedCardsId) throw new Error(`computed presets are unavailable: ${JSON.stringify(computedViews)}`);
+  const computedGridTab = page.getByTestId(`view-tab-${computedGridId}`);
+  const computedCardsTab = page.getByTestId(`view-tab-${computedCardsId}`);
+  await computedGridTab.click();
+  await waitForVisibleRowCount(page, 1);
+  await openFieldSettingsFromHeader(page, uiFormula.physicalName);
+  await selectVisibleNOption(page, "number-display-preset", "百分比");
+  await selectVisibleNOption(page, "number-display-percent-storage", "小数（0.125 显示 12.5%）");
+  await saveNumberSettings();
+  await waitAmountCellText("246,913.578%", uiFormula.physicalName);
+  await waitForLookupCellText(page, uiLookup.physicalName, "¥1,234.57");
+  await computedCardsTab.click();
+  await waitComputedCard("246,913.578%");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-percent-cards.png"), fullPage: true });
+  const computedDefinitions = async () => Promise.all([uiFormula, uiLookup].map(field =>
+    rawBridgeRequest(page, "field.settings.describe", { tableId: numberUiTableId, fieldId: field.fieldId })));
+  const savedComputedDefinitions = await computedDefinitions();
+  const savedComputedValues = (await uiQuery()).payload;
+  recorder.check("computed display-only settings preserve raw Formula, numeric Lookup list, record ID and business revision",
+    savedComputedValues.rows[0].id === beforeComputedDisplay.rows[0].id
+      && savedComputedValues.rows[0][uiAmount.physicalName] === 1234.56789
+      && savedComputedValues.rows[0][uiFormula.physicalName] === 2469.13578
+      && isDeepStrictEqual(savedComputedValues.rows[0][uiLookup.physicalName], [1234.56789])
+      && savedComputedValues.snapshot.dataRevision === beforeComputedDisplay.snapshot.dataRevision
+      && savedComputedDefinitions[0].payload.definition.display.preset === "percent"
+      && savedComputedDefinitions[0].payload.definition.display.percentStorage === "ratio"
+      && savedComputedDefinitions[0].payload.definition.display.displayScale === 3
+      && savedComputedDefinitions[0].payload.definition.display.scaleMode === "fixed"
+      && savedComputedDefinitions[1].payload.definition.display.preset === "currency"
+      && savedComputedDefinitions[1].payload.definition.display.currency === "CNY"
+      && savedComputedDefinitions[1].payload.definition.display.displayScale === 2
+      && savedComputedDefinitions[1].payload.definition.display.scaleMode === "fixed",
+    { savedComputedValues, savedComputedDefinitions });
+  const computedSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await runAutoNumberJourney(page, recorder, runtime, {
+    createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
+    rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
+    waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
+    applyV2FieldChange, chooseToolbarMore, parseCsv,
+  });
+  // 复用 AutoNumber 已执行的真实工作区重开，保留相同字段/记录身份和格式。
+  await selectTable(page, "E2E Number Display UI");
+  await computedCardsTab.click();
+  await waitComputedCard("246,913.578%");
+  const reopenedComputedValues = (await uiQuery()).payload;
+  const reopenedComputedDefinitions = await computedDefinitions();
+  const reopenedComputedSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  recorder.check("real offline reopen keeps computed displays, raw values and field identities without recomputing business data",
+    reopenedComputedSession.workspaceId === computedSession.workspaceId
+      && reopenedComputedSession.sessionEpoch > computedSession.sessionEpoch
+      && isDeepStrictEqual(reopenedComputedValues.rows, savedComputedValues.rows)
+      && reopenedComputedValues.snapshot.dataRevision === savedComputedValues.snapshot.dataRevision
+      && reopenedComputedDefinitions.every((item, index) =>
+        isDeepStrictEqual(item.payload.definition, savedComputedDefinitions[index].payload.definition)),
+    { reopenedComputedValues, reopenedComputedDefinitions, reopenedComputedSession });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "02-computed-display-reopened.png"), fullPage: true });
   return;
 }
 
@@ -3244,7 +3951,157 @@ async function runRelationScenario(page, recorder, searchTargets) {
   return;
 }
 
-async function scenario28(page, recorder) {
+async function relationContractDisplayJourney(page, recorder, runtime) {
+  await page.getByTestId("nav-tables").click();
+  const contracts = await createSimpleTable(page, "合同显示案例", "合同编号");
+  const name = await createV2Field(page, contracts.tableId, "合同名称", "text");
+  const lines = await createSimpleTable(page, "合同明细案例", "明细");
+  await createV2Field(page, lines.tableId, "封面", "file");
+  const byName = await createV2Field(page, lines.tableId, "关联名称", "relation", draft => {
+    draft.relation = { ...draft.relation, targetTableId: contracts.tableId, displayFieldId: name.fieldId, cardinality: "many" };
+    return draft;
+  });
+  const byCode = await createV2Field(page, lines.tableId, "关联编号", "relation", draft => {
+    draft.relation = { ...draft.relation, targetTableId: contracts.tableId, displayFieldId: contracts.field.fieldId };
+    return draft;
+  });
+  const firstId = "contractcase001", secondId = "contractcase002", sourceId = "contractline001";
+  const seeded = await applyProductMutation(page, contracts.tableId, [
+    { kind: "insert", recordId: firstId, values: { [contracts.field.physicalName]: "CT-001", [name.physicalName]: "城轨一期" } },
+    { kind: "insert", recordId: secondId, values: { [contracts.field.physicalName]: "CT-002", [name.physicalName]: "城轨一期" } },
+  ], "contract-case-targets");
+  const source = await applyProductMutation(page, lines.tableId, [{
+    kind: "insert", recordId: sourceId,
+    values: { [lines.field.physicalName]: "合成合同明细", [byCode.physicalName]: firstId },
+  }], "contract-case-source");
+  if (seeded.payload?.status !== "applied" || source.payload?.status !== "applied") throw new Error("contract display fixture did not commit");
+  const read = async tableId => {
+    const result = await rawBridgeRequest(page, "query.page", { tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 } });
+    if (!result.payload?.snapshot || !Array.isArray(result.payload.rows)) throw new Error(`contract read failed: ${JSON.stringify(result)}`);
+    return result.payload;
+  };
+  await selectTable(page, "合同明细案例");
+  await waitForVisibleRowCount(page, 1);
+  const cell = page.locator(`.grid-wrapper[aria-busy="false"] .tabulator-cell[tabulator-field="${byName.physicalName}"]`).first();
+  const panel = page.locator(".relation-editor:visible");
+  await cell.dblclick();
+  await panel.waitFor();
+  const search = panel.getByRole("textbox", { name: /^(搜索目标记录|Search target records)$/u });
+  const candidates = panel.locator(".relation-editor__candidate");
+  for (const query of ["CT-001", "城轨一期"]) {
+    await search.fill(query);
+    await page.waitForFunction(({ query }) => {
+      const rows = [...document.querySelectorAll(".relation-editor .relation-editor__candidate")];
+      return rows.length === (query === "CT-001" ? 1 : 2) && rows.every(row => row.textContent.includes("城轨一期"));
+    }, { query });
+    recorder.check(`contract search ${query} keeps identity with configured name and auxiliary code`,
+      await candidates.filter({ hasText: "CT-001" }).count() === 1);
+  }
+  await candidates.filter({ hasText: "CT-001" }).click();
+  await candidates.filter({ hasText: "CT-002" }).click();
+  const sameNameTokens = panel.locator(".relation-editor__token");
+  recorder.check("same-name contract candidates select two distinct IDs disambiguated by their codes",
+    await sameNameTokens.count() === 2
+      && await sameNameTokens.filter({ hasText: "CT-001" }).getAttribute("title") === `${contracts.tableId} · ${firstId}`
+      && await sameNameTokens.filter({ hasText: "CT-002" }).getAttribute("title") === `${contracts.tableId} · ${secondId}`);
+  await panel.getByRole("button", { name: /^(应用 2 项|Apply 2 items)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  const waitLabels = async expected => page.waitForFunction(({ field, codeField, expected }) =>
+    document.querySelector(`.tabulator-cell[tabulator-field="${field}"] .vt-relation-token`)?.textContent === expected
+      && document.querySelector(`.tabulator-cell[tabulator-field="${codeField}"] .vt-relation-token`)?.textContent === "CT-001",
+  { field: byName.physicalName, codeField: byCode.physicalName, expected });
+  await waitLabels("城轨一期");
+  const committed = await read(lines.tableId);
+  recorder.check("committing same-name contracts keeps both original IDs and the independent code relation",
+    JSON.stringify(committed.rows[0][byName.physicalName]) === JSON.stringify([firstId, secondId])
+      && committed.rows[0][byCode.physicalName] === firstId);
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-grid.png"), fullPage: true });
+  await cell.dblclick();
+  await panel.waitFor();
+  await search.fill("CT-002");
+  await candidates.filter({ hasText: "CT-002" }).waitFor();
+  await candidates.filter({ hasText: "CT-002" }).click();
+  const targetBefore = (await read(contracts.tableId)).rows.find(row => row.id === firstId);
+  const renamed = await applyProductMutation(page, contracts.tableId, [{
+    kind: "update", recordId: firstId, values: { [name.physicalName]: "城轨一期更新" }, expectedDigest: targetBefore.__vibetableDigest,
+  }], "contract-case-rename");
+  if (renamed.payload?.status !== "applied") throw new Error("contract rename failed");
+  await panel.locator(".relation-editor__token").filter({ hasText: "城轨一期更新" }).waitFor();
+  recorder.check("target rename refreshes selected outside search while keeping the uncommitted second removal",
+    await panel.locator(".relation-editor__token").count() === 1 && await search.inputValue() === "CT-002");
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-picker-refresh.png"), fullPage: true });
+  await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
+  await panel.waitFor({ state: "hidden" });
+  await waitLabels("城轨一期更新");
+  const afterRename = await read(lines.tableId);
+  recorder.check("label refresh and cancelled draft preserve source value, digest and data revision",
+    afterRename.rows[0].__vibetableDigest === committed.rows[0].__vibetableDigest
+      && afterRename.snapshot.dataRevision === committed.snapshot.dataRevision
+      && JSON.stringify(afterRename.rows[0][byName.physicalName]) === JSON.stringify([firstId, secondId]));
+  const pairBefore = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
+  await openRelationPairEditor(page, byName.physicalName, pairBefore[1].definition.displayName);
+  await selectVisibleNOption(page, "relation-target-display-field", "合同编号");
+  await planRelationPairThroughUi(page);
+  await applyRelationPairThroughUi(page);
+  await closeFieldSettingsDrawer(page);
+  await waitLabels("CT-001");
+  const pairAfter = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
+  recorder.check("changing source display advances metadata while keeping both pair identities and links",
+    pairAfter[0].schemaRevision !== pairBefore[0].schemaRevision
+      && pairAfter[0].dataRevision === pairBefore[0].dataRevision
+      && canonicalJsonText(relationPairIdentitiesAndLinks(pairBefore)) === canonicalJsonText(relationPairIdentitiesAndLinks(pairAfter))
+      && pairAfter[1].definition.relation.displayFieldId === pairBefore[1].definition.relation.displayFieldId);
+  await openRelationPairEditor(page, byName.physicalName, pairAfter[1].definition.displayName);
+  await selectVisibleNOption(page, "relation-target-display-field", "合同名称");
+  await planRelationPairThroughUi(page);
+  await applyRelationPairThroughUi(page);
+  await closeFieldSettingsDrawer(page);
+  await waitLabels("城轨一期更新");
+  await page.getByTestId("view-create").click();
+  const dialog = page.locator(".view-dialog:visible");
+  await dialog.waitFor();
+  await dialog.locator(".n-input input").fill("合同卡片");
+  await page.getByTestId("view-kind-gallery").click();
+  await selectVisibleNOption(page, "view-gallery-cover-field", "封面");
+  await selectVisibleNOption(page, "view-gallery-title-field", "明细");
+  await page.getByTestId("view-dialog-confirm").click();
+  await waitForGalleryProjection(page, 1);
+  const card = page.getByTestId("gallery-card");
+  await card.filter({ hasText: "城轨一期更新" }).waitFor();
+  recorder.check("contract card shares configured name and independent code with the grid",
+    (await card.innerText()).includes("CT-001") && !(await card.innerText()).includes(firstId));
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-cards.png"), fullPage: true });
+  // 两个合同在真实重开时仍同名，避免改名后的不同标签掩盖按名称合并的回归。
+  const secondTarget = (await read(contracts.tableId)).rows.find(row => row.id === secondId);
+  const sameNameAgain = await applyProductMutation(page, contracts.tableId, [{
+    kind: "update", recordId: secondId, values: { [name.physicalName]: "城轨一期更新" },
+    expectedDigest: secondTarget.__vibetableDigest,
+  }], "contract-case-same-name-reopen");
+  if (sameNameAgain.payload?.status !== "applied") throw new Error("contract same-name reopen fixture failed");
+  const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const closed = await replicaUiMethod(page, recorder, "workspace.close", () => page.getByTestId("workspace-center")
+    .getByRole("button", { name: /关闭当前工作区|Close current workspace/ }).click());
+  if (closed.result?.state !== "closed") throw new Error("contract offline workspace close failed");
+  await beginWritableWorkspaceBootstrapCapture(page, session.sessionEpoch, "workspace.open");
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const reopened = await waitForCapturedBridgeMessage(page, 60_000);
+  await selectTable(page, "合同明细案例");
+  const persisted = await read(lines.tableId);
+  const savedPair = await readRelationPairAuthority(page, lines.tableId, byName.fieldId);
+  const reopenedContracts = await read(contracts.tableId);
+  recorder.check("offline reopen keeps both same-name contract IDs distinct, independent displays and renamed values in a fresh epoch",
+    reopened.payload.session.workspaceId === session.workspaceId && reopened.payload.session.sessionEpoch > session.sessionEpoch
+      && JSON.stringify(persisted.rows[0][byName.physicalName]) === JSON.stringify([firstId, secondId])
+      && persisted.rows[0][byCode.physicalName] === firstId
+      && savedPair[0].definition.relation.displayFieldId === name.fieldId
+      && savedPair[1].definition.relation.displayFieldId === pairBefore[1].definition.relation.displayFieldId
+      && [firstId, secondId].every(id => reopenedContracts.rows.find(row => row.id === id)?.[name.physicalName] === "城轨一期更新"));
+  await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "28-contract-offline-reopened.png"), fullPage: true });
+}
+
+async function scenario28(page, recorder, _network, runtime) {
   await waitForShell(page, recorder);
   await page.getByTestId("nav-tables").click();
   const authors = await createSimpleTable(page, "Preview Authors", "Name");
@@ -3305,11 +4162,15 @@ async function scenario28(page, recorder) {
   const panel = page.locator(".relation-editor:visible");
   await panel.waitFor();
   const selected = panel.locator(".relation-editor__token");
-  await selected.filter({ hasText: targetId }).waitFor();
+  await selected.filter({ hasText: "AUTHOR-001" }).waitFor();
+  const selectedMainLabel = await selected.first().evaluate(token => Array.from(token.childNodes)
+    .filter(node => node.nodeType === Node.TEXT_NODE)
+    .map(node => node.textContent).join("").trim());
   recorder.check("many relation preview hydrates the authority's existing target",
-    await selected.count() === 1 && (await selected.first().innerText()).trim() === targetId);
+    await selected.count() === 1 && selectedMainLabel === "AUTHOR-001"
+      && (await selected.first().locator(".relation-editor__token-secondary").innerText()).trim() === "已有作者");
   await panel.locator(".relation-editor__candidate").filter({ hasText: "候选作者" }).click();
-  await panel.locator(".relation-editor__token").filter({ hasText: "候选作者" }).waitFor();
+  await panel.locator(".relation-editor__token").filter({ hasText: "AUTHOR-002" }).waitFor();
   recorder.check("many relation editor holds a second selection as an uncommitted draft",
     await selected.count() === 2 && await panel.locator(".relation-editor__error").count() === 0);
   await panel.getByRole("button", { name: /^(取消|Cancel)$/u }).click();
@@ -3417,7 +4278,7 @@ async function scenario28(page, recorder) {
       && persistedTargets.rows.some(row => row.id === newTarget.id && row[authors.field.physicalName] === createdLabel),
     { reopened, persisted, persistedTargets });
   await page.evaluate(acknowledgeRetiredLookupFailuresInPage, session);
-
+  await relationContractDisplayJourney(page, recorder, runtime);
 }
 
 async function scenario29(page, recorder) {
@@ -4916,11 +5777,13 @@ function findCatalogEntry(catalogPayload, pluginId) {
 // here; their topology is asserted inside their own flows instead.
 const ORDINARY_WORKER_FREE_SCENARIOS = new Set([
   "01-offline-first-start",
-  "02-all-field-schema",
+  // 02-all-field-schema 在流内（首次导出前）执行同一 zero-worker 契约；
+  // 它的导出段刻意唤醒 Python，按本集合规则不得列入公共 dispatch 断言。
   "03-schema-errors",
   "05-formula-lifecycle",
   "06-relation-fanout",
   "08-stale-conflict",
+  "45-common-field-display",
 ]);
 
 // One closed-set topology observation at the common dispatch entry: after a
@@ -5714,6 +6577,10 @@ async function scenario10(page, recorder, _network, runtime) {
 async function scenario11(page, recorder, _network, runtime) {
   const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
   const projectKey = databaseOpened.payload.projectKey.trim();
+  await exerciseSdkExamples(page, recorder, runtime, projectKey, {
+    createSimpleTable, applyProductMutation, rawBridgeRequest,
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+  });
   await page.getByTestId("nav-tables").click();
   const pluginTable = await createSimpleTable(page, "E2E Plugin Target", "value");
   await selectTable(page, "E2E Plugin Target");
@@ -6118,6 +6985,10 @@ async function scenario12(page, recorder, _network, runtime) {
       return draft;
     },
   );
+  const autoNumberField = await createV2Field(page, tableId, "合同编号", "autoNumber", draft => {
+    draft.autoNumber = { prefix: "HT-", start: 1, width: 6 };
+    return draft;
+  });
   const attachmentField = await createV2Field(
     page,
     tableId,
@@ -6238,6 +7109,9 @@ async function scenario12(page, recorder, _network, runtime) {
   await page.getByTestId("attachment-preview-0").waitFor({ timeout: 30_000 });
   await panel.locator("header button").click();
 
+  await prepareAutoNumberSnapshot(page, recorder, tableId, autoNumberField, {
+    applyProductMutation, rawBridgeRequest,
+  });
   const beforeBackupQuery = await rawBridgeRequest(page, "query.page", {
     tableId,
     query: { filters: [], sorts: [], offset: 0, limit: 100 },
@@ -6686,6 +7560,9 @@ async function scenario12(page, recorder, _network, runtime) {
     path: path.join(runtime.evidenceDir, "12-dark-popover.png"),
     fullPage: true,
   });
+  await verifyAutoNumberSnapshot(page, recorder, tableId, autoNumberField, {
+    applyProductMutation, rawBridgeRequest,
+  });
 }
 
 async function scenario33(page, recorder, _network, runtime) {
@@ -7016,17 +7893,50 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
       && countProcessMembers(afterAction.members, "node.exe") === 0,
     { afterAction });
 
-  // Withhold the exact retained package file. The isolated workspace has
-  // exactly one installed plugin, the just-completed real action already read
-  // this package through the product boundary, and the catalog packageHash
-  // evidence above names its identity. The next action must fail closed and
+  // Withhold the exact retained package file. The seeded workspace installed
+  // exactly three plugins — the mutation-boundary fixture and both SDK example
+  // packages — and each installed plugin retains its content-addressed package.
+  // The catalog is the authority: derive every expected cache file name from
+  // the authoritative packageHash values through the shared compact-digest
+  // naming contract and require the cache to match that exact set with no
+  // extra files. The just-completed real action already read the fixture
+  // package through the product boundary, and the catalog packageHash evidence
+  // above names its identity. The next action must fail closed and
   // diagnosably without spawning any Node process, never falling back to a
   // shared absolute path, and the catalog entry must survive the miss.
+  const catalogEntries = Array.isArray(catalogResponse.payload) ? catalogResponse.payload : [];
+  const expectedPluginIds = [
+    state.pluginId,
+    "com.vibetable.examples.data-overview",
+    "com.vibetable.examples.normalize-text",
+  ];
+  const installedEntries = expectedPluginIds.map(id => findCatalogEntry(catalogEntries, id));
   const retained = await listRetainedPluginPackages(state.workspaceRoot);
-  recorder.check("the retained cache holds exactly the one installed package",
-    retained.packages.length === 1 && retained.entries.length === 1,
-    { retained, catalogPackageHash: state.packageHash });
-  const retainedPath = path.join(retained.cacheDirectory, retained.packages[0]);
+  recorder.check("the catalog holds exactly the fixture and both SDK examples",
+    catalogEntries.length === expectedPluginIds.length
+      && expectedPluginIds.every(id => catalogEntries.some(entry => entry?.pluginId === id))
+      && installedEntries.every(entry => /^sha256:[0-9a-f]{64}$/u.test(entry?.packageHash ?? "")),
+    { catalogEntries, expectedPluginIds, installedEntries });
+  if (!runtime.pythonExecutable) throw new Error("The runner's locked Python is required.");
+  const packageNames = JSON.parse(execFileSync(runtime.pythonExecutable, [
+    "-c",
+    "import json,sys; from backend.infrastructure.plugin_package_lifecycle import _compact_package_digest; print(json.dumps([_compact_package_digest(h)+'.vtplugin' for h in json.loads(sys.argv[1])]))",
+    JSON.stringify(installedEntries.map(entry => entry.packageHash)),
+  ], {
+    cwd: fileURLToPath(new URL("../../", import.meta.url)),
+    encoding: "utf8",
+    timeout: 30_000,
+    windowsHide: true,
+  }));
+  const expectedPackages = [...packageNames].sort();
+  recorder.check("the retained cache holds exactly the three installed packages",
+    isDeepStrictEqual(retained.packages, expectedPackages)
+      && isDeepStrictEqual(retained.entries, expectedPackages),
+    { retained, expectedPackages });
+  const retainedPath = path.join(
+    retained.cacheDirectory,
+    packageNames[0],
+  );
   const withheldPath = `${retainedPath}.withheld`;
   await fs.rename(retainedPath, withheldPath);
   try {
@@ -7055,11 +7965,11 @@ async function resumePluginHostRestart(page, recorder, statePath, runtime) {
     } while (Date.now() < withheldDeadline);
     recorder.check("a missing retained cache fails closed with a diagnosable safe error",
       withheldTask.payload?.state === "failed"
-        && withheldTask.payload?.error?.code === "plugin_action_failed"
+        && withheldTask.payload?.error?.code === "plugin_worker_failed"
         && /load/i.test(String(withheldTask.payload?.error?.message)),
       { withheldTask });
     recorder.check("the missing-cache failure is visible to the user with its safe error code",
-      (await withheldFailure.innerText()).includes("plugin_action_failed"),
+      (await withheldFailure.innerText()).includes("plugin_worker_failed"),
       { failureText: await withheldFailure.innerText() });
     const withheldTopology = await requestPackagedProcessKill(
       runtime,
@@ -7292,8 +8202,72 @@ async function scenario13(page, recorder, _network, runtime) {
   await page.screenshot({ path: path.join(runtime.evidenceDir, "13-protection-policy.png"), fullPage: true });
 }
 
+export function installDocumentDiffReadCaptureInPage() {
+  if (window.__vibetableE2EDocumentDiffReads) return;
+  const webview = window.chrome.webview;
+  const previousPostMessage = webview.postMessage;
+  const parse = candidate => {
+    if (typeof candidate !== "string") return candidate;
+    try { return JSON.parse(candidate); } catch { return null; }
+  };
+  const capture = { pending: new Map(), closes: new Map() };
+  const onMessage = event => {
+    const message = parse(event.data);
+    if (message?.type === "document.diffPageCompleted") {
+      capture.pending.delete(message.requestId);
+    }
+  };
+  function postMessage(...args) {
+    const message = parse(args[0]);
+    if (message?.type === "document.diffPageRequested") {
+      capture.pending.set(message.requestId, message.payload.sessionId);
+    } else if (message?.type === "document.diffCloseRequested") {
+      capture.closes.set(message.requestId, message.payload.sessionId);
+    }
+    return previousPostMessage.apply(this, args);
+  }
+  capture.release = () => {
+    webview.removeEventListener("message", onMessage);
+    if (webview.postMessage === postMessage) webview.postMessage = previousPostMessage;
+    if (window.__vibetableE2EDocumentDiffReads === capture) {
+      delete window.__vibetableE2EDocumentDiffReads;
+    }
+  };
+  window.__vibetableE2EDocumentDiffReads = capture;
+  webview.addEventListener("message", onMessage);
+  webview.postMessage = postMessage;
+}
+
+export async function closeDocumentDiffThroughUi(page, sessionId) {
+  await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
+  await page.getByTestId("diff-close").click();
+  const closed = await waitForCapturedBridgeMessage(page, 30_000);
+  const matchesRequest = await page.evaluate(({ requestId, sessionId }) =>
+    window.__vibetableE2EDocumentDiffReads?.closes.get(requestId) === sessionId,
+  { requestId: closed.requestId, sessionId });
+  if (closed.payload?.sessionId !== sessionId || !matchesRequest) {
+    throw new Error("document diff close session identity does not match its UI request");
+  }
+  // Closing revokes metadata immediately; active page readers release artifacts at their terminal.
+  await page.waitForFunction(sessionId => {
+    const capture = window.__vibetableE2EDocumentDiffReads;
+    if (!capture) throw new Error("document diff read capture was released before cleanup");
+    return [...capture.pending.values()].every(id => id !== sessionId);
+  }, closed.payload.sessionId, { timeout: 30_000 });
+  return closed;
+}
+
 async function scenario14(page, recorder, _network, runtime, shell = waitForShell) {
   await shell(page, recorder, { requireDatabaseOpened: true });
+  await page.evaluate(installDocumentDiffReadCaptureInPage);
+  try {
+    return await qualifyDocumentDiff(page, recorder, runtime);
+  } finally {
+    await page.evaluate(() => window.__vibetableE2EDocumentDiffReads?.release());
+  }
+}
+
+async function qualifyDocumentDiff(page, recorder, runtime) {
   const qualifiedFiles = [];
   const sourcePath = path.join(runtime.controlsDir, "document-diff-source.txt");
   const beforeLines = ["deleted-only", "start"];
@@ -7423,11 +8397,9 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       && text.includes("deleted-only") && text.includes("inserted-only"), { ids });
   await page.getByTestId("diff-result").scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(runtime.evidenceDir, "14-diff-details.png"), fullPage: true });
-  await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-  await page.getByTestId("diff-close").click();
-  await waitForCapturedBridgeMessage(page, 30_000);
+  const closed = await closeDocumentDiffThroughUi(page, changed.payload.session.sessionId);
   const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
-    sessionId: changed.payload.session.sessionId, cursor: null, limit: 50,
+    sessionId: closed.payload.sessionId, cursor: null, limit: 50,
   }, 30_000, ["document.diffPageCompleted"]);
   const artifactRoot = path.join(runtime.dataRoot, "document-diff");
   const remaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
@@ -7573,9 +8545,7 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       isDeepStrictEqual(unchangedHistorical, originalHistorical)
         && newTree.result.effectiveRevisionId === session.effectiveRevisionId,
     { originalHistorical, unchangedHistorical, effectiveRevisionId: newTree.result.effectiveRevisionId });
-    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-    await page.getByTestId("diff-close").click();
-    await waitForCapturedBridgeMessage(page, 30_000);
+    let closed = await closeDocumentDiffThroughUi(page, session.sessionId);
     if (!normalized) {
       await beginBridgeMessageCapture(page, ["document.diffCompleted"]);
       await page.getByTestId("compare-revision").first().click();
@@ -7591,12 +8561,10 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
       recorder.check("DOCX retries after cancellation with a fresh valid session", retried.payload?.outcome === "ready"
         && retried.payload?.session?.sessionId !== session.sessionId
         && retried.payload?.session?.summary?.totalChangeGroups === 3, { retried });
-      await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-      await page.getByTestId("diff-close").click();
-      await waitForCapturedBridgeMessage(page, 30_000);
+      closed = await closeDocumentDiffThroughUi(page, retried.payload.session.sessionId);
     }
     const closedPage = await rawBridgeRequest(page, "document.diffPageRequested", {
-      sessionId: session.sessionId, cursor: null, limit: 50,
+      sessionId: closed.payload.sessionId, cursor: null, limit: 50,
     }, 30_000, ["document.diffPageCompleted"]);
     const knownRemaining = fsSync.existsSync(artifactRoot) ? await fs.readdir(artifactRoot) : [];
     recorder.check(`DOCX ${name} closes its session and cleans Worker files`,
@@ -7728,11 +8696,9 @@ async function scenario14(page, recorder, _network, runtime, shell = waitForShel
         oldTree.result.revisions.find(item => item.revisionId === historical))
       && newTree.result.effectiveRevisionId === session.effectiveRevisionId
       && sourceBytes.equals(await fs.readFile(syntheticSource)));
-    await beginBridgeMessageCapture(page, ["document.diffCloseCompleted"]);
-    await page.getByTestId("diff-close").click();
-    await waitForCapturedBridgeMessage(page, 30_000);
+    const closed = await closeDocumentDiffThroughUi(page, session.sessionId);
     const expired = await rawBridgeRequest(page, "document.diffPageRequested", {
-      sessionId: session.sessionId, cursor: null, limit: 50,
+      sessionId: closed.payload.sessionId, cursor: null, limit: 50,
     }, 30_000, ["document.diffPageCompleted"]);
     const artifactRoot = path.join(runtime.dataRoot, "document-diff");
     recorder.check(`XLSX ${caseName} expires and cleans known outputs`, expired.payload?.failure === "sessionExpired"
@@ -11342,6 +12308,17 @@ async function scenario36(page, recorder, _network, runtime) {
   });
 }
 
+// 独立预算避免完整字段旅程与 S02 叠加超时。
+async function scenario45(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  await runCommonFieldDisplayJourney(page, recorder, runtime, {
+    createEmptyTable, createV2Field, closeFieldSettingsDrawer, selectTable, applyProductMutation,
+    rawBridgeRequest, selectVisibleNOption, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -11442,6 +12419,7 @@ const scenarios = {
   "44-file-restore-crash": () => {
     throw new Error("Restore crash requires the owned seed and normal cold-Host resume phases");
   },
+  "45-common-field-display": scenario45,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

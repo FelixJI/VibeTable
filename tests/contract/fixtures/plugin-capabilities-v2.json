@@ -1,0 +1,4268 @@
+{
+  "description": {
+    "collection": "articles",
+    "contract": "vibetable.plugin-data.v2",
+    "displayName": "Plugin synthetic 550",
+    "fields": [
+      {
+        "constraints": null,
+        "display": null,
+        "displayName": "ID",
+        "fieldId": "id",
+        "filterOperators": [
+          "is_null",
+          "is_not_null",
+          "eq",
+          "ne",
+          "in",
+          "contains",
+          "starts_with",
+          "ends_with"
+        ],
+        "logicalType": "text",
+        "nullable": false,
+        "options": [],
+        "readonly": true,
+        "resultType": "text",
+        "sortable": true
+      },
+      {
+        "constraints": {
+          "unique": {
+            "enabled": false,
+            "blankPolicy": "ignoreMissing"
+          },
+          "range": {
+            "min": null,
+            "max": null
+          },
+          "length": {
+            "min": null,
+            "max": null
+          },
+          "pattern": {
+            "enabled": false,
+            "value": ""
+          },
+          "domains": {
+            "only": [],
+            "except": []
+          },
+          "selection": {
+            "min": 0,
+            "max": null
+          }
+        },
+        "display": {
+          "kind": "number",
+          "preset": "number",
+          "displayScale": 2,
+          "scaleMode": "max",
+          "trimTrailingZeros": true,
+          "useGrouping": true,
+          "currency": "CNY",
+          "percentStorage": "ratio",
+          "unit": null,
+          "precision": "minute",
+          "timezone": "system",
+          "mode": "default",
+          "indent": 0,
+          "trueLabel": "是",
+          "falseLabel": "否"
+        },
+        "displayName": "Amount",
+        "fieldId": "fld_amount",
+        "filterOperators": [
+          "is_null",
+          "is_not_null",
+          "eq",
+          "ne",
+          "in",
+          "gt",
+          "lt",
+          "gte",
+          "lte",
+          "between"
+        ],
+        "logicalType": "number",
+        "nullable": true,
+        "options": [],
+        "readonly": false,
+        "resultType": "number",
+        "sortable": true
+      },
+      {
+        "constraints": {
+          "unique": {
+            "enabled": false,
+            "blankPolicy": "ignoreMissing"
+          },
+          "range": {
+            "min": null,
+            "max": null
+          },
+          "length": {
+            "min": null,
+            "max": null
+          },
+          "pattern": {
+            "enabled": false,
+            "value": ""
+          },
+          "domains": {
+            "only": [],
+            "except": []
+          },
+          "selection": {
+            "min": 0,
+            "max": null
+          }
+        },
+        "display": {
+          "kind": "date",
+          "preset": "",
+          "displayScale": 2,
+          "scaleMode": "max",
+          "trimTrailingZeros": true,
+          "useGrouping": true,
+          "currency": "CNY",
+          "percentStorage": "ratio",
+          "unit": null,
+          "precision": "day",
+          "timezone": "system",
+          "mode": "default",
+          "indent": 0,
+          "trueLabel": "是",
+          "falseLabel": "否"
+        },
+        "displayName": "Date",
+        "fieldId": "fld_date",
+        "filterOperators": [
+          "is_null",
+          "is_not_null",
+          "eq",
+          "ne",
+          "in",
+          "gt",
+          "lt",
+          "gte",
+          "lte",
+          "between"
+        ],
+        "logicalType": "date",
+        "nullable": true,
+        "options": [],
+        "readonly": false,
+        "resultType": "date",
+        "sortable": true
+      },
+      {
+        "constraints": {
+          "unique": {
+            "enabled": false,
+            "blankPolicy": "ignoreMissing"
+          },
+          "range": {
+            "min": null,
+            "max": null
+          },
+          "length": {
+            "min": null,
+            "max": null
+          },
+          "pattern": {
+            "enabled": false,
+            "value": ""
+          },
+          "domains": {
+            "only": [],
+            "except": []
+          },
+          "selection": {
+            "min": 0,
+            "max": null
+          }
+        },
+        "display": {
+          "kind": "bool",
+          "preset": "",
+          "displayScale": 2,
+          "scaleMode": "max",
+          "trimTrailingZeros": true,
+          "useGrouping": true,
+          "currency": "CNY",
+          "percentStorage": "ratio",
+          "unit": null,
+          "precision": "minute",
+          "timezone": "system",
+          "mode": "default",
+          "indent": 0,
+          "trueLabel": "是",
+          "falseLabel": "否"
+        },
+        "displayName": "Enabled",
+        "fieldId": "fld_enabled",
+        "filterOperators": [
+          "is_null",
+          "is_not_null",
+          "eq",
+          "ne",
+          "in"
+        ],
+        "logicalType": "bool",
+        "nullable": true,
+        "options": [],
+        "readonly": false,
+        "resultType": "bool",
+        "sortable": true
+      },
+      {
+        "constraints": {
+          "unique": {
+            "enabled": false,
+            "blankPolicy": "ignoreMissing"
+          },
+          "range": {
+            "min": null,
+            "max": null
+          },
+          "length": {
+            "min": null,
+            "max": null
+          },
+          "pattern": {
+            "enabled": false,
+            "value": ""
+          },
+          "domains": {
+            "only": [],
+            "except": []
+          },
+          "selection": {
+            "min": 0,
+            "max": null
+          }
+        },
+        "display": {
+          "kind": "relation",
+          "preset": "",
+          "displayScale": 2,
+          "scaleMode": "max",
+          "trimTrailingZeros": true,
+          "useGrouping": true,
+          "currency": "CNY",
+          "percentStorage": "ratio",
+          "unit": null,
+          "precision": "minute",
+          "timezone": "system",
+          "mode": "default",
+          "indent": 0,
+          "trueLabel": "是",
+          "falseLabel": "否"
+        },
+        "displayName": "Link",
+        "fieldId": "fld_link",
+        "filterOperators": [
+          "is_null",
+          "is_not_null",
+          "eq",
+          "ne",
+          "in"
+        ],
+        "logicalType": "relation",
+        "nullable": true,
+        "options": [],
+        "readonly": false,
+        "resultType": "relation",
+        "sortable": false
+      }
+    ],
+    "schemaRevision": "schema-fixture"
+  },
+  "normalization": "table, field, record IDs and cursor handles replaced by fixture identities; schema revision replaced by schema-fixture; values and capability metadata unchanged",
+  "pages": [
+    {
+      "complete": true,
+      "contract": "vibetable.plugin-query-page.v2",
+      "dataRevision": 0,
+      "filteredRows": 550,
+      "items": [
+        {
+          "fld_amount": 0,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-001"
+        },
+        {
+          "fld_amount": 0,
+          "fld_date": null,
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-002"
+        },
+        {
+          "fld_amount": 1,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-003"
+        },
+        {
+          "fld_amount": 1,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-004"
+        },
+        {
+          "fld_amount": 1,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-005"
+        },
+        {
+          "fld_amount": 2,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-006"
+        },
+        {
+          "fld_amount": 2,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-007"
+        },
+        {
+          "fld_amount": 2,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-008"
+        },
+        {
+          "fld_amount": 3,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-009"
+        },
+        {
+          "fld_amount": 3,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-010"
+        },
+        {
+          "fld_amount": 3,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-011"
+        },
+        {
+          "fld_amount": 4,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-012"
+        },
+        {
+          "fld_amount": 4,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-013"
+        },
+        {
+          "fld_amount": 4,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-014"
+        },
+        {
+          "fld_amount": 5,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-015"
+        },
+        {
+          "fld_amount": 5,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-016"
+        },
+        {
+          "fld_amount": 5,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-017"
+        },
+        {
+          "fld_amount": 6,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-018"
+        },
+        {
+          "fld_amount": 6,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-019"
+        },
+        {
+          "fld_amount": 6,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-020"
+        },
+        {
+          "fld_amount": 7,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-021"
+        },
+        {
+          "fld_amount": 7,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-022"
+        },
+        {
+          "fld_amount": 7,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-023"
+        },
+        {
+          "fld_amount": 8,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-024"
+        },
+        {
+          "fld_amount": 8,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-025"
+        },
+        {
+          "fld_amount": 8,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-026"
+        },
+        {
+          "fld_amount": 9,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-027"
+        },
+        {
+          "fld_amount": 9,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-028"
+        },
+        {
+          "fld_amount": 9,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-029"
+        },
+        {
+          "fld_amount": 10,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-030"
+        },
+        {
+          "fld_amount": 10,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-031"
+        },
+        {
+          "fld_amount": 10,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-032"
+        },
+        {
+          "fld_amount": 11,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-033"
+        },
+        {
+          "fld_amount": 11,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-034"
+        },
+        {
+          "fld_amount": 11,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-035"
+        },
+        {
+          "fld_amount": 12,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-036"
+        },
+        {
+          "fld_amount": 12,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-037"
+        },
+        {
+          "fld_amount": 12,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-038"
+        },
+        {
+          "fld_amount": 13,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-039"
+        },
+        {
+          "fld_amount": 13,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-040"
+        },
+        {
+          "fld_amount": 13,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-041"
+        },
+        {
+          "fld_amount": 14,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-042"
+        },
+        {
+          "fld_amount": 14,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-043"
+        },
+        {
+          "fld_amount": 14,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-044"
+        },
+        {
+          "fld_amount": 15,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-045"
+        },
+        {
+          "fld_amount": 15,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-046"
+        },
+        {
+          "fld_amount": 15,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-047"
+        },
+        {
+          "fld_amount": 16,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-048"
+        },
+        {
+          "fld_amount": 16,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-049"
+        },
+        {
+          "fld_amount": 16,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-050"
+        },
+        {
+          "fld_amount": 17,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-051"
+        },
+        {
+          "fld_amount": 17,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-052"
+        },
+        {
+          "fld_amount": 17,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-053"
+        },
+        {
+          "fld_amount": 18,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-054"
+        },
+        {
+          "fld_amount": 18,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-055"
+        },
+        {
+          "fld_amount": 18,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-056"
+        },
+        {
+          "fld_amount": 19,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-057"
+        },
+        {
+          "fld_amount": 19,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-058"
+        },
+        {
+          "fld_amount": 19,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-059"
+        },
+        {
+          "fld_amount": 20,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-060"
+        },
+        {
+          "fld_amount": 20,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-061"
+        },
+        {
+          "fld_amount": 20,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-062"
+        },
+        {
+          "fld_amount": 21,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-063"
+        },
+        {
+          "fld_amount": 21,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-064"
+        },
+        {
+          "fld_amount": 21,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-065"
+        },
+        {
+          "fld_amount": 22,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-066"
+        },
+        {
+          "fld_amount": 22,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-067"
+        },
+        {
+          "fld_amount": 22,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-068"
+        },
+        {
+          "fld_amount": 23,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-069"
+        },
+        {
+          "fld_amount": 23,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-070"
+        },
+        {
+          "fld_amount": 23,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-071"
+        },
+        {
+          "fld_amount": 24,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-072"
+        },
+        {
+          "fld_amount": 24,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-073"
+        },
+        {
+          "fld_amount": 24,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-074"
+        },
+        {
+          "fld_amount": 25,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-075"
+        },
+        {
+          "fld_amount": 25,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-076"
+        },
+        {
+          "fld_amount": 25,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-077"
+        },
+        {
+          "fld_amount": 26,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-078"
+        },
+        {
+          "fld_amount": 26,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-079"
+        },
+        {
+          "fld_amount": 26,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-080"
+        },
+        {
+          "fld_amount": 27,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-081"
+        },
+        {
+          "fld_amount": 27,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-082"
+        },
+        {
+          "fld_amount": 27,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-083"
+        },
+        {
+          "fld_amount": 28,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-084"
+        },
+        {
+          "fld_amount": 28,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-085"
+        },
+        {
+          "fld_amount": 28,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-086"
+        },
+        {
+          "fld_amount": 29,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-087"
+        },
+        {
+          "fld_amount": 29,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-088"
+        },
+        {
+          "fld_amount": 29,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-089"
+        },
+        {
+          "fld_amount": 30,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-090"
+        },
+        {
+          "fld_amount": 30,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-091"
+        },
+        {
+          "fld_amount": 30,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-092"
+        },
+        {
+          "fld_amount": 31,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-093"
+        },
+        {
+          "fld_amount": 31,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-094"
+        },
+        {
+          "fld_amount": 31,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-095"
+        },
+        {
+          "fld_amount": 32,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-096"
+        },
+        {
+          "fld_amount": 32,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-097"
+        },
+        {
+          "fld_amount": 32,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-098"
+        },
+        {
+          "fld_amount": 33,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-099"
+        },
+        {
+          "fld_amount": 33,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-100"
+        },
+        {
+          "fld_amount": 33,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-101"
+        },
+        {
+          "fld_amount": 34,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-102"
+        },
+        {
+          "fld_amount": 34,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-103"
+        },
+        {
+          "fld_amount": 34,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-104"
+        },
+        {
+          "fld_amount": 35,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-105"
+        },
+        {
+          "fld_amount": 35,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-106"
+        },
+        {
+          "fld_amount": 35,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-107"
+        },
+        {
+          "fld_amount": 36,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-108"
+        },
+        {
+          "fld_amount": 36,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-109"
+        },
+        {
+          "fld_amount": 36,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-110"
+        },
+        {
+          "fld_amount": 37,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-111"
+        },
+        {
+          "fld_amount": 37,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-112"
+        },
+        {
+          "fld_amount": 37,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-113"
+        },
+        {
+          "fld_amount": 38,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-114"
+        },
+        {
+          "fld_amount": 38,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-115"
+        },
+        {
+          "fld_amount": 38,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-116"
+        },
+        {
+          "fld_amount": 39,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-117"
+        },
+        {
+          "fld_amount": 39,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-118"
+        },
+        {
+          "fld_amount": 39,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-119"
+        },
+        {
+          "fld_amount": 40,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-120"
+        },
+        {
+          "fld_amount": 40,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-121"
+        },
+        {
+          "fld_amount": 40,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-122"
+        },
+        {
+          "fld_amount": 41,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-123"
+        },
+        {
+          "fld_amount": 41,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-124"
+        },
+        {
+          "fld_amount": 41,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-125"
+        },
+        {
+          "fld_amount": 42,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-126"
+        },
+        {
+          "fld_amount": 42,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-127"
+        },
+        {
+          "fld_amount": 42,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-128"
+        },
+        {
+          "fld_amount": 43,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-129"
+        },
+        {
+          "fld_amount": 43,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-130"
+        },
+        {
+          "fld_amount": 43,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-131"
+        },
+        {
+          "fld_amount": 44,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-132"
+        },
+        {
+          "fld_amount": 44,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-133"
+        },
+        {
+          "fld_amount": 44,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-134"
+        },
+        {
+          "fld_amount": 45,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-135"
+        },
+        {
+          "fld_amount": 45,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-136"
+        },
+        {
+          "fld_amount": 45,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-137"
+        },
+        {
+          "fld_amount": 46,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-138"
+        },
+        {
+          "fld_amount": 46,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-139"
+        },
+        {
+          "fld_amount": 46,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-140"
+        },
+        {
+          "fld_amount": 47,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-141"
+        },
+        {
+          "fld_amount": 47,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-142"
+        },
+        {
+          "fld_amount": 47,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-143"
+        },
+        {
+          "fld_amount": 48,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-144"
+        },
+        {
+          "fld_amount": 48,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-145"
+        },
+        {
+          "fld_amount": 48,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-146"
+        },
+        {
+          "fld_amount": 49,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-147"
+        },
+        {
+          "fld_amount": 49,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-148"
+        },
+        {
+          "fld_amount": 49,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-149"
+        },
+        {
+          "fld_amount": 50,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-150"
+        },
+        {
+          "fld_amount": 50,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-151"
+        },
+        {
+          "fld_amount": 50,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-152"
+        },
+        {
+          "fld_amount": 51,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-153"
+        },
+        {
+          "fld_amount": 51,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-154"
+        },
+        {
+          "fld_amount": 51,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-155"
+        },
+        {
+          "fld_amount": 52,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-156"
+        },
+        {
+          "fld_amount": 52,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-157"
+        },
+        {
+          "fld_amount": 52,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-158"
+        },
+        {
+          "fld_amount": 53,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-159"
+        },
+        {
+          "fld_amount": 53,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-160"
+        },
+        {
+          "fld_amount": 53,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-161"
+        },
+        {
+          "fld_amount": 54,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-162"
+        },
+        {
+          "fld_amount": 54,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-163"
+        },
+        {
+          "fld_amount": 54,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-164"
+        },
+        {
+          "fld_amount": 55,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-165"
+        },
+        {
+          "fld_amount": 55,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-166"
+        },
+        {
+          "fld_amount": 55,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-167"
+        },
+        {
+          "fld_amount": 56,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-168"
+        },
+        {
+          "fld_amount": 56,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-169"
+        },
+        {
+          "fld_amount": 56,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-170"
+        },
+        {
+          "fld_amount": 57,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-171"
+        },
+        {
+          "fld_amount": 57,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-172"
+        },
+        {
+          "fld_amount": 57,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-173"
+        },
+        {
+          "fld_amount": 58,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-174"
+        },
+        {
+          "fld_amount": 58,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-175"
+        },
+        {
+          "fld_amount": 58,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-176"
+        },
+        {
+          "fld_amount": 59,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-177"
+        },
+        {
+          "fld_amount": 59,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-178"
+        },
+        {
+          "fld_amount": 59,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-179"
+        },
+        {
+          "fld_amount": 60,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-180"
+        },
+        {
+          "fld_amount": 60,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-181"
+        },
+        {
+          "fld_amount": 60,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-182"
+        },
+        {
+          "fld_amount": 61,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-183"
+        },
+        {
+          "fld_amount": 61,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-184"
+        },
+        {
+          "fld_amount": 61,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-185"
+        },
+        {
+          "fld_amount": 62,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-186"
+        },
+        {
+          "fld_amount": 62,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-187"
+        },
+        {
+          "fld_amount": 62,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-188"
+        },
+        {
+          "fld_amount": 63,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-189"
+        },
+        {
+          "fld_amount": 63,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-190"
+        },
+        {
+          "fld_amount": 63,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-191"
+        },
+        {
+          "fld_amount": 64,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-192"
+        },
+        {
+          "fld_amount": 64,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-193"
+        },
+        {
+          "fld_amount": 64,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-194"
+        },
+        {
+          "fld_amount": 65,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-195"
+        },
+        {
+          "fld_amount": 65,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-196"
+        },
+        {
+          "fld_amount": 65,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-197"
+        },
+        {
+          "fld_amount": 66,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-198"
+        },
+        {
+          "fld_amount": 66,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-199"
+        },
+        {
+          "fld_amount": 66,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-200"
+        }
+      ],
+      "nextCursor": "fixture-page-2",
+      "schemaRevision": "schema-fixture",
+      "totalRows": 550
+    },
+    {
+      "complete": true,
+      "contract": "vibetable.plugin-query-page.v2",
+      "dataRevision": 0,
+      "filteredRows": 550,
+      "items": [
+        {
+          "fld_amount": 67,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-201"
+        },
+        {
+          "fld_amount": 67,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-202"
+        },
+        {
+          "fld_amount": 67,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-203"
+        },
+        {
+          "fld_amount": 68,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-204"
+        },
+        {
+          "fld_amount": 68,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-205"
+        },
+        {
+          "fld_amount": 68,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-206"
+        },
+        {
+          "fld_amount": 69,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-207"
+        },
+        {
+          "fld_amount": 69,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-208"
+        },
+        {
+          "fld_amount": 69,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-209"
+        },
+        {
+          "fld_amount": 70,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-210"
+        },
+        {
+          "fld_amount": 70,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-211"
+        },
+        {
+          "fld_amount": 70,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-212"
+        },
+        {
+          "fld_amount": 71,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-213"
+        },
+        {
+          "fld_amount": 71,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-214"
+        },
+        {
+          "fld_amount": 71,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-215"
+        },
+        {
+          "fld_amount": 72,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-216"
+        },
+        {
+          "fld_amount": 72,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-217"
+        },
+        {
+          "fld_amount": 72,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-218"
+        },
+        {
+          "fld_amount": 73,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-219"
+        },
+        {
+          "fld_amount": 73,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-220"
+        },
+        {
+          "fld_amount": 73,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-221"
+        },
+        {
+          "fld_amount": 74,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-222"
+        },
+        {
+          "fld_amount": 74,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-223"
+        },
+        {
+          "fld_amount": 74,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-224"
+        },
+        {
+          "fld_amount": 75,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-225"
+        },
+        {
+          "fld_amount": 75,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-226"
+        },
+        {
+          "fld_amount": 75,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-227"
+        },
+        {
+          "fld_amount": 76,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-228"
+        },
+        {
+          "fld_amount": 76,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-229"
+        },
+        {
+          "fld_amount": 76,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-230"
+        },
+        {
+          "fld_amount": 77,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-231"
+        },
+        {
+          "fld_amount": 77,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-232"
+        },
+        {
+          "fld_amount": 77,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-233"
+        },
+        {
+          "fld_amount": 78,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-234"
+        },
+        {
+          "fld_amount": 78,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-235"
+        },
+        {
+          "fld_amount": 78,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-236"
+        },
+        {
+          "fld_amount": 79,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-237"
+        },
+        {
+          "fld_amount": 79,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-238"
+        },
+        {
+          "fld_amount": 79,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-239"
+        },
+        {
+          "fld_amount": 80,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-240"
+        },
+        {
+          "fld_amount": 80,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-241"
+        },
+        {
+          "fld_amount": 80,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-242"
+        },
+        {
+          "fld_amount": 81,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-243"
+        },
+        {
+          "fld_amount": 81,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-244"
+        },
+        {
+          "fld_amount": 81,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-245"
+        },
+        {
+          "fld_amount": 82,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-246"
+        },
+        {
+          "fld_amount": 82,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-247"
+        },
+        {
+          "fld_amount": 82,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-248"
+        },
+        {
+          "fld_amount": 83,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-249"
+        },
+        {
+          "fld_amount": 83,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-250"
+        },
+        {
+          "fld_amount": 83,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-251"
+        },
+        {
+          "fld_amount": 84,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-252"
+        },
+        {
+          "fld_amount": 84,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-253"
+        },
+        {
+          "fld_amount": 84,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-254"
+        },
+        {
+          "fld_amount": 85,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-255"
+        },
+        {
+          "fld_amount": 85,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-256"
+        },
+        {
+          "fld_amount": 85,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-257"
+        },
+        {
+          "fld_amount": 86,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-258"
+        },
+        {
+          "fld_amount": 86,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-259"
+        },
+        {
+          "fld_amount": 86,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-260"
+        },
+        {
+          "fld_amount": 87,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-261"
+        },
+        {
+          "fld_amount": 87,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-262"
+        },
+        {
+          "fld_amount": 87,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-263"
+        },
+        {
+          "fld_amount": 88,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-264"
+        },
+        {
+          "fld_amount": 88,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-265"
+        },
+        {
+          "fld_amount": 88,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-266"
+        },
+        {
+          "fld_amount": 89,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-267"
+        },
+        {
+          "fld_amount": 89,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-268"
+        },
+        {
+          "fld_amount": 89,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-269"
+        },
+        {
+          "fld_amount": 90,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-270"
+        },
+        {
+          "fld_amount": 90,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-271"
+        },
+        {
+          "fld_amount": 90,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-272"
+        },
+        {
+          "fld_amount": 91,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-273"
+        },
+        {
+          "fld_amount": 91,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-274"
+        },
+        {
+          "fld_amount": 91,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-275"
+        },
+        {
+          "fld_amount": 92,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-276"
+        },
+        {
+          "fld_amount": 92,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-277"
+        },
+        {
+          "fld_amount": 92,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-278"
+        },
+        {
+          "fld_amount": 93,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-279"
+        },
+        {
+          "fld_amount": 93,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-280"
+        },
+        {
+          "fld_amount": 93,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-281"
+        },
+        {
+          "fld_amount": 94,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-282"
+        },
+        {
+          "fld_amount": 94,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-283"
+        },
+        {
+          "fld_amount": 94,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-284"
+        },
+        {
+          "fld_amount": 95,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-285"
+        },
+        {
+          "fld_amount": 95,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-286"
+        },
+        {
+          "fld_amount": 95,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-287"
+        },
+        {
+          "fld_amount": 96,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-288"
+        },
+        {
+          "fld_amount": 96,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-289"
+        },
+        {
+          "fld_amount": 96,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-290"
+        },
+        {
+          "fld_amount": 97,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-291"
+        },
+        {
+          "fld_amount": 97,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-292"
+        },
+        {
+          "fld_amount": 97,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-293"
+        },
+        {
+          "fld_amount": 98,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-294"
+        },
+        {
+          "fld_amount": 98,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-295"
+        },
+        {
+          "fld_amount": 98,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-296"
+        },
+        {
+          "fld_amount": 99,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-297"
+        },
+        {
+          "fld_amount": 99,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-298"
+        },
+        {
+          "fld_amount": 99,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-299"
+        },
+        {
+          "fld_amount": 100,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-300"
+        },
+        {
+          "fld_amount": 100,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-301"
+        },
+        {
+          "fld_amount": 100,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-302"
+        },
+        {
+          "fld_amount": 101,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-303"
+        },
+        {
+          "fld_amount": 101,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-304"
+        },
+        {
+          "fld_amount": 101,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-305"
+        },
+        {
+          "fld_amount": 102,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-306"
+        },
+        {
+          "fld_amount": 102,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-307"
+        },
+        {
+          "fld_amount": 102,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-308"
+        },
+        {
+          "fld_amount": 103,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-309"
+        },
+        {
+          "fld_amount": 103,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-310"
+        },
+        {
+          "fld_amount": 103,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-311"
+        },
+        {
+          "fld_amount": 104,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-312"
+        },
+        {
+          "fld_amount": 104,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-313"
+        },
+        {
+          "fld_amount": 104,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-314"
+        },
+        {
+          "fld_amount": 105,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-315"
+        },
+        {
+          "fld_amount": 105,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-316"
+        },
+        {
+          "fld_amount": 105,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-317"
+        },
+        {
+          "fld_amount": 106,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-318"
+        },
+        {
+          "fld_amount": 106,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-319"
+        },
+        {
+          "fld_amount": 106,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-320"
+        },
+        {
+          "fld_amount": 107,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-321"
+        },
+        {
+          "fld_amount": 107,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-322"
+        },
+        {
+          "fld_amount": 107,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-323"
+        },
+        {
+          "fld_amount": 108,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-324"
+        },
+        {
+          "fld_amount": 108,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-325"
+        },
+        {
+          "fld_amount": 108,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-326"
+        },
+        {
+          "fld_amount": 109,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-327"
+        },
+        {
+          "fld_amount": 109,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-328"
+        },
+        {
+          "fld_amount": 109,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-329"
+        },
+        {
+          "fld_amount": 110,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-330"
+        },
+        {
+          "fld_amount": 110,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-331"
+        },
+        {
+          "fld_amount": 110,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-332"
+        },
+        {
+          "fld_amount": 111,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-333"
+        },
+        {
+          "fld_amount": 111,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-334"
+        },
+        {
+          "fld_amount": 111,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-335"
+        },
+        {
+          "fld_amount": 112,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-336"
+        },
+        {
+          "fld_amount": 112,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-337"
+        },
+        {
+          "fld_amount": 112,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-338"
+        },
+        {
+          "fld_amount": 113,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-339"
+        },
+        {
+          "fld_amount": 113,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-340"
+        },
+        {
+          "fld_amount": 113,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-341"
+        },
+        {
+          "fld_amount": 114,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-342"
+        },
+        {
+          "fld_amount": 114,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-343"
+        },
+        {
+          "fld_amount": 114,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-344"
+        },
+        {
+          "fld_amount": 115,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-345"
+        },
+        {
+          "fld_amount": 115,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-346"
+        },
+        {
+          "fld_amount": 115,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-347"
+        },
+        {
+          "fld_amount": 116,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-348"
+        },
+        {
+          "fld_amount": 116,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-349"
+        },
+        {
+          "fld_amount": 116,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-350"
+        },
+        {
+          "fld_amount": 117,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-351"
+        },
+        {
+          "fld_amount": 117,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-352"
+        },
+        {
+          "fld_amount": 117,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-353"
+        },
+        {
+          "fld_amount": 118,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-354"
+        },
+        {
+          "fld_amount": 118,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-355"
+        },
+        {
+          "fld_amount": 118,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-356"
+        },
+        {
+          "fld_amount": 119,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-357"
+        },
+        {
+          "fld_amount": 119,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-358"
+        },
+        {
+          "fld_amount": 119,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-359"
+        },
+        {
+          "fld_amount": 120,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-360"
+        },
+        {
+          "fld_amount": 120,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-361"
+        },
+        {
+          "fld_amount": 120,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-362"
+        },
+        {
+          "fld_amount": 121,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-363"
+        },
+        {
+          "fld_amount": 121,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-364"
+        },
+        {
+          "fld_amount": 121,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-365"
+        },
+        {
+          "fld_amount": 122,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-366"
+        },
+        {
+          "fld_amount": 122,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-367"
+        },
+        {
+          "fld_amount": 122,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-368"
+        },
+        {
+          "fld_amount": 123,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-369"
+        },
+        {
+          "fld_amount": 123,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-370"
+        },
+        {
+          "fld_amount": 123,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-371"
+        },
+        {
+          "fld_amount": 124,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-372"
+        },
+        {
+          "fld_amount": 124,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-373"
+        },
+        {
+          "fld_amount": 124,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-374"
+        },
+        {
+          "fld_amount": 125,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-375"
+        },
+        {
+          "fld_amount": 125,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-376"
+        },
+        {
+          "fld_amount": 125,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-377"
+        },
+        {
+          "fld_amount": 126,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-378"
+        },
+        {
+          "fld_amount": 126,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-379"
+        },
+        {
+          "fld_amount": 126,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-380"
+        },
+        {
+          "fld_amount": 127,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-381"
+        },
+        {
+          "fld_amount": 127,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-382"
+        },
+        {
+          "fld_amount": 127,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-383"
+        },
+        {
+          "fld_amount": 128,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-384"
+        },
+        {
+          "fld_amount": 128,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-385"
+        },
+        {
+          "fld_amount": 128,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-386"
+        },
+        {
+          "fld_amount": 129,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-387"
+        },
+        {
+          "fld_amount": 129,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-388"
+        },
+        {
+          "fld_amount": 129,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-389"
+        },
+        {
+          "fld_amount": 130,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-390"
+        },
+        {
+          "fld_amount": 130,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-391"
+        },
+        {
+          "fld_amount": 130,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-392"
+        },
+        {
+          "fld_amount": 131,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-393"
+        },
+        {
+          "fld_amount": 131,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-394"
+        },
+        {
+          "fld_amount": 131,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-395"
+        },
+        {
+          "fld_amount": 132,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-396"
+        },
+        {
+          "fld_amount": 132,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-397"
+        },
+        {
+          "fld_amount": 132,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-398"
+        },
+        {
+          "fld_amount": 133,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-399"
+        },
+        {
+          "fld_amount": 133,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-400"
+        }
+      ],
+      "nextCursor": "fixture-page-3",
+      "schemaRevision": "schema-fixture",
+      "totalRows": 550
+    },
+    {
+      "complete": true,
+      "contract": "vibetable.plugin-query-page.v2",
+      "dataRevision": 0,
+      "filteredRows": 550,
+      "items": [
+        {
+          "fld_amount": 133,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-401"
+        },
+        {
+          "fld_amount": 134,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-402"
+        },
+        {
+          "fld_amount": 134,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-403"
+        },
+        {
+          "fld_amount": 134,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-404"
+        },
+        {
+          "fld_amount": 135,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-405"
+        },
+        {
+          "fld_amount": 135,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-406"
+        },
+        {
+          "fld_amount": 135,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-407"
+        },
+        {
+          "fld_amount": 136,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-408"
+        },
+        {
+          "fld_amount": 136,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-409"
+        },
+        {
+          "fld_amount": 136,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-410"
+        },
+        {
+          "fld_amount": 137,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-411"
+        },
+        {
+          "fld_amount": 137,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-412"
+        },
+        {
+          "fld_amount": 137,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-413"
+        },
+        {
+          "fld_amount": 138,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-414"
+        },
+        {
+          "fld_amount": 138,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-415"
+        },
+        {
+          "fld_amount": 138,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-416"
+        },
+        {
+          "fld_amount": 139,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-417"
+        },
+        {
+          "fld_amount": 139,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-418"
+        },
+        {
+          "fld_amount": 139,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-419"
+        },
+        {
+          "fld_amount": 140,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-420"
+        },
+        {
+          "fld_amount": 140,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-421"
+        },
+        {
+          "fld_amount": 140,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-422"
+        },
+        {
+          "fld_amount": 141,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-423"
+        },
+        {
+          "fld_amount": 141,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-424"
+        },
+        {
+          "fld_amount": 141,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-425"
+        },
+        {
+          "fld_amount": 142,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-426"
+        },
+        {
+          "fld_amount": 142,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-427"
+        },
+        {
+          "fld_amount": 142,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-428"
+        },
+        {
+          "fld_amount": 143,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-429"
+        },
+        {
+          "fld_amount": 143,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-430"
+        },
+        {
+          "fld_amount": 143,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-431"
+        },
+        {
+          "fld_amount": 144,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-432"
+        },
+        {
+          "fld_amount": 144,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-433"
+        },
+        {
+          "fld_amount": 144,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-434"
+        },
+        {
+          "fld_amount": 145,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-435"
+        },
+        {
+          "fld_amount": 145,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-436"
+        },
+        {
+          "fld_amount": 145,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-437"
+        },
+        {
+          "fld_amount": 146,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-438"
+        },
+        {
+          "fld_amount": 146,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-439"
+        },
+        {
+          "fld_amount": 146,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-440"
+        },
+        {
+          "fld_amount": 147,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-441"
+        },
+        {
+          "fld_amount": 147,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-442"
+        },
+        {
+          "fld_amount": 147,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-443"
+        },
+        {
+          "fld_amount": 148,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-444"
+        },
+        {
+          "fld_amount": 148,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-445"
+        },
+        {
+          "fld_amount": 148,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-446"
+        },
+        {
+          "fld_amount": 149,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-447"
+        },
+        {
+          "fld_amount": 149,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-448"
+        },
+        {
+          "fld_amount": 149,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-449"
+        },
+        {
+          "fld_amount": 150,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-450"
+        },
+        {
+          "fld_amount": 150,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-451"
+        },
+        {
+          "fld_amount": 150,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-452"
+        },
+        {
+          "fld_amount": 151,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-453"
+        },
+        {
+          "fld_amount": 151,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-454"
+        },
+        {
+          "fld_amount": 151,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-455"
+        },
+        {
+          "fld_amount": 152,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-456"
+        },
+        {
+          "fld_amount": 152,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-457"
+        },
+        {
+          "fld_amount": 152,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-458"
+        },
+        {
+          "fld_amount": 153,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-459"
+        },
+        {
+          "fld_amount": 153,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-460"
+        },
+        {
+          "fld_amount": 153,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-461"
+        },
+        {
+          "fld_amount": 154,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-462"
+        },
+        {
+          "fld_amount": 154,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-463"
+        },
+        {
+          "fld_amount": 154,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-464"
+        },
+        {
+          "fld_amount": 155,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-465"
+        },
+        {
+          "fld_amount": 155,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-466"
+        },
+        {
+          "fld_amount": 155,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-467"
+        },
+        {
+          "fld_amount": 156,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-468"
+        },
+        {
+          "fld_amount": 156,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-469"
+        },
+        {
+          "fld_amount": 156,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-470"
+        },
+        {
+          "fld_amount": 157,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-471"
+        },
+        {
+          "fld_amount": 157,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-472"
+        },
+        {
+          "fld_amount": 157,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-473"
+        },
+        {
+          "fld_amount": 158,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-474"
+        },
+        {
+          "fld_amount": 158,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-475"
+        },
+        {
+          "fld_amount": 158,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-476"
+        },
+        {
+          "fld_amount": 159,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-477"
+        },
+        {
+          "fld_amount": 159,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-478"
+        },
+        {
+          "fld_amount": 159,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-479"
+        },
+        {
+          "fld_amount": 160,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-480"
+        },
+        {
+          "fld_amount": 160,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-481"
+        },
+        {
+          "fld_amount": 160,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-482"
+        },
+        {
+          "fld_amount": 161,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-483"
+        },
+        {
+          "fld_amount": 161,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-484"
+        },
+        {
+          "fld_amount": 161,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-485"
+        },
+        {
+          "fld_amount": 162,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-486"
+        },
+        {
+          "fld_amount": 162,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-487"
+        },
+        {
+          "fld_amount": 162,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-488"
+        },
+        {
+          "fld_amount": 163,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-489"
+        },
+        {
+          "fld_amount": 163,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-490"
+        },
+        {
+          "fld_amount": 163,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-491"
+        },
+        {
+          "fld_amount": 164,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-492"
+        },
+        {
+          "fld_amount": 164,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-493"
+        },
+        {
+          "fld_amount": 164,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-494"
+        },
+        {
+          "fld_amount": 165,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-495"
+        },
+        {
+          "fld_amount": 165,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-496"
+        },
+        {
+          "fld_amount": 165,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-497"
+        },
+        {
+          "fld_amount": 166,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-498"
+        },
+        {
+          "fld_amount": 166,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-499"
+        },
+        {
+          "fld_amount": 166,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-500"
+        },
+        {
+          "fld_amount": 167,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-501"
+        },
+        {
+          "fld_amount": 167,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-502"
+        },
+        {
+          "fld_amount": 167,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-503"
+        },
+        {
+          "fld_amount": 168,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-504"
+        },
+        {
+          "fld_amount": 168,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-505"
+        },
+        {
+          "fld_amount": 168,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-506"
+        },
+        {
+          "fld_amount": 169,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-507"
+        },
+        {
+          "fld_amount": 169,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-508"
+        },
+        {
+          "fld_amount": 169,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-509"
+        },
+        {
+          "fld_amount": 170,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-510"
+        },
+        {
+          "fld_amount": 170,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-511"
+        },
+        {
+          "fld_amount": 170,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-512"
+        },
+        {
+          "fld_amount": 171,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-513"
+        },
+        {
+          "fld_amount": 171,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-514"
+        },
+        {
+          "fld_amount": 171,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-515"
+        },
+        {
+          "fld_amount": 172,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-516"
+        },
+        {
+          "fld_amount": 172,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-517"
+        },
+        {
+          "fld_amount": 172,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-518"
+        },
+        {
+          "fld_amount": 173,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-519"
+        },
+        {
+          "fld_amount": 173,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-520"
+        },
+        {
+          "fld_amount": 173,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-521"
+        },
+        {
+          "fld_amount": 174,
+          "fld_date": "2025-01-20 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-522"
+        },
+        {
+          "fld_amount": 174,
+          "fld_date": "2025-01-21 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-523"
+        },
+        {
+          "fld_amount": 174,
+          "fld_date": "2025-01-19 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-524"
+        },
+        {
+          "fld_amount": 175,
+          "fld_date": "2025-01-22 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-525"
+        },
+        {
+          "fld_amount": 175,
+          "fld_date": "2025-01-23 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-526"
+        },
+        {
+          "fld_amount": 175,
+          "fld_date": "2025-01-24 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-527"
+        },
+        {
+          "fld_amount": 176,
+          "fld_date": "2025-01-27 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-528"
+        },
+        {
+          "fld_amount": 176,
+          "fld_date": "2025-01-26 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-529"
+        },
+        {
+          "fld_amount": 176,
+          "fld_date": "2025-01-25 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-530"
+        },
+        {
+          "fld_amount": 177,
+          "fld_date": "2025-01-28 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-531"
+        },
+        {
+          "fld_amount": 177,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-532"
+        },
+        {
+          "fld_amount": 177,
+          "fld_date": "2025-01-02 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-533"
+        },
+        {
+          "fld_amount": 178,
+          "fld_date": "2025-01-04 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-534"
+        },
+        {
+          "fld_amount": 178,
+          "fld_date": "2025-01-03 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-535"
+        },
+        {
+          "fld_amount": 178,
+          "fld_date": "2025-01-05 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-536"
+        },
+        {
+          "fld_amount": 179,
+          "fld_date": "2025-01-06 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-537"
+        },
+        {
+          "fld_amount": 179,
+          "fld_date": "2025-01-07 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-538"
+        },
+        {
+          "fld_amount": 179,
+          "fld_date": "2025-01-08 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-539"
+        },
+        {
+          "fld_amount": 180,
+          "fld_date": "2025-01-10 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-540"
+        },
+        {
+          "fld_amount": 180,
+          "fld_date": "2025-01-11 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-541"
+        },
+        {
+          "fld_amount": 180,
+          "fld_date": "2025-01-09 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-542"
+        },
+        {
+          "fld_amount": 181,
+          "fld_date": "2025-01-14 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-543"
+        },
+        {
+          "fld_amount": 181,
+          "fld_date": "2025-01-12 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-544"
+        },
+        {
+          "fld_amount": 181,
+          "fld_date": "2025-01-13 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-545"
+        },
+        {
+          "fld_amount": 182,
+          "fld_date": "2025-01-15 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-546"
+        },
+        {
+          "fld_amount": 182,
+          "fld_date": "2025-01-16 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-547"
+        },
+        {
+          "fld_amount": 182,
+          "fld_date": "2025-01-17 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-548"
+        },
+        {
+          "fld_amount": 183,
+          "fld_date": "2025-01-18 00:00:00.000Z",
+          "fld_enabled": true,
+          "fld_link": "target-record",
+          "id": "record-549"
+        },
+        {
+          "fld_amount": null,
+          "fld_date": "2025-01-01 00:00:00.000Z",
+          "fld_enabled": false,
+          "fld_link": "target-record",
+          "id": "record-550"
+        }
+      ],
+      "nextCursor": null,
+      "schemaRevision": "schema-fixture",
+      "totalRows": 550
+    }
+  ],
+  "producer": "sidecar/internal/app/plugin_data_routes_test.go TestPluginDataRealAuthorityPaginationAndGrants",
+  "rejectCases": [
+    {
+      "code": "plugin_read_denied",
+      "name": "hidden projection",
+      "patch": {
+        "fields": [
+          "fld_hidden"
+        ]
+      }
+    },
+    {
+      "code": "plugin_read_denied",
+      "name": "hidden filter",
+      "patch": {
+        "filters": [
+          {
+            "field": "fld_hidden",
+            "operator": "eq",
+            "value": "never-visible"
+          }
+        ]
+      }
+    },
+    {
+      "code": "plugin_read_denied",
+      "name": "hidden sort",
+      "patch": {
+        "sorts": [
+          {
+            "field": "fld_hidden"
+          }
+        ]
+      }
+    },
+    {
+      "code": "plugin_read_denied",
+      "name": "unauthorized table ID selection",
+      "patch": {
+        "collection": "unavailable",
+        "ids": [
+          "record-001"
+        ]
+      }
+    },
+    {
+      "code": "plugin_read_denied",
+      "name": "relation target path",
+      "patch": {
+        "fields": [
+          "fld_amount.label"
+        ]
+      }
+    },
+    {
+      "code": "plugin_capability_invalid",
+      "name": "raw SQL",
+      "patch": {
+        "sql": "select *"
+      }
+    },
+    {
+      "code": "plugin_query_limit",
+      "name": "page size exceeds budget",
+      "patch": {
+        "pageSize": 201
+      }
+    },
+    {
+      "code": "query.operator.unsupported",
+      "name": "unsupported operator",
+      "patch": {
+        "filters": [
+          {
+            "field": "fld_amount",
+            "operator": "regex",
+            "value": ".*"
+          }
+        ]
+      }
+    }
+  ],
+  "request": {
+    "collection": "articles",
+    "contract": "vibetable.plugin-query.v2",
+    "fields": [
+      "id",
+      "fld_amount",
+      "fld_date",
+      "fld_enabled",
+      "fld_link"
+    ],
+    "pageSize": 200,
+    "sorts": [
+      {
+        "direction": "asc",
+        "field": "fld_amount"
+      }
+    ]
+  }
+}

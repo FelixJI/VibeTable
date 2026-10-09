@@ -13,7 +13,9 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -26,7 +28,6 @@ from backend.contracts.plugin import (
     MutationPlan,
     PluginPrivateSetting,
     PluginProgress,
-    PluginResult,
     PluginRisk,
     PluginSnapshot,
 )
@@ -43,10 +44,17 @@ _STORAGE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 class PluginWorkerError(RuntimeError):
     """Safe, diagnostic failure at the local plugin isolation boundary."""
 
+    def __init__(self, message: str, *, code: str = "plugin_worker_failed") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class _QueryPage(Protocol):
     @property
     def rows(self) -> list[dict[str, JsonValue]]: ...
+
+    @property
+    def total_rows(self) -> int: ...
 
 
 class _PluginDataClient(Protocol):
@@ -58,6 +66,8 @@ class _PluginDataClient(Protocol):
     ) -> _QueryPage: ...
 
     async def describe_table(self, table_id: str) -> dict[str, JsonValue]: ...
+
+    async def plugin_data(self, request: dict[str, JsonValue]) -> dict[str, JsonValue]: ...
 
 
 class _PluginInstallationStore(Protocol):
@@ -90,6 +100,8 @@ class _ResolvedWorker:
     plugin_id: str
     permissions: dict[str, Any]
     source: str
+    revision: int = 1
+    plugin_api: str = "1.x"
 
 
 class NodePluginWorkerAdapter:
@@ -115,8 +127,12 @@ class NodePluginWorkerAdapter:
         max_message_bytes: int = 1_048_576,
         max_capability_calls: int = 64,
         file_adapter: Any | None = None,
+        expected_project_key: str | None = None,
+        session_epoch: int = 0,
     ) -> None:
         self._store = store
+        self._expected_project_key = expected_project_key
+        self._session_epoch = session_epoch
         self._profiles = profiles
         self._dynamic_profiles = not profiles
         self._client = client
@@ -192,7 +208,9 @@ class NodePluginWorkerAdapter:
                         node, invocation, resolved, context, execution or {}
                     )
             except TimeoutError as exc:
-                raise PluginWorkerError("plugin Worker timed out and was terminated") from exc
+                raise PluginWorkerError(
+                    "plugin Worker timed out and was terminated", code="plugin_timeout"
+                ) from exc
         if not isinstance(result, dict):
             raise PluginWorkerError("plugin Worker result must be a JSON object")
         if result.get("contract") == "vibetable.mutation-plan.v1":
@@ -235,7 +253,8 @@ class NodePluginWorkerAdapter:
                     return message.get("value")
                 if kind == "error":
                     raise PluginWorkerError(
-                        f"plugin Worker failed: {message.get('error', 'unknown error')}"
+                        f"plugin Worker failed: {message.get('error', 'unknown error')}",
+                        code=str(message.get("code", "plugin_worker_failed")),
                     )
                 if kind != "capability" or not isinstance(message.get("id"), int):
                     raise PluginWorkerError("plugin Worker emitted an invalid protocol message")
@@ -262,6 +281,7 @@ class NodePluginWorkerAdapter:
                         "id": message["id"],
                         "ok": False,
                         "error": str(exc),
+                        "code": getattr(exc, "code", "plugin_capability_invalid"),
                     }
                 await self._write_message(process, response)
         finally:
@@ -299,11 +319,14 @@ class NodePluginWorkerAdapter:
     ) -> Any:
         if name == "context.read":
             return context
+        if name in {"data.describe", "data.query"}:
+            return await self._data_v2(resolved, context, execution, name, args)
         if name == "data.read":
             return await self._data_read(resolved, context, args)
         if name == "data.mutate":
             raise PluginWorkerError(
-                "data.mutate cannot write directly; return a mutation plan from the action"
+                "data.mutate cannot write directly; return a mutation plan from the action",
+                code="plugin_direct_mutation_unsupported",
             )
         if name in {"file.pickRead", "file.pickWrite", "file.read", "file.write"}:
             return await self._file_capability(resolved, execution, name, args)
@@ -314,13 +337,20 @@ class NodePluginWorkerAdapter:
         }:
             return await self._storage(resolved, name, args)
         if name == "ui.emitResult":
-            PluginResult.model_validate(args)
-            return None
+            raise PluginWorkerError(
+                "ui.emitResult is unsupported; return the final result from the action",
+                code="plugin_emit_result_unsupported",
+            )
         if name == "ui.reportProgress":
             progress = PluginProgress.model_validate(args)
+            if progress.total > 0 and progress.current > progress.total:
+                raise PluginWorkerError(
+                    "progress is out of bounds", code="plugin_capability_invalid"
+                )
             reporter = execution.get("_hostReporter")
             if reporter is None:
                 raise PluginWorkerError("plugin progress reporter is unavailable")
+            execution["_hostCancellable"] = progress.cancellable
             await reporter.report(
                 done=progress.current,
                 total=progress.total,
@@ -367,6 +397,114 @@ class NodePluginWorkerAdapter:
         await self._file_adapter.write(execution, grant_id, encoded)
         return None
 
+    async def _data_v2(
+        self,
+        resolved: _ResolvedWorker,
+        context: dict[str, Any],
+        execution: dict[str, Any],
+        name: str,
+        request: Any,
+    ) -> dict[str, JsonValue]:
+        if resolved.plugin_api != "2.x":
+            raise PluginWorkerError("plugin API v2 was not declared", code="plugin_api_unsupported")
+        if self._expected_project_key != resolved.project_key or self._session_epoch < 1:
+            raise PluginWorkerError(
+                "plugin workspace binding is unavailable", code="plugin_read_denied"
+            )
+        if not isinstance(request, dict):
+            raise PluginWorkerError(
+                "plugin data request is invalid", code="plugin_capability_invalid"
+            )
+        describe = name == "data.describe"
+        allowed = (
+            {"accepts", "collection"}
+            if describe
+            else {
+                "contract",
+                "collection",
+                "fields",
+                "ids",
+                "filters",
+                "sorts",
+                "pageSize",
+                "cursor",
+            }
+        )
+        if set(request) - allowed:
+            raise PluginWorkerError(
+                "plugin data request is invalid", code="plugin_capability_invalid"
+            )
+        if getattr(execution.get("_hostCancel"), "cancelled", False):
+            raise PluginWorkerError("plugin cancellation requested", code="plugin_cancel_requested")
+        installation = await self._store.get_installation(resolved.project_key, resolved.plugin_id)
+        if installation is None or installation.status != "enabled":
+            raise PluginWorkerError(
+                "plugin read permission is unavailable", code="plugin_read_denied"
+            )
+        if installation.revision != resolved.revision:
+            raise PluginWorkerError("plugin read authorization changed", code="plugin_cursor_stale")
+        # One execution owns these handles. No cursor or authorization survives a run.
+        handles = execution.setdefault("_pluginQueryCursors", {})
+        query_request = {key: value for key, value in request.items() if key != "cursor"}
+        binding = self._bounded_json(
+            {
+                "query": query_request,
+                "projectKey": resolved.project_key,
+                "pluginId": resolved.plugin_id,
+                "installationRevision": resolved.revision,
+                "runId": execution.get("runId"),
+                "sessionEpoch": self._session_epoch,
+                "activeCollection": context.get("collection"),
+            },
+            "plugin query request",
+        )
+        cursor = request.get("cursor")
+        previous = None
+        if cursor is not None:
+            if describe or not isinstance(cursor, str) or cursor not in handles:
+                raise PluginWorkerError("plugin cursor is invalid", code="plugin_cursor_invalid")
+            previous = handles.pop(cursor)
+            if previous["binding"] != binding:
+                raise PluginWorkerError("plugin cursor query changed", code="plugin_cursor_invalid")
+        body = {
+            "operation": "describe" if describe else "query",
+            "projectKey": resolved.project_key,
+            "pluginId": resolved.plugin_id,
+            "sessionEpoch": self._session_epoch,
+            "installationRevision": resolved.revision,
+            "activeCollection": context.get("collection") or "",
+            "request": query_request,
+        }
+        if previous is not None:
+            body["cursor"] = previous["cursor"]
+            body["dependencies"] = previous["dependencies"]
+        try:
+            value = await self._client.plugin_data(body)
+        except Exception as exc:
+            code = getattr(exc, "code", "plugin_query_failed")
+            raise PluginWorkerError(
+                "plugin data request could not be completed", code=code
+            ) from exc
+        if getattr(execution.get("_hostCancel"), "cancelled", False):
+            raise PluginWorkerError("plugin cancellation requested", code="plugin_cancel_requested")
+        if not describe:
+            dependencies = value.pop("dependencies", {})
+            next_cursor = value.get("nextCursor")
+            if next_cursor is not None:
+                if len(handles) >= self._max_capability_calls:
+                    raise PluginWorkerError(
+                        "plugin cursor budget exceeded", code="plugin_query_limit"
+                    )
+                handle = secrets.token_urlsafe(24)
+                handles[handle] = {
+                    "binding": binding,
+                    "cursor": next_cursor,
+                    "dependencies": dependencies,
+                }
+                value["nextCursor"] = handle
+        self._bounded_json(value, "plugin data response")
+        return value
+
     async def _data_read(
         self,
         resolved: _ResolvedWorker,
@@ -383,7 +521,10 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError("data.read collection is required")
         grant = self._read_grant(resolved.permissions, context, collection)
         if grant is None:
-            raise PluginWorkerError(f"collection {collection!r} was not declared for read")
+            raise PluginWorkerError(
+                f"collection {collection!r} was not declared for read",
+                code="plugin_read_denied",
+            )
         profile = await self._profile(collection)
         requested_fields = request.get("fields")
         if not isinstance(requested_fields, list) or not all(
@@ -395,10 +536,14 @@ class NodePluginWorkerAdapter:
         denied = set(fields) - allowed_fields
         if denied:
             raise PluginWorkerError(
-                f"data.read fields were not declared: {', '.join(sorted(denied))}"
+                f"data.read fields were not declared: {', '.join(sorted(denied))}",
+                code="plugin_read_denied",
             )
         if request.get("filter") not in (None, {}):
-            raise PluginWorkerError("data.read filter is unavailable in plugin API v1")
+            raise PluginWorkerError(
+                "data.read filter is unavailable in plugin API v1",
+                code="plugin_filter_unsupported",
+            )
         page_size = request.get("pageSize", 100)
         if not isinstance(page_size, int) or isinstance(page_size, bool):
             raise PluginWorkerError("data.read pageSize must be an integer")
@@ -423,6 +568,13 @@ class NodePluginWorkerAdapter:
         value = {
             "items": items,
             "nextCursor": str(offset + len(items)) if len(items) == page_size else None,
+            "totalRows": page.total_rows,
+            "rowGuards": {
+                str(row["id"]): row["__vibetableDigest"]
+                for row in page.rows
+                if isinstance(row.get("id"), (str, int))
+                and isinstance(row.get("__vibetableDigest"), str)
+            },
         }
         self._bounded_json(value, "data.read response")
         return value
@@ -579,6 +731,8 @@ class NodePluginWorkerAdapter:
             plugin_id=installation.plugin_id,
             permissions=installation.manifest.permissions,
             source=source,
+            revision=installation.revision,
+            plugin_api=str(installation.manifest.compatibility.get("pluginApi", "")),
         )
 
     @staticmethod
@@ -750,7 +904,11 @@ class InMemoryBulkMutationAdapter:
     trace: list[str] | None = None
     plans: list[MutationPlan] = field(default_factory=list)
 
-    async def apply(self, plan: MutationPlan) -> dict[str, Any]:
+    async def apply(
+        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
+        if on_submit is not None:
+            on_submit()
         if self.trace is not None:
             self.trace.append("bulk.apply")
         self.plans.append(plan)

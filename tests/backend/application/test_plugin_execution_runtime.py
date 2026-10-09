@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,7 @@ def _snapshot(
             "version": "1.0.0",
             "displayName": {"en": "Summary"},
             "compatibility": {
-                "minHostVersion": "1.0.0",
+                "minHostVersion": "0.5.1",
                 "pluginApi": "1.x",
             },
             "permissions": {
@@ -287,7 +288,7 @@ async def test_write_action_requires_confirmation_before_product_mutation() -> N
                 {
                     "kind": "update",
                     "primaryKey": "1",
-                    "expectedDateUpdated": "sha256:old",
+                    "expectedDigest": "sha256:" + "a" * 64,
                     "values": {"title": "updated"},
                 }
             ],
@@ -335,7 +336,7 @@ async def test_write_action_requires_confirmation_before_product_mutation() -> N
     assert await _wait_terminal(events) == "succeeded"
     assert events[-1].snapshot["result"]["summary"] == "updated"
     assert trace == ["host.confirm", "bulk.apply"]
-    assert mutation.plans[0].operations[0].expected_date_updated == "sha256:old"
+    assert mutation.plans[0].operations[0].expected_digest == "sha256:" + "a" * 64
 
 
 @pytest.mark.asyncio
@@ -423,8 +424,196 @@ async def test_rejected_write_never_reaches_product_mutation() -> None:
     )
 
     assert await _wait_terminal(events) == "failed"
-    assert events[-1].snapshot["error"]["code"] == "plugin_action_failed"
+    assert events[-1].snapshot["error"]["code"] == "plugin_mutation_rejected"
     assert mutation.plans == []
     assert len(registry.audit) == 1
     assert registry.audit[0].outcome == "failed"
-    assert registry.audit[0].error_code == "plugin_action_failed"
+    assert registry.audit[0].error_code == "plugin_mutation_rejected"
+
+
+@pytest.mark.asyncio
+async def test_progress_is_an_execution_report_and_retains_cancellability() -> None:
+    class ProgressWorker(RecordingWorker):
+        async def run(self, *args: Any, execution: dict[str, Any] | None = None) -> dict[str, Any]:
+            assert execution is not None
+            assert execution["_hostCancel"].cancelled is False
+            execution["_hostCancellable"] = False
+            await execution["_hostReporter"].report(done=1, total=2, message="one")
+            execution["_hostCancellable"] = True
+            await execution["_hostReporter"].report(done=2, total=2, message="two")
+            return self.result
+
+    runtime = PluginExecutionRuntime(
+        registry=FakeRegistry(_snapshot()),
+        worker_adapter=ProgressWorker(
+            {"contract": "vibetable.plugin-result.v1", "status": "success", "summary": "done"}
+        ),
+    )
+    events: list[Any] = []
+
+    async def record(event: Any) -> None:
+        events.append(event)
+
+    runtime.set_notification_sink(record)
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+    assert await _wait_terminal(events) == "succeeded"
+    reports = [
+        event.snapshot["progress"]
+        for event in events
+        if event.snapshot["state"] == "running" and event.snapshot["progress"]
+    ]
+    assert [report["current"] for report in reports] == [1, 2]
+    assert [report["cancellable"] for report in reports] == [False, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_started", [False, True])
+async def test_cancel_at_submission_boundary_settles_without_replay(commit_started: bool) -> None:
+    submitted = asyncio.Event()
+    calls = 0
+
+    class WaitingMutation:
+        async def apply(
+            self, plan: Any, *, on_submit: Callable[[], None] | None = None
+        ) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if commit_started:
+                assert on_submit is not None
+                on_submit()
+            submitted.set()
+            await asyncio.Future()
+            raise AssertionError("unreachable")
+
+    runtime = PluginExecutionRuntime(
+        registry=FakeRegistry(_snapshot(risk="write")),
+        worker_adapter=RecordingWorker(
+            {
+                "contract": "vibetable.mutation-plan.v1",
+                "collection": "articles",
+                "operations": [],
+                "preview": {"affectedCount": 0},
+            }
+        ),
+        confirmation_adapter=InMemoryHostConfirmationAdapter(decisions=[True]),
+        mutation_adapter=WaitingMutation(),
+    )
+    events: list[Any] = []
+
+    async def record(event: Any) -> None:
+        events.append(event)
+
+    runtime.set_notification_sink(record)
+    ids = _ids()
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **ids)
+    await asyncio.wait_for(submitted.wait(), 1)
+    assert await runtime.request_cancel(ids["task_id"])
+    assert await _wait_terminal(events) == ("aborted" if commit_started else "cancelled")
+    if commit_started:
+        assert events[-1].snapshot["error"]["code"] == "plugin_commit_unknown"
+    else:
+        assert events[-1].snapshot["error"] is None
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cooperative", [True, False])
+async def test_cancel_allows_worker_cleanup_then_forces_uncooperative_worker(
+    cooperative: bool,
+) -> None:
+    from backend.contracts.plugin import PluginExecutionError
+
+    observed = asyncio.Event()
+    cleaned = asyncio.Event()
+    terminal = asyncio.Event()
+
+    class CancellableWorker(RecordingWorker):
+        async def run(self, *args: Any, execution: dict[str, Any] | None = None) -> dict[str, Any]:
+            assert execution is not None
+            if not cooperative:
+                await asyncio.Future()
+            await execution["_hostCancel"].wait()
+            observed.set()
+            # Cooperative cleanup can itself yield before reporting cancellation.
+            await asyncio.sleep(0)
+            cleaned.set()
+            raise PluginExecutionError("cancelled", code="plugin_cancel_requested")
+
+    registry = FakeRegistry(_snapshot())
+    runtime = PluginExecutionRuntime(registry=registry, worker_adapter=CancellableWorker({}))
+    events: list[Any] = []
+
+    async def record(event: Any) -> None:
+        events.append(event)
+        if event.snapshot["state"] != "running":
+            terminal.set()
+
+    runtime.set_notification_sink(record)
+    ids = _ids()
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **ids)
+    assert await runtime.request_cancel(ids["task_id"])
+    assert await runtime.request_cancel(ids["task_id"])
+    await asyncio.wait_for(terminal.wait(), 3)
+    assert observed.is_set() is cooperative
+    assert cleaned.is_set() is cooperative
+    assert events[-1].snapshot["state"] == "cancelled"
+    assert len(registry.audit) == 1
+    assert registry.audit[0].outcome == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_worker_return_never_opens_mutation_confirmation() -> None:
+    class CancellableWorker(RecordingWorker):
+        async def run(self, *args: Any, execution: dict[str, Any] | None = None) -> dict[str, Any]:
+            assert execution is not None
+            await execution["_hostCancel"].wait()
+            return self.result
+
+    confirmation = InMemoryHostConfirmationAdapter(decisions=[True])
+    mutation = InMemoryBulkMutationAdapter(result={})
+    runtime = PluginExecutionRuntime(
+        registry=FakeRegistry(_snapshot(risk="write")),
+        worker_adapter=CancellableWorker(
+            {
+                "contract": "vibetable.mutation-plan.v1",
+                "collection": "articles",
+                "operations": [],
+                "preview": {"affectedCount": 0},
+            }
+        ),
+        confirmation_adapter=confirmation,
+        mutation_adapter=mutation,
+    )
+    events: list[Any] = []
+
+    async def record(event: Any) -> None:
+        events.append(event)
+
+    runtime.set_notification_sink(record)
+    ids = _ids()
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **ids)
+    await runtime.request_cancel(ids["task_id"])
+    assert await _wait_terminal(events) == "cancelled"
+    assert confirmation.previews == []
+    assert mutation.plans == []
+
+
+@pytest.mark.asyncio
+async def test_uninstall_cancellation_waits_for_worker_cleanup() -> None:
+    cleaned = asyncio.Event()
+
+    class CancellableWorker(RecordingWorker):
+        async def run(self, *args: Any, execution: dict[str, Any] | None = None) -> dict[str, Any]:
+            assert execution is not None
+            await execution["_hostCancel"].wait()
+            await asyncio.sleep(0)
+            cleaned.set()
+            return self.result
+
+    registry = FakeRegistry(_snapshot())
+    runtime = PluginExecutionRuntime(registry=registry, worker_adapter=CancellableWorker({}))
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+    assert await runtime.cancel_plugin_tasks("local:default", "com.example.summary") == 1
+    assert cleaned.is_set()
+    assert len(registry.audit) == 1
+    assert registry.audit[0].outcome == "cancelled"

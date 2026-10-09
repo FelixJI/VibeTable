@@ -33,6 +33,10 @@ func TestLookupListProjectionMatchesFrozenPythonConsumer(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			assertResultCardinalityWiring(t, sample.Catalog, result)
+			// The frozen wire predates `resultCardinality`. Project away exactly
+			// that new key; every historical definition field stays compared.
+			stripResultCardinalityField(result)
 			actual, err := json.Marshal(result)
 			if err != nil {
 				t.Fatal(err)
@@ -48,6 +52,85 @@ func TestLookupListProjectionMatchesFrozenPythonConsumer(t *testing.T) {
 				t.Fatalf("lookup.list projection differs: got %s; want %s", actual, sample.LookupList)
 			}
 		})
+	}
+}
+
+// stripResultCardinalityField removes only the newly added resultCardinality
+// key from every projected definition.
+func stripResultCardinalityField(result map[string]any) {
+	definitions, _ := result["definitions"].([]any)
+	for _, definition := range definitions {
+		if record, ok := definition.(map[string]any); ok {
+			delete(record, "resultCardinality")
+		}
+	}
+}
+
+// assertResultCardinalityWiring pins the new resultCardinality projection
+// against the frozen catalog inputs: each definition carries its descriptor's
+// authoritative cardinality.
+func assertResultCardinalityWiring(t *testing.T, catalog relation.CatalogResult, result map[string]any) {
+	t.Helper()
+	wantByLookup := map[string]string{}
+	for _, lookup := range catalog.Lookups {
+		wantByLookup[lookup.LookupID] = lookup.ResultCardinality
+	}
+	definitions, _ := result["definitions"].([]any)
+	for _, definition := range definitions {
+		record, ok := definition.(map[string]any)
+		if !ok {
+			t.Fatalf("definition is not an object: %#v", definition)
+		}
+		lookupID, _ := record["lookupId"].(string)
+		want, found := wantByLookup[lookupID]
+		if !found {
+			t.Fatalf("definition %s missing from catalog", lookupID)
+		}
+		if record["resultCardinality"] != want {
+			t.Fatalf("definition %s resultCardinality = %v, want %s", lookupID, record["resultCardinality"], want)
+		}
+	}
+}
+
+// TestLookupListProjectsResultCardinalityWithExplicitExpectations locks the
+// scalar/list shape knowledge with hand-written expectations from the frozen
+// corpus: numeric SUM-style outputs stay scalar, many-path numeric lookups
+// keep the list cardinality.
+func TestLookupListProjectsResultCardinalityWithExplicitExpectations(t *testing.T) {
+	wire, err := os.ReadFile("testdata/schema_describe_oracle.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus describeOracleCorpus
+	if err := json.Unmarshal(wire, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	scalar, err := projectLookupList(corpus.Cases[0].Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalarDefinitions := scalar["definitions"].([]any)
+	scalarByField := map[string]map[string]any{}
+	for _, definition := range scalarDefinitions {
+		record := definition.(map[string]any)
+		scalarByField[record["lookupId"].(string)] = record
+	}
+	integerList := scalarByField["tbl_d7b01a33031b5f638043.fld_2x4sjnrvqywynr7h8vvf"]
+	if integerList["resultCardinality"] != "one" || integerList["outputType"] != "integer" {
+		t.Fatalf("scalar integer lookup = %#v", integerList)
+	}
+	listed, err := projectLookupList(corpus.Cases[1].Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listByField := map[string]map[string]any{}
+	for _, definition := range listed["definitions"].([]any) {
+		record := definition.(map[string]any)
+		listByField[record["lookupId"].(string)] = record
+	}
+	numericList := listByField["tbl_84ab97161767528bbb4e.fld_m0vyx9azrr3nr405wjcr"]
+	if numericList["resultCardinality"] != "many" || numericList["outputType"] != "decimal" {
+		t.Fatalf("numeric list lookup = %#v", numericList)
 	}
 }
 
@@ -327,8 +410,9 @@ func TestLookupListProductHTTPReadsPersistedRelationDefinitions(t *testing.T) {
 				"fieldKey": lookup.Definition.Identity.PhysicalName, "displayName": "客户名称",
 				"path":       []any{map[string]any{"relationId": relationID}},
 				"source":     map[string]any{"kind": "target_field", "fieldRef": label.FieldID},
-				"outputType": "text", "outputScale": nil, "revision": float64(1),
-				"state": "valid", "diagnostics": []any{}, "dependencies": []any{relationID},
+				"outputType": "text", "outputScale": nil, "resultCardinality": cardinality,
+				"revision": float64(1),
+				"state":    "valid", "diagnostics": []any{}, "dependencies": []any{relationID},
 			}
 			if result.Collection != table.TableID || len(result.Definitions) != 1 || !reflect.DeepEqual(result.Definitions[0], want) {
 				t.Fatalf("persisted Lookup projection: %s", response.Result)
@@ -387,5 +471,8 @@ func TestLookupListProjectionKeepsNumericAggregationDecimal(t *testing.T) {
 	}
 	if projected["outputType"] != "decimal" || projected["aggregation"] != v2.LookupAggregationCountRecords {
 		t.Fatalf("numeric aggregation projection = %#v", projected)
+	}
+	if projected["resultCardinality"] != "one" {
+		t.Fatalf("numeric aggregation cardinality = %#v", projected)
 	}
 }

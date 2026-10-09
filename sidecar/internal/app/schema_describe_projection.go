@@ -33,7 +33,7 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 			"columns": []any{map[string]any{
 				"name": "id", "title": "ID", "fieldId": "id", "kind": "system",
 				"relationId": nil, "lookupId": nil, "dataType": "text", "editable": false, "nullable": false,
-				"scale": nil, "precision": nil, "attachmentPolicy": nil,
+				"scale": nil, "precision": nil, "attachmentPolicy": nil, "display": nil,
 				"filterOperators": []string{"eq", "ne", "in", "contains", "starts_with", "ends_with", "is_null", "is_not_null"},
 			}},
 			"normalizedRelations": []any{}, "schemaRevision": snapshot.SchemaRevision, "permissionRevision": snapshot.SchemaRevision,
@@ -106,13 +106,21 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 		if summaries == nil {
 			summaries = []string{}
 		}
-		columns = append(columns, map[string]any{
+		column := map[string]any{
 			"name": field.Identity.PhysicalName, "title": field.DisplayName, "fieldId": field.Identity.FieldID,
 			"kind": kind, "relationId": relationID, "lookupId": lookupID, "dataType": dataType,
 			"editable": !readonly, "nullable": !field.Value.Required, "scale": field.Display.DisplayScale,
-			"precision": nil, "attachmentPolicy": attachment, "filterOperators": operators,
-			"groupable": capability.Groupable, "summaryOperations": summaries,
-		})
+			"precision": nil, "attachmentPolicy": attachment, "display": field.Display,
+			"filterOperators": operators,
+			"groupable":       capability.Groupable, "summaryOperations": summaries,
+		}
+		if field.Formula != nil && field.Formula.ResultElementType != "" {
+			column["resultElementType"] = field.Formula.ResultElementType
+		}
+		if field.Select != nil {
+			column["enumOptions"] = field.Select.Options
+		}
+		columns = append(columns, column)
 	}
 	if primary == "" && len(snapshot.Fields) > 0 {
 		primary = snapshot.Fields[0].Identity.FieldID
@@ -144,6 +152,9 @@ func projectSchemaDescribe(snapshot v2.SchemaSnapshot, catalog relation.CatalogR
 			"pairId": descriptor.PairID, "reciprocalFieldId": descriptor.ReciprocalFieldID,
 			"quickCreateEligible": descriptor.QuickCreateEligible, "quickCreateReason": descriptor.QuickCreateReason,
 			"state": "valid", "displayTemplate": nil, "diagnostics": []any{},
+			"displayFieldId":           displayFieldIDValue(descriptor.DisplayFieldID),
+			"displayFieldInfo":         displayInfoValue(descriptor.DisplayFieldInfo),
+			"fallbackDisplayFieldInfo": displayInfoValue(descriptor.FallbackDisplayFieldInfo),
 		})
 	}
 	schema["normalizedRelations"] = relations
@@ -207,6 +218,32 @@ func describeLookupType(source v2.SchemaSnapshot, field v2.FieldDefinition, tabl
 	return target.LogicalType, nil
 }
 
+// displayFieldIDValue exposes the relation's display field id as a nullable
+// wire value; display info objects project the render contract shared with
+// the web display formatter.
+func displayFieldIDValue(fieldID string) any {
+	if fieldID == "" {
+		return nil
+	}
+	return fieldID
+}
+
+func displayInfoValue(info *relation.DisplayFieldInfo) any {
+	if info == nil {
+		return nil
+	}
+	result := map[string]any{
+		"fieldId": info.FieldID, "dataType": info.DataType,
+	}
+	if info.Display != nil {
+		result["display"] = *info.Display
+	}
+	if len(info.EnumOptions) > 0 {
+		result["enumOptions"] = info.EnumOptions
+	}
+	return result
+}
+
 func describeFieldByID(table v2.SchemaSnapshot, id string) (v2.FieldDefinition, error) {
 	for _, field := range table.Fields {
 		if field.Identity.FieldID == id {
@@ -218,12 +255,12 @@ func describeFieldByID(table v2.SchemaSnapshot, id string) (v2.FieldDefinition, 
 
 func describeFieldReadonly(table v2.SchemaSnapshot, field v2.FieldDefinition) bool {
 	return table.Kind == "view" || field.Lifecycle.State != v2.LifecycleActive ||
-		field.LogicalType == v2.LogicalAutoDate || field.LogicalType == v2.LogicalFormula || field.LogicalType == v2.LogicalLookup
+		field.LogicalType == v2.LogicalAutoNumber || field.LogicalType == v2.LogicalAutoDate || field.LogicalType == v2.LogicalFormula || field.LogicalType == v2.LogicalLookup
 }
 
 func describeDataType(kind v2.LogicalType) (string, error) {
 	switch kind {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect, v2.LogicalMultiSelect, v2.LogicalRelation, v2.LogicalFile:
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect, v2.LogicalMultiSelect, v2.LogicalRelation, v2.LogicalFile:
 		return "text", nil
 	case v2.LogicalNumber:
 		return "decimal", nil
@@ -245,7 +282,7 @@ func describeDataType(kind v2.LogicalType) (string, error) {
 func describeFilterOperators(kind v2.LogicalType) ([]string, error) {
 	var operators []string
 	switch kind {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect:
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalTime, v2.LogicalEmail, v2.LogicalURL, v2.LogicalSelect:
 		operators = []string{"eq", "ne", "in", "contains", "starts_with", "ends_with"}
 	case v2.LogicalNumber, v2.LogicalDate, v2.LogicalDateTime, v2.LogicalAutoDate:
 		operators = []string{"eq", "ne", "in", "gt", "lt", "gte", "lte", "between"}

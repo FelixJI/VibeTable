@@ -909,6 +909,67 @@ describe("useTabulator", () => {
     wrapper.unmount();
   });
 
+  it.each(["displayFieldInfo", "fallbackDisplayFieldInfo"] as const)(
+    "rebuilds real relation formatters when %s changes at equal source revisions",
+    async infoKey => {
+      const actual = await vi.importActual<typeof import("@/grid/createGrid")>("@/grid/createGrid");
+      const { buildTabulatorColumns } = await import("@/grid/createGrid");
+      const table = useTableStore();
+      const relations = useRelationLookupStore();
+      const descriptor: NormalizedRelationDescriptor = {
+        ...relationDescriptor("orders", "customer"),
+        [infoKey]: {
+          fieldId: "amount", dataType: "decimal",
+          display: {
+            kind: "number", preset: "number", displayScale: 0, scaleMode: "fixed",
+            trimTrailingZeros: false, useGrouping: true, currency: "CNY",
+            percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+            mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+          },
+        },
+      };
+      relations.schema = relationSchema("orders", descriptor);
+      relations.capabilities = relationCapabilities;
+      const gridEl = ref<HTMLElement | null>(null);
+      const wrapper = mountHost(gridEl);
+      gridEl.value = document.createElement("div");
+      table.beginLoad();
+      table.appendPage(makePage([{ rowKey: "1", customer: ["target"] }], [{
+        ...makeColumn("customer"), kind: "relation", relationId: descriptor.relationId,
+      }]));
+      await flushPromises();
+      const render = (columns: ReturnType<typeof actual.buildTabulatorColumns>): string | null => {
+        const formatter = columns.find(column => column.field === "customer")!.formatter;
+        if (typeof formatter !== "function") throw new Error("missing relation formatter");
+        const source = infoKey === "displayFieldInfo" ? "display" : "primary";
+        return formatter({
+          getField: () => "customer",
+          setValue: vi.fn(),
+          getValue: () => ["target"],
+          getRow: () => ({ getData: () => ({
+            __vibetableRelationLabels: { customer: { target: { value: 1982, source } } },
+          }) }),
+        }).textContent;
+      };
+      const originalColumns = actual.buildTabulatorColumns(table.pages[0]!, undefined, {
+        relations: new Map([[descriptor.relationId, descriptor]]), lookups: new Map(),
+        relationEditAvailable: false, lookupQueryAvailable: false,
+      });
+      expect(render(originalColumns)).toBe("1,982");
+      lastMock!.setColumns.mockClear();
+      vi.mocked(buildTabulatorColumns).mockImplementationOnce(actual.buildTabulatorColumns);
+      relations.schema = relationSchema("orders", {
+        ...descriptor,
+        [infoKey]: { ...descriptor[infoKey], display: { ...descriptor[infoKey]!.display!, preset: "currency" } },
+      });
+      await flushPromises();
+      expect(lastMock!.setColumns).toHaveBeenCalledOnce();
+      expect(render(lastMock!.setColumns.mock.calls[0]![0])).toBe("¥1,982");
+      expect(table.allRows[0]!.customer).toEqual(["target"]);
+      wrapper.unmount();
+    },
+  );
+
   /**
    * Task M3: when the caller supplies an onCellEdited callback, it must be
    * forwarded to createGrid so committed edits reach mutationService. We

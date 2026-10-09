@@ -19,6 +19,7 @@ import (
 	pbtypes "github.com/pocketbase/pocketbase/tools/types"
 	"github.com/vibetable/vibetable/sidecar/internal/auditledger"
 	"github.com/vibetable/vibetable/sidecar/internal/autodateobs"
+	"github.com/vibetable/vibetable/sidecar/internal/autonumber"
 	"github.com/vibetable/vibetable/sidecar/internal/fieldvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/formula"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
@@ -148,6 +149,16 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			return guardErr
 		}
 
+		var numberFields []*autonumber.Field
+		for _, operation := range preview.Operations {
+			if operation.Kind == OperationInsert {
+				numberFields, err = autonumber.Load(ctx, txApp, request.TableID)
+				if err != nil {
+					return mutationError("mutation.auto_number.state_invalid", nil, err.Error(), nil, false)
+				}
+				break
+			}
+		}
 		changeSetID := kernel.newID("changeSet")
 		recordStates := map[string]*core.Record{}
 		deleted := map[string]bool{}
@@ -192,7 +203,7 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 
 			after, applyErr := kernel.applyOperation(
 				ctx, txApp, definition, record, operation, before,
-				baseRowRevisions[recordID]+1, computedFields,
+				baseRowRevisions[recordID]+1, computedFields, numberFields,
 			)
 			if applyErr != nil {
 				return applyErr
@@ -241,6 +252,9 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 			})
 		}
 
+		if err := autonumber.Save(txApp, numberFields); err != nil {
+			return mutationError("mutation.auto_number.state_invalid", nil, err.Error(), nil, false)
+		}
 		relatedBatches := map[string]*relatedTableBatch{}
 		auditSequence := len(preview.Operations) + 1
 		for _, change := range reciprocalChanges {
@@ -616,6 +630,7 @@ func (kernel *Kernel) applyOperation(
 	before map[string]any,
 	rowRevision int64,
 	computedFields map[string]map[string]any,
+	numberFields []*autonumber.Field,
 ) (map[string]any, error) {
 	var finalizeAttachments AttachmentFinalizer
 	switch operation.Kind {
@@ -703,6 +718,13 @@ func (kernel *Kernel) applyOperation(
 	default:
 		return nil, mutationError("mutation.operation.unsupported", nil, "operation is not supported", nil, false)
 	}
+	if operation.Kind == OperationInsert {
+		for _, field := range numberFields {
+			if err := field.Assign(record); err != nil {
+				return nil, mutationError("mutation.auto_number.allocation_failed", nil, err.Error(), nil, false)
+			}
+		}
+	}
 	record.Set(relatedcomputation.RowRevisionField, rowRevision)
 	if kernel.formulas != nil {
 		calculated, err := kernel.formulas.Calculate(ctx, app, definition, record)
@@ -749,6 +771,9 @@ func (kernel *Kernel) applyOperation(
 	saved := ProductRow(app, definition, record)
 	serverFields := map[string]any{}
 	for _, field := range definition.Snapshot.Fields {
+		if field.LogicalType == v2.LogicalAutoNumber {
+			serverFields[field.Identity.PhysicalName] = saved[field.Identity.PhysicalName]
+		}
 		if field.LogicalType == v2.LogicalAutoDate {
 			serverValue, valueErr := systemWireValue(field, saved[field.Identity.PhysicalName])
 			if valueErr != nil {

@@ -1652,14 +1652,20 @@ $clock = [System.Diagnostics.Stopwatch]::StartNew()
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
 [Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
+# Known framework assemblies load by their strong names; the Add-Type
+# utility cmdlet (and its module bootstrap) stays unloaded on this path.
+[void][Reflection.Assembly]::Load('UIAutomationClient, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
+[Console]::Error.WriteLine("UIA_STAGE client-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
+[void][Reflection.Assembly]::Load('UIAutomationTypes, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
+[Console]::Error.WriteLine("UIA_STAGE types-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
 # The default-proxy loader scans callers' ReflectedType. Public MethodInfo.Invoke
 # supplies a named framework frame without compiling C# inside the 5s budget.
 $assembly = [System.Windows.Automation.AutomationElement].Assembly.GetName()
 $assembly.Name = "UIAutomationClientsideProviders"
+[Console]::Error.WriteLine("UIA_STAGE provider-registration begin elapsedMs=$($clock.ElapsedMilliseconds)")
 [System.Windows.Automation.ClientSettings].GetMethod(
     "RegisterClientSideProviderAssembly").Invoke($null, @($assembly))
+[Console]::Error.WriteLine("UIA_STAGE provider-registration end elapsedMs=$($clock.ElapsedMilliseconds)")
 [Console]::Error.WriteLine("UIA_STAGE assemblies end elapsedMs=$($clock.ElapsedMilliseconds)")
 [Console]::Error.WriteLine("UIA_STAGE root begin elapsedMs=$($clock.ElapsedMilliseconds)")
 $root = [System.Windows.Automation.AutomationElement]::FromHandle(
@@ -2508,6 +2514,19 @@ def run_scenario(
         str(plugin_fixture.resolve()) + "\n",
         encoding="utf-8",
     )
+    if scenario.id == "11-plugin-mutation":
+        for example in ("data-overview", "normalize-text"):
+            source = ROOT / "examples" / "plugins" / example
+            plugin_cli = ROOT / "scripts" / "vibetable_plugin.py"
+            archive = controls_dir / f"{example}.vtplugin"
+            subprocess.run(
+                [sys.executable, str(plugin_cli), "build", str(source)], cwd=ROOT, check=True
+            )
+            subprocess.run(
+                [sys.executable, str(plugin_cli), "pack", str(source), "--output", str(archive)],
+                cwd=ROOT,
+                check=True,
+            )
     plugin_read_source = controls_dir / "plugin-read-source.txt"
     plugin_read_source.write_text("native plugin file grant\n", encoding="utf-8")
     (controls_dir / "plugin-file-read.txt").write_text(

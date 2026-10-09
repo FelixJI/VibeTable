@@ -5,6 +5,9 @@ import type {
   NormalizedRelationDescriptor,
   RelationTargetRef,
 } from "@/contracts";
+import type { DisplaySpec } from "@/contracts/generated/schemaV2";
+import { formatLookupDisplayValue } from "./computedValueDisplay";
+import { coerceLegacyLabelEntry, formatRelationLabelEntry, relationRowLabels } from "./relationDisplay";
 import { t } from "@/i18n";
 
 export function relationFormatter(descriptor: NormalizedRelationDescriptor, field = descriptor.fieldRef) {
@@ -29,15 +32,13 @@ export function relationFormatter(descriptor: NormalizedRelationDescriptor, fiel
       root.append(element("span", "vt-cell-empty", "—"));
       return root;
     }
-    const metadata = cell.getRow?.().getData().__vibetableRelationLabels;
-    const labels = isRecord(metadata) && isRecord(metadata[field]) ? metadata[field] : {};
+    const labels = relationRowLabels(cell.getRow?.().getData(), field);
     for (const target of targets.slice(0, 3)) {
       const token = element("span", "vt-relation-token");
-      const label = labels[target.itemId];
+      const entry = coerceLegacyLabelEntry(labels[target.itemId]);
+      const formatted = entry !== null ? formatRelationLabelEntry(entry, descriptor) : null;
       token.append(document.createTextNode(
-        typeof label === "string" && label.trim() !== ""
-          ? label
-          : target.label || target.itemId,
+        formatted ?? (target.label && target.label.trim() !== "" ? target.label : target.itemId),
       ));
       token.title = `${target.collection || descriptor.relatedCollection || ""} · ${target.itemId}`;
       root.append(token);
@@ -53,6 +54,7 @@ export function lookupFormatter(
   unavailableReason?: string | null,
   onSourceRequested?: (source: LookupValueProvenance) => void,
 	onSourcePageRequested?: (intent: import("@/contracts").LookupSourcePageIntent) => void,
+  columnDisplay?: DisplaySpec | null,
 ) {
 	return (cell: {
 		getValue(): unknown;
@@ -90,8 +92,8 @@ export function lookupFormatter(
       root.append(badge);
       return root;
     }
-    const display = formatLookupValue(value.value);
-    root.append(element("span", display === "" ? "vt-cell-empty" : "vt-lookup-text", display || "—"));
+    const rendered = formatLookupDisplayValue(value.value, definition, columnDisplay);
+    root.append(element("span", rendered === "" ? "vt-cell-empty" : "vt-lookup-text", rendered || "—"));
     if (value.provenance.length > 0) {
       root.title = t("grid.lookup.sourceCount", {
         count: value.provenanceTotalKnown ? value.provenanceTotal : `${value.provenanceTotal}+`,
@@ -180,15 +182,6 @@ function normalizeLookupCell(value: unknown): LookupCellValue {
     state: "ok", value, provenance: [], provenanceTotal: 0, provenanceTotalKnown: true,
     provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false,
   };
-}
-
-function formatLookupValue(value: unknown): string {
-  if (value == null) return "";
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item)).join(t("grid.valueSeparator"));
-  }
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
 }
 
 function stateBadge(label: string, state: string): HTMLElement {

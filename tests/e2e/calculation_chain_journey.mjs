@@ -25,6 +25,31 @@ export function calculationChainUiOracle(sources, multiplier) {
   });
 }
 
+// #445: number cells now render through the PR display spec defaults
+// (useGrouping true, scaleMode max, displayScale 2), so the DOM text for this
+// journey's integer results is 1982 -> "1,982", 7 -> "7", 0 -> "0". This is
+// an independent, journey-local DOM oracle over that default contract: it
+// must not import the product formatter, and raw query/export authority
+// keeps comparing unformatted numbers. Non-numeric cells (the marker text)
+// pass through unchanged.
+export function calculationChainDisplayText(value) {
+  if (typeof value !== "number") return value;
+  return new Intl.NumberFormat("zh-CN", {
+    useGrouping: true, minimumFractionDigits: 0, maximumFractionDigits: 2,
+  }).format(value);
+}
+
+// Computed apply receipts precede their asynchronous backfill. A subsequent
+// drawer must describe after all fixture rows expose current materialized values.
+export function waitForApplyBackfillFreshness(page, waitForQueryPage, tableId, query, receipt) {
+  const field = receipt.definition.identity.physicalName;
+  return waitForQueryPage(page, { tableId, query }, payload =>
+    payload?.snapshot?.schemaRevision === receipt.schemaRevision
+      && payload.rows?.length === 3
+      && new Set(payload.rows.map(row => row.id)).size === 3
+      && payload.rows.every(row => typeof row[field] === "number" && Number.isFinite(row[field])));
+}
+
 // S38 / #396: UI qualification is deliberately separate from 10k/50k timing.
 // Fixture imports use the visible toolbar and native picker. Computed field
 // creation/editing, source edits, queries, provenance and exports are UI actions;
@@ -91,6 +116,9 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     if (applied.payload?.migrationJobId) {
       const migration = await waitForFieldMigration(page, applied.payload.migrationJobId);
       if (migration.payload?.phase !== "completed") throw new Error(JSON.stringify(migration));
+    }
+    if (["formula", "lookup"].includes(applied.payload?.definition?.logicalType)) {
+      await waitForApplyBackfillFreshness(page, waitForQueryPage, tableId, query, applied.payload);
     }
     await closeFieldSettingsDrawer(page);
     const described = await request("field.settings.describe", { tableId, fieldId: applied.payload.fieldId });
@@ -214,6 +242,10 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     await waitForQueryPage(page, { tableId: table.tableId, query }, payload =>
       payload?.rows?.length === 3 && values.every(expected => payload.rows.some(row =>
         row[table.field.physicalName] === expected[0] && fields.every((field, index) => row[field] === expected[index + 1]))));
+    // #445: DOM cells follow the default display spec while the raw query above
+    // keeps numeric authority. waitForFunction runs in the browser and cannot
+    // call Node helpers, so the expected display text is prepared here.
+    const displayValues = values.map(row => row.map(calculationChainDisplayText));
     await selectTable(page, name);
     await chooseToolbarMore(page, "refresh");
     await waitForVisibleRowCount(page, 3);
@@ -221,9 +253,9 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
       const rows = [...document.querySelectorAll(".grid-wrapper .tabulator-row")];
       return expected.every(values => rows.some(row => [marker, ...fields].every((field, index) => {
         const cell = row.querySelector(`.tabulator-cell[tabulator-field="${field}"]`);
-        return (cell?.querySelector(".vt-lookup-text") ?? cell)?.textContent?.trim() === String(values[index]);
+        return (cell?.querySelector(".vt-lookup-text") ?? cell)?.textContent?.trim() === values[index];
       })));
-    }, { marker: table.field.physicalName, fields, expected: values }, { timeout: 30_000 });
+    }, { marker: table.field.physicalName, fields, expected: displayValues }, { timeout: 30_000 });
     recorder.check(`${stage}: ${name} grid and fresh query match every independent oracle cell`, true);
   };
   const verifyChain = async stage => {
@@ -326,6 +358,9 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
   const verifyOrderedView = async stage => {
     await waitForStableGridState(page, { expectedRows: 2 });
     const expected = ordered.map(row => [row.contract, String(row.total), String(row.doubled), String(row.total)]);
+    // #445: same raw/DOM split — the grid shows grouped display text.
+    const displayExpected = ordered.map(row => [row.contract, calculationChainDisplayText(row.total),
+      calculationChainDisplayText(row.doubled), calculationChainDisplayText(row.total)]);
     const complete = await authority(main.tableId);
     recorder.check(`${stage}: unfiltered authority retains all three oracle results, including zero-match`,
       complete.rows.length === 3 && oracle().every(expectedRow => complete.rows.some(row =>
@@ -341,7 +376,7 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
       && isDeepStrictEqual(result.rows.map(row => [row[main.field.physicalName], String(row[total.identity.physicalName]),
         String(row[linkedLookup.identity.physicalName]), String(row[linkedTotal.identity.physicalName])]), expected)
       && isDeepStrictEqual(await gridRows(main.field.physicalName, [total.identity.physicalName,
-        linkedLookup.identity.physicalName, linkedTotal.identity.physicalName]), expected), { expected });
+        linkedLookup.identity.physicalName, linkedTotal.identity.physicalName]), displayExpected), { expected, displayExpected });
   };
   await verifyOrderedView("filtered view");
   await screenshot("filtered-sorted-grid");

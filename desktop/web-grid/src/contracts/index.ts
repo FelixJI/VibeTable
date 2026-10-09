@@ -102,6 +102,8 @@ export interface ColumnSchema {
   readonly attachmentPolicy?: AttachmentPolicy | null;
   /** Grid renderer type hint. */
   readonly dataType: ColumnDataType;
+  /** Authoritative Formula list element type; absent for scalars and legacy hosts. */
+  readonly resultElementType?: import("./generated/schemaV2").FormulaSpec["resultElementType"] | null;
   /** Whether the current product capability schema permits editing. */
   readonly editable: boolean;
   /** Whether the column may hold NULL. */
@@ -114,12 +116,21 @@ export interface ColumnSchema {
   readonly scale?: number | null;
   /** Numeric precision (total significant digits) from the product schema. */
   readonly precision?: number | null;
+  /**
+   * Authoritative read-only display spec (canonical Schema V2 DisplaySpec)
+   * projected verbatim by the schema-describe owner. Absent/null for system
+   * columns or legacy hosts. Pure presentation: editors, sorting, filtering
+   * and raw-value exports keep consuming the unformatted value.
+   */
+  readonly display?: import("./generated/schemaV2").DisplaySpec | null;
 	/** Sidecar-compatible operators exposed by the authoritative host schema. */
 	readonly filterOperators?: readonly FilterOperator[];
 	/** Authoritative editor kind for filter operands; never inferred from row values. */
 	readonly filterInput?: "text" | "number" | "boolean" | "date" | "dateTime" | "time" | "select" | "multiSelect" | "relation";
 	/** Closed enum options published by SchemaCore for select-like fields. */
 	readonly filterOptions?: readonly { readonly value: string; readonly label: string }[];
+  /** Canonical options, including retired identities, for display only. */
+  readonly enumOptions?: readonly import("./generated/schemaV2").SelectOption[];
 	/** Authoritative QueryPort grouping support; never inferred in a surface editor. */
 	readonly groupable?: boolean;
 	/** Authoritative aggregate operations accepted for this field. */
@@ -289,6 +300,7 @@ export interface ColumnEditSchema {
   readonly name: string;
   readonly storageName: string;
   readonly dataType:
+    | "autoNumber"
     | "text"
     | "integer"
     | "decimal"
@@ -654,6 +666,7 @@ export const TABLE_FIELD_TYPES = [
   "date",
   "dateTime",
   "autoDate",
+  "autoNumber",
   "time",
   "email",
   "url",
@@ -687,7 +700,7 @@ export interface ProductErrorPayload {
 export interface FormulaDefinition {
   readonly language: "cel-v1" | "cel-v2";
   readonly source: string;
-  readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate">;
+  readonly resultType: Exclude<TableFieldType, "formula" | "relation" | "lookup" | "file" | "autoDate" | "autoNumber">;
   readonly version: number;
   readonly status: "draft" | "ready" | "backfilling" | "failed" | "cancelled";
 }

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
@@ -251,6 +252,149 @@ public sealed class ProductDataSidecarRoutingTests
             @"""code"":""BACKEND_UNAVAILABLE""");
         Assert.AreEqual(1, sidecar.CallCount);
         Assert.AreEqual(0, pythonTransport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task FailedRpcPersistsNoRequestIdAndKeepsRendererCorrelation()
+    {
+        foreach (string requestId in new[]
+        {
+            "rlzhp8xk-1-password",
+            $"rlzhp8xk-7-{Guid.NewGuid():D}",
+            $"e2e-{Guid.NewGuid():D}",
+            "customer-salary-9000",
+            @"C:\Users\customer\机密-report.docx",
+        })
+        {
+            var sink = new FakeWebReplySink();
+            var traces = new List<string>();
+            var sidecar = new ControlledProductSidecarForwarder((_, _) =>
+                throw new InvalidOperationException("sensitive failure detail"));
+            var controller = new ProductDataRequestController(
+                sink,
+                SelectorFor("query.page", "goSidecar"),
+                traceError: traces.Add);
+            controller.SetProductSidecarForwarder(sidecar);
+
+            await controller.DispatchAsync(QueryRequest(requestId));
+
+            FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
+            Assert.IsNotNull(reply, requestId);
+            Assert.AreEqual(
+                requestId,
+                reply.RequestId,
+                "Renderer correlation must stay untouched on the reply path.");
+            StringAssert.Contains(
+                JsonSerializer.Serialize(reply.Payload),
+                @"""code"":""PRODUCT_DATA_FAILED""");
+            Assert.HasCount(1, traces, requestId);
+            Assert.IsTrue(DiagnosticLogLine.IsSafe(traces[0]), traces[0]);
+            using JsonDocument document = JsonDocument.Parse(traces[0]);
+            Assert.AreEqual(
+                JsonValueKind.Null,
+                document.RootElement.GetProperty("requestId").ValueKind,
+                traces[0]);
+            Assert.IsFalse(
+                traces[0].Contains(requestId, StringComparison.Ordinal),
+                traces[0]);
+        }
+    }
+
+    [TestMethod]
+    public async Task ThrowingTraceCallbackKeepsTheProductReply()
+    {
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(
+            sink,
+            SelectorFor("query.page", "goSidecar"),
+            traceError: _ => throw new IOException("diagnostic sink failure"));
+        controller.SetProductSidecarForwarder(FailureForwarder(new ProductSidecarRpcError(
+            -32000,
+            "sensitive sidecar failure",
+            null)));
+
+        await controller.DispatchAsync(QueryRequest("rlzhp8xk-1-password"));
+
+        FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(reply);
+        Assert.AreEqual("rlzhp8xk-1-password", reply.RequestId);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(reply.Payload),
+            @"""code"":""PRODUCT_DATA_FAILED""");
+
+        var secondSink = new FakeWebReplySink();
+        var secondController = new ProductDataRequestController(
+            secondSink,
+            SelectorFor("query.page", "goSidecar"),
+            traceError: _ => throw new IOException("diagnostic sink failure"));
+        secondController.SetProductSidecarForwarder(new ControlledProductSidecarForwarder((_, _) =>
+            throw new InvalidOperationException("sensitive failure detail")));
+
+        await secondController.DispatchAsync(QueryRequest("rlzhp8xk-1-password"));
+
+        FakeWebReplySink.Reply? secondReply = await secondSink.WaitForFailedAsync();
+        Assert.IsNotNull(secondReply);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(secondReply.Payload),
+            @"""code"":""PRODUCT_DATA_FAILED""");
+    }
+
+    [TestMethod]
+    public async Task UnmappedSidecarFailureTracesDispatchStageWithNumericCodeOnly()
+    {
+        string requestId = $"rlzhp8xk-9-{Guid.NewGuid():D}";
+        JsonElement sensitiveData = JsonSerializer.SerializeToElement(new
+        {
+            secret = @"C:\Users\customer\机密-report.docx",
+        });
+        var sink = new FakeWebReplySink();
+        var traces = new List<string>();
+        var controller = new ProductDataRequestController(
+            sink,
+            SelectorFor("query.page", "goSidecar"),
+            traceError: traces.Add);
+        controller.SetProductSidecarForwarder(FailureForwarder(new ProductSidecarRpcError(
+            -32000,
+            @"sensitive sidecar failure C:\Users\customer\机密-report.docx",
+            sensitiveData)));
+
+        await controller.DispatchAsync(QueryRequest(requestId));
+
+        FakeWebReplySink.Reply? reply = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(reply);
+        Assert.AreEqual(requestId, reply.RequestId);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(reply.Payload),
+            @"""code"":""PRODUCT_DATA_FAILED""");
+        Assert.HasCount(1, traces);
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(traces[0]), traces[0]);
+        using JsonDocument document = JsonDocument.Parse(traces[0]);
+        JsonElement root = document.RootElement;
+        Assert.AreEqual(
+            "query.page.dispatch",
+            root.GetProperty("event").GetString(),
+            traces[0]);
+        Assert.AreEqual(
+            "PRODUCT_RPC_FAILED:-32000",
+            root.GetProperty("errorCode").GetString(),
+            traces[0]);
+        Assert.AreEqual(
+            JsonValueKind.Null,
+            root.GetProperty("requestId").ValueKind,
+            traces[0]);
+        Assert.AreEqual(
+            JsonValueKind.Number,
+            root.GetProperty("durationMs").ValueKind,
+            traces[0]);
+        Assert.IsTrue(
+            root.GetProperty("durationMs").GetDouble() >= 0,
+            traces[0]);
+        Assert.IsFalse(
+            traces[0].Contains("sensitive sidecar failure", StringComparison.Ordinal),
+            traces[0]);
+        Assert.IsFalse(
+            traces[0].Contains("机密-report", StringComparison.Ordinal),
+            traces[0]);
     }
 
     [TestMethod]

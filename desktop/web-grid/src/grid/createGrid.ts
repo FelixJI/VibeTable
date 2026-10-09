@@ -36,6 +36,8 @@ import type {
 import { tabulatorEditor, validateLocally } from "./editorFactory";
 import type { CalendarDateEditor } from "./calendarDateEditor";
 import { lookupFormatter, relationFormatter } from "./relationLookupRenderer";
+import { formatFormulaDisplayValue, formulaStateLabel } from "./computedValueDisplay";
+import { formatFieldDisplay, enumDisplayParts, progressDisplay } from "./commonFieldDisplay";
 import { getLocale, t } from "@/i18n";
 
 /**
@@ -405,6 +407,7 @@ function toColumnDef(
         relationLookup?.lookupUnavailableReason,
         relationLookup?.onLookupSourceRequested,
 		relationLookup?.onLookupSourcePageRequested,
+        col.display,
       ),
       cssClass: "vt-lookup-cell",
     };
@@ -413,7 +416,9 @@ function toColumnDef(
     return {
       ...def,
       editable: false,
-      formatter: formulaValueFormatter,
+      // Formula result and element types come from the compiler projection;
+      // row values never decide whether a result receives numeric formatting.
+      formatter: (cell: { getValue(): unknown }) => formulaValueFormatter(cell, col),
       cssClass: "vt-formula-cell",
     };
   }
@@ -422,6 +427,19 @@ function toColumnDef(
   // NOT mutate the underlying cell value (decimals preserved exactly).
   switch (col.dataType) {
     case "decimal":
+    case "integer":
+      // With the authoritative DisplaySpec the shared numeric formatter owns
+      // scale/grouping/currency/percent/unit; non-number values fall back to
+      // the raw rendering and are never coerced.
+      if (col.display) {
+        return {
+          ...def,
+          formatter: commonFieldFormatter(col),
+        };
+      }
+      if (col.dataType === "integer") {
+        return { ...def, formatter: "plaintext" };
+      }
       // Show numeric value with a thousands separator but DO NOT round or
       // re-store. Tabulator's "money" formatter reads-only. Precision follows
       // the column's declared scale when the product schema reports one (e.g. 2 for a
@@ -437,12 +455,12 @@ function toColumnDef(
         },
       };
     case "boolean":
-      return { ...def, formatter: "tickCross" };
+      return { ...def, formatter: commonFieldFormatter(col) };
     case "date":
     case "datetime":
-      return { ...def, formatter: temporalValueFormatter };
+      return { ...def, formatter: col.display ? commonFieldFormatter(col) : temporalValueFormatter };
     case "time":
-      return { ...def, formatter: "plaintext" };
+      return { ...def, formatter: col.display ? commonFieldFormatter(col) : "plaintext" };
     case "json":
       return {
         ...def,
@@ -450,22 +468,66 @@ function toColumnDef(
         headerFilterFunc: jsonHeaderFilter,
         cssClass: "vt-json-cell",
       };
-    case "integer":
     case "text":
     default:
-      return { ...def, formatter: "plaintext" };
+      return { ...def, formatter: commonFieldFormatter(col) };
   }
 }
 
-function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
+/** Render the shared display text and safe enum/progress decorations without writing values. */
+function commonFieldFormatter(column: ColumnSchema): GridCellFormatter {
+  return (cell) => {
+    const raw = cell.getValue();
+    const element = document.createElement("span");
+    element.textContent = formatFieldDisplay(raw, column, getLocale());
+    if (raw === null || raw === undefined || raw === "" || (column.display?.kind === "select" && Array.isArray(raw) && raw.length === 0)) { element.className = "vt-cell-empty"; return element; }
+    if (column.display?.kind === "select") {
+      element.textContent = "";
+      for (const [index, part] of enumDisplayParts(raw, column.enumOptions).entries()) {
+        if (index > 0) element.append(document.createTextNode("、"));
+        const tag = document.createElement("span");
+        tag.textContent = part.text;
+        if (part.color) { tag.style.borderBottom = `3px solid ${part.color}`; }
+        tag.style.marginRight = "6px";
+        element.append(tag);
+      }
+    }
+    const progress = column.display ? progressDisplay(raw, column.display) : null;
+    if (progress) {
+      element.title = progress.outside ? `超出显示范围 · 原值 ${String(raw)}` : String(raw);
+      element.style.background = `linear-gradient(to right, var(--vt-color-primary-100) ${progress.width}%, transparent ${progress.width}%)`;
+      element.style.display = "block";
+      element.dataset.progressOutside = String(progress.outside);
+      if (progress.outside) element.setAttribute("aria-label", `${element.textContent}，超出显示范围`);
+    }
+    if (column.display?.kind === "url" && typeof raw === "string") {
+      try {
+        const url = new URL(raw);
+        if (url.protocol === "http:" || url.protocol === "https:") {
+          const link = document.createElement("a"); link.href = url.href;
+          link.target = "_blank"; link.rel = "noreferrer";
+          link.textContent = element.textContent; link.title = raw;
+          link.addEventListener("click", (event) => event.stopPropagation());
+          element.replaceChildren(link);
+        }
+      } catch { /* malformed values remain safe text */ }
+    }
+    return element;
+  };
+}
+
+function formulaValueFormatter(
+  cell: { getValue(): unknown },
+  column: ColumnSchema,
+): HTMLElement {
   const raw = cell.getValue();
   const root = document.createElement("span");
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const envelope = raw as Record<string, unknown>;
-    if (envelope.state === "ready") {
-      root.textContent = envelope.value == null ? "—" : String(envelope.value);
-      return root;
-    }
+  const envelope = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : null;
+  // Non-ready computed states render their real state first; a stale value
+  // never leaks as a new result.
+  if (envelope && envelope.state !== "ready") {
     const label = formulaStateLabel(envelope.state);
     if (label) {
       root.className = `vt-lookup-state vt-lookup-state--${envelope.state}`;
@@ -478,19 +540,11 @@ function formulaValueFormatter(cell: { getValue(): unknown }): HTMLElement {
       return root;
     }
   }
-  root.textContent = raw == null ? "—" : String(raw);
+  // The Go query port delivers ready formula results as bare values; legacy
+  // envelopes carrying state=ready unwrap to the same unified value branch.
+  const value = envelope && envelope.state === "ready" ? envelope.value : raw;
+  root.textContent = formatFormulaDisplayValue(value, column);
   return root;
-}
-
-function formulaStateLabel(state: unknown): string | null {
-  switch (state) {
-    case "updating": return "grid.formula.updating";
-    case "failed": return "grid.formula.failed";
-    case "cancelled": return "grid.formula.cancelled";
-    case "invalid": return "grid.formula.invalid";
-    case "too_expensive": return "grid.formula.too_expensive";
-    default: return null;
-  }
 }
 
 /**

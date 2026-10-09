@@ -197,7 +197,8 @@ def test_version_update_derives_workspace_policy_without_claiming_n_minus_one(
         REPO_ROOT / "contracts/v2/fixtures",
         tmp_path / "contracts/v2/fixtures",
     )
-    changed = update_versions(tmp_path, "0.5.2")
+    next_version = bump_version(read_project_version(tmp_path), "patch")
+    changed = update_versions(tmp_path, next_version)
     policy = json.loads(
         (tmp_path / "contracts/v2/workspace-version-policy.json").read_text(encoding="utf-8")
     )
@@ -207,12 +208,12 @@ def test_version_update_derives_workspace_policy_without_claiming_n_minus_one(
         "contracts/v2/workspace-version-policy.json",
         "desktop/publish-layout.json",
     }
-    assert policy["currentWriter"]["appVersion"] == "0.5.2"
+    assert policy["currentWriter"]["appVersion"] == next_version
     assert policy["writerCompatibility"] == {
         "window": "current-and-one-previous-formal-release",
         "verificationGate": "disabled-until-packaged-runtime-evidence",
         "nMinusOneTarget": "0.5.0",
-        "accepted": [{"appVersion": "0.5.2", "status": "current"}],
+        "accepted": [{"appVersion": next_version, "status": "current"}],
         "pending": [
             {
                 "appVersion": "0.5.0",
@@ -236,10 +237,11 @@ def test_version_update_rejects_verified_state_while_runtime_evidence_gate_is_di
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / relative, target)
+    current_version = read_project_version(tmp_path)
     policy_path = tmp_path / "contracts/v2/workspace-version-policy.json"
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
     policy["writerCompatibility"]["accepted"] = [
-        {"appVersion": "0.5.1", "status": "current"},
+        {"appVersion": current_version, "status": "current"},
         {"appVersion": "0.5.0", "status": "verified"},
     ]
     policy["writerCompatibility"]["pending"] = []
@@ -286,9 +288,9 @@ def test_version_update_rejects_verified_state_while_runtime_evidence_gate_is_di
     corpus_path.write_text(json.dumps(corpus), encoding="utf-8")
 
     with pytest.raises(VersionError, match="promotion is disabled"):
-        update_versions(tmp_path, "0.5.2")
+        update_versions(tmp_path, bump_version(current_version, "patch"))
 
-    assert read_project_version(tmp_path) == "0.5.1"
+    assert read_project_version(tmp_path) == current_version
     assert (
         json.loads(policy_path.read_text(encoding="utf-8"))["writerCompatibility"][
             "verificationGate"

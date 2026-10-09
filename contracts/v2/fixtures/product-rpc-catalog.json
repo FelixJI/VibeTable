@@ -1772,6 +1772,32 @@
             ],
             "type": "object"
           },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
+            ],
+            "type": "object"
+          },
           "ConstraintSpec": {
             "additionalProperties": false,
             "properties": {
@@ -1934,6 +1960,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -2059,6 +2120,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -2307,6 +2379,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -3043,13 +3116,17 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -3253,6 +3330,32 @@
             },
             "required": [
               "role"
+            ],
+            "type": "object"
+          },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
             ],
             "type": "object"
           },
@@ -3467,6 +3570,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -3711,6 +3849,17 @@
                 ],
                 "default": null
               },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "formula": {
                 "anyOf": [
                   {
@@ -3821,6 +3970,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -4124,6 +4284,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -5138,13 +5299,17 @@
                 "mode": "sample-value",
                 "indent": null,
                 "trueLabel": "sample-value",
-                "falseLabel": "sample-value"
+                "falseLabel": "sample-value",
+                "progressStart": null,
+                "progressTarget": null,
+                "ratingMax": null
               },
               "select": null,
               "relation": null,
               "file": null,
               "json": null,
               "autoDate": null,
+              "autoNumber": null,
               "formula": null,
               "lookup": null
             },
@@ -5240,13 +5405,17 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -5332,13 +5501,17 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -5576,6 +5749,32 @@
             ],
             "type": "object"
           },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
+            ],
+            "type": "object"
+          },
           "ConstraintSpec": {
             "additionalProperties": false,
             "properties": {
@@ -5738,6 +5937,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -5863,6 +6097,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -6111,6 +6356,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -6746,13 +6992,17 @@
                 "mode": "sample-value",
                 "indent": null,
                 "trueLabel": "sample-value",
-                "falseLabel": "sample-value"
+                "falseLabel": "sample-value",
+                "progressStart": null,
+                "progressTarget": null,
+                "ratingMax": null
               },
               "select": null,
               "relation": null,
               "file": null,
               "json": null,
               "autoDate": null,
+              "autoNumber": null,
               "formula": null,
               "lookup": null
             }
@@ -6792,6 +7042,32 @@
             },
             "required": [
               "role"
+            ],
+            "type": "object"
+          },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
             ],
             "type": "object"
           },
@@ -7104,6 +7380,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -7229,6 +7540,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -7477,6 +7799,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -8201,13 +8524,17 @@
               "mode": "sample-value",
               "indent": null,
               "trueLabel": "sample-value",
-              "falseLabel": "sample-value"
+              "falseLabel": "sample-value",
+              "progressStart": null,
+              "progressTarget": null,
+              "ratingMax": null
             },
             "select": null,
             "relation": null,
             "file": null,
             "json": null,
             "autoDate": null,
+            "autoNumber": null,
             "formula": null,
             "lookup": null
           },
@@ -8293,7 +8620,10 @@
                   "mode": "sample-value",
                   "indent": null,
                   "trueLabel": "sample-value",
-                  "falseLabel": "sample-value"
+                  "falseLabel": "sample-value",
+                  "progressStart": null,
+                  "progressTarget": null,
+                  "ratingMax": null
                 },
                 "file": null,
                 "json": null
@@ -13725,6 +14055,14 @@
                 ],
                 "default": null
               },
+              "resultCardinality": {
+                "default": "one",
+                "enum": [
+                  "one",
+                  "many"
+                ],
+                "type": "string"
+              },
               "revision": {
                 "default": 1,
                 "minimum": 1,
@@ -15933,7 +16271,7 @@
             "theme": "light",
             "density": "comfortable",
             "user": {},
-            "hostVersion": "1.0.0"
+            "hostVersion": "0.5.1"
           }
         }
       },
@@ -17978,7 +18316,7 @@
             "theme": "light",
             "density": "comfortable",
             "user": {},
-            "hostVersion": "1.0.0"
+            "hostVersion": "0.5.1"
           },
           "input": {},
           "taskId": "00000000-0000-4000-8000-000000000001",
@@ -20075,6 +20413,36 @@
             "title": "AutoDateSpec",
             "type": "object"
           },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "title": "Prefix",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "title": "Start",
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "title": "Width",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
+            ],
+            "title": "AutoNumberSpec",
+            "type": "object"
+          },
           "Capability": {
             "additionalProperties": false,
             "properties": {
@@ -20425,6 +20793,44 @@
               "falseLabel": {
                 "title": "Falselabel",
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Progressstart"
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Progresstarget"
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Ratingmax"
               }
             },
             "required": [
@@ -20557,6 +20963,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -20830,6 +21247,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -21768,13 +22186,17 @@
                   "mode": "sample-value",
                   "indent": null,
                   "trueLabel": "sample-value",
-                  "falseLabel": "sample-value"
+                  "falseLabel": "sample-value",
+                  "progressStart": null,
+                  "progressTarget": null,
+                  "ratingMax": null
                 },
                 "select": null,
                 "relation": null,
                 "file": null,
                 "json": null,
                 "autoDate": null,
+                "autoNumber": null,
                 "formula": null,
                 "lookup": null
               }
@@ -21861,7 +22283,10 @@
                     "mode": "sample-value",
                     "indent": null,
                     "trueLabel": "sample-value",
-                    "falseLabel": "sample-value"
+                    "falseLabel": "sample-value",
+                    "progressStart": null,
+                    "progressTarget": null,
+                    "ratingMax": null
                   },
                   "file": null,
                   "json": null
@@ -22740,6 +23165,46 @@
                   }
                 ],
                 "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -22803,7 +23268,9 @@
               "collection": "orders",
               "itemId": "00000000-0000-4000-8000-000000000001",
               "label": "sample-value",
-              "secondaryLabel": null
+              "secondaryLabel": null,
+              "displayValue": null,
+              "secondaryValue": null
             }
           ],
           "schemaRevision": "schema_0001",
@@ -22846,6 +23313,46 @@
                 "anyOf": [
                   {
                     "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
                   },
                   {
                     "type": "null"
@@ -22900,7 +23407,9 @@
             "collection": "orders",
             "itemId": "00000000-0000-4000-8000-000000000001",
             "label": "sample-value",
-            "secondaryLabel": null
+            "secondaryLabel": null,
+            "displayValue": null,
+            "secondaryValue": null
           },
           "requestId": "00000000-0000-4000-8000-000000000001"
         }
@@ -23339,6 +23848,46 @@
                   }
                 ],
                 "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -23482,6 +24031,46 @@
                   }
                 ],
                 "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -23528,7 +24117,9 @@
               "collection": "orders",
               "itemId": "00000000-0000-4000-8000-000000000001",
               "label": "sample-value",
-              "secondaryLabel": null
+              "secondaryLabel": null,
+              "displayValue": null,
+              "secondaryValue": null
             }
           ],
           "total": 1
@@ -23570,6 +24161,46 @@
                 "anyOf": [
                   {
                     "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "displayValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "secondaryValue": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
                   },
                   {
                     "type": "null"
@@ -23780,6 +24411,23 @@
                 ],
                 "type": "string"
               },
+              "resultElementType": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "number",
+                      "bool",
+                      "text",
+                      "dateTime"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "editable": {
                 "default": false,
                 "type": "boolean"
@@ -23803,6 +24451,31 @@
                 "anyOf": [
                   {
                     "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "display": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DisplaySpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "enumOptions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/SelectOption"
+                    },
+                    "type": "array"
                   },
                   {
                     "type": "null"
@@ -23836,6 +24509,162 @@
               "name",
               "title",
               "dataType"
+            ],
+            "type": "object"
+          },
+          "DisplaySpec": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "text",
+                  "editor",
+                  "number",
+                  "bool",
+                  "date",
+                  "dateTime",
+                  "time",
+                  "email",
+                  "url",
+                  "select",
+                  "relation",
+                  "file",
+                  "geoPoint",
+                  "json",
+                  "readonly"
+                ],
+                "type": "string"
+              },
+              "preset": {
+                "type": "string"
+              },
+              "displayScale": {
+                "maximum": 15,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "scaleMode": {
+                "enum": [
+                  "max",
+                  "fixed"
+                ],
+                "type": "string"
+              },
+              "trimTrailingZeros": {
+                "type": "boolean"
+              },
+              "useGrouping": {
+                "type": "boolean"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "percentStorage": {
+                "enum": [
+                  "ratio",
+                  "percent"
+                ],
+                "type": "string"
+              },
+              "unit": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "precision": {
+                "enum": [
+                  "exact",
+                  "day",
+                  "minute",
+                  "second",
+                  "millisecond"
+                ],
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "indent": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      0,
+                      2,
+                      4
+                    ],
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "trueLabel": {
+                "type": "string"
+              },
+              "falseLabel": {
+                "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "kind",
+              "preset",
+              "displayScale",
+              "scaleMode",
+              "trimTrailingZeros",
+              "useGrouping",
+              "currency",
+              "percentStorage",
+              "unit",
+              "precision",
+              "timezone",
+              "mode",
+              "trueLabel",
+              "falseLabel"
             ],
             "type": "object"
           },
@@ -23980,6 +24809,39 @@
                   "$ref": "#/$defs/RelationDiagnostic"
                 },
                 "type": "array"
+              },
+              "displayFieldId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "displayFieldInfo": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RelationDisplayFieldInfo"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "fallbackDisplayFieldInfo": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RelationDisplayFieldInfo"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -24015,6 +24877,59 @@
             "required": [
               "code",
               "message"
+            ],
+            "type": "object"
+          },
+          "RelationDisplayFieldInfo": {
+            "additionalProperties": false,
+            "properties": {
+              "fieldId": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "dataType": {
+                "enum": [
+                  "text",
+                  "integer",
+                  "decimal",
+                  "boolean",
+                  "date",
+                  "datetime",
+                  "time",
+                  "json"
+                ],
+                "type": "string"
+              },
+              "display": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DisplaySpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "enumOptions": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "$ref": "#/$defs/SelectOption"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "fieldId",
+              "dataType"
             ],
             "type": "object"
           },
@@ -24115,6 +25030,40 @@
               "lookupRevision"
             ],
             "type": "object"
+          },
+          "SelectOption": {
+            "additionalProperties": false,
+            "properties": {
+              "optionId": {
+                "pattern": "^opt_[A-Za-z0-9_-]{8,}$",
+                "type": "string"
+              },
+              "label": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "color": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "active",
+                  "retired"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "optionId",
+              "label",
+              "color",
+              "order",
+              "state"
+            ],
+            "type": "object"
           }
         },
         "additionalProperties": false,
@@ -24175,10 +25124,13 @@
                 "relationId": null,
                 "lookupId": null,
                 "dataType": "text",
+                "resultElementType": null,
                 "editable": false,
                 "nullable": true,
                 "scale": null,
                 "precision": null,
+                "display": null,
+                "enumOptions": null,
                 "filterOperators": []
               }
             ],
@@ -24264,6 +25216,32 @@
             },
             "required": [
               "role"
+            ],
+            "type": "object"
+          },
+          "AutoNumberSpec": {
+            "additionalProperties": false,
+            "properties": {
+              "prefix": {
+                "maxLength": 64,
+                "pattern": "^[^\u0000\r\n]*$",
+                "type": "string"
+              },
+              "start": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 16,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prefix",
+              "start",
+              "width"
             ],
             "type": "object"
           },
@@ -24576,6 +25554,41 @@
               },
               "falseLabel": {
                 "type": "string"
+              },
+              "progressStart": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "progressTarget": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ratingMax": {
+                "anyOf": [
+                  {
+                    "maximum": 10,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -24701,6 +25714,17 @@
                 "anyOf": [
                   {
                     "$ref": "#/$defs/AutoDateSpec"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "autoNumber": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AutoNumberSpec"
                   },
                   {
                     "type": "null"
@@ -24949,6 +25973,7 @@
               "dateTime",
               "time",
               "autoDate",
+              "autoNumber",
               "email",
               "url",
               "select",
@@ -25684,13 +26709,17 @@
                 "mode": "sample-value",
                 "indent": null,
                 "trueLabel": "sample-value",
-                "falseLabel": "sample-value"
+                "falseLabel": "sample-value",
+                "progressStart": null,
+                "progressTarget": null,
+                "ratingMax": null
               },
               "select": null,
               "relation": null,
               "file": null,
               "json": null,
               "autoDate": null,
+              "autoNumber": null,
               "formula": null,
               "lookup": null
             }
@@ -25777,7 +26806,10 @@
                   "mode": "sample-value",
                   "indent": null,
                   "trueLabel": "sample-value",
-                  "falseLabel": "sample-value"
+                  "falseLabel": "sample-value",
+                  "progressStart": null,
+                  "progressTarget": null,
+                  "ratingMax": null
                 },
                 "file": null,
                 "json": null

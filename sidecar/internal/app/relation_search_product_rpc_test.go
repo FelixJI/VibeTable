@@ -37,10 +37,10 @@ func TestRelationSearchProductDefaultsAndProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if probe.request != (relation.SearchRequest{RelationID: "rel", Query: "", Offset: 0, Limit: 50}) {
+	if !reflect.DeepEqual(probe.request, relation.SearchRequest{RelationID: "rel", Query: "", Offset: 0, Limit: 50}) {
 		t.Fatal(probe.request)
 	}
-	if !reflect.DeepEqual(result, map[string]any{"items": []map[string]any{{"collection": "t", "itemId": "r", "label": "中文 Cafe\u0301"}}, "total": int64(-1)}) {
+	if !reflect.DeepEqual(result, map[string]any{"items": []map[string]any{{"collection": "t", "itemId": "r", "label": "中文 Cafe\u0301", "secondaryLabel": "hidden"}}, "total": int64(-1)}) {
 		t.Fatal(result)
 	}
 	for _, text := range []string{`{"relationId":" ","query":" \t ","offset":-1,"limit":101}`, `{"relationId":"rel","limit":0}`} {
@@ -140,5 +140,27 @@ func TestRelationSearchProductCancellationAndLegacyErrors(t *testing.T) {
 	probe.err = context.DeadlineExceeded
 	if _, err := relationSearchTargetsRegistration(probe).Handler(context.Background(), raw); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
+	}
+}
+
+func TestRelationSearchTargetItemIdsValidation(t *testing.T) {
+	registration := relationSearchTargetsRegistration(nil)
+	for _, raw := range []string{
+		`{"relationId":"rel","targetItemIds":[]}`,
+		`{"relationId":"rel","targetItemIds":["a",null]}`,
+		`{"relationId":"rel","targetItemIds":"a"}`,
+		`{"relationId":"rel","targetItemIds":[1]}`,
+		`{"relationId":"rel","targetItemIds":[` + strings.Repeat(`"x",`, 100) + `"x"]}`,
+	} {
+		if registration.ValidateParams(json.RawMessage(raw)) == nil {
+			t.Errorf("accepted %s", raw)
+		}
+	}
+	probe := &relationSearchProbe{result: relation.SearchResult{Items: []relation.TargetRef{{TableID: "t", RecordID: "r", Label: "L"}}, Total: 1}}
+	if _, err := relationSearchTargetsRegistration(probe).Handler(context.Background(), json.RawMessage(`{"relationId":"rel","targetItemIds":["r"],"limit":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(probe.request.TargetItemIDs, []string{"r"}) {
+		t.Fatalf("target ids = %#v", probe.request.TargetItemIDs)
 	}
 }

@@ -3,9 +3,11 @@ package v2_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/jsonschemavalidation"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 )
 
@@ -57,7 +59,7 @@ func TestValidateRejectsEnabledDefaultOutsideFieldSemantics(t *testing.T) {
 
 func TestCapabilityMatrixCoversEveryLogicalTypeWithExplicitDefaults(t *testing.T) {
 	t.Parallel()
-	if len(v2.LogicalTypes) != 18 {
+	if len(v2.LogicalTypes) != 19 {
 		t.Fatalf("logical type matrix drifted: %d", len(v2.LogicalTypes))
 	}
 	for _, logicalType := range v2.LogicalTypes {
@@ -232,7 +234,8 @@ func TestValidateRejectsUnsupportedUniqueAndUnstableSelectOptions(t *testing.T) 
 	selectField := validNumberDefinition()
 	selectField.LogicalType = v2.LogicalSelect
 	selectField.Storage.Kind = v2.StorageSelect
-	selectField.Display.Kind = v2.DisplaySelect
+	recommended, _ := v2.RecommendedDefaults(v2.LogicalSelect)
+	selectField.Display = recommended.Display
 	one := 1
 	selectField.Constraints.Selection.Max = &one
 	selectField.Select = &v2.SelectSpec{Options: []v2.SelectOption{{
@@ -318,4 +321,120 @@ func v2JSONEqual(left, right any) bool {
 	leftRaw, leftErr := json.Marshal(left)
 	rightRaw, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
+}
+
+func TestValidateCurrencyDisplayCode(t *testing.T) {
+	raw, err := os.ReadFile("../../../../contracts/schema-v2/schema.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	displaySchema := map[string]any{"$defs": schema["$defs"], "$ref": "#/$defs/DisplaySpec"}
+	validateWire := func(display v2.DisplaySpec) error {
+		t.Helper()
+		raw, err := json.Marshal(display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			t.Fatal(err)
+		}
+		return jsonschemavalidation.ValidateValue(displaySchema, value)
+	}
+	for _, code := range []string{"CNY", "usd", "cHf", "ZZZ"} {
+		definition := validNumberDefinition()
+		definition.Display.Preset = "currency"
+		definition.Display.Currency = code
+		if err := v2.Validate(definition); err != nil {
+			t.Errorf("compatible code %q rejected: %v", code, err)
+		}
+		if err := validateWire(definition.Display); err != nil {
+			t.Errorf("canonical schema rejected compatible code %q: %v", code, err)
+		}
+	}
+	for _, code := range []string{"人民币", "BADCODE", "", "US", "US1", " CNY", "ＣＮＹ", "USD\n"} {
+		definition := validNumberDefinition()
+		definition.Display.Preset = "currency"
+		definition.Display.Currency = code
+		var productErr *v2.ProductError
+		if err := v2.Validate(definition); !errors.As(err, &productErr) ||
+			productErr.Code != "field.contract.invalid" || productErr.Path != "display.currency" {
+			t.Errorf("invalid code %q error = %#v", code, err)
+		}
+		if err := validateWire(definition.Display); err == nil {
+			t.Errorf("canonical schema accepted invalid code %q", code)
+		}
+	}
+	definition := validNumberDefinition()
+	definition.Display.Currency = ""
+	if err := v2.Validate(definition); err != nil {
+		t.Errorf("unused legacy currency rejected: %v", err)
+	}
+	if err := validateWire(definition.Display); err != nil {
+		t.Errorf("canonical schema rejected unused legacy currency: %v", err)
+	}
+}
+
+func TestBusinessDisplayPresetsValidateCanonicalParameters(t *testing.T) {
+	progress := validNumberDefinition()
+	progress.Display.Preset = "progress"
+	if err := v2.Validate(progress); err != nil {
+		t.Fatal(err)
+	}
+	if progress.Constraints.Range.Min != nil || progress.Constraints.Range.Max != nil {
+		t.Fatal("progress introduced a value range")
+	}
+	start, target := 1.0, 2.0
+	progress.Display.ProgressStart, progress.Display.ProgressTarget = &start, &target
+	if err := v2.Validate(progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]float64{{1, 1}, {2, 1}, {-1e308, 1e308}, {math.NaN(), 1}, {0, math.Inf(1)}} {
+		progress.Display.ProgressStart, progress.Display.ProgressTarget = &pair[0], &pair[1]
+		var productErr *v2.ProductError
+		if err := v2.Validate(progress); !errors.As(err, &productErr) || productErr.Path != "display.progressTarget" {
+			t.Fatalf("invalid progress accepted: %v", err)
+		}
+	}
+	rating := validNumberDefinition()
+	rating.Display.Preset = "rating"
+	if err := v2.Validate(rating); err == nil {
+		t.Fatal("rating without explicit constraints accepted")
+	}
+	rating.Storage.Options.OnlyInt = true
+	rating.Constraints.Range.Min, rating.Constraints.Range.Max = 0, 5
+	if err := v2.Validate(rating); err != nil {
+		t.Fatal(err)
+	}
+	badMaximum := 11
+	rating.Display.RatingMax = &badMaximum
+	if err := v2.Validate(rating); err == nil {
+		t.Fatal("invalid rating maximum accepted")
+	}
+	unknown := validNumberDefinition()
+	unknown.Display.Preset = "future"
+	if err := v2.Validate(unknown); err == nil {
+		t.Fatal("unknown preset accepted")
+	}
+	for _, preset := range []string{"", "plain", "number", "integer", "currency", "percent", "unit"} {
+		legacy := validNumberDefinition()
+		legacy.Display.Preset = preset
+		if err := v2.Validate(legacy); err != nil {
+			t.Fatalf("legacy preset %s rejected: %v", preset, err)
+		}
+	}
+	for _, timezone := range []string{"system", "UTC", "America/New_York", "Asia/Shanghai", "Not/AZone", ""} {
+		date := validNumberDefinition()
+		recommended, _ := v2.RecommendedDefaults(v2.LogicalDateTime)
+		date.LogicalType, date.Storage, date.Display = v2.LogicalDateTime, recommended.Storage, recommended.Display
+		date.Display.Timezone = timezone
+		err := v2.Validate(date)
+		if (timezone == "Not/AZone" || timezone == "") != (err != nil) {
+			t.Fatalf("timezone %q = %v", timezone, err)
+		}
+	}
 }

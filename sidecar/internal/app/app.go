@@ -449,6 +449,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				return fmt.Errorf("import legacy plugin state: %w", importErr)
 			}
 			registerPluginStoreRoutes(event.Router, plugins, businessGate)
+			registerPluginDataRoutes(event.Router, pb, querySource, capabilities.WorkspaceID, capabilities.SessionEpoch)
 			schemaCatalog := schemaapi.New(pb)
 			dashboardService := metadata.NewDashboard(pb, queryPort)
 			contentMetadata := metadata.NewContentService(pb, querySource)

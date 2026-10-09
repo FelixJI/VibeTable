@@ -78,6 +78,9 @@ func (service *Service) Describe(
 			}
 			descriptor.QuickCreateEligible, descriptor.QuickCreateReason =
 				quickCreateEligibility(target)
+			descriptor.DisplayFieldID = field.Relation.DisplayField
+			descriptor.DisplayFieldInfo = service.displayFieldInfoByID(ctx, target, field.Relation.DisplayField)
+			descriptor.FallbackDisplayFieldInfo = service.fallbackDisplayFieldInfoFor(ctx, target)
 			result.Relations = append(
 				result.Relations,
 				descriptor,
@@ -215,6 +218,18 @@ func (service *Service) SearchTargets(
 			"target table does not match the relation",
 		)
 	}
+	// Direct ID refresh reuses the same projection and paging budget as the
+	// keyword search: one batched IN query, never per-record reads.
+	filters := []query.FilterExpression{}
+	if len(request.TargetItemIDs) > 0 {
+		values := make([]any, 0, len(request.TargetItemIDs))
+		for _, id := range request.TargetItemIDs {
+			values = append(values, id)
+		}
+		filters = append(filters, query.FilterExpression{
+			Field: "id", Operator: query.OperatorIn, Value: values, Logic: query.LogicAnd,
+		})
+	}
 	page, err := service.queries.QueryPage(
 		ctx,
 		targetTableID,
@@ -222,7 +237,7 @@ func (service *Service) SearchTargets(
 			Keyword: request.Query,
 			Offset:  request.Offset,
 			Limit:   request.Limit,
-			Filters: []query.FilterExpression{},
+			Filters: filters,
 			Sorts: []query.SortCondition{{
 				Field: "id", Direction: query.SortAscending,
 			}},
@@ -235,26 +250,11 @@ func (service *Service) SearchTargets(
 	if err != nil {
 		return SearchResult{}, err
 	}
-	labelField := targetLabelField(target)
-	secondaryField := targetSecondaryField(target, labelField)
+	projection := resolveTargetDisplay(resolved.field, target)
 	items := make([]TargetRef, 0, len(page.Rows))
 	for _, row := range page.Rows {
 		recordID := fmt.Sprint(row["id"])
-		label := recordID
-		if labelField != "" && row[labelField] != nil &&
-			fmt.Sprint(row[labelField]) != "" {
-			label = fmt.Sprint(row[labelField])
-		}
-		secondaryLabel := ""
-		if secondaryField != "" && row[secondaryField] != nil {
-			secondaryLabel = strings.TrimSpace(fmt.Sprint(row[secondaryField]))
-		}
-		items = append(items, TargetRef{
-			TableID:        targetTableID,
-			RecordID:       recordID,
-			Label:          label,
-			SecondaryLabel: secondaryLabel,
-		})
+		items = append(items, projection.projectTargetRef(targetTableID, recordID, row))
 	}
 	return SearchResult{
 		Items: items, Total: page.FilteredRows, Snapshot: page.Snapshot,
@@ -365,15 +365,11 @@ func (service *Service) CreateTarget(
 			"created target record could not be read",
 		)
 	}
-	canonicalLabel := label
-	if value := rows[0][labelPhysicalName]; value != nil && fmt.Sprint(value) != "" {
-		canonicalLabel = fmt.Sprint(value)
-	}
+	// Business writes keep the global primary display field semantics; only
+	// the returned display follows this relation's own display projection.
+	projection := resolveTargetDisplay(resolved.field, target)
 	return CreateTargetResult{
-		Target: TargetRef{
-			TableID: target.Snapshot.TableID, RecordID: recordID,
-			Label: canonicalLabel,
-		},
+		Target:  projection.projectTargetRef(target.Snapshot.TableID, recordID, rows[0]),
 		Receipt: receipt,
 	}, nil
 }
@@ -670,13 +666,9 @@ func (service *Service) prepareDelta(
 		)
 	}
 	currentIDs := relationIDs(rows[0][resolved.field.Identity.PhysicalName])
-	currentSet := make(map[string]TargetRef, len(currentIDs))
+	currentSet := make(map[string]struct{}, len(currentIDs))
 	for _, recordID := range currentIDs {
-		currentSet[recordID] = TargetRef{
-			TableID:  resolved.descriptor.TargetTableID,
-			RecordID: recordID,
-			Label:    recordID,
-		}
+		currentSet[recordID] = struct{}{}
 	}
 	for _, remove := range request.Removes {
 		if remove.TableID != resolved.descriptor.TargetTableID {
@@ -707,18 +699,44 @@ func (service *Service) prepareDelta(
 				"add target is already linked",
 			)
 		}
-		currentSet[add.RecordID] = add
+		currentSet[add.RecordID] = struct{}{}
 	}
-	current := refsFromIDs(
-		resolved.descriptor.TargetTableID, currentIDs,
+	target, err := schemaexecution.Describe(
+		ctx, service.app, resolved.descriptor.TargetTableID,
 	)
-	result := make([]TargetRef, 0, len(currentSet))
-	for _, item := range currentSet {
-		result = append(result, item)
+	if err != nil {
+		return resolvedRelation{}, nil, nil, err
 	}
-	sort.Slice(result, func(left, right int) bool {
-		return result[left].RecordID < result[right].RecordID
-	})
+	// Labels are display-only metadata resolved through the shared projection;
+	// relation IDs, digests and mutation values stay authoritative. The batch
+	// covers the union of current and post-delta targets so added targets get
+	// projected labels too, not just pre-existing links.
+	projection := resolveTargetDisplay(resolved.field, target)
+	resultIDs := make([]string, 0, len(currentSet))
+	for recordID := range currentSet {
+		resultIDs = append(resultIDs, recordID)
+	}
+	sort.Strings(resultIDs)
+	unionIDs := append([]string(nil), currentIDs...)
+	unionIDs = append(unionIDs, resultIDs...)
+	rowsByID, err := service.readTargetRows(
+		ctx, resolved.descriptor.TargetTableID, unionIDs,
+	)
+	if err != nil {
+		return resolvedRelation{}, nil, nil, err
+	}
+	current := make([]TargetRef, 0, len(currentIDs))
+	for _, recordID := range currentIDs {
+		current = append(current, projection.projectTargetRef(
+			resolved.descriptor.TargetTableID, recordID, rowsByID[recordID],
+		))
+	}
+	result := make([]TargetRef, 0, len(resultIDs))
+	for _, recordID := range resultIDs {
+		result = append(result, projection.projectTargetRef(
+			resolved.descriptor.TargetTableID, recordID, rowsByID[recordID],
+		))
+	}
 	if resolved.descriptor.Cardinality == "one" && len(result) > 1 {
 		return resolvedRelation{}, nil, nil, relationError(
 			"relation.cardinality",
@@ -790,7 +808,7 @@ func targetLabelField(definition schemaexecution.Table) string {
 			continue
 		}
 		switch field.LogicalType {
-		case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail:
+		case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail:
 			return field.Identity.PhysicalName
 		}
 	}
@@ -839,7 +857,7 @@ func hasFieldDefault(field v2.FieldDefinition) bool {
 }
 
 func fieldReadOnly(field v2.FieldDefinition) bool {
-	return field.LogicalType == v2.LogicalAutoDate ||
+	return field.LogicalType == v2.LogicalAutoNumber || field.LogicalType == v2.LogicalAutoDate ||
 		field.LogicalType == v2.LogicalFormula ||
 		field.LogicalType == v2.LogicalLookup
 }
@@ -874,7 +892,7 @@ func outputTypeFor(field v2.FieldDefinition) lookupOutputType {
 
 func lookupOutputStorage(output lookupOutputType) string {
 	switch output.logicalType {
-	case v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
+	case v2.LogicalAutoNumber, v2.LogicalText, v2.LogicalEditor, v2.LogicalEmail,
 		v2.LogicalURL, v2.LogicalSelect, v2.LogicalMultiSelect,
 		v2.LogicalRelation, v2.LogicalFile:
 		return "text"
@@ -920,14 +938,30 @@ func relationIDs(value any) []string {
 	}
 }
 
-func refsFromIDs(tableID string, ids []string) []TargetRef {
-	result := make([]TargetRef, 0, len(ids))
-	for _, recordID := range ids {
-		result = append(result, TargetRef{
-			TableID: tableID, RecordID: recordID, Label: recordID,
-		})
+// readTargetRows batches target reads for label projection; it never issues
+// per-record queries.
+func (service *Service) readTargetRows(
+	ctx context.Context,
+	tableID string,
+	ids []string,
+) (map[string]map[string]any, error) {
+	result := make(map[string]map[string]any, len(ids))
+	for start := 0; start < len(ids); start += 200 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		batch := ids[start:min(start+200, len(ids))]
+		rows, err := service.queries.ReadRows(ctx, tableID, batch)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if id, ok := row["id"].(string); ok {
+				result[id] = row
+			}
+		}
 	}
-	return result
+	return result, nil
 }
 
 func relationError(code, message string) *mutation.ProductError {

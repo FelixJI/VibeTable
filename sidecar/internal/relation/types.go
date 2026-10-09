@@ -18,6 +18,13 @@ type Descriptor struct {
 	ReciprocalFieldID   string `json:"reciprocalFieldId,omitempty"`
 	QuickCreateEligible bool   `json:"quickCreateEligible"`
 	QuickCreateReason   string `json:"quickCreateReason,omitempty"`
+	// DisplayFieldID is the relation's own display field in the target table;
+	// DisplayFieldInfo renders its labels, FallbackDisplayFieldInfo the
+	// target table's global primary display value used as auxiliary label
+	// and empty-label fallback.
+	DisplayFieldID           string            `json:"displayFieldId,omitempty"`
+	DisplayFieldInfo         *DisplayFieldInfo `json:"displayFieldInfo,omitempty"`
+	FallbackDisplayFieldInfo *DisplayFieldInfo `json:"fallbackDisplayFieldInfo,omitempty"`
 }
 
 type LookupDescriptor struct {
@@ -49,11 +56,12 @@ type CatalogResult struct {
 }
 
 type SearchRequest struct {
-	RelationID    string `json:"relationId"`
-	Query         string `json:"query"`
-	Offset        int    `json:"offset"`
-	Limit         int    `json:"limit"`
-	TargetTableID string `json:"-"`
+	RelationID    string   `json:"relationId"`
+	Query         string   `json:"query"`
+	Offset        int      `json:"offset"`
+	Limit         int      `json:"limit"`
+	TargetItemIDs []string `json:"targetItemIds,omitempty"`
+	TargetTableID string   `json:"-"`
 }
 
 type TargetRef struct {
@@ -61,6 +69,12 @@ type TargetRef struct {
 	RecordID       string `json:"recordId"`
 	Label          string `json:"label"`
 	SecondaryLabel string `json:"secondaryLabel,omitempty"`
+	// DisplayValue/SecondaryValue carry the raw typed scalars behind Label/
+	// SecondaryLabel (0 and false included) so clients render every surface
+	// through the shared display contract instead of re-parsing label text.
+	// They are display-only and never join mutation business values.
+	DisplayValue   any `json:"displayValue,omitempty"`
+	SecondaryValue any `json:"secondaryValue,omitempty"`
 }
 
 type SearchResult struct {

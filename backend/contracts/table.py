@@ -18,6 +18,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+from backend.contracts.generated_schema_v2 import DisplaySpec, SelectOption
+
 FilterOperator = Literal[
     "eq",
     "ne",
@@ -75,6 +77,8 @@ class ColumnSchema(CamelModel):
         "time",
         "json",
     ]
+    # Formula list typing comes from the compiler, never observed row values.
+    result_element_type: Literal["number", "bool", "text", "dateTime"] | None = None
     editable: bool = False
     nullable: bool = True
     # Numeric precision/scale from the authoritative schema. ``None`` for
@@ -83,4 +87,10 @@ class ColumnSchema(CamelModel):
     # validation both key off ``scale``.
     scale: int | None = None
     precision: int | None = None
+    # Authoritative read-only display spec (canonical Schema V2 ``DisplaySpec``)
+    # projected verbatim by the schema-describe owner. ``None`` for system
+    # columns. Pure presentation: editors, sorting, filters and exports keep
+    # consuming the raw value.
+    display: DisplaySpec | None = None
+    enum_options: list[SelectOption] | None = None
     filter_operators: list[FilterOperator] = Field(default_factory=list)

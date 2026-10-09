@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/pocketbase/dbx"
-	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -115,10 +114,14 @@ func TestWholeDatabaseSnapshotRestoresFourKindsAndMigrationMarkerAtNewPath(t *te
 	if _, err := service.app.DB().NewQuery("VACUUM INTO {:destination}").Bind(dbx.Params{"destination": filepath.Join(root, "data.db")}).Execute(); err != nil {
 		t.Fatal(err)
 	}
-	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: root, HideStartBanner: true})
+	// Plain core app: the CLI launcher's background modernc dependency check
+	// would read Settings().Logs concurrently with the MaxDays write below.
+	app := core.NewBaseApp(core.BaseAppConfig{DataDir: root})
 	if err := app.Bootstrap(); err != nil {
 		t.Fatal(err)
 	}
+	// Keep the restored fixture free of the same asynchronous log writer.
+	app.Settings().Logs.MaxDays = 0
 	defer app.ResetBootstrapState()
 	restored := New(app, "0f8f4a3b-2c1d-4e5f-8091-a2b3c4d5e6f7")
 	if result, err := restored.ImportLegacySQLite(ctx, filepath.Join(root, "removed-legacy-source.db")); err != nil || result.Status != ImportStatusAlreadyComplete {

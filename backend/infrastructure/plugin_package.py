@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
+from backend._version import __version__
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -40,7 +41,7 @@ DEFAULT_PACKAGE_POLICY = PackagePolicy()
 class PluginCompatibilityPolicy:
     """Versions implemented by this host and checked before package installation."""
 
-    host_version: str = "1.0.0"
+    host_version: str = __version__
     plugin_api: str = "1.x"
 
 
@@ -159,7 +160,7 @@ def _validate_compatibility(
         )
 
     plugin_api = compatibility["pluginApi"]
-    if plugin_api != policy.plugin_api:
+    if plugin_api not in {policy.plugin_api, "2.x"}:
         raise PluginPackageError(
             "version_incompatible",
             f"compatibility.pluginApi {plugin_api} is not supported by {policy.plugin_api}",
@@ -341,7 +342,8 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
                 "permissions_invalid", "data permissions require a collection and operations"
             )
         if not all(
-            isinstance(operation, str) and operation in {"read", "create", "update", "delete"}
+            isinstance(operation, str)
+            and operation in {"read", "query", "create", "update", "delete"}
             for operation in operations
         ):
             raise PluginPackageError(
@@ -351,6 +353,12 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
             raise PluginPackageError(
                 "permissions_invalid", "data permission fields must be strings"
+            )
+        if "query" in operations and (
+            "read" not in operations or manifest["compatibility"]["pluginApi"] != "2.x"
+        ):
+            raise PluginPackageError(
+                "permissions_invalid", "query requires read and plugin API 2.x"
             )
     file_permissions = permissions.get("files", [])
     if (

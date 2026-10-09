@@ -88,6 +88,8 @@ const target: RelationTargetRef = {
   itemId: "customer-1",
   label: "Acme",
   secondaryLabel: "华东区 · A-001",
+  displayValue: "Acme",
+  secondaryValue: "华东区 · A-001",
 };
 
 describe("RelationEditorPanel accessibility", () => {

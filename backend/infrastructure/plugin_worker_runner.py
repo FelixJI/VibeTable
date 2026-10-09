@@ -33,7 +33,11 @@ async function capability(name, args) {
   if (response.type !== "capabilityResult" || response.id !== id) {
     throw new Error("invalid plugin capability response");
   }
-  if (!response.ok) throw new Error(response.error || "plugin capability failed");
+  if (!response.ok) {
+    const error = new Error(response.error || "plugin capability failed");
+    error.code = response.code || "plugin_capability_invalid";
+    throw error;
+  }
   return response.value;
 }
 
@@ -56,7 +60,19 @@ async function main() {
       const clone = (value) => value === undefined
         ? undefined
         : JSON.parse(JSON.stringify(value));
-      const call = async (name, args) => clone(await hostCapability(name, clone(args)));
+      let cancelRequested = false;
+      const call = async (name, args) => {
+        try {
+          const value = clone(await hostCapability(name, clone(args)));
+          if (name === "ui.reportProgress") cancelRequested ||= value.cancelRequested;
+          return value;
+        } catch (failure) {
+          // Construct errors in the VM realm: never expose a host Error/constructor.
+          const error = new Error(String(failure.message || "plugin capability failed"));
+          error.code = String(failure.code || "plugin_capability_invalid");
+          throw error;
+        }
+      };
       const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
       const decodeBase64 = (encoded) => {
         const clean = encoded.replace(/=+$/, "");
@@ -112,6 +128,8 @@ async function main() {
       const api = {
         data: {
           read: (request) => call("data.read", request),
+          describe: (request) => call("data.describe", request),
+          query: (request) => call("data.query", request),
           mutate: (plan) => call("data.mutate", plan),
         },
         file: {
@@ -133,9 +151,15 @@ async function main() {
       globalThis.__capabilities = Object.freeze(api);
       globalThis.__payload = JSON.parse(globalThis.__payloadJson);
       globalThis.__signal = Object.freeze({
-        aborted: false,
+        get aborted() { return cancelRequested; },
         reason: undefined,
-        throwIfAborted() {},
+        throwIfAborted() {
+          if (cancelRequested) {
+            const error = new Error("plugin cancellation requested");
+            error.code = "plugin_cancel_requested";
+            throw error;
+          }
+        },
         addEventListener() {},
         removeEventListener() {},
       });
@@ -160,7 +184,8 @@ async function main() {
 }
 
 main().catch((error) => {
-  send({ type: "error", error: error instanceof Error ? error.message : String(error) });
+  send({ type: "error", error: String(error?.message || error),
+    code: String(error?.code || "plugin_worker_failed") });
   process.exitCode = 1;
 });
 """

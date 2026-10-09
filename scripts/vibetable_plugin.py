@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from backend._version import __version__  # noqa: E402
 from backend.infrastructure.plugin_package import (  # noqa: E402
     PluginPackageError,
     inspect_plugin_package,
@@ -116,7 +117,7 @@ def _command_init(args: argparse.Namespace) -> int:
         "displayName": {"zh-CN": args.display_name},
         "description": {"zh-CN": args.description or args.display_name},
         "compatibility": {
-            "minHostVersion": "1.0.0",
+            "minHostVersion": __version__,
             "pluginApi": "1.x",
         },
         "permissions": {

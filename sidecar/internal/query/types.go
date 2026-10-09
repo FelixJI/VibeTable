@@ -180,13 +180,17 @@ func isJSONNull(raw []byte) bool {
 }
 
 type RelationDescriptor struct {
-	DisplayField    string                     `json:"displayField,omitempty"`
-	PresenceFields  map[string]string          `json:"presenceFields,omitempty"`
-	TableName       string                     `json:"tableName"`
-	PrimaryKey      string                     `json:"primaryKey"`
-	RowRevisionName string                     `json:"rowRevisionName,omitempty"`
-	Fields          map[string]FieldDescriptor `json:"fields"`
-	Multiple        bool                       `json:"multiple"`
+	DisplayField string `json:"displayField,omitempty"`
+	// PrimaryDisplayField is the target table's global primary display
+	// physical name; it backs the auxiliary label and the empty-label
+	// fallback in the shared relation label projection.
+	PrimaryDisplayField string                     `json:"primaryDisplayField,omitempty"`
+	PresenceFields      map[string]string          `json:"presenceFields,omitempty"`
+	TableName           string                     `json:"tableName"`
+	PrimaryKey          string                     `json:"primaryKey"`
+	RowRevisionName     string                     `json:"rowRevisionName,omitempty"`
+	Fields              map[string]FieldDescriptor `json:"fields"`
+	Multiple            bool                       `json:"multiple"`
 }
 
 type EnumValueDescriptor struct {
@@ -204,6 +208,7 @@ type FieldDescriptor struct {
 	Type                        FieldType           `json:"type"`
 	AutoDate                    bool                `json:"autoDate,omitempty"`
 	Searchable                  bool                `json:"searchable,omitempty"`
+	PreserveComputedEnvelope    bool                `json:"-"`
 	ComputedEnvelope            bool                `json:"computedEnvelope,omitempty"`
 	ComputedReady               bool                `json:"computedReady,omitempty"`
 	ComputedStatus              string              `json:"computedStatus,omitempty"`

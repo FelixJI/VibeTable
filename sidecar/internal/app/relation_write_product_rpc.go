@@ -353,9 +353,44 @@ func relationWriteTargetResult(target relation.TargetRef) (map[string]any, error
 	if target.TableID == "" || target.RecordID == "" || target.Label == "" {
 		return nil, errors.New("PocketBase returned an invalid relation target")
 	}
+	return relationWriteTargetItem(target), nil
+}
+
+// relationWriteTargetItem keeps the frozen write-path wire shape: the
+// secondaryLabel key is always present (null when empty), while the raw
+// typed display scalars only appear when the projection resolved them.
+func relationWriteTargetItem(target relation.TargetRef) map[string]any {
 	var secondary any
 	if target.SecondaryLabel != "" {
 		secondary = target.SecondaryLabel
 	}
-	return map[string]any{"collection": target.TableID, "itemId": target.RecordID, "label": target.Label, "secondaryLabel": secondary}, nil
+	result := map[string]any{
+		"collection": target.TableID, "itemId": target.RecordID,
+		"label": target.Label, "secondaryLabel": secondary,
+	}
+	if target.DisplayValue != nil {
+		result["displayValue"] = target.DisplayValue
+	}
+	if target.SecondaryValue != nil {
+		result["secondaryValue"] = target.SecondaryValue
+	}
+	return result
+}
+
+// relationTargetResult is the search wire projection: keys appear only when
+// the shared label projection resolved a value.
+func relationTargetResult(target relation.TargetRef) map[string]any {
+	result := map[string]any{
+		"collection": target.TableID, "itemId": target.RecordID, "label": target.Label,
+	}
+	if target.SecondaryLabel != "" {
+		result["secondaryLabel"] = target.SecondaryLabel
+	}
+	if target.DisplayValue != nil {
+		result["displayValue"] = target.DisplayValue
+	}
+	if target.SecondaryValue != nil {
+		result["secondaryValue"] = target.SecondaryValue
+	}
+	return result
 }

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	_ "time/tzdata"
 	"unicode/utf8"
 
 	"github.com/vibetable/vibetable/sidecar/internal/jsonschemavalidation"
@@ -458,11 +459,67 @@ func jsonRootMatches(root string, value any) bool {
 	}
 }
 
+var currencyCodePattern = regexp.MustCompile(`^[A-Za-z]{3}$`)
+
 func validateDisplay(
 	definition FieldDefinition,
 	capability Capability,
 ) error {
 	display := definition.Display
+	allowed := display.Preset == "" || display.Preset == "plain"
+	if definition.LogicalType == LogicalFormula || definition.LogicalType == LogicalLookup {
+		allowed = allowed || display.Preset == "number" || display.Preset == "integer" || display.Preset == "currency" || display.Preset == "percent" || display.Preset == "unit" || display.Preset == "progress"
+	}
+	for _, preset := range capability.DisplayPresets {
+		allowed = allowed || display.Preset == preset
+	}
+	if !allowed {
+		return invalid("display.preset", "display preset is unsupported")
+	}
+	if display.Preset == "progress" {
+		start, target := 0.0, 1.0
+		if display.ProgressStart != nil {
+			start = *display.ProgressStart
+		}
+		if display.ProgressTarget != nil {
+			target = *display.ProgressTarget
+		}
+		if math.IsNaN(start) || math.IsInf(start, 0) || math.IsNaN(target) || math.IsInf(target, 0) || start >= target || math.IsInf(target-start, 0) {
+			return invalid("display.progressTarget", "progress start and target must be finite and start must be less than target")
+		}
+		if display.PercentStorage != "ratio" {
+			return invalid("display.percentStorage", "progress requires ratio storage")
+		}
+	} else if display.ProgressStart != nil || display.ProgressTarget != nil {
+		return invalid("display.progressTarget", "progress parameters require progress preset")
+	}
+	if display.Preset == "rating" {
+		maximum := 5
+		if display.RatingMax != nil {
+			maximum = *display.RatingMax
+		}
+		if maximum < 1 || maximum > 10 {
+			return invalid("display.ratingMax", "rating maximum must be an integer between 1 and 10")
+		}
+		min, hasMin, _ := rangeNumber(definition.Constraints.Range.Min)
+		max, hasMax, _ := rangeNumber(definition.Constraints.Range.Max)
+		if !definition.Storage.Options.OnlyInt || !hasMin || !hasMax || min != 0 || max != float64(maximum) {
+			return invalid("constraints.range", "rating requires explicit integer storage and range 0..ratingMax")
+		}
+	} else if display.RatingMax != nil {
+		return invalid("display.ratingMax", "rating maximum requires rating preset")
+	}
+	if definition.LogicalType == LogicalDateTime || definition.LogicalType == LogicalAutoDate ||
+		definition.LogicalType == LogicalLookup || (definition.Formula != nil && definition.Formula.ResultType == LogicalDateTime) {
+		if display.Timezone != "system" && display.Timezone != "UTC" {
+			if _, err := time.LoadLocation(display.Timezone); err != nil || display.Timezone == "" || display.Timezone == "Local" {
+				return invalid("display.timezone", "display timezone must be system, UTC or an IANA timezone")
+			}
+		}
+	}
+	if display.Preset == "currency" && !currencyCodePattern.MatchString(display.Currency) {
+		return invalid("display.currency", "currency must contain exactly three ASCII letters")
+	}
 	if display.Kind != capability.Recommended.Display.Kind {
 		return invalid("display.kind", "display kind does not match logical type")
 	}
@@ -642,6 +699,9 @@ func validateTypeSpecific(definition FieldDefinition) error {
 	if definition.JSON != nil && definition.LogicalType != LogicalJSON {
 		return invalid("json", "JSON settings are not allowed for this logical type")
 	}
+	if definition.AutoNumber != nil && definition.LogicalType != LogicalAutoNumber {
+		return invalid("autoNumber", "autoNumber settings are not allowed for this logical type")
+	}
 	if definition.AutoDate != nil && definition.LogicalType != LogicalAutoDate {
 		return invalid("autoDate", "autoDate settings are not allowed for this logical type")
 	}
@@ -720,6 +780,15 @@ func validateTypeSpecific(definition FieldDefinition) error {
 		}
 		if definition.Display.Indent != 2 && definition.Display.Indent != 4 {
 			return invalid("display.indent", "JSON indent must be 2 or 4")
+		}
+	case LogicalAutoNumber:
+		if err := ValidateAutoNumberSpec(definition.AutoNumber); err != nil {
+			return err
+		}
+		recommended, _ := RecommendedDefaults(LogicalAutoNumber)
+		if !reflect.DeepEqual(definition.Constraints, recommended.Constraints) ||
+			!reflect.DeepEqual(definition.Storage, recommended.Storage) {
+			return unsupported("autoNumber", "autoNumber storage and constraints are system-owned")
 		}
 	case LogicalAutoDate:
 		if definition.AutoDate == nil ||

@@ -45,7 +45,7 @@ def _write_plugin(root: Path, *, version: str = "1.0.0") -> None:
                 "version": version,
                 "displayName": {"en": "Reader"},
                 "compatibility": {
-                    "minHostVersion": "1.0.0",
+                    "minHostVersion": "0.5.1",
                     "pluginApi": "1.x",
                 },
                 "permissions": {
@@ -250,7 +250,7 @@ async def test_install_and_uninstall_use_package_lifecycle_tasks() -> None:
             "pluginId": "com.example.reader",
             "version": "1.0.0",
             "displayName": {"en": "Reader"},
-            "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
             "permissions": {"data": [], "files": [], "privateStorage": False},
             "actions": [
                 {
@@ -910,7 +910,7 @@ def _reader_manifest() -> PluginManifest:
             "pluginId": "com.example.reader",
             "version": "1.0.0",
             "displayName": {"en": "Reader"},
-            "compatibility": {"minHostVersion": "1.0.0", "pluginApi": "1.x"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "1.x"},
             "permissions": {"data": [], "files": [], "privateStorage": False},
             "actions": [
                 {

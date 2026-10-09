@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Kanban } from "@lucide/vue";
-import type { ColumnSchema, PresetView } from "@/contracts";
+import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
 import { t } from "@/i18n";
+import RecordFieldValue from "./RecordFieldValue.vue";
 import { displayValue, metadataFields, rowTitle } from "./recordViewUtils";
 
 const props = defineProps<{
@@ -11,6 +12,8 @@ const props = defineProps<{
   view: PresetView;
   interactionEnabled?: boolean;
   laneOptions?: readonly { readonly optionId: string; readonly label: string }[];
+  lookupDefinitions?: readonly LookupDefinition[];
+  relations?: readonly NormalizedRelationDescriptor[];
 }>();
 const emit = defineEmits<{
   cardMove: [intent: {
@@ -33,6 +36,9 @@ interface DraggedCard {
 }
 
 const draggedCard = ref<DraggedCard | null>(null);
+
+const groupColumn = computed(() =>
+  props.schema.find((column) => column.name === props.view.groupField) ?? null);
 
 const details = computed(() => metadataFields(
   props.schema,
@@ -61,7 +67,7 @@ const lanes = computed(() => {
     if (!lane) {
       lane = {
         key,
-        label: blank ? t("views.kanban.ungrouped") : displayValue(raw),
+        label: blank ? t("views.kanban.ungrouped") : displayValue(raw, groupColumn.value, props.lookupDefinitions),
         targetOptionId: null,
         records: [],
       };
@@ -125,17 +131,17 @@ function onDrop(event: DragEvent, targetOptionId: string | null): void {
         <div class="kanban-cards">
           <article
             v-for="row in lane.records"
-            :key="String(row.rowKey ?? rowTitle(row, view))"
+            :key="String(row.rowKey ?? rowTitle(row, view, schema, lookupDefinitions, relations))"
             data-testid="kanban-card"
             :data-row-key="String(row.rowKey ?? '')"
             :draggable="canDrag(row)"
             @dragstart="onDragStart($event, row)"
             @dragend="draggedCard = null"
           >
-            <strong>{{ rowTitle(row, view) }}</strong>
+            <strong>{{ rowTitle(row, view, schema, lookupDefinitions, relations) }}</strong>
             <dl v-if="details.length">
               <template v-for="field in details" :key="field.name">
-                <dt>{{ field.title }}</dt><dd>{{ displayValue(row[field.name]) }}</dd>
+                <dt>{{ field.title }}</dt><dd><RecordFieldValue :value="row[field.name]" :column="field" :lookups="lookupDefinitions" :row="row" :relations="relations" /></dd>
               </template>
             </dl>
           </article>

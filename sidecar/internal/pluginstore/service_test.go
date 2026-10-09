@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/core"
+	// Registers the PocketBase system migrations, mirroring the CLI package's
+	// own blank import because core.NewBaseApp does not import them itself.
+	_ "github.com/pocketbase/pocketbase/migrations"
 	// Registers the sidecar migrations (including the plugin shared-state
 	// collections) so the test app's RunAllMigrations creates them.
 	_ "github.com/vibetable/vibetable/sidecar/migrations"
@@ -75,13 +78,17 @@ func newTestService(t *testing.T) *Service {
 			time.Sleep(20 * time.Millisecond)
 		}
 	})
-	app := pocketbase.NewWithConfig(pocketbase.Config{
-		DefaultDataDir:  dataDir,
-		HideStartBanner: true,
-	})
+	// Plain core app (like PocketBase tests/app.go): the CLI launcher's
+	// fire-and-forget modernc dependency check logs from a background
+	// goroutine and races the Settings().Logs.MaxDays write below.
+	app := core.NewBaseApp(core.BaseAppConfig{DataDir: dataDir})
 	if err := app.Bootstrap(); err != nil {
 		t.Fatalf("Bootstrap(): %v", err)
 	}
+	// Match PocketBase tests/app.go: retained logs write asynchronously without
+	// a join point and can race ResetBootstrapState. This fixture tests plugin
+	// records and returned errors, not the auxiliary log database.
+	app.Settings().Logs.MaxDays = 0
 	t.Cleanup(func() { _ = app.ResetBootstrapState() })
 	if err := app.RunAllMigrations(); err != nil {
 		t.Fatalf("RunAllMigrations(): %v", err)

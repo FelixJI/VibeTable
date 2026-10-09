@@ -19,7 +19,7 @@ type TableStore = ReturnType<typeof useTableStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 
 type RelationStorePort = Pick<RelationLookupStore,
-  "capabilities" | "schema" | "draft" | "openDraft" | "closeDraft" | "toggleDraftTarget">;
+  "capabilities" | "schema" | "draft" | "openDraft" | "closeDraft" | "toggleDraftTarget" | "refreshDraftLabels">;
 type RelationTablePort = Pick<TableStore, "schema" | "applyRelationValue">;
 type RelationWorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type RelationEditorServicePort = Pick<RelationLookupService,
@@ -69,6 +69,7 @@ export type RelationEditorIntent =
   | { readonly type: "editor.close" }
   | { readonly type: "targets.search"; readonly query: string; readonly offset?: number }
   | { readonly type: "targets.loadMore" }
+  | { readonly type: "targets.refresh" }
   | { readonly type: "target.select"; readonly target: RelationTargetRef }
   | { readonly type: "target.clear" }
   | { readonly type: "draft.apply" }
@@ -137,6 +138,7 @@ export function createRelationEditorController(
   const pendingCreation = shallowRef<PendingRelationCreation | null>(null);
   let searchGeneration = 0;
   let schemaGeneration = 0;
+  let refreshGeneration = 0;
   let editorEpoch = 0;
   let pendingCreationEpoch = 0;
   let nestedSearchGeneration = 0;
@@ -145,6 +147,7 @@ export function createRelationEditorController(
   const invalidateEditor = (closeDraft: boolean): void => {
     searchGeneration += 1;
     schemaGeneration += 1;
+    refreshGeneration += 1;
     editorEpoch += 1;
     nestedSearchGenerations.clear();
     state.value.show = false;
@@ -165,7 +168,7 @@ export function createRelationEditorController(
     field: string,
   ): boolean => epoch === editorEpoch
     && state.value.show
-    && state.value.descriptor === descriptor
+    && state.value.descriptor?.relationId === descriptor?.relationId
     && state.value.rowKey === rowKey
     && state.value.field === field;
 
@@ -271,11 +274,21 @@ export function createRelationEditorController(
     }
     if (intent.descriptor.kind === "m2o") {
       dependencies.relations.openDraft(intent.descriptor.relationId, String(intent.rowKey), current);
+      const capturedEpoch = editorEpoch;
+      const generation = ++refreshGeneration;
       await searchTargets("");
+      try {
+        await refreshSelectedLabels(intent.descriptor.relationId, () =>
+          capturedEpoch === editorEpoch && generation === refreshGeneration && state.value.show);
+      } catch (error) {
+        if (capturedEpoch === editorEpoch) state.value.error = errorMessage(error);
+      }
       return;
     }
     state.value.loading = true;
     const capturedEpoch = editorEpoch;
+    const initialRefreshGeneration = refreshGeneration;
+    const initialSearchGeneration = searchGeneration;
     const isCurrent = () => capturedEpoch === editorEpoch
       && state.value.show
       && state.value.descriptor?.relationId === intent.descriptor.relationId;
@@ -287,12 +300,73 @@ export function createRelationEditorController(
         isCurrent,
       );
       if (!isCurrent()) return;
-      await searchTargets("");
+      // Preserve searches or pages started while previewDelta was pending.
+      if (searchGeneration === initialSearchGeneration) {
+        await searchTargets("");
+      }
+      // A target refresh may finish before previewDelta initializes membership.
+      // Keep that membership, then project its labels using the latest refresh.
+      if (isCurrent() && initialRefreshGeneration !== refreshGeneration) {
+        const generation = refreshGeneration;
+        await refreshSelectedLabels(intent.descriptor.relationId, () =>
+          isCurrent() && generation === refreshGeneration);
+      }
     } catch (error) {
       if (!isCurrent()) return;
       state.value.loading = false;
       state.value.error = errorMessage(error);
     }
+  }
+
+  /**
+   * Refresh picker candidates and staged-selection labels after target-table
+   * writes or display-field changes. Identity (collection + itemId) stays
+   * authoritative; the staged selection itself is never replaced. Selected
+   * targets refresh by their own IDs through the batched targetItemIds
+   * protocol — independent of the current search candidates — and the
+   * descriptor render info re-describes so display-field config changes take
+   * effect without reopening the picker.
+   */
+  async function refreshTargets(): Promise<void> {
+    const descriptor = state.value.descriptor;
+    if (!descriptor || !state.value.show) return;
+    const capturedEpoch = editorEpoch;
+    const generation = ++refreshGeneration;
+    const current = (): boolean => capturedEpoch === editorEpoch
+      && generation === refreshGeneration
+      && state.value.show
+      && state.value.descriptor?.relationId === descriptor.relationId;
+    try {
+      const snapshot = await dependencies.service.describeCollection(descriptor.sourceCollection);
+      if (!current()) return;
+      const fresh = snapshot.normalizedRelations.find(
+        candidate => candidate.relationId === descriptor.relationId,
+      );
+      if (fresh) state.value.descriptor = fresh;
+      await searchTargets(state.value.query);
+      if (!current()) return;
+      await refreshSelectedLabels(descriptor.relationId, current);
+    } catch (error) {
+      if (current()) state.value.error = errorMessage(error);
+    }
+  }
+
+  async function refreshSelectedLabels(relationId: string, current: () => boolean): Promise<void> {
+    const draft = dependencies.relations.draft;
+    const ids = draft
+      ? [...new Set([...draft.original, ...draft.selected].map(target => target.itemId))]
+      : [];
+    const refreshed: RelationTargetRef[] = [];
+    for (let start = 0; start < ids.length; start += 100) {
+      if (!current()) return;
+      const chunk = ids.slice(start, start + 100);
+      const result = await dependencies.service.searchTargets({
+        relationId, offset: 0, limit: chunk.length, targetItemIds: chunk,
+      });
+      if (!current()) return;
+      refreshed.push(...result.items);
+    }
+    if (current()) dependencies.relations.refreshDraftLabels(refreshed, ids);
   }
 
   async function searchNested(field: string, query: string): Promise<void> {
@@ -553,6 +627,7 @@ export function createRelationEditorController(
       case "editor.open": await open(intent); return;
       case "editor.close": invalidateEditor(true); return;
       case "targets.search": await searchTargets(intent.query, intent.offset); return;
+      case "targets.refresh": await refreshTargets(); return;
       case "targets.loadMore":
         if (!state.value.loading && state.value.candidates.length < state.value.total) {
           await searchTargets(state.value.query, state.value.candidates.length);

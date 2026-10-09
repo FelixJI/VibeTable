@@ -26,7 +26,7 @@
       "type": "string",
       "enum": [
         "text", "editor", "number", "bool", "date", "dateTime", "time",
-        "autoDate", "email", "url", "select", "multiSelect", "relation",
+        "autoDate", "autoNumber", "email", "url", "select", "multiSelect", "relation",
         "file", "geoPoint", "json", "formula", "lookup"
       ]
     },
@@ -209,8 +209,15 @@
         "mode": {"type": "string"},
         "indent": {"type": "integer", "enum": [0, 2, 4]},
         "trueLabel": {"type": "string"},
-        "falseLabel": {"type": "string"}
-      }
+        "falseLabel": {"type": "string"},
+        "progressStart": {"type": "number"},
+        "progressTarget": {"type": "number"},
+        "ratingMax": {"type": "integer", "minimum": 1, "maximum": 10}
+      },
+      "allOf": [{
+        "if": {"properties": {"preset": {"const": "currency"}}, "required": ["preset"]},
+        "then": {"properties": {"currency": {"minLength": 3, "maxLength": 3, "pattern": "^[A-Za-z]{3}$"}}}
+      }]
     },
     "SelectOption": {
       "type": "object",
@@ -296,6 +303,16 @@
         },
         "maxSize": {"type": "integer", "minimum": 1},
         "schema": {"type": "object"}
+      }
+    },
+    "AutoNumberSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prefix", "start", "width"],
+      "properties": {
+        "prefix": {"type": "string", "maxLength": 64, "pattern": "^[^\u0000\r\n]*$"},
+        "start": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "width": {"type": "integer", "minimum": 1, "maximum": 16}
       }
     },
     "AutoDateSpec": {
@@ -424,6 +441,7 @@
         "file": {"$ref": "#/$defs/FileSpec"},
         "json": {"$ref": "#/$defs/JSONSpec"},
         "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
+        "autoNumber": {"$ref": "#/$defs/AutoNumberSpec"},
         "formula": {"$ref": "#/$defs/FormulaSpec"},
         "lookup": {"$ref": "#/$defs/LookupSpec"}
       },
@@ -449,6 +467,7 @@
         "file": {"$ref": "#/$defs/FileSpec"},
         "json": {"$ref": "#/$defs/JSONSpec"},
         "autoDate": {"$ref": "#/$defs/AutoDateSpec"},
+        "autoNumber": {"$ref": "#/$defs/AutoNumberSpec"},
         "formula": {"$ref": "#/$defs/FormulaDraftSpec"},
         "lookup": {"$ref": "#/$defs/LookupSpec"}
       },
@@ -480,6 +499,11 @@
           "if": {"properties": {"logicalType": {"const": "autoDate"}}, "required": ["logicalType"]},
           "then": {"required": ["autoDate"]},
           "else": {"not": {"required": ["autoDate"]}}
+        },
+        {
+          "if": {"properties": {"logicalType": {"const": "autoNumber"}}, "required": ["logicalType"]},
+          "then": {"required": ["autoNumber"]},
+          "else": {"not": {"required": ["autoNumber"]}}
         },
         {
           "if": {"properties": {"logicalType": {"const": "formula"}}, "required": ["logicalType"]},
