@@ -268,9 +268,23 @@ def test_atomic_job_keeps_child_owned_after_root_exit_and_terminates_it(
             for member in working_sets.members
         )
 
+        root_exit_deadline = time.monotonic() + 15
         root_release.set()
-        assert scope.root.wait(timeout=15) == 0
-        after_root = {member.pid for member in scope.snapshot().members}
+        assert scope.root.wait(timeout=max(0.0, root_exit_deadline - time.monotonic())) == 0
+        # A venv launcher may add interpreter members to this Job. Keep the
+        # atomic test's original contract: the child survives and the root leaves.
+        while True:
+            after_root = {member.pid for member in scope.snapshot().members}
+            assert child_pid in after_root
+            if scope.root.pid not in after_root:
+                break
+            remaining = root_exit_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"root {scope.root.pid} did not leave the fixture Job before the deadline; "
+                    f"last members={sorted(after_root)}"
+                )
+            time.sleep(min(0.025, remaining))
         assert scope.root.pid not in after_root
         assert child_pid in after_root
         residual = scope.wait_empty(timeout=0)
