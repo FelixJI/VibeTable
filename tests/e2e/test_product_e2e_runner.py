@@ -6343,8 +6343,9 @@ $documents = @(1..12 | ForEach-Object {
 
 
 @pytest.mark.skipif(runner.os.name != "nt", reason="Windows UIA provider initialization")
+@pytest.mark.parametrize("startup_delay_ms", [0, 6000])
 def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, startup_delay_ms: int
 ) -> None:
     import base64
     from concurrent.futures import ThreadPoolExecutor
@@ -6396,13 +6397,17 @@ $edit.Text = "第一行 '引号' `"双引号`" 制表`t结尾`r`nsecond line"
 $form.Controls.Add($edit)
 try {
     $form.Show()
-    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{
-        hwnd = $form.Handle.ToInt64(); pid = $PID;
-        apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
-    }))
+    # Publish readiness only when the owner thread is dispatching messages.
+    $null = $form.BeginInvoke([Action]{
+        [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{
+            hwnd = $form.Handle.ToInt64(); pid = $PID;
+            apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
+        }))
+    })
+    [System.Threading.Thread]::Sleep(STARTUP_DELAY_MS)
     [Windows.Forms.Application]::Run($form)
 } finally { $form.Close(); $form.Dispose() }
-"""
+""".replace("STARTUP_DELAY_MS", str(startup_delay_ms))
     with subprocess.Popen(
         [
             "powershell.exe",
