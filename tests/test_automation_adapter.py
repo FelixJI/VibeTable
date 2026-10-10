@@ -983,7 +983,21 @@ def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     assert "token:" not in checkout
 
 
-def test_publish_requires_closed_product_e2e_evidence_after_staging() -> None:
+def test_release_pr_and_publish_require_closed_product_e2e_evidence() -> None:
+    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    prepare = ci.split("\n  prepare:\n", maxsplit=1)[1].split("\n  shard:\n", maxsplit=1)[0]
+    before_build = prepare.split("- name: Build immutable candidate", maxsplit=1)[0]
+    release_pr_gate = before_build.split(
+        "- name: Verify release PR evidence before building", maxsplit=1
+    )[1].split("- uses:", maxsplit=1)[0]
+    assert (
+        "if: github.event_name == 'pull_request' && github.head_ref == 'automation/release'"
+        in release_pr_gate
+    )
+    assert (
+        "uv run --frozen python scripts/automation_project.py release-evidence" in release_pr_gate
+    )
+
     workflow = (REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
     after_stage = workflow.split("- name: Stage release", maxsplit=1)[1]
     closed_evidence = after_stage.split("- name: Verify closed product E2E evidence", maxsplit=1)[
