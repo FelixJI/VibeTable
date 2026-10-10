@@ -16,23 +16,41 @@
 
 [PR #459 的分片诊断](https://github.com/FelixJI/VibeTable/pull/459)确认，`product-e2e` 前 32 场累计约 1715.1 秒，S45 的业务结果与四份截图已完成，但 Host 收尾时被该 stage 的 1800 秒外层预算终止，聚合报告仍为 32/33。相同候选的 `data-io` 11 场全部通过、累计约 1156.4 秒，prepare 中 S45 完整运行约 86.1 秒。因此把完整 S45 分配到既有 `data-io` 分片，初次调整的两分区为 32/12 场；保留 `release.smoke` 预合并旅程、全部断言、截图、零 Worker 门禁与两 stage 的原预算。该分配仍需后续完整 CI 验证，不把本次被截断报告视为通过。
 
-后续集成主干在未含 S45 的分区中仍耗尽 1800 秒：前 31 场累计约 1603.1 秒，末尾 S40 文件容量场景被截断。新增 S45 后的 data-io 12 场已完整通过、累计约 1227.1 秒，因此将此前约 180 秒的 S40 完整迁入同一文件旅程分区，最终两分区为 31/13 场。保持总覆盖与全部时限不变，详细运行证据继续保留在上述 PR；最终分配仍需完整 CI 验证。
+后续集成主干在未含 S45 的分区中仍耗尽 1800 秒：前 31 场累计约 1603.1 秒，末尾 S40 文件容量场景被截断。新增 S45 后的 data-io 12 场已完整通过、累计约 1227.1 秒，因此将此前约 180 秒的 S40 完整迁入同一文件旅程分区，最终两分区为 31/13 场。保持总覆盖与全部时限不变，详细运行证据继续保留在上述 PR；最终 31/13 分配已由下方当前产品 E2E 样本完整验证。
 
 ## 当前产品 E2E 证据
 
-- source SHA：`GitHub/main@b17c7a6b7d0c9a22049ae664b7e678a10cc7518c`
-- GitHub run：[main CI 36963790989](https://github.com/FelixJI/VibeTable/actions/runs/36963790989)
+- source SHA：`GitHub/main@03a24719a17641973897bb0ba24e4e7d64ff3913`
+- GitHub run：[main CI 37951349334](https://github.com/FelixJI/VibeTable/actions/runs/37951349334)
 - 报告契约：`contractVersion=2.0`
-- 结果：39/39 passed、0 failed、0 skipped。
-- 当前 manifest gap：5（`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`）。
+- 结果：44/44 passed、0 failed、0 skipped。
+- 当前 manifest gap：无。
 - 当前 manifest surplus：无。
-- 当前 manifest changed：1（`28-relation-delta-preview`）。
+- 当前 manifest changed：无。
+
+同一 main 候选的 data-io 13 场与 resilience 31 场精确、不重复覆盖当前 manifest 的全部场景。两份原始产品报告均通过，六 lane 报告的 commit/source/candidate/资产绑定一致、所有 stage 返回码为零，聚合 required 成功。报告内部路径分别为 `lane-evidence/data-io/20261009T154732Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261009T155026Z/product-e2e-report.json`。
+
+覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`、`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`、`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`。
+
+本次包含 S41–45 文件文档、原生 Windows 操作、版本叶子、Restore 崩溃恢复与常用字段显示旅程，以及更新后的 S28 关系差异预览。结论仅覆盖 manifest 声明的场景，不扩大为 #415/#409 的全部 AC/GAC 已验收。
+
+关联 CD 37965714045 在发布前的 closed-evidence 检查被旧文档的 gap/changed 阻断，尚未执行正式 Publish 和 attestations，也未产生 v0.5.2 Release。此处归档真实产品运行证据，不把 CI 通过等同于正式发布完成。
+
+## 前一完整样本 2026-10-02（b17，历史）
+
+- source SHA：`b17c7a6b7d0c9a22049ae664b7e678a10cc7518c`
+- GitHub run：main CI 36963790989
+- 报告契约：2.0
+- 结果：39 场全部通过、零失败、零跳过。
+- 当时 manifest gap：5（`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`）。
+- 当时 manifest surplus：无。
+- 当时 manifest changed：1（`28-relation-delta-preview`）。
 
 同一 main 候选的 data-io 7 场与 resilience 32 场精确覆盖当时 manifest 的 39 场，两 lane 的原报告全部通过，六 lane 的 commit/source/candidate/资产绑定一致，required 成功。报告内部路径分别为 `lane-evidence/data-io/20261002T043152Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261002T043620Z/product-e2e-report.json`。普通 CD36970691192 成功，正式 Publish 与 attestation 均 skipped；[PR423 合并后证据](https://github.com/FelixJI/VibeTable/pull/423#issuecomment-5946519425)保留核验范围。此样本不代表 #415/#409 全部 AC/GAC 已通过。
 
 覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`、`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`。
 
-S41–44 尚未取得新最终包的真实 Host 资格：分别补文件排序分页/身份确认/丢失重连、真实 Windows 打开预览拖出、多 autosave/正式分支/非当前叶子恢复激活、真实 Restore 崩溃后的同 UUID 冷恢复。聚焦契约与静态审阅不替代实跑；沿既有 180 秒 driver 和分片 1800 秒预算，能力缺失或证据不足均失败。
+该旧样本中的 S41–44 尚未取得新最终包的真实 Host 资格：分别补文件排序分页/身份确认/丢失重连、真实 Windows 打开预览拖出、多 autosave/正式分支/非当前叶子恢复激活、真实 Restore 崩溃后的同 UUID 冷恢复。聚焦契约与静态审阅不替代实跑；沿既有 180 秒 driver 和分片 1800 秒预算，能力缺失或证据不足均失败。
 
 ## 前一完整样本 2026-09-27（0b，历史）
 
