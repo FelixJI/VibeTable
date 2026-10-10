@@ -77,6 +77,10 @@ export function formatFormulaDisplayValue(
 }
 
 const LOOKUP_STATE_LABELS: Readonly<Record<string, string>> = {
+  // The query wire reports a pending recalculation as an `updating` envelope
+  // (value null); the same label as Formula keeps the visible state instead
+  // of an empty card field.
+  updating: "grid.formula.updating",
   restricted: "grid.lookup.restricted",
   invalid: "grid.lookup.invalid",
   too_expensive: "grid.lookup.tooExpensive",

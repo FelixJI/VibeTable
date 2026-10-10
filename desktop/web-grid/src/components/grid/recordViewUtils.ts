@@ -1,5 +1,5 @@
 import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
-import { findLookupDefinition, formatFormulaDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
+import { findLookupDefinition, formatFormulaDisplayValue, formatLookupDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
 import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { normalizeTargets } from "@/grid/relationLookupRenderer";
 import { coerceLegacyLabelEntry, formatRelationLabelEntry, relationRowLabels } from "@/grid/relationDisplay";
@@ -41,6 +41,12 @@ export function displayValue(
   if (column?.kind === "formula" && column.dataType === "json"
     && column.resultElementType === "number" && Array.isArray(value)) {
     return formatFormulaDisplayValue(value, column);
+  }
+  // Query wire ready results arrive as bare lookup values (no envelope); they
+  // are authoritative server data and format through the LookupDefinition,
+  // mirroring the grid cell's bare-scalar normalization.
+  if (column?.kind === "lookup") {
+    return formatLookupDisplayValue(value, findLookupDefinition(column, lookups), column.display);
   }
   if (column) return formatFieldDisplay(value, column, getLocale());
   if (typeof value === "boolean") return value ? "✓" : "✕";
