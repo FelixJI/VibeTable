@@ -41,15 +41,23 @@ const tree = computed(() => {
   return [...parents.values()];
 });
 
+function groupValueText(value: unknown, field: string): string {
+  if (value === null || value === undefined) return "空值";
+  const column = props.columns.find(column => column.name === field);
+  const formatted = column?.dataType === "decimal" || column?.dataType === "integer"
+    ? formatNumberDisplay(value, column.display, getLocale()) : null;
+  return formatted ?? String(value);
+}
+
 function firstGroupLabel(value: unknown): string {
   const field = props.groups[0]?.field ?? "group_1";
-  return `${names.value.get(field) ?? field}: ${String(value ?? "空值")}`;
+  return `${names.value.get(field) ?? field}: ${groupValueText(value, field)}`;
 }
 
 function groupLabel(row: ViewGroupRow, startIndex = 0): string {
   return row.key.map((value, index) => {
     const field = props.groups[index + startIndex]?.field ?? `group_${index + startIndex + 1}`;
-    return `${names.value.get(field) ?? field}: ${String(value ?? "空值")}`;
+    return `${names.value.get(field) ?? field}: ${groupValueText(value, field)}`;
   }).join(" / ");
 }
 function summaryLabel(row: ViewGroupRow): string {

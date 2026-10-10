@@ -175,6 +175,9 @@ describe("alternative record views", () => {
         rows: [
           { rowKey: "1", title: "A", prices: { state: "ok", value: [1.5, 1234.56789], provenance: [] } },
           { rowKey: "2", title: "B", prices: { state: "restricted", value: [42], provenance: [] } },
+          { rowKey: "3", title: "C", prices: [1.5, 1234.56789] },
+          { rowKey: "4", title: "D", prices: { state: "updating", value: null, provenance: [],
+            diagnostic: { code: "calculation.pending", message: "computed value is waiting for recalculation" } } },
         ],
         schema: [...schema, lookupColumn],
         lookupDefinitions: definitions,
@@ -185,6 +188,12 @@ describe("alternative record views", () => {
     expect(cards[0].text()).toContain("1.5 · 1,234.57");
     expect(cards[1].text()).toContain("受限");
     expect(cards[1].text()).not.toContain("42");
+    // 查询 wire 的 ready 结果是裸值：仍按权威定义格式化，而不是 JSON 数组文本。
+    expect(cards[2].text()).toContain("1.5 · 1,234.57");
+    expect(cards[2].text()).not.toContain("[1.5");
+    // 重算窗口内 wire 返回 updating envelope：显示真实状态而不是空文本。
+    expect(cards[3].text()).toContain("计算中");
+    expect(cards[3].text()).not.toContain("1,234");
   });
 
   it("keeps runtime number-looking values unformatted for non-numeric declared columns", () => {
