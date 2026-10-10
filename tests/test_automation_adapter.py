@@ -532,6 +532,7 @@ def test_quality_and_release_build_keep_the_locked_node_toolchain(
 ) -> None:
     observed: list[tuple[tuple[str, ...], dict[str, str] | None]] = []
     locked_path = "C:/locked-node"
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
     monkeypatch.delenv("VIBETABLE_CI_PREPARE_MODE", raising=False)
     monkeypatch.setattr(
         automation_project,
@@ -568,23 +569,52 @@ def test_quality_and_release_build_keep_the_locked_node_toolchain(
     assert build_next[1] == {"PATH": locked_path}
 
 
-def test_candidate_prepare_defers_quality_to_candidate_bound_shards(
+@pytest.mark.parametrize(
+    ("event", "head", "fails", "requires_evidence"),
+    [
+        ("pull_request", "automation/release", False, True),
+        ("pull_request", "automation/release", True, True),
+        ("pull_request", "codex/feature", False, False),
+        ("push", "automation/release", False, False),
+        ("", "", False, False),
+    ],
+)
+def test_candidate_prepare_checks_release_evidence_before_deferring_quality(
     monkeypatch: pytest.MonkeyPatch,
+    event: str,
+    head: str,
+    fails: bool,
+    requires_evidence: bool,
 ) -> None:
     observed: list[tuple[str, ...]] = []
     monkeypatch.setenv("VIBETABLE_CI_PREPARE_MODE", "candidate")
-    monkeypatch.setattr(
-        automation_project, "ensure_npm", lambda _root: Path("C:/npm/node_modules/.bin")
-    )
-    monkeypatch.setattr(
-        automation_project,
-        "_run",
-        lambda *command, **_kwargs: observed.append(command),
-    )
+    monkeypatch.setenv("AUTOMATION_EVENT", event)
+    monkeypatch.setenv("GITHUB_HEAD_REF", head)
 
-    automation_project.quality()
+    def run(*command: str, **_kwargs: object) -> None:
+        observed.append(command)
+        if fails:
+            raise subprocess.CalledProcessError(1, command)
 
-    assert observed == []
+    monkeypatch.setattr(automation_project, "_run", run)
+    if fails:
+        with pytest.raises(subprocess.CalledProcessError):
+            automation_project.quality()
+    else:
+        automation_project.quality()
+
+    assert observed == (
+        [
+            (
+                automation_project.sys.executable,
+                "scripts/generate_product_e2e_capability_index.py",
+                "--check",
+                "--require-closed-evidence",
+            )
+        ]
+        if requires_evidence
+        else []
+    )
 
 
 def test_pr_e2e_builds_a_package_and_selects_exact_release_smoke_capability(
@@ -791,6 +821,7 @@ def test_full_quality_starts_with_the_stable_contract_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[tuple[str, ...], Path]] = []
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
     monkeypatch.delenv("VIBETABLE_CI_PREPARE_MODE", raising=False)
     monkeypatch.setattr(
         automation_project,
@@ -983,21 +1014,7 @@ def test_publish_checkout_keeps_job_token_for_git_tag_push() -> None:
     assert "token:" not in checkout
 
 
-def test_release_pr_and_publish_require_closed_product_e2e_evidence() -> None:
-    ci = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    prepare = ci.split("\n  prepare:\n", maxsplit=1)[1].split("\n  shard:\n", maxsplit=1)[0]
-    before_build = prepare.split("- name: Build immutable candidate", maxsplit=1)[0]
-    release_pr_gate = before_build.split(
-        "- name: Verify release PR evidence before building", maxsplit=1
-    )[1].split("- uses:", maxsplit=1)[0]
-    assert (
-        "if: github.event_name == 'pull_request' && github.head_ref == 'automation/release'"
-        in release_pr_gate
-    )
-    assert (
-        "uv run --frozen python scripts/automation_project.py release-evidence" in release_pr_gate
-    )
-
+def test_publish_requires_closed_product_e2e_evidence_after_staging() -> None:
     workflow = (REPO_ROOT / ".github/workflows/cd.yml").read_text(encoding="utf-8")
     after_stage = workflow.split("- name: Stage release", maxsplit=1)[1]
     closed_evidence = after_stage.split("- name: Verify closed product E2E evidence", maxsplit=1)[

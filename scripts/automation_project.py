@@ -269,6 +269,11 @@ def node_tests() -> None:
 
 
 def quality() -> None:
+    if (
+        os.environ.get("AUTOMATION_EVENT") == "pull_request"
+        and os.environ.get("GITHUB_HEAD_REF") == "automation/release"
+    ):
+        verify_release_evidence()
     if _candidate_prepare_mode():
         print(
             "+ defer quality to immutable-candidate CI shards",
