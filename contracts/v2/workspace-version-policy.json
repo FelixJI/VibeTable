@@ -2,7 +2,7 @@
   "contractVersion": "2.0",
   "policyRevision": 2,
   "currentWriter": {
-    "appVersion": "0.5.2",
+    "appVersion": "0.5.3",
     "workspaceManifestFormat": 3,
     "snapshotPackageFormat": 2,
     "internalSnapshotManifestFormat": 2
@@ -13,7 +13,7 @@
     "nMinusOneTarget": "0.5.0",
     "accepted": [
       {
-        "appVersion": "0.5.2",
+        "appVersion": "0.5.3",
         "status": "current"
       }
     ],
