@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import {
   classifyClipboard,
+  encodeClipboardTsv,
   mapCellsToColumns,
   parseClipboard,
   PASTE_CELL_LIMIT,
@@ -82,6 +83,36 @@ describe("parseClipboard", () => {
     expect(parsed.cells[0].map((c) => c.rawValue)).toEqual(["a\tb", 'c"d']);
   });
 
+  it("keeps CRLF/LF/CR inside a quoted cell as one multi-line cell (#465 regression)", () => {
+    const parsed = parseClipboard('"第一行\r\n第二行"\t"lf\nonly"\t"cr\ronly"\t尾部');
+    expect(parsed.rowCount).toBe(1);
+    expect(parsed.columnCount).toBe(4);
+    expect(parsed.cells[0].map((c) => c.rawValue)).toEqual([
+      "第一行\r\n第二行",
+      "lf\nonly",
+      "cr\ronly",
+      "尾部",
+    ]);
+  });
+
+  it("keeps embedded newlines inside quotes while real terminators still split rows", () => {
+    const parsed = parseClipboard('头\t"a\nb"\r\n尾行');
+    expect(parsed.rowCount).toBe(2);
+    expect(parsed.cells[0][1]?.rawValue).toBe("a\nb");
+    expect(parsed.cells[1][0]?.rawValue).toBe("尾行");
+  });
+
+  it("treats a doubled quote after a closed quoted field as a literal quote", () => {
+    const parsed = parseClipboard('"a""b"\tc');
+    expect(parsed.cells[0][0]?.rawValue).toBe('a"b');
+  });
+
+  it("parses an unterminated quoted field leniently to end of input", () => {
+    const parsed = parseClipboard('"未闭合\t内容');
+    expect(parsed.rowCount).toBe(1);
+    expect(parsed.cells[0][0]?.rawValue).toBe("未闭合\t内容");
+  });
+
   it("preserves quotes inside an unquoted JSON value", () => {
     const json = '{"nested":{"value":8},"items":[4,5],"enabled":false}';
     const parsed = parseClipboard(json);
@@ -118,6 +149,38 @@ describe("classifyClipboard", () => {
     };
     const classified = classifyClipboard(over);
     expect("overflow" in classified && classified.overflow).toBe(true);
+  });
+});
+
+describe("encodeClipboardTsv", () => {
+  it("emits plain cells verbatim and joins rows without a trailing terminator", () => {
+    expect(encodeClipboardTsv([["a", "b"], ["c", "d"]])).toBe("a\tb\nc\td");
+  });
+
+  it("quotes cells containing quotes, tabs, CR or LF and doubles quotes", () => {
+    expect(encodeClipboardTsv([['含"引号"', "制\t表", "多\n行", "回\r车", "0", "false"]]))
+      .toBe('"含""引号"""\t"制\t表"\t"多\n行"\t"回\r车"\t0\tfalse');
+  });
+
+  it("preserves a trailing empty column as a trailing tab", () => {
+    expect(encodeClipboardTsv([["a", ""]])).toBe("a\t");
+  });
+
+  it("round-trips multi-line/quoted/tabbed rectangles through parseClipboard", () => {
+    const rectangle = [
+      ["表头一", "表头二", ""],
+      ["多\n行\r\n值", '含"引号"与\t制表符', "007"],
+      ["0", "false", null as unknown as string],
+    ];
+    const encoded = encodeClipboardTsv(rectangle);
+    const parsed = parseClipboard(encoded);
+    expect(parsed.rowCount).toBe(3);
+    expect(parsed.columnCount).toBe(3);
+    expect(parsed.cells.map(row => row.map(cell => cell.rawValue))).toEqual([
+      ["表头一", "表头二", ""],
+      ["多\n行\r\n值", '含"引号"与\t制表符', "007"],
+      ["0", "false", ""],
+    ]);
   });
 });
 

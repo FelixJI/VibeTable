@@ -5,6 +5,10 @@ import { useKeyboardStore } from "@/stores/keyboardStore";
 export interface UseKeyboardOptions {
   /** Whether table-scoped actions are valid in the currently visible view. */
   isTableContext?: () => boolean;
+  /** Foreground modal/drawer; when true table-scoped commands are suppressed. */
+  isForegroundOverlay?: () => boolean;
+  /** Selector of the grid root so grid-internal DOM selections stay usable. */
+  gridRootSelector?: string;
   /**
    * Optional Tabulator instance ref. Currently UNUSED — arrow / Tab / Enter
    * navigation is handled by Tabulator's own range API directly. Kept on the
@@ -81,6 +85,27 @@ function isFocusInInput(): boolean {
 }
 
 /**
+ * A non-collapsed DOM text selection outside the grid root is a user text
+ * interaction: the browser owns copy/cut there, so table commands must not
+ * fire. Selections anchored inside the grid root are treated as grid-internal
+ * (Tabulator ranges are not DOM text selections) and stay usable.
+ */
+function isPlainTextSelection(gridRootSelector: string): boolean {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return false;
+  const node = selection.anchorNode;
+  if (!node) return false;
+  const element = node instanceof Element ? node : node.parentElement;
+  if (!element) return false;
+  return element.closest(gridRootSelector) === null;
+}
+
+/** Shared text-interaction gate for keyboard AND explicit menu commands. */
+export function isGridTextInteractionActive(gridRootSelector = ".tabulator"): boolean {
+  return isFocusInInput() || isPlainTextSelection(gridRootSelector);
+}
+
+/**
  * Register global + grid-scoped keyboard shortcuts on `document`. Should be
  * called from a component's setup(). The listener is removed on unmount.
  *
@@ -95,12 +120,17 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
   const kb = useKeyboardStore();
 
   function onKeydown(e: KeyboardEvent): void {
-    const inInput = isFocusInInput();
-    const tableContext = opts.isTableContext?.() ?? true;
+    // IME composition and already-consumed events own the keyboard first.
+    if (e.isComposing || e.defaultPrevented) return;
 
-    // Inside a form field, ignore everything except Escape (which must bubble
-    // so modals/panels can close).
-    if (inInput && e.key !== "Escape") return;
+    const inInput = isFocusInInput();
+    const inTextSelection = isPlainTextSelection(opts.gridRootSelector ?? ".tabulator");
+    const tableContext = !(opts.isForegroundOverlay?.() ?? false)
+      && (opts.isTableContext?.() ?? true);
+
+    // Inside a form field or over a plain text selection, ignore everything
+    // except Escape (which must bubble so modals/panels can close).
+    if ((inInput || inTextSelection) && e.key !== "Escape") return;
 
     // --- Global scope -------------------------------------------------------
     if (tableContext && matchesShortcut(e, "Ctrl+Z")) {
@@ -137,8 +167,8 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
       return;
     }
 
-    // --- Grid scope (suppressed in form fields) -----------------------------
-    if (inInput || !tableContext) return;
+    // --- Grid scope (suppressed in form fields/text selections) -----------
+    if (inInput || inTextSelection || !tableContext) return;
 
     if (matchesShortcut(e, "Ctrl+C")) {
       e.preventDefault();

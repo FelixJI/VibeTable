@@ -154,6 +154,103 @@ describe("useKeyboard", () => {
     expect(kb.lastFired).toBe("help");
     wrapper.unmount();
   });
+
+  it("ignores keys during IME composition", () => {
+    const kb = useKeyboardStore();
+    const onCopy = vi.fn();
+    const wrapper = mountKeyboard({ ...noopTabulator, onCopy });
+    fireKey("c", { ctrlKey: true, isComposing: true });
+    expect(kb.lastFired).toBeNull();
+    expect(onCopy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("ignores events already consumed by an earlier handler", () => {
+    const kb = useKeyboardStore();
+    const onPaste = vi.fn();
+    const wrapper = mountKeyboard({ ...noopTabulator, onPaste });
+    const event = new KeyboardEvent("keydown", {
+      key: "v",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    event.preventDefault();
+    document.dispatchEvent(event);
+    expect(kb.lastFired).toBeNull();
+    expect(onPaste).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("suppresses copy while a plain text selection outside the grid is active", () => {
+    const kb = useKeyboardStore();
+    const onCopy = vi.fn();
+    const wrapper = mountKeyboard({ ...noopTabulator, onCopy });
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "普通文字选择";
+    document.body.appendChild(paragraph);
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireKey("c", { ctrlKey: true });
+    expect(kb.lastFired).toBeNull();
+    expect(onCopy).not.toHaveBeenCalled();
+
+    selection.removeAllRanges();
+    document.body.removeChild(paragraph);
+    fireKey("c", { ctrlKey: true });
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("keeps grid shortcuts working for selections anchored inside the grid root", () => {
+    const onCopy = vi.fn();
+    const wrapper = mountKeyboard({ ...noopTabulator, onCopy });
+    const gridRoot = document.createElement("div");
+    gridRoot.className = "tabulator";
+    const cell = document.createElement("div");
+    cell.textContent = "单元格文本";
+    gridRoot.appendChild(cell);
+    document.body.appendChild(gridRoot);
+    const range = document.createRange();
+    range.selectNodeContents(cell);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireKey("c", { ctrlKey: true });
+    expect(onCopy).toHaveBeenCalledTimes(1);
+
+    selection.removeAllRanges();
+    document.body.removeChild(gridRoot);
+    wrapper.unmount();
+  });
+
+  it("suppresses table commands while a foreground overlay is active", () => {
+    const kb = useKeyboardStore();
+    const onCopy = vi.fn();
+    const onUndo = vi.fn();
+    const onHelp = vi.fn();
+    const wrapper = mountKeyboard({
+      isForegroundOverlay: () => true,
+      onCopy,
+      onUndo,
+      onHelp,
+    });
+
+    fireKey("c", { ctrlKey: true });
+    fireKey("z", { ctrlKey: true });
+    expect(kb.lastFired).toBeNull();
+    expect(onCopy).not.toHaveBeenCalled();
+    expect(onUndo).not.toHaveBeenCalled();
+
+    fireKey("?");
+    expect(onHelp).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
 });
 
 describe("matchesShortcut", () => {

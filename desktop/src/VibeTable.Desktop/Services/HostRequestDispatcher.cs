@@ -151,6 +151,7 @@ internal sealed class HostRequestDispatcher
         GridPresentationRequestController gridPresentation,
         HostCommandRequestController commands,
         HostSourceImportRequestController sourceImports,
+        ClipboardRequestController clipboard,
         Action<RoutedWebRequest>? beforeDispatch = null)
     {
         _reply = reply ?? throw new ArgumentNullException(nameof(reply));
@@ -165,12 +166,14 @@ internal sealed class HostRequestDispatcher
         ArgumentNullException.ThrowIfNull(gridPresentation);
         ArgumentNullException.ThrowIfNull(commands);
         ArgumentNullException.ThrowIfNull(sourceImports);
+        ArgumentNullException.ThrowIfNull(clipboard);
         _beforeDispatch = beforeDispatch;
         _routes =
         [
             new(HostLifecycleRequestController.Handles, lifecycle.Dispatch),
             new(WorkspaceProductController.Handles,
                 request => _ = workspaceProduct.DispatchAsync(request)),
+            new(ClipboardRequestController.Handles, request => _ = clipboard.DispatchAsync(request)),
             new(ApplicationRequestController.Handles,
                 request => _ = application.DispatchAsync(request)),
             new(DeviceSettingsRequestController.Handles,

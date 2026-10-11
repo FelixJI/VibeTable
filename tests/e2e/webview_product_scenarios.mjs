@@ -1647,12 +1647,7 @@ async function scenario02(page, recorder, _network, runtime) {
   const percentStorageEdit = await beginCellEdit(
     page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
   );
-  // 真实剪贴板粘贴：授予权限→写入剪贴板→编辑器 Ctrl+V（同文件既有模式）。
-  await page.context().grantPermissions(
-    ["clipboard-read", "clipboard-write"],
-    { origin: "https://app.vibetable.local" },
-  );
-  await page.evaluate(async (value) => navigator.clipboard.writeText(value), "12.5");
+  await seedIsolatedNativeClipboard(page, "12.5");
   await percentStorageEdit.press("Control+a");
   await percentStorageEdit.press("Control+V");
   await percentStorageEdit.press("Enter");
@@ -2080,6 +2075,18 @@ async function verifyQueryViewGroupingUI(page, recorder) {
         throw cleanupError;
       }
     }
+  }
+}
+
+// Native clipboard writes are confined to the ephemeral GitHub-hosted test desktop.
+async function seedIsolatedNativeClipboard(page, text) {
+  if (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted") {
+    throw new Error("Native clipboard E2E requires an isolated GitHub-hosted runner; local clipboard is untouched.");
+  }
+  const written = await rawBridgeRequest(page, "clipboard.writeText", { text });
+  const read = await rawBridgeRequest(page, "clipboard.readText", {});
+  if (written.payload?.written !== true || read.payload?.text !== text) {
+    throw new Error("Native Host clipboard round trip failed");
   }
 }
 
@@ -3041,11 +3048,7 @@ async function scenario04(page, recorder, _network, runtime) {
       normalizedEditorValue: canonicalJsonText(editorValue),
     });
 
-    await page.context().grantPermissions(
-      ["clipboard-read", "clipboard-write"],
-      { origin: "https://app.vibetable.local" },
-    );
-    await page.evaluate(async (value) => navigator.clipboard.writeText(value),
+    await seedIsolatedNativeClipboard(page,
       '{"nested":{"value":8},"items":[4,5],"enabled":false}');
     await page.waitForFunction(
       controlOwnJsonReconcileInPage,

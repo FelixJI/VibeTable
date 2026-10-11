@@ -97,8 +97,22 @@ import {
   SURFACE_WEB_MESSAGE_TYPES,
 } from "@/contracts/surfaceBridgeContracts";
 
+import type {
+  ClipboardHostMessageType,
+  ClipboardHostPayloadMap,
+  ClipboardWebMessageType,
+  ClipboardWebPayloadMap,
+} from "@/contracts/clipboardContracts";
+import {
+  CLIPBOARD_HOST_MESSAGE_TYPES,
+  CLIPBOARD_WEB_MESSAGE_TYPES,
+  CLIPBOARD_MESSAGE_MAX_BYTES,
+  ClipboardOperationError,
+} from "@/contracts/clipboardContracts";
+
 type HostMessageType =
   | SharedHostMessageType
+  | ClipboardHostMessageType
   | RuntimeDiagnosticsHostMessageType
   | AppPreferencesHostMessageType
   | ReleaseUpdateHostMessageType
@@ -106,6 +120,7 @@ type HostMessageType =
   | WorkspaceV2HostMessageType;
 type HostPayloadMap =
   & SharedHostPayloadMap
+  & ClipboardHostPayloadMap
   & RuntimeDiagnosticsHostPayloadMap
   & AppPreferencesHostPayloadMap
   & ReleaseUpdateHostPayloadMap
@@ -113,6 +128,7 @@ type HostPayloadMap =
   & WorkspaceV2HostPayloadMap;
 type WebMessageType =
   | SharedWebMessageType
+  | ClipboardWebMessageType
   | RuntimeDiagnosticsWebMessageType
   | AppPreferencesWebMessageType
   | ReleaseUpdateWebMessageType
@@ -120,6 +136,7 @@ type WebMessageType =
   | WorkspaceV2WebMessageType;
 type WebPayloadMap =
   & SharedWebPayloadMap
+  & ClipboardWebPayloadMap
   & RuntimeDiagnosticsWebPayloadMap
   & AppPreferencesWebPayloadMap
   & ReleaseUpdateWebPayloadMap
@@ -316,6 +333,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "gridState.save",
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
+  ...CLIPBOARD_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
   ...SURFACE_HOST_MESSAGE_TYPES,
@@ -440,6 +458,7 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "version.delete",
   ...RUNTIME_DIAGNOSTICS_WEB_MESSAGE_TYPES,
   ...APP_PREFERENCES_WEB_MESSAGE_TYPES,
+  ...CLIPBOARD_WEB_MESSAGE_TYPES,
   ...RELEASE_UPDATE_WEB_MESSAGE_TYPES,
   ...WORKSPACE_V2_WEB_MESSAGE_TYPES,
   ...SURFACE_WEB_MESSAGE_TYPES,
@@ -637,6 +656,10 @@ export interface HostBridge {
     type: K,
     payload: RuntimeDiagnosticsWebPayloadMap[K],
   ): Promise<RuntimeDiagnosticsHostPayloadMap[K]>;
+  request<K extends ClipboardWebMessageType>(
+    type: K,
+    payload: ClipboardWebPayloadMap[K],
+  ): Promise<ClipboardHostPayloadMap[K]>;
   request<K extends AppPreferencesWebMessageType>(
     type: K,
     payload: AppPreferencesWebPayloadMap[K],
@@ -1010,6 +1033,10 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
         `HostBridge: refusing to post non-whitelisted web message type "${env.type}"`,
       );
     }
+    if (env.type.startsWith("clipboard.")
+      && new TextEncoder().encode(JSON.stringify(env)).length > CLIPBOARD_MESSAGE_MAX_BYTES) {
+      throw new ClipboardOperationError("tooLarge");
+    }
     webview().postMessage(env);
   }
 
@@ -1112,7 +1139,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
           || type === "settings.readWorkCalendar" || type === "lookup.query"
           || type === "plugin.catalog.list" || type === "plugin.audit.list"
           || type === "plugin.cleanup.listPending"
-          || type.startsWith("command.") || type.startsWith("shortcut."))
+          || type.startsWith("command.") || type.startsWith("shortcut.")
+          || type.startsWith("clipboard."))
           && env.scope ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
           : undefined,
         messageType: type,
