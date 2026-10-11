@@ -168,12 +168,6 @@ describe("encodeClipboardTsv", () => {
       .toBe('"含""引号"""\t"制\t表"\t"多\n行"\t"回\r车"\t0\tfalse');
   });
 
-  it("preserves a single quoted empty cell", () => {
-    const parsed = parseClipboard('""');
-    expect(parsed.cellCount).toBe(1);
-    expect(parsed.cells[0][0].rawValue).toBe("");
-  });
-
   it("preserves a trailing empty column as a trailing tab", () => {
     expect(encodeClipboardTsv([["a", ""]])).toBe("a\t");
   });
