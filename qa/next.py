@@ -1457,11 +1457,12 @@ def persist_product_e2e_evidence(
         def copy_runtime_diagnostics(
             runtime_source: Path, runtime_destination: Path, *, preview_host: bool = False
         ) -> None:
-            if preview_host and any(
-                path.is_symlink() or path.is_junction()
-                for path in (runtime_source, runtime_source.parent)
-            ):
-                return
+            if preview_host:
+                ancestor = runtime_source
+                while ancestor != run_source.parent:
+                    if ancestor.is_symlink() or ancestor.is_junction():
+                        return
+                    ancestor = ancestor.parent
             # Fixed readiness-root diagnostics only; the shared user desktop.log is never read.
             _copy_if_file(
                 runtime_source / "vibetable-trace.log",

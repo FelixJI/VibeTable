@@ -1441,7 +1441,7 @@ def test_product_e2e_failure_evidence_rejects_a_symlinked_rotated_log(
     assert not (copied_runtime / f"{log_prefix}-20260103-030303333.log").exists()
 
 
-@pytest.mark.parametrize("linked_directory", ["controls", "preview-host"])
+@pytest.mark.parametrize("linked_directory", ["_runtime", "42", "controls", "preview-host"])
 def test_product_e2e_failure_evidence_rejects_linked_preview_host_ancestors(
     tmp_path: Path, linked_directory: str
 ) -> None:
@@ -1455,13 +1455,12 @@ def test_product_e2e_failure_evidence_rejects_linked_preview_host_ancestors(
         ),
         encoding="utf-8",
     )
-    controls = run_root / "_runtime" / "42" / "controls"
-    link = controls if linked_directory == "controls" else controls / "preview-host"
-    link.parent.mkdir(parents=True)
+    parts = ("_runtime", "42", "controls", "preview-host")
+    index = parts.index(linked_directory)
+    link = run_root.joinpath(*parts[: index + 1])
+    link.parent.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "outside-evidence"
-    logs = outside / "desktop-logs"
-    if linked_directory == "controls":
-        logs = outside / "preview-host" / "desktop-logs"
+    logs = outside.joinpath(*parts[index + 1 :], "desktop-logs")
     logs.mkdir(parents=True)
     (logs / "preview-1234.log").write_text("outside log", encoding="utf-8")
     _create_junction(link, outside)
