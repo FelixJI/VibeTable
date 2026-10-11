@@ -16,6 +16,13 @@ import type {
 import { t } from "@/i18n";
 import { computed, ref } from "vue";
 
+export class DataTaskCancelledError extends Error {
+  constructor() {
+    super("Data task cancelled.");
+    this.name = "DataTaskCancelledError";
+  }
+}
+
 export type DataTaskSessionState = "active" | "draining" | "retired";
 
 export interface ImportPreviewSession {
@@ -149,6 +156,7 @@ export function useDataIoService() {
   }
 
   function readTaskResult(kind: "data.import" | "data.export" | "data.previewImport", status: DataTaskStatus): unknown {
+    if (status.state === "cancelled") throw new DataTaskCancelledError();
     if (status.state !== "succeeded") {
       throw new Error(status.error ?? `Data task ended as ${status.state}.`);
     }

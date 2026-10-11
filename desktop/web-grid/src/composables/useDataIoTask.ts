@@ -10,6 +10,7 @@ import type {
   RelationImportOption,
 } from "@/services/dataIoService";
 import { t } from "@/i18n";
+import { DataTaskCancelledError } from "@/services/dataIoService";
 
 /** One user-authored relation mapping row (stable identities only). */
 export interface RelationMappingDraft {
@@ -279,7 +280,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       previewSession.value = session;
       previewedMappingKey = "[]";
     } catch (error) {
-      if (isLive(scope)) options.reportError(errorMessage(error));
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) options.reportError(errorMessage(error));
       return;
     } finally {
       previewing.value = false;
@@ -313,7 +314,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       previewSession.value = { grant, plan, mode: "create_only" };
       previewedMappingKey = "[]";
     } catch (error) {
-      if (isLive(scope)) options.reportError(errorMessage(error));
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) options.reportError(errorMessage(error));
       return;
     } finally {
       previewing.value = false;
@@ -344,7 +345,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       mappingDirty.value = false;
       schemaDrifted.value = false;
     } catch (error) {
-      if (isLive(scope)) applyError.value = errorMessage(error);
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) applyError.value = errorMessage(error);
     } finally {
       repreviewing.value = false;
     }
@@ -371,7 +372,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       retirePendingRequests();
       options.refresh();
     } catch (error) {
-      if (isLive(scope)) applyError.value = errorMessage(error);
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) applyError.value = errorMessage(error);
     } finally {
       applying.value = false;
       cancelling.value = false;
@@ -480,7 +481,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       );
       if (isLive(scope)) options.exportSucceeded(result);
     } catch (error) {
-      if (isLive(scope)) options.reportError(errorMessage(error));
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) options.reportError(errorMessage(error));
     } finally {
       exporting.value = false;
     }

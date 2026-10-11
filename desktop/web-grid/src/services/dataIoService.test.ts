@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BridgeOperationError, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
-import { useDataIoService } from "./dataIoService";
+import { DataTaskCancelledError, useDataIoService } from "./dataIoService";
 
 describe("dataIoService", () => {
   it.each(["draining", "active", "retired"] as const)("retains an admitted task after an in-flight status lease is cancelled with session %s", async (afterRejection) => {
@@ -273,7 +273,7 @@ describe("dataIoService", () => {
         done: 20, total: 0, message: "解析来源文件：20 行",
       });
       await vi.advanceTimersByTimeAsync(100);
-      expect(await result).toBeInstanceOf(Error);
+      expect(await result).toBeInstanceOf(DataTaskCancelledError);
       expect(service.busy.value).toBe(false);
       expect(service.progress.value).toBeNull();
     } finally {

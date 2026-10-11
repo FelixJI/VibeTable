@@ -468,6 +468,8 @@ class ImportService:
         relation_targets: dict[int, RelationImportTarget] = {}
         relation_mapping_errors: dict[int, tuple[str, str]] = {}
         for col_index, field in mapping.items():
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             relation = relations.get(field)
             explicit = explicit_by_source.get(header[col_index].strip())
             if relation is None:
@@ -509,6 +511,8 @@ class ImportService:
                 )
         plan_rows: list[ImportPlanRow] = []
         for row_offset, raw_row in enumerate(rows):
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             source_row = row_offset + 2  # 1-based + header
             values: dict[str, Any] = {}
             diagnostics: list[ImportCellDiagnostic] = []
@@ -536,6 +540,8 @@ class ImportService:
                     target = relation_targets[col_index]
                     assert self._relation_provider is not None
                     try:
+                        if cancelled and cancelled():
+                            raise asyncio.CancelledError
                         matches = await self._relation_provider.find_exact(target, raw)
                     except Exception as exc:
                         diagnostics.append(
@@ -614,6 +620,8 @@ class ImportService:
             )
         source_column_by_field = {field: index for index, field in mapping.items()}
         for row_index, authoritative_row in enumerate(normalized_rows):
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             if not isinstance(authoritative_row, dict):
                 raise ImportFlowError(
                     "invalid authoritative import preview row",
@@ -679,8 +687,7 @@ class ImportService:
             mode=params.mode,
             upsert_key=params.upsert_key,
         )
-        if cancelled and cancelled():
-            raise asyncio.CancelledError
+        # A minted plan must remain reachable even if cancellation arrived during minting.
         return ImportPlan(
             collection=params.collection,
             schema_revision=params.schema_revision,

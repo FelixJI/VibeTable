@@ -8,6 +8,7 @@ import type {
   ImportPreviewSession,
   RelationImportOption,
 } from "@/services/dataIoService";
+import { DataTaskCancelledError } from "@/services/dataIoService";
 import { useDataIoTask, type DataIoTaskPort, type RelationMappingDraft } from "./useDataIoTask";
 
 function previewSession(token = "preview-1"): ImportPreviewSession {
@@ -124,6 +125,55 @@ const mappingRow: RelationMappingDraft = {
 };
 
 describe("useDataIoTask", () => {
+  it.each(["initial", "granted", "repreview"] as const)("handles expected %s preview cancellation without an error", async (entry) => {
+    const cancelled = vi.fn(async () => { throw new DataTaskCancelledError(); });
+    const { task, service, session, reportError } = setup(entry === "initial"
+      ? { previewImport: cancelled }
+      : { previewImportWithGrant: cancelled });
+    if (entry === "repreview") {
+      await task.previewImport();
+      task.setRelationConfig([mappingRow]);
+      await task.repreviewImport();
+      expect(task.previewSession.value).toEqual(session);
+      expect(task.mappingDirty.value).toBe(true);
+      expect(task.repreviewing.value).toBe(false);
+    } else if (entry === "granted") {
+      await task.previewImportWithGrant(session.grant);
+    } else {
+      await task.previewImport();
+    }
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(reportError).not.toHaveBeenCalled();
+    expect(task.applyError.value).toBeNull();
+    expect(task.previewing.value).toBe(false);
+    if (entry !== "repreview") {
+      expect(task.previewSession.value).toBeNull();
+      expect(service.loadRelationImportOptions).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps expected apply and export cancellation out of failure and success callbacks", async () => {
+    const cancelled = vi.fn(async () => { throw new DataTaskCancelledError(); });
+    const { task, reportError, importSucceeded, exportSucceeded, refresh } = setup({
+      applyImport: cancelled,
+      exportData: cancelled,
+    });
+    await task.previewImport();
+    await task.applyImport();
+    expect(task.applyError.value).toBeNull();
+    expect(task.applying.value).toBe(false);
+    expect(task.previewSession.value).not.toBeNull();
+    task.dismissPreview();
+    await task.exportData("csv");
+    await task.confirmExportData();
+    expect(task.canExport.value).toBe(true);
+    expect(cancelled).toHaveBeenCalledTimes(2);
+    expect(reportError).not.toHaveBeenCalled();
+    expect(importSucceeded).not.toHaveBeenCalled();
+    expect(exportSucceeded).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("resolves a stable relation choice to its current physical name after schema refresh", async () => {
     const context = ref<Context>({ collection: "orders", schemaRevision: "schema_0001" });
     const catalog = vi.fn(async () => relationOptions);

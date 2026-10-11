@@ -432,6 +432,23 @@ public sealed class JsonRpcProductDataGatewayTests
     }
 
     [TestMethod]
+    [DataRow("failed")]
+    [DataRow("cancelled")]
+    public async Task TerminalWaitKeepsTheFirstFailureOrCancellationReceipt(string state)
+    {
+        await using var fixture = new NotificationBindingFixture();
+        Task<JsonElement> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        fixture.Report(state, 1);
+        fixture.Report("succeeded", 2);
+        fixture.RetireClient();
+        JsonElement earlierWaiter = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        JsonElement laterWaiter = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        Assert.AreEqual(state, earlierWaiter.GetProperty("state").GetString());
+        Assert.IsTrue(JsonElement.DeepEquals(earlierWaiter, laterWaiter));
+        Assert.AreEqual(JsonValueKind.Null, laterWaiter.GetProperty("result").ValueKind);
+    }
+
+    [TestMethod]
     public async Task CapturedTerminalSurvivesPruningAndDisposedOwnerRejectsLateReports()
     {
         await using var client = new JsonRpcClient(new AutoRespondTransport());

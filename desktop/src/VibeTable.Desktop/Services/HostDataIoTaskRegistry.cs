@@ -243,14 +243,17 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         }
     }
 
-    internal Task<JsonElement> WaitForTerminalAsync(string taskId, CancellationToken token)
+    internal async Task<JsonElement> WaitForTerminalAsync(string taskId, CancellationToken token)
     {
+        Task<TaskStatus> completion;
         lock (_gate)
         {
             if (!_tasks.TryGetValue(taskId, out Record? record))
                 throw new KeyNotFoundException("Data IO task is not in this workspace.");
-            return record.Completion.Task.WaitAsync(token);
+            completion = record.Completion.Task;
         }
+        TaskStatus status = await completion.WaitAsync(token).ConfigureAwait(false);
+        return JsonSerializer.SerializeToElement(status, Wire);
     }
 
     internal (JsonElement Snapshot, JsonRpcClient? Client) RequestCancel(string taskId)
@@ -398,7 +401,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
 
     private JsonElement EventLocked(Record record)
     {
-        if (Terminal(record.Status.State)) record.Completion.TrySetResult(Snapshot(record));
+        if (Terminal(record.Status.State)) record.Completion.TrySetResult(record.Status);
         return EventLocked(record.Status);
     }
 
@@ -508,7 +511,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         internal long Generation { get; } = generation;
         internal ProductSidecarIdentity Identity { get; } = identity;
         internal TaskStatus Status { get; set; } = status;
-        internal TaskCompletionSource<JsonElement> Completion { get; } =
+        internal TaskCompletionSource<TaskStatus> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool CancelRequested { get; set; }
         internal bool HistoryStarted { get; set; }

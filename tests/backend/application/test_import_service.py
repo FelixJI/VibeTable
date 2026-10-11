@@ -1618,3 +1618,101 @@ async def test_cancel_during_prefix_binding_rejects_before_business_submission(t
     )
     assert result.failed_rows == []
     assert len(mutation.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["mapping", "find_exact"])
+async def test_preview_cancellation_stops_before_the_next_relation_rpc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    path = tmp_path / "relations.csv"
+    _write_csv(path, ["Contract", "Partner"], [["C-1", "C-2"], ["C-3", "C-4"]])
+    profile = collection_profile_from_definition(
+        snapshot_v2(
+            "orders",
+            [
+                field_v2("contract", "relation", target_table_id="contracts"),
+                field_v2("partner", "relation", target_table_id="contracts"),
+            ],
+            revision="schema-1",
+        )
+    )
+    provider = FakeRelationProvider({})
+    calls: list[str] = []
+    cancelled = False
+    inspect = provider.inspect_mapping
+
+    async def inspect_then_cancel(**kwargs: Any) -> RelationImportTarget:
+        nonlocal cancelled
+        calls.append("mapping")
+        target = await inspect(**kwargs)
+        if boundary == "mapping":
+            cancelled = True
+        return target
+
+    async def find_then_cancel(target: RelationImportTarget, value: Any) -> list[Any]:
+        nonlocal cancelled
+        calls.append("find_exact")
+        cancelled = True
+        return ["matched-record"]
+
+    monkeypatch.setattr(provider, "inspect_mapping", inspect_then_cancel)
+    monkeypatch.setattr(provider, "find_exact", find_then_cancel)
+    service, mutation = _service(path, profile=profile, relation_provider=provider)
+    with pytest.raises(asyncio.CancelledError):
+        await service.preview(
+            PreviewImportParams(
+                grant_id="grant-1",
+                collection="orders",
+                schema_revision="schema-1",
+                column_mapping=[
+                    ImportColumnMapping(
+                        source_column=header,
+                        target_field=f"f_{field}",
+                        relation_id=f"orders.fld_{field}",
+                        match_field="number",
+                    )
+                    for header, field in [("Contract", "contract"), ("Partner", "partner0")]
+                ],
+            ),
+            cancelled=lambda: cancelled,
+        )
+    assert calls == (["mapping"] if boundary == "mapping" else ["mapping", "mapping", "find_exact"])
+    assert mutation.preview_calls == []
+    assert mutation.plan_calls == []
+
+
+@pytest.mark.asyncio
+async def test_preview_returns_minted_plan_when_cancellation_arrives_during_mint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "minted.csv"
+    _write_csv(path, ["number"], [[str(index)] for index in range(MAX_ATOMIC_IMPORT_ROWS)])
+    service, mutation = _service(path)
+    cancelled = False
+    mint = mutation.mint_import_plan
+
+    async def mint_then_cancel(**kwargs: Any) -> dict[str, Any]:
+        nonlocal cancelled
+        receipt = await mint(**kwargs)
+        cancelled = True
+        return receipt
+
+    monkeypatch.setattr(mutation, "mint_import_plan", mint_then_cancel)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        ),
+        cancelled=lambda: cancelled,
+    )
+    assert cancelled
+    assert len(plan.rows) == MAX_ATOMIC_IMPORT_ROWS
+    assert list(mutation._plans) == [plan.token.token]
+    staged = await mutation.stage_import_plan(
+        token=plan.token.token,
+        grant_id="grant-1",
+        collection="vibetable_demo",
+        mode="create_only",
+        capability_hash=plan.capability_hash,
+    )
+    assert len(staged["rows"]) == MAX_ATOMIC_IMPORT_ROWS
