@@ -1333,6 +1333,8 @@ def persist_product_e2e_evidence(
                 "45-common-field-display-reopened.png",
                 "45-common-field-display-restored.png",
                 "45-common-field-display-cards.png",
+                "45-common-field-display-lookup-cards.png",
+                "45-common-field-display-lookup-kanban.png",
             ),
             "35-data-io-interoperability": (
                 "35-import-management-history.png",
