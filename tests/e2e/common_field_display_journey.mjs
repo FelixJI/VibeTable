@@ -228,14 +228,14 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
       const current = await query();
       const rows = current.payload?.rows ?? [];
       if (rows.length === 6 && rows.every(row => row[amountLookup.identity.physicalName] === 1234.56789
-        && JSON.stringify(row[payloadLookup.identity.physicalName]) === JSON.stringify(statePayload))) return rows;
+        && JSON.stringify(row[payloadLookup.identity.physicalName]) === JSON.stringify([statePayload]))) return rows;
       if (Date.now() > deadline) throw new Error(`lookup backfill did not settle: ${JSON.stringify(current)}`);
       await page.waitForTimeout(250);
     }
   };
   const lookupRows = await waitLookupAuthority();
   recorder.check("query wire keeps the fresh JSON-state Lookup column as bare authoritative data",
-    lookupRows.every(row => JSON.stringify(row[payloadLookup.identity.physicalName]) === '{"state":"updating","value":42}'
+    lookupRows.every(row => JSON.stringify(row[payloadLookup.identity.physicalName]) === JSON.stringify([statePayload])
       && row[amountLookup.identity.physicalName] === 1234.56789), { row: lookupRows[0] });
   await page.waitForFunction(fields => fields.every(field => {
     const cells = [...document.querySelectorAll(`.tabulator-cell[tabulator-field="${field.name}"] .vt-lookup-text`)];
