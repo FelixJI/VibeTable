@@ -19,7 +19,13 @@ function isLookupEnvelope(record: Record<string, unknown>): boolean {
     return record.value === null && lookupDiagnosticCode(record) === "calculation.pending";
   }
   if (state === "ok" || state === "restricted" || state === "invalid" || state === "too_expensive") {
-    return Array.isArray(record.provenance) && typeof record.provenanceTotal === "number";
+    return "value" in record
+      && Array.isArray(record.provenance)
+      && typeof record.provenanceTotal === "number"
+      && typeof record.provenanceTotalKnown === "boolean"
+      && typeof record.provenanceOffset === "number"
+      && typeof record.provenanceLimit === "number"
+      && typeof record.provenanceHasMore === "boolean";
   }
   return false;
 }

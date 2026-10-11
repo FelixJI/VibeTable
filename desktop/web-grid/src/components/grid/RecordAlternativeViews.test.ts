@@ -282,17 +282,17 @@ describe("alternative record views", () => {
     }];
     // sidecar CellValue 的完整 wire 形状：状态 + 分页元数据恒定序列化。
     const cell = (state: string, extra: Record<string, unknown>) => ({
-      state, provenance: [], provenanceTotal: 0, provenanceTotalKnown: true,
+      state, value: null, provenance: [], provenanceTotal: 0, provenanceTotalKnown: true,
       provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false, ...extra,
     });
     const gallery = mount(RecordGalleryView, {
       props: {
         rows: [
-          // 裸 JSON：缺 LookupCellValue 恒定携带的 provenance/provenanceTotal，是数据。
-          { rowKey: "1", title: "A", payload: { state: "ok", value: 42 } },
-          { rowKey: "2", title: "B", payload: { state: "restricted", value: 42 } },
-          { rowKey: "3", title: "C", payload: { state: "invalid", value: 42 } },
-          { rowKey: "4", title: "D", payload: { state: "too_expensive", value: 42 } },
+          // 裸 JSON 可碰撞部分分页字段；缺完整 LookupCellValue 形状仍是数据。
+          { rowKey: "1", title: "A", payload: { state: "ok", value: 42, provenance: [], provenanceTotal: 0 } },
+          { rowKey: "2", title: "B", payload: { state: "restricted", value: 42, provenance: [], provenanceTotal: 0 } },
+          { rowKey: "3", title: "C", payload: { state: "invalid", value: 42, provenance: [], provenanceTotal: 0 } },
+          { rowKey: "4", title: "D", payload: { state: "too_expensive", value: 42, provenance: [], provenanceTotal: 0 } },
           { rowKey: "5", title: "E", payload: { state: "ready", value: 42 } },
           // 真实 envelope：按状态渲染，不泄露 stale 值。
           { rowKey: "6", title: "F", payload: cell("ok", { value: [1.5, 1234.56789], provenanceTotal: 2 }) },
@@ -311,12 +311,12 @@ describe("alternative record views", () => {
       },
     });
     const cards = gallery.findAll('[data-testid="gallery-card"]');
-    expect(cards[0].text()).toContain('{"state":"ok","value":42}');
-    expect(cards[1].text()).toContain('{"state":"restricted","value":42}');
+    expect(cards[0].text()).toContain('{"state":"ok","value":42,"provenance":[],"provenanceTotal":0}');
+    expect(cards[1].text()).toContain('{"state":"restricted","value":42,"provenance":[],"provenanceTotal":0}');
     expect(cards[1].text()).not.toContain("受限");
-    expect(cards[2].text()).toContain('{"state":"invalid","value":42}');
+    expect(cards[2].text()).toContain('{"state":"invalid","value":42,"provenance":[],"provenanceTotal":0}');
     expect(cards[2].text()).not.toContain("无效");
-    expect(cards[3].text()).toContain('{"state":"too_expensive","value":42}');
+    expect(cards[3].text()).toContain('{"state":"too_expensive","value":42,"provenance":[],"provenanceTotal":0}');
     expect(cards[3].text()).not.toContain("超出预算");
     expect(cards[4].text()).toContain('{"state":"ready","value":42}');
     // 真实 envelope 按权威定义格式化（json 输出类型不加数值格式化，decimal 场景由 AC4 覆盖）。
