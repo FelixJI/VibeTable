@@ -1,6 +1,6 @@
 # Host 本机呈现状态完整收敛：设计与资格记录
 
-基线 main `9fa626a13840830037bcb82eaddc0adf8617075b`。本分支处理 PR140 L6 的本机网格呈现状态及真实保存/恢复消费者；与 Go 共享工作日历、Version、Dashboard 等业务 authority 分开。当前仅完成代码盘点，尚未生产切换或测试资格，不创建文档微型PR。
+基线 main `9fa626a13840830037bcb82eaddc0adf8617075b`。本分支处理 PR140 L6 的本机网格呈现状态及真实保存/恢复消费者；与 Go 共享工作日历、Version、Dashboard 等业务 authority 分开。以下早期盘点按当时基线保留；后续迁移与验证见各日期记录，当前主题状态见文末 2026-10-11 记录。
 
 ## 已核实际调用
 
@@ -9,7 +9,7 @@
 - 原 Python DTO 有512列、16sort、64filter、keyword256、width1–4096等边界，C# GridStateContracts 不是这些输入验证的自动替代。切换需显式保留/解释契约，不用类型反序列化代替验证。
 - GridStateCoordinator 当前 ExecuteSaveAsync 以CancellationToken.None保存并直接覆盖_confirmedState，LoadStateAsync也未检查await后的workspace/table世代。迁移时必须以延迟完成/切换workspace的真实回归核实，避免把旧请求结果采纳到新表。
 - settings.readDevice/saveDevice已有C# DeviceSettingsRequestController/DeviceSettingsStore及workspace epoch lease；存储目前位于当前workspace runtime data/state/device-settings.json，不能重新发明相同Host route并宣布完成。
-- 实际主题仍从uiStore的全局vt:theme localStorage读取/写入；useTheme直接消费该值。设备设置route存在不等于主题UI已接线。主题的全局设备语义与网格workspace/table语义须显式分域。
+- 当时主题由 uiStore 的全局 vt:theme localStorage 持久化。该路径已由 #466 迁至 Host AppPreferences，Web 只接收投影；旧值仅用于一次迁移，当前契约和验证见文末。主题的全局设备语义与网格 workspace/table 语义仍分域。
 
 ## 待形成的完整实现边界
 
@@ -17,11 +17,11 @@
 
 在切换前冻结实际旧DTO/service/store语义，且当前新Host回归须覆盖默认读、重开、CAS冲突、输入边界、取消/过期请求和独立workspace/table隔离。不声称旧Python回放就是新Host测试。保留原测试直到迁移方案可审、发现机制和覆盖对应关系明确；当前没有授权绕过任何自动审批拒绝。
 
-主题/其他uiStore偏好是否纳入同一完整呈现状态PR，须先确定现有DeviceSettings DTO与真实消费者范围，避免仅接theme却继续保留第二个主题authority。Shortcuts/command.export.query与Worker依赖另行完整实施，不因此分支宣称L6全部完成。
+当时未确定的主题接线已由 #466 完成：AppPreferences 是唯一持久化 authority，不并入 workspace DeviceSettings，也不保留 localStorage 双写；其他 uiStore 偏好不因此迁移。Shortcuts/command.export.query与Worker依赖另行完整实施，不因此分支宣称L6全部完成。
 
 ## 验收
 
-正常hooks、相关C#/Web/Python契约与生成一致性，独立Standards/Spec，完整发布构建；使用真实产品改变网格状态、切表/切工作区/关闭重开，并检查当前状态仍由Host持久恢复。若接主题则同时从真实Settings UI改变并重开验证。fresh CI、严格同步main、squash及postmain CI/CD全部完成后才可写交付通过。
+正常hooks、相关C#/Web/Python契约与生成一致性，独立Standards/Spec，完整发布构建；使用真实产品改变网格状态、切表/切工作区/关闭重开，并检查当前状态仍由Host持久恢复。主题已接入；其真实设置切换与重开验证见文末，不以静态接线代替资格。fresh CI、严格同步main、squash及postmain CI/CD全部完成后才可写交付通过。
 
 ## 恢复顺序的首个已复现缺口
 
@@ -201,3 +201,11 @@ CI `34468066165` 的 release smoke 中 S02 编辑器未就绪、S08 等待超时
 在 PR366 合入后的最新 main（041fac87）上完成 L6 余项清账：删除无活跃消费者的旧保存链，公开 gridState.get/save 仍由 HostRequestDispatcher→GridPresentationRequestController→HostGridStateStore 独占，用户存储格式（workspace UUID 分目录 grid-state.json）与 workspace 隔离不变。
 
 逐条核实后的删除：Web `gridState.saveRequested` 仅剩 hostBridge.ts 白名单与 contracts/index.ts 类型，无 producer，已退出；GridRequestController 不再分发该名字，WebMessageRouter 继续以 UNKNOWN_TYPE 拒绝（既有回归保留）。GridStateCoordinator 删除 RequestSave/FlushAsync/LoadStateAsync/SetDatabase/SwitchTableAsync 与 _databaseId/_databaseGeneration/_confirmedState/_confirmedRevision/_currentTable，保留全部活跃 query/selection 逻辑；DatabaseOpenCommit 只保留 TableWorkspaceService.DatabaseOpenAdmission 的 commit/rollback（Enqueue 完成、Dispose 回滚），真实 workspace admission/回滚回归仍覆盖。ITableRpcGateway/LazyProductTableGateway/PocketBaseTableGateway 的 Get/SaveGridStateAsync 与 IWorkspaceSupportRpcGateway/JsonRpcWorkspaceSupportGateway 整体删除；backend/application/grid_state_service.py 与 backend/state（LocalStateStore）删除，backend.__main__ 从未注册 gridState，无未注册方法调用残留。backend/contracts/grid_state.py 只保留 Host* 模型（catalog 生成器消费），遗留 Python GridState/GridStateGetParams/GridStateSaveParams/GridStateResult 与其 service/store/b3 契约测试删除；固定 producer oracle（grid_state-python-oracle.json）按历史 SHA 回放，与当前树无关，保留并通过。inventory state.device-grid 改为唯一 Host owner（wpfHost/HostGridStateStore），rpc.grid-state deleteWhen 标记 Completed；legacy-surface 新增被删路径与 gridState.saveRequested/旧方法名字面量回归守卫。
+
+## 2026-10-11：全局主题迁至 Host AppPreferences（#466 / PR #472）
+
+AppPreferences 保存唯一 light/dark/system 全局偏好。HostAppearanceService 解析系统外观并通知 WPF/Web；uiStore、useTheme 与插件消费者只投影 Host 状态。Host 未配置偏好时，主题服务可提交有效旧 vt:theme 值迁移；Host 已有偏好优先，持久化失败保留旧值，成功确认后才清理旧 localStorage，不再双写。关闭工作区回到启动页、切换或重开工作区仍使用同一 Host 偏好。
+
+5cf866ba 实现的验证：HostAppearanceServiceTests/SourceImportWindowTests 共 38 passed，包含实际合成 HWND 的暗/亮标题栏属性断言；相邻 Web 主题测试和类型检查通过。CI 38117245932 的真实 WPF/WebView2 S12 通过 Host 设置确认、暗色表格/弹窗/popover、关闭和重开工作区投影断言。旧归档遗漏三张 PNG，ebbdb34f 将它们纳入既有归档及缺图失败检查，tests/test_next_gate.py 147 passed；该新 CI 的截图与完整 required 尚待核对。
+
+用户明确移除真实多 DPI、跨屏及高对比专项验收要求，这些行为未实测，不记为通过。上述证据不代表 PR 已合并或 main CI/CD 已通过；完整门禁及集成结果以 PR #472 为准。
