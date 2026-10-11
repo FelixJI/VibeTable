@@ -181,42 +181,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
       && snapshotDisplay.progressStart === 1 && snapshotDisplay.progressTarget === 2
       && (await query()).payload.rows.some(row => row[progress.physicalName] === 1.5), { snapshotId, restoredBootstrap, snapshotDisplay });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-restored.png"), fullPage: true });
-  // New Gallery views inherit the current visible fields; select the tested summaries.
-  await page.getByTestId("view-hidden-trigger").click();
-  await page.getByTestId("view-hidden-hide-filtered").click();
-  for (const summaryField of ["进度", "评分", "电话"]) {
-    await page.getByTestId("view-hidden-search").locator("input").fill(summaryField);
-    await page.getByTestId("view-hidden-show-filtered").click();
-  }
-  await page.getByTestId("view-hidden-search").locator("input").fill("");
-  await page.getByTestId("view-hidden-apply").click();
-
-  await page.getByTestId("view-create").click();
-  const galleryDialog = page.locator(".view-dialog:visible"); await galleryDialog.waitFor();
-  await galleryDialog.locator(".n-input input").fill("E2E Common Cards");
-  await page.getByTestId("view-kind-gallery").click();
-  await selectVisibleNOption(page, "view-gallery-title-field", "电话");
-  await page.getByTestId("view-dialog-confirm").click();
-  // Wait out the create-view dialog exit animation so the cards screenshot keeps the settled gallery.
-  await galleryDialog.waitFor({ state: "hidden", timeout: 30_000 });
-  await page.getByTestId("record-gallery-view").waitFor({ state: "visible", timeout: 30_000 });
-  await page.waitForFunction(() => document.querySelectorAll('[data-testid="gallery-card"]').length === 6);
-  // Wait for the selected summaries to render before capturing the cards.
-  await page.waitForFunction(wanted => {
-    const texts = [...document.querySelectorAll('[data-testid="gallery-card"]')].map(card => card.textContent ?? "");
-    return wanted.every(text => texts.some(card => card.includes(text)));
-  }, ["150%", "☆☆☆☆☆ 0/5", "★★★★★ 5/5"], { timeout: 30_000 });
-  const cards = await page.getByTestId("gallery-card").allInnerTexts();
-  recorder.check("real record cards share progress and rating display with the grid after snapshot restore",
-    cards.some(text => text.includes("150%")) && cards.some(text => text.includes("☆☆☆☆☆ 0/5"))
-      && cards.some(text => text.includes("★★★★★ 5/5")) && cards.every(text => text.includes("+86 010-0012 ext.03")), { cards });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-cards.png"), fullPage: true });
-
-  // PR #471: record cards render Lookup values through the authoritative
-  // LookupDefinition, and a bare JSON state object stays data on every
-  // surface. The query wire delivers fresh Lookup columns as bare values, so
-  // the seeded {"state":"updating","value":42} source object must reach
-  // cards as data instead of a pending-envelope label.
+  // Verify bare Lookup values before creating any alternative-view preset.
   await selectTable(page, tableName);
   const lookupSourceName = "E2E Lookup 来源";
   const lookupSourceId = await createEmptyTable(page, lookupSourceName);
@@ -318,4 +283,36 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
     kanbanText.includes("1,234.57") && kanbanText.includes('{"state":"updating","value":42}')
       && !kanbanText.includes("计算中"), { kanbanText });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-lookup-kanban.png"), fullPage: true });
+  // New Gallery views inherit the current visible fields; select the tested summaries.
+  await page.getByTestId("view-hidden-trigger").click();
+  await page.getByTestId("view-hidden-hide-filtered").click();
+  for (const summaryField of ["进度", "评分", "电话"]) {
+    await page.getByTestId("view-hidden-search").locator("input").fill(summaryField);
+    await page.getByTestId("view-hidden-show-filtered").click();
+  }
+  await page.getByTestId("view-hidden-search").locator("input").fill("");
+  await page.getByTestId("view-hidden-apply").click();
+
+  await page.getByTestId("view-create").click();
+  const galleryDialog = page.locator(".view-dialog:visible"); await galleryDialog.waitFor();
+  await galleryDialog.locator(".n-input input").fill("E2E Common Cards");
+  await page.getByTestId("view-kind-gallery").click();
+  await selectVisibleNOption(page, "view-gallery-title-field", "电话");
+  await page.getByTestId("view-dialog-confirm").click();
+  // Wait out the create-view dialog exit animation so the cards screenshot keeps the settled gallery.
+  await galleryDialog.waitFor({ state: "hidden", timeout: 30_000 });
+  await page.getByTestId("record-gallery-view").waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="gallery-card"]').length === 6);
+  // Wait for the selected summaries to render before capturing the cards.
+  await page.waitForFunction(wanted => {
+    const texts = [...document.querySelectorAll('[data-testid="gallery-card"]')].map(card => card.textContent ?? "");
+    return wanted.every(text => texts.some(card => card.includes(text)));
+  }, ["150%", "☆☆☆☆☆ 0/5", "★★★★★ 5/5"], { timeout: 30_000 });
+  const cards = await page.getByTestId("gallery-card").allInnerTexts();
+  recorder.check("real record cards share progress and rating display with the grid after snapshot restore",
+    cards.some(text => text.includes("150%")) && cards.some(text => text.includes("☆☆☆☆☆ 0/5"))
+      && cards.some(text => text.includes("★★★★★ 5/5")) && cards.every(text => text.includes("+86 010-0012 ext.03")), { cards });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-cards.png"), fullPage: true });
+
+
 }
