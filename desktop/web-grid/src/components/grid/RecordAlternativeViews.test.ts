@@ -196,6 +196,76 @@ describe("alternative record views", () => {
     expect(cards[3].text()).not.toContain("1,234");
   });
 
+  it("renders legitimate JSON lookup state objects as data; only real pending envelopes show 计算中", () => {
+    const lookupColumn = {
+      name: "payload", title: "负载", kind: "lookup" as const, dataType: "json" as const,
+      editable: false, nullable: true, lookupId: "orders.payload",
+    } as ColumnSchema;
+    const definitions = [{
+      lookupId: "orders.payload", collection: "orders", fieldKey: "payload", displayName: "负载",
+      path: [{ relationId: "orders.contract" }], source: { kind: "target_field" as const, fieldRef: "payload" },
+      outputType: "json" as const,
+      revision: 1, state: "valid" as const, diagnostics: [], dependencies: [],
+    }];
+    const pending = { state: "updating", value: null, provenance: [],
+      diagnostic: { code: "calculation.pending", message: "computed value is waiting for recalculation" } };
+    const gallery = mount(RecordGalleryView, {
+      props: {
+        rows: [
+          // 合法裸 JSON：源字段本身就是形如 envelope 的对象，wire 以裸值交付。
+          { rowKey: "1", title: "A", payload: { state: "updating", value: 42 } },
+          { rowKey: "2", title: "B", payload: { state: "updating", value: { depth: 3 } } },
+          // 诊断码不是 calculation.pending：不是 sidecar 的 pending envelope，是数据。
+          { rowKey: "3", title: "C", payload: { state: "updating", value: null,
+            diagnostic: { code: "workflow.pending" } } },
+          // 诊断码正确但 value 非空：真实生产者恒为 null，仍按数据渲染。
+          { rowKey: "4", title: "D", payload: { state: "updating", value: 7,
+            diagnostic: { code: "calculation.pending" } } },
+          // 真实 pending envelope：sidecar 恒定携带 calculation.pending 诊断与空值。
+          { rowKey: "5", title: "E", payload: pending },
+        ],
+        schema: [...schema, lookupColumn],
+        lookupDefinitions: definitions,
+        view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "payload"] }),
+      },
+    });
+    const cards = gallery.findAll('[data-testid="gallery-card"]');
+    // 与 grid 的裸值归一一致：按权威定义渲染数据本身，而不是永久显示“计算中”。
+    expect(cards[0].text()).toContain('{"state":"updating","value":42}');
+    expect(cards[0].text()).not.toContain("计算中");
+    expect(cards[1].text()).toContain('{"state":"updating","value":{"depth":3}}');
+    expect(cards[1].text()).not.toContain("计算中");
+    expect(cards[2].text()).toContain('{"state":"updating","value":null,"diagnostic":{"code":"workflow.pending"}}');
+    expect(cards[2].text()).not.toContain("计算中");
+    expect(cards[3].text()).toContain('{"state":"updating","value":7,"diagnostic":{"code":"calculation.pending"}}');
+    expect(cards[3].text()).not.toContain("计算中");
+    // 真实 pending 仍显示状态，不用空值占据卡片。
+    expect(cards[4].text()).toContain("计算中");
+    expect(cards[4].text()).not.toContain("depth");
+    // Kanban 车道标签走同一个 displayValue：合法 JSON 是数据，pending 才是状态。
+    const kanbanData = mount(RecordKanbanView, {
+      props: {
+        rows: [{ rowKey: "1", title: "A", payload: { state: "updating", value: 42 } }],
+        schema: [...schema, lookupColumn],
+        lookupDefinitions: definitions,
+        view: view({ kind: "kanban", groupField: "payload", titleField: "title" }),
+      },
+    });
+    expect(kanbanData.text()).toContain('{"state":"updating","value":42}');
+    expect(kanbanData.text()).not.toContain("计算中");
+    const kanbanPending = mount(RecordKanbanView, {
+      props: {
+        rows: [{ rowKey: "2", title: "B", payload: pending }],
+        schema: [...schema, lookupColumn],
+        lookupDefinitions: definitions,
+        view: view({ kind: "kanban", groupField: "payload", titleField: "title" }),
+      },
+    });
+    expect(kanbanPending.text()).toContain("计算中");
+    expect(kanbanPending.text()).not.toContain("depth");
+    expect(kanbanPending.findAll('[data-testid="kanban-card"]')).toHaveLength(1);
+  });
+
   it("keeps runtime number-looking values unformatted for non-numeric declared columns", () => {
     const textColumn = { name: "code", title: "代码", dataType: "text", editable: true, nullable: true } as ColumnSchema;
     const gallery = mount(RecordGalleryView, {

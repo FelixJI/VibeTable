@@ -5,9 +5,18 @@ import { normalizeTargets } from "@/grid/relationLookupRenderer";
 import { coerceLegacyLabelEntry, formatRelationLabelEntry, relationRowLabels } from "@/grid/relationDisplay";
 import { getLocale, t } from "@/i18n";
 
-function isEnvelope(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-    && "state" in (value as Record<string, unknown>);
+function isEnvelope(value: unknown, column?: ColumnSchema | null): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!("state" in record)) return false;
+  // Bare wire lookup JSON can mimic an envelope; only the exact pending shape may hide the data.
+  if (column?.kind === "lookup" && record.state === "updating") {
+    const diagnostic = record.diagnostic;
+    return record.value === null
+      && !!diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)
+      && (diagnostic as Record<string, unknown>).code === "calculation.pending";
+  }
+  return true;
 }
 
 /**
@@ -30,7 +39,7 @@ export function displayValue(
     const summary = relationSummaryText(value, column, row, relations);
     if (summary !== null) return summary;
   }
-  if (isEnvelope(value)) {
+  if (isEnvelope(value, column)) {
     if (column?.kind === "formula") {
       return renderFormulaEnvelope(value, column);
     }
