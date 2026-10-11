@@ -1,11 +1,58 @@
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
 
 namespace VibeTable.PreviewHost;
 
+internal enum PreviewHostStage
+{
+    ManagedEntry,
+    DesktopStartupCompleted,
+    PreviewEntry,
+    ArgumentsAccepted,
+    WindowShowStarted,
+    WindowShowReturned,
+    ComActivationStarted,
+    ComActivationReturned,
+    HandlerInitializeStarted,
+    HandlerInitializeReturned,
+    HandlerSetWindowStarted,
+    HandlerSetWindowReturned,
+    HandlerDoPreviewStarted,
+    HandlerDoPreviewReturned,
+    PreviewSessionFailed,
+    PreviewWindowFailed,
+}
+
 public static class PreviewHostEntry
 {
+    internal static void TraceStage(PreviewHostStage stage, Exception? exception = null)
+    {
+        try
+        {
+            Trace.TraceInformation(JsonSerializer.Serialize(new
+            {
+                timestamp = DateTimeOffset.UtcNow,
+                level = exception is null ? "info" : "error",
+                module = "document-preview",
+                @event = $"preview.host.phase.{stage}",
+                errorCode = exception is null
+                    ? null : $"{exception.GetType().Name}(0x{exception.HResult:X8})",
+                requestId = (string?)null,
+                operationId = (string?)null,
+                workspaceId = (string?)null,
+                sessionEpoch = (long?)null,
+                jobId = (string?)null,
+                durationMs = (double?)null,
+            }));
+        }
+        catch
+        {
+            // Diagnostics must not change preview startup or failure handling.
+        }
+    }
+
     internal static void WriteEvidence(
         PreviewHostArguments arguments, string outcome, IntPtr hwnd = default)
     {
@@ -39,8 +86,10 @@ public static class PreviewHostEntry
     {
         ArgumentNullException.ThrowIfNull(application);
         ArgumentNullException.ThrowIfNull(args);
+        TraceStage(PreviewHostStage.PreviewEntry);
         application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (!PreviewHostArguments.TryParse(args, out var arguments)) return 2;
+        TraceStage(PreviewHostStage.ArgumentsAccepted);
 
         void WriteEvidence(string outcome, IntPtr hwnd = default)
             => PreviewHostEntry.WriteEvidence(arguments, outcome, hwnd);
@@ -60,6 +109,7 @@ public static class PreviewHostEntry
         application.DispatcherUnhandledException += (_, eventArgs) =>
         {
             eventArgs.Handled = true;
+            TraceStage(PreviewHostStage.PreviewWindowFailed, eventArgs.Exception);
             WriteEvidence("failed");
             ShowSafeFailure("系统预览器运行失败，请使用默认应用打开。");
             application.Shutdown(4);
@@ -80,12 +130,15 @@ public static class PreviewHostEntry
                 hwnd => WriteEvidence("do-preview-returned", hwnd));
             application.MainWindow = window;
             application.ShutdownMode = ShutdownMode.OnMainWindowClose;
+            TraceStage(PreviewHostStage.WindowShowStarted);
             window.Show();
+            TraceStage(PreviewHostStage.WindowShowReturned);
             window.Activate();
             return 0;
         }
-        catch
+        catch (Exception exception)
         {
+            TraceStage(PreviewHostStage.PreviewWindowFailed, exception);
             WriteEvidence("failed");
             ShowSafeFailure("系统预览器无法加载此文件，请使用默认应用打开。");
             return 4;
