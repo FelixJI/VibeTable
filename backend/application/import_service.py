@@ -426,9 +426,9 @@ class ImportService:
         self._profiles = profiles
         self._files = files
         self._relation_provider = relation_provider
-        # Serializes apply executions inside this worker process only. Plan
-        # consumption, concurrency and idempotency binding are owned by the Go
-        # import plan owner via the staged/settled lifecycle ports.
+        # Serializes reuse of this service instance only; product operations use
+        # separate instances. Cross-operation plan consumption and idempotency
+        # binding belong to the Go import plan owner's staged/settled lifecycle.
         self._apply_lock = asyncio.Lock()
 
     async def preview(

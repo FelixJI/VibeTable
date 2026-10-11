@@ -263,7 +263,24 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
             if (Terminal(record.Status.State)) return (Snapshot(record), null);
             if (!ReferenceEquals(record.Client, _client) || record.Generation != _generation)
                 return (Snapshot(record), null);
+            // The control lane can overtake a queued start. Keep the intent on
+            // this admitted record until the start receipt permits a second send.
+            record.CancelRequested = true;
             return (Snapshot(record), record.Client);
+        }
+    }
+
+    internal bool NeedsCancellationAfterStart(string taskId, JsonRpcClient client)
+    {
+        lock (_gate)
+        {
+            return !_disposed
+                && ReferenceEquals(client, _client)
+                && _tasks.TryGetValue(taskId, out Record? record)
+                && ReferenceEquals(client, record.Client)
+                && record.Generation == _generation
+                && record.CancelRequested
+                && !Terminal(record.Status.State);
         }
     }
 
@@ -493,6 +510,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         internal TaskStatus Status { get; set; } = status;
         internal TaskCompletionSource<JsonElement> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool CancelRequested { get; set; }
         internal bool HistoryStarted { get; set; }
         internal long Order { get; } = Interlocked.Increment(ref _nextOrder);
     }

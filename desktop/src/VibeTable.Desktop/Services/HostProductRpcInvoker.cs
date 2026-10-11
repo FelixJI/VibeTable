@@ -223,6 +223,14 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
             if (!accepted.TryGetProperty("accepted", out JsonElement confirmed)
                 || confirmed.ValueKind != JsonValueKind.True)
                 throw new JsonException("Worker did not acknowledge Data IO execution.");
+            if (_taskOwner.NeedsCancellationAfterStart(taskId, clientForStart))
+            {
+                // A control request may have reached the worker before its FIFO
+                // start created a handle. Replay only for this live admitted task.
+                await InvokeTaskAsync("task.cancel",
+                    JsonSerializer.SerializeToElement(new { taskId }, WireOptions), token)
+                    .ConfigureAwait(false);
+            }
             return _taskOwner.Status(taskId);
         }
         catch

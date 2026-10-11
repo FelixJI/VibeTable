@@ -861,6 +861,85 @@ public sealed partial class HostProductRpcInvokerTests
         CollectionAssert.AreEqual(new[] { "task.startExecution", "task.settleExport" }, transport.Methods);
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CancellationBeforeWorkerAdmissionIsReplayedUnlessCommitAlreadySucceeded(
+        bool commitBeforeAcknowledgement)
+    {
+        var transport = new DelayedAdmissionTransport();
+        await using var fixture = await HostFixture.OpenAsync(transport: transport);
+        using var gateway = fixture.Gateway(useGeneratedPolicy: true);
+        Task<JsonElement> creating = gateway.CreateTaskAsync(
+            Json("""{"kind":"data.export","params":{"collection":"orders","format":"csv","grantId":"grant"}}"""),
+            CancellationToken.None);
+        string taskId = await transport.StartQueued.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        JsonElement task = JsonSerializer.SerializeToElement(new { taskId });
+        // The ordinary start is queued; the control lane reaches an empty runtime first.
+        JsonElement pending = await gateway.CancelTaskAsync(task, CancellationToken.None);
+        Assert.AreEqual("queued", pending.GetProperty("state").GetString());
+        Assert.AreEqual(1, transport.CancelCount);
+        Assert.IsFalse(creating.IsCompleted);
+        transport.AcknowledgeStart(commitBeforeAcknowledgement);
+        JsonElement started = await creating.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(commitBeforeAcknowledgement ? 1 : 2, transport.CancelCount,
+            "An unhandled early cancellation must be replayed after worker admission.");
+        Assert.AreEqual(commitBeforeAcknowledgement ? "succeeded" : "cancelled",
+            started.GetProperty("state").GetString());
+        JsonElement terminal = await gateway.CancelTaskAsync(task, CancellationToken.None);
+        Assert.AreEqual(started.GetProperty("state").GetString(), terminal.GetProperty("state").GetString());
+        Assert.AreEqual(commitBeforeAcknowledgement ? 1 : 2, transport.CancelCount,
+            "A late cancellation cannot replace a terminal receipt.");
+    }
+
+    private sealed class DelayedAdmissionTransport : IJsonLineTransport
+    {
+        private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
+        private JsonElement _start;
+        private bool _admitted;
+        internal TaskCompletionSource<string> StartQueued { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int CancelCount { get; private set; }
+        public Task<JsonElement?> ReadAsync(CancellationToken token) => _incoming.Reader.ReadAsync(token).AsTask();
+        public Task WriteAsync(string line, CancellationToken token)
+        {
+            JsonElement request = Json(line);
+            string method = request.GetProperty("method").GetString()!;
+            if (method == "task.startExecution")
+            {
+                _start = request;
+                StartQueued.TrySetResult(request.GetProperty("params").GetProperty("taskId").GetString()!);
+            }
+            else
+            {
+                Assert.AreEqual("task.cancelExecution", method);
+                CancelCount++;
+                if (_admitted) Report("cancelled");
+                Reply(request, _admitted);
+            }
+            return Task.CompletedTask;
+        }
+        internal void AcknowledgeStart(bool committed)
+        {
+            _admitted = true;
+            if (committed) Report("succeeded");
+            Reply(_start, new { accepted = true });
+        }
+        private void Report(string state) => _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new
+        {
+            jsonrpc = "2.0", method = "task.executionReport", @params = new
+            {
+                taskId = _start.GetProperty("params").GetProperty("taskId"), kind = "data.export", state,
+                progress = new { done = 1, total = 1, message = "settled" },
+                result = state == "succeeded" ? new { rowsWritten = 1 } : null, error = (string?)null,
+            },
+        }));
+        private void Reply(JsonElement request, object result) =>
+            _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new
+                { jsonrpc = "2.0", id = request.GetProperty("id"), result }));
+        public ValueTask DisposeAsync() { _incoming.Writer.TryComplete(); return ValueTask.CompletedTask; }
+    }
+
     private sealed class CommittedCommandTransport(
         CancellationTokenSource cancellation, bool lateCommit, bool cleanupFails) : IJsonLineTransport
     {
