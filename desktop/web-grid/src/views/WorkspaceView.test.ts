@@ -4577,6 +4577,78 @@ describe("WorkspaceView", () => {
       expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
     });
 
+    /** Emits importData and leaves the native picker request unanswered (picker open). */
+    async function openNativeImportPicker(
+      wrapper: Awaited<ReturnType<typeof openTableView>>,
+      posted: ReturnType<typeof makeRecordingBridge>["posted"],
+    ): Promise<void> {
+      useTableStore().revision = {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      };
+      wrapper.findComponent(AppToolbar).vm.$emit("importData");
+      await flushPromises();
+      expect(posted.some(item => item.type === "data.importSourceRequested")).toBe(true);
+    }
+
+    it("Ctrl+C while the native import picker is open never posts clipboard.writeText", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openNativeImportPicker(wrapper, posted);
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
+    it("opening the native import picker during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      await openNativeImportPicker(wrapper, posted);
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    it("cancelling the native import picker restores grid clipboard commands", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openNativeImportPicker(wrapper, posted);
+      const picker = posted.find(item => item.type === "data.importSourceRequested")!;
+      emit({
+        type: "operation.failed",
+        requestId: picker.requestId,
+        payload: { message: "已取消。", code: "CANCELLED" },
+      });
+      await flushPromises();
+
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+      const write = posted.find(item => item.type === "clipboard.writeText");
+      expect(write).toBeDefined();
+      emit({ type: "clipboard.writeText", requestId: write!.requestId, payload: { written: true } });
+      await flushPromises();
+    });
+
     it("Ctrl+C/Ctrl+V never touch the native clipboard while the plugin action panel is open", async () => {
       const { bridge, posted } = makeRecordingBridge();
       setHostBridgeForTesting(bridge);

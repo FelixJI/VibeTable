@@ -54,6 +54,24 @@ public sealed class ClipboardRequestControllerTests
     }
 
     [TestMethod]
+    public async Task ReadOutsideWhitelistExceptionStillRepliesTypedClipboardFailed()
+    {
+        using var fixture = await Fixture.OpenWithApiAsync(
+            new ThrowingApi(new ArithmeticException("outside the STA whitelist")));
+        await fixture.RequestAsync("clipboard.readText", "{}", expectedError: "CLIPBOARD_FAILED");
+        Assert.AreEqual("剪贴板操作失败，请重试。", fixture.LastFailureMessage);
+    }
+
+    [TestMethod]
+    public async Task WriteOutsideWhitelistExceptionStillRepliesTypedClipboardFailed()
+    {
+        using var fixture = await Fixture.OpenWithApiAsync(
+            new ThrowingApi(new ArithmeticException("outside the STA whitelist")));
+        await fixture.RequestAsync(
+            "clipboard.writeText", """{"text":"a"}""", expectedError: "CLIPBOARD_FAILED");
+    }
+
+    [TestMethod]
     public async Task RealComCantOpenMapsToBusyOnTheStaPipeline()
     {
         var api = new FakeApi("body", outcome: TextClipboardOutcome.Busy);

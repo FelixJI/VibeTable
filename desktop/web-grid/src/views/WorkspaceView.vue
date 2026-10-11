@@ -210,6 +210,7 @@ const workspaceSessionUi = createWorkspaceSessionUiController({
 const {
   busy: dataIoBusy,
   previewSession: importPreviewSession,
+  previewing: importPreviewing,
   applying: importApplying,
   cancelling: importCancelling,
   applyError: importApplyError,
@@ -571,6 +572,9 @@ const isForegroundOverlayOpen = (): boolean =>
   || pluginContextMenu.value.show
   || importPreviewSession.value !== null
   || exportLookupPanel.value !== null
+  // The native import picker and preview fetch run before a preview session
+  // exists; gate grid commands through that phase too.
+  || importPreviewing.value
   || plugins.actionOpen;
 
 const canExecuteGridCommand = (): boolean =>

@@ -69,7 +69,7 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   // Register the product's own Host SetText as unconfirmed before the key
   // press: a timed-out or late-landing copy must keep the finally cleanup
   // indeterminate instead of clearing the previous owned sentinel.
-  beginIsolatedNativeClipboardWrite(runtime);
+  await beginIsolatedNativeClipboardWrite(runtime);
   await page.keyboard.press("Control+c");
   let copied = "";
   const copyDeadline = Date.now() + 10_000;

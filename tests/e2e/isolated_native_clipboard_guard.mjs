@@ -150,16 +150,27 @@ export function createIsolatedNativeClipboardGuard({ env = process.env, runProbe
       unconfirmedWrites -= 1;
     },
 
-    // Registers an externally issued native write (e.g. the product's own
-    // Ctrl+C Host SetText) BEFORE it is triggered: if that write times out
-    // or lands late, cleanup must stay indeterminate until adopt confirms
-    // the exact landed text, instead of clearing the previous owned state
-    // and reporting a false clean.
-    beginUnconfirmedNativeWrite() {
+    // Registers an externally issued native write (the product's own Ctrl+C
+    // Host SetText) before it is triggered. The clipboard must still hold
+    // this run's last confirmed state when the write starts; an external
+    // change or probe failure aborts before any Ctrl+C is sent. Once
+    // triggered, a timed-out or late-landing write keeps cleanup
+    // indeterminate until adopt confirms the exact landed text.
+    async beginUnconfirmedNativeWrite() {
       requireGate();
       if (!armed) {
         throw new Error(
           "cannot register a native clipboard write before the guard verified the isolated clipboard");
+      }
+      const state = await runProbe("verify-sequence", { expectedSequence: ownedSequence });
+      if (state?.ok !== true) {
+        throw new Error(
+          "clipboard ownership could not be verified before the product's write: "
+          + `${state?.error ?? "probe failed without a report"}`);
+      }
+      if (state.verified !== true) {
+        throw new Error(
+          "the clipboard changed outside this run before the product's write; refusing to trigger it");
       }
       unconfirmedWrites += 1;
     },

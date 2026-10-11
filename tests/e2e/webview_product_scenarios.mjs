@@ -2126,8 +2126,8 @@ async function adoptIsolatedNativeClipboardText(page, expectedTexts, runtime) {
   await guard.adopt(page, expectedTexts, { bridgeRequest: rawBridgeRequest });
 }
 
-function beginIsolatedNativeClipboardWrite(runtime) {
-  ensureIsolatedNativeClipboardGuard(runtime).beginUnconfirmedNativeWrite();
+async function beginIsolatedNativeClipboardWrite(runtime) {
+  await ensureIsolatedNativeClipboardGuard(runtime).beginUnconfirmedNativeWrite();
 }
 
 async function releaseIsolatedNativeClipboardGuard() {

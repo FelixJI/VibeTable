@@ -274,9 +274,52 @@ test("adopting before the guard is armed is refused", async () => {
     guard.adopt("page", ["HT-000001"], { bridgeRequest }),
     /before the guard verified the isolated clipboard/,
   );
-  assert.throws(
-    () => guard.beginUnconfirmedNativeWrite(),
+  await assert.rejects(
+    guard.beginUnconfirmedNativeWrite(),
     /before the guard verified the isolated clipboard/,
+  );
+});
+
+test("an external change before the product write aborts without registering", async () => {
+  const changed = makeHarness({
+    env: GITHUB_HOSTED_ENV,
+    probeScript: [
+      { ok: true, empty: true, formatCount: 0, sequence: 11 },
+      { ok: true, verified: true, sequence: 12 },
+      { ok: true, verified: false, refused: "sequence-changed" },
+      { ok: true, cleared: true, alreadyEmpty: false, emptyAfter: true },
+    ],
+    bridgeScript: successfulBridgeRoundTrip("number-copy-sentinel"),
+  });
+  await changed.guard.seed("page", "number-copy-sentinel", { bridgeRequest: changed.bridgeRequest });
+  // The pre-write sequence check refused, so no Ctrl+C may be sent and no
+  // unconfirmed write is registered; cleanup stays on the normal owned path.
+  await assert.rejects(
+    changed.guard.beginUnconfirmedNativeWrite(),
+    /the clipboard changed outside this run before the product's write; refusing to trigger it/,
+  );
+  assert.deepEqual(changed.probeCalls[2].payload, { expectedSequence: 12 });
+  const cleanup = await changed.guard.release();
+  assert.deepEqual(cleanup, { status: "clean", cleared: true, alreadyEmpty: false });
+
+  const failing = makeHarness({
+    env: GITHUB_HOSTED_ENV,
+    probeScript: [
+      { ok: true, empty: true, formatCount: 0, sequence: 11 },
+      { ok: true, verified: true, sequence: 12 },
+      { ok: false, error: "open-clipboard-failed" },
+      { ok: true, cleared: true, alreadyEmpty: false, emptyAfter: true },
+    ],
+    bridgeScript: successfulBridgeRoundTrip("number-copy-sentinel"),
+  });
+  await failing.guard.seed("page", "number-copy-sentinel", { bridgeRequest: failing.bridgeRequest });
+  await assert.rejects(
+    failing.guard.beginUnconfirmedNativeWrite(),
+    /clipboard ownership could not be verified before the product's write: open-clipboard-failed/,
+  );
+  assert.deepEqual(
+    await failing.guard.release(),
+    { status: "clean", cleared: true, alreadyEmpty: false },
   );
 });
 
@@ -286,6 +329,7 @@ test("a registered external copy keeps cleanup indeterminate while it may still 
     probeScript: [
       { ok: true, empty: true, formatCount: 0, sequence: 11 },
       { ok: true, verified: true, sequence: 12 },
+      { ok: true, verified: true, sequence: 12 },
       { ok: true, empty: false, formatCount: 1, sequence: 12 },
     ],
     bridgeScript: successfulBridgeRoundTrip("number-copy-sentinel"),
@@ -294,7 +338,7 @@ test("a registered external copy keeps cleanup indeterminate while it may still 
   // The product's Ctrl+C Host SetText is registered as unconfirmed; it times
   // out or is still in flight, so even the unchanged owned sentinel state
   // must not be cleared and reported clean.
-  guard.beginUnconfirmedNativeWrite();
+  await guard.beginUnconfirmedNativeWrite();
   const cleanup = await guard.release();
   assert.deepEqual(cleanup, {
     status: "indeterminate",
@@ -306,7 +350,7 @@ test("a registered external copy keeps cleanup indeterminate while it may still 
   // final state, not a momentary observation.
   assert.deepEqual(
     probeCalls.map((call) => call.command),
-    ["inspect", "confirm-owned", "inspect"],
+    ["inspect", "confirm-owned", "verify-sequence", "inspect"],
   );
   const result = { status: "passed" };
   assert.equal(applyNativeClipboardCleanupResult(result, cleanup), true);
@@ -320,6 +364,7 @@ test("a registered external copy settles through a successful adopt", async () =
     probeScript: [
       { ok: true, empty: true, formatCount: 0, sequence: 11 },
       { ok: true, verified: true, sequence: 12 },
+      { ok: true, verified: true, sequence: 12 },
       { ok: true, verified: true, sequence: 14 },
       { ok: true, cleared: true, alreadyEmpty: false, emptyAfter: true },
     ],
@@ -329,7 +374,7 @@ test("a registered external copy settles through a successful adopt", async () =
     ],
   });
   await guard.seed("page", "number-copy-sentinel", { bridgeRequest });
-  guard.beginUnconfirmedNativeWrite();
+  await guard.beginUnconfirmedNativeWrite();
   await guard.adopt(
     "page",
     ["HT-000001", "HT-000001\n", "HT-000001\r\n"],
@@ -339,7 +384,7 @@ test("a registered external copy settles through a successful adopt", async () =
   // and clears the confirmed state normally.
   const cleanup = await guard.release();
   assert.deepEqual(cleanup, { status: "clean", cleared: true, alreadyEmpty: false });
-  assert.deepEqual(probeCalls[3].payload, {
+  assert.deepEqual(probeCalls[4].payload, {
     ownedTexts: ["number-copy-sentinel", "HT-000001\r\n"],
     expectedSequence: 14,
   });

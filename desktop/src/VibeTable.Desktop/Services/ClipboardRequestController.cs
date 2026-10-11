@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.Workspace;
 
 namespace VibeTable.Desktop.Services;
@@ -85,6 +87,15 @@ internal sealed class ClipboardRequestController(
             catch (JsonException)
             {
                 PostFailure(request, lease, "Invalid clipboard request.", "BAD_PAYLOAD");
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // Reply on unexpected clipboard faults without logging clipboard content.
+                Trace.TraceError(DiagnosticEvent.Failure(
+                    "VibeTable.Desktop.Services.ClipboardRequestController",
+                    request.Type,
+                    $"CLIPBOARD_UNEXPECTED:{exception.GetType().Name}"));
+                PostOutcomeFailure(request, lease, TextClipboardOutcome.Failed);
             }
         }
     }
