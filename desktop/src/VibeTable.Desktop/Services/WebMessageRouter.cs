@@ -177,6 +177,9 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> HostNotificationWhitelist = new(StringComparer.Ordinal)
     {
         "host.startupStateChanged",
+        // Host-appearance projection: initial snapshot after app.ready plus
+        // system/preference change notifications.
+        "appearance.changed",
         "database.opened",
         "database.openCancelled",
         "plugin.projectContext.unavailable",

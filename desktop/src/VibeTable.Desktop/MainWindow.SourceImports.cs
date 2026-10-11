@@ -19,7 +19,8 @@ public partial class MainWindow
             (source, accessToken, key, secret, cancellation) =>
                 ConnectSourceImportAsync(provider, source, accessToken, key, secret, cancellation),
             session, DescribeSourceImportError, token,
-            provider == "feishu" ? OpenFeishuBaseFileAsync : null) { Owner = this };
+            provider == "feishu" ? OpenFeishuBaseFileAsync : null,
+            _appearance) { Owner = this };
         window.ShowDialog();
         return Task.FromResult(window.Result);
     }

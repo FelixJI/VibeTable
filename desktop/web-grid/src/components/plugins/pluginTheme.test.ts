@@ -11,7 +11,7 @@ describe("projectPluginTheme", () => {
     root.style.setProperty("--vt-color-primary-500", "#123456");
 
     const theme = projectPluginTheme({
-      themeMode: "light",
+      effectiveTheme: "light",
       locale: "zh-CN",
       density: "compact",
       root,
@@ -23,20 +23,20 @@ describe("projectPluginTheme", () => {
     expect(theme.variables["--vt-plugin-radius"]).toBe("6px");
   });
 
-  it("uses dark fallbacks for explicit and system dark modes", () => {
+  it("uses the projected effective mode regardless of a stale DOM class", () => {
     const root = document.createElement("div");
     root.classList.add("dark");
 
-    for (const themeMode of ["dark", "system"] as const) {
+    for (const effectiveTheme of ["dark", "light"] as const) {
       const theme = projectPluginTheme({
-        themeMode,
+        effectiveTheme,
         locale: "en-US",
         density: "comfortable",
         root,
       });
-      expect(theme.mode).toBe("dark");
-      expect(theme.variables["--vt-plugin-bg"]).toBe("#17191f");
-      expect(theme.variables["--vt-plugin-border"]).toBe("#2a2e37");
+      expect(theme.mode).toBe(effectiveTheme);
+      expect(theme.variables["--vt-plugin-bg"]).toBe(effectiveTheme === "dark" ? "#17191f" : "#ffffff");
+      expect(theme.variables["--vt-plugin-border"]).toBe(effectiveTheme === "dark" ? "#2a2e37" : "#e5e6eb");
     }
   });
 });

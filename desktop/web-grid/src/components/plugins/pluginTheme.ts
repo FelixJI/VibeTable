@@ -1,17 +1,16 @@
 import type { PluginSurfaceThemeSnapshot } from "@/contracts";
-import type { DensityMode, ThemeMode } from "@/stores/uiStore";
+import type { DensityMode, SystemBaseTheme } from "@/stores/uiStore";
 import type { Locale } from "@/i18n";
 
 export function projectPluginTheme(input: {
-  readonly themeMode: ThemeMode;
+  readonly effectiveTheme: SystemBaseTheme;
   readonly locale: Locale;
   readonly density: DensityMode;
   readonly root?: HTMLElement;
 }): PluginSurfaceThemeSnapshot {
   const root = input.root ?? document.documentElement;
   const style = getComputedStyle(root);
-  const mode = input.themeMode === "dark"
-    || (input.themeMode === "system" && root.classList.contains("dark")) ? "dark" : "light";
+  const mode = input.effectiveTheme;
   const css = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
   return {
     contract: "vibetable.plugin-theme.v1",
