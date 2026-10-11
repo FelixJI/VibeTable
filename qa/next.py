@@ -1322,6 +1322,11 @@ def persist_product_e2e_evidence(
                 "02-computed-display-reopened.png",
                 "02-auto-number-readonly.png",
             ),
+            "12-backup-consistency": (
+                "12-dark-table.png",
+                "12-dark-modal.png",
+                "12-dark-popover.png",
+            ),
             "28-relation-delta-preview": (
                 "28-contract-grid.png",
                 "28-contract-picker-refresh.png",
