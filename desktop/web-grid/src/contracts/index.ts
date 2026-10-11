@@ -942,6 +942,27 @@ export interface DashboardWorkspacePayload {
   readonly queryLimits: DashboardQueryLimitsPayload;
 }
 
+/** Native save request for one dashboard output file (CSV or PNG). */
+export interface DashboardExportTargetRequestedPayload {
+  readonly fileName: string;
+  readonly format: "csv" | "png";
+  /** Exact one-shot app-origin blob URL the host must admit for the download. */
+  readonly blobUrl: string;
+  readonly byteLength: number;
+}
+
+export interface DashboardExportTargetGrantedPayload {
+  /** Opaque one-shot download registration; never a native path. */
+  readonly token: string;
+  readonly displayName: string;
+}
+
+export interface DashboardExportSettledPayload {
+  readonly token: string;
+  readonly outcome: "saved" | "cancelled" | "failed";
+  readonly reason?: string | null;
+}
+
 export interface DashboardPanelDraftPayload {
   readonly clientId: string;
   readonly panelId?: string | null;
@@ -1513,6 +1534,8 @@ export type WebMessageType =
   | "dashboard.saveRequested"
   | "dashboard.deleteRequested"
   | "dashboard.cancelRequested"
+  | "dashboard.exportTargetRequested"
+  | "dashboard.printRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
   | "plugin.cleanup.listPending"
@@ -1649,6 +1672,9 @@ export type HostMessageType =
   | "dashboard.queryLoaded"
   | "dashboard.saved"
   | "dashboard.deleted"
+  | "dashboard.exportTargetGranted"
+  | "dashboard.exportSettled"
+  | "dashboard.printDialogOpened"
   | "plugin.catalog.changed"
   | "plugin.task.changed"
   | "plugin.interaction.requested"
@@ -1982,6 +2008,9 @@ export interface HostPayloadMap {
   "dashboard.queryLoaded": DashboardQueryResultPayload;
   "dashboard.saved": DashboardSaveResultPayload;
   "dashboard.deleted": { readonly deleted: string };
+  "dashboard.exportTargetGranted": DashboardExportTargetGrantedPayload;
+  "dashboard.exportSettled": DashboardExportSettledPayload;
+  "dashboard.printDialogOpened": { readonly opened: true };
   "plugin.catalog.changed": PluginEventEnvelope;
   "plugin.task.changed": PluginEventEnvelope;
   "plugin.interaction.requested": PluginEventEnvelope;
@@ -2212,6 +2241,8 @@ export interface WebPayloadMap {
   "dashboard.saveRequested": DashboardSaveRequestedPayload;
   "dashboard.deleteRequested": { readonly dashboardId: string };
   "dashboard.cancelRequested": { readonly targetRequestId: string };
+  "dashboard.exportTargetRequested": DashboardExportTargetRequestedPayload;
+  "dashboard.printRequested": Record<string, never>;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };
   "plugin.cleanup.listPending": { readonly projectKey: string };

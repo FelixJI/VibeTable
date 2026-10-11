@@ -1334,6 +1334,12 @@ def persist_product_e2e_evidence(
                 "45-common-field-display-restored.png",
                 "45-common-field-display-cards.png",
             ),
+            "46-dashboard-native-output": (
+                "46-dashboard-export-csv.png",
+                "46-dashboard-export-png.png",
+                "46-dashboard-export-cancelled.png",
+                "46-dashboard-print-dialog-opened.png",
+            ),
             "35-data-io-interoperability": (
                 "35-import-management-history.png",
                 "35-import-management-reopened.png",

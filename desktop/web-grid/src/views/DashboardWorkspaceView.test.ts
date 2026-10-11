@@ -15,16 +15,20 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 import DashboardWorkspaceView from "./DashboardWorkspaceView.vue";
 
 const exportsHarness = vi.hoisted(() => ({
-  csv: vi.fn(),
-  png: vi.fn(async () => undefined),
-  print: vi.fn(),
+  csv: vi.fn(async () => ({ outcome: "saved" as const, fileName: "报表.csv", truncated: false, maxPoints: 1 })),
+  png: vi.fn(async () => ({ outcome: "saved" as const, fileName: "看板.png" })),
+  print: vi.fn(async () => ({ opened: true as const })),
 }));
 
-vi.mock("@/services/dashboardExportService", () => ({
-  exportDashboardCsv: exportsHarness.csv,
-  exportDashboardElementPng: exportsHarness.png,
-  printDashboard: exportsHarness.print,
-}));
+vi.mock("@/services/dashboardExportService", () => {
+  class DashboardExportError extends Error {}
+  return {
+    exportDashboardCsv: exportsHarness.csv,
+    exportDashboardElementPng: exportsHarness.png,
+    printDashboard: exportsHarness.print,
+    DashboardExportError,
+  };
+});
 
 const sidebarStub = defineComponent({
   name: "DashboardSidebar",
@@ -252,8 +256,8 @@ describe("DashboardWorkspaceView", () => {
     await flushPromises();
     expect(service.refresh).toHaveBeenCalled();
     expect(service.copyCurrent).toHaveBeenCalled();
-    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), "运营");
-    expect(exportsHarness.print).toHaveBeenCalled();
+    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), "运营", expect.anything());
+    expect(exportsHarness.print).toHaveBeenCalledWith(expect.anything());
     expect(useDashboardDraftStore().editing).toBe(true);
 
     toolbar.vm.$emit("addPanel");
@@ -281,8 +285,8 @@ describe("DashboardWorkspaceView", () => {
     expect(useDashboardDraftStore().draft!.panels[0]!.position).toMatchObject({ x: 2, y: 4 });
     expect(wrapper.findComponent(editorStub).props("panel")).toMatchObject({ id: first.id });
     expect(service.previewPanel).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }));
-    expect(exportsHarness.csv).toHaveBeenCalledWith(first.name, expect.objectContaining({ state: "idle" }));
-    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), first.name);
+    expect(exportsHarness.csv).toHaveBeenCalledWith(first.name, expect.objectContaining({ state: "idle" }), expect.anything());
+    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), first.name, expect.anything());
     expect(service.setVisiblePanels).toHaveBeenCalledWith([first.id]);
 
     toolbar.vm.$emit("configure");

@@ -273,5 +273,11 @@
     "title": "常用字段显示、重开与快照恢复旅程",
     "requirement": "独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。",
     "capabilities": ["schema.v2", "release.smoke"]
+  },
+  {
+    "id": "46-dashboard-native-output",
+    "title": "仪表盘真实 WebView 下载与原生输出",
+    "requirement": "独立场景验证仪表盘原生输出闭环：真实 WebView2 下载 CSV 落盘内容含 BOM、表头与权威行；PNG 下载落盘为非平凡 PNG 签名字节；取消保存经显式合成控制seam回报 CANCELLED 且零落盘；打印仅验证原生对话框打开回执，不假报完成。全程经宿主保存对话框授权与单一 blob URL 门控。",
+    "capabilities": ["dashboard.export", "dashboard.print"]
   }
 ]

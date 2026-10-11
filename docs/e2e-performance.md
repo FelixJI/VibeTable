@@ -24,7 +24,7 @@
 - GitHub run：[main CI 37951349334](https://github.com/FelixJI/VibeTable/actions/runs/37951349334)
 - 报告契约：`contractVersion=2.0`
 - 结果：44/44 passed、0 failed、0 skipped。
-- 当前 manifest gap：无。
+- 当前 manifest gap：1（`46-dashboard-native-output`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：无。
 

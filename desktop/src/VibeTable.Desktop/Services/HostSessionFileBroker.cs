@@ -18,15 +18,21 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     private readonly Dictionary<string, Grant> _grants = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Transfer> _transfers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Reservation> _reservations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Download> _downloads = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Func<Task>> _terminations = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource _drain = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TimeSpan _drainDownloadSettlementTimeout;
     private int _retireStarted;
 
     internal HostSessionFileBroker(Func<WorkspaceRequestEpochLease> capture,
-        Action<Action> commitCurrent, TimeProvider? time = null)
+        Action<Action> commitCurrent, TimeProvider? time = null,
+        TimeSpan? drainDownloadSettlementTimeout = null)
     {
         _capture = capture;
         _commitCurrent = commitCurrent;
         _time = time ?? TimeProvider.System;
+        _drainDownloadSettlementTimeout = drainDownloadSettlementTimeout
+            ?? TimeSpan.FromSeconds(10);
     }
 
     internal async Task<JsonElement> IssueAsync(string path, bool write, string? runId,
@@ -292,6 +298,125 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         return JsonSerializer.SerializeToElement(new { reservationId = id, outcome });
     }
 
+    /// <summary>
+    /// Opens a host-driven download target: a validated native path plus a
+    /// same-directory temporary file that WebView2 writes into directly.
+    /// The caller must not hold any broker lock while waiting on a modal
+    /// picker; resolve the path before calling this method.
+    /// </summary>
+    internal async Task<HostDownloadTarget> OpenDownloadTargetAsync(string path)
+    {
+        WorkspaceRequestEpochLease lease = _capture();
+        try
+        {
+            await _gate.WaitAsync(_retired.Token).ConfigureAwait(false);
+            try
+            {
+                _epochRegistration ??= lease.CancellationToken.Register(Retire);
+                _retired.Token.ThrowIfCancellationRequested();
+                PruneExpiredReceipts();
+                if (_downloads.Count >= 16) throw new InvalidOperationException("Too many dashboard downloads.");
+                if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\.\", StringComparison.Ordinal)
+                    || path.StartsWith(@"\\?\GLOBALROOT", StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("A native file path is required.");
+                string full = Path.GetFullPath(path);
+                string name = Path.GetFileName(full);
+                if (name.Length is 0 or > 256 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+                    || !Directory.Exists(Path.GetDirectoryName(full))) throw new IOException("Invalid selected file.");
+                string temporary = Path.Combine(Path.GetDirectoryName(full)!, $".vibetable-{Guid.NewGuid():N}.tmp");
+                string id = "download-" + Guid.NewGuid().ToString("N");
+                var download = new Download(id, full, temporary, lease);
+                _commitCurrent(() => { _retired.Token.ThrowIfCancellationRequested(); _downloads.Add(id, download); });
+                return new HostDownloadTarget(id, temporary, name);
+            }
+            finally { _gate.Release(); }
+        }
+        catch
+        {
+            // Retirement may cancel the gate wait before the download entry
+            // exists; the captured epoch lease must still be released so the
+            // pending drain cannot wait on it forever.
+            lease.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Attaches the WebView-side termination for one admitted download. The
+    /// drain path uses it to cancel the WebView2 download operation before
+    /// any cleanup, so the temporary file is never deleted while WebView2
+    /// still writes it.
+    /// </summary>
+    internal bool AttachDownloadTermination(string id, Func<Task> terminate)
+    {
+        ArgumentNullException.ThrowIfNull(terminate);
+        lock (_terminations)
+        {
+            if (Volatile.Read(ref _retireStarted) != 0) return false;
+            _terminations[id] = terminate;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Settles one host download. A committed download atomically replaces
+    /// the selected target through the epoch-checked commit boundary; any
+    /// other outcome deletes the temporary file and leaves the target
+    /// untouched. Settlement stays reachable after retirement so a WebView
+    /// write that outlives the drain can always be cleaned up; committing
+    /// after retirement is refused. Idempotent for a matching outcome.
+    /// </summary>
+    internal async Task CompleteDownloadAsync(string id, bool commit)
+    {
+        Download? download = null;
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!_downloads.TryGetValue(id, out download))
+                throw new InvalidOperationException("Dashboard download is unavailable.");
+            if (download.Outcome is bool settled)
+            {
+                if (settled != commit)
+                {
+                    _retired.Token.ThrowIfCancellationRequested();
+                    throw new IOException("Dashboard download outcome is already settled.");
+                }
+                // A drain-side settlement defers cleanup to the WebView cancel;
+                // a matching late settlement performs it exactly once.
+                if (!settled) FinalizeUncommitted(download);
+            }
+            else if (commit)
+            {
+                try
+                {
+                    _commitCurrent(() =>
+                    {
+                        download.Lease.CancellationToken.ThrowIfCancellationRequested();
+                        _retired.Token.ThrowIfCancellationRequested();
+                        File.Move(download.Temporary, download.Target, overwrite: true);
+                    });
+                }
+                catch
+                {
+                    download.Outcome = false;
+                    FinalizeUncommitted(download);
+                    throw;
+                }
+                download.Outcome = true;
+                download.ReceiptExpiresAt = _time.GetUtcNow().AddMinutes(5).ToUnixTimeMilliseconds() / 1000.0;
+                lock (_terminations) _terminations.Remove(id);
+                download.Settlement.TrySetResult();
+                download.Lease.Dispose();
+            }
+            else
+            {
+                download.Outcome = false;
+                FinalizeUncommitted(download);
+            }
+        }
+        finally { _gate.Release(); }
+    }
+
     internal async Task RevokeAsync(string grantId)
     {
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -327,11 +452,13 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     }
 
     public Task DrainCompletion => _drain.Task;
+    internal bool IsRetired => _retired.IsCancellationRequested;
 
     private async Task DrainAsync()
     {
-        await _gate.WaitAsync().ConfigureAwait(false);
         var errors = new List<Exception>();
+        var pending = new List<(Download Download, Func<Task> Terminate)>();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             foreach (Grant grant in _grants.Values) grant.State = "revoked";
@@ -340,14 +467,55 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 try { await CloseAsync(transfer).ConfigureAwait(false); }
                 catch (Exception error) { errors.Add(error); }
             }
+            foreach (KeyValuePair<string, Download> pair in _downloads)
+            {
+                // Retirement settles any in-flight download as cancelled so
+                // an old session can never commit afterwards; the WebView
+                // write itself is terminated below, and cleanup happens only
+                // after that termination is observed.
+                if (pair.Value.Outcome is null) pair.Value.Outcome = false;
+                if (pair.Value.Outcome is not true)
+                {
+                    Func<Task>? terminate = TakeTermination(pair.Key);
+                    if (terminate is not null) pending.Add((pair.Value, terminate));
+                    else if (pair.Value.ReceiptExpiresAt is null)
+                    {
+                        try { FinalizeUncommitted(pair.Value); }
+                        catch (Exception error) { errors.Add(error); }
+                    }
+                }
+            }
         }
         finally
         {
-            _epochRegistration?.Unregister();
             _gate.Release();
-            if (errors.Count > 0) _drain.TrySetException(errors);
-            else _drain.TrySetResult();
         }
+        if (pending.Count > 0)
+        {
+            // Terminate outside the gate: the resulting settlement needs the
+            // gate for its cleanup, so terminate must not run under it.
+            var settlements = new List<Task>();
+            foreach ((Download download, Func<Task> terminate) in pending)
+            {
+                settlements.Add(download.Settlement.Task);
+                try { settlements.Add(terminate()); }
+                catch (Exception error) { errors.Add(error); }
+            }
+            try
+            {
+                await Task.WhenAll(settlements)
+                    .WaitAsync(_drainDownloadSettlementTimeout).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                // Preserve the writer and lease until a terminal callback.
+                // Timeout is a drain failure, never proof that writing stopped.
+                errors.Add(error);
+            }
+        }
+        _epochRegistration?.Unregister();
+        if (errors.Count > 0) _drain.TrySetException(errors);
+        else _drain.TrySetResult();
     }
 
     private void PruneExpiredReceipts()
@@ -357,6 +525,12 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             .Select(pair => pair.Key).ToArray()) _transfers.Remove(id);
         foreach (string id in _reservations.Where(pair => pair.Value.Outcome is not null && pair.Value.ReceiptExpiresAt <= now)
             .Select(pair => pair.Key).ToArray()) _reservations.Remove(id);
+        foreach (string id in _downloads.Where(pair => pair.Value.ReceiptExpiresAt is not null && pair.Value.ReceiptExpiresAt <= now)
+            .Select(pair => pair.Key).ToArray())
+        {
+            _downloads.Remove(id);
+            lock (_terminations) _terminations.Remove(id);
+        }
         foreach (string id in _grants.Where(pair => pair.Value.ExpiresAt <= now
             && pair.Value.State is not ("reading" or "writing" or "reserved"))
             .Select(pair => pair.Key).ToArray()) _grants.Remove(id);
@@ -428,4 +602,49 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         internal string? Outcome { get; set; }
         internal double ReceiptExpiresAt { get; set; }
     }
+    /// <summary>
+    /// Performs the cleanup of one uncommitted download: delete the
+    /// temporary file, stamp the receipt, release the WebView termination,
+    /// complete the settlement task, and release the epoch lease so a
+    /// pending drain can finish. Only a terminal download or a registration
+    /// with no admitted WebView writer may enter this cleanup.
+    /// </summary>
+    private void FinalizeUncommitted(Download download)
+    {
+        try
+        {
+            File.Delete(download.Temporary);
+            download.ReceiptExpiresAt = _time.GetUtcNow().AddMinutes(5).ToUnixTimeMilliseconds() / 1000.0;
+            download.Settlement.TrySetResult();
+        }
+        catch (Exception error)
+        {
+            download.Settlement.TrySetException(error);
+            throw;
+        }
+        finally
+        {
+            lock (_terminations) _terminations.Remove(download.Id);
+            download.Lease.Dispose();
+        }
+    }
+
+    private Func<Task>? TakeTermination(string id)
+    {
+        lock (_terminations)
+        {
+            return _terminations.Remove(id, out Func<Task>? terminate) ? terminate : null;
+        }
+    }
+
+    private sealed record Download(string Id, string Target, string Temporary, WorkspaceRequestEpochLease Lease)
+    {
+        internal bool? Outcome { get; set; }
+        internal double? ReceiptExpiresAt { get; set; }
+        internal TaskCompletionSource Settlement { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 }
+
+/// <summary>One admitted host download before its WebView2 bytes arrive.</summary>
+internal sealed record HostDownloadTarget(string Id, string TemporaryPath, string DisplayName);

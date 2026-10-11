@@ -13,14 +13,21 @@ import DashboardDrilldownDrawer from "@/components/dashboard/DashboardDrilldownD
 import type { DashboardPanel, DashboardTemplateId, PanelPosition } from "@/dashboard";
 import { useDashboardDraftStore, useDashboardStore, type DashboardManagedConfig } from "@/stores/dashboardStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useHostBridge } from "@/services/bridgeContext";
 import { useProvidedDashboardService } from "@/services/dashboardService";
-import { exportDashboardCsv, exportDashboardElementPng, printDashboard } from "@/services/dashboardExportService";
+import {
+  DashboardExportError,
+  exportDashboardCsv,
+  exportDashboardElementPng,
+  printDashboard,
+} from "@/services/dashboardExportService";
 import { t } from "@/i18n";
 
 const store = useDashboardStore();
 const draft = useDashboardDraftStore();
 const workspace = useWorkspaceStore();
 const service = useProvidedDashboardService();
+const bridge = useHostBridge();
 const message = useMessage();
 const surface = ref<HTMLElement | null>(null);
 const createOpen = ref(false);
@@ -100,14 +107,56 @@ function refreshActive(): void {
 }
 function updateFilter(key: string, value: unknown): void { store.setFilterValue(key, value); refreshActive(); }
 function clearFilters(): void { store.clearFilterValues(); refreshActive(); }
-function exportCsv(panel: DashboardPanel): void { exportDashboardCsv(panel.name, store.panelData[panel.id] ?? emptyData()); }
+async function exportCsv(panel: DashboardPanel): Promise<void> {
+  try {
+    const receipt = await exportDashboardCsv(panel.name, store.panelData[panel.id] ?? emptyData(), bridge);
+    if (receipt.outcome === "cancelled") return;
+    message.success(t("dashboard.export.saved", { name: receipt.fileName }));
+    if (receipt.truncated) {
+      message.warning(t("dashboard.export.truncated", { count: receipt.maxPoints }));
+    }
+  } catch (error) {
+    message.error(exportErrorMessage(error));
+  }
+}
 async function exportPng(panel?: DashboardPanel): Promise<void> {
   const element = panel
     ? surface.value?.querySelector<HTMLElement>(`[data-panel-id="${CSS.escape(panel.id)}"]`)
     : surface.value;
   if (!element) return;
-  try { await exportDashboardElementPng(element, panel?.name ?? activeDashboard.value?.name ?? "dashboard"); }
-  catch (error) { message.error(error instanceof Error ? error.message : String(error)); }
+  try {
+    const receipt = await exportDashboardElementPng(element, panel?.name ?? activeDashboard.value?.name ?? "dashboard", bridge);
+    if (receipt.outcome === "cancelled") return;
+    message.success(t("dashboard.export.saved", { name: receipt.fileName }));
+  } catch (error) {
+    message.error(exportErrorMessage(error));
+  }
+}
+async function printActive(): Promise<void> {
+  try {
+    await printDashboard(bridge);
+    // The WebView2 SDK reports only that the dialog opened; never claim the
+    // print itself completed or was cancelled.
+    message.info(t("dashboard.export.printDialogOpened"));
+  } catch (error) {
+    message.error(exportErrorMessage(error));
+  }
+}
+function exportErrorMessage(error: unknown): string {
+  if (error instanceof DashboardExportError) {
+    const localized = {
+      PANEL_NOT_READY: "dashboard.export.panelNotReady",
+      PNG_BUDGET_EXCEEDED: "dashboard.export.pngBudget",
+      PNG_BYTES_EXCEEDED: "dashboard.export.pngBytes",
+      SAVE_FAILED: "dashboard.export.saveFailed",
+      SAVE_TIMEOUT: "dashboard.export.saveTimeout",
+    }[error.code];
+    if (error.code === "SAVE_FAILED") {
+      return t("dashboard.export.saveFailed", { message: error.message });
+    }
+    return t(localized);
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 function discard(): void {
   if (!draft.dirty || window.confirm(t("dashboard.confirm.discard"))) service.discardEdit();
@@ -152,7 +201,7 @@ function closeDrilldown(): void {
   <div class="dashboard-workspace" data-testid="dashboard-workspace">
     <DashboardSidebar :dashboards="store.list" :selected-id="store.current?.id" @select="selectDashboard" @create="createOpen = true" />
     <main class="dashboard-main">
-      <DashboardToolbar v-if="activeDashboard" :name="activeDashboard.name" :editing="draft.editing" :dirty="draft.dirty" :saving="store.phase === 'saving'" :refresh-interval="activeConfig.refreshInterval" @refresh="refreshActive" @edit="service.beginEdit" @copy="copyDashboard" @delete="deleteDashboard" @save="service.save" @discard="discard" @add-panel="openNewPanel" @configure="settingsOpen = true" @refresh-interval="updateRefresh" @export-png="exportPng()" @print="printDashboard" />
+      <DashboardToolbar v-if="activeDashboard" :name="activeDashboard.name" :editing="draft.editing" :dirty="draft.dirty" :saving="store.phase === 'saving'" :refresh-interval="activeConfig.refreshInterval" @refresh="refreshActive" @edit="service.beginEdit" @copy="copyDashboard" @delete="deleteDashboard" @save="service.save" @discard="discard" @add-panel="openNewPanel" @configure="settingsOpen = true" @refresh-interval="updateRefresh" @export-png="exportPng()" @print="printActive" />
       <DashboardFilterBar v-if="activeDashboard" :filters="filters" :values="store.sessionFilterValues" @change="updateFilter" @clear="clearFilters" />
       <NAlert v-if="draft.conflict" type="warning" class="dashboard-alert" data-testid="dashboard-conflict-error">
         <div class="dashboard-conflict-content">

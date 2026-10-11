@@ -33,6 +33,128 @@ public sealed class HostSessionFileBrokerTests
     }
 
     [TestMethod]
+    public async Task DownloadTargetUsesSameDirectoryTempAndValidatesSelectedPath()
+    {
+        await using var f = new Fixture();
+        string target = Path.Combine(f.Root, "看板.png");
+        File.WriteAllText(target, "old");
+        HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+        Assert.AreEqual(Path.GetDirectoryName(target), Path.GetDirectoryName(opened.TemporaryPath));
+        Assert.AreEqual("看板.png", opened.DisplayName);
+        await Assert.ThrowsAsync<IOException>(() => f.Broker.OpenDownloadTargetAsync("relative.csv"));
+        await Assert.ThrowsAsync<IOException>(() =>
+            f.Broker.OpenDownloadTargetAsync(Path.Combine(f.Root, "bad|name.csv")));
+        await f.Broker.CompleteDownloadAsync(opened.Id, commit: false);
+        Assert.AreEqual("old", File.ReadAllText(target));
+        Assert.AreEqual(1, Directory.GetFiles(f.Root).Length);
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
+    public async Task DownloadSettlementRefusesConflictingOutcomeAndUnknownId()
+    {
+        await using var f = new Fixture();
+        string target = Path.Combine(f.Root, "out.csv");
+        File.WriteAllText(target, "old");
+        HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+        File.WriteAllText(opened.TemporaryPath, "new");
+        await f.Broker.CompleteDownloadAsync(opened.Id, commit: true);
+        Assert.AreEqual("new", File.ReadAllText(target));
+        // Already committed: a late cancellation must not flip the outcome.
+        await Assert.ThrowsAsync<IOException>(() =>
+            f.Broker.CompleteDownloadAsync(opened.Id, commit: false));
+        Assert.AreEqual("new", File.ReadAllText(target));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            f.Broker.CompleteDownloadAsync("download-unknown", commit: true));
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
+    public async Task ExpiredDownloadReceiptsDoNotExhaustTheSession()
+    {
+        await using var f = new Fixture();
+        string target = Path.Combine(f.Root, "out.csv");
+        for (int i = 0; i < 17; i++)
+        {
+            HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+            File.WriteAllText(opened.TemporaryPath, "new");
+            await f.Broker.CompleteDownloadAsync(opened.Id, commit: true);
+            f.Clock.Now = f.Clock.Now.AddMinutes(6);
+        }
+        Assert.AreEqual("new", File.ReadAllText(target));
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
+    public async Task OpenDownloadTargetAfterRetireDoesNotLeakTheEpochLease()
+    {
+        await using var f = new Fixture();
+        f.Broker.Retire();
+        await f.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        // The epoch is still live; only the broker is retired, so the capture
+        // succeeds and the cancelled gate wait must still release the lease.
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            f.Broker.OpenDownloadTargetAsync(Path.Combine(f.Root, "late.csv")));
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
+    public async Task RetiredDownloadCancelsTheWebViewBeforeCleanupAndRefusesLateCommit()
+    {
+        await using var f = new Fixture();
+        string target = Path.Combine(f.Root, "board.png");
+        File.WriteAllText(target, "old");
+        HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+        File.WriteAllText(opened.TemporaryPath, "partial");
+        int terminated = 0;
+        // Simulate the bridge: retirement cancels the WebView2 download, and
+        // its interrupted settlement performs the cleanup afterwards.
+        Assert.IsTrue(f.Broker.AttachDownloadTermination(opened.Id, () =>
+        {
+            Interlocked.Increment(ref terminated);
+            return f.Broker.CompleteDownloadAsync(opened.Id, commit: false);
+        }));
+
+        f.Epoch.Cancel();
+        await f.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(1, terminated);
+        Assert.AreEqual("old", File.ReadAllText(target));
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(0, f.Leases);
+        // A WebView completion that arrives after the drain cannot flip the
+        // already-settled outcome into a commit.
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            f.Broker.CompleteDownloadAsync(opened.Id, commit: true));
+        Assert.AreEqual("old", File.ReadAllText(target));
+    }
+
+    [TestMethod]
+    public async Task DrainTimeoutPreservesWriterUntilALateTerminalSettlement()
+    {
+        await using var f = new Fixture(shortDrain: true);
+        string target = Path.Combine(f.Root, "late.png");
+        File.WriteAllText(target, "old");
+        HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+        File.WriteAllText(opened.TemporaryPath, "partial");
+        Assert.IsTrue(f.Broker.AttachDownloadTermination(opened.Id, () => Task.CompletedTask));
+        f.ExpectDrainFailure = true;
+        f.Epoch.Cancel();
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            f.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.AreEqual("old", File.ReadAllText(target));
+        Assert.IsTrue(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(1, f.Leases);
+        // The write ends interrupted; its late settlement performs the
+        // cleanup the drain could not do against a locked file.
+        await f.Broker.CompleteDownloadAsync(opened.Id, commit: false);
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual("old", File.ReadAllText(target));
+        Assert.AreEqual(0, f.Leases);
+        Assert.IsFalse(f.Broker.AttachDownloadTermination(opened.Id, () => Task.CompletedTask));
+    }
+
+    [TestMethod]
     public async Task RetiringEpochClosesWritersAndCannotCommitIntoNewWorkspace()
     {
         await using var f = new Fixture();
@@ -182,7 +304,8 @@ public sealed class HostSessionFileBrokerTests
         internal readonly Clock Clock = new();
         internal readonly HostSessionFileBroker Broker;
         internal int Leases;
-        internal Fixture()
+        internal bool ExpectDrainFailure;
+        internal Fixture(bool shortDrain = false)
         {
             Directory.CreateDirectory(Root);
             Broker = new HostSessionFileBroker(() =>
@@ -192,7 +315,8 @@ public sealed class HostSessionFileBrokerTests
                 return new WorkspaceRequestEpochLease(new WorkspaceWireScope
                 { Scope = "workspace", WorkspaceId = Guid.NewGuid(), SessionEpoch = 1, OperationId = Guid.NewGuid(), Sequence = 1 },
                     Epoch.Token, () => Interlocked.Decrement(ref Leases));
-            }, action => { Epoch.Token.ThrowIfCancellationRequested(); action(); }, Clock);
+            }, action => { Epoch.Token.ThrowIfCancellationRequested(); action(); }, Clock,
+                shortDrain ? TimeSpan.FromMilliseconds(50) : null);
         }
         internal async Task<string> Issue(string path, bool write)
             => (await Broker.IssueAsync(path, write, null, CancellationToken.None)).GetProperty("grantId").GetString()!;
@@ -201,7 +325,8 @@ public sealed class HostSessionFileBrokerTests
         public async ValueTask DisposeAsync()
         {
             Broker.Retire();
-            await Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+            try { await Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2)); }
+            catch (TimeoutException) when (ExpectDrainFailure) { }
             Epoch.Dispose();
             Directory.Delete(Root, recursive: true);
         }

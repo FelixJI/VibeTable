@@ -57,6 +57,8 @@ public partial class MainWindow : Window
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
     private readonly NativeProductFileRequestController _nativeProductFiles;
+    private readonly DashboardExportDownloadGate? _dashboardDownloadGate;
+    private readonly DashboardNativeOutputController? _dashboardOutput;
     private readonly PluginSurfaceSessionManager _pluginSurfaces;
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly PluginRequestDispatcher _pluginDispatcher;
@@ -197,7 +199,15 @@ public partial class MainWindow : Window
             runtimeDataRoot is not null
                 ? Path.Combine(runtimeDataRoot, "webview2-user-data")
                 : null,
-            stableIsolatedUserDataRoot: runtimeDataRoot is not null);
+            stableIsolatedUserDataRoot: runtimeDataRoot is not null)
+        {
+            DashboardDownloads = () => _dashboardDownloadGate,
+        };
+        // Assigned after the bridge so the settlement callback can post
+        // through it; downloads only run after LoadAsync.
+        _dashboardDownloadGate = new DashboardExportDownloadGate(
+            notification => _webBridge.PostNotification("dashboard.exportSettled", notification),
+            message => _readiness?.Trace(message));
         _workspaceRegistry = new WorkspaceRegistry(
             startup.TestMode ? runtimeDataRoot : null);
         IReadOnlyList<WorkspaceRegistryEntryV2> knownWorkspaces;
@@ -437,6 +447,16 @@ public partial class MainWindow : Window
                 _attachmentPreview),
             () => _session.Token,
             message => _readiness?.Trace(message));
+        _dashboardOutput = new DashboardNativeOutputController(
+            _webBridge,
+            _workspaceSessionFilter,
+            new WindowsNativeDashboardOutputHost(
+                this,
+                () => AppWebView.CoreWebView2,
+                _e2eControlsDir),
+            ResolveDashboardExportBroker,
+            _dashboardDownloadGate,
+            message => _readiness?.Trace(message));
         _applicationRequests = new ApplicationRequestController(
             _webBridge,
             new ApplicationRequestHost(
@@ -463,6 +483,7 @@ public partial class MainWindow : Window
             _applicationRequests,
             _documentRequests,
             _nativeProductFiles,
+            _dashboardOutput,
             _pluginDispatcher,
             _dispatcher,
             new DeviceSettingsRequestController(
@@ -652,6 +673,24 @@ public partial class MainWindow : Window
             && _configuredProductBinding is { } configured
             && _runtime.CaptureHostProductRpcBinding() is { } current
             && configured.Matches(current);
+
+    /// <summary>
+    /// Resolves the session file broker backing dashboard exports. The
+    /// Go-sidecar binding owns the broker; a Python client is never required
+    /// and never started for native dashboard output.
+    /// </summary>
+    private HostSessionFileBroker? ResolveDashboardExportBroker()
+    {
+        try
+        {
+            return _productGateway?.EnableHostFiles();
+        }
+        catch (Exception exception) when (
+            exception is BackendUnavailableException or ObjectDisposedException)
+        {
+            return null;
+        }
+    }
 
     private async Task<bool> ConfigureRpcGatewaysAsync(
         ProductSidecarGenerationSnapshot snapshot,

@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：44
-- 唯一能力：64
-- 场景—能力关联：103
+- 场景：45
+- 唯一能力：66
+- 场景—能力关联：105
 - `release.smoke` 场景：5
 
 ## 能力到场景
@@ -25,8 +25,10 @@
 | `contract.diagnostics` | <code>03-schema-errors</code>（前端与服务端 typed diagnostic）、<code>06-relation-fanout</code>（双向关联字段编辑、冻结计划与重开） |
 | `dashboard.conflict` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.drilldown` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `dashboard.export` | <code>46-dashboard-native-output</code>（仪表盘真实 WebView 下载与原生输出） |
 | `dashboard.filtering` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `dashboard.lifecycle` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
+| `dashboard.print` | <code>46-dashboard-native-output</code>（仪表盘真实 WebView 下载与原生输出） |
 | `dashboard.visualization` | <code>16-dashboard-lifecycle</code>（Dashboard 可视化、筛选与冲突闭环） |
 | `data-import.atomic` | <code>09-atomic-import-scale</code>（粘贴或导入中途失败无半提交）、<code>36-backend-import-exit</code>（运行中导入遇 Python 退出仍保留 Host 状态） |
 | `data-io.interop` | <code>35-data-io-interoperability</code>（数据互操作代表矩阵） |
@@ -129,3 +131,4 @@
 | <code>43-file-revision-leaves</code> | 文件autosave正式分支与叶子恢复激活 | 真实Host picker导入formal V1，同UUID正常关闭/外部保存/重开两次由真实startup watcher追加autosave；真实树从首autosave升级formal V2生成兄弟分支，分别从非当前叶子恢复为新formal V3与设为当前分支，核parent/effective/ordinal/formal/source、旧修订全对象不变及独立字面物化bytes；再次同UUID重开核权威树和列表有效指针。不用上传替代叶子恢复，不声称覆盖Restore异常或崩溃。 | `history.restore`、`file-history.branches` |
 | <code>44-file-restore-crash</code> | 真实Restore提交断点崩溃与同UUID冷恢复 | 合成TXT经真实picker导入并经既有picker RPC契约准备较新formal fixture后（真实UI升级独立由S43验收），从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。 | `history.restore`、`file-history.branches`、`workspace.recovery` |
 | <code>45-common-field-display</code> | 常用字段显示、重开与快照恢复旅程 | 独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。 | `schema.v2`、`release.smoke` |
+| <code>46-dashboard-native-output</code> | 仪表盘真实 WebView 下载与原生输出 | 独立场景验证仪表盘原生输出闭环：真实 WebView2 下载 CSV 落盘内容含 BOM、表头与权威行；PNG 下载落盘为非平凡 PNG 签名字节；取消保存经显式合成控制seam回报 CANCELLED 且零落盘；打印仅验证原生对话框打开回执，不假报完成。全程经宿主保存对话框授权与单一 blob URL 门控。 | `dashboard.export`、`dashboard.print` |

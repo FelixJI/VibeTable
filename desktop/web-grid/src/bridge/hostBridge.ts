@@ -333,6 +333,9 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "dashboard.queryLoaded",
   "dashboard.saved",
   "dashboard.deleted",
+  "dashboard.exportTargetGranted",
+  "dashboard.exportSettled",
+  "dashboard.printDialogOpened",
   "document.listLoaded",
   "document.actionCompleted",
   "document.diffCompleted",
@@ -474,6 +477,8 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "dashboard.saveRequested",
   "dashboard.deleteRequested",
   "dashboard.cancelRequested",
+  "dashboard.exportTargetRequested",
+  "dashboard.printRequested",
   "plugin.catalog.list",
   "plugin.audit.list",
   "plugin.cleanup.listPending",
@@ -551,6 +556,8 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "dashboard.queryRequested": ["dashboard.queryLoaded"],
   "dashboard.saveRequested": ["dashboard.saved"],
   "dashboard.deleteRequested": ["dashboard.deleted"],
+  "dashboard.exportTargetRequested": ["dashboard.exportTargetGranted"],
+  "dashboard.printRequested": ["dashboard.printDialogOpened"],
   "interface.listRequested": ["interface.listLoaded"],
   "interface.loadRequested": ["interface.loaded"],
   "interface.commitRequested": ["interface.committed"],
@@ -588,6 +595,9 @@ const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
   "sourceImport.open",
   "file.previewRequested",
   "file.downloadRequested",
+  // The export target request waits in the host-owned SaveFileDialog; the
+  // native dialog owns completion and stop() still clears the pending entry.
+  "dashboard.exportTargetRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {

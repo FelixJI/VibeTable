@@ -12319,6 +12319,156 @@ async function scenario45(page, recorder, _network, runtime) {
   });
 }
 
+async function waitForFileOnDisk(file, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const stat = await fs.stat(file);
+      if (stat.size > 0) return stat;
+    } catch {
+      // Not written yet.
+    }
+    if (Date.now() >= deadline) throw new Error(`exported file was not written in time: ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+async function waitForExportSettledNotification(page, timeoutMs = 30_000) {
+  await page.waitForFunction(() =>
+    window.__vibetableE2EBridgeDiagnostics?.notifications?.some((notification) =>
+      notification.requestType === "dashboard.exportSettled"),
+    undefined, { timeout: timeoutMs });
+}
+
+async function scenario46(page, recorder, _network, runtime) {
+  await waitForShell(page, recorder);
+  await page.getByTestId("nav-tables").click();
+  const seeded = await createSimpleTable(page, "E2E Dashboard Export", "Region");
+  await applyProductMutation(page, seeded.tableId, [
+    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "North" } },
+    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "South" } },
+  ], "dashboard-export-seed");
+
+  await page.getByTestId("nav-dashboard").click();
+  const workspace = page.getByTestId("dashboard-workspace");
+  await workspace.waitFor({ state: "visible", timeout: 30_000 });
+  await page.getByTestId("dashboard-create").click();
+  const modal = page.getByTestId("dashboard-create-modal");
+  await modal.waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByTestId("dashboard-create-name").locator("input").fill("Native Output");
+  await page.getByTestId("dashboard-create-template-blank").click();
+  await page.getByTestId("dashboard-create-submit").click();
+  await page.getByTestId("dashboard-save").waitFor({ state: "visible", timeout: 10_000 });
+
+  await page.getByTestId("dashboard-add-panel").click();
+  await page.getByTestId("dashboard-panel-editor").waitFor({ state: "visible" });
+  await fillNInput(page, "dashboard-panel-name", "Export records");
+  await selectVisibleNOption(page, "dashboard-panel-type", /^(明细列表|Record list)$/u);
+  await selectVisibleNOption(page, "dashboard-panel-collection", seeded.tableId);
+  await page.getByTestId("dashboard-panel-fields").waitFor({ state: "visible" });
+  await selectVisibleNOptions(page, "dashboard-panel-fields", ["Region"]);
+  const submit = page.getByTestId("dashboard-panel-submit");
+  await page.waitForFunction(
+    () => !document.querySelector('[data-testid="dashboard-panel-submit"]')?.hasAttribute("disabled"),
+    undefined, { timeout: 20_000 },
+  );
+  await submit.click();
+  const panel = workspace.locator(".dashboard-panel").filter({ hasText: "Export records" });
+  await awaitDashboardPanelReady(page, panel);
+  await panel.getByText("North", { exact: true }).waitFor({ timeout: 30_000 });
+
+  // Real WebView2 CSV download: the host-owned save dialog is synthesized
+  // through the test-mode control file, and the download itself is admitted
+  // and settled by the native bridge.
+  const csvTarget = path.join(runtime.controlsDir, "46-dashboard-export.csv");
+  await fs.rm(csvTarget, { force: true });
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "dashboard-export-target.txt"),
+    `${csvTarget}\r\n`, "utf8");
+  await panel.getByRole("button", { name: /^(导出 CSV|Export CSV)$/u }).click();
+  await waitForExportSettledNotification(page);
+  const csvStat = await waitForFileOnDisk(csvTarget, 30_000);
+  const csvBytes = await fs.readFile(csvTarget);
+  const csvText = csvBytes.toString("utf8");
+  const csvLines = csvText.trimEnd().split(/\r?\n/u);
+  recorder.check("the real WebView2 CSV download lands the declared dashboard rows on disk",
+    csvBytes[0] === 0xfe && csvBytes[1] === 0xbb && csvBytes[2] === 0xbf
+      && csvLines.length === 3
+      && csvLines.some((line) => line.includes("North"))
+      && csvLines.some((line) => line.includes("South"))
+      && !csvText.includes("undefined"),
+  { csvTarget, csvBytes: csvStat.size });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "46-dashboard-export-csv.png"),
+    fullPage: true,
+  });
+
+  // Real WebView2 PNG download of the whole dashboard surface.
+  const pngTarget = path.join(runtime.controlsDir, "46-dashboard-export.png");
+  await fs.rm(pngTarget, { force: true });
+  await fs.writeFile(
+    path.join(runtime.controlsDir, "dashboard-export-target.txt"),
+    `${pngTarget}\r\n`, "utf8");
+  await page.getByRole("button", { name: /^(导出仪表盘 PNG|Export dashboard PNG)$/u }).click();
+  await waitForExportSettledNotification(page);
+  const pngStat = await waitForFileOnDisk(pngTarget, 60_000);
+  const pngBytes = await fs.readFile(pngTarget);
+  recorder.check("the real WebView2 PNG download writes a non-trivial PNG image on disk",
+    pngBytes.length > 2_048
+      && pngBytes[0] === 0x89 && pngBytes[1] === 0x50 && pngBytes[2] === 0x4e
+      && pngBytes[3] === 0x47 && pngBytes[4] === 0x0d && pngBytes[5] === 0x0a
+      && pngBytes[6] === 0x1a && pngBytes[7] === 0x0a,
+  { pngTarget, pngBytes: pngStat.size });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "46-dashboard-export-png.png"),
+    fullPage: true,
+  });
+
+  // Cancelled save: the explicit test-mode cancel seam behaves exactly like
+  // a user cancelling the native dialog, and nothing is written to disk.
+  const cancelTarget = path.join(runtime.controlsDir, "46-dashboard-cancelled.csv");
+  await fs.writeFile(path.join(runtime.controlsDir, "dashboard-export-target.txt"),
+    `${cancelTarget}\r\n`, "utf8");
+  await fs.writeFile(path.join(runtime.controlsDir, "dashboard-export-cancel.txt"), "cancel\r\n", "utf8");
+  const cancelFailureStart = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.failures.length ?? 0,
+  );
+  await panel.getByRole("button", { name: /^(导出 CSV|Export CSV)$/u }).click();
+  await page.waitForFunction(({ start }) =>
+    window.__vibetableE2EBridgeDiagnostics?.failures.slice(start)
+      .some((failure) => failure.requestType === "dashboard.exportTargetRequested"
+        && failure.code === "CANCELLED"),
+  { start: cancelFailureStart }, { timeout: 30_000 });
+  await fs.rm(path.join(runtime.controlsDir, "dashboard-export-cancel.txt"), { force: true });
+  let cancelledFileExists = false;
+  try { await fs.access(cancelTarget); cancelledFileExists = true; } catch { /* absent */ }
+  recorder.check("cancelling the native save dialog reports CANCELLED without writing a file",
+    !cancelledFileExists,
+  { cancelTarget });
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "46-dashboard-export-cancelled.png"),
+    fullPage: true,
+  });
+
+  // Print: the WebView2 browser preview is native UI; the bridge can only
+  // truthfully report that the dialog opened, never that printing completed.
+  const printStart = await page.evaluate(
+    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
+  );
+  await page.getByRole("button", { name: /^(打印|Print)$/u }).click();
+  await page.waitForFunction(({ start }) =>
+    window.__vibetableE2EBridgeDiagnostics?.roundTrips.slice(start)
+      .some((trip) => trip.requestType === "dashboard.printRequested"
+        && trip.responseType === "dashboard.printDialogOpened"),
+  { start: printStart }, { timeout: 30_000 });
+  recorder.check("the native print preview reports only that the dialog opened",
+    true, {});
+  await page.screenshot({
+    path: path.join(runtime.evidenceDir, "46-dashboard-print-dialog-opened.png"),
+    fullPage: true,
+  });
+}
+
 const scenarios = {
   "01-offline-first-start": scenario01,
   "02-all-field-schema": scenario02,
@@ -12420,6 +12570,7 @@ const scenarios = {
     throw new Error("Restore crash requires the owned seed and normal cold-Host resume phases");
   },
   "45-common-field-display": scenario45,
+  "46-dashboard-native-output": scenario46,
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

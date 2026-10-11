@@ -924,6 +924,44 @@ public sealed class WebMessageRouterTests
     }
 
     [TestMethod]
+    public void DashboardNativeOutputRequiresTheCurrentWorkspaceScope()
+    {
+        var dispatched = new List<RoutedWebRequest>();
+        var router = new WebMessageRouter(dispatched.Add,
+            WorkspaceRpcCapabilityManifest.Default, ProductRpcCapabilityManifest.Default)
+        {
+            IsReady = true,
+        };
+
+        HostReplyMessage? exportMissing = router.Route(
+            """{"type":"dashboard.exportTargetRequested","requestId":"export-missing","payload":{"fileName":"sales","format":"csv","blobUrl":"blob:https://app.vibetable.local/abc123","byteLength":24}}""");
+        HostReplyMessage? printMissing = router.Route(
+            """{"type":"dashboard.printRequested","requestId":"print-missing","payload":{}}""");
+        string acceptedJson = JsonSerializer.Serialize(new
+        {
+            type = "dashboard.printRequested",
+            requestId = "print-scoped",
+            scope = new
+            {
+                scope = "workspace",
+                workspaceId = "11111111-1111-4111-8111-111111111111",
+                sessionEpoch = 3,
+                operationId = "22222222-2222-4222-8222-222222222222",
+                sequence = 1,
+            },
+            payload = new { },
+        });
+        HostReplyMessage? accepted = router.Route(acceptedJson);
+
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", exportMissing?.Payload?.Code);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", printMissing?.Payload?.Code);
+        Assert.IsNull(accepted);
+        Assert.HasCount(1, dispatched);
+        Assert.AreEqual("dashboard.printRequested", dispatched.Single().Type);
+        Assert.IsNotNull(dispatched.Single().Scope);
+    }
+
+    [TestMethod]
     public void GoProductRouteRequiresWorkspaceScopeAndPreservesRawWireObject()
     {
         Guid workspaceId = Guid.NewGuid();
