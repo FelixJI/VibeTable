@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using VibeTable.Contracts;
+using TaskStatus = VibeTable.Contracts.TaskStatus;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
@@ -12,6 +13,8 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class JsonRpcProductDataGatewayTests
 {
+    private static readonly JsonSerializerOptions Wire = new(JsonSerializerDefaults.Web);
+
     [TestMethod]
     public async Task ClosedProductMethodsNeverEmitRetiredProviderOrSecrets()
     {
@@ -397,21 +400,22 @@ public sealed class JsonRpcProductDataGatewayTests
         fixture.Report("succeeded", 2);
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
-        JsonElement result = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, cancelled.Token);
-        Assert.AreEqual("succeeded", result.GetProperty("state").GetString());
-        Assert.AreEqual(1, result.GetProperty("result").GetProperty("createdCount").GetInt32());
+        TaskStatus result = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, cancelled.Token);
+        Assert.AreEqual("succeeded", result.State);
+        JsonElement receipt = JsonSerializer.SerializeToElement(result.Result, Wire);
+        Assert.AreEqual(1, receipt.GetProperty("createdCount").GetInt32());
     }
 
     [TestMethod]
     public async Task TerminalWaitIgnoresProgressAndCompletesFromTheOwnerReport()
     {
         await using var fixture = new NotificationBindingFixture();
-        Task<JsonElement> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        Task<TaskStatus> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
         fixture.Report("running", 1);
         Assert.IsFalse(waiting.IsCompleted);
         fixture.Report("succeeded", 2);
-        JsonElement result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.AreEqual("succeeded", result.GetProperty("state").GetString());
+        TaskStatus result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("succeeded", result.State);
         fixture.Report("cancelled", 2);
         Assert.AreEqual("succeeded", fixture.Status().GetProperty("state").GetString());
     }
@@ -421,14 +425,14 @@ public sealed class JsonRpcProductDataGatewayTests
     {
         await using var fixture = new NotificationBindingFixture();
         using var cancellation = new CancellationTokenSource();
-        Task<JsonElement> cancelled = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, cancellation.Token);
-        Task<JsonElement> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        Task<TaskStatus> cancelled = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, cancellation.Token);
+        Task<TaskStatus> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
         cancellation.Cancel();
         await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => cancelled);
         Assert.AreEqual("queued", fixture.Status().GetProperty("state").GetString());
         fixture.RetireClient();
-        JsonElement result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
-        Assert.AreEqual("aborted", result.GetProperty("state").GetString());
+        TaskStatus result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("aborted", result.State);
     }
 
     [TestMethod]
@@ -437,15 +441,17 @@ public sealed class JsonRpcProductDataGatewayTests
     public async Task TerminalWaitKeepsTheFirstFailureOrCancellationReceipt(string state)
     {
         await using var fixture = new NotificationBindingFixture();
-        Task<JsonElement> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        Task<TaskStatus> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
         fixture.Report(state, 1);
         fixture.Report("succeeded", 2);
         fixture.RetireClient();
-        JsonElement earlierWaiter = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
-        JsonElement laterWaiter = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
-        Assert.AreEqual(state, earlierWaiter.GetProperty("state").GetString());
-        Assert.IsTrue(JsonElement.DeepEquals(earlierWaiter, laterWaiter));
-        Assert.AreEqual(JsonValueKind.Null, laterWaiter.GetProperty("result").ValueKind);
+        TaskStatus earlierWaiter = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        TaskStatus laterWaiter = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        Assert.AreEqual(state, earlierWaiter.State);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            JsonSerializer.SerializeToElement(earlierWaiter, Wire),
+            JsonSerializer.SerializeToElement(laterWaiter, Wire)));
+        Assert.IsNull(laterWaiter.Result);
     }
 
     [TestMethod]
@@ -457,29 +463,34 @@ public sealed class JsonRpcProductDataGatewayTests
             Guid.NewGuid().ToString("D"));
         tasks.BindClient(client, identity);
         string id = tasks.Admit(client, identity, "data.export").TaskId;
-        Task<JsonElement> terminal = tasks.WaitForTerminalAsync(id, CancellationToken.None);
+        Task<TaskStatus> terminal = tasks.WaitForTerminalAsync(id, CancellationToken.None);
         tasks.ApplyReport(client, JsonSerializer.SerializeToElement(new
         {
             taskId = id, kind = "data.export", state = "succeeded",
             progress = new { done = 1, total = 1, message = "committed" },
             result = new { rowsWritten = 1 }, error = (string?)null,
         }));
+        // The no-cancel terminal completes synchronously with the report: a
+        // committed receipt is observable immediately, with no wrapper
+        // continuation that could lag it (the #468 receipt contract).
+        Assert.IsTrue(terminal.IsCompletedSuccessfully);
+        Assert.AreEqual("succeeded", terminal.Result.State);
         for (int index = 0; index < 256; index++)
         {
             string newer = tasks.Admit(client, identity, "data.export").TaskId;
             tasks.AbortTask(newer, "closed");
         }
         Assert.ThrowsExactly<KeyNotFoundException>(() => tasks.Status(id));
-        Assert.AreEqual("succeeded", (await terminal).GetProperty("state").GetString());
+        Assert.AreEqual("succeeded", (await terminal).State);
         string active = tasks.Admit(client, identity, "data.previewImport").TaskId;
-        Task<JsonElement> retiring = tasks.WaitForTerminalAsync(active, CancellationToken.None);
+        Task<TaskStatus> retiring = tasks.WaitForTerminalAsync(active, CancellationToken.None);
         tasks.Dispose();
         tasks.ApplyReport(client, JsonSerializer.SerializeToElement(new
         {
             taskId = active, kind = "data.previewImport", state = "succeeded",
             progress = new { done = 0, total = 0, message = "" }, result = new { },
         }));
-        Assert.AreEqual("aborted", (await retiring).GetProperty("state").GetString());
+        Assert.AreEqual("aborted", (await retiring).State);
     }
 
     private sealed class NotificationBindingFixture : IAsyncDisposable

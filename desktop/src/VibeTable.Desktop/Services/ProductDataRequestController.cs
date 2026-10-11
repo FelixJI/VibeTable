@@ -269,17 +269,6 @@ public sealed class ProductDataRequestController
             epochLease?.Dispose();
             return;
         }
-        if (endpoint.MutatesWorkspaceFor(request.Payload)
-            && _sessionEnvelopeFilter?.Current.OpenMode
-                == WorkspaceOpenMode.ReadOnly)
-        {
-            _reply.PostOperationFailed(
-                request.RequestId,
-                "The workspace is open read-only.",
-                "WORKSPACE_READ_ONLY");
-            epochLease?.Dispose();
-            return;
-        }
         if (!_routeSelector.TrySelectProduct(
                 request.Type,
                 endpoint.CapabilityCatalog,
@@ -293,6 +282,20 @@ public sealed class ProductDataRequestController
             IProductSidecarRpcForwarder? sidecarForwarder,
             FieldChangeProtectionLedgerContext protectionContext) =
             CaptureProductContext(request.Scope);
+        // Admission resolves the task kind through the same captured gateway
+        // that will forward the request, so the decision cannot drift to a
+        // different binding between the check and dispatch.
+        if (MutatesWorkspaceForAdmission(endpoint, request.Payload, gateway)
+            && _sessionEnvelopeFilter?.Current.OpenMode
+                == WorkspaceOpenMode.ReadOnly)
+        {
+            _reply.PostOperationFailed(
+                request.RequestId,
+                "The workspace is open read-only.",
+                "WORKSPACE_READ_ONLY");
+            epochLease?.Dispose();
+            return;
+        }
         long startedTimestamp = Stopwatch.GetTimestamp();
         string stage = "protection";
         try
@@ -420,6 +423,28 @@ public sealed class ProductDataRequestController
         {
             epochLease?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Admission-level mutating check: the payload read-only lane plus the
+    /// Host-registered task kind lane, resolved through the captured gateway
+    /// that forwards this request — the kind never comes from the caller.
+    /// </summary>
+    private static bool MutatesWorkspaceForAdmission(
+        ProductDataRpcEndpoint endpoint,
+        JsonElement payload,
+        IProductDataRpcGateway? gateway)
+    {
+        if (!endpoint.MutatesWorkspaceFor(payload))
+            return false;
+        if (endpoint.ReadOnlyTaskKind is { } allowedKind
+            && gateway is JsonRpcProductDataGateway productGateway
+            && payload.TryGetProperty("taskId", out JsonElement taskId)
+            && taskId.ValueKind == JsonValueKind.String
+            && productGateway.TryGetRegisteredTaskKind(taskId.GetString()!, out string registered)
+            && string.Equals(registered, allowedKind, StringComparison.Ordinal))
+            return false;
+        return true;
     }
 
     private async Task<JsonElement> ProtectMutationAsync(

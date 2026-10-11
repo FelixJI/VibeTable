@@ -243,7 +243,36 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         }
     }
 
-    internal async Task<JsonElement> WaitForTerminalAsync(string taskId, CancellationToken token)
+    /// <summary>
+    /// The Host-registered kind for a task in this workspace binding, or false
+    /// for unknown tasks. Read-only admission decisions use this instead of
+    /// trusting renderer-supplied kinds.
+    /// </summary>
+    internal bool TryGetRegisteredTaskKind(string taskId, out string kind)
+    {
+        lock (_gate)
+        {
+            if (_sourceTasks.TryGetValue(taskId, out SourceTask? source))
+            {
+                kind = source.Status.Kind;
+                return true;
+            }
+            if (_tasks.TryGetValue(taskId, out Record? record))
+            {
+                kind = record.Status.Kind;
+                return true;
+            }
+            kind = "";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The task's registered terminal. With no cancellable token this is the
+    /// underlying completion itself, so a committed terminal is synchronously
+    /// observable (no wrapper continuation can lag the report).
+    /// </summary>
+    internal Task<TaskStatus> WaitForTerminalAsync(string taskId, CancellationToken token)
     {
         Task<TaskStatus> completion;
         lock (_gate)
@@ -252,8 +281,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
                 throw new KeyNotFoundException("Data IO task is not in this workspace.");
             completion = record.Completion.Task;
         }
-        TaskStatus status = await completion.WaitAsync(token).ConfigureAwait(false);
-        return JsonSerializer.SerializeToElement(status, Wire);
+        return token.CanBeCanceled ? completion.WaitAsync(token) : completion;
     }
 
     internal (JsonElement Snapshot, JsonRpcClient? Client) RequestCancel(string taskId)

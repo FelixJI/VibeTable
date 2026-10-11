@@ -19,13 +19,15 @@ internal sealed record ProductDataRpcEndpoint(
     Func<IProductDataRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync,
     bool MutatesWorkspace = false,
     Func<JsonElement, bool>? ReadOnlyPayload = null,
+    string? ReadOnlyTaskKind = null,
     ProtectionSnapshotPolicy? ProtectionPolicy = null,
     ProductRpcCapabilityCatalog CapabilityCatalog = ProductRpcCapabilityCatalog.Product)
 {
     /// <summary>
-    /// Whether this payload keeps the mutating admission. The read-only lane
-    /// is reserved for the exact zero-write preview payload; anything else
-    /// stays mutating, so other kinds cannot masquerade through it.
+    /// Whether this payload keeps the mutating admission, judging the payload
+    /// read-only lane only. The Host-registered task kind lane in
+    /// <see cref="ReadOnlyTaskKind"/> is evaluated by the request controller
+    /// with its captured gateway, not here.
     /// </summary>
     internal bool MutatesWorkspaceFor(JsonElement payload)
         => MutatesWorkspace && ReadOnlyPayload?.Invoke(payload) != true;
@@ -172,7 +174,8 @@ internal static class ProductDataRpcRegistry
             ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("task.cancel", p => Safe(p) && HasString(p, "taskId"),
             (g, p, t) => g.CancelTaskAsync(p, t),
-            MutatesWorkspace: true),
+            MutatesWorkspace: true,
+            ReadOnlyTaskKind: "data.previewImport"),
         new("task.status", p => Safe(p) && HasString(p, "taskId"),
             (g, p, t) => g.GetTaskStatusAsync(p, t)),
         new("formula.validate", p => Safe(p)

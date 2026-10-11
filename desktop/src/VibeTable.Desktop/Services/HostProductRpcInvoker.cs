@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Text.Json;
 using VibeTable.Contracts;
+using TaskStatus = VibeTable.Contracts.TaskStatus;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
@@ -32,6 +33,9 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
 
     internal JsonRpcClient? Client => _client;
     internal HostDataIoTaskRegistry TaskOwner => _taskOwner;
+
+    internal bool TryGetRegisteredTaskKind(string taskId, out string kind)
+        => _taskOwner.TryGetRegisteredTaskKind(taskId, out kind);
 
     internal HostProductRpcInvoker(
         JsonRpcClient? client,
@@ -148,7 +152,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
 
     private async Task<JsonElement> InvokeTaskAsync(
         string method, JsonElement parameters, CancellationToken token, JsonRpcClient? execution = null,
-        Action<Task<JsonElement>>? captureTerminal = null)
+        Action<Task<TaskStatus>>? captureTerminal = null)
     {
         if (method == "data.importHistory")
         {
@@ -281,7 +285,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         HostSessionFileBroker files = Files;
         string grantId = parameters.GetProperty("grantId").GetString()
             ?? throw new JsonException("Export grant is required.");
-        Task<JsonElement>? completion = null;
+        Task<TaskStatus>? completion = null;
         Exception? failure = null;
         try
         {
@@ -313,7 +317,7 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
 
         if (completion is { IsCompletedSuccessfully: true })
         {
-            JsonElement status = completion.Result;
+            JsonElement status = JsonSerializer.SerializeToElement(completion.Result, WireOptions);
             // A commit receipt observed during drain wins over cancellation or cleanup failure.
             string? state = status.GetProperty("state").GetString();
             if (state == "succeeded") return status.GetProperty("result").Clone();
