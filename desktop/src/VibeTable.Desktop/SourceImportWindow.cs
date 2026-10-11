@@ -55,6 +55,7 @@ internal sealed class SourceImportWindow : Window
     private readonly Button _previewButton = new() { Content = "预检", IsEnabled = false };
     private readonly Button _startButton = new() { Content = "确认并导入", IsEnabled = false };
     private readonly List<TableChoice> _choices = [];
+    private readonly ResourceDictionary _controlTheme = new();
     private readonly HostAppearanceService _appearance;
     private readonly bool _ownsAppearance;
     private NativeSourceConnection? _connection;
@@ -182,7 +183,8 @@ internal sealed class SourceImportWindow : Window
                 new DynamicResourceExtension(HostThemeResources.WindowTextBrushKey)));
             Resources[type] = style;
         }
-        HostThemeResources.Apply(Resources, _appearance.Projection);
+        Resources.MergedDictionaries.Add(_controlTheme);
+        OnAppearanceProjectionChanged(_appearance.Projection);
         _appearance.ProjectionChanged += OnAppearanceProjectionChanged;
         _previewButton.Click += async (_, _) => await PreviewAsync();
         _startButton.Click += (_, _) => Start();
@@ -198,8 +200,13 @@ internal sealed class SourceImportWindow : Window
         { if (!_closed) Close(); })));
     }
 
-    private void OnAppearanceProjectionChanged(HostThemeProjection projection) =>
+    private void OnAppearanceProjectionChanged(HostThemeProjection projection)
+    {
+        string theme = projection.HighContrast ? "HC" : projection.Effective == "dark" ? "Dark" : "Light";
+        _controlTheme.Source = new Uri(
+            $"pack://application:,,,/PresentationFramework.Fluent;component/Themes/Fluent.{theme}.xaml");
         HostThemeResources.Apply(Resources, projection);
+    }
 
     private void OnLoaded(object sender, RoutedEventArgs args)
     {

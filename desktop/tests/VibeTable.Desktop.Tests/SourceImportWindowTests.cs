@@ -901,6 +901,12 @@ public sealed class SourceImportWindowTests
             Assert.AreEqual(ThemedColor("dark", HostThemeResources.SurfaceTextBrushKey),
                 await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Foreground).Color));
         }
+        await fixture.DoAsync(w =>
+        {
+            RequireType<Expander>(w).IsExpanded = true;
+            Require<ComboBox>(w, "field-policy-tbl-1-f-amount").SelectedIndex = 1;
+        });
+        await fixture.SettleAsync();
         string? screenshotDirectory = ResolveOptInScreenshotDirectory();
         if (screenshotDirectory is not null)
         {
