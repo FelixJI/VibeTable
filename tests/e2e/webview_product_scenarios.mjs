@@ -7485,11 +7485,20 @@ async function scenario12(page, recorder, _network, runtime) {
   // packaged WebView2 table, modal, and popover in dark mode.
   await page.getByTestId("nav-settings").click();
   await page.getByTestId("settings-nav-general").click();
+  await beginBridgeMessageCapture(page, ["appPreferences.update", "operation.failed"]);
   await page.getByTestId("theme-select").click();
   await page.locator(".n-base-select-option")
     .filter({ hasText: /^(深色|Dark)$/u })
     .click();
   await page.locator("html.dark").waitFor({ timeout: 10_000 });
+  const themeUpdated = await waitForCapturedBridgeMessage(page, 30_000);
+  recorder.check("the theme update is acknowledged by the real Host",
+    themeUpdated.type === "appPreferences.update" && themeUpdated.payload?.theme === "dark",
+    { themeUpdated });
+  const darkPreferences = await rawBridgeRequest(page, "appPreferences.get", {});
+  recorder.check("the real theme selector persists its choice through the Host authority",
+    darkPreferences.payload?.theme === "dark" && darkPreferences.payload?.effectiveTheme === "dark",
+    { darkPreferences });
   await page.getByTestId("nav-tables").click();
   await selectTable(page, "E2E Backup Consistency");
   const darkThemeEvidence = await sampleConnectedThemeSurfaces(page);
@@ -7563,6 +7572,24 @@ async function scenario12(page, recorder, _network, runtime) {
   await verifyAutoNumberSnapshot(page, recorder, tableId, autoNumberField, {
     applyProductMutation, rawBridgeRequest,
   });
+  const themeSession = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+  await openWorkspaceCenterFromSwitcher(page);
+  const themeClosed = await replicaUiMethod(page, recorder, "workspace.close", () =>
+    page.getByTestId("workspace-center").getByRole("button", {
+      name: /关闭当前工作区|Close current workspace/,
+    }).click());
+  recorder.check("global dark appearance survives closing the workspace",
+    themeClosed.result?.state === "closed" && await page.locator("html.dark").count() === 1);
+  await beginWritableWorkspaceBootstrapCapture(page, themeSession.sessionEpoch, "workspace.open");
+  await page.getByTestId("workspace-center").getByRole("button", { name: /E2E Product Workspace/ }).click();
+  const themeReopened = await waitForCapturedBridgeMessage(page, 60_000);
+  const reopenedPreferences = await rawBridgeRequest(page, "appPreferences.get", {});
+  recorder.check("workspace reopen retains the Host theme in the new epoch",
+    themeReopened.payload.session.sessionEpoch > themeSession.sessionEpoch
+      && reopenedPreferences.payload?.theme === "dark"
+      && reopenedPreferences.payload?.effectiveTheme === "dark"
+      && await page.locator("html.dark").count() === 1,
+    { reopenedPreferences });
 }
 
 async function scenario33(page, recorder, _network, runtime) {
