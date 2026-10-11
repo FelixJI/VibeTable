@@ -252,6 +252,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         // Downloads are denied by default; only the exact blob URL of one
         // registered dashboard export action is admitted, redirected into the
         // broker-managed temporary file and settled through the gate.
+        core.DownloadStarting -= OnDownloadStarting;
         core.DownloadStarting += OnDownloadStarting;
 
         core.NavigationStarting += (_, args) =>
@@ -329,16 +330,18 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         };
     }
 
-    private void OnDownloadStarting(
+    private async void OnDownloadStarting(
         object? sender,
         CoreWebView2DownloadStartingEventArgs args)
     {
         CoreWebView2Deferral deferral = args.GetDeferral();
+        DashboardExportDownloadGate? gate = null;
+        DashboardDownloadAdmission? admission = null;
         try
         {
-            DashboardExportDownloadGate? gate = DashboardDownloads?.Invoke();
+            gate = DashboardDownloads?.Invoke();
             string uri = args.DownloadOperation.Uri ?? string.Empty;
-            if (gate is null || !gate.TryAdmit(uri, out DashboardDownloadAdmission? admission)
+            if (gate is null || !gate.TryAdmit(uri, out admission)
                 || admission is null)
             {
                 _readiness?.Trace($"Download rejected; uri={uri}");
@@ -352,7 +355,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             // The broker drain cancels the WebView2 operation through this
             // termination before cleaning up, so the temporary file is never
             // deleted while WebView2 still writes it.
-            if (!admission.Broker.AttachDownloadTermination(
+            if (!await admission.Broker.AttachDownloadTerminationAsync(
                 admission.Token,
                 () => _owner.Dispatcher.InvokeAsync(() =>
                 {
@@ -362,7 +365,9 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                 }).Task))
             {
                 args.Cancel = true;
-                _ = gate.SettleAsync(admission, completed: false, "SessionRetired");
+                string reason = admission.Broker.IsRetired ? "SessionRetired" : "SAVE_TIMEOUT";
+                if (reason == "SAVE_TIMEOUT") admission.RecordFailure(reason);
+                _ = gate.SettleAsync(admission, completed: false, reason);
                 return;
             }
             operation.BytesReceivedChanged += (_, _) =>
@@ -371,6 +376,16 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             // A fast local blob download may already be past InProgress before
             // the subscription runs; check the current state explicitly.
             ObserveDownloadState(gate, admission, operation);
+        }
+        catch (Exception error)
+        {
+            args.Cancel = true;
+            _readiness?.Trace($"Dashboard download start failed; exception={error.GetType().Name}");
+            if (gate is not null && admission is not null)
+            {
+                admission.RecordFailure("DOWNLOAD_START_FAILED");
+                _ = gate.SettleAsync(admission, completed: false, error.GetType().Name);
+            }
         }
         finally
         {

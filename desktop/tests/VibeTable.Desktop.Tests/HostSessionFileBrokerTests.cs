@@ -70,18 +70,32 @@ public sealed class HostSessionFileBrokerTests
     }
 
     [TestMethod]
-    public async Task ExpiredDownloadReceiptsDoNotExhaustTheSession()
+    public async Task SettledDownloadReceiptsDoNotExhaustActiveSlots()
     {
         await using var f = new Fixture();
         string target = Path.Combine(f.Root, "out.csv");
-        for (int i = 0; i < 17; i++)
+        for (int i = 0; i < 300; i++)
         {
             HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
             File.WriteAllText(opened.TemporaryPath, "new");
             await f.Broker.CompleteDownloadAsync(opened.Id, commit: true);
-            f.Clock.Now = f.Clock.Now.AddMinutes(6);
         }
         Assert.AreEqual("new", File.ReadAllText(target));
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
+    public async Task CommitChecksTheHostDeadlineWithoutDependingOnTheTimer()
+    {
+        await using var f = new Fixture();
+        string target = Path.Combine(f.Root, "deadline.csv");
+        File.WriteAllText(target, "old");
+        HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+        File.WriteAllText(opened.TemporaryPath, "new");
+        f.Clock.Now = opened.Deadline;
+        await Assert.ThrowsAsync<TimeoutException>(() => f.Broker.CompleteDownloadAsync(opened.Id, true));
+        Assert.AreEqual("old", File.ReadAllText(target));
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
         Assert.AreEqual(0, f.Leases);
     }
 
@@ -109,7 +123,7 @@ public sealed class HostSessionFileBrokerTests
         int terminated = 0;
         // Simulate the bridge: retirement cancels the WebView2 download, and
         // its interrupted settlement performs the cleanup afterwards.
-        Assert.IsTrue(f.Broker.AttachDownloadTermination(opened.Id, () =>
+        Assert.IsTrue(await f.Broker.AttachDownloadTerminationAsync(opened.Id, () =>
         {
             Interlocked.Increment(ref terminated);
             return f.Broker.CompleteDownloadAsync(opened.Id, commit: false);
@@ -137,7 +151,7 @@ public sealed class HostSessionFileBrokerTests
         File.WriteAllText(target, "old");
         HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
         File.WriteAllText(opened.TemporaryPath, "partial");
-        Assert.IsTrue(f.Broker.AttachDownloadTermination(opened.Id, () => Task.CompletedTask));
+        Assert.IsTrue(await f.Broker.AttachDownloadTerminationAsync(opened.Id, () => Task.CompletedTask));
         f.ExpectDrainFailure = true;
         f.Epoch.Cancel();
         await Assert.ThrowsAsync<TimeoutException>(() =>
@@ -151,7 +165,7 @@ public sealed class HostSessionFileBrokerTests
         Assert.IsFalse(File.Exists(opened.TemporaryPath));
         Assert.AreEqual("old", File.ReadAllText(target));
         Assert.AreEqual(0, f.Leases);
-        Assert.IsFalse(f.Broker.AttachDownloadTermination(opened.Id, () => Task.CompletedTask));
+        Assert.IsFalse(await f.Broker.AttachDownloadTerminationAsync(opened.Id, () => Task.CompletedTask));
     }
 
     [TestMethod]

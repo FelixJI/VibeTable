@@ -1,5 +1,8 @@
 import type { HostBridge } from "@/bridge/hostBridge";
-import { BridgeOperationError } from "@/bridge/hostBridge";
+import { BridgeOperationError, BridgeRequestRetiredError } from "@/bridge/hostBridge";
+import { getActivePinia } from "pinia";
+import { watch } from "vue";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type {
   DashboardExportSettledPayload,
   DashboardExportTargetGrantedPayload,
@@ -10,7 +13,6 @@ const MAX_EXPORT_EDGE = 16_000;
 const MAX_EXPORT_PIXELS = 64_000_000;
 const MAX_EXPORT_BYTES = 32 * 1024 * 1024;
 const MIN_EXPORT_SCALE = 0.05;
-const SAVE_SETTLE_TIMEOUT_MS = 120_000;
 
 export type DashboardExportCode =
   | "PANEL_NOT_READY"
@@ -49,6 +51,7 @@ export async function exportDashboardCsv(
   fileName: string,
   data: DashboardPanelData,
   bridge: HostBridge,
+  signal?: AbortSignal,
 ): Promise<DashboardCsvExportReceipt> {
   if (data.state !== "ready") {
     throw new DashboardExportError(
@@ -67,6 +70,7 @@ export async function exportDashboardCsv(
     "csv",
     new Blob(["\uFEFF", lines.join("\r\n")], { type: "text/csv;charset=utf-8" }),
     bridge,
+    signal,
   );
   return { ...receipt, truncated: data.truncated, maxPoints: data.maxPoints };
 }
@@ -75,41 +79,50 @@ export async function exportDashboardElementPng(
   element: HTMLElement,
   fileName: string,
   bridge: HostBridge,
+  signal?: AbortSignal,
 ): Promise<DashboardExportReceipt> {
-  const { toBlob } = await import("html-to-image");
-  const width = Math.max(1, Math.floor(element.scrollWidth));
-  const height = Math.max(1, Math.floor(element.scrollHeight));
-  // Edge and total-pixel budgets both bound the encode; the scale is never
-  // floored, so an over-large element cannot silently break either cap.
-  const scale = Math.min(
-    2,
-    MAX_EXPORT_EDGE / width,
-    MAX_EXPORT_EDGE / height,
-    Math.sqrt(MAX_EXPORT_PIXELS / (width * height)),
-  );
-  if (!(scale >= MIN_EXPORT_SCALE)) {
-    throw new DashboardExportError(
-      "PNG_BUDGET_EXCEEDED",
-      `图像 ${width}x${height} 超出导出预算。`,
-      { width, height },
+  const owner = captureExportOwner(signal);
+  try {
+    owner.assertCurrent();
+    const { toBlob } = await import("html-to-image");
+    owner.assertCurrent();
+    const width = Math.max(1, Math.floor(element.scrollWidth));
+    const height = Math.max(1, Math.floor(element.scrollHeight));
+    // Edge and total-pixel budgets both bound the encode; the scale is never
+    // floored, so an over-large element cannot silently break either cap.
+    const scale = Math.min(
+      2,
+      MAX_EXPORT_EDGE / width,
+      MAX_EXPORT_EDGE / height,
+      Math.sqrt(MAX_EXPORT_PIXELS / (width * height)),
     );
+    if (!(scale >= MIN_EXPORT_SCALE)) {
+      throw new DashboardExportError(
+        "PNG_BUDGET_EXCEEDED",
+        `图像 ${width}x${height} 超出导出预算。`,
+        { width, height },
+      );
+    }
+    const blob = await toBlob(element, {
+      cacheBust: true,
+      pixelRatio: scale,
+      backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--vt-bg").trim() || "#fff",
+      width,
+      height,
+    });
+    owner.assertCurrent();
+    if (!blob) throw new Error("PNG export failed.");
+    if (blob.size > MAX_EXPORT_BYTES) {
+      throw new DashboardExportError(
+        "PNG_BYTES_EXCEEDED",
+        `PNG 编码为 ${blob.size} 字节，超出字节预算。`,
+        { bytes: blob.size },
+      );
+    }
+    return await saveDashboardOutput(fileName, "png", blob, bridge, owner.signal);
+  } finally {
+    owner.dispose();
   }
-  const blob = await toBlob(element, {
-    cacheBust: true,
-    pixelRatio: scale,
-    backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--vt-bg").trim() || "#fff",
-    width,
-    height,
-  });
-  if (!blob) throw new Error("PNG export failed.");
-  if (blob.size > MAX_EXPORT_BYTES) {
-    throw new DashboardExportError(
-      "PNG_BYTES_EXCEEDED",
-      `PNG 编码为 ${blob.size} 字节，超出字节预算。`,
-      { bytes: blob.size },
-    );
-  }
-  return saveDashboardOutput(fileName, "png", blob, bridge);
 }
 
 export async function printDashboard(bridge: HostBridge): Promise<{ opened: true }> {
@@ -123,25 +136,65 @@ async function saveDashboardOutput(
   format: "csv" | "png",
   blob: Blob,
   bridge: HostBridge,
+  signal?: AbortSignal,
 ): Promise<DashboardExportReceipt> {
-  const safe = safeFileName(fileName);
-  const blobUrl = URL.createObjectURL(blob);
-  let granted: DashboardExportTargetGrantedPayload;
+  const owner = captureExportOwner(signal);
   try {
-    granted = await bridge.request("dashboard.exportTargetRequested", {
-      fileName: safe,
-      format,
-      blobUrl,
-      byteLength: blob.size,
-    }) as DashboardExportTargetGrantedPayload;
-  } catch (error) {
-    URL.revokeObjectURL(blobUrl);
-    if (error instanceof BridgeOperationError && error.code === "CANCELLED") {
-      return { outcome: "cancelled", fileName: safe };
+    owner.assertCurrent();
+    const safe = safeFileName(fileName);
+    const blobUrl = URL.createObjectURL(blob);
+    let granted: DashboardExportTargetGrantedPayload;
+    try {
+      granted = await bridge.request("dashboard.exportTargetRequested", {
+        fileName: safe,
+        format,
+        blobUrl,
+        byteLength: blob.size,
+      }) as DashboardExportTargetGrantedPayload;
+      owner.assertCurrent();
+    } catch (error) {
+      URL.revokeObjectURL(blobUrl);
+      if (error instanceof BridgeOperationError && error.code === "CANCELLED") {
+        return { outcome: "cancelled", fileName: safe };
+      }
+      throw error instanceof Error ? error : new Error(String(error));
     }
-    throw error instanceof Error ? error : new Error(String(error));
+    return await awaitDownloadSettlement(bridge, granted, safe, blobUrl, owner.signal);
+  } finally {
+    owner.dispose();
   }
-  return await awaitDownloadSettlement(bridge, granted, safe, blobUrl);
+}
+
+function captureExportOwner(signal?: AbortSignal): {
+  signal: AbortSignal;
+  assertCurrent: () => void;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  const session = getActivePinia() ? useWorkspaceSessionStore() : null;
+  const workspaceId = session?.activeWorkspaceId;
+  const epoch = session?.sessionEpoch;
+  const bound = session?.enabled;
+  const checkSession = (): void => {
+    if (bound && session && (!session.enabled || session.activeWorkspaceId !== workspaceId
+      || session.sessionEpoch !== epoch || !session.hasOpenWorkspace || session.isTransitioning)) abort();
+  };
+  const stop = session ? watch(
+    () => [session.enabled, session.activeWorkspaceId, session.sessionEpoch, session.isTransitioning, session.sessionState],
+    checkSession, { flush: "sync" },
+  ) : undefined;
+  checkSession();
+  return {
+    signal: controller.signal,
+    assertCurrent: () => {
+      checkSession();
+      if (controller.signal.aborted) throw new BridgeRequestRetiredError();
+    },
+    dispose: () => { stop?.(); signal?.removeEventListener("abort", abort); },
+  };
 }
 
 async function awaitDownloadSettlement(
@@ -149,27 +202,23 @@ async function awaitDownloadSettlement(
   granted: DashboardExportTargetGrantedPayload,
   fileName: string,
   blobUrl: string,
+  signal: AbortSignal,
 ): Promise<DashboardExportReceipt> {
-  const cleanup: { unsubscribe: (() => void) | null; timer: ReturnType<typeof setTimeout> | null } = {
+  const cleanup: { unsubscribe: (() => void) | null } = {
     unsubscribe: null,
-    timer: null,
   };
+  let retire: (() => void) | undefined;
   try {
     const settled = new Promise<DashboardExportSettledPayload>((resolve, reject) => {
-      cleanup.timer = setTimeout(() => {
-        reject(new DashboardExportError(
-          "SAVE_TIMEOUT",
-          "保存未在限定时间内完成。",
-          { fileName },
-        ));
-      }, SAVE_SETTLE_TIMEOUT_MS);
+      retire = () => reject(new BridgeRequestRetiredError());
+      signal.addEventListener("abort", retire, { once: true });
+      if (signal.aborted) { retire(); return; }
       cleanup.unsubscribe = bridge.on("dashboard.exportSettled", (payload) => {
         if (payload.token !== granted.token) return;
-        if (cleanup.timer !== null) clearTimeout(cleanup.timer);
         resolve(payload);
       });
     });
-    triggerSingleBlobDownload(blobUrl, granted.displayName);
+    if (!signal.aborted) triggerSingleBlobDownload(blobUrl, granted.displayName);
     const settle = await settled;
     if (settle.outcome === "saved") {
       return { outcome: "saved", fileName: granted.displayName || fileName };
@@ -178,12 +227,12 @@ async function awaitDownloadSettlement(
       return { outcome: "cancelled", fileName };
     }
     throw new DashboardExportError(
-      "SAVE_FAILED",
+      settle.reason === "SAVE_TIMEOUT" ? "SAVE_TIMEOUT" : "SAVE_FAILED",
       settle.reason || "保存失败。",
       { fileName },
     );
   } finally {
-    if (cleanup.timer !== null) clearTimeout(cleanup.timer);
+    if (retire) signal.removeEventListener("abort", retire);
     cleanup.unsubscribe?.();
     // The blob must stay alive until the WebView2 download has read it.
     URL.revokeObjectURL(blobUrl);

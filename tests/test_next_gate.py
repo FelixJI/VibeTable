@@ -3262,6 +3262,20 @@ def test_core_lane_retains_capacity_record_only_after_passing_coverage(
         assert not retained.exists()
 
 
+def test_dashboard_download_hardening_rebinds_the_handler_on_load_retry() -> None:
+    bridge = Path(__file__).resolve().parents[1] / (
+        "desktop/src/VibeTable.Desktop/Services/ProductWebViewBridge.cs"
+    )
+    source = bridge.read_text(encoding="utf-8")
+    hardening = source.split("private void ApplyHardening(", 1)[1].split(
+        "private async void OnDownloadStarting(", 1
+    )[0]
+    assert "core.DownloadStarting -= OnDownloadStarting;" in hardening
+    assert hardening.index("core.DownloadStarting -= OnDownloadStarting;") < hardening.index(
+        "core.DownloadStarting += OnDownloadStarting;"
+    )
+
+
 def test_go_gate_uses_the_same_pinned_toolchain_as_package_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

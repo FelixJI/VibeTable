@@ -115,15 +115,15 @@ internal sealed class DashboardNativeOutputController
             }
             // The modal dialog runs before any broker lock is taken, so no broker
             // gate is ever held across the wait.
-            string defaultName = $"{SafeFileName(fileName)}.{format}";
-            string? path = _host.SelectExportTarget(format, defaultName);
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                PostFailure(request, "已取消保存仪表盘输出。", "CANCELLED");
-                return;
-            }
             try
             {
+                string defaultName = $"{SafeFileName(fileName)}.{format}";
+                string? path = _host.SelectExportTarget(format, defaultName);
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    PostFailure(request, "已取消保存仪表盘输出。", "CANCELLED");
+                    return;
+                }
                 HostDownloadTarget target = await broker
                     .OpenDownloadTargetAsync(path)
                     .ConfigureAwait(true);
@@ -146,10 +146,7 @@ internal sealed class DashboardNativeOutputController
                 _trace?.Invoke("Dashboard export target retired; reason=epoch-cancelled");
                 PostFailure(request, "工作区已切换，已取消保存仪表盘输出。", "CANCELLED");
             }
-            catch (Exception exception) when (
-                exception is IOException or InvalidOperationException or UnauthorizedAccessException
-                or System.Security.SecurityException or NotSupportedException
-                or BackendUnavailableException)
+            catch (Exception exception)
             {
                 _trace?.Invoke(
                     $"Dashboard export target failed; exception={exception.GetType().Name}");

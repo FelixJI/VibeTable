@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 
 import { createHostBridge, type WebViewLike } from "@/bridge/hostBridge";
 import {
@@ -46,6 +48,7 @@ describe("dashboardExportService native output", () => {
   }
 
   beforeEach(() => {
+    setActivePinia(createPinia());
     vi.useFakeTimers();
     vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
     posted = [];
@@ -198,14 +201,16 @@ describe("dashboardExportService native output", () => {
     bridge.stop();
   });
 
-  it("times out when the host never settles the download", async () => {
+  it("uses the host deadline and reports its terminal failure", async () => {
     const bridge = makeBridge();
     const promise = exportDashboardCsv("sales", readyData(), bridge);
     await vi.advanceTimersByTimeAsync(0);
     await grantTarget();
-    const timeout = expect(promise).rejects.toMatchObject({ code: "SAVE_TIMEOUT" });
-    await vi.runAllTimersAsync();
-    await timeout;
+    await vi.advanceTimersByTimeAsync(120_001);
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    reply({ type: "dashboard.exportSettled",
+      payload: { token: "download-1", outcome: "failed", reason: "SAVE_TIMEOUT" } });
+    await expect(promise).rejects.toMatchObject({ code: "SAVE_TIMEOUT" });
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     bridge.stop();
   });
@@ -256,6 +261,57 @@ describe("dashboardExportService native output", () => {
       payload: { token: "download-1", outcome: "saved" },
     });
     await expect(promise).resolves.toEqual({ outcome: "saved", fileName: "board.png" });
+    bridge.stop();
+  });
+
+  it("rejects a delayed PNG from a retired workspace before requesting a new target", async () => {
+    const session = useWorkspaceSessionStore();
+    session.activeWorkspaceId = "workspace-a";
+    session.sessionEpoch = 1;
+    session.sessionState = "openedWritable";
+    session.setWorkspaces([{
+      contractVersion: "2.0", workspaceId: "workspace-a", displayName: "A",
+      selectedRoot: "C:\\fixture-a", activityRoot: null, storageKind: "fixed",
+      coordinationStrength: "strong", lastOpenedAt: null, lastKnownHealth: "healthy",
+      lastSnapshotAt: null, lastSyncAt: null, pendingSync: false,
+    }]);
+    session.configureCapabilities(["workspace.session.v2"]);
+    let finish!: (blob: Blob) => void;
+    toBlob.mockReturnValueOnce(new Promise<Blob>((resolve) => { finish = resolve; }));
+    const bridge = makeBridge();
+    const pending = exportDashboardElementPng(document.createElement("section"), "board-a", bridge);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(toBlob).toHaveBeenCalledTimes(1);
+    session.activeWorkspaceId = "workspace-b";
+    session.sessionEpoch = 2;
+    finish(new Blob(["png-a"]));
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(posted).toEqual([]);
+    expect(createObjectURL).not.toHaveBeenCalled();
+    bridge.stop();
+  });
+
+  it("rejects a retired dashboard before the lazy PNG import finishes", async () => {
+    const owner = new AbortController();
+    const bridge = makeBridge();
+    const pending = exportDashboardElementPng(document.createElement("section"), "old-board", bridge, owner.signal);
+    owner.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(toBlob).not.toHaveBeenCalled();
+    expect(posted).toEqual([]);
+    bridge.stop();
+  });
+
+  it("retires a granted download wait and ignores its old saved receipt", async () => {
+    const owner = new AbortController();
+    const bridge = makeBridge();
+    const pending = exportDashboardCsv("old-board", readyData(), bridge, owner.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    await grantTarget();
+    owner.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    reply({ type: "dashboard.exportSettled", payload: { token: "download-1", outcome: "saved" } });
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     bridge.stop();
   });
 

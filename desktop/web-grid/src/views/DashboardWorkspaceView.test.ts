@@ -12,6 +12,7 @@ import {
 } from "@/services/dashboardService";
 import { useDashboardDraftStore, useDashboardStore } from "@/stores/dashboardStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import DashboardWorkspaceView from "./DashboardWorkspaceView.vue";
 
 const exportsHarness = vi.hoisted(() => ({
@@ -256,7 +257,7 @@ describe("DashboardWorkspaceView", () => {
     await flushPromises();
     expect(service.refresh).toHaveBeenCalled();
     expect(service.copyCurrent).toHaveBeenCalled();
-    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), "运营", expect.anything());
+    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), "运营", expect.anything(), expect.any(AbortSignal));
     expect(exportsHarness.print).toHaveBeenCalledWith(expect.anything());
     expect(useDashboardDraftStore().editing).toBe(true);
 
@@ -285,8 +286,8 @@ describe("DashboardWorkspaceView", () => {
     expect(useDashboardDraftStore().draft!.panels[0]!.position).toMatchObject({ x: 2, y: 4 });
     expect(wrapper.findComponent(editorStub).props("panel")).toMatchObject({ id: first.id });
     expect(service.previewPanel).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }));
-    expect(exportsHarness.csv).toHaveBeenCalledWith(first.name, expect.objectContaining({ state: "idle" }), expect.anything());
-    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), first.name, expect.anything());
+    expect(exportsHarness.csv).toHaveBeenCalledWith(first.name, expect.objectContaining({ state: "idle" }), expect.anything(), expect.any(AbortSignal));
+    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), first.name, expect.anything(), expect.any(AbortSignal));
     expect(service.setVisiblePanels).toHaveBeenCalledWith([first.id]);
 
     toolbar.vm.$emit("configure");
@@ -341,6 +342,33 @@ describe("DashboardWorkspaceView", () => {
     expect(service.deleteCurrent).toHaveBeenCalled();
     expect(confirm).toHaveBeenCalled();
     wrapper.unmount();
+  });
+
+  it.each(["dashboard", "workspace", "unmount"])("retires an old PNG and its toast on %s change", async (change) => {
+    seedDashboard();
+    let finish!: (receipt: { outcome: "saved"; fileName: string }) => void;
+    exportsHarness.png.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mountView(pinia, createService());
+    await flushPromises();
+    const oldSurface = wrapper.get(".dashboard-surface").element;
+    wrapper.findComponent(toolbarStub).vm.$emit("exportPng");
+    await flushPromises();
+    const call = exportsHarness.png.mock.calls.at(-1) as unknown as [HTMLElement, string, unknown, AbortSignal];
+    if (change === "dashboard") {
+      const store = useDashboardStore();
+      store.current = { ...store.current!, id: "d2", name: "新看板" };
+    } else if (change === "workspace") {
+      useWorkspaceSessionStore().sessionEpoch++;
+    } else wrapper.unmount();
+    await flushPromises();
+    expect(call[3].aborted).toBe(true);
+    if (change === "dashboard") {
+      expect(wrapper.get(".dashboard-surface").element).not.toBe(oldSurface);
+    }
+    finish({ outcome: "saved", fileName: "旧看板.png" });
+    await flushPromises();
+    expect(document.body.textContent).not.toContain("旧看板.png");
+    if (change !== "unmount") wrapper.unmount();
   });
 
   it("shows loading/offline/error/conflict states and keeps failed drilldown deterministic", async () => {

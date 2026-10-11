@@ -13,12 +13,14 @@ public sealed class DashboardNativeOutputControllerTests
     {
         public string? Target { get; set; } = "unused";
         public Exception? PrintFailure { get; set; }
+        public Exception? PickerFailure { get; set; }
         public int Dialogs { get; private set; }
         public int PrintDialogs { get; private set; }
 
         public string? SelectExportTarget(string format, string defaultName)
         {
             Dialogs++;
+            if (PickerFailure is not null) throw PickerFailure;
             return Target;
         }
 
@@ -38,7 +40,7 @@ public sealed class DashboardNativeOutputControllerTests
         internal int Retired;
         internal int Leases;
 
-        internal BrokerFixture()
+        internal BrokerFixture(TimeProvider? time = null)
         {
             Directory.CreateDirectory(Root);
             Broker = new HostSessionFileBroker(
@@ -62,7 +64,7 @@ public sealed class DashboardNativeOutputControllerTests
                 {
                     Epoch.Token.ThrowIfCancellationRequested();
                     action();
-                });
+                }, time);
         }
 
         internal string TargetPath(string name = "board.png") => Path.Combine(Root, name);
@@ -634,6 +636,102 @@ public sealed class DashboardNativeOutputControllerTests
         FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
         Assert.IsNotNull(failure);
         Assert.AreEqual("BAD_PAYLOAD", Code(failure));
+    }
+
+    [TestMethod]
+    public async Task Picker_exception_returns_failure_and_releases_request_lease()
+    {
+        using var sessions = new SessionFixture();
+        await sessions.OpenAsync();
+        await using var fixture = new BrokerFixture();
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardNativeOutputController(sink, sessions.Filter,
+            new FakeOutputHost { PickerFailure = new System.Runtime.InteropServices.COMException() },
+            () => fixture.Broker, new DashboardExportDownloadGate(_ => { }));
+        await controller.DispatchAsync(Request("dashboard.exportTargetRequested",
+            ExportPayload(), scope: sessions.CurrentScope()));
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        Assert.AreEqual("PATH_GRANT_FAILED", Code(failure));
+        Assert.AreEqual(0, fixture.Leases);
+        await sessions.Manager.CloseAsync("picker failed").WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [TestMethod]
+    public async Task Host_deadline_blocks_late_save_but_waits_for_terminal_cleanup()
+    {
+        var time = new ManualTimeProvider();
+        await using var fixture = new BrokerFixture(time);
+        string target = fixture.TargetPath();
+        await File.WriteAllTextAsync(target, "old");
+        var reports = new List<JsonElement>();
+        var gate = new DashboardExportDownloadGate(payload => reports.Add(JsonSerializer.SerializeToElement(payload)));
+        HostDownloadTarget opened = await fixture.Broker.OpenDownloadTargetAsync(target);
+        Assert.IsTrue(gate.TryRegister(opened, fixture.Broker, "blob:https://app.vibetable.local/deadline", 3));
+        Assert.IsTrue(gate.TryAdmit("blob:https://app.vibetable.local/deadline", out var admission));
+        await File.WriteAllTextAsync(opened.TemporaryPath, "new");
+        int cancellations = 0;
+        Assert.IsTrue(await fixture.Broker.AttachDownloadTerminationAsync(opened.Id, () =>
+        { cancellations++; return Task.CompletedTask; }));
+
+        time.Advance(HostSessionFileBroker.DownloadLifetime);
+        Assert.AreEqual(1, cancellations);
+        Assert.HasCount(1, reports);
+        Assert.AreEqual("failed", reports[0].GetProperty("outcome").GetString());
+        Assert.AreEqual("SAVE_TIMEOUT", reports[0].GetProperty("reason").GetString());
+        Assert.IsTrue(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(1, fixture.Leases);
+        await Assert.ThrowsAsync<TimeoutException>(() => fixture.Broker.CompleteDownloadAsync(opened.Id, true));
+        Assert.AreEqual("old", await File.ReadAllTextAsync(target));
+
+        await gate.SettleAsync(admission!, completed: true, null);
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(0, fixture.Leases);
+        Assert.HasCount(1, reports);
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+    }
+
+    [TestMethod]
+    public async Task Host_deadline_during_retirement_never_cleans_an_admitted_writer()
+    {
+        var time = new ManualTimeProvider();
+        await using var fixture = new BrokerFixture(time);
+        object? report = null;
+        var gate = new DashboardExportDownloadGate(payload => report = payload);
+        HostDownloadTarget opened = await fixture.Broker.OpenDownloadTargetAsync(fixture.TargetPath());
+        Assert.IsTrue(gate.TryRegister(opened, fixture.Broker, "blob:https://app.vibetable.local/draining", 3));
+        Assert.IsTrue(gate.TryAdmit("blob:https://app.vibetable.local/draining", out var admission));
+        await File.WriteAllTextAsync(opened.TemporaryPath, "new");
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.IsTrue(await fixture.Broker.AttachDownloadTerminationAsync(opened.Id, () => cancelled.Task));
+        fixture.Broker.Retire();
+        time.Advance(HostSessionFileBroker.DownloadLifetime);
+
+        Assert.AreEqual("SAVE_TIMEOUT", JsonSerializer.SerializeToElement(report).GetProperty("reason").GetString());
+        Assert.IsTrue(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(1, fixture.Leases);
+        cancelled.SetResult();
+        await gate.SettleAsync(admission!, completed: false, "UserCanceled");
+        await fixture.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(0, fixture.Leases);
+    }
+
+    [TestMethod]
+    public async Task Unadmitted_target_expires_and_cannot_start_a_late_download()
+    {
+        var time = new ManualTimeProvider();
+        await using var fixture = new BrokerFixture(time);
+        object? report = null;
+        var gate = new DashboardExportDownloadGate(payload => report = payload);
+        HostDownloadTarget opened = await fixture.Broker.OpenDownloadTargetAsync(fixture.TargetPath());
+        Assert.IsTrue(gate.TryRegister(opened, fixture.Broker, "blob:https://app.vibetable.local/unadmitted", 3));
+        time.Advance(HostSessionFileBroker.DownloadLifetime);
+        Assert.AreEqual("SAVE_TIMEOUT", JsonSerializer.SerializeToElement(report).GetProperty("reason").GetString());
+        Assert.IsFalse(gate.TryAdmit("blob:https://app.vibetable.local/unadmitted", out _));
+        Assert.IsFalse(await fixture.Broker.AttachDownloadTerminationAsync(opened.Id, () => Task.CompletedTask));
+        Assert.AreEqual(0, fixture.Leases);
+        Assert.AreEqual(0, time.ScheduledTimerCount);
     }
 
     [TestMethod]

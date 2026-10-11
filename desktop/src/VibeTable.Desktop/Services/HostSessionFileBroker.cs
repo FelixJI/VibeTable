@@ -9,6 +9,8 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
 {
     private const int BlockBytes = 256 * 1024;
     private const long PluginBytes = 1024 * 1024;
+    internal static readonly TimeSpan DownloadLifetime = TimeSpan.FromSeconds(120);
+    internal TimeProvider DownloadTime => _time;
     private readonly Func<WorkspaceRequestEpochLease> _capture;
     private readonly Action<Action> _commitCurrent;
     private readonly TimeProvider _time;
@@ -315,7 +317,11 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 _epochRegistration ??= lease.CancellationToken.Register(Retire);
                 _retired.Token.ThrowIfCancellationRequested();
                 PruneExpiredReceipts();
-                if (_downloads.Count >= 16) throw new InvalidOperationException("Too many dashboard downloads.");
+                if (_downloads.Values.Count(item => item.ReceiptExpiresAt is null) >= 16)
+                    throw new InvalidOperationException("Too many dashboard downloads.");
+                foreach (string receipt in _downloads.Where(pair => pair.Value.ReceiptExpiresAt is not null)
+                    .OrderByDescending(pair => pair.Value.ReceiptExpiresAt).Skip(128)
+                    .Select(pair => pair.Key).ToArray()) _downloads.Remove(receipt);
                 if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\.\", StringComparison.Ordinal)
                     || path.StartsWith(@"\\?\GLOBALROOT", StringComparison.OrdinalIgnoreCase))
                     throw new IOException("A native file path is required.");
@@ -325,9 +331,9 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                     || !Directory.Exists(Path.GetDirectoryName(full))) throw new IOException("Invalid selected file.");
                 string temporary = Path.Combine(Path.GetDirectoryName(full)!, $".vibetable-{Guid.NewGuid():N}.tmp");
                 string id = "download-" + Guid.NewGuid().ToString("N");
-                var download = new Download(id, full, temporary, lease);
+                var download = new Download(id, full, temporary, lease, _time.GetUtcNow() + DownloadLifetime);
                 _commitCurrent(() => { _retired.Token.ThrowIfCancellationRequested(); _downloads.Add(id, download); });
-                return new HostDownloadTarget(id, temporary, name);
+                return new HostDownloadTarget(id, temporary, name, download.Deadline);
             }
             finally { _gate.Release(); }
         }
@@ -347,15 +353,41 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     /// any cleanup, so the temporary file is never deleted while WebView2
     /// still writes it.
     /// </summary>
-    internal bool AttachDownloadTermination(string id, Func<Task> terminate)
+    internal async Task<bool> AttachDownloadTerminationAsync(string id, Func<Task> terminate)
     {
         ArgumentNullException.ThrowIfNull(terminate);
-        lock (_terminations)
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            if (Volatile.Read(ref _retireStarted) != 0) return false;
-            _terminations[id] = terminate;
+            if (IsRetired || !_downloads.TryGetValue(id, out Download? download)
+                || download.Outcome is not null || _time.GetUtcNow() >= download.Deadline) return false;
+            download.Admitted = true;
+            lock (_terminations) _terminations[id] = terminate;
             return true;
         }
+        finally { _gate.Release(); }
+    }
+
+    internal async Task ExpireDownloadAsync(string id, Action expired)
+    {
+        Func<Task>? terminate = null;
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_downloads.TryGetValue(id, out Download? download))
+            {
+                if (download.Outcome is true || download.Expired) return;
+                download.Expired = true;
+                download.Outcome = false;
+                lock (_terminations) _terminations.TryGetValue(id, out terminate);
+                if (terminate is null && !download.Admitted) FinalizeUncommitted(download);
+            }
+        }
+        finally { _gate.Release(); }
+        // The receipt means commits are now impossible, not that WebView stopped.
+        expired();
+        if (terminate is not null)
+            await terminate().WaitAsync(_drainDownloadSettlementTimeout).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -378,6 +410,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             {
                 if (settled != commit)
                 {
+                    if (download.Expired) throw new TimeoutException("SAVE_TIMEOUT");
                     _retired.Token.ThrowIfCancellationRequested();
                     throw new IOException("Dashboard download outcome is already settled.");
                 }
@@ -393,6 +426,8 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                     {
                         download.Lease.CancellationToken.ThrowIfCancellationRequested();
                         _retired.Token.ThrowIfCancellationRequested();
+                        if (_time.GetUtcNow() >= download.Deadline)
+                            throw new TimeoutException("SAVE_TIMEOUT");
                         File.Move(download.Temporary, download.Target, overwrite: true);
                     });
                 }
@@ -637,8 +672,11 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         }
     }
 
-    private sealed record Download(string Id, string Target, string Temporary, WorkspaceRequestEpochLease Lease)
+    private sealed record Download(string Id, string Target, string Temporary,
+        WorkspaceRequestEpochLease Lease, DateTimeOffset Deadline)
     {
+        internal bool Expired { get; set; }
+        internal bool Admitted { get; set; }
         internal bool? Outcome { get; set; }
         internal double? ReceiptExpiresAt { get; set; }
         internal TaskCompletionSource Settlement { get; } =
@@ -647,4 +685,5 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
 }
 
 /// <summary>One admitted host download before its WebView2 bytes arrive.</summary>
-internal sealed record HostDownloadTarget(string Id, string TemporaryPath, string DisplayName);
+internal sealed record HostDownloadTarget(string Id, string TemporaryPath, string DisplayName,
+    DateTimeOffset Deadline);

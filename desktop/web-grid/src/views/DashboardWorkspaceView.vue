@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { NAlert, NButton, NEmpty, NIcon, NSpin, useMessage } from "naive-ui";
 import { LayoutDashboard, Plus } from "@lucide/vue";
 import DashboardSidebar from "@/components/dashboard/DashboardSidebar.vue";
@@ -13,6 +13,7 @@ import DashboardDrilldownDrawer from "@/components/dashboard/DashboardDrilldownD
 import type { DashboardPanel, DashboardTemplateId, PanelPosition } from "@/dashboard";
 import { useDashboardDraftStore, useDashboardStore, type DashboardManagedConfig } from "@/stores/dashboardStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useHostBridge } from "@/services/bridgeContext";
 import { useProvidedDashboardService } from "@/services/dashboardService";
 import {
@@ -26,6 +27,7 @@ import { t } from "@/i18n";
 const store = useDashboardStore();
 const draft = useDashboardDraftStore();
 const workspace = useWorkspaceStore();
+const session = useWorkspaceSessionStore();
 const service = useProvidedDashboardService();
 const bridge = useHostBridge();
 const message = useMessage();
@@ -48,6 +50,13 @@ const activeDashboard = computed(() => draft.editing ? draft.draft : store.curre
 const activeConfig = computed(() => draft.editing ? draft.config : store.config);
 const filters = computed(() => activeConfig.value.globalFilters);
 const collections = computed(() => workspace.collections.map((item) => item.collection));
+let outputOwner = new AbortController();
+watch(() => [
+  activeDashboard.value?.id, activeDashboard.value?.name, store.revision, draft.editing,
+  session.activeWorkspaceId, session.sessionEpoch, session.isTransitioning, session.sessionState,
+  ...Object.values(store.panelData).flatMap((data) => [data.state, data.updatedAt, data.rows]),
+], () => { outputOwner.abort(); outputOwner = new AbortController(); }, { flush: "sync" });
+onBeforeUnmount(() => outputOwner.abort());
 
 async function selectDashboard(id: string): Promise<void> {
   if (draft.dirty && !window.confirm(t("dashboard.confirm.discard"))) return;
@@ -108,37 +117,44 @@ function refreshActive(): void {
 function updateFilter(key: string, value: unknown): void { store.setFilterValue(key, value); refreshActive(); }
 function clearFilters(): void { store.clearFilterValues(); refreshActive(); }
 async function exportCsv(panel: DashboardPanel): Promise<void> {
+  const signal = outputOwner.signal;
   try {
-    const receipt = await exportDashboardCsv(panel.name, store.panelData[panel.id] ?? emptyData(), bridge);
-    if (receipt.outcome === "cancelled") return;
+    const receipt = await exportDashboardCsv(panel.name, store.panelData[panel.id] ?? emptyData(), bridge, signal);
+    if (signal.aborted || receipt.outcome === "cancelled") return;
     message.success(t("dashboard.export.saved", { name: receipt.fileName }));
     if (receipt.truncated) {
       message.warning(t("dashboard.export.truncated", { count: receipt.maxPoints }));
     }
   } catch (error) {
+    if (signal.aborted) return;
     message.error(exportErrorMessage(error));
   }
 }
 async function exportPng(panel?: DashboardPanel): Promise<void> {
+  const signal = outputOwner.signal;
   const element = panel
     ? surface.value?.querySelector<HTMLElement>(`[data-panel-id="${CSS.escape(panel.id)}"]`)
     : surface.value;
   if (!element) return;
   try {
-    const receipt = await exportDashboardElementPng(element, panel?.name ?? activeDashboard.value?.name ?? "dashboard", bridge);
-    if (receipt.outcome === "cancelled") return;
+    const receipt = await exportDashboardElementPng(element, panel?.name ?? activeDashboard.value?.name ?? "dashboard", bridge, signal);
+    if (signal.aborted || receipt.outcome === "cancelled") return;
     message.success(t("dashboard.export.saved", { name: receipt.fileName }));
   } catch (error) {
+    if (signal.aborted) return;
     message.error(exportErrorMessage(error));
   }
 }
 async function printActive(): Promise<void> {
+  const signal = outputOwner.signal;
   try {
     await printDashboard(bridge);
+    if (signal.aborted) return;
     // The WebView2 SDK reports only that the dialog opened; never claim the
     // print itself completed or was cancelled.
     message.info(t("dashboard.export.printDialogOpened"));
   } catch (error) {
+    if (signal.aborted) return;
     message.error(exportErrorMessage(error));
   }
 }
@@ -214,7 +230,7 @@ function closeDrilldown(): void {
       <NAlert v-if="store.offline" type="info" class="dashboard-alert">{{ t("dashboard.state.offline") }}</NAlert>
       <NAlert v-if="store.error" type="error" closable class="dashboard-alert" data-testid="dashboard-operation-error">{{ store.error }}</NAlert>
       <div v-if="store.phase === 'loading'" class="dashboard-state"><NSpin />{{ t("dashboard.state.loading") }}</div>
-      <div v-else-if="activeDashboard" ref="surface" class="dashboard-surface">
+      <div v-else-if="activeDashboard" :key="activeDashboard.id" ref="surface" class="dashboard-surface">
         <DashboardGrid :panels="activeDashboard.panels" :data="store.panelData" :editing="draft.editing" :manifest="store.panelManifest" @layout="updateLayout" @remove="draft.removePanel" @edit="openPanel" @refresh="refreshPanel" @export-csv="exportCsv" @export-png="exportPng" @select="selectPanel" @visibility="service.setVisiblePanels" />
         <NEmpty v-if="activeDashboard.panels.length === 0" :description="t('dashboard.empty.panels')" class="dashboard-empty"><template #icon><NIcon><LayoutDashboard /></NIcon></template><NButton v-if="draft.editing" type="primary" @click="openNewPanel"><template #icon><NIcon><Plus /></NIcon></template>{{ t("dashboard.action.addPanel") }}</NButton></NEmpty>
       </div>

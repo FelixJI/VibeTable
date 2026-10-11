@@ -12392,7 +12392,7 @@ async function scenario46(page, recorder, _network, runtime) {
   const csvText = csvBytes.toString("utf8");
   const csvLines = csvText.trimEnd().split(/\r?\n/u);
   recorder.check("the real WebView2 CSV download lands the declared dashboard rows on disk",
-    csvBytes[0] === 0xfe && csvBytes[1] === 0xbb && csvBytes[2] === 0xbf
+    csvBytes[0] === 0xef && csvBytes[1] === 0xbb && csvBytes[2] === 0xbf
       && csvLines.length === 3
       && csvLines.some((line) => line.includes("North"))
       && csvLines.some((line) => line.includes("South"))

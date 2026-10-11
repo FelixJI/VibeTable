@@ -14,14 +14,16 @@ internal sealed record DashboardDownloadAdmission(
     long DeclaredByteLength,
     HostSessionFileBroker Broker)
 {
-    internal DateTime RegisteredAt { get; init; } = DateTime.UtcNow;
     private int _settled;
+    private int _reported;
     private string? _failureReason;
+    internal ITimer? DeadlineTimer { get; set; }
 
     public bool MarkSettling() => Interlocked.Exchange(ref _settled, 1) == 0;
     public bool RecordFailure(string reason)
         => Interlocked.CompareExchange(ref _failureReason, reason, null) is null;
     public string? FailureReason => Volatile.Read(ref _failureReason);
+    public bool MarkReported() => Interlocked.Exchange(ref _reported, 1) == 0;
 }
 
 /// <summary>
@@ -31,8 +33,6 @@ internal sealed record DashboardDownloadAdmission(
 /// </summary>
 internal sealed class DashboardExportDownloadGate
 {
-    private static readonly TimeSpan RegistrationLifetime = TimeSpan.FromMinutes(5);
-
     /// <summary>
     /// The single download budget shared by the request check and the
     /// settlement check. It bounds the bytes WebView2 may write for one
@@ -65,15 +65,21 @@ internal sealed class DashboardExportDownloadGate
         if (declaredByteLength is <= 0 or > MaxExportBytes) return false;
         lock (_gate)
         {
-            PruneExpired();
             if (_registrations.Count >= 8) return false;
-            _registrations[target.Id] = new DashboardDownloadAdmission(
+            var admission = new DashboardDownloadAdmission(
                 target.Id,
                 blobUrl,
                 target.TemporaryPath,
                 target.DisplayName,
                 declaredByteLength,
                 broker);
+            _registrations[target.Id] = admission;
+            admission.DeadlineTimer = broker.DownloadTime.CreateTimer(
+                _ => _ = ExpireAsync(admission), null, Timeout.InfiniteTimeSpan,
+                Timeout.InfiniteTimeSpan);
+            admission.DeadlineTimer.Change(
+                TimeSpan.FromTicks(Math.Max(0, (target.Deadline - broker.DownloadTime.GetUtcNow()).Ticks)),
+                Timeout.InfiniteTimeSpan);
             return true;
         }
     }
@@ -89,7 +95,6 @@ internal sealed class DashboardExportDownloadGate
         if (string.IsNullOrEmpty(downloadUri)) return false;
         lock (_gate)
         {
-            PruneExpired();
             foreach (DashboardDownloadAdmission candidate in _registrations.Values)
             {
                 if (!string.Equals(candidate.BlobUrl, downloadUri, StringComparison.Ordinal))
@@ -128,6 +133,7 @@ internal sealed class DashboardExportDownloadGate
     {
         ArgumentNullException.ThrowIfNull(admission);
         if (!admission.MarkSettling()) return;
+        admission.DeadlineTimer?.Dispose();
         bool commit = outcome == "saved";
         if (commit && admission.Broker.IsRetired)
         {
@@ -187,7 +193,7 @@ internal sealed class DashboardExportDownloadGate
         }
         catch (Exception error)
         {
-            if (outcome != "failed") reason = error.GetType().Name;
+            if (outcome != "failed") reason = error is TimeoutException ? "SAVE_TIMEOUT" : error.GetType().Name;
             outcome = "failed";
             reason = reason ?? error.GetType().Name;
             Trace.TraceError(DiagnosticEvent.Failure(
@@ -195,12 +201,39 @@ internal sealed class DashboardExportDownloadGate
                 admission.Token,
                 error.GetType().Name));
         }
+        Report(admission, outcome, reason);
+    }
+
+    private void Report(DashboardDownloadAdmission admission, string outcome, string? reason)
+    {
+        if (!admission.MarkReported()) return;
         _postSettled(new
         {
             token = admission.Token,
             outcome,
             reason,
         });
+    }
+
+    private async Task ExpireAsync(DashboardDownloadAdmission admission)
+    {
+        lock (_gate) _registrations.Remove(admission.Token);
+        admission.DeadlineTimer?.Dispose();
+        try
+        {
+            await admission.Broker.ExpireDownloadAsync(admission.Token, () =>
+            {
+                admission.RecordFailure("SAVE_TIMEOUT");
+                Report(admission, "failed", "SAVE_TIMEOUT");
+            }).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            admission.RecordFailure("SAVE_TIMEOUT");
+            Report(admission, "failed", "SAVE_TIMEOUT");
+            Trace.TraceError(DiagnosticEvent.Failure(
+                "VibeTable.Desktop.DashboardExportDownloadGate", admission.Token, error.GetType().Name));
+        }
     }
 
     private static long? TryMeasure(string path)
@@ -220,23 +253,6 @@ internal sealed class DashboardExportDownloadGate
         catch (NotSupportedException)
         {
             return null;
-        }
-    }
-
-    private void PruneExpired()
-    {
-        // Called under the gate lock. Registrations without an admitted
-        // download expire after the fixed lifetime so stale grants cannot
-        // accumulate; settled admissions are removed on admit.
-        DateTime now = DateTime.UtcNow;
-        foreach (KeyValuePair<string, DashboardDownloadAdmission> expired in _registrations
-            .Where(pair => now - pair.Value.RegisteredAt > RegistrationLifetime)
-            .ToArray())
-        {
-            _registrations.Remove(expired.Key);
-            // Release the broker download and tell the renderer the truthful
-            // outcome instead of leaving the promise to a renderer timeout.
-            _ = SettleAsync(expired.Value, completed: false, "Expired");
         }
     }
 }
