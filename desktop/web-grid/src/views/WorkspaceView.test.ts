@@ -28,6 +28,7 @@ import { useSurfaceStore } from "@/stores/surfaceStore";
 import { useDashboardDraftStore } from "@/stores/dashboardStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { setLocale } from "@/i18n";
 import {
   setWorkspaceV2UiPort,
@@ -38,8 +39,10 @@ import type {
   NormalizedRelationDescriptor,
   PastePlan,
   PasteSummary,
-  RelationTargetRef,
+  PluginCommandContext,
   PresetEntry,
+  RelationTargetRef,
+  WebPluginActionDescription,
 } from "@/contracts";
 
 /**
@@ -4269,6 +4272,30 @@ describe("WorkspaceView", () => {
       return wrapper;
     }
 
+    /** Opens the plugin action panel overlay directly through the store. */
+    function openPluginActionPanel(): void {
+      const context: PluginCommandContext = {
+        contract: "vibetable.command-context.v1",
+        projectKey: "local:default",
+        collection: "users",
+        selectedKeys: [],
+        querySnapshot: null,
+        locale: "zh-CN",
+        theme: "light",
+        density: "comfortable",
+        user: {},
+        hostVersion: "1.0.0",
+      };
+      const description: WebPluginActionDescription = {
+        pluginId: "com.acme.clean",
+        actionId: "normalize",
+        title: "规范化",
+        risk: "write",
+        inputSchema: { type: "object", properties: {} },
+      };
+      usePluginStore().beginAction(description, context);
+    }
+
     it("Ctrl+C posts clipboard.writeText with TSV-quoted multi-line/quoted cells", async () => {
       const { bridge, posted, emit } = makeRecordingBridge();
       setHostBridgeForTesting(bridge);
@@ -4409,6 +4436,42 @@ describe("WorkspaceView", () => {
       const read = posted.find(item => item.type === "clipboard.readText")!;
 
       useUiStore().openShortcuts();
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    it("Ctrl+C/Ctrl+V never touch the native clipboard while the plugin action panel is open", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      openPluginActionPanel();
+      fireKey("c", { ctrlKey: true });
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+      expect(posted.some(item => item.type === "clipboard.readText")).toBe(false);
+    });
+
+    it("opening the plugin action panel during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      openPluginActionPanel();
       emit({
         type: "clipboard.readText",
         requestId: read.requestId,

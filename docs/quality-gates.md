@@ -45,6 +45,9 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
   `race-b` lanes；本地最小反馈可按改动风险只运行相关 Go 测试。门禁按包复用 race 编译、每条 lane 以一个
   package worker 串行执行，避免无关进程挤占公式墙钟预算；两条 lane 仍并行，包内逐测试独立进程，不减少测试或关闭 race detector。
 - 产品 E2E：必须作为发布证据，但依赖真实 Windows/WebView2 桌面会话，不伪装成 Ubuntu 单元门禁。
+- 涉及真实系统剪贴板的产品 E2E 场景只在隔离环境执行：GitHub hosted runner 原生满足；本机复跑必须显式设置
+  `VIBETABLE_NATIVE_CLIPBOARD_TESTS=1`（与 .NET 隔离剪贴板测试同一开关），且仅在剪贴板为空的专用隔离桌面上使用。
+  未满足时场景在任何剪贴板 bridge 请求之前 fail closed，不读写本机真实剪贴板。
 
 2026-07-31 的同机全量基线中，优化后的 Go race 覆盖 46 个有测试包、582 个命名
 测试和 3 个无命名测试包，耗时 16.57 分钟；此前逐测试重复编译的远端基线为

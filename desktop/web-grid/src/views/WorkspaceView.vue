@@ -568,7 +568,8 @@ const isForegroundOverlayOpen = (): boolean =>
   || revisionHistory.panelOpen
   || fieldSettingsState.open
   || columnContextMenu.value.show
-  || pluginContextMenu.value.show;
+  || pluginContextMenu.value.show
+  || plugins.actionOpen;
 
 const canExecuteGridCommand = (): boolean =>
   ui.activeView === "tables" && activeViewKind.value === "table"

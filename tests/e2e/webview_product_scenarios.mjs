@@ -2078,10 +2078,22 @@ async function verifyQueryViewGroupingUI(page, recorder) {
   }
 }
 
-// Native clipboard writes are confined to the ephemeral GitHub-hosted test desktop.
+// Native clipboard writes are only allowed on an isolated test desktop whose
+// clipboard is empty: the ephemeral GitHub-hosted runner, or an explicitly
+// opted-in dedicated machine via VIBETABLE_NATIVE_CLIPBOARD_TESTS=1 (the same
+// switch the isolated C# clipboard tests use). Every other environment fails
+// closed here, before any bridge request, so a default local run never touches
+// the real clipboard.
 async function seedIsolatedNativeClipboard(page, text) {
-  if (process.env.GITHUB_ACTIONS !== "true" || process.env.RUNNER_ENVIRONMENT !== "github-hosted") {
-    throw new Error("Native clipboard E2E requires an isolated GitHub-hosted runner; local clipboard is untouched.");
+  const isolatedGitHubRunner = process.env.GITHUB_ACTIONS === "true"
+    && process.env.RUNNER_ENVIRONMENT === "github-hosted";
+  const isolatedDesktopOptIn = process.env.VIBETABLE_NATIVE_CLIPBOARD_TESTS === "1";
+  if (!isolatedGitHubRunner && !isolatedDesktopOptIn) {
+    throw new Error(
+      "Native clipboard E2E requires an isolated desktop with an empty clipboard: "
+      + "run it on a GitHub-hosted runner, or set VIBETABLE_NATIVE_CLIPBOARD_TESTS=1 "
+      + "on a dedicated isolated test machine. Without that opt-in the real "
+      + "clipboard is never touched.");
   }
   const written = await rawBridgeRequest(page, "clipboard.writeText", { text });
   const read = await rawBridgeRequest(page, "clipboard.readText", {});
