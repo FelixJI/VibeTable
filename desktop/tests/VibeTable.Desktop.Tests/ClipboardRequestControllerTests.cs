@@ -213,20 +213,34 @@ public sealed class ClipboardRequestControllerTests
         using var sta = new StaDispatcherHost();
         var api = new FakeApi("never-written");
         using var cts = new CancellationTokenSource();
+        // Entry-observed gate at the dispatch's own Send priority: the write
+        // provably stays queued behind the busy dispatcher until cancelled.
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        // Block the dispatcher so the clipboard write stays merely queued.
-        _ = sta.Dispatcher.InvokeAsync(() => gate.Task.GetAwaiter().GetResult());
-        var clipboard = new WindowsTextClipboard(sta.Dispatcher, api);
-        Task<TextClipboardResult> pending = clipboard.WriteTextAsync("late-write", cts.Token);
+        var gateEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ = sta.Dispatcher.InvokeAsync(
+            () => { gateEntered.TrySetResult(); gate.Task.GetAwaiter().GetResult(); },
+            DispatcherPriority.Send);
+        try
+        {
+            await gateEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var clipboard = new WindowsTextClipboard(sta.Dispatcher, api);
+            Task<TextClipboardResult> pending = clipboard.WriteTextAsync("late-write", cts.Token);
 
-        cts.Cancel();
-        gate.TrySetResult();
-        TextClipboardResult result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+            cts.Cancel();
+            gate.TrySetResult();
+            TextClipboardResult result = await pending.WaitAsync(TimeSpan.FromSeconds(5));
+            await sta.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background)
+                .Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.AreEqual(TextClipboardOutcome.Unavailable, result.Outcome);
-        Assert.IsNull(api.WriteThreadId, "A cancelled queued write must never reach the clipboard.");
-        Assert.IsNull(api.LastWrittenText);
-        Assert.IsFalse(result.WriteMayHaveCompleted);
+            Assert.AreEqual(TextClipboardOutcome.Unavailable, result.Outcome);
+            Assert.IsNull(api.WriteThreadId, "A cancelled queued write must never reach the clipboard.");
+            Assert.IsNull(api.LastWrittenText);
+            Assert.IsFalse(result.WriteMayHaveCompleted);
+        }
+        finally
+        {
+            gate.TrySetResult();
+        }
     }
 
     [TestMethod]
@@ -264,15 +278,27 @@ public sealed class ClipboardRequestControllerTests
     public async Task DeadlineAbortsAQueuedReadAsTimeoutWithoutAnyLateResult()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var api = new FakeApi("late-text");
         using var fixture = await Fixture.OpenWithApiAsync(api, TimeSpan.FromMilliseconds(200));
-        // Block the dispatcher so the clipboard read stays merely queued.
-        _ = fixture.StaDispatcher.InvokeAsync(() => gate.Task.GetAwaiter().GetResult());
-
-        await fixture.RequestAsync("clipboard.readText", "{}", expectedError: "CLIPBOARD_TIMEOUT");
-        await Task.Delay(300);
+        // Same-priority, entry-observed gate: the read provably stays queued
+        // behind the busy dispatcher until the deadline aborts it.
+        _ = fixture.StaDispatcher.InvokeAsync(
+            () => { gateEntered.TrySetResult(); gate.Task.GetAwaiter().GetResult(); },
+            DispatcherPriority.Send);
+        try
+        {
+            await gateEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await fixture.RequestAsync("clipboard.readText", "{}", expectedError: "CLIPBOARD_TIMEOUT");
+            await Task.Delay(300);
+        }
+        finally
+        {
+            gate.TrySetResult();
+        }
+        await fixture.StaDispatcher.InvokeAsync(() => { }, DispatcherPriority.Background)
+            .Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.IsNull(api.ReadThreadId, "A deadline-aborted read must never reach the clipboard.");
-        gate.TrySetResult();
     }
 
     [TestMethod]
