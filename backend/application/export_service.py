@@ -23,13 +23,18 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+from zipfile import ZIP_DEFLATED, ZipFile
 
 if TYPE_CHECKING:
+    from openpyxl import Workbook
     from openpyxl.cell.cell import Cell
     from openpyxl.worksheet._write_only import WriteOnlyWorksheet
 
+from backend.application.file_work import Check, CheckedStream, Report, run_file_work
 from backend.application.host_files import HostFiles, text_stream
 from backend.contracts.data_io import ExportParams, ExportResult, TemplateResult
 from backend.contracts.data_profile import CollectionProfile
@@ -182,6 +187,8 @@ class ExportService:
                     )
             if cancelled and cancelled():
                 raise asyncio.CancelledError
+            if progress:
+                await progress(rows_written, 0, f"写出 {fmt.upper()}：{rows_written} 行")
         return ExportResult(
             collection=params.collection,
             format=fmt,
@@ -222,7 +229,7 @@ class ExportService:
             ws.append(notes)
         try:
             async with self._files.write(grant_id) as target:
-                wb.save(target.stream)
+                await run_file_work(lambda check, _: _save_workbook(wb, target.stream, check))
         finally:
             wb.close()
         return TemplateResult(
@@ -292,19 +299,27 @@ class ExportService:
                 from openpyxl import Workbook
 
                 workbook = Workbook(write_only=True)
-                resources.callback(workbook.close)
+                resources.callback(_close_workbook, workbook)
                 writer = workbook.create_sheet(title=profile.collection[:31])
                 writer.append(columns)
             while True:
-                for row in page.rows:
-                    rendered = [_render_cell(row, column) for column in columns]
-                    if params.format == "csv":
-                        writer.writerow(rendered)
-                    else:
-                        writer.append(_xlsx_row(writer, rendered))
-                    written += 1
+
+                def encode(
+                    check: Check, report: Report, rows: list[dict[str, Any]] = page.rows
+                ) -> int:
+                    def append(values: list[Any]) -> None:
+                        if params.format == "csv":
+                            writer.writerow(values)
+                        else:
+                            writer.append(_xlsx_row(writer, values))
+
+                    return _write_rows(rows, columns, append, check, report)
+
                 if progress:
-                    await progress(written, page.filtered_rows, f"exported {written} rows")
+                    await progress(written, page.filtered_rows, f"编码导出数据：{written} 行")
+                written += await run_file_work(encode, cancelled=cancelled)
+                if progress:
+                    await progress(written, page.filtered_rows, f"编码导出数据：{written} 行")
                 if len(page.rows) < EXPORT_PAGE_SIZE or (cancelled and cancelled()):
                     break
                 offset += EXPORT_PAGE_SIZE
@@ -326,7 +341,12 @@ class ExportService:
                     binding, page.snapshot, plane="Lookup", computed_pending=page.computed_pending
                 )
             if workbook is not None:
-                workbook.save(stream)
+                if progress:
+                    await progress(written, 0, f"写出 XLSX：{written} 行")
+                await run_file_work(
+                    lambda check, _: _save_workbook(workbook, stream, check),
+                    cancelled=cancelled,
+                )
         return written
 
     async def _export_csv(
@@ -358,11 +378,14 @@ class ExportService:
                 )
                 if offset == 0:
                     total_estimate = page.filtered_rows
-                for row in page.rows:
-                    writer.writerow([_render_cell(row, col) for col in columns])
-                    written += 1
                 if progress:
-                    await progress(written, total_estimate, f"exported {written} rows")
+                    await progress(written, page.filtered_rows, f"编码导出数据：{written} 行")
+                written += await run_file_work(
+                    partial(_write_rows, page.rows, columns, writer.writerow),
+                    cancelled=cancelled,
+                )
+                if progress:
+                    await progress(written, total_estimate, f"编码导出数据：{written} 行")
                 if len(page.rows) < EXPORT_PAGE_SIZE:
                     break
                 offset += EXPORT_PAGE_SIZE
@@ -378,7 +401,6 @@ class ExportService:
         cancelled: Callable[[], bool] | None,
     ) -> int:
         from openpyxl import Workbook
-        from openpyxl.worksheet._writer import WorksheetWriter
 
         wb = Workbook(write_only=True)
         try:
@@ -401,31 +423,31 @@ class ExportService:
                 )
                 if offset == 0:
                     total_estimate = page.filtered_rows
-                for row in page.rows:
-                    rendered = [_render_cell(row, col) for col in columns]
-                    ws.append(_xlsx_row(ws, rendered))
-                    written += 1
                 if progress:
-                    await progress(written, total_estimate, f"exported {written} rows")
+                    await progress(written, page.filtered_rows, f"编码导出数据：{written} 行")
+                written += await run_file_work(
+                    partial(
+                        _write_rows,
+                        page.rows,
+                        columns,
+                        lambda values: ws.append(_xlsx_row(ws, values)),
+                    ),
+                    cancelled=cancelled,
+                )
+                if progress:
+                    await progress(written, total_estimate, f"编码导出数据：{written} 行")
                 if len(page.rows) < EXPORT_PAGE_SIZE:
                     break
                 offset += EXPORT_PAGE_SIZE
-            wb.save(stream)
+            if progress:
+                await progress(written, 0, f"写出 XLSX：{written} 行")
+            await run_file_work(
+                lambda check, _: _save_workbook(wb, stream, check),
+                cancelled=cancelled,
+            )
             return written
         finally:
-            # A cancelled streaming workbook has never reached save(), which
-            # normally closes and removes openpyxl's worksheet temporary file.
-            for worksheet in wb.worksheets:
-                sheet = cast("WriteOnlyWorksheet", worksheet)
-                if not sheet.closed:
-                    sheet.close()
-                writer = getattr(sheet, "_writer", None)
-                if writer is not None:
-                    if not isinstance(writer, WorksheetWriter) or not isinstance(writer.out, str):
-                        raise RuntimeError("Unexpected streaming worksheet resource.")
-                    if Path(writer.out).exists():
-                        writer.cleanup()
-            wb.close()
+            _close_workbook(wb)
 
     def _profile(self, collection: str) -> CollectionProfile:
         profile = self._profiles.get(collection)
@@ -435,6 +457,45 @@ class ExportService:
                 code="schema_unknown",
             )
         return profile
+
+
+def _save_workbook(wb: Workbook, stream: BinaryIO, check: Check) -> None:
+    from openpyxl.writer.excel import ExcelWriter
+
+    # Workbook.save leaves its ZIP open on an interrupted write; own it explicitly.
+    with ZipFile(CheckedStream(stream, check), "w", ZIP_DEFLATED, allowZip64=True) as archive:
+        wb.properties.modified = datetime.now(UTC).replace(tzinfo=None)
+        ExcelWriter(wb, archive).write_data()
+
+
+def _close_workbook(wb: Workbook) -> None:
+    from openpyxl.worksheet._writer import WorksheetWriter
+
+    # Unsaved streaming sheets still own openpyxl temporary files.
+    for worksheet in wb.worksheets:
+        sheet = cast("WriteOnlyWorksheet", worksheet)
+        if not sheet.closed:
+            sheet.close()
+        writer = getattr(sheet, "_writer", None)
+        if writer is not None:
+            if not isinstance(writer, WorksheetWriter) or not isinstance(writer.out, str):
+                raise RuntimeError("Unexpected streaming worksheet resource.")
+            if Path(writer.out).exists():
+                writer.cleanup()
+    wb.close()
+
+
+def _write_rows(
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    append: Callable[[list[Any]], object],
+    check: Check,
+    _report: Report,
+) -> int:
+    for row in rows:
+        check()
+        append([_render_cell(row, column) for column in columns])
+    return len(rows)
 
 
 def _render_cell(row: dict[str, Any], column: str) -> Any:

@@ -136,7 +136,7 @@ describe("useDataIoTask", () => {
     await task.repreviewImport();
     expect(service.previewImportWithGrant).toHaveBeenCalledWith(expect.anything(), "orders", "schema_0002", [
       { sourceColumn: "Partner Code", targetField: "renamed_partner", relationId: "orders.fld_partner", matchField: "fld_code" },
-    ]);
+    ], expect.any(Function), expect.any(Function));
   });
 
   it("keeps the newest relation catalog when earlier reads complete last", async () => {
@@ -267,8 +267,7 @@ describe("useDataIoTask", () => {
       grant,
       "orders",
       "schema_0001",
-      [],
-    );
+      [], expect.any(Function), expect.any(Function));
     expect(task.previewSession.value?.grant.grantId).toBe("grant-managed");
     expect(task.relationOptions.value).toEqual(relationOptions);
   });
@@ -292,7 +291,7 @@ describe("useDataIoTask", () => {
 
     await task.previewImport();
     expect(task.previewSession.value).toEqual(session);
-    expect(service.previewImport).toHaveBeenCalledWith("orders", "schema_0001", expect.any(Function));
+    expect(service.previewImport).toHaveBeenCalledWith("orders", "schema_0001", expect.any(Function), expect.any(Function));
     expect(task.relationOptions.value).toEqual(relationOptions);
 
     await task.applyImport();
@@ -418,8 +417,7 @@ describe("useDataIoTask", () => {
         targetField: "partner",
         relationId: "orders.fld_partner",
         matchField: "fld_code",
-      }] satisfies ImportColumnMappingPayload[],
-    );
+      }] satisfies ImportColumnMappingPayload[], expect.any(Function), expect.any(Function));
     expect(task.mappingDirty.value).toBe(false);
     expect(task.previewSession.value?.plan.token.token).toBe("preview-2");
     expect(task.canRepreview.value).toBe(false);

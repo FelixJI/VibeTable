@@ -125,6 +125,75 @@ export async function runDataIoInteroperability(page, recorder, runtime, helpers
 
   // ---- Table 1: UTF-8 BOM CSV with Unicode and frozen date text ----
   const table = await createSimpleTable(page, "A5 Interop CSV", "Label");
+  // Exercise cancellation before a large, within-limit XLSX finishes parsing.
+  const slowSource = path.join(runtime.controlsDir, "slow-preview.xlsx");
+  const slowFixture = await workbook("slow-preview", slowSource, { field: table.field.physicalName });
+  const beforeSlowPreview = await authority(table.tableId);
+  await page.evaluate(() => {
+    const state = { taskId: null, acceptedAt: null, terminalAt: null, terminal: null };
+    const listener = (event) => {
+      let message = event.data;
+      if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return; }
+      }
+      const payload = message?.payload;
+      if (message?.type === "task.create" && payload?.kind === "data.previewImport") {
+        state.taskId = payload.taskId;
+      }
+      if (!state.taskId || payload?.taskId !== state.taskId) return;
+      if (message.type === "task.cancel") state.acceptedAt = Date.now();
+      if (["task.create", "task.status"].includes(message.type)
+          && ["succeeded", "failed", "cancelled", "aborted"].includes(payload.state)) {
+        state.terminalAt = Date.now();
+        state.terminal = payload;
+      }
+    };
+    window.chrome.webview.addEventListener("message", listener);
+    window.__vibetableSlowPreview = {
+      state, release: () => window.chrome.webview.removeEventListener("message", listener),
+    };
+  });
+  try {
+    await selectImportSource(slowSource);
+    await chooseToolbarMore(page, "refresh");
+    await chooseToolbarMore(page, "import");
+    await page.getByTestId("data-io-progress").waitFor({ state: "visible", timeout: 10_000 });
+    const phase = await page.getByTestId("data-io-progress").innerText();
+    await page.screenshot({
+      path: path.join(runtime.evidenceDir, "35-file-preview-progress.png"), fullPage: true,
+    });
+    await page.getByTestId("toolbar-more").click();
+    const cancel = page.locator(".n-dropdown-option-body")
+      .filter({ hasText: /取消数据任务|Cancel data task/i }).last();
+    await cancel.waitFor();
+    const requestedAt = Date.now();
+    await cancel.click();
+    await page.waitForFunction(() =>
+      window.__vibetableSlowPreview.state.terminal !== null, null, { timeout: 10_000 });
+    const observed = await page.evaluate(() => window.__vibetableSlowPreview.state);
+    const evidence = {
+      ...observed, phase, fixture: slowFixture,
+      acceptanceMs: observed.acceptedAt - requestedAt,
+      drainMs: observed.terminalAt - observed.acceptedAt,
+    };
+    await fs.writeFile(path.join(runtime.evidenceDir, "35-file-preview-cancel.json"),
+      JSON.stringify(evidence, null, 2), "utf8");
+    recorder.check("slow XLSX preview has a visible measured phase and cancels within the existing drain budget",
+      phase.length > 0 && observed.acceptedAt !== null
+        && evidence.acceptanceMs >= 0 && evidence.acceptanceMs < 10_000
+        && evidence.drainMs >= 0 && evidence.drainMs < 10_000
+        && observed.terminal.state === "cancelled"
+        && observed.terminal.progress.done < 1000,
+      evidence);
+    recorder.check("cancelled slow preview does not refill a plan or change authoritative rows/revisions",
+      !await page.getByTestId("import-preview-panel").isVisible()
+        && canonicalJsonText(await authority(table.tableId)) === canonicalJsonText(beforeSlowPreview));
+  } finally {
+    await page.evaluate(() => {
+      window.__vibetableSlowPreview.release();
+      delete window.__vibetableSlowPreview;
+    });
+  }
   const value = await createV2Field(page, table.tableId, "Value", "text");
   const eventDate = await createV2Field(page, table.tableId, "Event Date", "date");
   const eventAt = await createV2Field(page, table.tableId, "Event At", "dateTime");

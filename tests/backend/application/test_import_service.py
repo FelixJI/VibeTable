@@ -397,18 +397,12 @@ def _service(
     profiles = profiles or {profile.collection: profile}
     mutation = mutation or FakeProductMutationPort(clock=clock)
 
-    kwargs: dict[str, Any] = {}
-    if clock is not None:
-        kwargs["clock"] = clock
     return (
         ImportService(
-            client=object(),
-            auth=object(),
             bulk=mutation,
             profiles=profiles,
             files=FormatFiles(path, consumed),
             relation_provider=relation_provider,
-            **kwargs,
         ),
         mutation,
     )
@@ -1135,7 +1129,9 @@ async def test_expired_import_token_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_at", ["settlement", "progress"])
+@pytest.mark.parametrize(
+    "failure_at", ["settlement", "progress", "settlement_cancel", "progress_cancel"]
+)
 async def test_committed_import_task_keeps_result_when_final_notification_fails(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, failure_at: str
 ) -> None:
@@ -1160,6 +1156,8 @@ async def test_committed_import_task_keeps_result_when_final_notification_fails(
             return {"reservationId": "r"}
         assert action == "settleImport"
         assert params["outcome"] == "consumed"
+        if failure_at == "settlement_cancel":
+            raise asyncio.CancelledError
         if failure_at == "settlement":
             raise TimeoutError("private transport detail")
         return {"reservationId": "r", "outcome": "consumed"}
@@ -1171,6 +1169,8 @@ async def test_committed_import_task_keeps_result_when_final_notification_fails(
 
     async def progress(done, total, message):
         assert message == "atomic import committed"
+        if failure_at == "progress_cancel":
+            raise asyncio.CancelledError
         if failure_at == "progress":
             raise RuntimeError("private transport detail")
 
@@ -1574,3 +1574,47 @@ def test_auto_number_import_mapping_explains_readonly_and_text_preservation() ->
     )
     assert mapping == {0: "source_number"}
     assert unmatched == []
+
+
+async def test_cancel_during_prefix_binding_rejects_before_business_submission(tmp_path):
+    path = tmp_path / "input.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, mutation = _service(path)
+    profile = service._profile("vibetable_demo")
+    plan = await service.preview(
+        PreviewImportParams(
+            collection=profile.collection,
+            schema_revision=profile.capability_hash,
+            grant_id="g",
+        )
+    )
+    cancel = False
+    bind = mutation.bind_import_plan
+
+    async def cancel_after_bind(**kwargs):
+        nonlocal cancel
+        result = await bind(**kwargs)
+        cancel = True
+        return result
+
+    mutation.bind_import_plan = cancel_after_bind
+    with pytest.raises(asyncio.CancelledError):
+        await service.apply(
+            ApplyImportParams(
+                collection=profile.collection,
+                grant_id="g",
+                token=plan.token.token,
+            ),
+            cancelled=lambda: cancel,
+        )
+    assert mutation.calls == []
+    # The unsubmitted attempt was rejected and remains eligible for an explicit retry.
+    result = await service.apply(
+        ApplyImportParams(
+            collection=profile.collection,
+            grant_id="g",
+            token=plan.token.token,
+        )
+    )
+    assert result.failed_rows == []
+    assert len(mutation.calls) == 1

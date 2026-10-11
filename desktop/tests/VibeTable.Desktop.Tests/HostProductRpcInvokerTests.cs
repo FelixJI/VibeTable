@@ -835,6 +835,85 @@ public sealed partial class HostProductRpcInvokerTests
     }
 
     [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task ExportCommitReceiptWinsOverCancellationAndCleanupFailure(
+        bool cancelDuringExecution, bool cleanupFails)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var transport = new CommittedCommandTransport(cancellation, cancelDuringExecution, cleanupFails);
+        await using var fixture = await HostFixture.OpenAsync(transport: transport);
+        using var gateway = fixture.Gateway(useGeneratedPolicy: true);
+        gateway.EnableHostFiles();
+        Task<JsonElement> pending = ((IHostCommandExportGateway)gateway).ExecuteExportAsync(
+            Json("""{"collection":"orders","query":{},"format":"csv","grantId":"known-grant"}"""),
+            cancellation.Token);
+        if (cancelDuringExecution)
+        {
+            await transport.Admitted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            // The Host binds completion before sending this start request.
+            cancellation.Cancel();
+        }
+        JsonElement result = await pending.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(7, result.GetProperty("rowsWritten").GetInt32());
+        CollectionAssert.AreEqual(new[] { "task.startExecution", "task.settleExport" }, transport.Methods);
+    }
+
+    private sealed class CommittedCommandTransport(
+        CancellationTokenSource cancellation, bool lateCommit, bool cleanupFails) : IJsonLineTransport
+    {
+        private readonly Channel<JsonElement?> _incoming = Channel.CreateUnbounded<JsonElement?>();
+        private string? _taskId;
+        private bool _startReplyRead;
+        internal TaskCompletionSource Admitted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal List<string> Methods { get; } = [];
+        public async Task<JsonElement?> ReadAsync(CancellationToken token)
+        {
+            // A subsequent read proves the client's pump already handled the start receipt.
+            if (_startReplyRead) Admitted.TrySetResult();
+            JsonElement? message = await _incoming.Reader.ReadAsync(token);
+            if (message is JsonElement frame && frame.TryGetProperty("result", out JsonElement result)
+                && result.TryGetProperty("accepted", out _)) _startReplyRead = true;
+            return message;
+        }
+        public Task WriteAsync(string line, CancellationToken token)
+        {
+            JsonElement request = Json(line);
+            string method = request.GetProperty("method").GetString()!;
+            Methods.Add(method);
+            if (method == "task.startExecution")
+            {
+                _taskId = request.GetProperty("params").GetProperty("taskId").GetString();
+                if (!lateCommit) ReportSuccess();
+                Reply(request, new { accepted = true });
+            }
+            else
+            {
+                Assert.AreEqual("task.settleExport", method);
+                if (lateCommit) ReportSuccess();
+                cancellation.Cancel();
+                Reply(request, new { grantId = "known-grant", settled = !cleanupFails });
+            }
+            return Task.CompletedTask;
+        }
+        private void ReportSuccess() => _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new
+        {
+            jsonrpc = "2.0", method = "task.executionReport", @params = new
+            {
+                taskId = _taskId, kind = "data.export", state = "succeeded",
+                progress = new { done = 7, total = 7, message = "committed" },
+                result = new { rowsWritten = 7 }, error = (string?)null,
+            },
+        }));
+        private void Reply(JsonElement request, object result) =>
+            _incoming.Writer.TryWrite(JsonSerializer.SerializeToElement(new
+                { jsonrpc = "2.0", id = request.GetProperty("id"), result }));
+        public ValueTask DisposeAsync() { _incoming.Writer.TryComplete(); return ValueTask.CompletedTask; }
+    }
+
+    [TestMethod]
     public async Task RetiredPythonImportPreviewReportsBackendUnavailable()
     {
         var transport = new CommandTransport();

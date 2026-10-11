@@ -131,9 +131,17 @@ class RpcServer:
     async def serve(self) -> None:
         """Read broker responses without reordering ordinary RPC execution."""
         queue: asyncio.Queue[JsonObject | None] = asyncio.Queue(maxsize=64)
+        controls: asyncio.Queue[JsonObject | None] = asyncio.Queue(maxsize=16)
+        control_methods = {
+            "task.cancelExecution",
+            "task.settleExport",
+            "plugin.cancelTask",
+            "plugin.resolveInteraction",
+            "plugin.resolveFile",
+        }
 
-        async def dispatch_serially() -> None:
-            while (payload := await queue.get()) is not None:
+        async def dispatch_serially(pending: asyncio.Queue[JsonObject | None]) -> None:
+            while (payload := await pending.get()) is not None:
                 try:
                     response = await self._dispatcher.dispatch(payload)
                 except Exception:
@@ -152,7 +160,13 @@ class RpcServer:
                     if not self._receive_host_file(payload):
                         # Backpressure here would hide the callback reply that
                         # the active handler needs. Terminate on overload.
-                        queue.put_nowait(payload)
+                        method = payload.get("method")
+                        pending = (
+                            controls
+                            if isinstance(method, str) and method in control_methods
+                            else queue
+                        )
+                        pending.put_nowait(payload)
             finally:
                 self._closed = True
                 for future in self._host_pending.values():
@@ -160,19 +174,26 @@ class RpcServer:
                         future.set_exception(RuntimeError("Host file channel closed"))
                 self._host_pending.clear()
             await queue.put(None)
+            await controls.put(None)
 
-        consumer = asyncio.create_task(dispatch_serially())
+        consumer = asyncio.create_task(dispatch_serially(queue))
+        controller = asyncio.create_task(dispatch_serially(controls))
         reader = asyncio.create_task(read_requests())
         try:
-            done, _ = await asyncio.wait((reader, consumer), return_when=asyncio.FIRST_COMPLETED)
-            if consumer in done:
-                await consumer
+            done, _ = await asyncio.wait(
+                (reader, consumer, controller), return_when=asyncio.FIRST_COMPLETED
+            )
+            for worker in (consumer, controller):
+                if worker in done:
+                    await worker
             await reader
             await consumer
+            await controller
         finally:
             reader.cancel()
             consumer.cancel()
-            await asyncio.gather(reader, consumer, return_exceptions=True)
+            controller.cancel()
+            await asyncio.gather(reader, consumer, controller, return_exceptions=True)
 
     async def notify(self, method: str, params: BaseModel | dict[str, Any]) -> None:
         """Send a JSON-RPC notification (no ``id``) to the client.

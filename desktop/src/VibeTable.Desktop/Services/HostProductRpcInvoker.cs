@@ -147,7 +147,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
     }
 
     private async Task<JsonElement> InvokeTaskAsync(
-        string method, JsonElement parameters, CancellationToken token, JsonRpcClient? execution = null)
+        string method, JsonElement parameters, CancellationToken token, JsonRpcClient? execution = null,
+        Action<Task<JsonElement>>? captureTerminal = null)
     {
         if (method == "data.importHistory")
         {
@@ -199,6 +200,8 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         EnsurePythonCurrent(clientForStart);
         var (taskId, _) = _taskOwner.Admit(
             clientForStart, _snapshot.Identity, kind);
+        // Capture the owner's completion before execution can finish and history can be pruned.
+        captureTerminal?.Invoke(_taskOwner.WaitForTerminalAsync(taskId, CancellationToken.None));
         try
         {
             if (kind == "data.import")
@@ -270,33 +273,21 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
         HostSessionFileBroker files = Files;
         string grantId = parameters.GetProperty("grantId").GetString()
             ?? throw new JsonException("Export grant is required.");
+        Task<JsonElement>? completion = null;
+        Exception? failure = null;
         try
         {
-            JsonElement status = await InvokeTaskAsync("task.create", JsonSerializer.SerializeToElement(
-                new { kind = "data.export", @params = parameters }), token, client).ConfigureAwait(false);
-            string taskId = status.GetProperty("taskId").GetString()
-                ?? throw new JsonException("Export task ID is missing.");
-            while (true)
-            {
-                EnsureCurrent(lease, token, go: true);
-                EnsurePythonCurrent(client);
-                string? state = status.GetProperty("state").GetString();
-                if (state == "succeeded") return status.GetProperty("result").Clone();
-                if (state == "failed") throw new InvalidOperationException("Export failed.");
-                if (state == "cancelled") throw new OperationCanceledException("Export cancelled.");
-                if (state == "aborted") throw new InvalidOperationException(
-                    "Export execution was interrupted; the output outcome is unknown.");
-                if (state is not ("queued" or "running")) throw new JsonException("Invalid export state.");
-                await Task.Delay(100, token).ConfigureAwait(false);
-                status = await InvokeAsync("task.status", JsonSerializer.SerializeToElement(new { taskId }), token)
-                    .ConfigureAwait(false);
-            }
+            await InvokeTaskAsync("task.create", JsonSerializer.SerializeToElement(
+                new { kind = "data.export", @params = parameters }), token, client,
+                terminal => completion = terminal).ConfigureAwait(false);
+            await completion!.WaitAsync(token).ConfigureAwait(false);
         }
-        finally
+        catch (Exception error) { failure = error; }
+
+        try
         {
-            // The known grant also identifies tasks whose create reply was lost.
-            // Only this captured client's export grant can be retired after epoch cancellation.
-            // Keep our lease until the server has closed its writers; never use a new binding.
+            // A captured grant also identifies execution whose start reply was lost.
+            // Keep the lease through native revoke and the worker's actual writer join.
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await files.RevokeAsync(grantId).ConfigureAwait(false);
             JsonElement settled = await client.InvokeAsync<JsonElement, JsonElement>(
@@ -306,6 +297,30 @@ internal sealed partial class HostProductRpcInvoker : IDisposable
                 || !settled.GetProperty("settled").GetBoolean())
                 throw new InvalidOperationException("Export cleanup was not confirmed.");
         }
+        catch (Exception error)
+        {
+            failure ??= error;
+            System.Diagnostics.Trace.TraceError($"Export cleanup failed: {error}");
+        }
+
+        if (completion is { IsCompletedSuccessfully: true })
+        {
+            JsonElement status = completion.Result;
+            // A commit receipt observed during drain wins over cancellation or cleanup failure.
+            string? state = status.GetProperty("state").GetString();
+            if (state == "succeeded") return status.GetProperty("result").Clone();
+            failure ??= state switch
+            {
+                "cancelled" => new OperationCanceledException("Export cancelled."),
+                "aborted" => new InvalidOperationException(
+                    "Export execution was interrupted; the output outcome is unknown."),
+                "failed" => new InvalidOperationException("Export failed."),
+                _ => new JsonException("Invalid export terminal state."),
+            };
+        }
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(
+            failure ?? new InvalidOperationException("Export outcome is unknown."));
+        throw new InvalidOperationException("Unreachable export outcome.");
     }
 
     private Task<JsonRpcClient> EnsurePythonAsync(CancellationToken token)

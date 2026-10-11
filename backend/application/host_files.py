@@ -6,18 +6,23 @@ import asyncio
 import base64
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from io import TextIOWrapper
 from tempfile import SpooledTemporaryFile
 from typing import BinaryIO, cast
 
+from backend.application.file_work import Progress
 from backend.contracts.product_rpc import JsonObject
 from backend.contracts.task import SessionPathGrant
 
 HostFileCall = Callable[[str, JsonObject], Awaitable[JsonObject]]
 logger = logging.getLogger(__name__)
 BLOCK_BYTES = 256 * 1024
+
+
+class FileCommitUnknownError(RuntimeError):
+    code = "export_outcome_unknown"
 
 
 @dataclass
@@ -43,12 +48,22 @@ class HostFiles:
         return SessionPathGrant.model_validate(await self._call("describe", {"grantId": grant_id}))
 
     @asynccontextmanager
-    async def read(self, grant_id: str, *, run_id: str | None = None) -> AsyncIterator[FileBuffer]:
+    async def read(
+        self,
+        grant_id: str,
+        *,
+        run_id: str | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        progress: Progress | None = None,
+    ) -> AsyncIterator[FileBuffer]:
         opened = await self._call("openRead", self._grant_params(grant_id, run_id))
         transfer_id = _string(opened, "transferId")
         with SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as spool:
             try:
+                read_bytes = 0
                 while True:
+                    if cancelled and cancelled():
+                        raise asyncio.CancelledError
                     block = await self._call(
                         "read", {"transferId": transfer_id, "maxBytes": BLOCK_BYTES}
                     )
@@ -58,6 +73,9 @@ class HostFiles:
                     if len(content) > BLOCK_BYTES or (not content and not block["eof"]):
                         raise RuntimeError("Invalid Host file block")
                     spool.write(content)
+                    read_bytes += len(content)
+                    if progress:
+                        await progress(0, 0, f"读取来源文件：{read_bytes} 字节")
                     if block["eof"]:
                         break
                 spool.seek(0)
@@ -104,11 +122,16 @@ class HostFiles:
                     self._call("finishWrite", {"transferId": transfer_id, "commit": True})
                 )
                 try:
-                    receipt = await asyncio.shield(commit)
-                except asyncio.CancelledError:
-                    receipt = await commit
-                if receipt.get("committed") is not True or receipt.get("bytes") != offset:
-                    raise RuntimeError("Host file commit was not confirmed")
+                    while not commit.done():
+                        with suppress(asyncio.CancelledError):
+                            await asyncio.shield(commit)
+                    receipt = commit.result()
+                    if receipt.get("committed") is not True or receipt.get("bytes") != offset:
+                        raise RuntimeError("Host file commit was not confirmed")
+                except Exception as exc:
+                    raise FileCommitUnknownError(
+                        "Export submission outcome is unknown; verify the target file."
+                    ) from exc
             finally:
                 if not finishing:
                     await self._call("finishWrite", {"transferId": transfer_id, "commit": False})
@@ -137,7 +160,7 @@ class HostFiles:
                         "outcome": "consumed" if committed else "released",
                     },
                 )
-            except Exception:
+            except Exception, asyncio.CancelledError:
                 if not committed:
                     raise
                 # The authority already committed. The Host reservation remains

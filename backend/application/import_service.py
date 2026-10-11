@@ -25,14 +25,14 @@ import asyncio
 import csv
 import hashlib
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol, cast
 
+from backend.application.file_work import Check, CheckedStream, Progress, Report, run_file_work
 from backend.application.host_files import HostFiles, text_stream
 from backend.application.paste_service import PasteMutationPort
 from backend.contracts.data_io import (
@@ -193,8 +193,17 @@ class SourceFile:
     reader never loads the entire file into memory at once.
     """
 
-    def __init__(self, stream: BinaryIO, display_name: str) -> None:
-        self._stream = stream
+    def __init__(
+        self,
+        stream: BinaryIO,
+        display_name: str,
+        *,
+        check: Check = lambda: None,
+        report: Report = lambda *_: None,
+    ) -> None:
+        self._check = check
+        self._report = report
+        self._stream = cast(BinaryIO, CheckedStream(stream, check))
         self._display_name = display_name
 
     def read_header_and_rows(
@@ -212,10 +221,15 @@ class SourceFile:
         ``source_hash`` is the SHA-256 of the file bytes (binds the preview).
         """
         digest = hashlib.sha256()
+        read_bytes = 0
+        self._report(0, 0, "校验来源文件")
         while block := self._stream.read(256 * 1024):
             digest.update(block)
+            read_bytes += len(block)
+            self._report(0, 0, f"校验来源文件：{read_bytes} 字节")
         source_hash = digest.hexdigest()
         self._stream.seek(0)
+        self._report(0, 0, "解析来源文件")
         suffix = Path(self._display_name).suffix.lower()
         if suffix in (".xlsx", ".xlsm"):
             header, rows = self._read_xlsx(max_rows=max_rows, sheet=sheet)
@@ -249,6 +263,7 @@ class SourceFile:
             try:
                 data: list[list[Any]] = []
                 for row in rows_iter:
+                    self._check()
                     if len(data) >= max_rows:
                         raise _import_row_limit(max_rows)
                     values: list[Any] = []
@@ -285,6 +300,8 @@ class SourceFile:
                             value = value.isoformat()
                         values.append(value)
                     data.append(values)
+                    if len(data) % 100 == 0:
+                        self._report(len(data), 0, f"解析来源文件：{len(data)} 行")
                 return header, data
             finally:
                 rows_iter.close()
@@ -300,9 +317,12 @@ class SourceFile:
                 return [], []
             data: list[list[Any]] = []
             for row in reader:
+                self._check()
                 if len(data) >= max_rows:
                     raise _import_row_limit(max_rows)
                 data.append(list(row))
+                if len(data) % 100 == 0:
+                    self._report(len(data), 0, f"解析来源文件：{len(data)} 行")
         return header, data
 
 
@@ -397,27 +417,27 @@ class ImportService:
     def __init__(
         self,
         *,
-        client: Any,
-        auth: Any,
         bulk: ImportMutationPort,
         profiles: dict[str, CollectionProfile],
         files: HostFiles,
         relation_provider: RelationImportProvider | None = None,
-        clock: Callable[[], float] = time.time,
     ) -> None:
-        self._client = client
-        self._auth = auth
         self._bulk = bulk
         self._profiles = profiles
         self._files = files
         self._relation_provider = relation_provider
-        self._clock = clock
         # Serializes apply executions inside this worker process only. Plan
         # consumption, concurrency and idempotency binding are owned by the Go
         # import plan owner via the staged/settled lifecycle ports.
         self._apply_lock = asyncio.Lock()
 
-    async def preview(self, params: PreviewImportParams) -> ImportPlan:
+    async def preview(
+        self,
+        params: PreviewImportParams,
+        *,
+        progress: Progress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ImportPlan:
         profile = self._profile(params.collection)
         if params.schema_revision != profile.capability_hash:
             raise ImportFlowError(
@@ -428,10 +448,20 @@ class ImportService:
                     "expectedSchemaRevision": params.schema_revision,
                 },
             )
-        async with self._files.read(params.grant_id) as source:
-            header, rows, source_hash = SourceFile(
-                source.stream, source.display_name
-            ).read_header_and_rows()
+        async with self._files.read(
+            params.grant_id, cancelled=cancelled, progress=progress
+        ) as source:
+            header, rows, source_hash = await run_file_work(
+                lambda check, report: SourceFile(
+                    source.stream, source.display_name, check=check, report=report
+                ).read_header_and_rows(),
+                cancelled=cancelled,
+                progress=progress,
+            )
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
+        if progress:
+            await progress(len(rows), 0, f"校验导入数据：{len(rows)} 行")
         mapping, unmatched = auto_map_columns(header, profile, params.column_mapping)
         relations = {r.field: r for r in profile.relations}
         explicit_by_source = {item.source_column.strip(): item for item in params.column_mapping}
@@ -569,6 +599,8 @@ class ImportService:
                     relation_resolutions=relation_resolutions,
                 )
             )
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
         authoritative = await self._bulk.preview_import(
             collection=params.collection,
             schema_revision=params.schema_revision,
@@ -635,6 +667,8 @@ class ImportService:
             error_count=error_count,
             warning_count=warning_count,
         )
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
         token = await self._mint_plan(
             collection=params.collection,
             grant_id=params.grant_id,
@@ -645,6 +679,8 @@ class ImportService:
             mode=params.mode,
             upsert_key=params.upsert_key,
         )
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
         return ImportPlan(
             collection=params.collection,
             schema_revision=params.schema_revision,
@@ -748,6 +784,8 @@ class ImportService:
         )
         submitted = False
         try:
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             if requires_cross_table:
                 if self._relation_provider is None:
                     raise ImportFlowError(
@@ -796,6 +834,11 @@ class ImportService:
             await self._settle_quietly(
                 params.token, "unknown" if submitted else "rejected", staged.attempt
             )
+            if submitted:
+                raise ImportFlowError(
+                    "Import submission outcome is unknown; verify the data before previewing again",
+                    code="import_outcome_unknown",
+                ) from None
             raise
         except Exception as exc:
             known_rejection = getattr(exc, "code", None) in {
@@ -843,7 +886,7 @@ class ImportService:
         commit_grant()
         try:
             await self._settle_plan(params.token, "committed", staged.attempt)
-        except Exception:
+        except Exception, asyncio.CancelledError:
             # The business writes and the Host grant are already committed. The
             # plan stays claimed (fail-closed) instead of pretending nothing
             # happened; a late settle cannot change the reported result.
@@ -851,7 +894,7 @@ class ImportService:
         if progress:
             try:
                 await progress(total, total, "atomic import committed")
-            except Exception:
+            except Exception, asyncio.CancelledError:
                 logger.warning("import.committed_progress_notification_failed")
         return ApplyImportResult(
             collection=params.collection,

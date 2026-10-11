@@ -1848,7 +1848,7 @@ export interface MutationReceipt {
 
 export interface DataTaskStatus {
   readonly taskId: string;
-  readonly kind: "data.import" | "data.export";
+  readonly kind: "data.import" | "data.export" | "data.previewImport";
   readonly state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "aborted";
   readonly progress: { readonly done: number; readonly total: number; readonly message: string };
   readonly result: unknown;
@@ -2179,7 +2179,7 @@ export interface WebPayloadMap {
     readonly lookupIds: readonly string[];
   };
   "task.create": {
-    readonly kind: "data.import" | "data.export";
+    readonly kind: "data.import" | "data.export" | "data.previewImport";
     readonly params: Readonly<Record<string, unknown>>;
   };
   "task.cancel": { readonly taskId: string };

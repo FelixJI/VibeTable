@@ -156,3 +156,67 @@ async def test_paste_read_port_rejects_non_finite_schema_field_metadata() -> Non
 
     with pytest.raises(ValueError, match="numbers must be finite"):
         await port.fields(profile)
+
+
+@pytest.mark.parametrize("second_table", ["orders", "other"])
+async def test_interleaved_executions_keep_their_own_live_schema(monkeypatch, second_table):
+    import asyncio
+
+    from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
+    from backend.application.host_files import HostFiles
+    from backend.application.import_service import ImportService
+    from backend.application.task_service import build_task_service
+    from backend.contracts.data_io import PreviewImportParams
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    class Client:
+        calls = 0
+
+        async def describe_table(self, table_id):
+            self.calls += 1
+            return snapshot_v2(
+                table_id,
+                [field_v2("first" if self.calls == 1 else "second")],
+                revision=f"schema_{self.calls}",
+            )
+
+    async def preview(self, params, **_kwargs):
+        if params.schema_revision == "schema_1":
+            entered.set()
+            await release.wait()
+        profile = self._profile(params.collection)
+        observed.append((profile.collection, profile.capability_hash, profile.fields))
+        return profile
+
+    async def unused(*_args):
+        raise AssertionError("This projection check must not read a file or mutate Go.")
+
+    monkeypatch.setattr(ImportService, "preview", preview)
+    runtime = ProductDataIoRuntime(
+        client=Client(),
+        task_service=build_task_service(files=HostFiles(unused)),
+    )
+    first = asyncio.create_task(
+        runtime.preview_import(
+            PreviewImportParams(
+                collection="orders",
+                grant_id="g1",
+                schema_revision="schema_1",
+            )
+        )
+    )
+    await entered.wait()
+    await runtime.preview_import(
+        PreviewImportParams(
+            collection=second_table,
+            grant_id="g2",
+            schema_revision="schema_2",
+        )
+    )
+    release.set()
+    await first
+    assert observed[0][0:2] == (second_table, "schema_2")
+    assert observed[1][0:2] == ("orders", "schema_1")
+    assert observed[0][2] != observed[1][2]

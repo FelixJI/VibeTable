@@ -9,7 +9,6 @@ writable-field checks never rely on a startup snapshot.
 
 from __future__ import annotations
 
-import asyncio
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -182,41 +181,38 @@ class ProductDataIoRuntime:
     def __init__(self, *, client: PocketBaseClient, task_service: TaskService) -> None:
         self._client = client
         self._task_service = task_service
-        self._profiles: dict[str, CollectionProfile] = {}
-        self._definitions: dict[str, JsonObject] = {}
-        self._refresh_lock = asyncio.Lock()
         auth = PocketBaseLocalAuth()
-        read_port = PocketBasePasteReadPort(
-            client=client,
-            profiles=self._profiles,
-            definitions=self._definitions,
-        )
-        bulk = PocketBaseBulkMutationClient(client=client, auth=auth)
-        self._import = ImportService(
-            client=read_port,
-            auth=auth,
-            bulk=bulk,
-            profiles=self._profiles,
-            files=task_service.files,
+        self._bulk = PocketBaseBulkMutationClient(client=client, auth=auth)
+
+    async def _import_service(self, collection: str) -> ImportService:
+        profile = await self._profile(collection)
+        return ImportService(
+            bulk=self._bulk,
+            profiles={collection: profile},
+            files=self._task_service.files,
             relation_provider=PocketBaseRelationImportProvider(
-                client=client,
-                bulk=bulk,
+                client=self._client, bulk=self._bulk
             ),
         )
-        self._export = ExportService(
-            query_port=cast(QueryPagePort, client),
-            profiles=self._profiles,
-            files=task_service.files,
-            lookup_provider=PocketBaseLookupExportProvider(client=client),
+
+    async def _export_service(self, collection: str) -> ExportService:
+        profile = await self._profile(collection)
+        return ExportService(
+            query_port=cast(QueryPagePort, self._client),
+            profiles={collection: profile},
+            files=self._task_service.files,
+            lookup_provider=PocketBaseLookupExportProvider(client=self._client),
         )
 
-    @property
-    def profiles(self) -> dict[str, CollectionProfile]:
-        return self._profiles
-
-    async def preview_import(self, params: PreviewImportParams) -> ImportPlan:
-        await self._refresh(params.collection)
-        return await self._import.preview(params)
+    async def preview_import(
+        self,
+        params: PreviewImportParams,
+        *,
+        progress: ProgressCallback | None = None,
+        cancelled: CancellationCheck | None = None,
+    ) -> ImportPlan:
+        service = await self._import_service(params.collection)
+        return await service.preview(params, progress=progress, cancelled=cancelled)
 
     async def apply_import(
         self,
@@ -225,12 +221,8 @@ class ProductDataIoRuntime:
         progress: ProgressCallback | None = None,
         cancelled: CancellationCheck | None = None,
     ) -> ApplyImportResult:
-        await self._refresh(params.collection)
-        return await self._import.apply(
-            params,
-            progress=progress,
-            cancelled=cancelled,
-        )
+        service = await self._import_service(params.collection)
+        return await service.apply(params, progress=progress, cancelled=cancelled)
 
     async def export(
         self,
@@ -239,18 +231,31 @@ class ProductDataIoRuntime:
         progress: ProgressCallback | None = None,
         cancelled: CancellationCheck | None = None,
     ) -> ExportResult:
-        await self._refresh(params.collection)
-        return await self._export.export(
-            params,
-            progress=progress,
-            cancelled=cancelled,
-        )
+        service = await self._export_service(params.collection)
+        return await service.export(params, progress=progress, cancelled=cancelled)
 
     async def generate_template(self, params: GenerateTemplateParams) -> TemplateResult:
-        await self._refresh(params.collection)
-        return await self._export.generate_template(params.collection, params.grant_id)
+        service = await self._export_service(params.collection)
+        return await service.generate_template(params.collection, params.grant_id)
 
     def register_tasks(self) -> None:
+        async def preview_import_task(
+            _task_id: str,
+            reporter: ProgressReporter,
+            token: CancellationToken,
+            raw_params: JsonObject,
+        ) -> ImportPlan:
+            async def progress(done: int, total: int, message: str) -> None:
+                await reporter.report(done=done, total=total, message=message)
+
+            return await self.preview_import(
+                PreviewImportParams.model_validate(raw_params),
+                progress=progress,
+                cancelled=lambda: token.cancelled,
+            )
+
+        self._task_service.runtime.register("data.previewImport", preview_import_task)
+
         async def apply_import_task(
             _task_id: str,
             reporter: ProgressReporter,
@@ -288,18 +293,12 @@ class ProductDataIoRuntime:
         self._task_service.runtime.register("data.import", apply_import_task)
         self._task_service.runtime.register("data.export", export_task)
 
-    async def _refresh(self, collection: str) -> CollectionProfile:
-        async with self._refresh_lock:
-            definition = await self._client.describe_table(collection)
-            profile = collection_profile_from_definition(definition)
-            if profile.collection != collection:
-                raise PasteError(
-                    "product schema identity mismatch",
-                    code="schema_mismatch",
-                )
-            self._definitions[collection] = definition
-            self._profiles[collection] = profile
-            return profile
+    async def _profile(self, collection: str) -> CollectionProfile:
+        definition = await self._client.describe_table(collection)
+        profile = collection_profile_from_definition(definition)
+        if profile.collection != collection:
+            raise PasteError("product schema identity mismatch", code="schema_mismatch")
+        return profile
 
 
 def _raw_fields(definition: JsonObject) -> list[JsonObject]:

@@ -215,7 +215,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
     internal (string TaskId, JsonElement Initial) Admit(
         JsonRpcClient client, ProductSidecarIdentity identity, string kind)
     {
-        if (kind is not ("data.import" or "data.export"))
+        if (kind is not ("data.import" or "data.export" or "data.previewImport"))
             throw new JsonException("Unsupported Data IO task kind.");
         lock (_gate)
         {
@@ -240,6 +240,16 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
             return _tasks.TryGetValue(taskId, out Record? record)
                 ? Snapshot(record)
                 : throw new KeyNotFoundException("Data IO task is not in this workspace.");
+        }
+    }
+
+    internal Task<JsonElement> WaitForTerminalAsync(string taskId, CancellationToken token)
+    {
+        lock (_gate)
+        {
+            if (!_tasks.TryGetValue(taskId, out Record? record))
+                throw new KeyNotFoundException("Data IO task is not in this workspace.");
+            return record.Completion.Task.WaitAsync(token);
         }
     }
 
@@ -369,7 +379,11 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         return changed;
     }
 
-    private JsonElement EventLocked(Record record) => EventLocked(record.Status);
+    private JsonElement EventLocked(Record record)
+    {
+        if (Terminal(record.Status.State)) record.Completion.TrySetResult(Snapshot(record));
+        return EventLocked(record.Status);
+    }
 
     private JsonElement EventLocked(TaskStatus status)
     {
@@ -390,7 +404,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
             sequence = ++_sequence,
             occurredAt = DateTimeOffset.UtcNow.ToString("O"),
             taskId = status.TaskId,
-            taskType = status.Kind is "data.import" or "data.sourceImport" ? "import" : "export",
+            taskType = status.Kind is "data.import" or "data.sourceImport" or "data.previewImport" ? "import" : "export",
             state,
             progress = ratio,
             cursor = (string?)null,
@@ -477,6 +491,8 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         internal long Generation { get; } = generation;
         internal ProductSidecarIdentity Identity { get; } = identity;
         internal TaskStatus Status { get; set; } = status;
+        internal TaskCompletionSource<JsonElement> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool HistoryStarted { get; set; }
         internal long Order { get; } = Interlocked.Increment(ref _nextOrder);
     }

@@ -2842,6 +2842,8 @@ SCENARIO_SCREENSHOTS = {
         "45-common-field-display-cards.png",
     ),
     "35-data-io-interoperability": (
+        "35-file-preview-progress.png",
+        "35-file-preview-cancel.json",
         "35-import-management-history.png",
         "35-import-management-reopened.png",
         "35-source-import-history.png",

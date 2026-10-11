@@ -438,3 +438,100 @@ async def test_native_commit_outlives_callback_deadline_without_a_false_failed_t
         reader.feed_eof()
         await asyncio.wait_for(serving, 2)
         await asyncio.wait_for(runtime.wait(created.task_id), 2)
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        "task.cancelExecution",
+        "task.settleExport",
+        "plugin.cancelTask",
+        "plugin.resolveInteraction",
+        "plugin.resolveFile",
+    ],
+)
+async def test_controls_and_host_replies_bypass_slow_ordinary_rpc_in_a_bounded_lane(control):
+    dispatcher = RpcDispatcher()
+    reader = asyncio.StreamReader()
+    frames = asyncio.Queue()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    order = []
+
+    class InteractiveWriter(BufferWriter):
+        def write(self, data):
+            frames.put_nowait(json.loads(data))
+
+    server = RpcServer(reader, InteractiveWriter(), dispatcher)
+
+    async def ordinary(_params):
+        order.append("ordinary-start")
+        entered.set()
+        await release.wait()
+        order.append("ordinary-end")
+        return {}
+
+    async def following(_params):
+        order.append("following")
+        return {}
+
+    async def controlling(_params):
+        await server.call_host_file("describe", {"grantId": "g"})
+        order.append("control")
+        return {}
+
+    dispatcher.register("ordinary", ordinary, HandshakeParams)
+    dispatcher.register("following", following, HandshakeParams)
+    dispatcher.register(control, controlling, HandshakeParams)
+
+    def send(method):
+        reader.feed_data(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": method,
+                    "method": method,
+                    "params": {"clientVersion": "1", "protocolVersion": "1.0"},
+                }
+            ).encode()
+            + b"\n"
+        )
+
+    serving = asyncio.create_task(server.serve())
+    try:
+        send("ordinary")
+        await asyncio.wait_for(entered.wait(), 1)
+        send("following")
+        send(control)
+        callback = await asyncio.wait_for(frames.get(), 1)
+        assert callback["method"] == "host.file.describe"
+        assert order == ["ordinary-start"]
+        reader.feed_data(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": callback["id"],
+                    "result": {"grantId": "g"},
+                }
+            ).encode()
+            + b"\n"
+        )
+        response = await asyncio.wait_for(frames.get(), 1)
+        assert response["id"] == control
+        assert order == ["ordinary-start", "control"]
+        release.set()
+        replies = [await asyncio.wait_for(frames.get(), 1) for _ in range(2)]
+        assert [reply["id"] for reply in replies] == ["ordinary", "following"]
+    finally:
+        release.set()
+        reader.feed_eof()
+        await asyncio.wait_for(serving, 1)
+
+
+async def test_control_lane_overload_is_bounded():
+    server, reader, _writer = _make_server()
+    reader.feed_data(
+        b'{"jsonrpc":"2.0","id":"a","method":"task.cancelExecution","params":{}}\n' * 18
+    )
+    with pytest.raises(asyncio.QueueFull):
+        await asyncio.wait_for(server.serve(), 1)

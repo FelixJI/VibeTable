@@ -30,12 +30,14 @@ export interface ExportLookupPanelState {
 
 export interface DataIoTaskPort {
   readonly busy: Readonly<Ref<boolean>>;
-  previewImport(collection: string, schemaRevision: string, assertCurrent?: () => void): Promise<ImportPreviewSession>;
+  previewImport(collection: string, schemaRevision: string, assertCurrent?: () => void, taskSession?: () => DataTaskSessionState): Promise<ImportPreviewSession>;
   previewImportWithGrant(
     grant: SessionPathGrant,
     collection: string,
     schemaRevision: string,
     columnMapping: readonly ImportColumnMappingPayload[],
+    assertCurrent?: () => void,
+    taskSession?: () => DataTaskSessionState,
   ): Promise<ImportPlan>;
   loadRelationImportOptions(collection: string, assertCurrent?: () => void): Promise<readonly RelationImportOption[]>;
   loadExportLookupContext(collection: string): Promise<ExportLookupContext>;
@@ -271,6 +273,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.collection,
         context.schemaRevision,
         () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = session;
@@ -303,6 +306,8 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.collection,
         context.schemaRevision,
         [],
+        () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = { grant, plan, mode: "create_only" };
@@ -330,6 +335,8 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.collection,
         context.schemaRevision,
         payload,
+        () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = { grant: session.grant, plan, mode: session.mode };
