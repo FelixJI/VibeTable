@@ -31,6 +31,7 @@ from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.mutation import PocketBaseBulkMutationClient
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.import_service import (
+    _EXECUTION_REPORT_ENVELOPE_BUDGET,
     MAX_ATOMIC_IMPORT_ROWS,
     ImportFlowError,
     ImportService,
@@ -52,6 +53,8 @@ from backend.contracts.data_profile import (
     collection_profile_from_definition,
 )
 from backend.contracts.paste import ApplyPasteResult
+from backend.contracts.task import TaskProgress, TaskStatus
+from backend.rpc.framing import MAX_FRAME_BYTES
 from tests.backend.host_files_fixture import FormatFiles
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
@@ -663,6 +666,107 @@ async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path
             "signed_on": "2026-07-14",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_undeliverable_plan_before_minting(tmp_path: Path) -> None:
+    """A plan the host transport can never deliver must fail before minting.
+
+    Oversized terminal reports are replaced by the compact-failure fallback;
+    minting first would park an unreachable single-use plan with the Go import
+    plan owner until the workspace ends (PR474 review comment 4241748219).
+    The 4 MiB frame boundary itself is untouched.
+    """
+    path = tmp_path / "oversize.csv"
+    _write_csv(path, ["title"], [["a" * 8000] for _ in range(600)])
+    service, mutation = _service(path)
+
+    with pytest.raises(ImportFlowError) as rejected:
+        await service.preview(
+            PreviewImportParams(
+                grant_id="grant-1",
+                collection="vibetable_demo",
+                schema_revision="schema-1",
+            )
+        )
+
+    assert rejected.value.code == "import_preview_oversize"
+    # The authoritative preview ran, but no unreachable plan was parked with
+    # the Go owner.
+    assert [call[0] for call in mutation.plan_calls] == []
+    assert len(mutation.preview_calls) == 1
+
+    # A normal small preview on the same service still mints exactly once.
+    small = tmp_path / "small.csv"
+    _write_csv(small, ["title"], [["ok"]])
+    service._files = FormatFiles(small, None)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision="schema-1",
+        )
+    )
+    assert [call[0] for call in mutation.plan_calls] == ["mint"]
+    assert plan.token.token
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_one_multibyte_cell_before_minting(tmp_path: Path) -> None:
+    """The budget must measure encoded bytes, not character counts.
+
+    Fifteen 100k-character cells stay under the CSV field limit and total
+    1.5M characters (< 4 MiB), yet encode to 4.5 MB of UTF-8 — over the cap.
+    """
+    path = tmp_path / "unicode.csv"
+    _write_csv(path, ["title"], [["表" * 100_000] for _ in range(15)])
+    service, mutation = _service(path)
+
+    with pytest.raises(ImportFlowError) as rejected:
+        await service.preview(
+            PreviewImportParams(
+                grant_id="grant-1",
+                collection="vibetable_demo",
+                schema_revision="schema-1",
+            )
+        )
+
+    assert rejected.value.code == "import_preview_oversize"
+    assert [call[0] for call in mutation.plan_calls] == []
+
+
+def test_execution_report_envelope_budget_covers_worst_case_metadata() -> None:
+    """The pre-mint gate must never pass a plan the wire would then reject.
+
+    The gate compares plan-only bytes against ``MAX_FRAME_BYTES -
+    _EXECUTION_REPORT_ENVELOPE_BUDGET``. The full report frame with the worst
+    legal metadata — maximal control-character taskId and progress message
+    (6 escaped bytes per character) plus huge integer counters — must stay
+    within the budget, so a plan that passes the gate always fits the real
+    frame cap and is never minted first and dropped at send time.
+    """
+    worst_metadata = TaskStatus(
+        task_id="\x01" * 128,
+        kind="data.previewImport",
+        state="succeeded",
+        progress=TaskProgress(done=2**53, total=2**53, message="\x01" * 512),
+    )
+    worst_envelope = len(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "task.executionReport",
+                "params": worst_metadata.model_dump(mode="json", by_alias=True),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+    assert worst_envelope <= _EXECUTION_REPORT_ENVELOPE_BUDGET
+    # A plan sized to exactly pass the gate still fits under the real cap
+    # once wrapped in the worst-case envelope.
+    assert MAX_FRAME_BYTES - _EXECUTION_REPORT_ENVELOPE_BUDGET + worst_envelope <= MAX_FRAME_BYTES
 
 
 @pytest.mark.asyncio

@@ -454,7 +454,7 @@
         "pocketBase"
       ],
       "stateLifetime": "task",
-      "cancellation": "cooperative",
+      "cancellation": "clientPendingOnly",
       "timeout": "perHopBounded",
       "productScenarios": [
         "04-json-round-trip",
@@ -462,7 +462,7 @@
       ],
       "targetSlice": "L8",
       "targetPr": null,
-      "deleteWhen": "The on-demand Worker uses joined cancellable file work and per-execution Go schema inputs; Host owns preview/import/export task state, while Go owns preview tokens and commits.",
+      "deleteWhen": "The on-demand Worker uses joined cancellable file work and per-execution Go schema inputs; the direct template/preview routes complete per request (only the awaiting client can abandon them), while the cooperatively cancellable preview runs through the task lifecycle groups and Go owns preview tokens and commits.",
       "evidence": [
         "backend/__main__.py",
         "backend/adapters/pocketbase/data_io.py",

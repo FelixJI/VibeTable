@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ from backend.contracts.data_io import (
 )
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import PastePlanRow
+from backend.rpc.framing import MAX_FRAME_BYTES
 
 #: How long an import preview token remains valid (seconds). The Go import
 #: plan owner enforces this frozen TTL; the value stays here as the public
@@ -332,6 +334,46 @@ def _import_row_limit(max_rows: int) -> ImportFlowError:
         code="import_row_limit",
         data={"maxRows": max_rows},
     )
+
+
+#: Conservative byte cap for the ``task.executionReport`` envelope around
+#: the plan. The TaskStatus contract allows ``taskId`` ≤ 128 and
+#: ``progress.message`` ≤ 512 characters, each character up to 6 bytes when
+#: JSON-escapes a control character; kind/state/error and the done/total
+#: counters reported by the real producers (row counts and byte offsets)
+#: add only a few hundred bytes. 8192 covers every term with headroom.
+_EXECUTION_REPORT_ENVELOPE_BUDGET = 8192
+
+#: Go mint replies use ``imp1.`` + base64(24 random bytes) = 37 ASCII chars
+#: and ``float64(UnixNano)/1e9`` ≈ 18 characters; the placeholders below are
+#: at least as long as any real minted value, so the measured plan is never
+#: smaller than the one that would be delivered.
+_MINTED_TOKEN_PLACEHOLDER = "imp1." + "t" * 64
+_MINTED_EXPIRY_PLACEHOLDER = 1.2345678901234567e99
+
+
+def _reject_undeliverable_plan(plan: ImportPlan) -> None:
+    """Fail an oversized preview BEFORE the Go owner mints a single-use token.
+
+    The terminal report frame is encoded with the exact parameters of
+    ``backend.rpc.framing.write_frame``; a plan whose serialized result plus
+    the envelope budget exceeds the cap would be minted into the Go import
+    plan owner and then dropped by the compact-failure terminal fallback,
+    parking an unreachable plan until the workspace ends. The check uses the
+    minted-token placeholders (never shorter than real values) and never
+    raises the 4 MiB transport boundary itself.
+    """
+    encoded = json.dumps(
+        plan.model_dump(mode="json", by_alias=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    if len(encoded.encode("utf-8")) > MAX_FRAME_BYTES - _EXECUTION_REPORT_ENVELOPE_BUDGET:
+        raise ImportFlowError(
+            "导入预览结果超出宿主传输上限；请减少行数或列数后重新预览",
+            code="import_preview_oversize",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +719,26 @@ class ImportService:
         )
         if cancelled and cancelled():
             raise asyncio.CancelledError
-        token = await self._mint_plan(
+        plan = ImportPlan(
+            collection=params.collection,
+            schema_revision=params.schema_revision,
+            capability_hash=profile.capability_hash,
+            source_hash=source_hash,
+            summary=summary,
+            rows=plan_rows,
+            source_columns=header,
+            unmatched_columns=unmatched,
+            # Worst-case placeholders: the transport budget must be enforced
+            # before the Go owner mints a token an oversized report can never
+            # deliver.
+            token=ImportPreviewToken(
+                token=_MINTED_TOKEN_PLACEHOLDER,
+                expires_at=_MINTED_EXPIRY_PLACEHOLDER,
+                consumed=False,
+            ),
+        )
+        _reject_undeliverable_plan(plan)
+        plan.token = await self._mint_plan(
             collection=params.collection,
             grant_id=params.grant_id,
             schema_revision=params.schema_revision,
@@ -688,17 +749,7 @@ class ImportService:
             upsert_key=params.upsert_key,
         )
         # A minted plan must remain reachable even if cancellation arrived during minting.
-        return ImportPlan(
-            collection=params.collection,
-            schema_revision=params.schema_revision,
-            capability_hash=profile.capability_hash,
-            source_hash=source_hash,
-            summary=summary,
-            rows=plan_rows,
-            source_columns=header,
-            unmatched_columns=unmatched,
-            token=token,
-        )
+        return plan
 
     async def apply(
         self,

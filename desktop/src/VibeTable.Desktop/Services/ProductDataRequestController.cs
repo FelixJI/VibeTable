@@ -269,7 +269,7 @@ public sealed class ProductDataRequestController
             epochLease?.Dispose();
             return;
         }
-        if (endpoint.MutatesWorkspace
+        if (endpoint.MutatesWorkspaceFor(request.Payload)
             && _sessionEnvelopeFilter?.Current.OpenMode
                 == WorkspaceOpenMode.ReadOnly)
         {
@@ -429,7 +429,7 @@ public sealed class ProductDataRequestController
         FieldChangeProtectionLedgerContext protectionContext)
     {
         ProtectionSnapshotPolicy? policy = endpoint.ProtectionPolicy;
-        if (policy is null)
+        if (policy is null || !endpoint.MutatesWorkspaceFor(request.Payload))
             return request.Payload;
         ProtectionSnapshotReceipt? protection = null;
         if (policy.RequiresSnapshot(

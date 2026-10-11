@@ -18,8 +18,18 @@ internal sealed record ProductDataRpcEndpoint(
     Func<JsonElement, bool> IsValidPayload,
     Func<IProductDataRpcGateway, JsonElement, CancellationToken, Task<JsonElement>> InvokeAsync,
     bool MutatesWorkspace = false,
+    Func<JsonElement, bool>? ReadOnlyPayload = null,
     ProtectionSnapshotPolicy? ProtectionPolicy = null,
-    ProductRpcCapabilityCatalog CapabilityCatalog = ProductRpcCapabilityCatalog.Product);
+    ProductRpcCapabilityCatalog CapabilityCatalog = ProductRpcCapabilityCatalog.Product)
+{
+    /// <summary>
+    /// Whether this payload keeps the mutating admission. The read-only lane
+    /// is reserved for the exact zero-write preview payload; anything else
+    /// stays mutating, so other kinds cannot masquerade through it.
+    /// </summary>
+    internal bool MutatesWorkspaceFor(JsonElement payload)
+        => MutatesWorkspace && ReadOnlyPayload?.Invoke(payload) != true;
+}
 
 /// <summary>
 /// Closed renderer-to-product dispatch table. The renderer chooses a complete
@@ -153,6 +163,12 @@ internal static class ProductDataRpcRegistry
         new("task.create", p => Safe(p) && HasString(p, "kind") && HasObject(p, "params"),
             (g, p, t) => g.CreateTaskAsync(p, t),
             MutatesWorkspace: true,
+            ReadOnlyPayload: p => p.TryGetProperty("kind", out JsonElement kind)
+                && kind.ValueKind == JsonValueKind.String
+                && kind.GetString() == "data.previewImport"
+                && p.TryGetProperty("params", out JsonElement taskParams)
+                && taskParams.ValueKind == JsonValueKind.Object
+                && HasStrings(taskParams, "grantId", "collection", "schemaRevision"),
             ProtectionPolicy: ProtectionSnapshotPolicy.AlwaysSideEffectOnly),
         new("task.cancel", p => Safe(p) && HasString(p, "taskId"),
             (g, p, t) => g.CancelTaskAsync(p, t),

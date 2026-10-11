@@ -657,6 +657,105 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
     }
 
     [TestMethod]
+    public async Task ReadOnlySessionAdmitsPreviewImportTaskWithoutProtectionSnapshot()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"kind":"data.previewImport","params":{"grantId":"grant-1","collection":"records","schemaRevision":"schema-1"}}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "task.create",
+            "read-only-preview",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        // The zero-write preview keeps the read-only admission the direct
+        // data.previewImport endpoint always had and reaches the gateway…
+        await transport.WaitForWriteAsync();
+        Assert.AreEqual(1, transport.WriteCount);
+        // …without an AlwaysSideEffectOnly protection snapshot.
+        Assert.AreEqual(0, fixture.Protection.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionStillRejectsMutatingTaskKinds()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"kind":"data.applyImport","params":{"grantId":"grant-1","collection":"records","schemaRevision":"schema-1"}}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "task.create",
+            "read-only-import",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(failed.Payload),
+            @"""code"":""WORKSPACE_READ_ONLY""");
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionRejectsForgedPreviewKindWithoutPreviewParams()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("三号", "Three");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"kind":"data.previewImport","params":{"collection":"records"}}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "task.create",
+            "forged-preview",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(failed.Payload),
+            @"""code"":""WORKSPACE_READ_ONLY""");
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
     public async Task DangerousProductMutationProtectsBeforeGatewayWrite()
     {
         using var fixture = new SessionFixture();
