@@ -373,6 +373,7 @@ internal sealed class SourceImportWindow : Window
         {
             var row = new DockPanel { Margin = new Thickness(0, 3, 0, 3) };
             var policy = new ComboBox { ItemsSource = new[] { "原生迁移", "保留值快照", "跳过字段" }, SelectedIndex = 0, Width = 128 };
+            ApplyInputTheme(policy);
             AutomationProperties.SetAutomationId(policy, $"field-policy-{table.Id}-{field.Id}");
             var snapshotKind = new ComboBox
             {
@@ -383,6 +384,7 @@ internal sealed class SourceImportWindow : Window
                 ToolTip = "值快照的目标类型：保持来源类型、精确文本（保真大数等）或 JSON",
                 Visibility = Visibility.Collapsed,
             };
+            ApplyInputTheme(snapshotKind);
             AutomationProperties.SetAutomationId(snapshotKind, $"field-snapshot-kind-{table.Id}-{field.Id}");
             var strategies = new StackPanel { Orientation = Orientation.Horizontal };
             DockPanel.SetDock(strategies, Dock.Right);

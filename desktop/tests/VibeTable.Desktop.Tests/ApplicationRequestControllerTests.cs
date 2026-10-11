@@ -168,6 +168,28 @@ public sealed class ApplicationRequestControllerTests
     }
 
     [TestMethod]
+    public void LegacyAdoptionRejectsMixedPatchesInEitherPropertyOrder()
+    {
+        foreach (string other in new[]
+        {
+            "\"minimizeToTrayOnClose\":true", "\"startWithWindows\":true",
+            "\"updateProxy\":\"direct\"", "\"customUpdateProxyUrl\":\"\"", "\"theme\":\"light\"",
+        })
+        {
+            foreach (string payload in new[]
+            {
+                "{\"adoptLegacyTheme\":\"dark\"," + other + "}",
+                "{" + other + ",\"adoptLegacyTheme\":\"dark\"}",
+            })
+            {
+                using JsonDocument document = JsonDocument.Parse(payload);
+                Assert.IsFalse(ApplicationRequestController.TryReadAppPreferencesPatch(
+                    document.RootElement, out _), payload);
+            }
+        }
+    }
+
+    [TestMethod]
     public void HandlesOnlyTheClosedApplicationRequestUnion()
     {
         foreach (string type in new[]

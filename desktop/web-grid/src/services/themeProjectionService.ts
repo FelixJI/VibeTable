@@ -154,13 +154,12 @@ export function createThemeProjectionService(
   }
 
   async function setTheme(mode: ThemeMode): Promise<void> {
-    const rollback = lastSnapshot;
     useUiStore().setThemeMode(mode);
     try {
       applySnapshot(snapshotFromPreferences(await deps.updatePreferences({ theme: mode })));
     } catch (error) {
-      if (rollback) {
-        applySnapshot(rollback);
+      if (lastSnapshot) {
+        applySnapshot(lastSnapshot);
       }
       throw error;
     }

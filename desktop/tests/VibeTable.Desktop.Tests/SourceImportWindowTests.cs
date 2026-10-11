@@ -893,6 +893,14 @@ public sealed class SourceImportWindowTests
         Assert.AreEqual(
             System.Windows.SystemColors.GrayTextBrush.Color,
             await fixture.ReadAsync(w => ((SolidColorBrush)Require<Button>(w, "preview-button").Foreground).Color));
+        await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-theme"));
+        foreach (string id in new[] { "field-policy-tbl-1-f-amount", "field-snapshot-kind-tbl-1-f-amount" })
+        {
+            Assert.AreEqual(ThemedColor("dark", HostThemeResources.SurfaceBackgroundBrushKey),
+                await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Background).Color));
+            Assert.AreEqual(ThemedColor("dark", HostThemeResources.SurfaceTextBrushKey),
+                await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Foreground).Color));
+        }
         string? screenshotDirectory = ResolveOptInScreenshotDirectory();
         if (screenshotDirectory is not null)
         {
@@ -907,6 +915,12 @@ public sealed class SourceImportWindowTests
         Assert.AreEqual(
             ThemedColor("light", HostThemeResources.WindowBackgroundBrushKey),
             await fixture.ReadAsync(w => ((SolidColorBrush)w.Background!).Color));
+
+        foreach (string id in new[] { "field-policy-tbl-1-f-amount", "field-snapshot-kind-tbl-1-f-amount" })
+        {
+            Assert.AreEqual(ThemedColor("light", HostThemeResources.SurfaceBackgroundBrushKey),
+                await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Background).Color));
+        }
 
         // High contrast swaps in the SystemColors fallback so the system
         // palette stays authoritative while every Vt* key keeps a value.

@@ -365,6 +365,9 @@ internal sealed class ApplicationRequestController : IDisposable
         if (!sawMinimize && !sawStartup && !sawUpdateProxy && !sawCustomUpdateProxyUrl
             && !sawTheme && !sawAdoptLegacyTheme)
             return false;
+        if (sawAdoptLegacyTheme
+            && (sawMinimize || sawStartup || sawUpdateProxy || sawCustomUpdateProxyUrl || sawTheme))
+            return false;
         patch = new AppPreferencesPatch(
             minimizeToTrayOnClose,
             startWithWindows,

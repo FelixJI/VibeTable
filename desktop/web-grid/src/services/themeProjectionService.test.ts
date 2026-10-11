@@ -247,6 +247,24 @@ describe("themeProjectionService", () => {
     expect(ui.hostThemeSynced).toBe(true);
   });
 
+  it("failed persistence preserves a newer Host appearance push", async () => {
+    const fake = fakeDeps({ pulled: preferences({ theme: "system", effectiveTheme: "light" }) });
+    let rejectUpdate!: (error: Error) => void;
+    const service = createThemeProjectionService({
+      ...fake.deps,
+      updatePreferences: () => new Promise((_, reject) => { rejectUpdate = reject; }),
+    });
+    await service.initialize();
+    const rejected = expect(service.setTheme("dark")).rejects.toThrow("write denied");
+    fake.push(snapshot({ preference: "system", effective: "dark", highContrast: true }));
+    rejectUpdate(new Error("write denied"));
+    await rejected;
+    expect(useUiStore().themeMode).toBe("system");
+    expect(useUiStore().systemTheme).toBe("dark");
+    expect(useUiStore().highContrast).toBe(true);
+    service.dispose();
+  });
+
   it("legacy storage ports read and clear the vt:theme key", () => {
     expect(legacyThemeStoragePorts.readLegacyTheme()).toBeNull();
     localStorage.setItem("vt:theme", "system");
