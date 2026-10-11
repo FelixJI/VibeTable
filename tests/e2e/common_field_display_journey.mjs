@@ -61,6 +61,7 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
     const applied = await waitForCapturedBridgeMessage(page, 60_000);
     if (applied.type !== "field.change.apply") throw new Error(`common display apply failed: ${JSON.stringify(applied)}`);
     await closeFieldSettingsDrawer(page);
+    return applied;
   };
   const waitTexts = async (field, expected) => {
     await page.waitForFunction(({ name, wanted }) => {
@@ -211,4 +212,110 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
       && cards.some(text => text.includes("★★★★★ 5/5")) && cards.every(text => text.includes("+86 010-0012 ext.03")), { cards });
   await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-cards.png"), fullPage: true });
 
+  // PR #471: record cards render Lookup values through the authoritative
+  // LookupDefinition, and a bare JSON state object stays data on every
+  // surface. The query wire delivers fresh Lookup columns as bare values, so
+  // the seeded {"state":"updating","value":42} source object must reach
+  // cards as data instead of a pending-envelope label.
+  await selectTable(page, tableName);
+  const lookupSourceName = "E2E Lookup 来源";
+  const lookupSourceId = await createEmptyTable(page, lookupSourceName);
+  const sourcePhone = await createV2Field(page, lookupSourceId, "电话", "text");
+  await closeFieldSettingsDrawer(page);
+  const sourceAmount = await createV2Field(page, lookupSourceId, "金额", "number");
+  const sourcePayload = await createV2Field(page, lookupSourceId, "负载", "json");
+  const statePayload = { state: "updating", value: 42 };
+  const sourceSeeded = await applyProductMutation(page, lookupSourceId, [{
+    kind: "insert", recordId: null, values: {
+      [sourcePhone.physicalName]: "+86 010-0012 ext.03",
+      [sourceAmount.physicalName]: 1234.56789,
+      [sourcePayload.physicalName]: statePayload,
+    },
+  }], "e2e-lookup-source-seed");
+  if (sourceSeeded.payload?.status !== "applied") throw new Error(`lookup source seed failed: ${JSON.stringify(sourceSeeded)}`);
+  await selectTable(page, tableName);
+  const createLookupField = async (name, targetField, aggregation) => {
+    await page.getByTestId("toolbar-field-manager").click();
+    await page.getByTestId("field-display-name").locator("input").first().fill(name);
+    await selectVisibleNOption(page, "field-logical-type", "查找引用");
+    await page.getByTestId("lookup-editor-entry").click();
+    await selectVisibleNOption(page, "lookup-mode", "条件筛选（按条件查询来源表）");
+    await selectVisibleNOption(page, "lookup-condition-source-table", lookupSourceName);
+    await selectVisibleNOption(page, "lookup-target-field", targetField);
+    await selectVisibleNOption(page, "lookup-rule-source-field-0", "电话");
+    await selectVisibleNOption(page, "lookup-rule-operand-field-0", "电话");
+    if (aggregation) await selectVisibleNOption(page, "lookup-aggregation", aggregation);
+    await page.getByTestId("lookup-preview-value").waitFor({ timeout: 30_000 });
+    await page.getByTestId("lookup-editor-commit").click();
+    const applied = await save();
+    const defined = await describe({ fieldId: applied.payload?.fieldId });
+    if (!defined.payload?.definition?.identity?.physicalName) throw new Error(JSON.stringify(defined));
+    return defined.payload.definition;
+  };
+  const amountLookup = await createLookupField("合同金额", "金额", "SUM 求和");
+  const payloadLookup = await createLookupField("状态负载", "负载", "原值");
+  const waitLookupAuthority = async () => {
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      const current = await query();
+      const rows = current.payload?.rows ?? [];
+      if (rows.length === 6 && rows.every(row => row[amountLookup.identity.physicalName] === 1234.56789
+        && JSON.stringify(row[payloadLookup.identity.physicalName]) === JSON.stringify(statePayload))) return rows;
+      if (Date.now() > deadline) throw new Error(`lookup backfill did not settle: ${JSON.stringify(current)}`);
+      await page.waitForTimeout(250);
+    }
+  };
+  const lookupRows = await waitLookupAuthority();
+  recorder.check("query wire keeps the fresh JSON-state Lookup column as bare authoritative data",
+    lookupRows.every(row => JSON.stringify(row[payloadLookup.identity.physicalName]) === '{"state":"updating","value":42}'
+      && row[amountLookup.identity.physicalName] === 1234.56789), { row: lookupRows[0] });
+  await page.waitForFunction(fields => fields.every(field => {
+    const cells = [...document.querySelectorAll(`.tabulator-cell[tabulator-field="${field.name}"] .vt-lookup-text`)];
+    return cells.length === 6 && cells.every(cell => cell.textContent.trim() === field.text);
+  }), [
+    { name: amountLookup.identity.physicalName, text: "1,234.57" },
+    { name: payloadLookup.identity.physicalName, text: '{"state":"updating","value":42}' },
+  ], { timeout: 30_000 });
+  await page.getByTestId("view-hidden-trigger").click();
+  await page.getByTestId("view-hidden-hide-filtered").click();
+  for (const summaryField of ["电话", "合同金额", "状态负载"]) {
+    await page.getByTestId("view-hidden-search").locator("input").fill(summaryField);
+    await page.getByTestId("view-hidden-show-filtered").click();
+  }
+  await page.getByTestId("view-hidden-search").locator("input").fill("");
+  await page.getByTestId("view-hidden-apply").click();
+  await page.getByTestId("view-create").click();
+  const lookupCardsDialog = page.locator(".view-dialog:visible"); await lookupCardsDialog.waitFor();
+  await lookupCardsDialog.locator(".n-input input").fill("E2E Lookup Cards");
+  await page.getByTestId("view-kind-gallery").click();
+  await selectVisibleNOption(page, "view-gallery-title-field", "电话");
+  await page.getByTestId("view-dialog-confirm").click();
+  await lookupCardsDialog.waitFor({ state: "hidden", timeout: 30_000 });
+  await page.getByTestId("record-gallery-view").waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="gallery-card"]').length === 6);
+  await page.waitForFunction(wanted => {
+    const texts = [...document.querySelectorAll('[data-testid="gallery-card"]')].map(card => card.textContent ?? "");
+    return wanted.every(text => texts.every(card => card.includes(text)));
+  }, ["1,234.57", '{"state":"updating","value":42}'], { timeout: 30_000 });
+  const lookupCards = await page.getByTestId("gallery-card").allInnerTexts();
+  recorder.check("real cards format the numeric Lookup through its definition and keep the JSON state object as data",
+    lookupCards.length === 6 && lookupCards.every(text => text.includes("1,234.57")
+      && text.includes('{"state":"updating","value":42}') && !text.includes("计算中")), { lookupCards });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-lookup-cards.png"), fullPage: true });
+  await selectTable(page, tableName);
+  await page.getByTestId("view-create").click();
+  const lookupKanbanDialog = page.locator(".view-dialog:visible"); await lookupKanbanDialog.waitFor();
+  await lookupKanbanDialog.locator(".n-input input").fill("E2E Lookup 看板");
+  await page.getByTestId("view-kind-kanban").click();
+  await selectVisibleNOption(page, "view-kanban-group-field", "状态");
+  await selectVisibleNOption(page, "view-kanban-title-field", "电话");
+  await page.getByTestId("view-dialog-confirm").click();
+  await lookupKanbanDialog.waitFor({ state: "hidden", timeout: 30_000 });
+  await page.getByTestId("record-kanban-view").waitFor({ state: "visible", timeout: 30_000 });
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="kanban-card"]').length === 6);
+  const kanbanText = await page.getByTestId("record-kanban-view").innerText();
+  recorder.check("kanban lane cards keep the authoritative Lookup display without envelope labels",
+    kanbanText.includes("1,234.57") && kanbanText.includes('{"state":"updating","value":42}')
+      && !kanbanText.includes("计算中"), { kanbanText });
+  await page.screenshot({ path: path.join(runtime.evidenceDir, "45-common-field-display-lookup-kanban.png"), fullPage: true });
 }

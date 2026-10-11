@@ -9,14 +9,26 @@ function isEnvelope(value: unknown, column?: ColumnSchema | null): value is Reco
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (!("state" in record)) return false;
-  // Bare wire lookup JSON can mimic an envelope; only the exact pending shape may hide the data.
-  if (column?.kind === "lookup" && record.state === "updating") {
-    const diagnostic = record.diagnostic;
-    return record.value === null
-      && !!diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)
-      && (diagnostic as Record<string, unknown>).code === "calculation.pending";
+  return column?.kind === "lookup" ? isLookupEnvelope(record) : true;
+}
+
+// Bare JSON can contain state; only producer-specific envelope shapes may hide it.
+function isLookupEnvelope(record: Record<string, unknown>): boolean {
+  const state = record.state;
+  if (state === "updating") {
+    return record.value === null && lookupDiagnosticCode(record) === "calculation.pending";
   }
-  return true;
+  if (state === "ok" || state === "restricted" || state === "invalid" || state === "too_expensive") {
+    return Array.isArray(record.provenance) && typeof record.provenanceTotal === "number";
+  }
+  return false;
+}
+
+function lookupDiagnosticCode(record: Record<string, unknown>): unknown {
+  const diagnostic = record.diagnostic;
+  if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) return undefined;
+  const code = (diagnostic as Record<string, unknown>).code;
+  return typeof code === "string" && code !== "" ? code : undefined;
 }
 
 /**

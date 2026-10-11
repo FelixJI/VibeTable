@@ -173,8 +173,11 @@ describe("alternative record views", () => {
     const gallery = mount(RecordGalleryView, {
       props: {
         rows: [
-          { rowKey: "1", title: "A", prices: { state: "ok", value: [1.5, 1234.56789], provenance: [] } },
-          { rowKey: "2", title: "B", prices: { state: "restricted", value: [42], provenance: [] } },
+          // 真实 wire 形状：sidecar CellValue 恒定序列化 provenance 数组与分页元数据。
+          { rowKey: "1", title: "A", prices: { state: "ok", value: [1.5, 1234.56789], provenance: [],
+            provenanceTotal: 2, provenanceTotalKnown: true, provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false } },
+          { rowKey: "2", title: "B", prices: { state: "restricted", value: [42], provenance: [],
+            provenanceTotal: 1, provenanceTotalKnown: true, provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false } },
           { rowKey: "3", title: "C", prices: [1.5, 1234.56789] },
           { rowKey: "4", title: "D", prices: { state: "updating", value: null, provenance: [],
             diagnostic: { code: "calculation.pending", message: "computed value is waiting for recalculation" } } },
@@ -264,6 +267,67 @@ describe("alternative record views", () => {
     expect(kanbanPending.text()).toContain("计算中");
     expect(kanbanPending.text()).not.toContain("depth");
     expect(kanbanPending.findAll('[data-testid="kanban-card"]')).toHaveLength(1);
+  });
+
+  it("recognizes only real LookupCellValue envelopes across states; bare JSON state objects stay data", () => {
+    const lookupColumn = {
+      name: "payload", title: "负载", kind: "lookup" as const, dataType: "json" as const,
+      editable: false, nullable: true, lookupId: "orders.payload",
+    } as ColumnSchema;
+    const definitions = [{
+      lookupId: "orders.payload", collection: "orders", fieldKey: "payload", displayName: "负载",
+      path: [{ relationId: "orders.contract" }], source: { kind: "target_field" as const, fieldRef: "payload" },
+      outputType: "json" as const,
+      revision: 1, state: "valid" as const, diagnostics: [], dependencies: [],
+    }];
+    // sidecar CellValue 的完整 wire 形状：状态 + 分页元数据恒定序列化。
+    const cell = (state: string, extra: Record<string, unknown>) => ({
+      state, provenance: [], provenanceTotal: 0, provenanceTotalKnown: true,
+      provenanceOffset: 0, provenanceLimit: 100, provenanceHasMore: false, ...extra,
+    });
+    const gallery = mount(RecordGalleryView, {
+      props: {
+        rows: [
+          // 裸 JSON：缺 LookupCellValue 恒定携带的 provenance/provenanceTotal，是数据。
+          { rowKey: "1", title: "A", payload: { state: "ok", value: 42 } },
+          { rowKey: "2", title: "B", payload: { state: "restricted", value: 42 } },
+          { rowKey: "3", title: "C", payload: { state: "invalid", value: 42 } },
+          { rowKey: "4", title: "D", payload: { state: "too_expensive", value: 42 } },
+          { rowKey: "5", title: "E", payload: { state: "ready", value: 42 } },
+          // 真实 envelope：按状态渲染，不泄露 stale 值。
+          { rowKey: "6", title: "F", payload: cell("ok", { value: [1.5, 1234.56789], provenanceTotal: 2 }) },
+          { rowKey: "7", title: "G", payload: cell("restricted", { value: [42], provenanceTotal: 1 }) },
+          { rowKey: "8", title: "H", payload: cell("invalid", {
+            diagnostic: { code: "lookup.value.source_missing", message: "关联的来源记录已不存在" } }) },
+          // 无 Lookup 分页元数据的业务 JSON 仍是数据，即使携带 diagnostic。
+          { rowKey: "9", title: "I", payload: { state: "invalid", value: null,
+            diagnostic: { code: "lookup.value.source_missing", message: "关联的来源记录已不存在" } } },
+          { rowKey: "10", title: "J", payload: { state: "too_expensive", value: null,
+            diagnostic: { code: "workflow.pending", message: "等待处理" } } },
+        ],
+        schema: [...schema, lookupColumn],
+        lookupDefinitions: definitions,
+        view: view({ kind: "gallery", titleField: "title", visibleFields: ["title", "payload"] }),
+      },
+    });
+    const cards = gallery.findAll('[data-testid="gallery-card"]');
+    expect(cards[0].text()).toContain('{"state":"ok","value":42}');
+    expect(cards[1].text()).toContain('{"state":"restricted","value":42}');
+    expect(cards[1].text()).not.toContain("受限");
+    expect(cards[2].text()).toContain('{"state":"invalid","value":42}');
+    expect(cards[2].text()).not.toContain("无效");
+    expect(cards[3].text()).toContain('{"state":"too_expensive","value":42}');
+    expect(cards[3].text()).not.toContain("超出预算");
+    expect(cards[4].text()).toContain('{"state":"ready","value":42}');
+    // 真实 envelope 按权威定义格式化（json 输出类型不加数值格式化，decimal 场景由 AC4 覆盖）。
+    expect(cards[5].text()).toContain("1.5 · 1234.56789");
+    expect(cards[6].text()).toContain("受限");
+    expect(cards[6].text()).not.toContain("42");
+    expect(cards[7].text()).toContain("#REF!");
+    expect(cards[8].text()).toContain('"lookup.value.source_missing"');
+    expect(cards[8].text()).not.toContain("#REF!");
+    expect(cards[9].text()).toContain('"workflow.pending"');
+    expect(cards[9].text()).not.toContain("超出预算");
   });
 
   it("keeps runtime number-looking values unformatted for non-numeric declared columns", () => {
