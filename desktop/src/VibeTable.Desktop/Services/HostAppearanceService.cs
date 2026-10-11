@@ -188,6 +188,8 @@ internal static class HostThemeResources
     internal const string ThemeMarkerKey = "__VibeTableThemeMarker";
 
     private const string Dark = AppThemeOptions.Dark;
+    private const string FluentThemePrefix =
+        "pack://application:,,,/PresentationFramework.Fluent;component/Themes/";
 
     public static ResourceDictionary ForTheme(string effectiveTheme) =>
         effectiveTheme == Dark ? DarkTheme() : LightTheme();
@@ -203,10 +205,10 @@ internal static class HostThemeResources
             ? HighContrastFallback()
             : ForTheme(projection.Effective);
         string controlTheme = projection.HighContrast ? "HC" : projection.Effective == Dark ? "Dark" : "Light";
-        theme.MergedDictionaries.Add(new ResourceDictionary
+        // WPF only detects direct Fluent dictionaries when synchronizing the native title bar.
+        target.MergedDictionaries.Insert(0, new ResourceDictionary
         {
-            Source = new Uri(
-                $"pack://application:,,,/PresentationFramework.Fluent;component/Themes/Fluent.{controlTheme}.xaml"),
+            Source = new Uri($"{FluentThemePrefix}Fluent.{controlTheme}.xaml"),
         });
         theme[ThemeMarkerKey] = projection.HighContrast ? "highContrast" : projection.Effective;
         target.MergedDictionaries.Insert(0, theme);
@@ -217,7 +219,10 @@ internal static class HostThemeResources
         ArgumentNullException.ThrowIfNull(target);
         for (int index = target.MergedDictionaries.Count - 1; index >= 0; index--)
         {
-            if (target.MergedDictionaries[index].Contains(ThemeMarkerKey))
+            ResourceDictionary dictionary = target.MergedDictionaries[index];
+            if (dictionary.Contains(ThemeMarkerKey)
+                || dictionary.Source?.AbsoluteUri.StartsWith(
+                    FluentThemePrefix, StringComparison.OrdinalIgnoreCase) == true)
             {
                 target.MergedDictionaries.RemoveAt(index);
             }

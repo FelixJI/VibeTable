@@ -207,7 +207,7 @@ public sealed class HostAppearanceServiceTests
             new HostThemeProjection(null, "dark", HighContrast: false));
         Assert.AreEqual(1, ThemedMergedCount(target));
         StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
-            dictionary.Contains(HostThemeResources.ThemeMarkerKey)).MergedDictionaries.Single().Source.AbsoluteUri,
+            dictionary.Source is not null).Source.AbsoluteUri,
             "Fluent.Dark.xaml");
         Assert.AreEqual(
             (Color)ColorConverter.ConvertFromString("#FF17191F"),
@@ -218,7 +218,7 @@ public sealed class HostAppearanceServiceTests
             new HostThemeProjection(AppThemeOptions.Light, "light", HighContrast: false));
         Assert.AreEqual(1, ThemedMergedCount(target));
         StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
-            dictionary.Contains(HostThemeResources.ThemeMarkerKey)).MergedDictionaries.Single().Source.AbsoluteUri,
+            dictionary.Source is not null).Source.AbsoluteUri,
             "Fluent.Light.xaml");
         Assert.AreEqual(Colors.White, Brush(target, HostThemeResources.WindowBackgroundBrushKey));
 
@@ -227,9 +227,7 @@ public sealed class HostAppearanceServiceTests
         HostThemeResources.Apply(target,
             new HostThemeProjection(null, "dark", HighContrast: true));
         Assert.AreEqual(1, ThemedMergedCount(target));
-        StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
-            dictionary.Contains(HostThemeResources.ThemeMarkerKey)).MergedDictionaries.Single().Source.AbsoluteUri,
-            "Fluent.HC.xaml");
+        Assert.AreEqual(1, target.MergedDictionaries.Count(dictionary => dictionary.Source is not null));
         Assert.AreEqual(
             System.Windows.SystemColors.WindowBrush.Color,
             Brush(target, HostThemeResources.WindowBackgroundBrushKey));
@@ -239,7 +237,31 @@ public sealed class HostAppearanceServiceTests
 
         HostThemeResources.Remove(target);
         Assert.AreEqual(0, ThemedMergedCount(target));
+        Assert.AreEqual(0, target.MergedDictionaries.Count);
     }
+
+    [STATestMethod]
+    public void ApplyUpdatesNativeTitleBarWhenWindowAlreadyHasAHandle()
+    {
+        var window = new Window();
+        IntPtr handle = new System.Windows.Interop.WindowInteropHelper(window).EnsureHandle();
+        try
+        {
+            HostThemeResources.Apply(window.Resources,
+                new HostThemeProjection(AppThemeOptions.Dark, "dark", HighContrast: false));
+            Assert.AreEqual(0, DwmGetWindowAttribute(handle, 20, out int dark, sizeof(int)));
+            Assert.AreEqual(1, dark);
+            HostThemeResources.Apply(window.Resources,
+                new HostThemeProjection(AppThemeOptions.Light, "light", HighContrast: false));
+            Assert.AreEqual(0, DwmGetWindowAttribute(handle, 20, out int light, sizeof(int)));
+            Assert.AreEqual(0, light);
+        }
+        finally { window.Close(); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(
+        IntPtr window, int attribute, out int value, int size);
 
     [TestMethod]
     public void HighContrastNotificationsReRaiseSoPaletteChangesRefresh()
