@@ -32,7 +32,6 @@ import type {
   DailyQuoteStyle,
   DensityMode,
   StartupPage,
-  ThemeMode,
   WorkspaceStartupPolicy,
 } from "@/stores/uiStore";
 import type { Locale } from "@/i18n";
@@ -50,6 +49,7 @@ import type {
   UpdateProxyId,
 } from "@/contracts/appPreferencesContracts";
 import { useAppPreferencesService } from "@/services/appPreferencesService";
+import { useThemeProjectionService } from "@/services/themeProjectionService";
 import type { ReleaseUpdateCheckResult } from "@/contracts/releaseUpdateContracts";
 import { useReleaseUpdateService } from "@/services/releaseUpdateService";
 import WorkspaceProtectionSettings, {
@@ -82,9 +82,15 @@ const appPreferences = ref<AppPreferences>({
   startWithWindows: false,
   updateProxy: "direct",
   customUpdateProxyUrl: "",
+  theme: null,
+  effectiveTheme: "light",
+  highContrast: false,
 });
 const appPreferencesPhase = ref<"loading" | "idle" | "saving">("loading");
 const appPreferencesError = ref<string | null>(null);
+const themeProjection = useThemeProjectionService();
+const themePhase = ref<"idle" | "saving">("idle");
+const themeError = ref<string | null>(null);
 const releaseUpdateService = useReleaseUpdateService();
 const releaseUpdate = ref<ReleaseUpdateCheckResult | null>(null);
 const releaseUpdatePhase = ref<"idle" | "checking" | "installing">("idle");
@@ -143,6 +149,29 @@ async function updateAppPreferences(patch: AppPreferencesUpdate): Promise<void> 
       : t("settings.appPreferences.failed");
   } finally {
     appPreferencesPhase.value = "idle";
+  }
+}
+
+async function saveTheme(value: string | number | null): Promise<void> {
+  if (themePhase.value !== "idle") return;
+  if (typeof value !== "string"
+    || (value !== "light" && value !== "dark" && value !== "system")) return;
+  themePhase.value = "saving";
+  themeError.value = null;
+  const previous = ui.themeMode;
+  // Optimistic local projection; the Host reply is the authority and a
+  // failure rolls the pick back with a visible error.
+  ui.setThemeMode(value);
+  try {
+    await themeProjection.setTheme(value);
+    appPreferences.value = { ...appPreferences.value, theme: value };
+  } catch (error) {
+    ui.setThemeMode(previous);
+    themeError.value = error instanceof Error
+      ? error.message
+      : t("settings.theme.failed");
+  } finally {
+    themePhase.value = "idle";
   }
 }
 
@@ -317,10 +346,13 @@ function setCalendarName(name: string): void {
                 :value="ui.themeMode"
                 :aria-label="t('settings.theme')"
                 :options="themeOptions"
+                :disabled="themePhase !== 'idle'"
+                :loading="themePhase === 'saving'"
                 class="setting-control"
                 data-testid="theme-select"
-                @update:value="ui.setThemeMode($event as ThemeMode)"
+                @update:value="saveTheme"
               />
+              <small v-if="themeError" class="setting-error" data-testid="theme-error">{{ themeError }}</small>
             </div>
             <div class="setting-row">
               <div>

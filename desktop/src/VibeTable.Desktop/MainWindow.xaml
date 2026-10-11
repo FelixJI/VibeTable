@@ -16,7 +16,7 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Window.Resources>
-    <Grid Background="#FFFFFF">
+    <Grid Background="{DynamicResource VtWindowBackgroundBrush}">
         <!-- The primary app renderer is never navigated away from or removed. -->
         <wv2:WebView2
             x:Name="AppWebView"
@@ -24,7 +24,7 @@
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
 
         <!-- Host fallback exists only before the shell loads or after a renderer fault. -->
-        <Grid Panel.ZIndex="30" Background="#F7F8FA"
+        <Grid Panel.ZIndex="30" Background="{DynamicResource VtSurfaceBackgroundBrush}"
               Visibility="{Binding IsHostFallbackVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <StackPanel Width="440" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Border Width="44" Height="44" Background="#3370FF" CornerRadius="10" HorizontalAlignment="Center">
@@ -32,9 +32,9 @@
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <TextBlock Text="{Binding StatusText}" Margin="0,18,0,0" FontSize="18" FontWeight="SemiBold"
-                           Foreground="#1F2329" HorizontalAlignment="Center"/>
+                           Foreground="{DynamicResource VtWindowTextBrush}" HorizontalAlignment="Center"/>
                 <TextBlock Text="{Binding DetailMessage}" Margin="0,8,0,0" FontSize="12"
-                           TextWrapping="Wrap" TextAlignment="Center" Foreground="#646A73"/>
+                           TextWrapping="Wrap" TextAlignment="Center" Foreground="{DynamicResource VtMutedTextBrush}"/>
                 <ProgressBar Height="3" Width="200" Margin="0,22,0,0" IsIndeterminate="True" Foreground="#3370FF">
                     <ProgressBar.Style>
                         <Style TargetType="ProgressBar">

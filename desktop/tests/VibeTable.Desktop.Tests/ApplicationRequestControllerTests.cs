@@ -47,6 +47,91 @@ public sealed class ApplicationRequestControllerTests
     }
 
     [TestMethod]
+    public async Task ThemePreferenceRoundTripsAndProjectsAppearance()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var sink = new FakeWebReplySink();
+            var host = new FakeApplicationRequestHost();
+            using ApplicationRequestController controller = Controller(root, sink, host);
+
+            await controller.DispatchAsync(Request(
+                "appPreferences.update",
+                """{"theme":"dark"}"""));
+
+            Assert.AreEqual(AppThemeOptions.Dark, controller.CurrentPreferences.Theme);
+            Assert.HasCount(1, sink.Replies);
+            using JsonDocument payload = JsonSerializer.SerializeToDocument(sink.Replies[0].Payload);
+            Assert.AreEqual(
+                AppThemeOptions.Dark,
+                payload.RootElement.GetProperty("theme").GetString());
+            // Explicit dark wins over the light system snapshot.
+            Assert.AreEqual(
+                "dark",
+                payload.RootElement.GetProperty("effectiveTheme").GetString());
+            Assert.IsFalse(
+                payload.RootElement.GetProperty("highContrast").GetBoolean());
+
+            // Reads project the persisted preference without changing it.
+            await controller.DispatchAsync(Request("appPreferences.get", "{}"));
+            using JsonDocument read = JsonSerializer.SerializeToDocument(sink.Replies[1].Payload);
+            Assert.AreEqual(
+                AppThemeOptions.Dark,
+                read.RootElement.GetProperty("theme").GetString());
+            Assert.AreEqual(
+                "dark",
+                read.RootElement.GetProperty("effectiveTheme").GetString());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task LegacyAdoptionPersistsOnlyWhileTheHostIsUnconfigured()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "vibetable-application-controller-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var sink = new FakeWebReplySink();
+            var host = new FakeApplicationRequestHost();
+            using ApplicationRequestController controller = Controller(root, sink, host);
+
+            await controller.DispatchAsync(Request(
+                "appPreferences.update",
+                """{"adoptLegacyTheme":"system"}"""));
+            Assert.AreEqual(
+                AppThemeOptions.System,
+                controller.CurrentPreferences.Theme);
+            using JsonDocument adopted = JsonSerializer.SerializeToDocument(sink.Replies[0].Payload);
+            Assert.AreEqual(
+                AppThemeOptions.System,
+                adopted.RootElement.GetProperty("theme").GetString());
+
+            // A second adoption attempt must never overwrite the now-explicit
+            // Host value (compare-unset semantics).
+            await controller.DispatchAsync(Request(
+                "appPreferences.update",
+                """{"adoptLegacyTheme":"dark"}"""));
+            Assert.AreEqual(
+                AppThemeOptions.System,
+                controller.CurrentPreferences.Theme);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task InvalidApplicationRequestsFailBeforeProvidersOrLifecycleEffects()
     {
         string root = Path.Combine(
@@ -117,6 +202,7 @@ public sealed class ApplicationRequestControllerTests
             preferences,
             new ReleaseUpdateCoordinator(root, "1.0.0", installationEnabled: false),
             new DailyQuoteHostClient(),
+            Appearance(),
             AppPreferences.Default);
 
         await controller.DispatchAsync(Request("appPreferences.get", "{}"));
@@ -157,8 +243,12 @@ public sealed class ApplicationRequestControllerTests
             preferences,
             new ReleaseUpdateCoordinator(root, "1.0.0", installationEnabled: false),
             new DailyQuoteHostClient(),
+            Appearance(),
             AppPreferences.Default);
     }
+
+    private static HostAppearanceService Appearance() =>
+        new(new FakeAppearanceSource());
 
     private static RoutedWebRequest Request(string type, string json)
     {
@@ -179,6 +269,16 @@ public sealed class ApplicationRequestControllerTests
         => JsonSerializer.SerializeToElement(reply.Payload)
             .GetProperty("code")
             .GetString();
+
+    private sealed class FakeAppearanceSource : ISystemAppearanceSource
+    {
+        public HostAppearanceSnapshot Read() =>
+            new(SystemPrefersDark: false, HighContrast: false);
+
+        public event EventHandler? Changed { add { } remove { } }
+
+        public void Dispose() { }
+    }
 
     private sealed class FakeApplicationRequestHost : IApplicationRequestHost
     {

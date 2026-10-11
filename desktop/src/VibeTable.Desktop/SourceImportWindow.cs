@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Media;
+using System.Windows.Input;
 using VibeTable.Desktop.Services;
 
 namespace VibeTable.Desktop;
@@ -55,6 +55,8 @@ internal sealed class SourceImportWindow : Window
     private readonly Button _previewButton = new() { Content = "预检", IsEnabled = false };
     private readonly Button _startButton = new() { Content = "确认并导入", IsEnabled = false };
     private readonly List<TableChoice> _choices = [];
+    private readonly HostAppearanceService _appearance;
+    private readonly bool _ownsAppearance;
     private NativeSourceConnection? _connection;
     private HostSourceImportPreview? _preview;
     private bool _noticesAcknowledged;
@@ -68,21 +70,32 @@ internal sealed class SourceImportWindow : Window
         Func<string, string, string, string, CancellationToken, Task<NativeSourceConnection>> connect,
         IHostSourceImportWizardSession session, Func<Exception, string> describeError,
         CancellationToken cancellation,
-        Func<CancellationToken, Task<NativeSourceConnection?>>? openLocalFile = null)
+        Func<CancellationToken, Task<NativeSourceConnection?>>? openLocalFile = null,
+        HostAppearanceService? appearance = null)
     {
         _connect = connect;
         _openLocalFile = openLocalFile;
         _session = session;
         _describeError = describeError;
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        // Without an injected service the window still follows the system
+        // appearance on its own dispatcher; an explicit preference arrives
+        // once the composition root passes its shared service in.
+        _appearance = appearance ?? new HostAppearanceService(
+            new WindowsSystemAppearanceSource(),
+            dispatcher: Dispatcher);
+        _ownsAppearance = appearance is null;
         Title = provider == "feishu" ? "从飞书多维表格导入" : "从 WPS 多维表格导入";
         Width = 840;
         Height = 760;
         MinWidth = 680;
         MinHeight = 520;
-        FontFamily = new System.Windows.Media.FontFamily("Microsoft YaHei UI");
-        FontSize = 14;
-        Background = System.Windows.Media.Brushes.White;
+        // System font family/size and themed window chrome resolve through
+        // standard WPF dynamic resources, so system changes apply live.
+        SetResourceReference(FontFamilyProperty, System.Windows.SystemFonts.MessageFontFamilyKey);
+        SetResourceReference(FontSizeProperty, System.Windows.SystemFonts.MessageFontSizeKey);
+        SetResourceReference(BackgroundProperty, HostThemeResources.WindowBackgroundBrushKey);
+        SetResourceReference(ForegroundProperty, HostThemeResources.WindowTextBrushKey);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         AutomationProperties.SetAutomationId(this, "source-import-window");
         AutomationProperties.SetAutomationId(_previewButton, "preview-button");
@@ -95,18 +108,26 @@ internal sealed class SourceImportWindow : Window
         AutomationProperties.SetAutomationId(_notices, "notices-panel");
         AutomationProperties.SetAutomationId(_noticeAcknowledge, "notice-acknowledge-checkbox");
 
-        var root = new DockPanel { Margin = new Thickness(24) };
+        var root = new Grid { Margin = new Thickness(24) };
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var content = new StackPanel();
+        // Content first, footer second: the declaration order is the Tab
+        // order, so keyboard users reach the inputs before the buttons.
+        root.Children.Add(new ScrollViewer
+        {
+            Content = content,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        });
         var footer = new StackPanel { Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0) };
         var cancel = new Button { Content = "取消", MinWidth = 80, Padding = new Thickness(12, 6, 12, 6) };
         AutomationProperties.SetAutomationId(cancel, "cancel-button");
         cancel.Click += (_, _) => Close();
         foreach (Button button in new[] { _previewButton, _startButton, cancel })
-        { button.Margin = new Thickness(8, 0, 0, 0); button.Padding = new Thickness(12, 6, 12, 6); footer.Children.Add(button); }
-        DockPanel.SetDock(footer, Dock.Bottom);
+        { ApplyInputTheme(button); button.Margin = new Thickness(8, 0, 0, 0); button.Padding = new Thickness(12, 6, 12, 6); footer.Children.Add(button); }
+        Grid.SetRow(footer, 1);
         root.Children.Add(footer);
-        var content = new StackPanel();
-        root.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         content.Children.Add(new TextBlock { Text = Title, FontSize = 24, FontWeight = FontWeights.SemiBold });
         content.Children.Add(new TextBlock { Text = "仅导入当前授权范围内的数据；分页读取不保证时点一致。凭据只保留在本次 Host 会话。",
             TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 16) });
@@ -123,6 +144,7 @@ internal sealed class SourceImportWindow : Window
         var connectButton = new Button { Content = "连接并读取表目录", HorizontalAlignment = HorizontalAlignment.Left,
             Padding = new Thickness(12, 6, 12, 6) };
         AutomationProperties.SetAutomationId(connectButton, "connect-button");
+        ApplyInputTheme(connectButton);
         connectButton.Click += async (_, _) => await ConnectAsync();
         var connectRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 12) };
         connectRow.Children.Add(connectButton);
@@ -133,6 +155,7 @@ internal sealed class SourceImportWindow : Window
             var localFileButton = new Button { Content = "从 .base 文件导入",
                 Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(8, 0, 0, 0) };
             AutomationProperties.SetAutomationId(localFileButton, "source-file-button");
+            ApplyInputTheme(localFileButton);
             localFileButton.Click += async (_, _) => await OpenLocalFileAsync();
             connectRow.Children.Add(localFileButton);
         }
@@ -152,6 +175,15 @@ internal sealed class SourceImportWindow : Window
         content.Children.Add(_reverse);
         content.Children.Add(_report);
         Content = root;
+        foreach (Type type in new[] { typeof(CheckBox), typeof(Expander) })
+        {
+            var style = new Style(type);
+            style.Setters.Add(new Setter(ForegroundProperty,
+                new DynamicResourceExtension(HostThemeResources.WindowTextBrushKey)));
+            Resources[type] = style;
+        }
+        HostThemeResources.Apply(Resources, _appearance.Projection);
+        _appearance.ProjectionChanged += OnAppearanceProjectionChanged;
         _previewButton.Click += async (_, _) => await PreviewAsync();
         _startButton.Click += (_, _) => Start();
         _source.TextChanged += (_, _) => ConnectionChanged();
@@ -160,16 +192,81 @@ internal sealed class SourceImportWindow : Window
         _secret.PasswordChanged += (_, _) => ConnectionChanged();
         Closing += OnClosing;
         Closed += (_, _) => DisposeResources();
+        Loaded += OnLoaded;
+        PreviewKeyDown += OnPreviewKeyDown;
         _retirement = cancellation.Register(() => Dispatcher.BeginInvoke(new Action(() =>
         { if (!_closed) Close(); })));
+    }
+
+    private void OnAppearanceProjectionChanged(HostThemeProjection projection) =>
+        HostThemeResources.Apply(Resources, projection);
+
+    private void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        // Windows convention for an owned modal wizard: keyboard focus starts
+        // on the first credential input, not on the dialog chrome.
+        if (!_closing && !_closed)
+        {
+            _source.Focus();
+        }
+    }
+
+    private void OnPreviewKeyDown(object sender, KeyEventArgs args)
+    {
+        if (args.Key != Key.Escape)
+        {
+            return;
+        }
+        // ESC cancels exactly like the title-bar close and Cancel button:
+        // the linked token drains in-flight calls before the window unloads.
+        args.Handled = true;
+        Close();
     }
 
     private static void AddInput(Panel panel, string label, Control input, string automationId)
     {
         AutomationProperties.SetAutomationId(input, automationId);
+        AutomationProperties.SetName(input, label);
         panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 8, 0, 4) });
         input.Padding = new Thickness(8, 6, 8, 6);
+        ApplyInputTheme(input);
         panel.Children.Add(input);
+    }
+
+    /// <summary>Text-entry surfaces follow the effective theme through
+    /// dynamic resources; caret uses the window text color so dark surfaces
+    /// keep a visible caret.</summary>
+    private static void ApplyInputTheme(Control input)
+    {
+        if (input is Button)
+        {
+            var style = new Style(typeof(Button));
+            style.Setters.Add(new Setter(BackgroundProperty,
+                new DynamicResourceExtension(HostThemeResources.SurfaceBackgroundBrushKey)));
+            style.Setters.Add(new Setter(ForegroundProperty,
+                new DynamicResourceExtension(HostThemeResources.SurfaceTextBrushKey)));
+            style.Setters.Add(new Setter(BorderBrushProperty,
+                new DynamicResourceExtension(HostThemeResources.SurfaceBorderBrushKey)));
+            var disabled = new Trigger { Property = IsEnabledProperty, Value = false };
+            disabled.Setters.Add(new Setter(ForegroundProperty,
+                new DynamicResourceExtension(System.Windows.SystemColors.GrayTextBrushKey)));
+            style.Triggers.Add(disabled);
+            input.Style = style;
+            return;
+        }
+        input.SetResourceReference(BackgroundProperty, HostThemeResources.SurfaceBackgroundBrushKey);
+        input.SetResourceReference(ForegroundProperty, HostThemeResources.SurfaceTextBrushKey);
+        input.SetResourceReference(BorderBrushProperty, HostThemeResources.SurfaceBorderBrushKey);
+        if (input is TextBox textBox)
+        {
+            textBox.SetResourceReference(TextBox.CaretBrushProperty, HostThemeResources.WindowTextBrushKey);
+        }
+        else if (input is PasswordBox passwordBox)
+        {
+            passwordBox.SetResourceReference(
+                PasswordBox.CaretBrushProperty,
+                HostThemeResources.WindowTextBrushKey);
+        }
     }
 
     private async Task ConnectAsync()
@@ -265,6 +362,7 @@ internal sealed class SourceImportWindow : Window
         AutomationProperties.SetAutomationId(selected, $"table-select-{table.Id}");
         var target = new TextBox { Text = table.Name, Padding = new Thickness(6), Margin = new Thickness(0, 6, 0, 6) };
         AutomationProperties.SetAutomationId(target, $"table-target-{table.Id}");
+        ApplyInputTheme(target);
         var panel = new StackPanel { Margin = new Thickness(0, 14, 0, 0) };
         panel.Children.Add(selected);
         panel.Children.Add(new TextBlock { Text = "新建目标表名称", Margin = new Thickness(0, 6, 0, 0) });
@@ -299,6 +397,7 @@ internal sealed class SourceImportWindow : Window
                 reverseName = new TextBox { Padding = new Thickness(6), Margin = new Thickness(0, 2, 24, 6),
                     MaxWidth = 360, HorizontalAlignment = HorizontalAlignment.Left };
                 AutomationProperties.SetAutomationId(reverseName, $"field-reverse-name-{table.Id}-{field.Id}");
+                ApplyInputTheme(reverseName);
                 fields.Children.Add(new TextBlock
                 {
                     Text = "新建反向字段名称（仅原生迁移时创建并命名；快照/跳过不创建反向字段，也不改名目标列）",
@@ -523,6 +622,12 @@ internal sealed class SourceImportWindow : Window
         _session.Dispose();
         _connection?.Dispose();
         _lifetime.Dispose();
+        _appearance.ProjectionChanged -= OnAppearanceProjectionChanged;
+        HostThemeResources.Remove(Resources);
+        if (_ownsAppearance)
+        {
+            _appearance.Dispose();
+        }
     }
 
     private sealed record FieldChoice(NativeSourceField Field, ComboBox Policy, ComboBox SnapshotKind,

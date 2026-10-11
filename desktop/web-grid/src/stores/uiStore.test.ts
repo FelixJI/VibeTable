@@ -8,13 +8,19 @@ describe("uiStore", () => {
     setActivePinia(createPinia());
   });
 
-  it("starts with all panels closed and theme=system", () => {
+  it("starts with all panels closed and an unprojected theme default", () => {
     const s = useUiStore();
     expect(s.createModalOpen).toBe(false);
     expect(s.deleteModalOpen).toBe(false);
     expect(s.pastePanelOpen).toBe(false);
     expect(s.shortcutsOpen).toBe(false);
+    // "system" is the display default before any Host snapshot; the Host
+    // owns the durable preference and the system appearance projection.
     expect(s.themeMode).toBe("system");
+    expect(s.systemTheme).toBeNull();
+    expect(s.highContrast).toBe(false);
+    expect(s.hostThemeSynced).toBe(false);
+    expect(localStorage.getItem("vt:theme")).toBeNull();
   });
 
   it("openCreate/closeCreate toggles createModalOpen", () => {
@@ -42,11 +48,33 @@ describe("uiStore", () => {
     expect(s.shortcutsOpen).toBe(false);
   });
 
-  it("setThemeMode persists to localStorage", () => {
+  it("setThemeMode is a local projection and never writes storage", () => {
     const s = useUiStore();
     s.setThemeMode("dark");
     expect(s.themeMode).toBe("dark");
-    expect(localStorage.getItem("vt:theme")).toBe("dark");
+    expect(localStorage.getItem("vt:theme")).toBeNull();
+
+    // A pre-existing legacy value must not be overwritten by local picks.
+    localStorage.setItem("vt:theme", "light");
+    s.setThemeMode("system");
+    expect(s.themeMode).toBe("system");
+    expect(localStorage.getItem("vt:theme")).toBe("light");
+  });
+
+  it("applyThemeProjection maps Host snapshots onto presentation state", () => {
+    const s = useUiStore();
+    // Unconfigured Host preference keeps the "system" display default.
+    s.applyThemeProjection({ preference: null, effective: "dark", highContrast: false });
+    expect(s.themeMode).toBe("system");
+    expect(s.systemTheme).toBe("dark");
+    expect(s.highContrast).toBe(false);
+    expect(s.hostThemeSynced).toBe(true);
+
+    // Explicit values and high contrast arrive the same way.
+    s.applyThemeProjection({ preference: "dark", effective: "light", highContrast: true });
+    expect(s.themeMode).toBe("dark");
+    expect(s.systemTheme).toBe("light");
+    expect(s.highContrast).toBe(true);
   });
 
   it("starts on Home and persists product preferences", () => {

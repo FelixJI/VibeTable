@@ -541,6 +541,7 @@ export const messages: Record<string, string> = {
   "settings.language.hint": "切换后立即作用于桌面网页界面",
   "settings.theme": "主题",
   "settings.theme.hint": "可跟随 Windows 的深浅色设置",
+  "settings.theme.failed": "主题设置保存失败",
   "settings.startup": "启动页面",
   "settings.startup.hint": "下次启动 VibeTable 时首先显示",
   "settings.minimizeToTrayOnClose": "关闭时最小化到托盘",
