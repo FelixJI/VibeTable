@@ -787,7 +787,7 @@ export const messages: Record<string, string> = {
   "workspace.clipboard.copy.unavailable": "The system clipboard is unavailable; the copy did not complete.",
   "workspace.clipboard.copy.busy": "The system clipboard is held by another program. Retry the copy shortly.",
   "workspace.clipboard.copy.failed": "The copy failed. Try again.",
-  "workspace.clipboard.copy.timeout": "The copy timed out. Try again.",
+  "workspace.clipboard.copy.timeout": "Copy timed out and its result is unconfirmed. Check the clipboard before trying again.",
   "workspace.clipboard.copy.tooLarge": "The copy exceeds the message budget. Use file export instead.",
   "workspace.clipboard.paste.unavailable": "The system clipboard is unavailable; the paste did not complete.",
   "workspace.clipboard.paste.busy": "The system clipboard is held by another program. Retry the paste shortly.",

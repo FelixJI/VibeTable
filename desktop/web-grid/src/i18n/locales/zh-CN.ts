@@ -787,7 +787,7 @@ export const messages: Record<string, string> = {
   "workspace.clipboard.copy.unavailable": "系统剪贴板当前不可用，复制未完成",
   "workspace.clipboard.copy.busy": "系统剪贴板正被其他程序占用，请稍后重试复制",
   "workspace.clipboard.copy.failed": "复制失败，请重试",
-  "workspace.clipboard.copy.timeout": "复制超时，请重试",
+  "workspace.clipboard.copy.timeout": "复制超时，写入结果尚未确认，请先检查剪贴板",
   "workspace.clipboard.copy.tooLarge": "复制内容超过消息预算，请改用文件导出",
   "workspace.clipboard.paste.unavailable": "系统剪贴板当前不可用，粘贴未完成",
   "workspace.clipboard.paste.busy": "系统剪贴板正被其他程序占用，请稍后重试粘贴",
