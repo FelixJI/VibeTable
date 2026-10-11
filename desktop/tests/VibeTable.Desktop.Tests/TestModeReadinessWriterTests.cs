@@ -78,6 +78,30 @@ public sealed class TestModeReadinessWriterTests
     }
 
     [TestMethod]
+    public void PreviewHostLogDirectoryUsesOnlyItsIsolatedControlsInTestMode()
+    {
+        string controls = @"C:\VibeTable\build\qa\scenario-42\controls";
+        var options = new HostStartupOptions
+        {
+            TestMode = true,
+            ReadinessDir = @"C:\VibeTable\build\qa\scenario-42\host",
+            E2eControlsDir = controls,
+        };
+        Assert.AreEqual(
+            Path.Combine(controls, "preview-host", "desktop-logs"),
+            App.DesktopLogDirectory(options, previewHost: true));
+        Assert.AreNotEqual(
+            App.DesktopLogDirectory(options),
+            App.DesktopLogDirectory(options, previewHost: true));
+        Assert.Throws<ArgumentException>(() => App.DesktopLogDirectory(
+            new HostStartupOptions { TestMode = true }, previewHost: true));
+        Assert.AreEqual(
+            App.DesktopLogDirectory(new HostStartupOptions()),
+            App.DesktopLogDirectory(new HostStartupOptions { E2eControlsDir = controls },
+                previewHost: true));
+    }
+
+    [TestMethod]
     public void DesktopLogDirectoryRedirectsToReadinessDirOnlyForTestModeLaunch()
     {
         string readiness = Path.Combine(
