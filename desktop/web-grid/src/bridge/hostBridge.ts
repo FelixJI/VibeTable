@@ -55,10 +55,13 @@ import type {
   AppPreferencesHostPayloadMap,
   AppPreferencesWebMessageType,
   AppPreferencesWebPayloadMap,
+  AppearanceHostMessageType,
+  AppearanceHostPayloadMap,
 } from "@/contracts/appPreferencesContracts";
 import {
   APP_PREFERENCES_HOST_MESSAGE_TYPES,
   APP_PREFERENCES_WEB_MESSAGE_TYPES,
+  APPEARANCE_HOST_MESSAGE_TYPES,
 } from "@/contracts/appPreferencesContracts";
 import type {
   ReleaseUpdateHostMessageType,
@@ -101,6 +104,7 @@ type HostMessageType =
   | SharedHostMessageType
   | RuntimeDiagnosticsHostMessageType
   | AppPreferencesHostMessageType
+  | AppearanceHostMessageType
   | ReleaseUpdateHostMessageType
   | SurfaceHostMessageType
   | WorkspaceV2HostMessageType;
@@ -108,6 +112,7 @@ type HostPayloadMap =
   & SharedHostPayloadMap
   & RuntimeDiagnosticsHostPayloadMap
   & AppPreferencesHostPayloadMap
+  & AppearanceHostPayloadMap
   & ReleaseUpdateHostPayloadMap
   & SurfaceHostPayloadMap
   & WorkspaceV2HostPayloadMap;
@@ -316,6 +321,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "gridState.save",
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
+  ...APPEARANCE_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
   ...SURFACE_HOST_MESSAGE_TYPES,
@@ -718,6 +724,10 @@ export interface HostBridge {
   on<K extends RuntimeDiagnosticsHostMessageType>(
     type: K,
     handler: (payload: RuntimeDiagnosticsHostPayloadMap[K]) => void,
+  ): () => void;
+  on<K extends AppPreferencesHostMessageType | AppearanceHostMessageType>(
+    type: K,
+    handler: (payload: (AppPreferencesHostPayloadMap & AppearanceHostPayloadMap)[K]) => void,
   ): () => void;
   on<K extends WorkspaceV2HostMessageType>(
     type: K,
