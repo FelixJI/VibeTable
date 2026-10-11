@@ -12446,9 +12446,9 @@ async function scenario46(page, recorder, _network, runtime) {
     () => window.__vibetableE2EBridgeDiagnostics?.failures.length ?? 0,
   );
   await panel.getByRole("button", { name: /^(导出 CSV|Export CSV)$/u }).click();
-  await page.waitForFunction(({ start }) =>
+  const cancelFailure = await page.waitForFunction(({ start }) =>
     window.__vibetableE2EBridgeDiagnostics?.failures.slice(start)
-      .some((failure) => failure.requestType === "dashboard.exportTargetRequested"
+      .find((failure) => failure.requestType === "dashboard.exportTargetRequested"
         && failure.code === "CANCELLED"),
   { start: cancelFailureStart }, { timeout: 30_000 });
   await fs.rm(path.join(runtime.controlsDir, "dashboard-export-cancel.txt"), { force: true });
@@ -12457,6 +12457,8 @@ async function scenario46(page, recorder, _network, runtime) {
   recorder.check("cancelling the native save dialog reports CANCELLED without writing a file",
     !cancelledFileExists,
   { cancelTarget });
+  await acknowledgeExpectedBridgeFailure(page, await cancelFailure.jsonValue());
+  await cancelFailure.dispose();
   await page.screenshot({
     path: path.join(runtime.evidenceDir, "46-dashboard-export-cancelled.png"),
     fullPage: true,
