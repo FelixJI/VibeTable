@@ -535,3 +535,51 @@ async def test_control_lane_overload_is_bounded():
     )
     with pytest.raises(asyncio.QueueFull):
         await asyncio.wait_for(server.serve(), 1)
+
+
+@pytest.mark.asyncio
+async def test_control_overload_with_blocked_handler_raises_and_cancels_handler() -> None:
+    """Control overload cancels a blocked consumer without waiting for EOF."""
+    dispatcher = RpcDispatcher()
+    reader = asyncio.StreamReader()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def controlling(_params: HandshakeParams) -> dict:
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return {}
+
+    dispatcher.register("task.cancelExecution", controlling, HandshakeParams)
+    server = RpcServer(reader, BufferWriter(), dispatcher)
+    serving = asyncio.create_task(server.serve())
+
+    def control_frame(request_id: str) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "task.cancelExecution",
+                    "params": {"clientVersion": "1", "protocolVersion": "1.0"},
+                }
+            ).encode()
+            + b"\n"
+        )
+
+    # Park the controller inside the first blocked handler.
+    reader.feed_data(control_frame("c0"))
+    await asyncio.wait_for(entered.wait(), 1)
+    # 16 more fill the bounded control lane; the 17th raises QueueFull from
+    # read_requests, which must surface from serve() promptly.
+    reader.feed_data(b"".join(control_frame(f"c{i}") for i in range(1, 18)))
+
+    with pytest.raises(asyncio.QueueFull):
+        await asyncio.wait_for(serving, 5)
+    # serve()'s cancellation cleanup actually reached the blocked handler.
+    assert cancelled.is_set()
