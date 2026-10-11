@@ -67,6 +67,12 @@ describe("parseClipboard", () => {
     expect(parsed.cells[0].map((c) => c.rawValue)).toEqual(["a", "", "b"]);
   });
 
+  it("preserves a single quoted empty cell", () => {
+    const parsed = parseClipboard('""');
+    expect(parsed.cellCount).toBe(1);
+    expect(parsed.cells[0][0].rawValue).toBe("");
+  });
+
   it("preserves a trailing empty column from a trailing tab", () => {
     const parsed = parseClipboard("a\tb\t");
     expect(parsed.columnCount).toBe(3);
@@ -160,6 +166,12 @@ describe("encodeClipboardTsv", () => {
   it("quotes cells containing quotes, tabs, CR or LF and doubles quotes", () => {
     expect(encodeClipboardTsv([['含"引号"', "制\t表", "多\n行", "回\r车", "0", "false"]]))
       .toBe('"含""引号"""\t"制\t表"\t"多\n行"\t"回\r车"\t0\tfalse');
+  });
+
+  it("preserves a single quoted empty cell", () => {
+    const parsed = parseClipboard('""');
+    expect(parsed.cellCount).toBe(1);
+    expect(parsed.cells[0][0].rawValue).toBe("");
   });
 
   it("preserves a trailing empty column as a trailing tab", () => {

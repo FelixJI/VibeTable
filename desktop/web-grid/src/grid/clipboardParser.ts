@@ -271,7 +271,7 @@ function parseRows(raw: string): string[][] {
 
   // End of input: keep the pending row only when it carries any cell content;
   // a row left pending right after a terminator (e.g. "a\tb\n") is dropped.
-  if (current !== "" || cells.length > 0) {
+  if (state !== FieldState.Start || cells.length > 0) {
     endRow();
   }
   return rows;

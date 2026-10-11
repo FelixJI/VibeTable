@@ -1950,7 +1950,7 @@ async function scenario02(page, recorder, _network, runtime) {
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
-    applyV2FieldChange, chooseToolbarMore, parseCsv,
+    applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
   });
   // 复用 AutoNumber 已执行的真实工作区重开，保留相同字段/记录身份和格式。
   await selectTable(page, "E2E Number Display UI");
