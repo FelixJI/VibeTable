@@ -168,7 +168,8 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
       .filter({ hasText: "\u516c\u5f0f\u6709\u6548" }).waitFor({ timeout: 30_000 });
   };
   const firstRow = oracle()[0];
-  const createFormulaField = async ({ displayName, configureDraft, previewText, screenshot }) => {
+  const ledgerQuery = { filters: [], sorts: [], offset: 0, limit: 100 };
+  const createFormulaField = async ({ displayName, configureDraft, previewText, screenshot, oracleValue }) => {
     await openNewComputedFieldDrawer(displayName, "\u516c\u5f0f");
     await page.getByTestId("formula-editor-entry").click();
     await configureDraft();
@@ -195,7 +196,13 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     }
     await page.getByTestId("formula-editor-commit").click();
     const applied = await planAndApplyThroughUi();
-    return describeField(ledger.tableId, applied.payload.fieldId);
+    const definition = await describeField(ledger.tableId, applied.payload.fieldId);
+    // Wait for persisted backfill before the next drawer captures its planning revision.
+    await waitForQueryPage(page, { tableId: ledger.tableId, query: ledgerQuery }, (payload) =>
+      payload?.snapshot?.schemaRevision === applied.payload?.schemaRevision
+      && oracle().every((row) => payload?.rows?.find((item) => item.id === row.id)
+        ?.[definition.identity.physicalName] === oracleValue(row)));
+    return definition;
   };
 
   // 公式 1：同合同且已发货 SUMIF —— TABLE/CurrentValue 全部经来源表/来源字段
@@ -203,6 +210,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
   const sumifDef = await createFormulaField({
     displayName: "\u5df2\u53d1\u8d27\u91d1\u989d",
     previewText: String(firstRow.sumifShipped),
+    oracleValue: (row) => row.sumifShipped,
     screenshot: "37-collection-editor-pickers.png",
     configureDraft: async () => {
       await page.getByTestId("formula-source-table").waitFor({ state: "visible", timeout: 30_000 });
@@ -228,17 +236,20 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     {
       displayName: "\u5df2\u53d1\u8d27\u5355\u6570",
       previewText: String(firstRow.countifShipped),
+      oracleValue: (row) => row.countifShipped,
       source: `COUNTIF(TABLE({${SHIP_TABLE}}), CurrentValue.{\u5408\u540c} == {\u5408\u540c} && CurrentValue.{\u72b6\u6001} == "${SHIPPED}")`,
     },
     {
       displayName: "\u53bb\u91cd\u7f16\u7801",
       previewText: firstRow.uniqueCodes,
+      oracleValue: (row) => row.uniqueCodes,
       screenshot: "37-collection-editor-arrayjoin.png",
       source: `ARRAYJOIN(UNIQUE(PROJECT(FILTER(TABLE({${SHIP_TABLE}}), CurrentValue.{\u5408\u540c} == {\u5408\u540c}), CurrentValue.{\u7f16\u7801})), ", ")`,
     },
     {
       displayName: "\u533a\u95f4\u91d1\u989d",
       previewText: String(firstRow.windowSum),
+      oracleValue: (row) => row.windowSum,
       source: `SUMIF(TABLE({${SHIP_TABLE}}), CurrentValue.{\u5408\u540c} == {\u5408\u540c} && CurrentValue.{\u65e5\u671f} >= {\u5f00\u59cb\u65e5\u671f} && CurrentValue.{\u65e5\u671f} <= {\u7ed3\u675f\u65e5\u671f}, CurrentValue.{\u91d1\u989d})`,
     },
   ];
@@ -247,6 +258,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     typedDefs.push(await createFormulaField({
       displayName: item.displayName,
       previewText: item.previewText,
+      oracleValue: item.oracleValue,
       screenshot: item.screenshot,
       configureDraft: async () => {
         await fillNInput(page, "formula-source", item.source);
@@ -320,7 +332,6 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     window: windowDef.identity.physicalName,
     lookup: lookupDef.identity.physicalName,
   };
-  const ledgerQuery = { filters: [], sorts: [], offset: 0, limit: 100 };
   const computedExpectations = () => oracle().flatMap((row) => [
     { id: row.id, field: computedPhysical.sumif, value: row.sumifShipped },
     { id: row.id, field: computedPhysical.countif, value: row.countifShipped },
