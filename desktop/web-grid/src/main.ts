@@ -19,7 +19,7 @@
  * returns the singleton. We invoke it after mount so subscriptions from step 4
  * are in place before the host can react to `app.ready`.
  */
-import { createApp, watch } from "vue";
+import { createApp } from "vue";
 import { createPinia } from "pinia";
 import "./design-tokens/tokens.css";
 import "./components/calendar/work-calendar.css";
@@ -29,7 +29,6 @@ import { createWorkspaceV2HostAdapter } from "@/services/workspaceV2HostAdapter"
 import { setWorkspaceV2UiPort } from "@/services/workspaceV2UiPort";
 import { installWorkspaceWireE2EPort } from "@/services/workspaceWireE2EPort";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
-import { useStartupStore } from "@/stores/startupStore";
 import { useThemeProjectionService } from "@/services/themeProjectionService";
 import App from "./App.vue";
 
@@ -57,8 +56,8 @@ app.mount("#app");
 
 // Theme projection: subscribe before the app.ready handshake so the Host's
 // initial appearance snapshot (posted right after app.ready) is never
-// missed. Requests wait until the startup handshake is ready — the Host
-// rejects business requests that arrive before app.ready.
+// missed. The first Host snapshot starts preference migration after the
+// handshake, even when no workspace runtime is open.
 const themeProjection = useThemeProjectionService();
 themeProjection.attach();
 
@@ -67,20 +66,10 @@ themeProjection.attach();
 bridge.start();
 bridge.notify("app.ready", { phase: "shell" });
 
-const startupForTheme = useStartupStore();
-const stopThemeReadyWatch = watch(
-  () => startupForTheme.phase === "ready",
-  (ready) => {
-    if (ready) void themeProjection.initialize();
-  },
-  { immediate: true },
-);
-
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    // Recycle the theme subscription + watcher so an HMR remount cannot
+    // Recycle the theme subscription so an HMR remount cannot
     // stack duplicate handlers on the same bridge.
-    stopThemeReadyWatch();
     themeProjection.dispose();
     disposeE2EWirePort();
     workspaceV2Adapter.dispose();

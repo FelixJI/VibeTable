@@ -105,7 +105,11 @@ export function createThemeProjectionService(
 
   function attach(): void {
     if (unsubscribe) return;
-    unsubscribe = deps.onAppearanceSnapshot(applySnapshot);
+    unsubscribe = deps.onAppearanceSnapshot((snapshot) => {
+      applySnapshot(snapshot);
+      // Host sends this after app.ready, including workspace-center startup.
+      void initialize();
+    });
   }
 
   async function initialize(): Promise<void> {

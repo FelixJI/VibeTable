@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import {
   createThemeProjectionService,
@@ -109,6 +109,19 @@ describe("themeProjectionService", () => {
     expect(fake.subscriberCount()).toBe(0);
     fake.push(snapshot({ preference: "dark", effective: "dark" }));
     expect(ui.themeMode).toBe("system"); // No stale handler ran.
+  });
+
+  it("adopts legacy theme after the shell snapshot without a workspace runtime", async () => {
+    localStorage.setItem("vt:theme", "dark");
+    const fake = fakeDeps({ updateResult: preferences({ theme: "dark", effectiveTheme: "dark" }) });
+    const service = createThemeProjectionService(fake.deps);
+    service.attach();
+    expect(fake.events).toEqual(["subscribe"]);
+    fake.push(snapshot());
+    await vi.waitFor(() => expect(localStorage.getItem("vt:theme")).toBeNull());
+    expect(fake.updates).toEqual([{ adoptLegacyTheme: "dark" }]);
+    expect(useUiStore().themeMode).toBe("dark");
+    service.dispose();
   });
 
   it("adopts a valid legacy value only when the Host is unconfigured", async () => {
