@@ -571,7 +571,7 @@ const isForegroundOverlayOpen = (): boolean =>
   || pluginContextMenu.value.show;
 
 const canExecuteGridCommand = (): boolean =>
-  ui.activeView === "tables"
+  ui.activeView === "tables" && activeViewKind.value === "table"
   // Without workspace-session v2 there is no session state to gate on; the
   // view check above is the legacy context.
   && (!workspaceSession.enabled
@@ -1319,6 +1319,11 @@ watch(
   { flush: "sync" },
 );
 
+function guardClipboardPointer(event: PointerEvent): void {
+  // Preserve editor focus and text selection until the click guard runs.
+  if (isGridTextInteractionActive()) event.preventDefault();
+}
+
 /** Explicit menu actions share the keyboard context; only focus is exempt. */
 function dispatchMenuClipboard(intent: "menu.copy" | "menu.paste"): void {
   if (!canExecuteGridCommand() || isGridTextInteractionActive()) return;
@@ -1366,12 +1371,13 @@ useKeyboard({
           <i></i>
           <strong>{{ pageTitle }}</strong>
         </div>
-        <div v-if="ui.activeView === 'tables'" class="grid-clipboard-actions">
+        <div v-if="ui.activeView === 'tables' && activeViewKind === 'table'" class="grid-clipboard-actions">
           <NButton
             size="tiny"
             secondary
             data-testid="grid-menu-copy"
             :title="t('workspace.clipboard.menu.copy')"
+            @pointerdown="guardClipboardPointer"
             @click="dispatchMenuClipboard('menu.copy')"
           >{{ t("workspace.clipboard.menu.copy") }}</NButton>
           <NButton
@@ -1379,6 +1385,7 @@ useKeyboard({
             secondary
             data-testid="grid-menu-paste"
             :title="t('workspace.clipboard.menu.paste')"
+            @pointerdown="guardClipboardPointer"
             @click="dispatchMenuClipboard('menu.paste')"
           >{{ t("workspace.clipboard.menu.paste") }}</NButton>
         </div>

@@ -101,7 +101,9 @@ export function parseClipboard(raw: string): ParsedClipboard {
  * round-trips.
  */
 export function encodeClipboardTsv(rows: readonly (readonly string[])[]): string {
-  return rows.map(row => row.map(encodeCell).join("\t")).join("\n");
+  return rows.map(row => row.length === 1 && row[0] === ""
+    ? '""'
+    : row.map(encodeCell).join("\t")).join("\n");
 }
 
 /**

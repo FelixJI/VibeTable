@@ -132,10 +132,17 @@ public sealed class ClipboardRequestControllerTests
         await gate.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Task closing = fixture.Manager.CloseAsync("clipboard read in flight");
-        release.TrySetResult();
-        await Task.WhenAll(
-            dispatch.WaitAsync(TimeSpan.FromSeconds(5)),
-            closing.WaitAsync(TimeSpan.FromSeconds(10)));
+        try
+        {
+            await Task.WhenAll(
+                dispatch.WaitAsync(TimeSpan.FromSeconds(5)),
+                closing.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.IsFalse(api.Finished.Task.IsCompleted, "Session draining must not wait for a blocked native call.");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
         Assert.AreEqual(0, fixture.TotalReplyCount, "A stale session must not emit any reply.");
     }
 
@@ -219,6 +226,7 @@ public sealed class ClipboardRequestControllerTests
         Assert.AreEqual(TextClipboardOutcome.Unavailable, result.Outcome);
         Assert.IsNull(api.WriteThreadId, "A cancelled queued write must never reach the clipboard.");
         Assert.IsNull(api.LastWrittenText);
+        Assert.IsFalse(result.WriteMayHaveCompleted);
     }
 
     [TestMethod]
@@ -228,11 +236,14 @@ public sealed class ClipboardRequestControllerTests
         using var cts = new CancellationTokenSource();
         var clipboard = new WindowsTextClipboard(sta.Dispatcher, new FakeApi("real-result"));
         TextClipboardResult read = await clipboard.ReadTextAsync(cts.Token);
+        TextClipboardResult write = await clipboard.WriteTextAsync("committed", cts.Token);
 
         cts.Cancel();
 
         Assert.AreEqual(TextClipboardOutcome.Succeeded, read.Outcome);
         Assert.AreEqual("real-result", read.Text);
+        Assert.AreEqual(TextClipboardOutcome.Succeeded, write.Outcome);
+        Assert.IsFalse(write.WriteMayHaveCompleted);
     }
 
     [TestMethod]
@@ -265,20 +276,106 @@ public sealed class ClipboardRequestControllerTests
     }
 
     [TestMethod]
-    public async Task CompletedReadAfterTheDeadlineKeepsItsRealResult()
+    public async Task StartedReadTimesOutWhileUiContinuesAndLateResultStaysSilent()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var api = new GatedApi(started, release, "real-late-text");
-        using var fixture = await Fixture.OpenWithApiAsync(api, TimeSpan.FromMilliseconds(250));
+        using var fixture = await Fixture.OpenWithApiAsync(api, TimeSpan.FromMilliseconds(500));
+        using var ui = new StaDispatcherHost();
+        try
+        {
+            Task<JsonElement> request = await ui.Dispatcher.InvokeAsync(() => fixture.RequestAsync(
+                "clipboard.readText", "{}", expectedError: "CLIPBOARD_TIMEOUT"));
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await ui.Dispatcher.InvokeAsync(() => { }).Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await request.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.IsFalse(api.Finished.Task.IsCompleted, "The host deadline must not wait for OLE to return.");
+            Assert.AreEqual(1, fixture.TotalReplyCount);
 
-        Task<JsonElement> request = Task.Run(() => fixture.RequestAsync(
-            "clipboard.readText", "{}"));
-        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await Task.Delay(400); // deadline elapses while the delegate is already running
-        release.TrySetResult();
-        JsonElement reply = await request;
-        Assert.AreEqual("real-late-text", reply.GetProperty("text").GetString());
+            for (int i = 0; i < 10; i++)
+                await fixture.RequestAsync("clipboard.readText", "{}", expectedError: "CLIPBOARD_BUSY");
+            Assert.AreEqual(1, api.CallCount, "Retries must neither queue native calls nor start replacement threads.");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await api.Finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StaDispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.AreEqual(11, fixture.TotalReplyCount, "A late result must not emit a second reply.");
+        Assert.AreEqual(0, fixture.SuccessCount);
+    }
+
+    [TestMethod]
+    public async Task StartedWriteTimesOutWithUnknownCommitAndLateWriteDoesNotReply()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new GatedApi(started, release, "");
+        using var fixture = await Fixture.OpenWithApiAsync(api, TimeSpan.FromMilliseconds(500));
+        try
+        {
+            Task<JsonElement> request = fixture.RequestAsync(
+                "clipboard.writeText", "{\"text\":\"late-write\"}", expectedError: "CLIPBOARD_TIMEOUT");
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await request.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.IsNull(api.LastWrittenText);
+            StringAssert.Contains(fixture.LastFailureMessage!, "写入结果尚未确认");
+            await fixture.RequestAsync("clipboard.writeText", "{\"text\":\"retry\"}", expectedError: "CLIPBOARD_BUSY");
+            Assert.AreEqual(1, api.CallCount);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await api.Finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.StaDispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+        Assert.AreEqual("late-write", api.LastWrittenText, "A started OLE write cannot be claimed to have been cancelled.");
+        Assert.AreEqual(2, fixture.TotalReplyCount);
+        Assert.AreEqual(0, fixture.SuccessCount);
+    }
+
+    [TestMethod]
+    public async Task ProductionStaIsIndependentOfUiAndSharedAcrossClipboardInstances()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new GatedApi(started, release, "native-result");
+        var clipboard = new WindowsTextClipboard(api);
+        var retryApi = new FakeApi("retry-result");
+        var anotherClipboard = new WindowsTextClipboard(retryApi);
+        using var ui = new StaDispatcherHost();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        try
+        {
+            Task<TextClipboardResult> read = await ui.Dispatcher.InvokeAsync(() => clipboard.ReadTextAsync(deadline.Token));
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await ui.Dispatcher.InvokeAsync(() => { }).Task.WaitAsync(TimeSpan.FromSeconds(2));
+            TextClipboardResult result = await read.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.AreEqual(TextClipboardOutcome.Unavailable, result.Outcome);
+            Assert.AreNotEqual(ui.ThreadId, api.ThreadId);
+            Assert.AreEqual(ApartmentState.STA, api.Apartment);
+            Assert.AreEqual(TextClipboardOutcome.Busy,
+                (await anotherClipboard.ReadTextAsync(CancellationToken.None)).Outcome);
+            Assert.IsNull(retryApi.ReadThreadId);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        await api.Finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Busy is valid until the native dispatch fully completes; do not create a replacement STA.
+        TextClipboardResult retried;
+        using var retryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        do
+        {
+            retried = await anotherClipboard.ReadTextAsync(retryDeadline.Token);
+            if (retried.Outcome == TextClipboardOutcome.Busy)
+                await Task.Delay(10, retryDeadline.Token);
+        } while (retried.Outcome == TextClipboardOutcome.Busy);
+        Assert.AreEqual(TextClipboardOutcome.Succeeded, retried.Outcome);
+        Assert.AreEqual(api.ThreadId, retryApi.ReadThreadId, "Recovery must reuse the sole process-wide STA.");
     }
 
     // -------------------------------------------------------------------
@@ -560,14 +657,32 @@ public sealed class ClipboardRequestControllerTests
     private sealed class GatedApi(
         TaskCompletionSource started, TaskCompletionSource release, string text) : IWindowsTextClipboardApi
     {
+        public TaskCompletionSource Finished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int CallCount { get; private set; }
+        public int ThreadId { get; private set; }
+        public ApartmentState Apartment { get; private set; }
+        public string? LastWrittenText { get; private set; }
         public bool ContainsText() => true;
         public string GetText()
         {
-            started.TrySetResult();
-            release.Task.GetAwaiter().GetResult();
+            WaitForRelease();
+            Finished.TrySetResult();
             return text;
         }
-        public void SetText(string text) => release.Task.GetAwaiter().GetResult();
+        public void SetText(string value)
+        {
+            WaitForRelease();
+            LastWrittenText = value;
+            Finished.TrySetResult();
+        }
+        private void WaitForRelease()
+        {
+            CallCount++;
+            ThreadId = Environment.CurrentManagedThreadId;
+            Apartment = Thread.CurrentThread.GetApartmentState();
+            started.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+        }
     }
 
     private sealed class ThrowingApi(Exception exception) : IWindowsTextClipboardApi

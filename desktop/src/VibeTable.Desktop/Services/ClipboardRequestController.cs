@@ -65,7 +65,8 @@ internal sealed class ClipboardRequestController(
                         TextClipboardResult write = await clipboard.WriteTextAsync(text, timeout.Token);
                         if (write.Outcome != TextClipboardOutcome.Succeeded)
                         {
-                            PostOutcomeFailure(request, lease, DeadlineOutcome(lease, timeout, write.Outcome));
+                            PostOutcomeFailure(request, lease,
+                                DeadlineOutcome(lease, timeout, write.Outcome), write.WriteMayHaveCompleted);
                             return;
                         }
                         payload = new { written = true };
@@ -99,12 +100,16 @@ internal sealed class ClipboardRequestController(
                 ? TextClipboardOutcome.TimedOut
                 : outcome;
 
-    private void PostOutcomeFailure(RoutedWebRequest request, WorkspaceRequestEpochLease? lease, TextClipboardOutcome outcome)
+    private void PostOutcomeFailure(
+        RoutedWebRequest request, WorkspaceRequestEpochLease? lease,
+        TextClipboardOutcome outcome, bool writeMayHaveCompleted = false)
     {
         (string message, string code) = outcome switch
         {
             TextClipboardOutcome.Busy => ("系统剪贴板正被其他程序占用，请重试。", "CLIPBOARD_BUSY"),
             TextClipboardOutcome.Unavailable => ("系统剪贴板当前不可用。", "CLIPBOARD_UNAVAILABLE"),
+            TextClipboardOutcome.TimedOut when writeMayHaveCompleted
+                => ("系统剪贴板操作超时，写入结果尚未确认，请先检查剪贴板。", "CLIPBOARD_TIMEOUT"),
             TextClipboardOutcome.TimedOut => ("系统剪贴板操作超时，请重试。", "CLIPBOARD_TIMEOUT"),
             _ => ("剪贴板操作失败，请重试。", "CLIPBOARD_FAILED"),
         };

@@ -159,6 +159,17 @@ describe("classifyClipboard", () => {
 });
 
 describe("encodeClipboardTsv", () => {
+  it.each([
+    [[""]],
+    [[""], [""]],
+    [["kept"], [""]],
+    [["", ""], ["", ""]],
+  ])("round-trips an empty rectangle or trailing empty row: %j", (...rows) => {
+    const encoded = encodeClipboardTsv(rows);
+    expect(encoded).not.toBe("");
+    expect(parseClipboard(encoded).cells.map(row => row.map(cell => cell.rawValue))).toEqual(rows);
+  });
+
   it("emits plain cells verbatim and joins rows without a trailing terminator", () => {
     expect(encodeClipboardTsv([["a", "b"], ["c", "d"]])).toBe("a\tb\nc\td");
   });

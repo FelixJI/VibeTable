@@ -1012,6 +1012,8 @@ describe("WorkspaceView", () => {
         wrapper.find(selectors[entry.view.kind!]).exists(),
         `${entry.view.kind} should render`,
       ).toBe(true);
+      expect(wrapper.find('[data-testid="grid-menu-copy"]').exists()).toBe(entry.view.kind === "table");
+      expect(wrapper.find('[data-testid="grid-menu-paste"]').exists()).toBe(entry.view.kind === "table");
     }
   });
 
@@ -4449,6 +4451,10 @@ describe("WorkspaceView", () => {
       document.body.appendChild(input);
       input.focus();
       const button = document.body.querySelector<HTMLButtonElement>('[data-testid="grid-menu-copy"]')!;
+      const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+      button.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      if (!down.defaultPrevented) button.focus();
       button.click();
       await flushPromises();
 
