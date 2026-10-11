@@ -1,6 +1,61 @@
 {
   "entries": [
     {
+      "subject": "fix(release): 补齐发布证据并前置发版门禁 (#469)",
+      "commit": "3c124f78",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(desktop): 修复公式预览竞态并补齐宿主失败诊断 (#462)",
+      "commit": "b37ded6d",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(relations): 按关系字段配置统一显示与刷新标签 (#457)",
+      "commit": "099590ca",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(plugin): 扩展受控字段描述与游标查询能力 (#456)",
+      "commit": "028cb1e1",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(fields): 完善常用显示与电话进度评分预设 (#459)",
+      "commit": "9a171100",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(formula): 保留集合查询的取消与超时错误 (#460)",
+      "commit": "d301e5c2",
+      "category": "changes"
+    },
+    {
+      "subject": "feat(fields): 增加事务一致的自动编号字段 (#458)",
+      "commit": "616297cc",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(fields): 贯通数值显示与原值编辑契约 (#452)",
+      "commit": "4277d66b",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(plugin): 修复执行取消隔离与概览计数预算 (#454)",
+      "commit": "1dc9c0ac",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(plugin): 对齐插件执行与开发契约 (#451)",
+      "commit": "8416a3d1",
+      "category": "changes"
+    },
+    {
+      "subject": "fix(ci): 修复发布测试对固定当前版本的依赖 (#443)",
+      "commit": "67ac6c75",
+      "category": "changes"
+    },
+    {
       "subject": "feat(import): 接入飞书与 WPS 只读来源和原生迁移向导 (#441)",
       "commit": "a0a18f8b",
       "category": "changes"
