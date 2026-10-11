@@ -47,7 +47,12 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 - 产品 E2E：必须作为发布证据，但依赖真实 Windows/WebView2 桌面会话，不伪装成 Ubuntu 单元门禁。
 - 涉及真实系统剪贴板的产品 E2E 场景只在隔离环境执行：GitHub hosted runner 原生满足；本机复跑必须显式设置
   `VIBETABLE_NATIVE_CLIPBOARD_TESTS=1`（与 .NET 隔离剪贴板测试同一开关），且仅在剪贴板为空的专用隔离桌面上使用。
-  未满足时场景在任何剪贴板 bridge 请求之前 fail closed，不读写本机真实剪贴板。
+  未满足时场景在任何剪贴板探针或 bridge 请求之前 fail closed，不读写本机真实剪贴板。首次原生写入前由锁定
+  Python ctypes 探针验证剪贴板全格式为空（对齐 .NET 隔离测试的 `ClipboardTextRestore.CaptureAsync`
+  契约）；每次写入前后都用 `GetClipboardSequenceNumber` 与精确文本（不做空白归一）确认归属，收尾只清除
+  已确认归属的状态。隔离桌面上探针与 Host 写不是事务：Host 写超时/失败可能已落地或在途，此时不因一时
+  观察到空剪贴板而宣称已结算，保留内容并把 cleanup 记为不确定/失败；外部改动同样保留未知数据并如实
+  失败。探针输出仅含布尔值、格式计数、序列号与错误标签，不携带剪贴板内容。
 
 2026-07-31 的同机全量基线中，优化后的 Go race 覆盖 46 个有测试包、582 个命名
 测试和 3 个无命名测试包，耗时 16.57 分钟；此前逐测试重复编译的远端基线为

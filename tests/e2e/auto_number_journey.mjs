@@ -8,7 +8,8 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, insertRowFromToolbar,
-    applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard } = ports;
+    applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
+    adoptIsolatedNativeClipboardText } = ports;
   const populated = await createSimpleTable(page, "E2E AutoNumber Backfill", "Title");
   await applyProductMutation(page, populated.tableId, Array.from({ length: 3 }, () => ({
     kind: "insert", recordId: null, values: {},
@@ -63,7 +64,7 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   await waitForVisibleRowCount(page, 1);
   const numberCell = page.locator(`.tabulator-cell[tabulator-field="${field.identity.physicalName}"]`).filter({ hasText: "HT-000001" });
   await numberCell.waitFor();
-  await seedIsolatedNativeClipboard(page, "number-copy-sentinel");
+  await seedIsolatedNativeClipboard(page, "number-copy-sentinel", runtime);
   await numberCell.click();
   await page.keyboard.press("Control+c");
   let copied = "";
@@ -74,6 +75,10 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
     if (copied.includes("HT-000001")) break;
     await page.waitForTimeout(100);
   }
+  // Pre-declared exact outputs of the product's Ctrl+C copy (the actual
+  // bytes, at most one trailing line ending); nothing else is adoptable.
+  const expectedCopyTexts = ["HT-000001", "HT-000001\n", "HT-000001\r\n"];
+  await adoptIsolatedNativeClipboardText(page, expectedCopyTexts, runtime);
   recorder.check("copy preserves the original readonly business number and leading zeroes",
     copied.trim() === "HT-000001", { copied });
   const exportTarget = path.join(runtime.controlsDir, "auto-number.csv");

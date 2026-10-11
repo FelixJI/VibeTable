@@ -75,6 +75,11 @@ import {
   collectBrowserSurfaceEvidence,
   sampleConnectedThemeSurfaces,
 } from "./theme_surface_probe.mjs";
+import {
+  applyNativeClipboardCleanupResult,
+  createIsolatedNativeClipboardGuard,
+  createPythonClipboardProbe,
+} from "./isolated_native_clipboard_guard.mjs";
 
 function parseArgs(argv) {
   const values = {};
@@ -1647,7 +1652,7 @@ async function scenario02(page, recorder, _network, runtime) {
   const percentStorageEdit = await beginCellEdit(
     page.locator(`.tabulator-cell[tabulator-field="${uiAmount.physicalName}"]`).first(),
   );
-  await seedIsolatedNativeClipboard(page, "12.5");
+  await seedIsolatedNativeClipboard(page, "12.5", runtime);
   await percentStorageEdit.press("Control+a");
   await percentStorageEdit.press("Control+V");
   await percentStorageEdit.press("Enter");
@@ -1951,6 +1956,7 @@ async function scenario02(page, recorder, _network, runtime) {
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
     applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
+    adoptIsolatedNativeClipboardText,
   });
   // 复用 AutoNumber 已执行的真实工作区重开，保留相同字段/记录身份和格式。
   await selectTable(page, "E2E Number Display UI");
@@ -2079,27 +2085,50 @@ async function verifyQueryViewGroupingUI(page, recorder) {
 }
 
 // Native clipboard writes are only allowed on an isolated test desktop whose
-// clipboard is empty: the ephemeral GitHub-hosted runner, or an explicitly
-// opted-in dedicated machine via VIBETABLE_NATIVE_CLIPBOARD_TESTS=1 (the same
-// switch the isolated C# clipboard tests use). Every other environment fails
-// closed here, before any bridge request, so a default local run never touches
-// the real clipboard.
-async function seedIsolatedNativeClipboard(page, text) {
-  const isolatedGitHubRunner = process.env.GITHUB_ACTIONS === "true"
-    && process.env.RUNNER_ENVIRONMENT === "github-hosted";
-  const isolatedDesktopOptIn = process.env.VIBETABLE_NATIVE_CLIPBOARD_TESTS === "1";
-  if (!isolatedGitHubRunner && !isolatedDesktopOptIn) {
-    throw new Error(
-      "Native clipboard E2E requires an isolated desktop with an empty clipboard: "
-      + "run it on a GitHub-hosted runner, or set VIBETABLE_NATIVE_CLIPBOARD_TESTS=1 "
-      + "on a dedicated isolated test machine. Without that opt-in the real "
-      + "clipboard is never touched.");
+// clipboard is completely empty across every format: the ephemeral
+// GitHub-hosted runner, or an explicitly opted-in dedicated machine via
+// VIBETABLE_NATIVE_CLIPBOARD_TESTS=1 (the same switch the isolated C#
+// clipboard tests use). Every other environment fails closed here, before any
+// probe or bridge request, so a default local run never touches the real
+// clipboard. The guard proves all-format emptiness before the first write,
+// re-verifies this run's confirmed clipboard state before every later write
+// (GetClipboardSequenceNumber), and main()'s finally clears only that
+// confirmed state. A timed-out or failed Host write may have landed or still
+// be in flight (the probe and the Host write are not a transaction), so
+// unconfirmed writes are never settled by observing an empty clipboard:
+// cleanup preserves everything and records an indeterminate failure.
+// Foreign or externally changed content is likewise preserved and fails the
+// run honestly.
+let isolatedNativeClipboardGuard = null;
+
+function ensureIsolatedNativeClipboardGuard(runtime) {
+  if (!isolatedNativeClipboardGuard) {
+    if (!runtime?.pythonExecutable) {
+      throw new Error("The runner's locked Python is required for isolated native clipboard E2E.");
+    }
+    isolatedNativeClipboardGuard = createIsolatedNativeClipboardGuard({
+      env: process.env,
+      runProbe: createPythonClipboardProbe(runtime.pythonExecutable, {
+        probePath: fileURLToPath(new URL("./native_clipboard_probe.py", import.meta.url)),
+      }),
+    });
   }
-  const written = await rawBridgeRequest(page, "clipboard.writeText", { text });
-  const read = await rawBridgeRequest(page, "clipboard.readText", {});
-  if (written.payload?.written !== true || read.payload?.text !== text) {
-    throw new Error("Native Host clipboard round trip failed");
-  }
+  return isolatedNativeClipboardGuard;
+}
+
+async function seedIsolatedNativeClipboard(page, text, runtime) {
+  const guard = ensureIsolatedNativeClipboardGuard(runtime);
+  await guard.seed(page, text, { bridgeRequest: rawBridgeRequest });
+}
+
+async function adoptIsolatedNativeClipboardText(page, expectedTexts, runtime) {
+  const guard = ensureIsolatedNativeClipboardGuard(runtime);
+  await guard.adopt(page, expectedTexts, { bridgeRequest: rawBridgeRequest });
+}
+
+async function releaseIsolatedNativeClipboardGuard() {
+  if (!isolatedNativeClipboardGuard) return { status: "unused" };
+  return isolatedNativeClipboardGuard.release();
 }
 
 async function rawBridgeRequest(
@@ -3061,7 +3090,7 @@ async function scenario04(page, recorder, _network, runtime) {
     });
 
     await seedIsolatedNativeClipboard(page,
-      '{"nested":{"value":8},"items":[4,5],"enabled":false}');
+      '{"nested":{"value":8},"items":[4,5],"enabled":false}', runtime);
     await page.waitForFunction(
       controlOwnJsonReconcileInPage,
       { operation: "selection-ready" },
@@ -12815,6 +12844,20 @@ async function main() {
       stack: error?.stack,
     };
   } finally {
+    // The isolated native clipboard guard must release on both success and
+    // failure paths, before any evidence capture: a non-clean outcome fails
+    // the run honestly (foreign clipboard content is preserved, not cleared).
+    try {
+      applyNativeClipboardCleanupResult(
+        result,
+        await releaseIsolatedNativeClipboardGuard(),
+      );
+    } catch (error) {
+      applyNativeClipboardCleanupResult(result, {
+        status: "error",
+        message: `native clipboard cleanup wiring failed: ${error?.message ?? String(error)}`,
+      });
+    }
     result.finishedAt = new Date().toISOString();
     result.durationMs = Date.parse(result.finishedAt) - Date.parse(result.startedAt);
     if (page && !(args.scenario === "44-file-restore-crash"
