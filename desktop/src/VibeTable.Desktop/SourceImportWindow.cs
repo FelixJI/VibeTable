@@ -55,7 +55,6 @@ internal sealed class SourceImportWindow : Window
     private readonly Button _previewButton = new() { Content = "预检", IsEnabled = false };
     private readonly Button _startButton = new() { Content = "确认并导入", IsEnabled = false };
     private readonly List<TableChoice> _choices = [];
-    private readonly ResourceDictionary _controlTheme = new();
     private readonly HostAppearanceService _appearance;
     private readonly bool _ownsAppearance;
     private NativeSourceConnection? _connection;
@@ -176,14 +175,6 @@ internal sealed class SourceImportWindow : Window
         content.Children.Add(_reverse);
         content.Children.Add(_report);
         Content = root;
-        foreach (Type type in new[] { typeof(CheckBox), typeof(Expander) })
-        {
-            var style = new Style(type);
-            style.Setters.Add(new Setter(ForegroundProperty,
-                new DynamicResourceExtension(HostThemeResources.WindowTextBrushKey)));
-            Resources[type] = style;
-        }
-        Resources.MergedDictionaries.Add(_controlTheme);
         OnAppearanceProjectionChanged(_appearance.Projection);
         _appearance.ProjectionChanged += OnAppearanceProjectionChanged;
         _previewButton.Click += async (_, _) => await PreviewAsync();
@@ -195,16 +186,13 @@ internal sealed class SourceImportWindow : Window
         Closing += OnClosing;
         Closed += (_, _) => DisposeResources();
         Loaded += OnLoaded;
-        PreviewKeyDown += OnPreviewKeyDown;
+        KeyDown += OnKeyDown;
         _retirement = cancellation.Register(() => Dispatcher.BeginInvoke(new Action(() =>
         { if (!_closed) Close(); })));
     }
 
     private void OnAppearanceProjectionChanged(HostThemeProjection projection)
     {
-        string theme = projection.HighContrast ? "HC" : projection.Effective == "dark" ? "Dark" : "Light";
-        _controlTheme.Source = new Uri(
-            $"pack://application:,,,/PresentationFramework.Fluent;component/Themes/Fluent.{theme}.xaml");
         HostThemeResources.Apply(Resources, projection);
     }
 
@@ -218,12 +206,13 @@ internal sealed class SourceImportWindow : Window
         }
     }
 
-    private void OnPreviewKeyDown(object sender, KeyEventArgs args)
+    private void OnKeyDown(object sender, KeyEventArgs args)
     {
         if (args.Key != Key.Escape)
         {
             return;
         }
+        // Bubbling lets an open ComboBox consume ESC before the window cancels.
         // ESC cancels exactly like the title-bar close and Cancel button:
         // the linked token drains in-flight calls before the window unloads.
         args.Handled = true;
@@ -245,22 +234,7 @@ internal sealed class SourceImportWindow : Window
     /// keep a visible caret.</summary>
     private static void ApplyInputTheme(Control input)
     {
-        if (input is Button)
-        {
-            var style = new Style(typeof(Button));
-            style.Setters.Add(new Setter(BackgroundProperty,
-                new DynamicResourceExtension(HostThemeResources.SurfaceBackgroundBrushKey)));
-            style.Setters.Add(new Setter(ForegroundProperty,
-                new DynamicResourceExtension(HostThemeResources.SurfaceTextBrushKey)));
-            style.Setters.Add(new Setter(BorderBrushProperty,
-                new DynamicResourceExtension(HostThemeResources.SurfaceBorderBrushKey)));
-            var disabled = new Trigger { Property = IsEnabledProperty, Value = false };
-            disabled.Setters.Add(new Setter(ForegroundProperty,
-                new DynamicResourceExtension(System.Windows.SystemColors.GrayTextBrushKey)));
-            style.Triggers.Add(disabled);
-            input.Style = style;
-            return;
-        }
+        if (input is Button) return; // Preserve Fluent disabled/hover states and template.
         input.SetResourceReference(BackgroundProperty, HostThemeResources.SurfaceBackgroundBrushKey);
         input.SetResourceReference(ForegroundProperty, HostThemeResources.SurfaceTextBrushKey);
         input.SetResourceReference(BorderBrushProperty, HostThemeResources.SurfaceBorderBrushKey);

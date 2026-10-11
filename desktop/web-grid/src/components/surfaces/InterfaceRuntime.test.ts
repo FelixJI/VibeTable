@@ -11,6 +11,7 @@ import type {
 } from "@/contracts/generated/workbench";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePluginStore } from "@/stores/pluginStore";
+import { useUiStore } from "@/stores/uiStore";
 import InterfaceRuntime from "./InterfaceRuntime.vue";
 
 const plugin: PluginSnapshot = {
@@ -320,6 +321,7 @@ describe("InterfaceRuntime", () => {
     setActivePinia(pinia);
     usePluginStore().setProjectContext("local:default", "interface-session:1");
     const h = host();
+    useUiStore().applyThemeProjection({ preference: "system", effective: "dark", highContrast: false });
     let currentTask = runningPluginTask();
     const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
       if (type === "plugin.action.describe") return { available: true, reasons: [] };
@@ -360,7 +362,7 @@ describe("InterfaceRuntime", () => {
       pluginId: plugin.pluginId,
       actionId: "normalize",
       input: {},
-      context: expect.objectContaining({ collection: "orders", selectedKeys: ["r1"] }),
+      context: expect.objectContaining({ collection: "orders", selectedKeys: ["r1"], theme: "dark" }),
     }));
     wrapper.unmount();
   });

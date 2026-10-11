@@ -10,8 +10,8 @@
         Title="VibeTable"
         Icon="Assets/Brand/VibeTable.ico"
         Height="720" Width="1024"
-        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
-        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"
+        Background="{DynamicResource VtWindowBackgroundBrush}"
+        Foreground="{DynamicResource VtWindowTextBrush}"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />

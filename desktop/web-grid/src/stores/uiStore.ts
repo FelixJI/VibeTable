@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { getLocale, setLocale, type Locale } from "@/i18n";
 
 export type ThemeMode = "light" | "dark" | "system";
@@ -117,6 +117,9 @@ export const useUiStore = defineStore("ui", () => {
   // snapshot arrived. Nothing here reads or writes localStorage "vt:theme".
   const themeMode = ref<ThemeMode>("system");
   const systemTheme = ref<SystemBaseTheme | null>(null);
+  const effectiveTheme = computed<SystemBaseTheme>(() =>
+    themeMode.value === "system" ? systemTheme.value ?? "light" : themeMode.value,
+  );
   const highContrast = ref(false);
   const hostThemeSynced = ref(false);
   const startupPage = ref<StartupPage>(loadStartupPage());
@@ -249,6 +252,7 @@ export const useUiStore = defineStore("ui", () => {
     pastePanelOpen,
     shortcutsOpen,
     themeMode,
+    effectiveTheme,
     systemTheme,
     highContrast,
     hostThemeSynced,

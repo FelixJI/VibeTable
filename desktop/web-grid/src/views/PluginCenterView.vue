@@ -29,7 +29,7 @@ const githubRepository = ref("");
 
 const plugin = computed(() => store.selectedPlugin);
 const theme = computed(() => projectPluginTheme({
-  themeMode: ui.themeMode,
+  effectiveTheme: ui.effectiveTheme,
   locale: ui.locale,
   density: ui.density,
 }));

@@ -827,6 +827,34 @@ public sealed class SourceImportWindowTests
     }
 
     [TestMethod]
+    public async Task EscapeClosesExpandedPolicyBeforeCancellingTheWindow()
+    {
+        var log = new EventLog();
+        var connect = new FakeConnect(log);
+        var session = new FakeWizardSession(log);
+        using var fixture = new NativeWizardStaFixture("feishu", connect, session);
+        await fixture.ShowAsync();
+        await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-escape"));
+        await fixture.DoAsync(w =>
+        {
+            RequireType<Expander>(w).IsExpanded = true;
+            Require<ComboBox>(w, "field-policy-tbl-1-f-amount").IsDropDownOpen = true;
+        });
+        await fixture.SettleAsync();
+        await PressEscapeAsync(fixture, "field-policy-tbl-1-f-amount");
+        Assert.IsFalse(await fixture.ReadAsync(w => Require<ComboBox>(w, "field-policy-tbl-1-f-amount").IsDropDownOpen));
+        Assert.IsFalse(fixture.Closed.Task.IsCompleted);
+        Assert.AreEqual(0, session.Disposals);
+        Assert.AreEqual(0, connect.Releases);
+        Assert.IsTrue(await fixture.ReadAsync(w => Require<CheckBox>(w, "table-select-tbl-1").IsChecked == true));
+
+        await PressEscapeAsync(fixture, "field-policy-tbl-1-f-amount");
+        await fixture.Closed.Task.WaitAsync(NativeWizardStaFixture.WaitBudget);
+        Assert.IsTrue((await fixture.ReadAsync(w => w.Result)).Cancelled);
+        Assert.AreEqual(1, session.Disposals);
+    }
+
+    [TestMethod]
     public async Task EscapeWhileConnectingCancelsTheReadThenCloses()
     {
         var log = new EventLog();
@@ -887,12 +915,7 @@ public sealed class SourceImportWindowTests
 
         Assert.AreEqual("Base / Wiki 链接或 app_token",
             await fixture.ReadAsync(w => AutomationProperties.GetName(Require<TextBox>(w, "source-input"))));
-        Assert.AreEqual(
-            ThemedColor("dark", HostThemeResources.WindowTextBrushKey),
-            await fixture.ReadAsync(w => ((SolidColorBrush)Require<CheckBox>(w, "reverse-checkbox").Foreground).Color));
-        Assert.AreEqual(
-            System.Windows.SystemColors.GrayTextBrush.Color,
-            await fixture.ReadAsync(w => ((SolidColorBrush)Require<Button>(w, "preview-button").Foreground).Color));
+        await fixture.DoAsync(w => AssertFluentControls(w));
         await ConnectAndSelectFirstTableAsync(fixture, connect, new FakeSourceProvider(log, "prov-theme"));
         foreach (string id in new[] { "field-policy-tbl-1-f-amount", "field-snapshot-kind-tbl-1-f-amount" })
         {
@@ -907,6 +930,7 @@ public sealed class SourceImportWindowTests
             Require<ComboBox>(w, "field-policy-tbl-1-f-amount").SelectedIndex = 1;
         });
         await fixture.SettleAsync();
+        await fixture.DoAsync(w => AssertFluentControls(w));
         string? screenshotDirectory = ResolveOptInScreenshotDirectory();
         if (screenshotDirectory is not null)
         {
@@ -926,6 +950,13 @@ public sealed class SourceImportWindowTests
         {
             Assert.AreEqual(ThemedColor("light", HostThemeResources.SurfaceBackgroundBrushKey),
                 await fixture.ReadAsync(w => ((SolidColorBrush)Require<ComboBox>(w, id).Background).Color));
+        }
+
+        await fixture.DoAsync(w => AssertFluentControls(w));
+        if (screenshotDirectory is not null)
+        {
+            Capture light = await fixture.ReadAsync(CaptureWindow);
+            File.WriteAllBytes(Path.Combine(screenshotDirectory, "native-wizard-light.png"), light.Png);
         }
 
         // High contrast swaps in the SystemColors fallback so the system
@@ -1216,18 +1247,35 @@ public sealed class SourceImportWindowTests
         return directory;
     }
 
-    private static Task PressEscapeAsync(NativeWizardStaFixture fixture) =>
+    private static Task PressEscapeAsync(NativeWizardStaFixture fixture, string? targetId = null) =>
         fixture.DoAsync(w =>
         {
             PresentationSource? presentation = PresentationSource.FromVisual(w);
             Assert.IsNotNull(presentation);
-            w.RaiseEvent(new KeyEventArgs(
+            UIElement target = targetId is null ? w : Require<ComboBox>(w, targetId);
+            target.RaiseEvent(new KeyEventArgs(
                 Keyboard.PrimaryDevice,
                 presentation,
                 timestamp: 0,
                 Key.Escape)
-            { RoutedEvent = UIElement.PreviewKeyDownEvent });
+            { RoutedEvent = UIElement.KeyDownEvent });
         });
+
+    private static void AssertFluentControls(SourceImportWindow window)
+    {
+        foreach (string id in new[] { "reverse-checkbox", "preview-button", "start-button", "cancel-button" })
+        {
+            Control control = Require<Control>(window, id);
+            Assert.AreSame(window.FindResource(control.GetType()), control.Style, id);
+            Assert.IsNotNull(control.Template, id);
+        }
+        if (FindByAutomationId<CheckBox>(window, "table-select-tbl-1") is not null)
+        {
+            Expander expander = RequireType<Expander>(window);
+            Assert.AreSame(window.FindResource(typeof(Expander)), expander.Style);
+            Assert.IsNotNull(expander.Template);
+        }
+    }
 
     private static Color ThemedColor(string theme, string key) =>
         ((SolidColorBrush)HostThemeResources.ForTheme(theme)[key]).Color;

@@ -196,14 +196,19 @@ public sealed class HostAppearanceServiceTests
             Brush(dark, HostThemeResources.SurfaceBorderBrushKey));
     }
 
-    [TestMethod]
+    [STATestMethod]
     public void ApplySwapsThemeDictionariesWithoutStackingAndClearsForHighContrast()
     {
-        var target = new ResourceDictionary();
+        // Initialize WPF's pack URI resolver without showing a product window.
+        var window = new Window();
+        var target = window.Resources;
 
         HostThemeResources.Apply(target,
             new HostThemeProjection(null, "dark", HighContrast: false));
         Assert.AreEqual(1, ThemedMergedCount(target));
+        StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
+            dictionary.Contains(HostThemeResources.ThemeMarkerKey)).MergedDictionaries.Single().Source.AbsoluteUri,
+            "Fluent.Dark.xaml");
         Assert.AreEqual(
             (Color)ColorConverter.ConvertFromString("#FF17191F"),
             Brush(target, HostThemeResources.WindowBackgroundBrushKey));
@@ -212,6 +217,9 @@ public sealed class HostAppearanceServiceTests
         HostThemeResources.Apply(target,
             new HostThemeProjection(AppThemeOptions.Light, "light", HighContrast: false));
         Assert.AreEqual(1, ThemedMergedCount(target));
+        StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
+            dictionary.Contains(HostThemeResources.ThemeMarkerKey)).MergedDictionaries.Single().Source.AbsoluteUri,
+            "Fluent.Light.xaml");
         Assert.AreEqual(Colors.White, Brush(target, HostThemeResources.WindowBackgroundBrushKey));
 
         // High contrast swaps in the SystemColors-backed fallback: every
@@ -219,6 +227,9 @@ public sealed class HostAppearanceServiceTests
         HostThemeResources.Apply(target,
             new HostThemeProjection(null, "dark", HighContrast: true));
         Assert.AreEqual(1, ThemedMergedCount(target));
+        StringAssert.EndsWith(target.MergedDictionaries.Single(dictionary =>
+            dictionary.Contains(HostThemeResources.ThemeMarkerKey)).MergedDictionaries.Single().Source.AbsoluteUri,
+            "Fluent.HC.xaml");
         Assert.AreEqual(
             System.Windows.SystemColors.WindowBrush.Color,
             Brush(target, HostThemeResources.WindowBackgroundBrushKey));

@@ -17,13 +17,7 @@ export function useTheme() {
   // Explicit light/dark wins; "system" (and the pre-snapshot display
   // default) follows the Host-projected system theme, defaulting to light
   // until the first snapshot arrives.
-  const isDark = computed(() =>
-    ui.themeMode === "dark"
-      ? true
-      : ui.themeMode === "light"
-        ? false
-        : ui.systemTheme === "dark",
-  );
+  const isDark = computed(() => ui.effectiveTheme === "dark");
 
   watchEffect(() => {
     if (typeof document === "undefined") return;

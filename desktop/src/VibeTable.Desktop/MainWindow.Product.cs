@@ -613,6 +613,7 @@ public partial class MainWindow : Window
     private void ApplyAppearanceResources(HostThemeProjection projection)
     {
         HostThemeResources.Apply(Application.Current.Resources, projection);
+        HostThemeResources.Apply(Resources, projection);
         var background = (System.Windows.Media.SolidColorBrush)
             Application.Current.Resources[HostThemeResources.WindowBackgroundBrushKey];
         var color = background.Color;
@@ -1176,6 +1177,7 @@ public partial class MainWindow : Window
         _webBridge.Realtime.Retire();
         _appearance.ProjectionChanged -= OnAppearanceProjectionChanged;
         HostThemeResources.Remove(Application.Current.Resources);
+        HostThemeResources.Remove(Resources);
         _appearance.Dispose();
         _productRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _productSidecarGatewayLifecycle.Dispose();

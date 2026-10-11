@@ -202,6 +202,12 @@ internal static class HostThemeResources
         ResourceDictionary theme = projection.HighContrast
             ? HighContrastFallback()
             : ForTheme(projection.Effective);
+        string controlTheme = projection.HighContrast ? "HC" : projection.Effective == Dark ? "Dark" : "Light";
+        theme.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri(
+                $"pack://application:,,,/PresentationFramework.Fluent;component/Themes/Fluent.{controlTheme}.xaml"),
+        });
         theme[ThemeMarkerKey] = projection.HighContrast ? "highContrast" : projection.Effective;
         target.MergedDictionaries.Insert(0, theme);
     }
