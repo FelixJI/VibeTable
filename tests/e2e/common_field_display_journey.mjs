@@ -202,7 +202,10 @@ export async function runCommonFieldDisplayJourney(page, recorder, runtime, deps
   const createLookupField = async (name, targetField, aggregation) => {
     await page.getByTestId("toolbar-field-manager").click();
     await page.getByTestId("field-display-name").locator("input").first().fill(name);
-    await selectVisibleNOption(page, "field-logical-type", "查找引用");
+    const typeSelect = page.getByTestId("field-logical-type");
+    await typeSelect.locator(".n-base-selection").click();
+    await typeSelect.locator("input").fill("查找引用");
+    await page.locator(".n-base-select-option:visible").filter({ hasText: "查找引用" }).first().click();
     await page.getByTestId("lookup-editor-entry").click();
     await selectVisibleNOption(page, "lookup-mode", "条件筛选（按条件查询来源表）");
     await selectVisibleNOption(page, "lookup-condition-source-table", lookupSourceName);
