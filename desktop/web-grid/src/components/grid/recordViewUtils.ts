@@ -1,13 +1,40 @@
 import type { ColumnSchema, LookupDefinition, NormalizedRelationDescriptor, PresetView } from "@/contracts";
-import { findLookupDefinition, formatFormulaDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
+import { findLookupDefinition, formatFormulaDisplayValue, formatLookupDisplayValue, renderFormulaEnvelope, renderLookupEnvelope } from "@/grid/computedValueDisplay";
 import { formatFieldDisplay } from "@/grid/commonFieldDisplay";
 import { normalizeTargets } from "@/grid/relationLookupRenderer";
 import { coerceLegacyLabelEntry, formatRelationLabelEntry, relationRowLabels } from "@/grid/relationDisplay";
 import { getLocale, t } from "@/i18n";
 
-function isEnvelope(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-    && "state" in (value as Record<string, unknown>);
+function isEnvelope(value: unknown, column?: ColumnSchema | null): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!("state" in record)) return false;
+  return column?.kind === "lookup" ? isLookupEnvelope(record) : true;
+}
+
+// Bare JSON can contain state; only producer-specific envelope shapes may hide it.
+function isLookupEnvelope(record: Record<string, unknown>): boolean {
+  const state = record.state;
+  if (state === "updating") {
+    return record.value === null && lookupDiagnosticCode(record) === "calculation.pending";
+  }
+  if (state === "ok" || state === "restricted" || state === "invalid" || state === "too_expensive") {
+    return "value" in record
+      && Array.isArray(record.provenance)
+      && typeof record.provenanceTotal === "number"
+      && typeof record.provenanceTotalKnown === "boolean"
+      && typeof record.provenanceOffset === "number"
+      && typeof record.provenanceLimit === "number"
+      && typeof record.provenanceHasMore === "boolean";
+  }
+  return false;
+}
+
+function lookupDiagnosticCode(record: Record<string, unknown>): unknown {
+  const diagnostic = record.diagnostic;
+  if (!diagnostic || typeof diagnostic !== "object" || Array.isArray(diagnostic)) return undefined;
+  const code = (diagnostic as Record<string, unknown>).code;
+  return typeof code === "string" && code !== "" ? code : undefined;
 }
 
 /**
@@ -30,7 +57,7 @@ export function displayValue(
     const summary = relationSummaryText(value, column, row, relations);
     if (summary !== null) return summary;
   }
-  if (isEnvelope(value)) {
+  if (isEnvelope(value, column)) {
     if (column?.kind === "formula") {
       return renderFormulaEnvelope(value, column);
     }
@@ -41,6 +68,12 @@ export function displayValue(
   if (column?.kind === "formula" && column.dataType === "json"
     && column.resultElementType === "number" && Array.isArray(value)) {
     return formatFormulaDisplayValue(value, column);
+  }
+  // Query wire ready results arrive as bare lookup values (no envelope); they
+  // are authoritative server data and format through the LookupDefinition,
+  // mirroring the grid cell's bare-scalar normalization.
+  if (column?.kind === "lookup") {
+    return formatLookupDisplayValue(value, findLookupDefinition(column, lookups), column.display);
   }
   if (column) return formatFieldDisplay(value, column, getLocale());
   if (typeof value === "boolean") return value ? "✓" : "✕";
