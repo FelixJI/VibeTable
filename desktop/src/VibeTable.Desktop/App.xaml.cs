@@ -31,6 +31,12 @@ public partial class App : Application
     /// </summary>
     protected override void OnStartup(StartupEventArgs e)
     {
+        bool previewHost = e.Args is ["--preview-host", ..];
+        if (previewHost)
+        {
+            InstallDesktopDiagnosticTrace(Services.HostStartupOptions.Current(), previewHost: true);
+            PreviewHostEntry.TraceStage(PreviewHostStage.ManagedEntry);
+        }
         if (Services.UpdateProcessCommand.TryApply(
                 e.Args,
                 out int updateExitCode,
@@ -77,13 +83,14 @@ public partial class App : Application
             ApplicationUserModelId);
         base.OnStartup(e);
         var options = Services.HostStartupOptions.Current();
-        InstallDesktopDiagnosticTrace(options);
+        if (!previewHost) InstallDesktopDiagnosticTrace(options);
         InstallCrashDiagnostics();
-        if (e.Args is ["--preview-host", .. var previewArguments])
+        if (previewHost)
         {
+            PreviewHostEntry.TraceStage(PreviewHostStage.DesktopStartupCompleted);
             int exitCode = PreviewHostEntry.Start(
                 this,
-                previewArguments);
+                e.Args[1..]);
             if (exitCode != 0)
             {
                 Shutdown(exitCode);
@@ -159,12 +166,16 @@ public partial class App : Application
     }
 
     private static void InstallDesktopDiagnosticTrace(
-        Services.HostStartupOptions startup)
+        Services.HostStartupOptions startup,
+        bool previewHost = false)
     {
         try
         {
-            Trace.Listeners.Add(new RotatingDiagnosticTraceListener(
-                Path.Combine(DesktopLogDirectory(startup), "desktop.log")));
+            string logName = previewHost ? $"preview-{Environment.ProcessId}.log" : "desktop.log";
+            string logPath = Path.Combine(DesktopLogDirectory(startup, previewHost), logName);
+            if (previewHost && startup.TestMode)
+                Services.UpdateProcessCommand.RejectReparsePointChainsToVolumeRoot(logPath);
+            Trace.Listeners.Add(new RotatingDiagnosticTraceListener(logPath));
         }
         catch
         {
@@ -173,12 +184,22 @@ public partial class App : Application
     }
 
     internal static string DesktopLogDirectory()
-        => DesktopLogDirectory(Services.HostStartupOptions.Current());
+        => DesktopLogDirectory(Services.HostStartupOptions.Current(), IsPreviewHostProcess());
+
+    private static bool IsPreviewHostProcess()
+        => Environment.GetCommandLineArgs() is [_, "--preview-host", ..];
 
     /// <summary>Scenario-isolates desktop.log in test mode so QA failure evidence stays per-scenario.</summary>
     internal static string DesktopLogDirectory(
-        Services.HostStartupOptions startup)
+        Services.HostStartupOptions startup,
+        bool previewHost = false)
     {
+        if (previewHost && startup.TestMode)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(startup.E2eControlsDir);
+            return Path.Combine(
+                Path.GetFullPath(startup.E2eControlsDir), "preview-host", "desktop-logs");
+        }
         if (startup.TestMode && !string.IsNullOrWhiteSpace(startup.ReadinessDir))
         {
             try
@@ -218,6 +239,11 @@ public partial class App : Application
                 jobId = (string?)null,
                 durationMs = (double?)null,
             });
+            if (IsPreviewHostProcess())
+            {
+                Trace.TraceError(line);
+                return;
+            }
             var sink = new RotatingLogSink(Path.Combine(root, "desktop.log"));
             sink.WriteLineAsync(line).AsTask().GetAwaiter().GetResult();
             sink.DisposeAsync().AsTask().GetAwaiter().GetResult();
