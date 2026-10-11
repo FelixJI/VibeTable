@@ -16,6 +16,8 @@ internal sealed record DashboardDownloadAdmission(
 {
     private int _settled;
     private int _reported;
+    private int _admitted;
+    private int _retired;
     private string? _failureReason;
     internal ITimer? DeadlineTimer { get; set; }
 
@@ -24,6 +26,10 @@ internal sealed record DashboardDownloadAdmission(
         => Interlocked.CompareExchange(ref _failureReason, reason, null) is null;
     public string? FailureReason => Volatile.Read(ref _failureReason);
     public bool MarkReported() => Interlocked.Exchange(ref _reported, 1) == 0;
+    public bool Admitted => Volatile.Read(ref _admitted) != 0;
+    public bool MarkAdmitted() => Interlocked.Exchange(ref _admitted, 1) == 0;
+    public bool Retired => Volatile.Read(ref _retired) != 0;
+    public void Retire() => Interlocked.Exchange(ref _retired, 1);
 }
 
 /// <summary>
@@ -65,7 +71,7 @@ internal sealed class DashboardExportDownloadGate
         if (declaredByteLength is <= 0 or > MaxExportBytes) return false;
         lock (_gate)
         {
-            if (_registrations.Count >= 8) return false;
+            if (_registrations.Values.Count(item => !item.Admitted) >= 8) return false;
             var admission = new DashboardDownloadAdmission(
                 target.Id,
                 blobUrl,
@@ -99,12 +105,30 @@ internal sealed class DashboardExportDownloadGate
             {
                 if (!string.Equals(candidate.BlobUrl, downloadUri, StringComparison.Ordinal))
                     continue;
+                if (candidate.Retired || !candidate.MarkAdmitted()) continue;
                 admission = candidate;
-                _registrations.Remove(candidate.Token);
                 return true;
             }
         }
         return false;
+    }
+
+    public async Task<bool?> RetireAsync(string token, HostSessionFileBroker broker)
+    {
+        DashboardDownloadAdmission? admission;
+        lock (_gate)
+        {
+            if (_registrations.TryGetValue(token, out admission)
+                && !ReferenceEquals(admission.Broker, broker)) return null;
+        }
+        bool? retired = await broker.RetireDownloadAsync(token, () =>
+        {
+            admission?.Retire();
+            admission?.DeadlineTimer?.Dispose();
+        }).ConfigureAwait(false);
+        if (retired is true && admission is { Admitted: false })
+            await SettleAsync(admission, completed: false, "SessionRetired").ConfigureAwait(false);
+        return retired;
     }
 
     /// <summary>
@@ -121,6 +145,7 @@ internal sealed class DashboardExportDownloadGate
         => SettleAsync(
             admission,
             admission.FailureReason is not null ? "failed"
+                : admission.Retired ? "cancelled"
                 : completed ? "saved"
                 : interruptReason is "UserCanceled" or "Expired" or "SessionRetired"
                     ? "cancelled" : "failed",
@@ -133,6 +158,7 @@ internal sealed class DashboardExportDownloadGate
     {
         ArgumentNullException.ThrowIfNull(admission);
         if (!admission.MarkSettling()) return;
+        lock (_gate) _registrations.Remove(admission.Token);
         admission.DeadlineTimer?.Dispose();
         bool commit = outcome == "saved";
         if (commit && admission.Broker.IsRetired)

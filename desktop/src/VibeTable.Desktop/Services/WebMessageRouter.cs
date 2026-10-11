@@ -97,6 +97,7 @@ public sealed class WebMessageRouter
         "dashboard.deleteRequested",
         "dashboard.cancelRequested",
         "dashboard.exportTargetRequested",
+        "dashboard.exportRetireRequested",
         "dashboard.printRequested",
         // Interface authoring uses one closed use case per operation.
         "interface.listRequested",
@@ -222,6 +223,7 @@ public sealed class WebMessageRouter
         "dashboard.saved",
         "dashboard.deleted",
         "dashboard.exportTargetGranted",
+        "dashboard.exportRetired",
         "dashboard.exportSettled",
         "dashboard.printDialogOpened",
         "interface.listLoaded",

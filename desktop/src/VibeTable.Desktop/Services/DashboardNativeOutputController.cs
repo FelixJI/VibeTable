@@ -56,12 +56,14 @@ internal sealed class DashboardNativeOutputController
     }
 
     public static bool Handles(string requestType)
-        => requestType is "dashboard.exportTargetRequested" or "dashboard.printRequested";
+        => requestType is "dashboard.exportTargetRequested" or "dashboard.exportRetireRequested"
+            or "dashboard.printRequested";
 
     public Task DispatchAsync(RoutedWebRequest request)
         => request.Type switch
         {
             "dashboard.exportTargetRequested" => PrepareExportAsync(request),
+            "dashboard.exportRetireRequested" => RetireExportAsync(request),
             "dashboard.printRequested" => PrintAsync(request),
             _ => RejectUnknownAsync(request),
         };
@@ -151,6 +153,44 @@ internal sealed class DashboardNativeOutputController
                 _trace?.Invoke(
                     $"Dashboard export target failed; exception={exception.GetType().Name}");
                 PostFailure(request, "无法使用所选位置，请重新选择后重试。", "PATH_GRANT_FAILED");
+            }
+        }
+    }
+
+    private async Task RetireExportAsync(RoutedWebRequest request)
+    {
+        JsonElement payload = request.Payload;
+        if (payload.ValueKind != JsonValueKind.Object || payload.EnumerateObject().Count() != 1
+            || !payload.TryGetProperty("token", out JsonElement node)
+            || node.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(node.GetString()))
+        {
+            PostFailure(request, "导出退休请求无效。", "BAD_PAYLOAD");
+            return;
+        }
+        if (request.Scope is not { } scope
+            || !_sessions.TryCapture(scope, out WorkspaceRequestEpochLease? lease) || lease is null)
+        {
+            PostFailure(request, "工作区会话无效，无法退休导出。", "BAD_WORKSPACE_SCOPE");
+            return;
+        }
+        using (lease)
+        {
+            try
+            {
+                HostSessionFileBroker? broker = _files();
+                string token = node.GetString()!;
+                bool? retired = broker is null ? null : await _gate.RetireAsync(token, broker).ConfigureAwait(true);
+                if (retired is null)
+                {
+                    PostFailure(request, "导出授权已结束或不属于当前会话。", "BAD_EXPORT_TOKEN");
+                    return;
+                }
+                _reply.PostResponse("dashboard.exportRetired", request.RequestId, new { token, retired = retired.Value });
+            }
+            catch (Exception error)
+            {
+                _trace?.Invoke($"Dashboard export retirement failed; exception={error.GetType().Name}");
+                PostFailure(request, "无法完成导出退休。", "EXPORT_RETIRE_FAILED");
             }
         }
     }

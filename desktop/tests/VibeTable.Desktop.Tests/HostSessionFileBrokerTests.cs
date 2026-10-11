@@ -85,6 +85,44 @@ public sealed class HostSessionFileBrokerTests
     }
 
     [TestMethod]
+    public async Task LockedTerminalFilesReleaseSlotsAndKeepBoundedRetryableCleanup()
+    {
+        await using var f = new Fixture();
+        string target = Path.Combine(f.Root, "locked.csv");
+        File.WriteAllText(target, "old");
+        var downloads = new List<HostDownloadTarget>();
+        var locks = new List<FileStream>();
+        try
+        {
+            for (int i = 0; i < 128; i++)
+            {
+                HostDownloadTarget opened = await f.Broker.OpenDownloadTargetAsync(target);
+                downloads.Add(opened);
+                File.WriteAllText(opened.TemporaryPath, "new");
+                locks.Add(new FileStream(opened.TemporaryPath, FileMode.Open, FileAccess.Read, FileShare.None));
+                await Assert.ThrowsAsync<IOException>(() => f.Broker.CompleteDownloadAsync(opened.Id, false));
+                Assert.IsTrue(File.Exists(opened.TemporaryPath));
+                Assert.AreEqual(0, f.Leases);
+            }
+            f.Clock.Now = f.Clock.Now.AddMinutes(6);
+            IOException full = await Assert.ThrowsAsync<IOException>(() => f.Broker.OpenDownloadTargetAsync(target));
+            Assert.AreEqual("Too many pending dashboard cleanups.", full.Message);
+            Assert.AreEqual(0, f.Leases);
+            Assert.AreEqual("old", File.ReadAllText(target));
+        }
+        finally
+        {
+            foreach (FileStream locked in locks) locked.Dispose();
+            foreach (HostDownloadTarget opened in downloads)
+                await f.Broker.CompleteDownloadAsync(opened.Id, false);
+        }
+        HostDownloadTarget next = await f.Broker.OpenDownloadTargetAsync(target);
+        await f.Broker.CompleteDownloadAsync(next.Id, false);
+        Assert.AreEqual(1, Directory.GetFiles(f.Root).Length);
+        Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
     public async Task CommitChecksTheHostDeadlineWithoutDependingOnTheTimer()
     {
         await using var f = new Fixture();

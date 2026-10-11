@@ -1535,6 +1535,7 @@ export type WebMessageType =
   | "dashboard.deleteRequested"
   | "dashboard.cancelRequested"
   | "dashboard.exportTargetRequested"
+  | "dashboard.exportRetireRequested"
   | "dashboard.printRequested"
   | "plugin.catalog.list"
   | "plugin.audit.list"
@@ -1673,6 +1674,7 @@ export type HostMessageType =
   | "dashboard.saved"
   | "dashboard.deleted"
   | "dashboard.exportTargetGranted"
+  | "dashboard.exportRetired"
   | "dashboard.exportSettled"
   | "dashboard.printDialogOpened"
   | "plugin.catalog.changed"
@@ -2009,6 +2011,7 @@ export interface HostPayloadMap {
   "dashboard.saved": DashboardSaveResultPayload;
   "dashboard.deleted": { readonly deleted: string };
   "dashboard.exportTargetGranted": DashboardExportTargetGrantedPayload;
+  "dashboard.exportRetired": { readonly token: string; readonly retired: boolean };
   "dashboard.exportSettled": DashboardExportSettledPayload;
   "dashboard.printDialogOpened": { readonly opened: true };
   "plugin.catalog.changed": PluginEventEnvelope;
@@ -2242,6 +2245,7 @@ export interface WebPayloadMap {
   "dashboard.deleteRequested": { readonly dashboardId: string };
   "dashboard.cancelRequested": { readonly targetRequestId: string };
   "dashboard.exportTargetRequested": DashboardExportTargetRequestedPayload;
+  "dashboard.exportRetireRequested": { readonly token: string };
   "dashboard.printRequested": Record<string, never>;
   "plugin.catalog.list": { readonly projectKey: string };
   "plugin.audit.list": { readonly projectKey: string; readonly pluginId: string };

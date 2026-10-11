@@ -302,6 +302,34 @@ describe("dashboardExportService native output", () => {
     bridge.stop();
   });
 
+  it("rejects content refreshed during encoding but keeps an encoded PNG across picker refresh", async () => {
+    let contentCurrent = true;
+    let finish!: (blob: Blob) => void;
+    toBlob.mockReturnValueOnce(new Promise<Blob>((resolve) => { finish = resolve; }));
+    const bridge = makeBridge();
+    const stale = exportDashboardElementPng(document.createElement("section"), "board", bridge,
+      undefined, () => contentCurrent);
+    await vi.advanceTimersByTimeAsync(0);
+    contentCurrent = false;
+    finish(new Blob(["stale"]));
+    await expect(stale).rejects.toMatchObject({ name: "AbortError" });
+    expect(posted).toEqual([]);
+
+    contentCurrent = true;
+    toBlob.mockResolvedValueOnce(new Blob(["encoded"]));
+    const encoded = exportDashboardElementPng(document.createElement("section"), "board", bridge,
+      undefined, () => contentCurrent);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted.at(-1)?.type).toBe("dashboard.exportTargetRequested");
+    contentCurrent = false;
+    await grantTarget({ displayName: "board.png" });
+    expect(clicks).toHaveLength(1);
+    expect(posted.map((item) => item.type)).toEqual(["dashboard.exportTargetRequested"]);
+    reply({ type: "dashboard.exportSettled", payload: { token: "download-1", outcome: "saved" } });
+    await expect(encoded).resolves.toEqual({ outcome: "saved", fileName: "board.png" });
+    bridge.stop();
+  });
+
   it("retires a granted download wait and ignores its old saved receipt", async () => {
     const owner = new AbortController();
     const bridge = makeBridge();
@@ -309,8 +337,29 @@ describe("dashboardExportService native output", () => {
     await vi.advanceTimersByTimeAsync(0);
     await grantTarget();
     owner.abort();
+    expect(posted.at(-1)).toMatchObject({ type: "dashboard.exportRetireRequested", payload: { token: "download-1" } });
+    reply({ type: "dashboard.exportSettled", payload: { token: "download-1", outcome: "saved" } });
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    reply({ type: "dashboard.exportRetired", requestId: posted.at(-1)!.requestId,
+      payload: { token: "download-1", retired: true } });
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     reply({ type: "dashboard.exportSettled", payload: { token: "download-1", outcome: "saved" } });
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    bridge.stop();
+  });
+
+  it("retires a target granted after its dashboard closed the picker wait", async () => {
+    const owner = new AbortController();
+    const bridge = makeBridge();
+    const pending = exportDashboardCsv("old-board", readyData(), bridge, owner.signal);
+    await vi.advanceTimersByTimeAsync(0);
+    owner.abort();
+    await grantTarget();
+    expect(posted.at(-1)).toMatchObject({ type: "dashboard.exportRetireRequested", payload: { token: "download-1" } });
+    expect(clicks).toEqual([]);
+    reply({ type: "dashboard.exportRetired", requestId: posted.at(-1)!.requestId,
+      payload: { token: "download-1", retired: true } });
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     bridge.stop();
   });

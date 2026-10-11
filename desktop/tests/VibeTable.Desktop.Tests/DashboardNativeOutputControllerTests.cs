@@ -639,6 +639,142 @@ public sealed class DashboardNativeOutputControllerTests
     }
 
     [TestMethod]
+    public async Task Dashboard_switch_retires_an_admitted_token_and_prevents_late_completion()
+    {
+        using var sessions = new SessionFixture();
+        await sessions.OpenAsync();
+        await using var fixture = new BrokerFixture();
+        string target = fixture.TargetPath();
+        await File.WriteAllTextAsync(target, "old");
+        object? report = null;
+        var gate = new DashboardExportDownloadGate(payload => report = payload);
+        HostDownloadTarget opened = await fixture.Broker.OpenDownloadTargetAsync(target);
+        Assert.IsTrue(gate.TryRegister(opened, fixture.Broker, "blob:https://app.vibetable.local/old-board", 3));
+        Assert.IsTrue(gate.TryAdmit("blob:https://app.vibetable.local/old-board", out var admission));
+        await File.WriteAllTextAsync(opened.TemporaryPath, "new");
+        int cancels = 0;
+        Assert.IsTrue(await fixture.Broker.AttachDownloadTerminationAsync(opened.Id, () =>
+        { cancels++; return Task.CompletedTask; }));
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardNativeOutputController(sink, sessions.Filter,
+            new FakeOutputHost(), () => fixture.Broker, gate);
+        ulong epoch = sessions.Manager.Current.SessionEpoch;
+
+        await controller.DispatchAsync(Request("dashboard.exportRetireRequested", new { token = opened.Id },
+            scope: sessions.CurrentScope()));
+        var replies = await sink.WaitForCountAsync("dashboard.exportRetired", 1);
+        Assert.IsTrue(JsonSerializer.SerializeToElement(replies[0].Payload).GetProperty("retired").GetBoolean());
+        Assert.AreEqual(epoch, sessions.Manager.Current.SessionEpoch);
+        Assert.AreEqual(1, cancels);
+        Assert.IsTrue(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(1, fixture.Leases);
+
+        await gate.SettleAsync(admission!, completed: true, null);
+        Assert.AreEqual("old", await File.ReadAllTextAsync(target));
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(0, fixture.Leases);
+        Assert.AreEqual("cancelled", JsonSerializer.SerializeToElement(report).GetProperty("outcome").GetString());
+    }
+
+    [TestMethod]
+    public async Task Export_retirement_reports_false_when_the_terminal_commit_already_won()
+    {
+        using var sessions = new SessionFixture();
+        await sessions.OpenAsync();
+        await using var fixture = new BrokerFixture();
+        var gate = new DashboardExportDownloadGate(_ => { });
+        HostDownloadTarget opened = await fixture.Broker.OpenDownloadTargetAsync(fixture.TargetPath());
+        Assert.IsTrue(gate.TryRegister(opened, fixture.Broker, "blob:https://app.vibetable.local/saved", 3));
+        Assert.IsTrue(gate.TryAdmit("blob:https://app.vibetable.local/saved", out var admission));
+        await File.WriteAllTextAsync(opened.TemporaryPath, "new");
+        await gate.SettleAsync(admission!, completed: true, null);
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardNativeOutputController(sink, sessions.Filter,
+            new FakeOutputHost(), () => fixture.Broker, gate);
+
+        await controller.DispatchAsync(Request("dashboard.exportRetireRequested", new { token = opened.Id },
+            scope: sessions.CurrentScope()));
+        var replies = await sink.WaitForCountAsync("dashboard.exportRetired", 1);
+        Assert.IsFalse(JsonSerializer.SerializeToElement(replies[0].Payload).GetProperty("retired").GetBoolean());
+        Assert.AreEqual("new", await File.ReadAllTextAsync(fixture.TargetPath()));
+        Assert.AreEqual(0, fixture.Leases);
+    }
+
+    [TestMethod]
+    public async Task Export_retirement_rejects_a_token_from_another_broker()
+    {
+        using var sessions = new SessionFixture();
+        await sessions.OpenAsync();
+        await using var owner = new BrokerFixture();
+        await using var other = new BrokerFixture();
+        var gate = new DashboardExportDownloadGate(_ => { });
+        HostDownloadTarget opened = await owner.Broker.OpenDownloadTargetAsync(owner.TargetPath());
+        Assert.IsTrue(gate.TryRegister(opened, owner.Broker, "blob:https://app.vibetable.local/foreign", 3));
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardNativeOutputController(sink, sessions.Filter,
+            new FakeOutputHost(), () => other.Broker, gate);
+        await controller.DispatchAsync(Request("dashboard.exportRetireRequested", new { token = opened.Id },
+            scope: sessions.CurrentScope()));
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        Assert.AreEqual("BAD_EXPORT_TOKEN", Code(failure));
+        Assert.AreEqual(1, owner.Leases);
+        Assert.AreEqual(true, await gate.RetireAsync(opened.Id, owner.Broker));
+        Assert.AreEqual(0, owner.Leases);
+    }
+
+    [TestMethod]
+    [DataRow("{\"token\":\"download-unknown\",\"path\":\"C:\\\\unowned.csv\"}", "BAD_PAYLOAD")]
+    [DataRow("{\"token\":1}", "BAD_PAYLOAD")]
+    [DataRow("{\"token\":\"download-unknown\"}", "BAD_EXPORT_TOKEN")]
+    public async Task Export_retirement_rejects_unowned_tokens_and_non_token_fields(string json, string code)
+    {
+        using var sessions = new SessionFixture();
+        await sessions.OpenAsync();
+        await using var fixture = new BrokerFixture();
+        var sink = new FakeWebReplySink();
+        var controller = new DashboardNativeOutputController(sink, sessions.Filter,
+            new FakeOutputHost(), () => fixture.Broker, new DashboardExportDownloadGate(_ => { }));
+        await controller.DispatchAsync(Request("dashboard.exportRetireRequested",
+            JsonSerializer.Deserialize<JsonElement>(json), scope: sessions.CurrentScope()));
+        FakeWebReplySink.Reply? failure = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failure);
+        Assert.AreEqual(code, Code(failure));
+        Assert.AreEqual(0, fixture.Leases);
+    }
+
+    [TestMethod]
+    public async Task Expired_commit_before_the_failure_callback_still_cleans_the_terminal_writer()
+    {
+        await using var fixture = new BrokerFixture();
+        string target = fixture.TargetPath();
+        await File.WriteAllTextAsync(target, "old");
+        object? report = null;
+        var gate = new DashboardExportDownloadGate(payload => report = payload);
+        HostDownloadTarget opened = await fixture.Broker.OpenDownloadTargetAsync(target);
+        Assert.IsTrue(gate.TryRegister(opened, fixture.Broker, "blob:https://app.vibetable.local/interleaved", 3));
+        Assert.IsTrue(gate.TryAdmit("blob:https://app.vibetable.local/interleaved", out var admission));
+        await File.WriteAllTextAsync(opened.TemporaryPath, "new");
+        Assert.IsTrue(await fixture.Broker.AttachDownloadTerminationAsync(opened.Id, () => Task.CompletedTask));
+
+        await fixture.Broker.ExpireDownloadAsync(opened.Id, () =>
+        {
+            // Expire released the broker gate but has not recorded the failure yet.
+            Assert.IsNull(admission!.FailureReason);
+            Assert.IsTrue(File.Exists(opened.TemporaryPath));
+            gate.SettleAsync(admission, completed: true, null).GetAwaiter().GetResult();
+            admission.RecordFailure("SAVE_TIMEOUT");
+        });
+
+        Assert.AreEqual("old", await File.ReadAllTextAsync(target));
+        Assert.IsFalse(File.Exists(opened.TemporaryPath));
+        Assert.AreEqual(0, fixture.Leases);
+        Assert.AreEqual("SAVE_TIMEOUT", JsonSerializer.SerializeToElement(report).GetProperty("reason").GetString());
+        fixture.Broker.Retire();
+        await fixture.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [TestMethod]
     public async Task Picker_exception_returns_failure_and_releases_request_lease()
     {
         using var sessions = new SessionFixture();

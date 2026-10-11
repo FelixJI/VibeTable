@@ -317,9 +317,11 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 _epochRegistration ??= lease.CancellationToken.Register(Retire);
                 _retired.Token.ThrowIfCancellationRequested();
                 PruneExpiredReceipts();
+                if (_downloads.Values.Count(item => item.CleanupPending) >= 128)
+                    throw new IOException("Too many pending dashboard cleanups.");
                 if (_downloads.Values.Count(item => item.ReceiptExpiresAt is null) >= 16)
                     throw new InvalidOperationException("Too many dashboard downloads.");
-                foreach (string receipt in _downloads.Where(pair => pair.Value.ReceiptExpiresAt is not null)
+                foreach (string receipt in _downloads.Where(pair => pair.Value.ReceiptExpiresAt is not null && !pair.Value.CleanupPending)
                     .OrderByDescending(pair => pair.Value.ReceiptExpiresAt).Skip(128)
                     .Select(pair => pair.Key).ToArray()) _downloads.Remove(receipt);
                 if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\.\", StringComparison.Ordinal)
@@ -370,24 +372,36 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
 
     internal async Task ExpireDownloadAsync(string id, Action expired)
     {
+        await InvalidateDownloadAsync(id, expired: true, expired).ConfigureAwait(false);
+    }
+
+    internal Task<bool?> RetireDownloadAsync(string id, Action retired)
+        => InvalidateDownloadAsync(id, expired: false, retired);
+
+    private async Task<bool?> InvalidateDownloadAsync(string id, bool expired, Action invalidated)
+    {
         Func<Task>? terminate = null;
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             if (_downloads.TryGetValue(id, out Download? download))
             {
-                if (download.Outcome is true || download.Expired) return;
-                download.Expired = true;
+                if (download.Outcome is true) return false;
+                if (download.Expired && expired) return true;
+                download.Expired |= expired;
+                download.Revoked |= !expired;
                 download.Outcome = false;
                 lock (_terminations) _terminations.TryGetValue(id, out terminate);
                 if (terminate is null && !download.Admitted) FinalizeUncommitted(download);
             }
+            else if (!expired) return null;
         }
         finally { _gate.Release(); }
         // The receipt means commits are now impossible, not that WebView stopped.
-        expired();
+        invalidated();
         if (terminate is not null)
             await terminate().WaitAsync(_drainDownloadSettlementTimeout).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>
@@ -410,7 +424,11 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             {
                 if (settled != commit)
                 {
+                    // CompleteDownloadAsync is a terminal callback. Even a
+                    // revoked commit must finish cleanup before it is refused.
+                    if (!settled) FinalizeUncommitted(download);
                     if (download.Expired) throw new TimeoutException("SAVE_TIMEOUT");
+                    if (download.Revoked) throw new OperationCanceledException("Export retired.");
                     _retired.Token.ThrowIfCancellationRequested();
                     throw new IOException("Dashboard download outcome is already settled.");
                 }
@@ -513,7 +531,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 {
                     Func<Task>? terminate = TakeTermination(pair.Key);
                     if (terminate is not null) pending.Add((pair.Value, terminate));
-                    else if (pair.Value.ReceiptExpiresAt is null)
+                    else if (pair.Value.ReceiptExpiresAt is null || pair.Value.CleanupPending)
                     {
                         try { FinalizeUncommitted(pair.Value); }
                         catch (Exception error) { errors.Add(error); }
@@ -560,7 +578,8 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             .Select(pair => pair.Key).ToArray()) _transfers.Remove(id);
         foreach (string id in _reservations.Where(pair => pair.Value.Outcome is not null && pair.Value.ReceiptExpiresAt <= now)
             .Select(pair => pair.Key).ToArray()) _reservations.Remove(id);
-        foreach (string id in _downloads.Where(pair => pair.Value.ReceiptExpiresAt is not null && pair.Value.ReceiptExpiresAt <= now)
+        foreach (string id in _downloads.Where(pair => !pair.Value.CleanupPending
+            && pair.Value.ReceiptExpiresAt is not null && pair.Value.ReceiptExpiresAt <= now)
             .Select(pair => pair.Key).ToArray())
         {
             _downloads.Remove(id);
@@ -649,16 +668,21 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         try
         {
             File.Delete(download.Temporary);
-            download.ReceiptExpiresAt = _time.GetUtcNow().AddMinutes(5).ToUnixTimeMilliseconds() / 1000.0;
+            download.CleanupPending = false;
             download.Settlement.TrySetResult();
         }
         catch (Exception error)
         {
+            download.CleanupPending = true;
             download.Settlement.TrySetException(error);
             throw;
         }
         finally
         {
+            // The writer is terminal even when deleting its residual file fails.
+            // Keep its path for a matching cleanup retry or session drain, while
+            // releasing the active slot and epoch lease independently.
+            download.ReceiptExpiresAt ??= _time.GetUtcNow().AddMinutes(5).ToUnixTimeMilliseconds() / 1000.0;
             lock (_terminations) _terminations.Remove(download.Id);
             download.Lease.Dispose();
         }
@@ -676,7 +700,9 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         WorkspaceRequestEpochLease Lease, DateTimeOffset Deadline)
     {
         internal bool Expired { get; set; }
+        internal bool Revoked { get; set; }
         internal bool Admitted { get; set; }
+        internal bool CleanupPending { get; set; }
         internal bool? Outcome { get; set; }
         internal double? ReceiptExpiresAt { get; set; }
         internal TaskCompletionSource Settlement { get; } =

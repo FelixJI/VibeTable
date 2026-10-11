@@ -937,6 +937,8 @@ public sealed class WebMessageRouterTests
             """{"type":"dashboard.exportTargetRequested","requestId":"export-missing","payload":{"fileName":"sales","format":"csv","blobUrl":"blob:https://app.vibetable.local/abc123","byteLength":24}}""");
         HostReplyMessage? printMissing = router.Route(
             """{"type":"dashboard.printRequested","requestId":"print-missing","payload":{}}""");
+        HostReplyMessage? retireMissing = router.Route(
+            """{"type":"dashboard.exportRetireRequested","requestId":"retire-missing","payload":{"token":"download-1"}}""");
         string acceptedJson = JsonSerializer.Serialize(new
         {
             type = "dashboard.printRequested",
@@ -955,6 +957,7 @@ public sealed class WebMessageRouterTests
 
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", exportMissing?.Payload?.Code);
         Assert.AreEqual("BAD_WORKSPACE_SCOPE", printMissing?.Payload?.Code);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", retireMissing?.Payload?.Code);
         Assert.IsNull(accepted);
         Assert.HasCount(1, dispatched);
         Assert.AreEqual("dashboard.printRequested", dispatched.Single().Type);

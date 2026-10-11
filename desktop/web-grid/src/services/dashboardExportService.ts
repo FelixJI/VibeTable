@@ -80,12 +80,17 @@ export async function exportDashboardElementPng(
   fileName: string,
   bridge: HostBridge,
   signal?: AbortSignal,
+  isContentCurrent?: () => boolean,
 ): Promise<DashboardExportReceipt> {
   const owner = captureExportOwner(signal);
+  const assertGenerationCurrent = (): void => {
+    owner.assertCurrent();
+    if (isContentCurrent && !isContentCurrent()) throw new BridgeRequestRetiredError();
+  };
   try {
-    owner.assertCurrent();
+    assertGenerationCurrent();
     const { toBlob } = await import("html-to-image");
-    owner.assertCurrent();
+    assertGenerationCurrent();
     const width = Math.max(1, Math.floor(element.scrollWidth));
     const height = Math.max(1, Math.floor(element.scrollHeight));
     // Edge and total-pixel budgets both bound the encode; the scale is never
@@ -110,7 +115,7 @@ export async function exportDashboardElementPng(
       width,
       height,
     });
-    owner.assertCurrent();
+    assertGenerationCurrent();
     if (!blob) throw new Error("PNG export failed.");
     if (blob.size > MAX_EXPORT_BYTES) {
       throw new DashboardExportError(
@@ -151,13 +156,19 @@ async function saveDashboardOutput(
         blobUrl,
         byteLength: blob.size,
       }) as DashboardExportTargetGrantedPayload;
-      owner.assertCurrent();
+      try {
+        owner.assertCurrent();
+      } catch (error) {
+        await bridge.request("dashboard.exportRetireRequested", { token: granted.token });
+        throw error;
+      }
     } catch (error) {
       URL.revokeObjectURL(blobUrl);
       if (error instanceof BridgeOperationError && error.code === "CANCELLED") {
         return { outcome: "cancelled", fileName: safe };
       }
-      throw error instanceof Error ? error : new Error(String(error));
+      throw error instanceof Error || error instanceof BridgeRequestRetiredError
+        ? error : new Error(String(error));
     }
     return await awaitDownloadSettlement(bridge, granted, safe, blobUrl, owner.signal);
   } finally {
@@ -210,10 +221,16 @@ async function awaitDownloadSettlement(
   let retire: (() => void) | undefined;
   try {
     const settled = new Promise<DashboardExportSettledPayload>((resolve, reject) => {
-      retire = () => reject(new BridgeRequestRetiredError());
+      retire = () => {
+        // The host must revoke the commit before the old view abandons its wait.
+        void bridge.request("dashboard.exportRetireRequested", { token: granted.token }).then(
+          () => reject(new BridgeRequestRetiredError()), reject,
+        );
+      };
       signal.addEventListener("abort", retire, { once: true });
       if (signal.aborted) { retire(); return; }
       cleanup.unsubscribe = bridge.on("dashboard.exportSettled", (payload) => {
+        if (signal.aborted) return;
         if (payload.token !== granted.token) return;
         resolve(payload);
       });

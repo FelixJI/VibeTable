@@ -15,6 +15,7 @@ import { useDashboardDraftStore, useDashboardStore, type DashboardManagedConfig 
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useHostBridge } from "@/services/bridgeContext";
+import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
 import { useProvidedDashboardService } from "@/services/dashboardService";
 import {
   DashboardExportError,
@@ -52,9 +53,8 @@ const filters = computed(() => activeConfig.value.globalFilters);
 const collections = computed(() => workspace.collections.map((item) => item.collection));
 let outputOwner = new AbortController();
 watch(() => [
-  activeDashboard.value?.id, activeDashboard.value?.name, store.revision, draft.editing,
+  activeDashboard.value?.id,
   session.activeWorkspaceId, session.sessionEpoch, session.isTransitioning, session.sessionState,
-  ...Object.values(store.panelData).flatMap((data) => [data.state, data.updatedAt, data.rows]),
 ], () => { outputOwner.abort(); outputOwner = new AbortController(); }, { flush: "sync" });
 onBeforeUnmount(() => outputOwner.abort());
 
@@ -132,16 +132,26 @@ async function exportCsv(panel: DashboardPanel): Promise<void> {
 }
 async function exportPng(panel?: DashboardPanel): Promise<void> {
   const signal = outputOwner.signal;
+  const contentVersion = (): unknown[] => [
+    activeDashboard.value, activeDashboard.value?.name, store.revision, draft.editing,
+    ...Object.values(store.panelData).flatMap((data) => [data.state, data.updatedAt, data.rows]),
+  ];
+  const capturedContent = contentVersion();
+  const isContentCurrent = (): boolean => {
+    const current = contentVersion();
+    return current.length === capturedContent.length
+      && current.every((value, index) => value === capturedContent[index]);
+  };
   const element = panel
     ? surface.value?.querySelector<HTMLElement>(`[data-panel-id="${CSS.escape(panel.id)}"]`)
     : surface.value;
   if (!element) return;
   try {
-    const receipt = await exportDashboardElementPng(element, panel?.name ?? activeDashboard.value?.name ?? "dashboard", bridge, signal);
+    const receipt = await exportDashboardElementPng(element, panel?.name ?? activeDashboard.value?.name ?? "dashboard", bridge, signal, isContentCurrent);
     if (signal.aborted || receipt.outcome === "cancelled") return;
     message.success(t("dashboard.export.saved", { name: receipt.fileName }));
   } catch (error) {
-    if (signal.aborted) return;
+    if (signal.aborted || error instanceof BridgeRequestRetiredError) return;
     message.error(exportErrorMessage(error));
   }
 }

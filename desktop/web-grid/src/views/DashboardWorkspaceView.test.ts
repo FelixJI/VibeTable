@@ -257,7 +257,7 @@ describe("DashboardWorkspaceView", () => {
     await flushPromises();
     expect(service.refresh).toHaveBeenCalled();
     expect(service.copyCurrent).toHaveBeenCalled();
-    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), "运营", expect.anything(), expect.any(AbortSignal));
+    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), "运营", expect.anything(), expect.any(AbortSignal), expect.any(Function));
     expect(exportsHarness.print).toHaveBeenCalledWith(expect.anything());
     expect(useDashboardDraftStore().editing).toBe(true);
 
@@ -287,7 +287,7 @@ describe("DashboardWorkspaceView", () => {
     expect(wrapper.findComponent(editorStub).props("panel")).toMatchObject({ id: first.id });
     expect(service.previewPanel).toHaveBeenCalledWith(expect.objectContaining({ id: first.id }));
     expect(exportsHarness.csv).toHaveBeenCalledWith(first.name, expect.objectContaining({ state: "idle" }), expect.anything(), expect.any(AbortSignal));
-    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), first.name, expect.anything(), expect.any(AbortSignal));
+    expect(exportsHarness.png).toHaveBeenCalledWith(expect.any(HTMLElement), first.name, expect.anything(), expect.any(AbortSignal), expect.any(Function));
     expect(service.setVisiblePanels).toHaveBeenCalledWith([first.id]);
 
     toolbar.vm.$emit("configure");
@@ -341,6 +341,29 @@ describe("DashboardWorkspaceView", () => {
     await flushPromises();
     expect(service.deleteCurrent).toHaveBeenCalled();
     expect(confirm).toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("keeps an encoded output and its saved toast across automatic panel refresh", async () => {
+    seedDashboard();
+    let finish!: (receipt: { outcome: "saved"; fileName: string }) => void;
+    exportsHarness.png.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const wrapper = mountView(pinia, createService());
+    await flushPromises();
+    wrapper.findComponent(toolbarStub).vm.$emit("exportPng");
+    await flushPromises();
+    const call = exportsHarness.png.mock.calls.at(-1) as unknown as
+      [HTMLElement, string, unknown, AbortSignal, () => boolean];
+    expect(call[4]()).toBe(true);
+    useDashboardStore().panelData.p1 = {
+      state: "loading", rows: [], updatedAt: 2, truncated: false, maxPoints: 100, error: null,
+    };
+    await flushPromises();
+    expect(call[4]()).toBe(false);
+    expect(call[3].aborted).toBe(false);
+    finish({ outcome: "saved", fileName: "已编码看板.png" });
+    await flushPromises();
+    expect(document.body.textContent).toContain("已编码看板.png");
     wrapper.unmount();
   });
 
