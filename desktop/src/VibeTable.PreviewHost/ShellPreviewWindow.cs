@@ -122,17 +122,26 @@ internal sealed class ShellPreviewSession : IDisposable
     {
         try
         {
+            PreviewHostEntry.TraceStage(PreviewHostStage.ComActivationStarted);
             Type type = Type.GetTypeFromCLSID(_handlerClsid, throwOnError: true)!;
             _handlerObject = Activator.CreateInstance(type)
                 ?? throw new PreviewHostLoadException();
+            PreviewHostEntry.TraceStage(PreviewHostStage.ComActivationReturned);
             _handler = (IPreviewHandler)_handlerObject;
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerInitializeStarted);
             InitializeHandler();
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerInitializeReturned);
             var rect = new NativeRect(0, 0, width, height);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerSetWindowStarted);
             _handler.SetWindow(parent, ref rect);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerSetWindowReturned);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerDoPreviewStarted);
             _handler.DoPreview();
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerDoPreviewReturned);
         }
-        catch
+        catch (Exception exception)
         {
+            PreviewHostEntry.TraceStage(PreviewHostStage.PreviewSessionFailed, exception);
             Dispose();
             throw new PreviewHostLoadException();
         }

@@ -1338,6 +1338,8 @@ def persist_product_e2e_evidence(
                 "45-common-field-display-reopened.png",
                 "45-common-field-display-restored.png",
                 "45-common-field-display-cards.png",
+                "45-common-field-display-lookup-cards.png",
+                "45-common-field-display-lookup-kanban.png",
             ),
             "35-data-io-interoperability": (
                 "35-import-management-history.png",
@@ -1457,7 +1459,15 @@ def persist_product_e2e_evidence(
                     run_destination / "_runtime" / scenario_number / "controls" / filename,
                 )
 
-        def copy_runtime_diagnostics(runtime_source: Path, runtime_destination: Path) -> None:
+        def copy_runtime_diagnostics(
+            runtime_source: Path, runtime_destination: Path, *, preview_host: bool = False
+        ) -> None:
+            if preview_host:
+                ancestor = runtime_source
+                while ancestor != run_source.parent:
+                    if ancestor.is_symlink() or ancestor.is_junction():
+                        return
+                    ancestor = ancestor.parent
             # Fixed readiness-root diagnostics only; the shared user desktop.log is never read.
             _copy_if_file(
                 runtime_source / "vibetable-trace.log",
@@ -1468,18 +1478,20 @@ def persist_product_e2e_evidence(
             if desktop_logs.is_dir() and not (
                 desktop_logs.is_symlink() or desktop_logs.is_junction()
             ):
-                current = desktop_logs / "desktop.log"
-                if not (current.is_symlink() or current.is_junction()):
-                    _copy_if_file(current, runtime_destination / "desktop.log")
-                for rotated in sorted(desktop_logs.iterdir()):
+                pattern = (
+                    r"preview-[1-9]\d*(?:-\d{8}-\d{9})?\.log"
+                    if preview_host
+                    else r"desktop(?:-\d{8}-\d{9})?\.log"
+                )
+                for log_path in sorted(desktop_logs.iterdir()):
                     if (
-                        rotated.is_symlink()
-                        or rotated.is_junction()
-                        or re.fullmatch(r"desktop-\d{8}-\d{9}\.log", rotated.name) is None
-                        or not rotated.is_file()
+                        log_path.is_symlink()
+                        or log_path.is_junction()
+                        or re.fullmatch(pattern, log_path.name) is None
+                        or not log_path.is_file()
                     ):
                         continue
-                    _copy_if_file(rotated, runtime_destination / rotated.name)
+                    _copy_if_file(log_path, runtime_destination / log_path.name)
             workspace_root = runtime_source / "local-data" / "workspaces"
             for log_name in PRODUCT_E2E_RUNTIME_LOGS:
                 for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
@@ -1492,6 +1504,11 @@ def persist_product_e2e_evidence(
         copy_runtime_diagnostics(
             runtime_root / "host",
             run_destination / "_runtime" / scenario_number / "host",
+        )
+        copy_runtime_diagnostics(
+            runtime_root / "controls" / "preview-host",
+            run_destination / "_runtime" / scenario_number / "controls" / "preview-host",
+            preview_host=True,
         )
         if scenario_id in {
             "11-plugin-mutation",

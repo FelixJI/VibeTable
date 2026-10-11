@@ -73,4 +73,36 @@ describe("ViewGroupPanel", () => {
     expect(raw).toEqual([1234.56789, 12, null, -0]);
   });
 
+  it("formats numeric group keys through the column display spec, matching grid cells", () => {
+    setLocale("zh-CN");
+    const wrapper = mount(ViewGroupPanel, { props: {
+      rows: [
+        { key: [0.125, 1234.56789], count: 2, summaries: [] },
+        { key: [null, 0], count: 1, summaries: [] },
+      ],
+      groups: [{ field: "ratio" }, { field: "amount" }],
+      summaries: [],
+      columns: [
+        { name: "ratio", title: "比例", dataType: "decimal", editable: true, nullable: true, display: {
+          kind: "number", preset: "percent", currency: "", displayScale: 1,
+          scaleMode: "fixed", trimTrailingZeros: false, useGrouping: true,
+          percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+          mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+        } },
+        { name: "amount", title: "金额", dataType: "decimal", editable: true, nullable: true, display: {
+          kind: "number", preset: "currency", currency: "CNY", displayScale: 2,
+          scaleMode: "fixed", trimTrailingZeros: false, useGrouping: true,
+          percentStorage: "ratio", unit: null, precision: "exact", timezone: "system",
+          mode: "default", indent: 0, trueLabel: "是", falseLabel: "否",
+        } },
+      ],
+      hasMore: false,
+    } });
+    expect(wrapper.text()).toContain("比例: 12.5%");
+    expect(wrapper.text()).toContain("金额: ¥1,234.57");
+    expect(wrapper.text()).toContain("比例: 空值");
+    expect(wrapper.text()).toContain("金额: ¥0.00");
+    expect(wrapper.text()).not.toContain("0.125");
+  });
+
 });

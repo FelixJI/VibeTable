@@ -270,6 +270,84 @@ public sealed class ShellPreviewHandlerResolverTests
     }
 
     [TestMethod]
+    public void PreviewStageDiagnosticsPersistClosedEventsWithoutExceptionContent()
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        string logPath = Path.Combine(fixture.Controls, "preview-1234.log");
+        using (var listener = new RotatingDiagnosticTraceListener(logPath))
+        {
+            Trace.Listeners.Add(listener);
+            try
+            {
+                foreach (PreviewHostStage stage in Enum.GetValues<PreviewHostStage>())
+                    PreviewHostEntry.TraceStage(stage);
+                PreviewHostEntry.TraceStage(PreviewHostStage.PreviewSessionFailed,
+                    new IOException(fixture.Source));
+            }
+            finally
+            {
+                Trace.Listeners.Remove(listener);
+            }
+        }
+        string[] lines = File.ReadAllLines(logPath);
+        Assert.HasCount(Enum.GetValues<PreviewHostStage>().Length + 1, lines);
+        Assert.IsTrue(lines.All(DiagnosticLogLine.IsSafe));
+        Assert.IsTrue(lines.All(line => !line.Contains(fixture.Source, StringComparison.Ordinal)));
+        using var failure = JsonDocument.Parse(lines[^1]);
+        Assert.AreEqual("IOException(0x80131620)",
+            failure.RootElement.GetProperty("errorCode").GetString());
+        Assert.AreEqual("preview.host.phase.PreviewSessionFailed",
+            failure.RootElement.GetProperty("event").GetString());
+    }
+
+    [TestMethod]
+    public void PreviewStageDiagnosticsCannotReplaceProductFailureWhenTheSinkThrows()
+    {
+        using var listener = new ThrowingPreviewTraceListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            PreviewHostEntry.TraceStage(PreviewHostStage.ManagedEntry);
+            using var session = new ShellPreviewSession(
+                @"C:\synthetic\report.docx",
+                Guid.Parse("11111111-1111-4111-8111-111111111111"));
+            Assert.Throws<PreviewHostLoadException>(() => session.Start(IntPtr.Zero, 100, 80));
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+    }
+
+    [TestMethod]
+    public void PreviewSessionFailureReportsTheActualActivationBoundary()
+    {
+        using var listener = new PreviewTraceCaptureListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            using var session = new ShellPreviewSession(
+                @"C:\synthetic\report.docx",
+                Guid.Parse("11111111-1111-4111-8111-111111111111"));
+            Assert.Throws<PreviewHostLoadException>(() => session.Start(IntPtr.Zero, 100, 80));
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+        string[] events = listener.Lines.Select(line =>
+        {
+            using var document = JsonDocument.Parse(line);
+            return document.RootElement.GetProperty("event").GetString()!;
+        }).ToArray();
+        CollectionAssert.AreEqual(new[]
+        {
+            "preview.host.phase.ComActivationStarted",
+            "preview.host.phase.PreviewSessionFailed",
+        }, events);
+    }
+
+    [TestMethod]
     public void PreviewHostArguments_ParseAbsolutePathAndHandler()
     {
         string documentPath = Path.Combine("C:\\", "Private Files", "quarterly report.docx");
