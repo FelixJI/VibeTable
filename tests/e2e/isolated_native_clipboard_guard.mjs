@@ -150,6 +150,20 @@ export function createIsolatedNativeClipboardGuard({ env = process.env, runProbe
       unconfirmedWrites -= 1;
     },
 
+    // Registers an externally issued native write (e.g. the product's own
+    // Ctrl+C Host SetText) BEFORE it is triggered: if that write times out
+    // or lands late, cleanup must stay indeterminate until adopt confirms
+    // the exact landed text, instead of clearing the previous owned state
+    // and reporting a false clean.
+    beginUnconfirmedNativeWrite() {
+      requireGate();
+      if (!armed) {
+        throw new Error(
+          "cannot register a native clipboard write before the guard verified the isolated clipboard");
+      }
+      unconfirmedWrites += 1;
+    },
+
     // Adopts only a pre-declared exact expected output of the product's own
     // copy: the observed text must equal one candidate byte-for-byte, and the
     // probe re-verifies it before ownership is claimed. Observed content is
@@ -168,6 +182,7 @@ export function createIsolatedNativeClipboardGuard({ env = process.env, runProbe
           + `output (${expectedTexts.length} candidate(s)); refusing to adopt it`);
       }
       await confirmOwned(exact, "product-written clipboard adoption");
+      unconfirmedWrites = Math.max(0, unconfirmedWrites - 1);
     },
 
     async release() {

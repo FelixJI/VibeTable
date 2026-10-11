@@ -4446,6 +4446,137 @@ describe("WorkspaceView", () => {
       expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
     });
 
+    /** Opens the export lookup panel through the real toolbar flow. */
+    async function openExportLookupPanel(
+      wrapper: Awaited<ReturnType<typeof openTableView>>,
+      io: Pick<ReturnType<typeof makeRecordingBridge>, "posted" | "emit">,
+    ): Promise<void> {
+      const { posted, emit } = io;
+      useTableStore().revision = {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      };
+      wrapper.findComponent(AppToolbar).vm.$emit("exportData", "xlsx");
+      await flushPromises();
+      let catalogRequest = posted.at(-2)!;
+      expect(catalogRequest.type).toBe("schema.describe");
+      emit({
+        type: "schema.describe",
+        requestId: catalogRequest.requestId,
+        payload: {
+          contract: "vibetable.schema-describe.v1",
+          collection: "users",
+          requestGeneration: (catalogRequest.payload as { requestGeneration: number }).requestGeneration,
+          schema: { collection: "users", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+          capabilities: {},
+        },
+      });
+      catalogRequest = posted.at(-1)!;
+      expect(catalogRequest.type).toBe("lookup.list");
+      emit({
+        type: "lookup.list",
+        requestId: catalogRequest.requestId,
+        payload: { collection: "users", lookupRevision: "lookup-1", definitions: [] },
+      });
+      await flushPromises();
+      expect(document.body.querySelector('[data-testid="export-lookup-panel"]')).toBeTruthy();
+    }
+
+    it("Ctrl+C with the export lookup panel open never posts clipboard.writeText", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openExportLookupPanel(wrapper, { posted, emit });
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
+    it("opening the export lookup panel during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      await openExportLookupPanel(wrapper, { posted, emit });
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    /** Opens the import preview session through the legacy toolbar flow. */
+    async function openImportPreviewSession(
+      wrapper: Awaited<ReturnType<typeof openTableView>>,
+      io: Pick<ReturnType<typeof makeRecordingBridge>, "posted" | "emit">,
+    ): Promise<void> {
+      const { posted, emit } = io;
+      useTableStore().revision = {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      };
+      posted.length = 0;
+      wrapper.findComponent(AppToolbar).vm.$emit("importData");
+      await flushPromises();
+      let request = posted.find(item => item.type === "data.importSourceRequested")!;
+      emit({ type: request.type, requestId: request.requestId, payload: { grantId: "grant-import", displayName: "users.csv" } });
+      await flushPromises();
+      request = posted.find(item => item.type === "data.previewImport")!;
+      emit({
+        type: request.type,
+        requestId: request.requestId,
+        payload: {
+          collection: "users", schemaRevision: "schema-1", capabilityHash: "cap-1", sourceHash: "source-1",
+          token: { token: "import-token", expiresAt: 9999999999, consumed: false },
+          summary: { validRows: 1, errorRows: 0, warningRows: 0, totalRows: 1, errorCount: 0, warningCount: 0 },
+          rows: [], sourceColumns: ["title"], unmatchedColumns: [], diagnostics: [],
+        },
+      });
+      await flushPromises();
+      const describeRequest = posted
+        .filter(item => item.type === "schema.describe")
+        .at(-1)!;
+      emit({
+        type: "schema.describe",
+        requestId: describeRequest.requestId,
+        payload: {
+          contract: "vibetable.schema-describe.v1",
+          collection: "users",
+          requestGeneration: (describeRequest.payload as { requestGeneration: number }).requestGeneration,
+          schema: { collection: "users", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+          capabilities: {},
+        },
+      });
+      await flushPromises();
+      expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeTruthy();
+    }
+
+    it("Ctrl+C with the import preview session open never posts clipboard.writeText", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openImportPreviewSession(wrapper, { posted, emit });
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
     it("Ctrl+C/Ctrl+V never touch the native clipboard while the plugin action panel is open", async () => {
       const { bridge, posted } = makeRecordingBridge();
       setHostBridgeForTesting(bridge);

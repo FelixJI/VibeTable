@@ -128,9 +128,12 @@ export function useKeyboard(opts: UseKeyboardOptions): void {
     const tableContext = !(opts.isForegroundOverlay?.() ?? false)
       && (opts.isTableContext?.() ?? true);
 
-    // Inside a form field or over a plain text selection, ignore everything
-    // except Escape (which must bubble so modals/panels can close).
-    if ((inInput || inTextSelection) && e.key !== "Escape") return;
+    // Inside a form field, ignore everything except Escape (which must
+    // bubble so modals/panels can close). A plain static text selection
+    // outside the grid owns only clipboard/text semantics, so it suppresses
+    // just the grid-scoped commands below; the global shortcuts (Ctrl+N,
+    // ?, Ctrl+R, undo/redo) stay available over such a selection.
+    if (inInput && e.key !== "Escape") return;
 
     // --- Global scope -------------------------------------------------------
     if (tableContext && matchesShortcut(e, "Ctrl+Z")) {

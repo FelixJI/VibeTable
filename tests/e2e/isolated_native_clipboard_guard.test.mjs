@@ -274,6 +274,75 @@ test("adopting before the guard is armed is refused", async () => {
     guard.adopt("page", ["HT-000001"], { bridgeRequest }),
     /before the guard verified the isolated clipboard/,
   );
+  assert.throws(
+    () => guard.beginUnconfirmedNativeWrite(),
+    /before the guard verified the isolated clipboard/,
+  );
+});
+
+test("a registered external copy keeps cleanup indeterminate while it may still land", async () => {
+  const { guard, probeCalls, bridgeRequest } = makeHarness({
+    env: GITHUB_HOSTED_ENV,
+    probeScript: [
+      { ok: true, empty: true, formatCount: 0, sequence: 11 },
+      { ok: true, verified: true, sequence: 12 },
+      { ok: true, empty: false, formatCount: 1, sequence: 12 },
+    ],
+    bridgeScript: successfulBridgeRoundTrip("number-copy-sentinel"),
+  });
+  await guard.seed("page", "number-copy-sentinel", { bridgeRequest });
+  // The product's Ctrl+C Host SetText is registered as unconfirmed; it times
+  // out or is still in flight, so even the unchanged owned sentinel state
+  // must not be cleared and reported clean.
+  guard.beginUnconfirmedNativeWrite();
+  const cleanup = await guard.release();
+  assert.deepEqual(cleanup, {
+    status: "indeterminate",
+    unconfirmedWrites: 1,
+    observedEmpty: false,
+    formatCount: 1,
+  });
+  // No clear-owned was issued: the possibly late-landing copy decides the
+  // final state, not a momentary observation.
+  assert.deepEqual(
+    probeCalls.map((call) => call.command),
+    ["inspect", "confirm-owned", "inspect"],
+  );
+  const result = { status: "passed" };
+  assert.equal(applyNativeClipboardCleanupResult(result, cleanup), true);
+  assert.equal(result.status, "failed");
+  assert.match(result.cleanupError, /never confirmed/);
+});
+
+test("a registered external copy settles through a successful adopt", async () => {
+  const { guard, probeCalls, bridgeRequest } = makeHarness({
+    env: GITHUB_HOSTED_ENV,
+    probeScript: [
+      { ok: true, empty: true, formatCount: 0, sequence: 11 },
+      { ok: true, verified: true, sequence: 12 },
+      { ok: true, verified: true, sequence: 14 },
+      { ok: true, cleared: true, alreadyEmpty: false, emptyAfter: true },
+    ],
+    bridgeScript: [
+      ...successfulBridgeRoundTrip("number-copy-sentinel"),
+      () => ({ payload: { text: "HT-000001\r\n" } }),
+    ],
+  });
+  await guard.seed("page", "number-copy-sentinel", { bridgeRequest });
+  guard.beginUnconfirmedNativeWrite();
+  await guard.adopt(
+    "page",
+    ["HT-000001", "HT-000001\n", "HT-000001\r\n"],
+    { bridgeRequest },
+  );
+  // The late-completing copy landed and was confirmed, so cleanup is settled
+  // and clears the confirmed state normally.
+  const cleanup = await guard.release();
+  assert.deepEqual(cleanup, { status: "clean", cleared: true, alreadyEmpty: false });
+  assert.deepEqual(probeCalls[3].payload, {
+    ownedTexts: ["number-copy-sentinel", "HT-000001\r\n"],
+    expectedSequence: 14,
+  });
 });
 
 test("foreign clipboard content is preserved and the run fails honestly", async () => {

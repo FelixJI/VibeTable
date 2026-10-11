@@ -1956,7 +1956,7 @@ async function scenario02(page, recorder, _network, runtime) {
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
     applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
-    adoptIsolatedNativeClipboardText,
+    adoptIsolatedNativeClipboardText, beginIsolatedNativeClipboardWrite,
   });
   // 复用 AutoNumber 已执行的真实工作区重开，保留相同字段/记录身份和格式。
   await selectTable(page, "E2E Number Display UI");
@@ -2124,6 +2124,10 @@ async function seedIsolatedNativeClipboard(page, text, runtime) {
 async function adoptIsolatedNativeClipboardText(page, expectedTexts, runtime) {
   const guard = ensureIsolatedNativeClipboardGuard(runtime);
   await guard.adopt(page, expectedTexts, { bridgeRequest: rawBridgeRequest });
+}
+
+function beginIsolatedNativeClipboardWrite(runtime) {
+  ensureIsolatedNativeClipboardGuard(runtime).beginUnconfirmedNativeWrite();
 }
 
 async function releaseIsolatedNativeClipboardGuard() {

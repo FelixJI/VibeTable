@@ -569,6 +569,8 @@ const isForegroundOverlayOpen = (): boolean =>
   || fieldSettingsState.open
   || columnContextMenu.value.show
   || pluginContextMenu.value.show
+  || importPreviewSession.value !== null
+  || exportLookupPanel.value !== null
   || plugins.actionOpen;
 
 const canExecuteGridCommand = (): boolean =>

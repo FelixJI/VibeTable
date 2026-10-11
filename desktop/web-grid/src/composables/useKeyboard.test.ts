@@ -206,6 +206,79 @@ describe("useKeyboard", () => {
     wrapper.unmount();
   });
 
+  it("keeps global shortcuts available over a plain text selection while grid commands stay suppressed", () => {
+    const kb = useKeyboardStore();
+    const onCopy = vi.fn();
+    const onSelectAll = vi.fn();
+    const onDelete = vi.fn();
+    const onNewTable = vi.fn();
+    const onHelp = vi.fn();
+    const onRefresh = vi.fn();
+    const onUndo = vi.fn();
+    const wrapper = mountKeyboard({
+      ...noopTabulator, onCopy, onSelectAll, onDelete, onNewTable, onHelp, onRefresh, onUndo,
+    });
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "普通静态文字选区";
+    document.body.appendChild(paragraph);
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    // Clipboard/grid commands stay owned by the text selection.
+    fireKey("c", { ctrlKey: true });
+    fireKey("v", { ctrlKey: true });
+    fireKey("a", { ctrlKey: true });
+    fireKey("Delete");
+    expect(onCopy).not.toHaveBeenCalled();
+    expect(onSelectAll).not.toHaveBeenCalled();
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(kb.lastFired).toBeNull();
+
+    // Global shortcuts must not be blocked by the static selection.
+    fireKey("n", { ctrlKey: true });
+    fireKey("r", { ctrlKey: true });
+    fireKey("z", { ctrlKey: true });
+    fireKey("?");
+    expect(onNewTable).toHaveBeenCalledTimes(1);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(onUndo).toHaveBeenCalledTimes(1);
+    expect(onHelp).toHaveBeenCalledTimes(1);
+
+    selection.removeAllRanges();
+    document.body.removeChild(paragraph);
+    wrapper.unmount();
+  });
+
+  it("keeps input protection for global shortcuts as well", () => {
+    const kb = useKeyboardStore();
+    const onNewTable = vi.fn();
+    const onHelp = vi.fn();
+    const onRefresh = vi.fn();
+    const onUndo = vi.fn();
+    const wrapper = mountKeyboard({
+      ...noopTabulator, onNewTable, onHelp, onRefresh, onUndo,
+    });
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+
+    fireKey("n", { ctrlKey: true });
+    fireKey("r", { ctrlKey: true });
+    fireKey("z", { ctrlKey: true });
+    fireKey("?");
+    expect(onNewTable).not.toHaveBeenCalled();
+    expect(onRefresh).not.toHaveBeenCalled();
+    expect(onUndo).not.toHaveBeenCalled();
+    expect(onHelp).not.toHaveBeenCalled();
+    expect(kb.lastFired).toBeNull();
+
+    document.body.removeChild(input);
+    wrapper.unmount();
+  });
+
   it("keeps grid shortcuts working for selections anchored inside the grid root", () => {
     const onCopy = vi.fn();
     const wrapper = mountKeyboard({ ...noopTabulator, onCopy });

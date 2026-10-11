@@ -9,7 +9,7 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, insertRowFromToolbar,
     applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
-    adoptIsolatedNativeClipboardText } = ports;
+    adoptIsolatedNativeClipboardText, beginIsolatedNativeClipboardWrite } = ports;
   const populated = await createSimpleTable(page, "E2E AutoNumber Backfill", "Title");
   await applyProductMutation(page, populated.tableId, Array.from({ length: 3 }, () => ({
     kind: "insert", recordId: null, values: {},
@@ -66,6 +66,10 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   await numberCell.waitFor();
   await seedIsolatedNativeClipboard(page, "number-copy-sentinel", runtime);
   await numberCell.click();
+  // Register the product's own Host SetText as unconfirmed before the key
+  // press: a timed-out or late-landing copy must keep the finally cleanup
+  // indeterminate instead of clearing the previous owned sentinel.
+  beginIsolatedNativeClipboardWrite(runtime);
   await page.keyboard.press("Control+c");
   let copied = "";
   const copyDeadline = Date.now() + 10_000;
