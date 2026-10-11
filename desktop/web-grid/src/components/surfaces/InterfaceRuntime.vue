@@ -197,7 +197,7 @@ async function execute(actionId: string, bindingId: string | null, elementId: st
             : null,
           selectedKeys: recordIdentity(row) === undefined ? [] : [recordIdentity(row)!],
           locale: ui.locale,
-          theme: ui.themeMode === "dark" ? "dark" : "light",
+          theme: ui.effectiveTheme,
           density: ui.density,
           user: plugins.currentUser,
           hostVersion: plugins.hostVersion,

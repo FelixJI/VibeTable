@@ -1,11 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { createHostBridge } from "@/bridge/hostBridge";
+import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import type { PluginAuditEvent, PluginSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { usePluginService } from "@/services/pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
+import { useUiStore } from "@/stores/uiStore";
 import PluginCenterView from "./PluginCenterView.vue";
 
 const blockedPlugin: PluginSnapshot = {
@@ -119,6 +120,37 @@ describe("PluginCenterView", () => {
     } finally {
       wrapper.unmount();
       process.env.TZ = previousTimeZone;
+    }
+  });
+
+  it("reprojects action context when a system theme arrives or changes", async () => {
+    const themes: string[] = [];
+    const bridge = createHostBridge({ webview: {
+      postMessage: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } });
+    const request = vi.fn(async (_type: string, payload: { context: { theme: string } }) => {
+      themes.push(payload.context.theme);
+      return { available: true, reasons: [] };
+    });
+    setHostBridgeForTesting({ ...bridge, request } as HostBridge);
+    usePluginStore().applyPlugin({ ...blockedPlugin, status: "enabled", revision: 8 });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    try {
+      await wrapper.get(".run-button").trigger("click");
+      await flushPromises();
+      const ui = useUiStore();
+      ui.applyThemeProjection({ preference: "system", effective: "dark", highContrast: false });
+      await wrapper.get(".run-button").trigger("click");
+      await flushPromises();
+      ui.applyThemeProjection({ preference: "system", effective: "light", highContrast: false });
+      await wrapper.get(".run-button").trigger("click");
+      await flushPromises();
+      expect(themes).toEqual(["light", "dark", "light"]);
+    } finally {
+      wrapper.unmount();
+      bridge.stop();
     }
   });
 

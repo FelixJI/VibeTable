@@ -1,8 +1,9 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { getLocale, setLocale, type Locale } from "@/i18n";
 
 export type ThemeMode = "light" | "dark" | "system";
+export type SystemBaseTheme = "light" | "dark";
 export type AppView = "home" | "tables" | "imports" | "dashboard" | "interfaces" | "files" | "search" | "conflicts" | "plugins" | "settings";
 export type StartupPage = "home" | "tables";
 export type WorkspaceStartupPolicy = "lastWorkspace" | "workspaceCenter";
@@ -22,7 +23,6 @@ export interface RecentTable {
   readonly openedAt: number;
 }
 
-const THEME_KEY = "vt:theme";
 const STARTUP_KEY = "vt:startup-page";
 const WORKSPACE_STARTUP_POLICY_KEY = "vt:workspace-startup-policy";
 const QUOTE_KEY = "vt:show-daily-quote";
@@ -34,13 +34,6 @@ const ADMIN_CONFIRM_CLOSE_KEY = "vt:admin-confirm-close";
 const ADMIN_RELEASE_IDLE_KEY = "vt:admin-release-idle";
 const DENSITY_KEY = "vt:density";
 const LEGACY_RECENT_KEY = "vt:recent-tables";
-
-function loadThemeMode(): ThemeMode {
-  const stored = readStorage(THEME_KEY) as ThemeMode | null;
-  return stored === "light" || stored === "dark" || stored === "system"
-    ? stored
-    : "system";
-}
 
 function readStorage(key: string): string | null {
   try {
@@ -117,7 +110,18 @@ export const useUiStore = defineStore("ui", () => {
   const deleteTarget = ref<string | null>(null);
   const pastePanelOpen = ref(false);
   const shortcutsOpen = ref(false);
-  const themeMode = ref<ThemeMode>(loadThemeMode());
+  // Theme presentation state. The Host is the only persisted-theme authority:
+  // themeMode is the projected preference ("system" also serves as the
+  // pre-projection display default), systemTheme/highContrast come from the
+  // Host's system-appearance snapshot, and hostThemeSynced flips once a
+  // snapshot arrived. Nothing here reads or writes localStorage "vt:theme".
+  const themeMode = ref<ThemeMode>("system");
+  const systemTheme = ref<SystemBaseTheme | null>(null);
+  const effectiveTheme = computed<SystemBaseTheme>(() =>
+    themeMode.value === "system" ? systemTheme.value ?? "light" : themeMode.value,
+  );
+  const highContrast = ref(false);
+  const hostThemeSynced = ref(false);
   const startupPage = ref<StartupPage>(loadStartupPage());
   const workspaceStartupPolicy = ref<WorkspaceStartupPolicy>(
     loadWorkspaceStartupPolicy(),
@@ -162,8 +166,20 @@ export const useUiStore = defineStore("ui", () => {
     shortcutsOpen.value = false;
   }
   function setThemeMode(m: ThemeMode): void {
+    // Local presentation projection only; persistence belongs to the Host
+    // through the theme projection service (AppPreferences is the single
+    // durable theme authority).
     themeMode.value = m;
-    writeStorage(THEME_KEY, m);
+  }
+  function applyThemeProjection(projection: {
+    preference: ThemeMode | null;
+    effective: SystemBaseTheme;
+    highContrast: boolean;
+  }): void {
+    themeMode.value = projection.preference ?? "system";
+    systemTheme.value = projection.effective;
+    highContrast.value = projection.highContrast;
+    hostThemeSynced.value = true;
   }
   function navigate(view: AppView): void {
     activeView.value = view;
@@ -236,6 +252,10 @@ export const useUiStore = defineStore("ui", () => {
     pastePanelOpen,
     shortcutsOpen,
     themeMode,
+    effectiveTheme,
+    systemTheme,
+    highContrast,
+    hostThemeSynced,
     startupPage,
     workspaceStartupPolicy,
     activeView,
@@ -259,6 +279,7 @@ export const useUiStore = defineStore("ui", () => {
     openShortcuts,
     closeShortcuts,
     setThemeMode,
+    applyThemeProjection,
     navigate,
     setStartupPage,
     setWorkspaceStartupPolicy,

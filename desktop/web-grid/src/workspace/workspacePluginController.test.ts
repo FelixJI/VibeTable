@@ -80,6 +80,15 @@ describe("workspacePluginController", () => {
       riskLabel: risk => risk,
     });
 
+    const ui = useUiStore();
+    expect(controller.theme.value.mode).toBe("light");
+    ui.applyThemeProjection({ preference: "system", effective: "dark", highContrast: false });
+    expect(controller.theme.value.mode).toBe("dark");
+    ui.applyThemeProjection({ preference: "system", effective: "light", highContrast: false });
+    expect(controller.theme.value.mode).toBe("light");
+    ui.applyThemeProjection({ preference: "dark", effective: "dark", highContrast: false });
+    expect(controller.theme.value.mode).toBe("dark");
+
     await controller.dispatch({ type: "action.open", key: "com.acme.clean/normalize" });
 
     expect(describeAction).toHaveBeenCalledWith(
@@ -88,6 +97,7 @@ describe("workspacePluginController", () => {
       expect.objectContaining({
         contract: "vibetable.command-context.v1",
         collection: "orders",
+        theme: "dark",
         selectedKeys: ["row-1", 2],
       }),
     );

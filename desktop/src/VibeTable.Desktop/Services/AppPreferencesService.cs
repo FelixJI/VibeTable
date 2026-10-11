@@ -9,7 +9,8 @@ internal sealed record AppPreferences(
     bool MinimizeToTrayOnClose,
     bool StartWithWindows,
     string UpdateProxy = UpdateProxyOptions.Direct,
-    string? CustomUpdateProxyUrl = null)
+    string? CustomUpdateProxyUrl = null,
+    string? Theme = null)
 {
     public static AppPreferences Default { get; } = new(false, false);
 }
@@ -19,17 +20,34 @@ internal sealed record AppPreferencesPatch(
     bool? StartWithWindows,
     string? UpdateProxy = null,
     string? CustomUpdateProxyUrl = null,
-    bool HasCustomUpdateProxyUrl = false);
+    bool HasCustomUpdateProxyUrl = false,
+    string? Theme = null,
+    bool HasTheme = false,
+    string? AdoptLegacyTheme = null,
+    bool HasAdoptLegacyTheme = false);
 
 internal sealed record PersistedAppPreferences(
     bool MinimizeToTrayOnClose,
     string UpdateProxy,
-    string? CustomUpdateProxyUrl)
+    string? CustomUpdateProxyUrl,
+    string? Theme = null)
 {
     public static PersistedAppPreferences Default { get; } = new(
         false,
         UpdateProxyOptions.Direct,
         null);
+}
+
+/// <summary>Theme preference values persisted in AppPreferences. A null
+/// theme means "not configured yet" and is distinct from an explicit
+/// <see cref="System"/> choice; only a known value is persisted.</summary>
+internal static class AppThemeOptions
+{
+    public const string Light = "light";
+    public const string Dark = "dark";
+    public const string System = "system";
+
+    public static bool IsKnown(string? value) => value is Light or Dark or System;
 }
 
 internal static class UpdateProxyOptions
@@ -85,10 +103,15 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
             string proxy = UpdateProxyOptions.IsKnown(stored.UpdateProxy ?? "")
                 ? stored.UpdateProxy!
                 : UpdateProxyOptions.Direct;
+            // An unknown or corrupt theme falls back to "not configured"
+            // (null) instead of blocking startup; every other preference
+            // keeps its stored value under the same safe-load rule.
+            string? theme = AppThemeOptions.IsKnown(stored.Theme) ? stored.Theme : null;
             return new PersistedAppPreferences(
                 stored.MinimizeToTrayOnClose,
                 proxy,
-                UpdateProxyOptions.NormalizeCustomUrl(stored.CustomUpdateProxyUrl));
+                UpdateProxyOptions.NormalizeCustomUrl(stored.CustomUpdateProxyUrl),
+                theme);
         }
         catch (FileNotFoundException)
         {
@@ -128,7 +151,8 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
                     new StoredAppPreferences(
                         preferences.MinimizeToTrayOnClose,
                         preferences.UpdateProxy,
-                        preferences.CustomUpdateProxyUrl),
+                        preferences.CustomUpdateProxyUrl,
+                        preferences.Theme),
                     SerializerOptions);
                 stream.Flush(flushToDisk: true);
             }
@@ -151,7 +175,8 @@ internal sealed class JsonAppPreferencesStore : IAppPreferencesStore
     private sealed record StoredAppPreferences(
         bool MinimizeToTrayOnClose,
         string? UpdateProxy = null,
-        string? CustomUpdateProxyUrl = null);
+        string? CustomUpdateProxyUrl = null,
+        string? Theme = null);
 }
 
 internal sealed class AppPreferencesService
@@ -174,7 +199,8 @@ internal sealed class AppPreferencesService
             stored.MinimizeToTrayOnClose,
             _startupRegistration.IsEnabled(),
             stored.UpdateProxy,
-            stored.CustomUpdateProxyUrl);
+            stored.CustomUpdateProxyUrl,
+            stored.Theme);
     }
 
     public AppPreferences ReadForStartup()
@@ -183,12 +209,14 @@ internal sealed class AppPreferencesService
         bool startWithWindows = false;
         string updateProxy = UpdateProxyOptions.Direct;
         string? customUpdateProxyUrl = null;
+        string? theme = null;
         try
         {
             PersistedAppPreferences stored = _store.Read();
             minimizeToTrayOnClose = stored.MinimizeToTrayOnClose;
             updateProxy = stored.UpdateProxy;
             customUpdateProxyUrl = stored.CustomUpdateProxyUrl;
+            theme = stored.Theme;
         }
         catch (Exception exception) when (IsNonCriticalReadFailure(exception))
         {
@@ -208,7 +236,8 @@ internal sealed class AppPreferencesService
             minimizeToTrayOnClose,
             startWithWindows,
             updateProxy,
-            customUpdateProxyUrl);
+            customUpdateProxyUrl,
+            theme);
     }
 
     public AppPreferences Update(AppPreferencesPatch patch)
@@ -220,16 +249,24 @@ internal sealed class AppPreferencesService
             patch.UpdateProxy ?? current.UpdateProxy,
             patch.HasCustomUpdateProxyUrl
                 ? UpdateProxyOptions.NormalizeCustomUrl(patch.CustomUpdateProxyUrl)
-                : current.CustomUpdateProxyUrl);
+                : current.CustomUpdateProxyUrl,
+            patch.HasTheme && AppThemeOptions.IsKnown(patch.Theme)
+                ? patch.Theme
+                : current.Theme);
         if (!UpdateProxyOptions.IsKnown(updated.UpdateProxy))
         {
             throw new ArgumentException("Unknown update proxy.", nameof(patch));
+        }
+        if (patch.HasTheme && !AppThemeOptions.IsKnown(patch.Theme))
+        {
+            throw new ArgumentException("Unknown theme.", nameof(patch));
         }
         bool startupChanged = updated.StartWithWindows != current.StartWithWindows;
         bool storedPreferencesChanged =
             updated.MinimizeToTrayOnClose != current.MinimizeToTrayOnClose
             || updated.UpdateProxy != current.UpdateProxy
-            || updated.CustomUpdateProxyUrl != current.CustomUpdateProxyUrl;
+            || updated.CustomUpdateProxyUrl != current.CustomUpdateProxyUrl
+            || updated.Theme != current.Theme;
 
         if (startupChanged)
         {
@@ -243,7 +280,8 @@ internal sealed class AppPreferencesService
                 _store.Write(new PersistedAppPreferences(
                     updated.MinimizeToTrayOnClose,
                     updated.UpdateProxy,
-                    updated.CustomUpdateProxyUrl));
+                    updated.CustomUpdateProxyUrl,
+                    updated.Theme));
             }
         }
         catch
@@ -255,6 +293,33 @@ internal sealed class AppPreferencesService
             throw;
         }
 
+        return updated;
+    }
+
+    /// <summary>
+    /// One-time legacy migration: persists <paramref name="theme"/> only when
+    /// the Host never persisted a theme (compare-unset). An already configured
+    /// Host value — including an explicit "system" — always wins and is
+    /// returned unchanged without writing. Dispatch is serialized on the UI
+    /// thread, so the read-modify-write is atomic against other updates.
+    /// </summary>
+    public AppPreferences AdoptLegacyTheme(string theme)
+    {
+        if (!AppThemeOptions.IsKnown(theme))
+        {
+            throw new ArgumentException("Unknown theme.", nameof(theme));
+        }
+        AppPreferences current = Read();
+        if (current.Theme is not null)
+        {
+            return current;
+        }
+        AppPreferences updated = current with { Theme = theme };
+        _store.Write(new PersistedAppPreferences(
+            updated.MinimizeToTrayOnClose,
+            updated.UpdateProxy,
+            updated.CustomUpdateProxyUrl,
+            updated.Theme));
         return updated;
     }
 

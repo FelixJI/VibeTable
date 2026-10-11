@@ -26,6 +26,7 @@ internal sealed class ApplicationRequestController : IDisposable
     private readonly AppPreferencesService _preferences;
     private readonly ReleaseUpdateCoordinator _updates;
     private readonly DailyQuoteHostClient _dailyQuotes;
+    private readonly HostAppearanceService _appearance;
     private readonly Func<CancellationToken> _sessionToken;
 
     public ApplicationRequestController(
@@ -34,6 +35,7 @@ internal sealed class ApplicationRequestController : IDisposable
         AppPreferencesService preferences,
         ReleaseUpdateCoordinator updates,
         DailyQuoteHostClient dailyQuotes,
+        HostAppearanceService appearance,
         AppPreferences initialPreferences,
         Func<CancellationToken>? sessionToken = null)
     {
@@ -42,6 +44,7 @@ internal sealed class ApplicationRequestController : IDisposable
         _preferences = preferences ?? throw new ArgumentNullException(nameof(preferences));
         _updates = updates ?? throw new ArgumentNullException(nameof(updates));
         _dailyQuotes = dailyQuotes ?? throw new ArgumentNullException(nameof(dailyQuotes));
+        _appearance = appearance ?? throw new ArgumentNullException(nameof(appearance));
         CurrentPreferences = initialPreferences
             ?? throw new ArgumentNullException(nameof(initialPreferences));
         _sessionToken = sessionToken ?? (() => CancellationToken.None);
@@ -110,7 +113,10 @@ internal sealed class ApplicationRequestController : IDisposable
         {
             if (patch.MinimizeToTrayOnClose is true)
                 _host.EnsureTrayIcon();
-            CurrentPreferences = _preferences.Update(patch);
+            CurrentPreferences = patch.HasAdoptLegacyTheme
+                ? _preferences.AdoptLegacyTheme(patch.AdoptLegacyTheme!)
+                : _preferences.Update(patch);
+            _appearance.SetPreferredTheme(CurrentPreferences.Theme);
             _host.ApplyPreferences(CurrentPreferences);
             PostPreferences(request);
         }
@@ -278,10 +284,14 @@ internal sealed class ApplicationRequestController : IDisposable
         bool? startWithWindows = null;
         string? updateProxy = null;
         string? customUpdateProxyUrl = null;
+        string? theme = null;
+        string? adoptLegacyTheme = null;
         bool sawMinimize = false;
         bool sawStartup = false;
         bool sawUpdateProxy = false;
         bool sawCustomUpdateProxyUrl = false;
+        bool sawTheme = false;
+        bool sawAdoptLegacyTheme = false;
         foreach (JsonProperty property in payload.EnumerateObject())
         {
             if (property.NameEquals("minimizeToTrayOnClose"))
@@ -323,16 +333,51 @@ internal sealed class ApplicationRequestController : IDisposable
                     return false;
                 continue;
             }
+            if (property.NameEquals("theme"))
+            {
+                if (sawTheme || property.Value.ValueKind != JsonValueKind.String)
+                    return false;
+                sawTheme = true;
+                theme = property.Value.GetString();
+                if (theme is null || !AppThemeOptions.IsKnown(theme))
+                    return false;
+                // A direct choice and the one-time legacy adoption are
+                // mutually exclusive: mixing them could overwrite an
+                // explicit Host value through the compare-unset path.
+                if (sawAdoptLegacyTheme)
+                    return false;
+                continue;
+            }
+            if (property.NameEquals("adoptLegacyTheme"))
+            {
+                if (sawAdoptLegacyTheme || property.Value.ValueKind != JsonValueKind.String)
+                    return false;
+                sawAdoptLegacyTheme = true;
+                adoptLegacyTheme = property.Value.GetString();
+                if (adoptLegacyTheme is null || !AppThemeOptions.IsKnown(adoptLegacyTheme))
+                    return false;
+                if (sawTheme)
+                    return false;
+                continue;
+            }
             return false;
         }
-        if (!sawMinimize && !sawStartup && !sawUpdateProxy && !sawCustomUpdateProxyUrl)
+        if (!sawMinimize && !sawStartup && !sawUpdateProxy && !sawCustomUpdateProxyUrl
+            && !sawTheme && !sawAdoptLegacyTheme)
+            return false;
+        if (sawAdoptLegacyTheme
+            && (sawMinimize || sawStartup || sawUpdateProxy || sawCustomUpdateProxyUrl || sawTheme))
             return false;
         patch = new AppPreferencesPatch(
             minimizeToTrayOnClose,
             startWithWindows,
             updateProxy,
             customUpdateProxyUrl,
-            sawCustomUpdateProxyUrl);
+            sawCustomUpdateProxyUrl,
+            theme,
+            sawTheme,
+            adoptLegacyTheme,
+            sawAdoptLegacyTheme);
         return true;
     }
 
@@ -346,6 +391,9 @@ internal sealed class ApplicationRequestController : IDisposable
                 startWithWindows = CurrentPreferences.StartWithWindows,
                 updateProxy = CurrentPreferences.UpdateProxy,
                 customUpdateProxyUrl = CurrentPreferences.CustomUpdateProxyUrl ?? "",
+                theme = CurrentPreferences.Theme,
+                effectiveTheme = _appearance.Projection.Effective,
+                highContrast = _appearance.Projection.HighContrast,
             });
 
     private void TraceUnexpectedFailure(string operation, Exception exception)

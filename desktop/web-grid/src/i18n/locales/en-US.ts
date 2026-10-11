@@ -541,6 +541,7 @@ export const messages: Record<string, string> = {
   "settings.language.hint": "Applies immediately to the web interface",
   "settings.theme": "Theme",
   "settings.theme.hint": "Can follow the Windows appearance setting",
+  "settings.theme.failed": "Theme setting could not be saved",
   "settings.startup": "Startup page",
   "settings.startup.hint": "The first page shown next time VibeTable starts",
   "settings.minimizeToTrayOnClose": "Minimize to tray on close",
