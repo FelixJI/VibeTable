@@ -165,6 +165,7 @@
         "name": "data-io",
         "uv": true,
         "node": true,
+        "dotnet": true,
         "go": true
       },
       {

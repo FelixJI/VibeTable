@@ -1341,6 +1341,12 @@ def persist_product_e2e_evidence(
                 "45-common-field-display-lookup-cards.png",
                 "45-common-field-display-lookup-kanban.png",
             ),
+            "46-dashboard-native-output": (
+                "46-dashboard-export-csv.png",
+                "46-dashboard-export-png.png",
+                "46-dashboard-export-cancelled.png",
+                "46-dashboard-print-dialog-opened.png",
+            ),
             "35-data-io-interoperability": (
                 "35-file-preview-progress.png",
                 "35-file-preview-cancel.json",
