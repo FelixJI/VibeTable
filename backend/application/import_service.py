@@ -24,15 +24,16 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
+import json
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, BinaryIO, Protocol, cast
 
+from backend.application.file_work import Check, CheckedStream, Progress, Report, run_file_work
 from backend.application.host_files import HostFiles, text_stream
 from backend.application.paste_service import PasteMutationPort
 from backend.contracts.data_io import (
@@ -51,6 +52,7 @@ from backend.contracts.data_io import (
 )
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.paste import PastePlanRow
+from backend.rpc.framing import MAX_FRAME_BYTES
 
 #: How long an import preview token remains valid (seconds). The Go import
 #: plan owner enforces this frozen TTL; the value stays here as the public
@@ -193,8 +195,17 @@ class SourceFile:
     reader never loads the entire file into memory at once.
     """
 
-    def __init__(self, stream: BinaryIO, display_name: str) -> None:
-        self._stream = stream
+    def __init__(
+        self,
+        stream: BinaryIO,
+        display_name: str,
+        *,
+        check: Check = lambda: None,
+        report: Report = lambda *_: None,
+    ) -> None:
+        self._check = check
+        self._report = report
+        self._stream = cast(BinaryIO, CheckedStream(stream, check))
         self._display_name = display_name
 
     def read_header_and_rows(
@@ -212,10 +223,15 @@ class SourceFile:
         ``source_hash`` is the SHA-256 of the file bytes (binds the preview).
         """
         digest = hashlib.sha256()
+        read_bytes = 0
+        self._report(0, 0, "校验来源文件")
         while block := self._stream.read(256 * 1024):
             digest.update(block)
+            read_bytes += len(block)
+            self._report(0, 0, f"校验来源文件：{read_bytes} 字节")
         source_hash = digest.hexdigest()
         self._stream.seek(0)
+        self._report(0, 0, "解析来源文件")
         suffix = Path(self._display_name).suffix.lower()
         if suffix in (".xlsx", ".xlsm"):
             header, rows = self._read_xlsx(max_rows=max_rows, sheet=sheet)
@@ -249,6 +265,7 @@ class SourceFile:
             try:
                 data: list[list[Any]] = []
                 for row in rows_iter:
+                    self._check()
                     if len(data) >= max_rows:
                         raise _import_row_limit(max_rows)
                     values: list[Any] = []
@@ -285,6 +302,8 @@ class SourceFile:
                             value = value.isoformat()
                         values.append(value)
                     data.append(values)
+                    if len(data) % 100 == 0:
+                        self._report(len(data), 0, f"解析来源文件：{len(data)} 行")
                 return header, data
             finally:
                 rows_iter.close()
@@ -300,9 +319,12 @@ class SourceFile:
                 return [], []
             data: list[list[Any]] = []
             for row in reader:
+                self._check()
                 if len(data) >= max_rows:
                     raise _import_row_limit(max_rows)
                 data.append(list(row))
+                if len(data) % 100 == 0:
+                    self._report(len(data), 0, f"解析来源文件：{len(data)} 行")
         return header, data
 
 
@@ -312,6 +334,46 @@ def _import_row_limit(max_rows: int) -> ImportFlowError:
         code="import_row_limit",
         data={"maxRows": max_rows},
     )
+
+
+#: Conservative byte cap for the ``task.executionReport`` envelope around
+#: the plan. The TaskStatus contract allows ``taskId`` ≤ 128 and
+#: ``progress.message`` ≤ 512 characters, each character up to 6 bytes when
+#: JSON-escapes a control character; kind/state/error and the done/total
+#: counters reported by the real producers (row counts and byte offsets)
+#: add only a few hundred bytes. 8192 covers every term with headroom.
+_EXECUTION_REPORT_ENVELOPE_BUDGET = 8192
+
+#: Go mint replies use ``imp1.`` + base64(24 random bytes) = 37 ASCII chars
+#: and ``float64(UnixNano)/1e9`` ≈ 18 characters; the placeholders below are
+#: at least as long as any real minted value, so the measured plan is never
+#: smaller than the one that would be delivered.
+_MINTED_TOKEN_PLACEHOLDER = "imp1." + "t" * 64
+_MINTED_EXPIRY_PLACEHOLDER = 1.2345678901234567e99
+
+
+def _reject_undeliverable_plan(plan: ImportPlan) -> None:
+    """Fail an oversized preview BEFORE the Go owner mints a single-use token.
+
+    The terminal report frame is encoded with the exact parameters of
+    ``backend.rpc.framing.write_frame``; a plan whose serialized result plus
+    the envelope budget exceeds the cap would be minted into the Go import
+    plan owner and then dropped by the compact-failure terminal fallback,
+    parking an unreachable plan until the workspace ends. The check uses the
+    minted-token placeholders (never shorter than real values) and never
+    raises the 4 MiB transport boundary itself.
+    """
+    encoded = json.dumps(
+        plan.model_dump(mode="json", by_alias=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    if len(encoded.encode("utf-8")) > MAX_FRAME_BYTES - _EXECUTION_REPORT_ENVELOPE_BUDGET:
+        raise ImportFlowError(
+            "导入预览结果超出宿主传输上限；请减少行数或列数后重新预览",
+            code="import_preview_oversize",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -397,27 +459,27 @@ class ImportService:
     def __init__(
         self,
         *,
-        client: Any,
-        auth: Any,
         bulk: ImportMutationPort,
         profiles: dict[str, CollectionProfile],
         files: HostFiles,
         relation_provider: RelationImportProvider | None = None,
-        clock: Callable[[], float] = time.time,
     ) -> None:
-        self._client = client
-        self._auth = auth
         self._bulk = bulk
         self._profiles = profiles
         self._files = files
         self._relation_provider = relation_provider
-        self._clock = clock
-        # Serializes apply executions inside this worker process only. Plan
-        # consumption, concurrency and idempotency binding are owned by the Go
-        # import plan owner via the staged/settled lifecycle ports.
+        # Serializes reuse of this service instance only; product operations use
+        # separate instances. Cross-operation plan consumption and idempotency
+        # binding belong to the Go import plan owner's staged/settled lifecycle.
         self._apply_lock = asyncio.Lock()
 
-    async def preview(self, params: PreviewImportParams) -> ImportPlan:
+    async def preview(
+        self,
+        params: PreviewImportParams,
+        *,
+        progress: Progress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ImportPlan:
         profile = self._profile(params.collection)
         if params.schema_revision != profile.capability_hash:
             raise ImportFlowError(
@@ -428,16 +490,28 @@ class ImportService:
                     "expectedSchemaRevision": params.schema_revision,
                 },
             )
-        async with self._files.read(params.grant_id) as source:
-            header, rows, source_hash = SourceFile(
-                source.stream, source.display_name
-            ).read_header_and_rows()
+        async with self._files.read(
+            params.grant_id, cancelled=cancelled, progress=progress
+        ) as source:
+            header, rows, source_hash = await run_file_work(
+                lambda check, report: SourceFile(
+                    source.stream, source.display_name, check=check, report=report
+                ).read_header_and_rows(),
+                cancelled=cancelled,
+                progress=progress,
+            )
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
+        if progress:
+            await progress(len(rows), 0, f"校验导入数据：{len(rows)} 行")
         mapping, unmatched = auto_map_columns(header, profile, params.column_mapping)
         relations = {r.field: r for r in profile.relations}
         explicit_by_source = {item.source_column.strip(): item for item in params.column_mapping}
         relation_targets: dict[int, RelationImportTarget] = {}
         relation_mapping_errors: dict[int, tuple[str, str]] = {}
         for col_index, field in mapping.items():
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             relation = relations.get(field)
             explicit = explicit_by_source.get(header[col_index].strip())
             if relation is None:
@@ -479,6 +553,8 @@ class ImportService:
                 )
         plan_rows: list[ImportPlanRow] = []
         for row_offset, raw_row in enumerate(rows):
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             source_row = row_offset + 2  # 1-based + header
             values: dict[str, Any] = {}
             diagnostics: list[ImportCellDiagnostic] = []
@@ -506,6 +582,8 @@ class ImportService:
                     target = relation_targets[col_index]
                     assert self._relation_provider is not None
                     try:
+                        if cancelled and cancelled():
+                            raise asyncio.CancelledError
                         matches = await self._relation_provider.find_exact(target, raw)
                     except Exception as exc:
                         diagnostics.append(
@@ -569,6 +647,8 @@ class ImportService:
                     relation_resolutions=relation_resolutions,
                 )
             )
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
         authoritative = await self._bulk.preview_import(
             collection=params.collection,
             schema_revision=params.schema_revision,
@@ -582,6 +662,8 @@ class ImportService:
             )
         source_column_by_field = {field: index for index, field in mapping.items()}
         for row_index, authoritative_row in enumerate(normalized_rows):
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             if not isinstance(authoritative_row, dict):
                 raise ImportFlowError(
                     "invalid authoritative import preview row",
@@ -635,7 +717,28 @@ class ImportService:
             error_count=error_count,
             warning_count=warning_count,
         )
-        token = await self._mint_plan(
+        if cancelled and cancelled():
+            raise asyncio.CancelledError
+        plan = ImportPlan(
+            collection=params.collection,
+            schema_revision=params.schema_revision,
+            capability_hash=profile.capability_hash,
+            source_hash=source_hash,
+            summary=summary,
+            rows=plan_rows,
+            source_columns=header,
+            unmatched_columns=unmatched,
+            # Worst-case placeholders: the transport budget must be enforced
+            # before the Go owner mints a token an oversized report can never
+            # deliver.
+            token=ImportPreviewToken(
+                token=_MINTED_TOKEN_PLACEHOLDER,
+                expires_at=_MINTED_EXPIRY_PLACEHOLDER,
+                consumed=False,
+            ),
+        )
+        _reject_undeliverable_plan(plan)
+        plan.token = await self._mint_plan(
             collection=params.collection,
             grant_id=params.grant_id,
             schema_revision=params.schema_revision,
@@ -645,17 +748,8 @@ class ImportService:
             mode=params.mode,
             upsert_key=params.upsert_key,
         )
-        return ImportPlan(
-            collection=params.collection,
-            schema_revision=params.schema_revision,
-            capability_hash=profile.capability_hash,
-            source_hash=source_hash,
-            summary=summary,
-            rows=plan_rows,
-            source_columns=header,
-            unmatched_columns=unmatched,
-            token=token,
-        )
+        # A minted plan must remain reachable even if cancellation arrived during minting.
+        return plan
 
     async def apply(
         self,
@@ -748,6 +842,8 @@ class ImportService:
         )
         submitted = False
         try:
+            if cancelled and cancelled():
+                raise asyncio.CancelledError
             if requires_cross_table:
                 if self._relation_provider is None:
                     raise ImportFlowError(
@@ -796,6 +892,11 @@ class ImportService:
             await self._settle_quietly(
                 params.token, "unknown" if submitted else "rejected", staged.attempt
             )
+            if submitted:
+                raise ImportFlowError(
+                    "Import submission outcome is unknown; verify the data before previewing again",
+                    code="import_outcome_unknown",
+                ) from None
             raise
         except Exception as exc:
             known_rejection = getattr(exc, "code", None) in {
@@ -843,7 +944,7 @@ class ImportService:
         commit_grant()
         try:
             await self._settle_plan(params.token, "committed", staged.attempt)
-        except Exception:
+        except Exception, asyncio.CancelledError:
             # The business writes and the Host grant are already committed. The
             # plan stays claimed (fail-closed) instead of pretending nothing
             # happened; a late settle cannot change the reported result.
@@ -851,7 +952,7 @@ class ImportService:
         if progress:
             try:
                 await progress(total, total, "atomic import committed")
-            except Exception:
+            except Exception, asyncio.CancelledError:
                 logger.warning("import.committed_progress_notification_failed")
         return ApplyImportResult(
             collection=params.collection,

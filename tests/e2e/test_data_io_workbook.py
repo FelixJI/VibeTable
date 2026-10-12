@@ -48,3 +48,21 @@ def test_calculation_export_rejects_executable_xlsx_formula(tmp_path: Path) -> N
     workbook.close()
     with pytest.raises(AssertionError):
         verify_export(path, ["text"], [["=1+1"]], string_cells_only=False)
+
+
+def test_slow_preview_fixture_stays_within_atomic_row_limit(tmp_path):
+    from openpyxl import load_workbook
+
+    from tests.e2e.data_io_workbook import write_slow_preview
+
+    path = tmp_path / "slow.xlsx"
+    result = write_slow_preview(path, "f_value")
+    workbook = load_workbook(path, read_only=True)
+    try:
+        rows = workbook.active.iter_rows(values_only=True)
+        header = next(rows)
+        assert header[0] == "f_value"
+        assert len(header) == 128
+        assert sum(1 for _ in rows) == result["rows"] == 1000
+    finally:
+        workbook.close()

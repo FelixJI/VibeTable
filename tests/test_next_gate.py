@@ -2913,6 +2913,8 @@ SCENARIO_SCREENSHOTS = {
         "46-dashboard-print-dialog-opened.png",
     ),
     "35-data-io-interoperability": (
+        "35-file-preview-progress.png",
+        "35-file-preview-cancel.json",
         "35-import-management-history.png",
         "35-import-management-reopened.png",
         "35-source-import-history.png",

@@ -47,6 +47,7 @@ from backend.contracts.task import (
     ResolveGrantParams,
     StartTaskExecutionParams,
     TaskIdParams,
+    TaskStatus,
 )
 from backend.infrastructure.diagnostic_logging import configure_diagnostic_logging
 from backend.infrastructure.plugin_file_capability import HostFileCapabilityAdapter
@@ -55,7 +56,7 @@ from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLi
 from backend.infrastructure.plugin_worker import NodePluginWorkerAdapter
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.error_registry import ErrorDomain, register_application_errors
-from backend.rpc.framing import MAX_FRAME_BYTES
+from backend.rpc.framing import MAX_FRAME_BYTES, FrameTooLargeError
 from backend.rpc.product_errors import register_product_rpc_errors
 from backend.rpc.server import RpcServer
 
@@ -172,6 +173,42 @@ def _register_plugin_methods(
     dispatcher.register("plugin.cancelTask", service.cancel_task, PluginTaskParams)
 
 
+_TERMINAL_TASK_STATES = frozenset(("succeeded", "failed", "cancelled", "aborted"))
+
+
+async def _send_execution_report(server: RpcServer, status: TaskStatus) -> None:
+    """Send one ``task.executionReport``; degrade only oversized terminals.
+
+    ``FrameTooLargeError`` is raised by ``write_frame`` before any byte is
+    written, so an oversized terminal provably never partially landed and is
+    replaced by one compact failure terminal (result dropped, no success/
+    cancellation/rollback claim). Non-terminal reports and any other I/O
+    failure propagate unchanged.
+    """
+    try:
+        await server.notify("task.executionReport", status.model_dump(mode="json", by_alias=True))
+    except FrameTooLargeError:
+        if status.state not in _TERMINAL_TASK_STATES:
+            raise
+        logger.warning(
+            "task %s terminal execution report exceeded the %d byte frame cap; "
+            "delivering a compact failure terminal instead",
+            status.task_id,
+            MAX_FRAME_BYTES,
+        )
+        degraded = status.model_copy(
+            update={
+                "state": "failed",
+                "result": None,
+                "error": (
+                    f"任务结果超出 RPC 帧上限（{MAX_FRAME_BYTES} 字节），终态报告未能送达宿主；"
+                    "本次执行未向宿主交付结果。"
+                ),
+            }
+        )
+        await server.notify("task.executionReport", degraded.model_dump(mode="json", by_alias=True))
+
+
 async def _build_server() -> tuple[
     RpcServer,
     PluginPlatformService | None,
@@ -180,10 +217,7 @@ async def _build_server() -> tuple[
 
     async def notify_task_status(status: Any) -> None:
         if server_ref is not None:
-            await server_ref.notify(
-                "task.executionReport",
-                status.model_dump(mode="json", by_alias=True),
-            )
+            await _send_execution_report(server_ref, status)
 
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader(limit=_READ_LIMIT, loop=loop)

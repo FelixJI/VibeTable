@@ -43,6 +43,18 @@ def write_native(
     }
 
 
+def write_slow_preview(path: Path, field: str) -> dict[str, int]:
+    # Many unmapped cells make parsing observable without exceeding atomic row limits.
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet()
+    sheet.append([field, *[f"unmapped_{index}" for index in range(127)]])
+    for row in range(1000):
+        sheet.append([f"row-{row}", *[f"{row}:{column}:" + "x" * 512 for column in range(127)]])
+    workbook.save(path)
+    workbook.close()
+    return {"rows": 1000, "columns": 128, "bytes": path.stat().st_size}
+
+
 def verify_export(
     path: Path,
     columns: list[str],
@@ -108,6 +120,8 @@ def main() -> None:
         result = write_native(
             path, payload["columns"], payload["date"], payload["stamp"], payload["notes"]
         )
+    elif action == "slow-preview":
+        result = write_slow_preview(path, payload["field"])
     elif action in {"verify", "verify-values"}:
         result = verify_export(
             path, payload["columns"], payload["rows"], string_cells_only=action == "verify"

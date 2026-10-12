@@ -31,6 +31,7 @@ from backend.adapters.pocketbase.client import PocketBaseClient
 from backend.adapters.pocketbase.mutation import PocketBaseBulkMutationClient
 from backend.adapters.pocketbase.transport import PocketBaseConfig, StdlibPocketBaseTransport
 from backend.application.import_service import (
+    _EXECUTION_REPORT_ENVELOPE_BUDGET,
     MAX_ATOMIC_IMPORT_ROWS,
     ImportFlowError,
     ImportService,
@@ -52,6 +53,8 @@ from backend.contracts.data_profile import (
     collection_profile_from_definition,
 )
 from backend.contracts.paste import ApplyPasteResult
+from backend.contracts.task import TaskProgress, TaskStatus
+from backend.rpc.framing import MAX_FRAME_BYTES
 from tests.backend.host_files_fixture import FormatFiles
 from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 
@@ -397,18 +400,12 @@ def _service(
     profiles = profiles or {profile.collection: profile}
     mutation = mutation or FakeProductMutationPort(clock=clock)
 
-    kwargs: dict[str, Any] = {}
-    if clock is not None:
-        kwargs["clock"] = clock
     return (
         ImportService(
-            client=object(),
-            auth=object(),
             bulk=mutation,
             profiles=profiles,
             files=FormatFiles(path, consumed),
             relation_provider=relation_provider,
-            **kwargs,
         ),
         mutation,
     )
@@ -669,6 +666,107 @@ async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path
             "signed_on": "2026-07-14",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_undeliverable_plan_before_minting(tmp_path: Path) -> None:
+    """A plan the host transport can never deliver must fail before minting.
+
+    Oversized terminal reports are replaced by the compact-failure fallback;
+    minting first would park an unreachable single-use plan with the Go import
+    plan owner until the workspace ends (PR474 review comment 4241748219).
+    The 4 MiB frame boundary itself is untouched.
+    """
+    path = tmp_path / "oversize.csv"
+    _write_csv(path, ["title"], [["a" * 8000] for _ in range(600)])
+    service, mutation = _service(path)
+
+    with pytest.raises(ImportFlowError) as rejected:
+        await service.preview(
+            PreviewImportParams(
+                grant_id="grant-1",
+                collection="vibetable_demo",
+                schema_revision="schema-1",
+            )
+        )
+
+    assert rejected.value.code == "import_preview_oversize"
+    # The authoritative preview ran, but no unreachable plan was parked with
+    # the Go owner.
+    assert [call[0] for call in mutation.plan_calls] == []
+    assert len(mutation.preview_calls) == 1
+
+    # A normal small preview on the same service still mints exactly once.
+    small = tmp_path / "small.csv"
+    _write_csv(small, ["title"], [["ok"]])
+    service._files = FormatFiles(small, None)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1",
+            collection="vibetable_demo",
+            schema_revision="schema-1",
+        )
+    )
+    assert [call[0] for call in mutation.plan_calls] == ["mint"]
+    assert plan.token.token
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_one_multibyte_cell_before_minting(tmp_path: Path) -> None:
+    """The budget must measure encoded bytes, not character counts.
+
+    Fifteen 100k-character cells stay under the CSV field limit and total
+    1.5M characters (< 4 MiB), yet encode to 4.5 MB of UTF-8 — over the cap.
+    """
+    path = tmp_path / "unicode.csv"
+    _write_csv(path, ["title"], [["表" * 100_000] for _ in range(15)])
+    service, mutation = _service(path)
+
+    with pytest.raises(ImportFlowError) as rejected:
+        await service.preview(
+            PreviewImportParams(
+                grant_id="grant-1",
+                collection="vibetable_demo",
+                schema_revision="schema-1",
+            )
+        )
+
+    assert rejected.value.code == "import_preview_oversize"
+    assert [call[0] for call in mutation.plan_calls] == []
+
+
+def test_execution_report_envelope_budget_covers_worst_case_metadata() -> None:
+    """The pre-mint gate must never pass a plan the wire would then reject.
+
+    The gate compares plan-only bytes against ``MAX_FRAME_BYTES -
+    _EXECUTION_REPORT_ENVELOPE_BUDGET``. The full report frame with the worst
+    legal metadata — maximal control-character taskId and progress message
+    (6 escaped bytes per character) plus huge integer counters — must stay
+    within the budget, so a plan that passes the gate always fits the real
+    frame cap and is never minted first and dropped at send time.
+    """
+    worst_metadata = TaskStatus(
+        task_id="\x01" * 128,
+        kind="data.previewImport",
+        state="succeeded",
+        progress=TaskProgress(done=2**53, total=2**53, message="\x01" * 512),
+    )
+    worst_envelope = len(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "task.executionReport",
+                "params": worst_metadata.model_dump(mode="json", by_alias=True),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+    assert worst_envelope <= _EXECUTION_REPORT_ENVELOPE_BUDGET
+    # A plan sized to exactly pass the gate still fits under the real cap
+    # once wrapped in the worst-case envelope.
+    assert MAX_FRAME_BYTES - _EXECUTION_REPORT_ENVELOPE_BUDGET + worst_envelope <= MAX_FRAME_BYTES
 
 
 @pytest.mark.asyncio
@@ -1135,7 +1233,9 @@ async def test_expired_import_token_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure_at", ["settlement", "progress"])
+@pytest.mark.parametrize(
+    "failure_at", ["settlement", "progress", "settlement_cancel", "progress_cancel"]
+)
 async def test_committed_import_task_keeps_result_when_final_notification_fails(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, failure_at: str
 ) -> None:
@@ -1160,6 +1260,8 @@ async def test_committed_import_task_keeps_result_when_final_notification_fails(
             return {"reservationId": "r"}
         assert action == "settleImport"
         assert params["outcome"] == "consumed"
+        if failure_at == "settlement_cancel":
+            raise asyncio.CancelledError
         if failure_at == "settlement":
             raise TimeoutError("private transport detail")
         return {"reservationId": "r", "outcome": "consumed"}
@@ -1171,6 +1273,8 @@ async def test_committed_import_task_keeps_result_when_final_notification_fails(
 
     async def progress(done, total, message):
         assert message == "atomic import committed"
+        if failure_at == "progress_cancel":
+            raise asyncio.CancelledError
         if failure_at == "progress":
             raise RuntimeError("private transport detail")
 
@@ -1574,3 +1678,145 @@ def test_auto_number_import_mapping_explains_readonly_and_text_preservation() ->
     )
     assert mapping == {0: "source_number"}
     assert unmatched == []
+
+
+async def test_cancel_during_prefix_binding_rejects_before_business_submission(tmp_path):
+    path = tmp_path / "input.csv"
+    _write_csv(path, ["number"], [["A-1"]])
+    service, mutation = _service(path)
+    profile = service._profile("vibetable_demo")
+    plan = await service.preview(
+        PreviewImportParams(
+            collection=profile.collection,
+            schema_revision=profile.capability_hash,
+            grant_id="g",
+        )
+    )
+    cancel = False
+    bind = mutation.bind_import_plan
+
+    async def cancel_after_bind(**kwargs):
+        nonlocal cancel
+        result = await bind(**kwargs)
+        cancel = True
+        return result
+
+    mutation.bind_import_plan = cancel_after_bind
+    with pytest.raises(asyncio.CancelledError):
+        await service.apply(
+            ApplyImportParams(
+                collection=profile.collection,
+                grant_id="g",
+                token=plan.token.token,
+            ),
+            cancelled=lambda: cancel,
+        )
+    assert mutation.calls == []
+    # The unsubmitted attempt was rejected and remains eligible for an explicit retry.
+    result = await service.apply(
+        ApplyImportParams(
+            collection=profile.collection,
+            grant_id="g",
+            token=plan.token.token,
+        )
+    )
+    assert result.failed_rows == []
+    assert len(mutation.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["mapping", "find_exact"])
+async def test_preview_cancellation_stops_before_the_next_relation_rpc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    path = tmp_path / "relations.csv"
+    _write_csv(path, ["Contract", "Partner"], [["C-1", "C-2"], ["C-3", "C-4"]])
+    profile = collection_profile_from_definition(
+        snapshot_v2(
+            "orders",
+            [
+                field_v2("contract", "relation", target_table_id="contracts"),
+                field_v2("partner", "relation", target_table_id="contracts"),
+            ],
+            revision="schema-1",
+        )
+    )
+    provider = FakeRelationProvider({})
+    calls: list[str] = []
+    cancelled = False
+    inspect = provider.inspect_mapping
+
+    async def inspect_then_cancel(**kwargs: Any) -> RelationImportTarget:
+        nonlocal cancelled
+        calls.append("mapping")
+        target = await inspect(**kwargs)
+        if boundary == "mapping":
+            cancelled = True
+        return target
+
+    async def find_then_cancel(target: RelationImportTarget, value: Any) -> list[Any]:
+        nonlocal cancelled
+        calls.append("find_exact")
+        cancelled = True
+        return ["matched-record"]
+
+    monkeypatch.setattr(provider, "inspect_mapping", inspect_then_cancel)
+    monkeypatch.setattr(provider, "find_exact", find_then_cancel)
+    service, mutation = _service(path, profile=profile, relation_provider=provider)
+    with pytest.raises(asyncio.CancelledError):
+        await service.preview(
+            PreviewImportParams(
+                grant_id="grant-1",
+                collection="orders",
+                schema_revision="schema-1",
+                column_mapping=[
+                    ImportColumnMapping(
+                        source_column=header,
+                        target_field=f"f_{field}",
+                        relation_id=f"orders.fld_{field}",
+                        match_field="number",
+                    )
+                    for header, field in [("Contract", "contract"), ("Partner", "partner0")]
+                ],
+            ),
+            cancelled=lambda: cancelled,
+        )
+    assert calls == (["mapping"] if boundary == "mapping" else ["mapping", "mapping", "find_exact"])
+    assert mutation.preview_calls == []
+    assert mutation.plan_calls == []
+
+
+@pytest.mark.asyncio
+async def test_preview_returns_minted_plan_when_cancellation_arrives_during_mint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "minted.csv"
+    _write_csv(path, ["number"], [[str(index)] for index in range(MAX_ATOMIC_IMPORT_ROWS)])
+    service, mutation = _service(path)
+    cancelled = False
+    mint = mutation.mint_import_plan
+
+    async def mint_then_cancel(**kwargs: Any) -> dict[str, Any]:
+        nonlocal cancelled
+        receipt = await mint(**kwargs)
+        cancelled = True
+        return receipt
+
+    monkeypatch.setattr(mutation, "mint_import_plan", mint_then_cancel)
+    plan = await service.preview(
+        PreviewImportParams(
+            grant_id="grant-1", collection="vibetable_demo", schema_revision="schema-1"
+        ),
+        cancelled=lambda: cancelled,
+    )
+    assert cancelled
+    assert len(plan.rows) == MAX_ATOMIC_IMPORT_ROWS
+    assert list(mutation._plans) == [plan.token.token]
+    staged = await mutation.stage_import_plan(
+        token=plan.token.token,
+        grant_id="grant-1",
+        collection="vibetable_demo",
+        mode="create_only",
+        capability_hash=plan.capability_hash,
+    )
+    assert len(staged["rows"]) == MAX_ATOMIC_IMPORT_ROWS

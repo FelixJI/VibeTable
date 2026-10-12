@@ -215,7 +215,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
     internal (string TaskId, JsonElement Initial) Admit(
         JsonRpcClient client, ProductSidecarIdentity identity, string kind)
     {
-        if (kind is not ("data.import" or "data.export"))
+        if (kind is not ("data.import" or "data.export" or "data.previewImport"))
             throw new JsonException("Unsupported Data IO task kind.");
         lock (_gate)
         {
@@ -243,6 +243,47 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         }
     }
 
+    /// <summary>
+    /// The Host-registered kind for a task in this workspace binding, or false
+    /// for unknown tasks. Read-only admission decisions use this instead of
+    /// trusting renderer-supplied kinds.
+    /// </summary>
+    internal bool TryGetRegisteredTaskKind(string taskId, out string kind)
+    {
+        lock (_gate)
+        {
+            if (_sourceTasks.TryGetValue(taskId, out SourceTask? source))
+            {
+                kind = source.Status.Kind;
+                return true;
+            }
+            if (_tasks.TryGetValue(taskId, out Record? record))
+            {
+                kind = record.Status.Kind;
+                return true;
+            }
+            kind = "";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The task's registered terminal. With no cancellable token this is the
+    /// underlying completion itself, so a committed terminal is synchronously
+    /// observable (no wrapper continuation can lag the report).
+    /// </summary>
+    internal Task<TaskStatus> WaitForTerminalAsync(string taskId, CancellationToken token)
+    {
+        Task<TaskStatus> completion;
+        lock (_gate)
+        {
+            if (!_tasks.TryGetValue(taskId, out Record? record))
+                throw new KeyNotFoundException("Data IO task is not in this workspace.");
+            completion = record.Completion.Task;
+        }
+        return token.CanBeCanceled ? completion.WaitAsync(token) : completion;
+    }
+
     internal (JsonElement Snapshot, JsonRpcClient? Client) RequestCancel(string taskId)
     {
         if (TryCancelSourceImport(taskId, out JsonElement source)) return (source, null);
@@ -253,7 +294,24 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
             if (Terminal(record.Status.State)) return (Snapshot(record), null);
             if (!ReferenceEquals(record.Client, _client) || record.Generation != _generation)
                 return (Snapshot(record), null);
+            // The control lane can overtake a queued start. Keep the intent on
+            // this admitted record until the start receipt permits a second send.
+            record.CancelRequested = true;
             return (Snapshot(record), record.Client);
+        }
+    }
+
+    internal bool NeedsCancellationAfterStart(string taskId, JsonRpcClient client)
+    {
+        lock (_gate)
+        {
+            return !_disposed
+                && ReferenceEquals(client, _client)
+                && _tasks.TryGetValue(taskId, out Record? record)
+                && ReferenceEquals(client, record.Client)
+                && record.Generation == _generation
+                && record.CancelRequested
+                && !Terminal(record.Status.State);
         }
     }
 
@@ -369,7 +427,11 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         return changed;
     }
 
-    private JsonElement EventLocked(Record record) => EventLocked(record.Status);
+    private JsonElement EventLocked(Record record)
+    {
+        if (Terminal(record.Status.State)) record.Completion.TrySetResult(record.Status);
+        return EventLocked(record.Status);
+    }
 
     private JsonElement EventLocked(TaskStatus status)
     {
@@ -390,7 +452,7 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
             sequence = ++_sequence,
             occurredAt = DateTimeOffset.UtcNow.ToString("O"),
             taskId = status.TaskId,
-            taskType = status.Kind is "data.import" or "data.sourceImport" ? "import" : "export",
+            taskType = status.Kind is "data.import" or "data.sourceImport" or "data.previewImport" ? "import" : "export",
             state,
             progress = ratio,
             cursor = (string?)null,
@@ -477,6 +539,9 @@ internal sealed partial class HostDataIoTaskRegistry : IDisposable
         internal long Generation { get; } = generation;
         internal ProductSidecarIdentity Identity { get; } = identity;
         internal TaskStatus Status { get; set; } = status;
+        internal TaskCompletionSource<TaskStatus> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool CancelRequested { get; set; }
         internal bool HistoryStarted { get; set; }
         internal long Order { get; } = Interlocked.Increment(ref _nextOrder);
     }
