@@ -826,7 +826,10 @@ public sealed class SourceImportWindowTests
         Assert.AreEqual(1, session.Disposals);
     }
 
+    // Other STA fixtures can dismiss this real popup through shared native input state.
+    // Keep the open-popup Escape contract isolated from parallel windows.
     [TestMethod]
+    [DoNotParallelize]
     public async Task EscapeClosesExpandedPolicyBeforeCancellingTheWindow()
     {
         var log = new EventLog();

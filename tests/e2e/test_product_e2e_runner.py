@@ -8,7 +8,7 @@ import json
 import sqlite3
 import subprocess
 from collections.abc import Mapping, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import IO, Any
@@ -740,7 +740,7 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
                 # timeout (str case); bytes stdout stays a truncated frame
                 # fragment (leak probe). Neither may reach the result JSON.
                 raise subprocess.TimeoutExpired(
-                    ["powershell.exe", "-EncodedCommand", "encoded-script"],
+                    ["NativeUiaObserver.exe", "7"],
                     5,
                     output=(
                         secret_frame if observation == "timeout-str" else b"VIBETABLE_UIA1\tcHJp"
@@ -750,7 +750,7 @@ def test_native_shell_open_closes_only_a_verified_new_single_synthetic_document(
             if observation == "multiple-tabs":
                 raise subprocess.CalledProcessError(
                     1,
-                    ["powershell.exe", "-EncodedCommand", "encoded-script"],
+                    ["NativeUiaObserver.exe", "7"],
                     stderr="UIA_TAB_COUNT maximum=1 actual=2\n" + "x" * 5000,
                 )
             text = source.read_text() if observation != "wrong-text" else "unrelated user text"
@@ -924,17 +924,22 @@ def test_uia_document_text_returns_documents_only_from_a_complete_frame(
     )
     captured: dict[str, object] = {}
 
-    def capture(_command, **kwargs):
-        captured["timeout"] = kwargs["timeout"]
+    def capture(command, **kwargs):
+        captured.update(kwargs)
+        captured["command"] = command
         return SimpleNamespace(stdout=frame)
 
     with monkeypatch.context() as patch:
+        patch.setattr(runner, "_native_uia_observer_prepared", True)
         patch.setattr(runner.subprocess, "run", capture)
         documents = runner._DocumentNativeWindows.__new__(
             runner._DocumentNativeWindows
         ).document_text(7)
-    # The unchanged 5s budget and the rebuilt [{name, text}] interface.
+    # The complete hidden observer must exit 0 before its unchanged frame is parsed.
+    assert captured["command"] == [str(runner.NATIVE_UIA_OBSERVER_EXE), "7"]
     assert captured["timeout"] == 5
+    assert captured["check"] is True
+    assert captured["creationflags"] == subprocess.CREATE_NO_WINDOW
     assert documents == [{"name": name, "text": text}]
 
 
@@ -945,35 +950,99 @@ def test_uia_document_text_rejects_legacy_json_output(
         return SimpleNamespace(stdout='[{"name":"a.txt","text":"legacy"}]')
 
     with monkeypatch.context() as patch:
+        patch.setattr(runner, "_native_uia_observer_prepared", True)
         patch.setattr(runner.subprocess, "run", capture)
         with pytest.raises(ValueError, match="not a single VIBETABLE_UIA1 frame"):
             runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(7)
 
 
-def test_uia_success_output_drops_powershell_json_for_the_base64_frame(
+def test_uia_document_text_never_parses_a_complete_frame_from_nonzero_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, str] = {}
+    frame = "VIBETABLE_UIA1\t\t"
+    parsed = False
 
-    def capture(command, **_kwargs):
-        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
+    def fail(command, **kwargs):
+        assert kwargs["check"] is True
+        assert kwargs["timeout"] == 5
+        raise subprocess.CalledProcessError(1, command, output=frame)
 
-    with monkeypatch.context() as patch:
-        patch.setattr(runner.subprocess, "run", capture)
-        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
-    script = captured["script"]
-    # The CI boundary: ConvertTo-Json never returned on the success path, so
-    # the success tail must encode the frame with .NET Base64 primitives only.
-    success = script[script.index("UIA_STAGE encode begin") :]
-    assert "ConvertTo-Json" not in success
-    assert '"VIBETABLE_UIA1"' in success
-    assert "[Convert]::ToBase64String" in success
-    assert "[System.Text.UTF8Encoding]::new($false, $true)" in success
-    assert "[Console]::Out.Write($frame)" in success
-    assert "UIA_STAGE output end" in success
-    # The bounded error-metadata branch keeps its independent stderr JSON path.
-    assert "ConvertTo-Json" in script[: script.index("UIA_STAGE encode begin")]
+    def parse(_stdout):
+        nonlocal parsed
+        parsed = True
+        return []
+
+    monkeypatch.setattr(runner, "_native_uia_observer_prepared", True)
+    monkeypatch.setattr(runner.subprocess, "run", fail)
+    monkeypatch.setattr(runner, "_parse_uia_document_frame", parse)
+    with pytest.raises(subprocess.CalledProcessError):
+        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(7)
+    assert not parsed
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_native_uia_preparation_builds_current_sources_once_and_rejects_stale_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed: bool
+) -> None:
+    output = tmp_path / "observer/output/NativeUiaObserver.exe"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"stale executable")
+    commands = []
+    monkeypatch.setattr(runner, "_resolve_executable", lambda name, **_kwargs: name)
+
+    def build(command, **kwargs):
+        commands.append(command)
+        assert kwargs["timeout"] == 120
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+        return SimpleNamespace(returncode=1 if failed else 0, stdout="build", stderr="")
+
+    monkeypatch.setattr(runner, "NATIVE_UIA_OBSERVER_DIRECTORY", tmp_path / "observer")
+    monkeypatch.setattr(runner, "NATIVE_UIA_OBSERVER_EXE", output)
+    monkeypatch.setattr(runner, "_native_uia_observer_prepared", False)
+    monkeypatch.setattr(runner.subprocess, "run", build)
+    if failed:
+        with pytest.raises(subprocess.CalledProcessError):
+            runner._prepare_native_uia_observer()
+        with pytest.raises(OSError, match="not prepared"):
+            runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(7)
+    else:
+        runner._prepare_native_uia_observer()
+        runner._prepare_native_uia_observer()
+    assert len(commands) == 1
+    assert commands[0][:3] == ["dotnet", "build", str(runner.NATIVE_UIA_OBSERVER_PROJECT)]
+    assert "-p:RestoreLockedMode=true" in commands[0]
+    assert commands[0][commands[0].index("--artifacts-path") + 1] == str(
+        tmp_path / "observer/artifacts"
+    )
+    assert runner._native_uia_observer_prepared is (not failed)
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_acceptance_prepares_uia_before_s42_and_fails_closed_on_build_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed: bool
+) -> None:
+    events = []
+
+    def prepare():
+        events.append("prepare")
+        if failed:
+            raise subprocess.CalledProcessError(1, ["dotnet", "build"])
+
+    def scenario(scenario, **_kwargs):
+        events.append("scenario")
+        return _passing_scenario_result(scenario)
+
+    _patch_acceptance_preflight(monkeypatch, run_scenario=scenario)
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", prepare)
+    code, report = runner.run_product_acceptance(
+        package_root=tmp_path / "package",
+        evidence_root=tmp_path / "evidence",
+        selected=["42-file-document-native-operations"],
+    )
+    assert code == (1 if failed else 0)
+    assert events == (["prepare"] if failed else ["prepare", "scenario"])
+    if failed:
+        assert report["scenarios"][0]["error"]["code"] == "NATIVE_UIA_OBSERVER_PREPARATION_FAILED"
 
 
 @pytest.mark.parametrize("case", ["zero", "multiple", "stem-only"])
@@ -3650,6 +3719,7 @@ def _patch_acceptance_preflight(
     monkeypatch.setattr(runner, "audit_package", lambda _package_root: {"passed": True})
     monkeypatch.setattr(runner.shutil, "which", lambda _name: "node")
     monkeypatch.setattr(runner, "run_scenario", run_scenario)
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
     if host_presentation_restart is not None:
         monkeypatch.setattr(
             runner,
@@ -6141,290 +6211,19 @@ def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed
     )
 
 
-@pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA query contract")
-@pytest.mark.parametrize(
-    ("counts", "status_panes", "control_type"),
-    [
-        ((0, 0, 1), 0, "Document"),
-        ((2,), 0, "Document"),
-        ((0,), 0, "Document"),
-        ((1,), 5, "Document"),
-        ((1,), 5, "Edit"),
-        ((2,), 5, "Document"),
-        ((0,), 5, "Document"),
-        ((-1,), 0, "Document"),
-    ],
-)
-def test_native_document_query_waits_only_for_absent_provider_with_original_budget(
-    monkeypatch: pytest.MonkeyPatch,
-    counts: tuple[int, ...],
-    status_panes: int,
-    control_type: str,
-) -> None:
-    import base64
+@contextmanager
+def _owned_native_uia_window(command: list[str]):
     from concurrent.futures import ThreadPoolExecutor
 
-    captured: dict[str, object] = {}
-
-    def capture(command, **kwargs):
-        captured.update(kwargs)
-        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        # A minimal valid frame (empty name/text) keeps the production parse
-        # satisfied; this stub only exists to extract the production script.
-        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(runner.subprocess, "run", capture)
-        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
-    assert captured["timeout"] == 5
-    script = str(captured["script"])
-    query = script[
-        script.index('[Console]::Error.WriteLine("UIA_STAGE document-query begin') : script.index(
-            "$tabCondition ="
-        )
-    ]
-    # The deterministic provider stub has no real UIA parent.
-    query = query.replace(
-        "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
-        "$document.Parent",
-    )
-    # This provider stub exercises the query loop, so it needs no UIA assembly
-    # compilation or real provider registration inside the production deadline.
-    query = query.replace("[System.Windows.Automation.TreeScope]::Descendants", "4")
-    harness = (
-        """
-$ErrorActionPreference = 'Stop'
-# Error reporting must finish even when the PowerShell formatter blocks.
-function Out-Default {
-    [Console]::Error.WriteLine("FORMATTER_GUARD_INVOKED")
-    Start-Sleep -Seconds 20
-}
-$script:counts = @(COUNTS)
-$script:call = 0
-$root = [pscustomobject]@{}
-$root | Add-Member ScriptMethod FindAll {
-    # A negative count represents a provider exception.
-    if ($script:counts[0] -lt 0) {
-        throw [InvalidOperationException]::new('synthetic provider failure')
-    }
-    $count = $script:counts[[Math]::Min($script:call, $script:counts.Count - 1)]
-    $script:call++
-    $window = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.Window"}}}
-    $status = [pscustomobject]@{Current=@{ControlType=@{ProgrammaticName="ControlType.StatusBar"}}}
-    for ($index=0; $index -lt $count; $index++) {
-        [pscustomobject]@{Count=1; Parent=$window; Current=@{
-            ControlType=@{ProgrammaticName="ControlType.CONTROL_TYPE"}}}
-    }
-    for ($index=0; $index -lt STATUS_PANES; $index++) {
-        [pscustomobject]@{Count=1; Parent=$status; Current=@{
-            ControlType=@{ProgrammaticName="ControlType.Edit"}}}
-    }
-}
-[Console]::Out.WriteLine("TEST_PROVIDER_READY")
-if ([Console]::ReadLine() -ne "query") { throw "query start was not requested" }
-$clock = [System.Diagnostics.Stopwatch]::StartNew()
-try {
-""".replace("COUNTS", ",".join(map(str, counts)))
-        .replace("STATUS_PANES", str(status_panes))
-        .replace("CONTROL_TYPE", control_type)
-    )
-    # Exercise the production handler for validation and provider errors.
-    catch = script[script.index("} catch {") :]
-    command = [
-        "powershell.exe",
-        "-NoProfile",
-        "-NonInteractive",
-        "-EncodedCommand",
-        base64.b64encode((harness + query + catch).encode("utf-16-le")).decode("ascii"),
-    ]
-    # This test times the query, not cold PowerShell startup or installation of
-    # the fake provider. The complete production process still has the 5s
-    # deadline asserted above and exercised by the owned-provider integration.
     with subprocess.Popen(
         command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    ) as process:
-        try:
-            assert process.stdout is not None
-            with ThreadPoolExecutor(max_workers=1) as reader:
-                ready = reader.submit(process.stdout.readline)
-                try:
-                    assert ready.result(timeout=30) == "TEST_PROVIDER_READY\n"
-                except BaseException:
-                    process.kill()
-                    raise
-            timed_out = False
-            try:
-                _, stderr = process.communicate("query\n", timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                _, stderr = process.communicate(timeout=5)
-                timed_out = True
-            assert "UIA_STAGE document-query begin" in stderr, stderr
-            assert timed_out == (counts == (0,)), stderr
-            if timed_out:
-                assert "UIA_STAGE document-query end" not in stderr
-            else:
-                assert process.returncode == (0 if counts[-1] == 1 else 1), stderr
-                if counts == (2,):
-                    assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in stderr
-                if counts == (-1,):
-                    assert "UIA_SCRIPT_ERROR " in stderr
-                    assert "synthetic provider failure" in stderr
-            assert "FORMATTER_GUARD_INVOKED" not in stderr, stderr
-        finally:
-            if process.poll() is None:
-                process.kill()
-            process.communicate(timeout=5)
-
-
-@pytest.mark.skipif(runner.os.name != "nt", reason="Windows PowerShell UIA metadata contract")
-def test_native_document_failure_metadata_is_bounded_and_excludes_content(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import base64
-
-    captured: dict[str, str] = {}
-
-    def capture(command, **_kwargs):
-        captured["script"] = base64.b64decode(command[-1]).decode("utf-16-le")
-        return SimpleNamespace(stdout="VIBETABLE_UIA1\t\t")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(runner.subprocess, "run", capture)
-        runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows).document_text(1)
-    script = captured["script"]
-    metadata = script[
-        script.index("    $metadata = @(") : script.index('    throw "UIA_DOCUMENT_COUNT')
-    ].replace(
-        "[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)",
-        "$document.Parent",
-    )
-    harness = """
-$ErrorActionPreference = 'Stop'
-$documents = @(1..12 | ForEach-Object {
-    [pscustomobject]@{
-        Current = [pscustomobject]@{
-            ControlType = [pscustomobject]@{ProgrammaticName='ControlType.Edit'}
-            ClassName = ('c' * 100); AutomationId = ('i' * 100)
-            IsOffscreen = $true; IsContentElement = $false; NativeWindowHandle = $_
-            Name = 'PRIVATE_CONTENT_MUST_NOT_BE_READ'
-        }
-        Parent = [pscustomobject]@{Current=[pscustomobject]@{
-            ControlType=[pscustomobject]@{ProgrammaticName='ControlType.Window'}
-            ClassName=('p' * 100); Name='PRIVATE_PARENT_MUST_NOT_BE_READ'
-        }}
-    }
-})
-"""
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            base64.b64encode((harness + metadata).encode("utf-16-le")).decode("ascii"),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=True,
-    )
-    line = next(line for line in result.stderr.splitlines() if "UIA_DOCUMENT_METADATA" in line)
-    assert "count=12" in line
-    items = json.loads(line.split("items=", 1)[1])
-    assert len(items) == 8
-    assert all(len(item[field]) == 80 for item in items for field in ("class", "id", "parentClass"))
-    assert all(item["offscreen"] is True and item["content"] is False for item in items)
-    assert "PRIVATE_" not in result.stderr
-    assert len(line) < 4096
-
-
-@pytest.mark.skipif(runner.os.name != "nt", reason="Windows UIA provider initialization")
-@pytest.mark.parametrize("startup_delay_ms", [0, 6000])
-def test_native_document_provider_reads_owned_edit_without_compiling_csharp(
-    monkeypatch: pytest.MonkeyPatch, startup_delay_ms: int
-) -> None:
-    import base64
-    from concurrent.futures import ThreadPoolExecutor
-
-    run = subprocess.run
-    captured: dict[str, str] = {}
-
-    def observe(command, **kwargs):
-        assert kwargs["timeout"] == 5
-        script = base64.b64decode(command[-1]).decode("utf-16-le")
-        guard = r"""
-# The production success path must avoid the serializer that timed out in CI.
-function ConvertTo-Json { throw 'generic JSON serialization is unavailable' }
-# An observation initializes the system provider without the Add-Type
-# utility cmdlet at all: known framework assemblies load by strong name.
-function Add-Type { throw 'Add-Type is unavailable' }
-"""
-        command = [
-            *command[:-1],
-            base64.b64encode((guard + script).encode("utf-16-le")).decode("ascii"),
-        ]
-        try:
-            result = run(command, **kwargs)
-        except subprocess.TimeoutExpired as error:
-            stderr = error.stderr
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode("utf-8", errors="replace")
-            stages = "\n".join(
-                line[:512] for line in (stderr or "").splitlines() if "UIA_STAGE " in line
-            )
-            error.add_note(f"UIA timeout stages:\n{stages[-8192:] or '<no stage output>'}")
-            raise
-        captured["stderr"] = result.stderr
-        captured["stdout"] = result.stdout
-        print(f"UIA_CLIENT argv={command[:-1]} timeout={kwargs['timeout']}")
-        print(result.stderr)
-        return result
-
-    # Only this independent STA process owns the synthetic UI. Its bootstrap
-    # is separate from the complete production observation's unchanged 5s.
-    target = r"""
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-$form = [Windows.Forms.Form]::new()
-$edit = [Windows.Forms.TextBox]::new()
-$edit.Multiline = $true
-$edit.ReadOnly = $true
-$edit.Text = "第一行 '引号' `"双引号`" 制表`t结尾`r`nsecond line"
-$form.Controls.Add($edit)
-try {
-    $form.Show()
-    # Publish readiness only when the owner thread is dispatching messages.
-    $null = $form.BeginInvoke([Action]{
-        [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{
-            hwnd = $form.Handle.ToInt64(); pid = $PID;
-            apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
-        }))
-    })
-    [System.Threading.Thread]::Sleep(STARTUP_DELAY_MS)
-    [Windows.Forms.Application]::Run($form)
-} finally { $form.Close(); $form.Dispose() }
-""".replace("STARTUP_DELAY_MS", str(startup_delay_ms))
-    with subprocess.Popen(
-        [
-            "powershell.exe",
-            "-Sta",
-            "-NoProfile",
-            "-NonInteractive",
-            "-EncodedCommand",
-            base64.b64encode(target.encode("utf-16-le")).decode("ascii"),
-        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         creationflags=subprocess.CREATE_NO_WINDOW,
     ) as process:
         native = None
-        hwnd: int | None = None
+        hwnd = None
         try:
             native = runner._DocumentNativeWindows()
             assert process.stdout is not None
@@ -6445,35 +6244,7 @@ try {
             ]
             assert len(windows) == 1
             assert windows[0]["hwnd"] == hwnd
-            with monkeypatch.context() as patch:
-                patch.setattr(runner.subprocess, "run", observe)
-                documents = native.document_text(hwnd)
-            assert len(documents) == 1
-            assert isinstance(documents[0]["name"], str)
-            assert documents[0]["text"] == "第一行 '引号' \"双引号\" 制表\t结尾\r\nsecond line"
-            print(f"UIA_DOCUMENTS {documents}")
-            # Success stdout is exactly one complete Base64 frame — never JSON.
-            frame = captured["stdout"]
-            assert frame.startswith("VIBETABLE_UIA1\t")
-            assert frame.count("\t") == 2
-            assert "\n" not in frame
-            assert "\r" not in frame
-            assert runner._UIA_FRAME_PATTERN.fullmatch(frame)
-            assert "UIA_STAGE document-query end" in captured["stderr"]
-            assert "UIA_STAGE encode begin" in captured["stderr"], captured["stderr"]
-            assert "UIA_STAGE encode end" in captured["stderr"], captured["stderr"]
-            assert "UIA_STAGE output end" in captured["stderr"], captured["stderr"]
-            script_begin = next(
-                line for line in captured["stderr"].splitlines() if "UIA_STAGE script begin" in line
-            )
-            assert "utc=" in script_begin
-            tab_stage = next(
-                line
-                for line in captured["stderr"].splitlines()
-                if "UIA_STAGE tab-query end" in line
-            )
-            assert tab_stage.endswith("count=0")
-            assert "apartment=MTA" in captured["stderr"], captured["stderr"]
+            yield native, hwnd
         finally:
             try:
                 if native is not None and hwnd is not None and process.poll() is None:
@@ -6488,6 +6259,251 @@ try {
                 _, stderr = process.communicate(timeout=5)
                 print(f"UIA_TARGET exit={process.returncode}")
         assert process.returncode == 0, stderr
+
+
+def _native_edit_fixture_command(startup_delay_ms: int = 0, mode: str = "single") -> list[str]:
+    target = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$form = [Windows.Forms.Form]::new()
+$edit = [Windows.Forms.TextBox]::new()
+$edit.Multiline = $true
+$edit.ReadOnly = $true
+$edit.Text = "第一行 '引号' `"双引号`" 制表`t结尾`r`nsecond line"
+$form.Controls.Add($edit)
+EXTRA_CONTROLS
+try {
+    $form.Show()
+    $null = $form.BeginInvoke([Action]{
+        [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{
+            hwnd = $form.Handle.ToInt64(); pid = $PID;
+            apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
+        }))
+    })
+    [System.Threading.Thread]::Sleep(STARTUP_DELAY_MS)
+    [Windows.Forms.Application]::Run($form)
+} finally { $form.Close(); $form.Dispose() }
+""".replace("STARTUP_DELAY_MS", str(startup_delay_ms))
+    extra = ""
+    if mode == "multiple":
+        extra = """
+$second = [Windows.Forms.TextBox]::new()
+$second.Top = 60
+$second.Text = 'PRIVATE_SECOND_EDIT'
+$form.Controls.Add($second)
+"""
+    elif mode == "absent":
+        target = target.replace("$form.Controls.Add($edit)", "")
+    target = target.replace("EXTRA_CONTROLS", extra)
+    return [
+        "powershell.exe",
+        "-Sta",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        base64.b64encode(target.encode("utf-16-le")).decode("ascii"),
+    ]
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows UIA provider initialization")
+@pytest.mark.parametrize("startup_delay_ms", [0, 6000])
+def test_native_document_provider_reads_owned_edit_with_precompiled_observer(
+    monkeypatch: pytest.MonkeyPatch, startup_delay_ms: int
+) -> None:
+    # Preparation builds current sources once; it never launches/prewarms the observer.
+    runner._prepare_native_uia_observer()
+    run = subprocess.run
+    captured = {}
+
+    def observe(command, **kwargs):
+        assert command == [str(runner.NATIVE_UIA_OBSERVER_EXE), str(hwnd)]
+        assert kwargs["timeout"] == 5
+        assert kwargs["check"] is True
+        assert kwargs["creationflags"] == subprocess.CREATE_NO_WINDOW
+        started = runner.time.monotonic()
+        try:
+            result = run(command, **kwargs)
+        except subprocess.TimeoutExpired as error:
+            stderr = error.stderr
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            error.add_note(f"UIA timeout stages:\n{(stderr or '')[-4096:]}")
+            raise
+        captured.update(stdout=result.stdout, stderr=result.stderr)
+        print(
+            f"UIA_OBSERVER elapsedMs={(runner.time.monotonic() - started) * 1000:.3f} exit={result.returncode}"
+        )
+        print(result.stderr)
+        return result
+
+    with _owned_native_uia_window(_native_edit_fixture_command(startup_delay_ms)) as (native, hwnd):
+        with monkeypatch.context() as patch:
+            patch.setattr(runner.subprocess, "run", observe)
+            documents = native.document_text(hwnd)
+        assert len(documents) == 1
+        assert isinstance(documents[0]["name"], str)
+        assert documents[0]["text"] == "第一行 '引号' \"双引号\" 制表\t结尾\r\nsecond line"
+        frame = captured["stdout"]
+        assert frame.startswith("VIBETABLE_UIA1\t")
+        assert frame.count("\t") == 2
+        assert "\n" not in frame
+        assert "\r" not in frame
+        assert runner._UIA_FRAME_PATTERN.fullmatch(frame)
+        for stage in ("document-query end", "encode begin", "encode end", "output end"):
+            assert f"UIA_STAGE {stage}" in captured["stderr"]
+        begin = next(
+            line for line in captured["stderr"].splitlines() if "UIA_STAGE observer begin" in line
+        )
+        assert "utc=" in begin
+        assert "apartment=MTA" in begin
+        tabs = next(
+            line for line in captured["stderr"].splitlines() if "UIA_STAGE tab-query end" in line
+        )
+        assert tabs.endswith("count=0")
+
+
+@pytest.mark.skipif(runner.os.name != "nt", reason="Windows UIA owned rejection fixture")
+@pytest.mark.parametrize("mode", ["multiple", "absent"])
+def test_native_document_observer_rejects_ambiguous_or_absent_owned_provider(mode: str) -> None:
+    runner._prepare_native_uia_observer()
+    with _owned_native_uia_window(_native_edit_fixture_command(mode=mode)) as (native, hwnd):
+        if mode == "multiple":
+            with pytest.raises(subprocess.CalledProcessError) as caught:
+                native.document_text(hwnd)
+            assert caught.value.returncode == 1
+            assert caught.value.stdout == ""
+            assert "UIA_DOCUMENT_COUNT expected=1 actual=2" in caught.value.stderr
+            assert "read-text begin" not in caught.value.stderr
+            assert "PRIVATE_SECOND_EDIT" not in caught.value.stderr
+        else:
+            with pytest.raises(subprocess.TimeoutExpired) as timed:
+                native.document_text(hwnd)
+            assert timed.value.timeout == 5
+            assert not timed.value.stdout
+            stderr = timed.value.stderr
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            assert "UIA_STAGE document-query begin" in (stderr or "")
+            assert "UIA_STAGE document-query end" not in (stderr or "")
+
+
+@pytest.fixture(scope="module")
+def native_value_only_fixture() -> Path:
+    if runner.os.name != "nt":
+        pytest.skip("Windows UIA ValuePattern fixture")
+    directory = runner.ROOT / "build/qa/native-uia-observer-fixture"
+    directory.mkdir(parents=True, exist_ok=True)
+    project = directory / "ValueOnlyFixture.csproj"
+    project.write_text(
+        """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors><PlatformTarget>x64</PlatformTarget>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>
+""",
+        encoding="utf-8",
+    )
+    (directory / "Program.cs").write_text(
+        """using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using System.Windows.Interop;
+
+internal static class Program
+{
+    [STAThread]
+    public static void Main()
+    {
+        var application = new Application();
+        var window = new Window { Width = 400, Height = 200, Content = new ValueOnlyElement() };
+        window.Loaded += (_, _) => window.Dispatcher.BeginInvoke(new Action(() =>
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new {
+                hwnd = new WindowInteropHelper(window).Handle.ToInt64(),
+                pid = Environment.ProcessId, apartment = "STA"
+            }))));
+        application.Run(window);
+    }
+}
+
+internal sealed class ValueOnlyElement : FrameworkElement
+{
+    public ValueOnlyElement() { Width = 300; Height = 100; }
+    protected override AutomationPeer OnCreateAutomationPeer() => new ValueOnlyPeer(this);
+}
+
+internal sealed class ValueOnlyPeer(FrameworkElement owner) : FrameworkElementAutomationPeer(owner), IValueProvider
+{
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Edit;
+    protected override string GetClassNameCore() => "ValueOnlyFixture";
+    protected override string GetNameCore() => "VALUE_ONLY_FIXTURE";
+    public override object? GetPattern(PatternInterface patternInterface) => patternInterface == PatternInterface.Value ? this : null;
+    public bool IsReadOnly => true;
+    public string Value => "PRIVATE_VALUE_ONLY" + new string('x', 4079);
+    public void SetValue(string value) => throw new InvalidOperationException();
+}
+""",
+        encoding="utf-8",
+    )
+    output = directory / "output"
+    dotnet = runner._resolve_executable("dotnet")
+    for command in (
+        [
+            dotnet,
+            "restore",
+            str(project),
+            "--use-lock-file",
+            "--artifacts-path",
+            str(directory / "artifacts"),
+        ],
+        [
+            dotnet,
+            "build",
+            str(project),
+            "--configuration",
+            "Release",
+            "--no-restore",
+            "--artifacts-path",
+            str(directory / "artifacts"),
+            "--output",
+            str(output),
+        ],
+    ):
+        try:
+            subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except subprocess.CalledProcessError as error:
+            error.add_note(error.stdout + error.stderr)
+            raise
+    return output / "ValueOnlyFixture.exe"
+
+
+def test_native_document_observer_rejects_over_limit_value_pattern(
+    native_value_only_fixture: Path,
+) -> None:
+    runner._prepare_native_uia_observer()
+    with _owned_native_uia_window([str(native_value_only_fixture)]) as (native, hwnd):
+        with pytest.raises(subprocess.CalledProcessError) as caught:
+            native.document_text(hwnd)
+        error = caught.value
+        assert error.returncode == 1
+        assert error.stdout == ""
+        assert "UIA_STAGE pattern end" in error.stderr
+        assert "kind=value" in error.stderr
+        assert "UIA_OBSERVER_ERROR UIA_TEXT_LIMIT" in error.stderr
+        assert "PRIVATE_VALUE_ONLY" not in error.stderr
+        assert "VALUE_ONLY_FIXTURE" not in error.stderr
+        assert "output end" not in error.stderr
 
 
 @pytest.mark.parametrize(

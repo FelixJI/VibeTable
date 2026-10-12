@@ -38,6 +38,10 @@ ROOT = Path(__file__).resolve().parents[2]
 NODE_RUNNER = Path(__file__).with_name("webview_product_scenarios.mjs")
 DEFAULT_EVIDENCE = ROOT / "build" / "qa" / "product-e2e"
 CDP_TIMEOUT_SECONDS = 60.0
+NATIVE_UIA_OBSERVER_PROJECT = ROOT / "qa/native-uia-observer/NativeUiaObserver.csproj"
+NATIVE_UIA_OBSERVER_DIRECTORY = ROOT / "build/qa/native-uia-observer"
+NATIVE_UIA_OBSERVER_EXE = NATIVE_UIA_OBSERVER_DIRECTORY / "output/NativeUiaObserver.exe"
+_native_uia_observer_prepared = False
 NORMAL_CLOSE_CONTROL_FILE = "host-normal-close.request"
 LIFECYCLE_EXIT_TIMEOUT_SECONDS = 35.0
 
@@ -50,7 +54,7 @@ from qa.product_scenario_manifest import (  # noqa: E402
     load_scenarios,
     select_scenarios,
 )
-from scripts.build_next import RepoPaths  # noqa: E402
+from scripts.build_next import RepoPaths, _resolve_executable  # noqa: E402
 from scripts.node_toolchain import ensure_node  # noqa: E402
 from scripts.qa._windows_tcp_table import query_windows_tcp_table  # noqa: E402
 from scripts.qa.windows_process_scope import (  # noqa: E402
@@ -1417,6 +1421,44 @@ def _document_native_source(request: Mapping[str, Any], local_data: Path, contro
     return source.resolve()
 
 
+def _prepare_native_uia_observer() -> None:
+    """Build current QA sources once per process, before any observed Shell action."""
+    global _native_uia_observer_prepared
+    if _native_uia_observer_prepared:
+        return
+    NATIVE_UIA_OBSERVER_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    command = [
+        _resolve_executable("dotnet"),
+        "build",
+        str(NATIVE_UIA_OBSERVER_PROJECT),
+        "--configuration",
+        "Release",
+        "-p:RestoreLockedMode=true",
+        "--artifacts-path",
+        str(NATIVE_UIA_OBSERVER_DIRECTORY / "artifacts"),
+        "--output",
+        str(NATIVE_UIA_OBSERVER_EXE.parent),
+        "--nologo",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=120,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    (NATIVE_UIA_OBSERVER_DIRECTORY / "build.stdout.log").write_text(result.stdout, encoding="utf-8")
+    (NATIVE_UIA_OBSERVER_DIRECTORY / "build.stderr.log").write_text(result.stderr, encoding="utf-8")
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, command)
+    if not NATIVE_UIA_OBSERVER_EXE.is_file():
+        raise OSError("native UIA observer build did not produce its executable")
+    _native_uia_observer_prepared = True
+
+
 class _DocumentNativeWindows:
     """Bounded Win32 input/window observation for the one synthetic FileDocument."""
 
@@ -1644,130 +1686,20 @@ class _DocumentNativeWindows:
                 inject(*escape(), mouse(4))
 
     def document_text(self, hwnd: int) -> list[dict[str, str]]:
-        # Only a newly observed HWND is inspected. Windows' own UIA avoids a
-        # Python COM dependency and does not launch or control an editor.
-        script = """
-[Console]::Error.WriteLine("UIA_STAGE script begin elapsedMs=0 apartment=$([System.Threading.Thread]::CurrentThread.GetApartmentState()) utc=$([DateTime]::UtcNow.ToString('o'))")
-$clock = [System.Diagnostics.Stopwatch]::StartNew()
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
-try {
-[Console]::Error.WriteLine("UIA_STAGE assemblies begin elapsedMs=$($clock.ElapsedMilliseconds)")
-# Known framework assemblies load by their strong names; the Add-Type
-# utility cmdlet (and its module bootstrap) stays unloaded on this path.
-[void][Reflection.Assembly]::Load('UIAutomationClient, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
-[Console]::Error.WriteLine("UIA_STAGE client-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
-[void][Reflection.Assembly]::Load('UIAutomationTypes, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
-[Console]::Error.WriteLine("UIA_STAGE types-assembly end elapsedMs=$($clock.ElapsedMilliseconds)")
-# The default-proxy loader scans callers' ReflectedType. Public MethodInfo.Invoke
-# supplies a named framework frame without compiling C# inside the 5s budget.
-$assembly = [System.Windows.Automation.AutomationElement].Assembly.GetName()
-$assembly.Name = "UIAutomationClientsideProviders"
-[Console]::Error.WriteLine("UIA_STAGE provider-registration begin elapsedMs=$($clock.ElapsedMilliseconds)")
-[System.Windows.Automation.ClientSettings].GetMethod(
-    "RegisterClientSideProviderAssembly").Invoke($null, @($assembly))
-[Console]::Error.WriteLine("UIA_STAGE provider-registration end elapsedMs=$($clock.ElapsedMilliseconds)")
-[Console]::Error.WriteLine("UIA_STAGE assemblies end elapsedMs=$($clock.ElapsedMilliseconds)")
-[Console]::Error.WriteLine("UIA_STAGE root begin elapsedMs=$($clock.ElapsedMilliseconds)")
-$root = [System.Windows.Automation.AutomationElement]::FromHandle(
-    [IntPtr]::new([int64]$env:VIBETABLE_QA_NATIVE_HWND))
-[Console]::Error.WriteLine("UIA_STAGE root end elapsedMs=$($clock.ElapsedMilliseconds)")
-$documentCondition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Document)
-$editCondition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Edit)
-$condition = [System.Windows.Automation.OrCondition]::new($documentCondition, $editCondition)
-[Console]::Error.WriteLine("UIA_STAGE document-query begin elapsedMs=$($clock.ElapsedMilliseconds)")
-# A visible Shell window can precede its UIA document provider. Wait only
-# for absence; the enclosing subprocess still enforces the original 5s budget.
-do {
-    $documents = @(foreach ($document in $root.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants, $condition)) {
-        # Classic Notepad exposes its status panes as Edit controls. Their
-        # parent role distinguishes them from document editors, without names.
-        $parent = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)
-        if ($document.Current.ControlType.ProgrammaticName -eq "ControlType.Edit" -and
-            $parent.Current.ControlType.ProgrammaticName -eq "ControlType.StatusBar") { continue }
-        $document
-    })
-    if ($documents.Count -eq 0) { Start-Sleep -Milliseconds 25 }
-} while ($documents.Count -eq 0)
-[Console]::Error.WriteLine("UIA_STAGE document-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($documents.Count)")
-if ($documents.Count -ne 1) {
-    $metadata = @(foreach ($document in @($documents | Select-Object -First 8)) {
-        $current = $document.Current
-        $parent = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($document)
-        $class = [string]$current.ClassName
-        $id = [string]$current.AutomationId
-        $parentClass = [string]$parent.Current.ClassName
-        @{ type = $current.ControlType.ProgrammaticName;
-           class = $class.Substring(0, [Math]::Min(80, $class.Length));
-           offscreen = $current.IsOffscreen; content = $current.IsContentElement;
-           id = $id.Substring(0, [Math]::Min(80, $id.Length)); hwnd = $current.NativeWindowHandle;
-           parentType = $parent.Current.ControlType.ProgrammaticName;
-           parentClass = $parentClass.Substring(0, [Math]::Min(80, $parentClass.Length)) }
-    })
-    $json = ConvertTo-Json -InputObject $metadata -Compress
-    [Console]::Error.WriteLine("UIA_DOCUMENT_METADATA count=$($documents.Count) items=$json")
-    throw "UIA_DOCUMENT_COUNT expected=1 actual=$($documents.Count)"
-}
-$tabCondition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::TabItem)
-[Console]::Error.WriteLine("UIA_STAGE tab-query begin elapsedMs=$($clock.ElapsedMilliseconds)")
-$tabs = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCondition)
-[Console]::Error.WriteLine("UIA_STAGE tab-query end elapsedMs=$($clock.ElapsedMilliseconds) count=$($tabs.Count)")
-if ($tabs.Count -gt 1) { throw "UIA_TAB_COUNT maximum=1 actual=$($tabs.Count)" }
-$items = @(foreach ($document in $documents) {
-    $pattern = $null
-    [Console]::Error.WriteLine("UIA_STAGE pattern begin elapsedMs=$($clock.ElapsedMilliseconds)")
-    if ($document.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
-        [Console]::Error.WriteLine("UIA_STAGE pattern end elapsedMs=$($clock.ElapsedMilliseconds) kind=text")
-        [Console]::Error.WriteLine("UIA_STAGE read-text begin elapsedMs=$($clock.ElapsedMilliseconds)")
-        @{ name = $document.Current.Name; text = $pattern.DocumentRange.GetText(4096) }
-        [Console]::Error.WriteLine("UIA_STAGE read-text end elapsedMs=$($clock.ElapsedMilliseconds)")
-    } elseif ($document.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
-        [Console]::Error.WriteLine("UIA_STAGE pattern end elapsedMs=$($clock.ElapsedMilliseconds) kind=value")
-        [Console]::Error.WriteLine("UIA_STAGE read-text begin elapsedMs=$($clock.ElapsedMilliseconds)")
-        @{ name = $document.Current.Name; text = $pattern.Current.Value }
-        [Console]::Error.WriteLine("UIA_STAGE read-text end elapsedMs=$($clock.ElapsedMilliseconds)")
-    } else {
-        [Console]::Error.WriteLine("UIA_STAGE pattern end elapsedMs=$($clock.ElapsedMilliseconds) kind=unavailable")
-        throw 'UIA_TEXT_PATTERN unavailable'
-    }
-})
-[Console]::Error.WriteLine("UIA_STAGE encode begin elapsedMs=$($clock.ElapsedMilliseconds)")
-$utf8 = [System.Text.UTF8Encoding]::new($false, $true)
-$tab = [string][char]9
-$frame = "VIBETABLE_UIA1" + $tab +
-    [Convert]::ToBase64String($utf8.GetBytes([string]$items[0].name)) + $tab +
-    [Convert]::ToBase64String($utf8.GetBytes([string]$items[0].text))
-[Console]::Error.WriteLine("UIA_STAGE encode end elapsedMs=$($clock.ElapsedMilliseconds) length=$($frame.Length)")
-[Console]::Out.Write($frame)
-[Console]::Error.WriteLine("UIA_STAGE output end elapsedMs=$($clock.ElapsedMilliseconds)")
-} catch {
-    # Bypass PowerShell error formatting so failures retain the observation budget.
-    $reason = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
-    [Console]::Error.WriteLine("UIA_SCRIPT_ERROR " + $reason.Substring(0, [Math]::Min(1024, $reason.Length)))
-    exit 1
-}
-"""
-        environment = os.environ.copy()
-        environment["VIBETABLE_QA_NATIVE_HWND"] = str(hwnd)
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        # Only a newly observed HWND enters the precompiled QA observer.
+        # Preparation builds current sources; this 5s path never builds or prewarms.
+        if not _native_uia_observer_prepared:
+            raise OSError("native UIA observer was not prepared before the Shell action")
         result = subprocess.run(
-            ["powershell.exe", "-Mta", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            env=environment,
+            [str(NATIVE_UIA_OBSERVER_EXE), str(hwnd)],
             capture_output=True,
             text=True,
             encoding="utf-8",
             check=True,
             timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        # The frame is parsed only after subprocess.run(check=True) returned:
-        # the complete process exited 0 before any output is trusted.
+        # Trust stdout only after the complete process exited 0 inside its budget.
         return _parse_uia_document_frame(result.stdout)
 
     def close_new_document(self, hwnd: int, pid: int) -> bool:
@@ -1868,7 +1800,7 @@ def _handle_document_native_request(
     window: dict[str, Any] | None = None
     window_observation: dict[str, Any] | None = None
     # Parent-side observation timing: pairs the whole native observation with
-    # the script's own UIA_STAGE clock (script begin carries a UTC timestamp).
+    # the observer's own UIA_STAGE clock (observer begin carries a UTC timestamp).
     started_at_utc: str | None = None
     started_at: float | None = None
     try:
@@ -1972,7 +1904,7 @@ def _handle_document_native_request(
             raise OSError("Shell Open has no unique newly created window for the synthetic TXT")
         window = candidates[0]
         # Observation clock: taken immediately before the UIA observation call
-        # so its delta against the script's entry UTC locates the PowerShell
+        # so its delta against the observer's entry UTC locates process
         # startup, not the validation/window search that precedes it.
         started_at_utc = datetime.now(UTC).isoformat()
         started_at = time.monotonic()
@@ -3081,6 +3013,14 @@ def run_product_acceptance(
     # point. Unstarted and running scenarios stay explicit failed entries, so a
     # completed subset can never be mistaken for a passing run.
     write_aggregate(report_path, audit=audit, results=results)
+    native_observer_error: str | None = None
+    if any(scenario.id == "42-file-document-native-operations" for scenario in scenarios):
+        try:
+            _prepare_native_uia_observer()
+        except (OSError, subprocess.SubprocessError) as exception:
+            native_observer_error = (
+                f"native UIA observer preparation failed: {type(exception).__name__}"
+            )
     for index, scenario in enumerate(scenarios):
         results[index] = _failure_result(
             scenario,
@@ -3090,7 +3030,16 @@ def run_product_acceptance(
         write_aggregate(report_path, audit=audit, results=results)
         print(f"[product-e2e] scenario {scenario.id} start", flush=True)
         scenario_started = time.monotonic()
-        if scenario.id in _PERSISTENT_RESTART_SEED_FIELDS:
+        if (
+            scenario.id == "42-file-document-native-operations"
+            and native_observer_error is not None
+        ):
+            result = _failure_result(
+                scenario,
+                code="NATIVE_UIA_OBSERVER_PREPARATION_FAILED",
+                message=native_observer_error,
+            )
+        elif scenario.id in _PERSISTENT_RESTART_SEED_FIELDS:
             result = _run_host_presentation_restart_acceptance(
                 scenario,
                 package_root=package_root.resolve(),
