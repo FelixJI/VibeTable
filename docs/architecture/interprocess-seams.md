@@ -51,6 +51,20 @@ Go/UUID/epoch 保持可用且仍零 Python，第二次显式请求才启动成�
 的清理覆盖；后者由 supervisor、epoch teardown 回归和 S36 承担。S18/preset 共用的恢复 helper
 保持纯 Go；原精确 Python kill 与 Go paste token 契约保留。
 
+文件预览通过既有 Host Data IO owner 登记 `data.previewImport` 任务；Web 与导入/导出共用任务 ID、
+会话退役防护及取消入口，工具栏显示真实读取字节、解析行数或编码/写出阶段。未知总量为 0，
+不显示虚构百分比。直接 `data.previewImport` RPC 保留为封闭兼容调用。
+CSV/XLSX 读取、逐页编码和 ZIP 保存离开事件循环；取消检查覆盖逐块、逐行和 ZIP I/O。
+线程被取消后必须完成 join，才可关闭其流或结算 grant。XLSX ZIP 与临时 worksheet 由同一执行收尾。
+每次操作重新读取 Go schema，并为此次执行构造专属 profile；Worker 不再共享可变 schema 缓存。
+
+Python 普通 RPC 仍经上限 64 的 FIFO 串行队列；Host 文件回复由读泵直接路由。
+只有 `task.cancelExecution`、`task.settleExport` 与既有插件取消/交互/文件回复控制入口
+使用独立上限 16 的串行控制队列，任一队列过载均关闭通道，不把业务 RPC 全面并行化。
+Host 导出命令在 registry 的同一锁内获取终态 Task，替代 100ms 自轮询；等待者取消不取消公开记录。
+导出命令在既有 10 秒清理预算内撤销 captured grant、等待 captured worker 结算；
+已确认提交成功优先于迟到取消和清理错误，未确认提交保持 unknown，不宣称已撤销或自动重放。
+
 现行 Product owner 以[生成能力清单](../../contracts/v2/product-rpc-capability-manifest.json)和[ownership inventory](../../contracts/v2/product-runtime-ownership-inventory.json)为准。`query.page`、`query.readRows`、`query.cursorOpen`、`query.cursorFetch`、`query.selectionOpen` 与 `query.view` 按该 policy 直达 Go，Python 不再注册这些方法。selection 产生的 cursor 继续由同一 Go authority 续读。
 `query.view` 以 `queryViewRegistration` 直达既有 `query.Port.ExecuteViewQuery`，保持原 Python
 参数边界、分组投影与公开错误；默认 Host composition 验证 Go epoch、远端错误及关闭取消均不 fallback，S02 通过现有分组／汇总控件覆盖产品链路。

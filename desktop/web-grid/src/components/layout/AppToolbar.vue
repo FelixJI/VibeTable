@@ -19,6 +19,7 @@ const props = withDefaults(defineProps<{
   historyDisabled?: boolean;
   insertRowDisabled?: boolean;
   dataIoBusy?: boolean;
+  dataIoProgress?: string;
   dataIoImportDisabled?: boolean;
   dataIoExportDisabled?: boolean;
 }>(), { pluginActions: () => [] });
@@ -144,6 +145,7 @@ function onSelectTable(key: string) {
         </NButton>
       </NDropdown>
     </div>
+    <span v-if="dataIoBusy && dataIoProgress" class="data-io-progress" role="status" data-testid="data-io-progress">{{ dataIoProgress }}</span>
     <div class="toolbar-actions">
       <NTooltip v-for="action in props.pluginActions" :key="action.key" placement="bottom" :delay="450">
         <template #trigger>
@@ -291,6 +293,7 @@ function onSelectTable(key: string) {
   margin-left: 4px;
   color: var(--vt-fg-muted);
 }
+.data-io-progress { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); padding-inline: 8px; }
 .toolbar-actions { display: flex; align-items: center; }
 .history-control { margin-left: 2px; }
 .history-menu-trigger { width: 22px; padding: 0 3px; }

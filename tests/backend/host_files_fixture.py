@@ -163,7 +163,7 @@ class FormatFiles(HostFiles):
         self.consumed = consumed
 
     @asynccontextmanager
-    async def read(self, grant_id, *, run_id=None):
+    async def read(self, grant_id, *, run_id=None, cancelled=None, progress=None):
         with io.BytesIO(self.path.read_bytes()) as stream:
             yield FileBuffer(stream, self.path.name)
 

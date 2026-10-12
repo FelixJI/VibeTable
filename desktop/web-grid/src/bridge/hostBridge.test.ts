@@ -312,6 +312,25 @@ describe("HostBridge", () => {
       bridge.stop();
     }
   });
+  it("fans out appearance.changed snapshots without a requestId", () => {
+    const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+    bridge.start();
+    const received: unknown[] = [];
+    const unsubscribe = bridge.on("appearance.changed", (payload) =>
+      received.push(payload));
+
+    webview.emit(JSON.stringify({
+      type: "appearance.changed",
+      payload: { preference: null, effective: "dark", highContrast: false },
+    }));
+
+    expect(received).toEqual([
+      { preference: null, effective: "dark", highContrast: false },
+    ]);
+    unsubscribe();
+    bridge.stop();
+  });
+
   it("round-trips the closed application preferences RPC types", async () => {
     const ids = ["preferences-get", "preferences-update"];
     const bridge = createHostBridge({

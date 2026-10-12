@@ -95,7 +95,10 @@ class HostExecutionRuntime:
         *,
         export_grant_id: str | None = None,
     ) -> bool:
-        if kind not in ("data.import", "data.export") or kind not in self._handlers:
+        if (
+            kind not in ("data.import", "data.export", "data.previewImport")
+            or kind not in self._handlers
+        ):
             raise ValueError(f"unknown task kind {kind!r}")
         if task_id in self._handles:
             raise ValueError("task execution identity is already active")
@@ -121,7 +124,10 @@ class HostExecutionRuntime:
             except asyncio.CancelledError:
                 final = TaskStatus(task_id=task_id, kind=kind, state="cancelled", progress=progress)
             except Exception as exc:
-                outcome_unknown = getattr(exc, "code", None) == "import_outcome_unknown"
+                outcome_unknown = getattr(exc, "code", None) in {
+                    "import_outcome_unknown",
+                    "export_outcome_unknown",
+                }
                 state: TaskState = (
                     "cancelled" if token.cancelled and not outcome_unknown else "failed"
                 )

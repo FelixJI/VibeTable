@@ -57,6 +57,8 @@ public partial class MainWindow : Window
     private readonly ProductAuthorityTransitionCoordinator _authorityTransition;
     private readonly DocumentRequestController _documentRequests;
     private readonly NativeProductFileRequestController _nativeProductFiles;
+    private readonly DashboardExportDownloadGate? _dashboardDownloadGate;
+    private readonly DashboardNativeOutputController? _dashboardOutput;
     private readonly PluginSurfaceSessionManager _pluginSurfaces;
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly PluginRequestDispatcher _pluginDispatcher;
@@ -72,6 +74,7 @@ public partial class MainWindow : Window
     private readonly UpdateActivationWorkspaceHealthGate? _updateWorkspaceHealth;
     private readonly string? _e2eControlsDir;
     private readonly AppPreferencesService _appPreferencesService;
+    private readonly HostAppearanceService _appearance;
     private readonly TestModeHostController? _testModeHost;
     private readonly CancellationTokenSource _session = new();
 
@@ -152,6 +155,15 @@ public partial class MainWindow : Window
                 ? (IStartupRegistration)new InMemoryStartupRegistration()
                 : (windowsStartupRegistration = WindowsStartupRegistration.ForCurrentProcess()));
         AppPreferences startupPreferences = _appPreferencesService.ReadForStartup();
+        // Single Host appearance authority: the persisted AppPreferences theme
+        // plus the observed Windows appearance drive the Vt* resource
+        // dictionaries (standard WPF dynamic resources) and the projection
+        // pushed to the renderer. System-change reconciliation always runs on
+        // this window's dispatcher.
+        _appearance = new HostAppearanceService(
+            new WindowsSystemAppearanceSource(),
+            startupPreferences.Theme,
+            Dispatcher);
         if (startup.TestModeTrayLifecycle)
         {
             // Persist inside the isolated test-mode data root so the renderer's
@@ -197,7 +209,15 @@ public partial class MainWindow : Window
             runtimeDataRoot is not null
                 ? Path.Combine(runtimeDataRoot, "webview2-user-data")
                 : null,
-            stableIsolatedUserDataRoot: runtimeDataRoot is not null);
+            stableIsolatedUserDataRoot: runtimeDataRoot is not null)
+        {
+            DashboardDownloads = () => _dashboardDownloadGate,
+        };
+        // Assigned after the bridge so the settlement callback can post
+        // through it; downloads only run after LoadAsync.
+        _dashboardDownloadGate = new DashboardExportDownloadGate(
+            notification => _webBridge.PostNotification("dashboard.exportSettled", notification),
+            message => _readiness?.Trace(message));
         _workspaceRegistry = new WorkspaceRegistry(
             startup.TestMode ? runtimeDataRoot : null);
         IReadOnlyList<WorkspaceRegistryEntryV2> knownWorkspaces;
@@ -437,6 +457,16 @@ public partial class MainWindow : Window
                 _attachmentPreview),
             () => _session.Token,
             message => _readiness?.Trace(message));
+        _dashboardOutput = new DashboardNativeOutputController(
+            _webBridge,
+            _workspaceSessionFilter,
+            new WindowsNativeDashboardOutputHost(
+                this,
+                () => AppWebView.CoreWebView2,
+                _e2eControlsDir),
+            ResolveDashboardExportBroker,
+            _dashboardDownloadGate,
+            message => _readiness?.Trace(message));
         _applicationRequests = new ApplicationRequestController(
             _webBridge,
             new ApplicationRequestHost(
@@ -447,6 +477,7 @@ public partial class MainWindow : Window
             _appPreferencesService,
             releaseUpdateCoordinator,
             dailyQuotes,
+            _appearance,
             startupPreferences,
             () => _session.Token);
         _hostRequests = new HostRequestDispatcher(
@@ -463,6 +494,7 @@ public partial class MainWindow : Window
             _applicationRequests,
             _documentRequests,
             _nativeProductFiles,
+            _dashboardOutput,
             _pluginDispatcher,
             _dispatcher,
             new DeviceSettingsRequestController(
@@ -496,6 +528,8 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         Closed += OnClosed;
         Application.Current.SessionEnding += OnSessionEnding;
+        ApplyAppearanceResources(_appearance.Projection);
+        _appearance.ProjectionChanged += OnAppearanceProjectionChanged;
         ApplyAppPreferences(_applicationRequests.CurrentPreferences);
         // UI-driven E2E stays visible. The explicit tray-lifecycle submode is
         // allowed to exercise the production auto-start visibility policy;
@@ -590,6 +624,35 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnAppearanceProjectionChanged(HostThemeProjection projection)
+    {
+        ApplyAppearanceResources(projection);
+        // The same projection is the renderer's only system-appearance source;
+        // the renderer never re-derives it from matchMedia.
+        PostAppearanceSnapshot(projection);
+    }
+
+    private void ApplyAppearanceResources(HostThemeProjection projection)
+    {
+        HostThemeResources.Apply(Application.Current.Resources, projection);
+        HostThemeResources.Apply(Resources, projection);
+        var background = (System.Windows.Media.SolidColorBrush)
+            Application.Current.Resources[HostThemeResources.WindowBackgroundBrushKey];
+        var color = background.Color;
+        AppWebView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(
+            color.A, color.R, color.G, color.B);
+    }
+
+    private void PostAppearanceSnapshot(HostThemeProjection projection) =>
+        _webBridge.PostNotification(
+            "appearance.changed",
+            new
+            {
+                preference = projection.Preference,
+                effective = projection.Effective,
+                highContrast = projection.HighContrast,
+            });
+
     private void OnRuntimeClientReady()
     {
         if (Volatile.Read(ref _closing) != 0 || HasCurrentProductGateways()) return;
@@ -653,6 +716,24 @@ public partial class MainWindow : Window
             && _configuredProductBinding is { } configured
             && _runtime.CaptureHostProductRpcBinding() is { } current
             && configured.Matches(current);
+
+    /// <summary>
+    /// Resolves the session file broker backing dashboard exports. The
+    /// Go-sidecar binding owns the broker; a Python client is never required
+    /// and never started for native dashboard output.
+    /// </summary>
+    private HostSessionFileBroker? ResolveDashboardExportBroker()
+    {
+        try
+        {
+            return _productGateway?.EnableHostFiles();
+        }
+        catch (Exception exception) when (
+            exception is BackendUnavailableException or ObjectDisposedException)
+        {
+            return null;
+        }
+    }
 
     private async Task<bool> ConfigureRpcGatewaysAsync(
         ProductSidecarGenerationSnapshot snapshot,
@@ -915,6 +996,9 @@ public partial class MainWindow : Window
         }
         TryWriteReadiness();
         _webBridge.Realtime.SetReady(phase);
+        // Initial appearance snapshot rides the app.ready handshake: the
+        // renderer subscribes before requesting, so nothing is missed.
+        PostAppearanceSnapshot(_appearance.Projection);
     }
 
     private void CompleteRendererBootstrap()
@@ -959,6 +1043,9 @@ public partial class MainWindow : Window
 
     private void ApplyAppPreferences(AppPreferences preferences)
     {
+        // Preference changes from the renderer flow back into the appearance
+        // authority, which re-projects WPF resources and the renderer state.
+        _appearance.SetPreferredTheme(preferences.Theme);
         if (!preferences.MinimizeToTrayOnClose)
         {
             if (_trayIcon is not null) _trayIcon.Visible = false;
@@ -1128,6 +1215,10 @@ public partial class MainWindow : Window
     {
         if (Interlocked.Exchange(ref _closing, 1) != 0) return;
         _webBridge.Realtime.Retire();
+        _appearance.ProjectionChanged -= OnAppearanceProjectionChanged;
+        HostThemeResources.Remove(Application.Current.Resources);
+        HostThemeResources.Remove(Resources);
+        _appearance.Dispose();
         _productRealtime.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _productSidecarGatewayLifecycle.Dispose();
         _testModeHost?.Dispose();

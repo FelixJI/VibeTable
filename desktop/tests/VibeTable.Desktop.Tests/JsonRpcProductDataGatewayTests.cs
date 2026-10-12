@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using VibeTable.Contracts;
+using TaskStatus = VibeTable.Contracts.TaskStatus;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.Backend;
 using VibeTable.Infrastructure.PocketBase;
@@ -12,6 +13,8 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class JsonRpcProductDataGatewayTests
 {
+    private static readonly JsonSerializerOptions Wire = new(JsonSerializerDefaults.Web);
+
     [TestMethod]
     public async Task ClosedProductMethodsNeverEmitRetiredProviderOrSecrets()
     {
@@ -388,6 +391,106 @@ public sealed class JsonRpcProductDataGatewayTests
             $$"""{"taskId":"{{fixture.TaskId}}","kind":"data.import","state":"succeeded","progress":{"done":1,"total":1,"message":""},"result":{"createdCount":1},"error":null}""");
         await terminal.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.AreEqual("succeeded", fixture.Status().GetProperty("state").GetString());
+    }
+
+    [TestMethod]
+    public async Task TerminalWaitReturnsEarlierSuccessEvenAfterCancellation()
+    {
+        await using var fixture = new NotificationBindingFixture();
+        fixture.Report("succeeded", 2);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        TaskStatus result = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, cancelled.Token);
+        Assert.AreEqual("succeeded", result.State);
+        JsonElement receipt = JsonSerializer.SerializeToElement(result.Result, Wire);
+        Assert.AreEqual(1, receipt.GetProperty("createdCount").GetInt32());
+    }
+
+    [TestMethod]
+    public async Task TerminalWaitIgnoresProgressAndCompletesFromTheOwnerReport()
+    {
+        await using var fixture = new NotificationBindingFixture();
+        Task<TaskStatus> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        fixture.Report("running", 1);
+        Assert.IsFalse(waiting.IsCompleted);
+        fixture.Report("succeeded", 2);
+        TaskStatus result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("succeeded", result.State);
+        fixture.Report("cancelled", 2);
+        Assert.AreEqual("succeeded", fixture.Status().GetProperty("state").GetString());
+    }
+
+    [TestMethod]
+    public async Task CancellingOneWaiterDoesNotCancelTheOwnerOrOtherWaiters()
+    {
+        await using var fixture = new NotificationBindingFixture();
+        using var cancellation = new CancellationTokenSource();
+        Task<TaskStatus> cancelled = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, cancellation.Token);
+        Task<TaskStatus> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        cancellation.Cancel();
+        await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => cancelled);
+        Assert.AreEqual("queued", fixture.Status().GetProperty("state").GetString());
+        fixture.RetireClient();
+        TaskStatus result = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual("aborted", result.State);
+    }
+
+    [TestMethod]
+    [DataRow("failed")]
+    [DataRow("cancelled")]
+    public async Task TerminalWaitKeepsTheFirstFailureOrCancellationReceipt(string state)
+    {
+        await using var fixture = new NotificationBindingFixture();
+        Task<TaskStatus> waiting = fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        fixture.Report(state, 1);
+        fixture.Report("succeeded", 2);
+        fixture.RetireClient();
+        TaskStatus earlierWaiter = await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        TaskStatus laterWaiter = await fixture.Tasks.WaitForTerminalAsync(fixture.TaskId, CancellationToken.None);
+        Assert.AreEqual(state, earlierWaiter.State);
+        Assert.IsTrue(JsonElement.DeepEquals(
+            JsonSerializer.SerializeToElement(earlierWaiter, Wire),
+            JsonSerializer.SerializeToElement(laterWaiter, Wire)));
+        Assert.IsNull(laterWaiter.Result);
+    }
+
+    [TestMethod]
+    public async Task CapturedTerminalSurvivesPruningAndDisposedOwnerRejectsLateReports()
+    {
+        await using var client = new JsonRpcClient(new AutoRespondTransport());
+        using var tasks = new HostDataIoTaskRegistry();
+        var identity = new ProductSidecarIdentity(Guid.NewGuid().ToString("D"), 1, 1,
+            Guid.NewGuid().ToString("D"));
+        tasks.BindClient(client, identity);
+        string id = tasks.Admit(client, identity, "data.export").TaskId;
+        Task<TaskStatus> terminal = tasks.WaitForTerminalAsync(id, CancellationToken.None);
+        tasks.ApplyReport(client, JsonSerializer.SerializeToElement(new
+        {
+            taskId = id, kind = "data.export", state = "succeeded",
+            progress = new { done = 1, total = 1, message = "committed" },
+            result = new { rowsWritten = 1 }, error = (string?)null,
+        }));
+        // The no-cancel terminal completes synchronously with the report: a
+        // committed receipt is observable immediately, with no wrapper
+        // continuation that could lag it (the #468 receipt contract).
+        Assert.IsTrue(terminal.IsCompletedSuccessfully);
+        Assert.AreEqual("succeeded", terminal.Result.State);
+        for (int index = 0; index < 256; index++)
+        {
+            string newer = tasks.Admit(client, identity, "data.export").TaskId;
+            tasks.AbortTask(newer, "closed");
+        }
+        Assert.ThrowsExactly<KeyNotFoundException>(() => tasks.Status(id));
+        Assert.AreEqual("succeeded", (await terminal).State);
+        string active = tasks.Admit(client, identity, "data.previewImport").TaskId;
+        Task<TaskStatus> retiring = tasks.WaitForTerminalAsync(active, CancellationToken.None);
+        tasks.Dispose();
+        tasks.ApplyReport(client, JsonSerializer.SerializeToElement(new
+        {
+            taskId = active, kind = "data.previewImport", state = "succeeded",
+            progress = new { done = 0, total = 0, message = "" }, result = new { },
+        }));
+        Assert.AreEqual("aborted", (await retiring).State);
     }
 
     private sealed class NotificationBindingFixture : IAsyncDisposable

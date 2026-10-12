@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BridgeOperationError, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "./bridgeContext";
-import { useDataIoService } from "./dataIoService";
+import { DataTaskCancelledError, useDataIoService } from "./dataIoService";
 
 describe("dataIoService", () => {
   it.each(["draining", "active", "retired"] as const)("retains an admitted task after an in-flight status lease is cancelled with session %s", async (afterRejection) => {
@@ -241,6 +241,46 @@ describe("dataIoService", () => {
     expect(service.busy.value).toBe(false);
   });
 
+  it("keeps preview stage visible and queues cancellation while admission is pending", async () => {
+    vi.useFakeTimers();
+    let admit!: (value: unknown) => void;
+    const created = new Promise((resolve) => { admit = resolve; });
+    const request = vi.fn(async (method: string) => {
+      if (method === "task.create") return await created;
+      if (method === "task.cancel") return { taskId: "preview-1", state: "running" };
+      if (method === "task.status") return {
+        taskId: "preview-1", kind: "data.previewImport", state: "cancelled",
+        progress: { done: 20, total: 0, message: "解析来源文件：20 行" }, error: null,
+      };
+      throw new Error(method);
+    });
+    setHostBridgeForTesting({ request } as unknown as HostBridge);
+    const service = useDataIoService();
+    const result = service.previewImportWithGrant(
+      { grantId: "g" } as never, "orders", "schema-1", [],
+    ).catch((error: unknown) => error);
+    try {
+      expect(service.busy.value).toBe(true);
+      await service.cancelActive();
+      expect(request).toHaveBeenCalledTimes(1);
+      admit({
+        taskId: "preview-1", kind: "data.previewImport", state: "running",
+        progress: { done: 20, total: 0, message: "解析来源文件：20 行" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(request).toHaveBeenCalledWith("task.cancel", { taskId: "preview-1" });
+      expect(service.progress.value).toEqual({
+        done: 20, total: 0, message: "解析来源文件：20 行",
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await result).toBeInstanceOf(DataTaskCancelledError);
+      expect(service.busy.value).toBe(false);
+      expect(service.progress.value).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   afterEach(() => {
     setHostBridgeForTesting(null);
     vi.restoreAllMocks();
@@ -256,8 +296,9 @@ describe("dataIoService", () => {
           displayName: "orders.csv", sizeBytes: 12, mimeType: "text/csv", expiresAt: 1,
         };
       }
-      if (type === "data.previewImport") {
-        return {
+      if (type === "task.create" && (_params as { kind?: string })?.kind === "data.previewImport") {
+        return { taskId: "preview-1", kind: "data.previewImport", state: "succeeded",
+          progress: { done: 0, total: 0, message: "" }, error: null, result: {
           collection: "orders", schemaRevision: "schema-7",
           summary: {
             totalRows: 2, validRows: 2, errorRows: 0,
@@ -268,7 +309,7 @@ describe("dataIoService", () => {
           unmatchedColumns: [],
           diagnostics: [],
           token: { token: "preview-token", expiresAt: 2, consumed: false },
-        };
+        } };
       }
       if (type === "data.applyImport") {
         return { collection: "orders", createdCount: 2, updatedCount: 0, failedRows: [] };
@@ -308,7 +349,7 @@ describe("dataIoService", () => {
 
     expect(methods).toEqual([
       "data.importSourceRequested",
-      "data.previewImport",
+      "task.create",
       "task.create",
       "data.exportTargetRequested",
       "task.create",
@@ -335,22 +376,23 @@ describe("dataIoService", () => {
   });
 
   it("surfaces a safe atomic import failure instead of reporting zero rows as success", async () => {
-    const request = vi.fn(async (type: string) => {
+    const request = vi.fn(async (type: string, _params?: unknown) => {
       if (type === "data.importSourceRequested") {
         return {
           grantId: "grant-in", purpose: "import_source", direction: "read",
           displayName: "orders.csv", sizeBytes: 12, mimeType: "text/csv", expiresAt: 1,
         };
       }
-      if (type === "data.previewImport") {
-        return {
+      if (type === "task.create" && (_params as { kind?: string })?.kind === "data.previewImport") {
+        return { taskId: "preview-1", kind: "data.previewImport", state: "succeeded",
+          progress: { done: 0, total: 0, message: "" }, error: null, result: {
           collection: "orders", schemaRevision: "schema-7",
           summary: {
             totalRows: 1, validRows: 1, errorRows: 0,
             warningRows: 0, errorCount: 0, warningCount: 0,
           },
           token: { token: "preview-token", expiresAt: 2, consumed: false },
-        };
+        } };
       }
       return {
         taskId: "import-1",
@@ -389,9 +431,10 @@ describe("dataIoService", () => {
   it("re-previews the same grant with the explicit relation mapping", async () => {
     const previewCalls: unknown[] = [];
     const request = vi.fn(async (type: string, params?: unknown) => {
-      if (type === "data.previewImport") {
+      if (type === "task.create") {
         previewCalls.push(params);
-        return {
+        return { taskId: "preview-1", kind: "data.previewImport", state: "succeeded",
+          progress: { done: 0, total: 0, message: "" }, error: null, result: {
           collection: "orders", schemaRevision: "schema-7",
           summary: {
             totalRows: 1, validRows: 1, errorRows: 0,
@@ -402,7 +445,7 @@ describe("dataIoService", () => {
           unmatchedColumns: [],
           diagnostics: [],
           token: { token: `preview-${previewCalls.length}`, expiresAt: 2, consumed: false },
-        };
+        } };
       }
       return {};
     });    setHostBridgeForTesting({ request } as unknown as HostBridge);
@@ -420,7 +463,8 @@ describe("dataIoService", () => {
       }],
     );
 
-    expect(request).toHaveBeenCalledWith("data.previewImport", {
+    expect(request).toHaveBeenCalledWith("task.create", {
+      kind: "data.previewImport", params: {
       grantId: "grant-in",
       collection: "orders",
       schemaRevision: "schema-7",
@@ -431,6 +475,7 @@ describe("dataIoService", () => {
         relationId: "orders.fld_partner",
         matchField: "fld_code",
       }],
+      },
     });
   });
 

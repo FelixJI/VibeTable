@@ -43,6 +43,18 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
     internal HostSessionFileBroker EnableHostFiles()
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required.")).EnableHostFiles();
 
+    /// <summary>
+    /// Host-registered task kinds; unknown without a Host binding. Read-only
+    /// admission uses this instead of trusting renderer-supplied kinds.
+    /// </summary>
+    internal bool TryGetRegisteredTaskKind(string taskId, out string kind)
+    {
+        if (_hostInvoker is not null)
+            return _hostInvoker.TryGetRegisteredTaskKind(taskId, out kind);
+        kind = "";
+        return false;
+    }
+
     public event Action<JsonElement>? TaskChanged;
 
     public Task<PastePlan> PreviewPasteAsync(PreviewPasteRpcParams parameters, CancellationToken token)

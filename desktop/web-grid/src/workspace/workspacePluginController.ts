@@ -19,7 +19,7 @@ type PluginStorePort = Pick<PluginStore,
   | "plugins" | "projectKey" | "currentUser" | "hostVersion"
   | "describedAction" | "activeContext" | "activeTask">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
-type PluginUiPort = Pick<UiStore, "themeMode" | "locale" | "density">;
+type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type WorkspacePluginServicePort = Pick<PluginService,
   "describeAction" | "startAction" | "resolveInteraction" | "cancelTask">;
@@ -102,7 +102,7 @@ export function createWorkspacePluginController(
   dependencies: WorkspacePluginDependencies,
 ): WorkspacePluginController {
   const theme = computed(() => projectPluginTheme({
-    themeMode: dependencies.ui.themeMode,
+    effectiveTheme: dependencies.ui.effectiveTheme,
     locale: dependencies.ui.locale,
     density: dependencies.ui.density,
   }));

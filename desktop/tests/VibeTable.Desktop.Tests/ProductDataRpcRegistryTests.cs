@@ -196,6 +196,37 @@ public sealed class ProductDataRpcRegistryTests
     }
 
     [TestMethod]
+    public void TaskCreateAdmitsOnlyExactPreviewImportPayloadsAsReadOnly()
+    {
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("task.create", out var endpoint));
+        Assert.IsTrue(endpoint.MutatesWorkspace);
+        Assert.IsTrue(endpoint.IsValidPayload(JsonDocument.Parse("""
+            {"kind":"data.previewImport","params":{
+                "grantId":"grant-1","collection":"orders","schemaRevision":"schema-1",
+                "columnMapping":[]}}
+            """).RootElement.Clone()));
+        // Only the exact zero-write preview payload joins the read-only lane.
+        Assert.IsFalse(endpoint.MutatesWorkspaceFor(JsonDocument.Parse("""
+            {"kind":"data.previewImport","params":{
+                "grantId":"grant-1","collection":"orders","schemaRevision":"schema-1"}}
+            """).RootElement.Clone()));
+        // Malformed preview params never reach the lenient lane.
+        Assert.IsTrue(endpoint.MutatesWorkspaceFor(JsonDocument.Parse(
+            """{"kind":"data.previewImport","params":{"collection":"orders"}}""").RootElement.Clone()));
+        // Other kinds — including a mutating import — keep strict admission.
+        Assert.IsTrue(endpoint.MutatesWorkspaceFor(JsonDocument.Parse("""
+            {"kind":"data.applyImport","params":{
+                "grantId":"grant-1","collection":"orders","schemaRevision":"schema-1"}}
+            """).RootElement.Clone()));
+        Assert.IsTrue(endpoint.MutatesWorkspaceFor(JsonDocument.Parse(
+            """{"kind":"data.previewImport"}""").RootElement.Clone()));
+        // Endpoints without the carve-out are unaffected.
+        Assert.IsTrue(ProductDataRpcRegistry.TryGet("data.applyImport", out var apply));
+        Assert.IsTrue(apply.MutatesWorkspaceFor(
+            JsonDocument.Parse("""{"grantId":"g","collection":"orders","token":"t"}""").RootElement.Clone()));
+    }
+
+    [TestMethod]
     public void ProtectedEndpointsExposeCompletePolicyBehavior()
     {
         var cases = new (string Type, JsonElement Payload,

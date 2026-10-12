@@ -522,18 +522,22 @@ describe("WorkspaceView", () => {
     });
     await flushPromises();
 
-    const previewRequest = [...posted].reverse().find((item) => item.type === "data.previewImport")!;
-    expect((previewRequest.payload as { grantId: string }).grantId).toBe("grant-managed");
-    expect((previewRequest.payload as { collection: string }).collection).toBe("invoices");
-    expect((previewRequest.payload as { schemaRevision: string }).schemaRevision).toBe("schema-9");
+    const previewRequest = [...posted].reverse().find((item) => item.type === "task.create")!;
+    expect((previewRequest.payload as { params: { grantId: string } }).params.grantId).toBe("grant-managed");
+    expect((previewRequest.payload as { params: { collection: string } }).params.collection).toBe("invoices");
+    expect((previewRequest.payload as { params: { schemaRevision: string } }).params.schemaRevision).toBe("schema-9");
     emit({
-      type: "data.previewImport",
+      type: "task.create",
       requestId: previewRequest.requestId,
       payload: {
+        taskId: "task-preview", kind: "data.previewImport", state: "succeeded",
+        progress: { done: 0, total: 0, message: "" }, error: null,
+        result: {
         collection: "invoices", schemaRevision: "schema-9",
         summary: { totalRows: 1, validRows: 1, errorRows: 0, warningRows: 0, errorCount: 0, warningCount: 0 },
         rows: [], sourceColumns: [], unmatchedColumns: [], diagnostics: [],
         token: { token: "preview-managed", expiresAt: 1, consumed: false },
+        },
       },
     });
     await flushPromises();
@@ -2344,11 +2348,15 @@ describe("WorkspaceView", () => {
     await flushPromises();
 
     request = posted.at(-1)!;
-    expect(request.type).toBe("data.previewImport");
+    expect(request.type).toBe("task.create");
+    expect(request.payload).toMatchObject({ kind: "data.previewImport" });
     emit({
       type: request.type,
       requestId: request.requestId,
       payload: {
+        taskId: "task-preview", kind: "data.previewImport", state: "succeeded",
+        progress: { done: 0, total: 0, message: "" }, error: null,
+        result: {
         collection: "orders",
         schemaRevision: "schema-1",
         capabilityHash: "cap-1",
@@ -2367,6 +2375,7 @@ describe("WorkspaceView", () => {
         sourceColumns: ["number"],
         unmatchedColumns: [],
         diagnostics: [],
+        },
       },
     });
     await flushPromises();
@@ -2416,7 +2425,7 @@ describe("WorkspaceView", () => {
 
     expect(posted.map((item) => item.type)).toEqual(expect.arrayContaining([
       "data.importSourceRequested",
-      "data.previewImport",
+      "task.create",
       "task.create",
     ]));
     expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeFalsy();
@@ -2453,10 +2462,14 @@ describe("WorkspaceView", () => {
       type: request.type,
       requestId: request.requestId,
       payload: {
+        taskId: "task-preview", kind: "data.previewImport", state: "succeeded",
+        progress: { done: 0, total: 0, message: "" }, error: null,
+        result: {
         collection: "orders", schemaRevision: "schema-1", capabilityHash: "cap-1", sourceHash: "source-1",
         token: { token: "import-token", expiresAt: 9999999999, consumed: false },
         summary: { validRows: 1, errorRows: 0, warningRows: 1, totalRows: 1, errorCount: 0, warningCount: 1 },
         rows: [], sourceColumns: ["number"], unmatchedColumns: [], diagnostics: [],
+        },
       },
     });
     await flushPromises();
@@ -2505,7 +2518,7 @@ describe("WorkspaceView", () => {
     expect(panel().isVisible()).toBe(false);
     expect(wrapper.get('[data-testid="import-active-task"]').text()).toContain("task-import");
     expect(wrapper.get('[data-testid="import-cancel-active-task"]').attributes("disabled")).toBeUndefined();
-    expect(posted.filter((item) => item.type === "task.create")).toHaveLength(1);
+    expect(posted.filter((item) => item.type === "task.create" && (item.payload as { kind: string }).kind === "data.import")).toHaveLength(1);
 
     // Returning to tables restores the SAME preview: still applying, still
     // cancellable, and no second task.create was issued.
@@ -2519,7 +2532,7 @@ describe("WorkspaceView", () => {
       const cancel = wrapper.get('[data-testid="import-cancel"]');
       expect(cancel.attributes("disabled")).toBeUndefined();
       expect(cancel.text()).toBe("取消导入任务");
-      expect(posted.filter((item) => item.type === "task.create")).toHaveLength(1);
+      expect(posted.filter((item) => item.type === "task.create" && (item.payload as { kind: string }).kind === "data.import")).toHaveLength(1);
 
       // Settle the paused run so the polling loop retires with real timers off.
       await vi.advanceTimersByTimeAsync(100);
@@ -2534,7 +2547,7 @@ describe("WorkspaceView", () => {
         },
       });
       await vi.advanceTimersByTimeAsync(0);
-      expect(posted.filter((item) => item.type === "task.create")).toHaveLength(1);
+      expect(posted.filter((item) => item.type === "task.create" && (item.payload as { kind: string }).kind === "data.import")).toHaveLength(1);
       expect(panel().exists()).toBe(false);
     } finally {
       vi.useRealTimers();
@@ -4534,15 +4547,20 @@ describe("WorkspaceView", () => {
       let request = posted.find(item => item.type === "data.importSourceRequested")!;
       emit({ type: request.type, requestId: request.requestId, payload: { grantId: "grant-import", displayName: "users.csv" } });
       await flushPromises();
-      request = posted.find(item => item.type === "data.previewImport")!;
+      request = posted.find(item => item.type === "task.create")!;
+      expect(request.payload).toMatchObject({ kind: "data.previewImport" });
       emit({
         type: request.type,
         requestId: request.requestId,
         payload: {
-          collection: "users", schemaRevision: "schema-1", capabilityHash: "cap-1", sourceHash: "source-1",
-          token: { token: "import-token", expiresAt: 9999999999, consumed: false },
-          summary: { validRows: 1, errorRows: 0, warningRows: 0, totalRows: 1, errorCount: 0, warningCount: 0 },
-          rows: [], sourceColumns: ["title"], unmatchedColumns: [], diagnostics: [],
+          taskId: "task-preview", kind: "data.previewImport", state: "succeeded",
+          progress: { done: 0, total: 0, message: "" }, error: null,
+          result: {
+            collection: "users", schemaRevision: "schema-1", capabilityHash: "cap-1", sourceHash: "source-1",
+            token: { token: "import-token", expiresAt: 9999999999, consumed: false },
+            summary: { validRows: 1, errorRows: 0, warningRows: 0, totalRows: 1, errorCount: 0, warningCount: 0 },
+            rows: [], sourceColumns: ["title"], unmatchedColumns: [], diagnostics: [],
+          },
         },
       });
       await flushPromises();

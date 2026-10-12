@@ -10,6 +10,7 @@ import type {
   RelationImportOption,
 } from "@/services/dataIoService";
 import { t } from "@/i18n";
+import { DataTaskCancelledError } from "@/services/dataIoService";
 
 /** One user-authored relation mapping row (stable identities only). */
 export interface RelationMappingDraft {
@@ -30,12 +31,14 @@ export interface ExportLookupPanelState {
 
 export interface DataIoTaskPort {
   readonly busy: Readonly<Ref<boolean>>;
-  previewImport(collection: string, schemaRevision: string, assertCurrent?: () => void): Promise<ImportPreviewSession>;
+  previewImport(collection: string, schemaRevision: string, assertCurrent?: () => void, taskSession?: () => DataTaskSessionState): Promise<ImportPreviewSession>;
   previewImportWithGrant(
     grant: SessionPathGrant,
     collection: string,
     schemaRevision: string,
     columnMapping: readonly ImportColumnMappingPayload[],
+    assertCurrent?: () => void,
+    taskSession?: () => DataTaskSessionState,
   ): Promise<ImportPlan>;
   loadRelationImportOptions(collection: string, assertCurrent?: () => void): Promise<readonly RelationImportOption[]>;
   loadExportLookupContext(collection: string): Promise<ExportLookupContext>;
@@ -271,12 +274,13 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.collection,
         context.schemaRevision,
         () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = session;
       previewedMappingKey = "[]";
     } catch (error) {
-      if (isLive(scope)) options.reportError(errorMessage(error));
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) options.reportError(errorMessage(error));
       return;
     } finally {
       previewing.value = false;
@@ -303,12 +307,14 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.collection,
         context.schemaRevision,
         [],
+        () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = { grant, plan, mode: "create_only" };
       previewedMappingKey = "[]";
     } catch (error) {
-      if (isLive(scope)) options.reportError(errorMessage(error));
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) options.reportError(errorMessage(error));
       return;
     } finally {
       previewing.value = false;
@@ -330,6 +336,8 @@ export function useDataIoTask(options: DataIoTaskOptions) {
         context.collection,
         context.schemaRevision,
         payload,
+        () => assertCurrent(scope),
+        () => taskSession(scope),
       );
       if (!isLive(scope)) return;
       previewSession.value = { grant: session.grant, plan, mode: session.mode };
@@ -337,7 +345,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       mappingDirty.value = false;
       schemaDrifted.value = false;
     } catch (error) {
-      if (isLive(scope)) applyError.value = errorMessage(error);
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) applyError.value = errorMessage(error);
     } finally {
       repreviewing.value = false;
     }
@@ -364,7 +372,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       retirePendingRequests();
       options.refresh();
     } catch (error) {
-      if (isLive(scope)) applyError.value = errorMessage(error);
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) applyError.value = errorMessage(error);
     } finally {
       applying.value = false;
       cancelling.value = false;
@@ -473,7 +481,7 @@ export function useDataIoTask(options: DataIoTaskOptions) {
       );
       if (isLive(scope)) options.exportSucceeded(result);
     } catch (error) {
-      if (isLive(scope)) options.reportError(errorMessage(error));
+      if (isLive(scope) && !(error instanceof DataTaskCancelledError)) options.reportError(errorMessage(error));
     } finally {
       exporting.value = false;
     }

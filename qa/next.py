@@ -1322,6 +1322,11 @@ def persist_product_e2e_evidence(
                 "02-computed-display-reopened.png",
                 "02-auto-number-readonly.png",
             ),
+            "12-backup-consistency": (
+                "12-dark-table.png",
+                "12-dark-modal.png",
+                "12-dark-popover.png",
+            ),
             "28-relation-delta-preview": (
                 "28-contract-grid.png",
                 "28-contract-picker-refresh.png",
@@ -1336,7 +1341,15 @@ def persist_product_e2e_evidence(
                 "45-common-field-display-lookup-cards.png",
                 "45-common-field-display-lookup-kanban.png",
             ),
+            "46-dashboard-native-output": (
+                "46-dashboard-export-csv.png",
+                "46-dashboard-export-png.png",
+                "46-dashboard-export-cancelled.png",
+                "46-dashboard-print-dialog-opened.png",
+            ),
             "35-data-io-interoperability": (
+                "35-file-preview-progress.png",
+                "35-file-preview-cancel.json",
                 "35-import-management-history.png",
                 "35-import-management-reopened.png",
                 "35-source-import-history.png",

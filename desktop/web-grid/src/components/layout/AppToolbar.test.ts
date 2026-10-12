@@ -7,6 +7,14 @@ import { useWorkspaceStore } from "@/stores/workspaceStore";
 
 describe("AppToolbar", () => {
   beforeEach(() => setActivePinia(createPinia()));
+  it("shows the measured file phase without inventing a percentage", () => {
+    const wrapper = mount(AppToolbar, { props: {
+      dataIoBusy: true, dataIoProgress: "解析来源文件：100 行",
+    } });
+    expect(wrapper.get('[role="status"]').text()).toBe("解析来源文件：100 行");
+    expect(wrapper.find('[role="progressbar"]').exists()).toBe(false);
+  });
+
   it("keeps More open after button activation while the pointer leaves for an action", async () => {
     vi.useFakeTimers();
     useWorkspaceStore().selectTable("orders");

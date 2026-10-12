@@ -195,6 +195,114 @@ public sealed class AppPreferencesServiceTests
         Assert.AreEqual(UpdateProxyOptions.Custom, patch!.UpdateProxy);
         Assert.IsTrue(patch.HasCustomUpdateProxyUrl);
         Assert.IsFalse(ParsePatch("{\"updateProxy\":\"automatic\"}", out _));
+        Assert.IsTrue(ParsePatch("{\"theme\":\"dark\"}", out patch));
+        Assert.AreEqual(AppThemeOptions.Dark, patch!.Theme);
+        Assert.IsTrue(patch.HasTheme);
+        Assert.IsFalse(patch.HasAdoptLegacyTheme);
+        Assert.IsFalse(ParsePatch("{\"theme\":\"sepia\"}", out _));
+        Assert.IsFalse(ParsePatch("{\"theme\":\"dark\",\"adoptLegacyTheme\":\"light\"}", out _));
+        Assert.IsTrue(ParsePatch("{\"adoptLegacyTheme\":\"system\"}", out patch));
+        Assert.AreEqual(AppThemeOptions.System, patch!.AdoptLegacyTheme);
+        Assert.IsTrue(patch.HasAdoptLegacyTheme);
+        Assert.IsFalse(patch.HasTheme);
+        Assert.IsFalse(ParsePatch("{\"adoptLegacyTheme\":\"nope\"}", out _));
+    }
+
+    [TestMethod]
+    public void JsonStorePersistsThemeAndKeepsExplicitSystemDistinctFromUnconfigured()
+    {
+        string path = PreferencesPath();
+        var store = new JsonAppPreferencesStore(path);
+
+        // Absent theme (never configured) round-trips as null; an explicit
+        // "system" choice stays a persisted, distinct value.
+        Assert.IsNull(store.Read().Theme);
+        store.Write(new PersistedAppPreferences(
+            true,
+            UpdateProxyOptions.Direct,
+            null,
+            AppThemeOptions.System));
+        Assert.AreEqual(AppThemeOptions.System, store.Read().Theme);
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+        Assert.AreEqual(
+            AppThemeOptions.System,
+            document.RootElement.GetProperty("theme").GetString());
+
+        store.Write(new PersistedAppPreferences(true, UpdateProxyOptions.Direct, null, null));
+        Assert.IsNull(store.Read().Theme);
+    }
+
+    [TestMethod]
+    public void JsonStoreFallsBackToUnconfiguredForUnknownThemeWhileKeepingOtherPreferences()
+    {
+        string path = PreferencesPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, """
+            {
+              "minimizeToTrayOnClose": true,
+              "updateProxy": "ghproxyNet",
+              "theme": "sepia"
+            }
+            """);
+        var store = new JsonAppPreferencesStore(path);
+
+        PersistedAppPreferences stored = store.Read();
+        Assert.IsNull(stored.Theme);
+        Assert.IsTrue(stored.MinimizeToTrayOnClose);
+        Assert.AreEqual(UpdateProxyOptions.GhProxyNet, stored.UpdateProxy);
+    }
+
+    [TestMethod]
+    public void UpdatePersistsThemeWithoutTouchingStartupOrOtherPreferences()
+    {
+        var store = new FakeStore();
+        var startup = new FakeStartupRegistration();
+        var service = new AppPreferencesService(store, startup);
+
+        AppPreferences updated = service.Update(new AppPreferencesPatch(
+            null,
+            null,
+            Theme: AppThemeOptions.Dark,
+            HasTheme: true));
+
+        Assert.AreEqual(AppThemeOptions.Dark, updated.Theme);
+        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        Assert.IsEmpty(startup.Changes);
+
+        // A patch without HasTheme never clears a configured theme.
+        updated = service.Update(new AppPreferencesPatch(null, null));
+        Assert.AreEqual(AppThemeOptions.Dark, updated.Theme);
+
+        // Unknown themes are rejected before any write lands.
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            service.Update(new AppPreferencesPatch(
+                null,
+                null,
+                Theme: "sepia",
+                HasTheme: true)));
+        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        Assert.IsFalse(store.Value.MinimizeToTrayOnClose);
+    }
+
+    [TestMethod]
+    public void AdoptLegacyThemePersistsOnlyWhileUnconfigured()
+    {
+        var store = new FakeStore();
+        var startup = new FakeStartupRegistration();
+        var service = new AppPreferencesService(store, startup);
+
+        AppPreferences adopted = service.AdoptLegacyTheme(AppThemeOptions.Dark);
+        Assert.AreEqual(AppThemeOptions.Dark, adopted.Theme);
+        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+        Assert.IsEmpty(startup.Changes);
+
+        // A later adoption attempt never overwrites the now-explicit value,
+        // including an explicit "system".
+        AppPreferences kept = service.AdoptLegacyTheme(AppThemeOptions.Light);
+        Assert.AreEqual(AppThemeOptions.Dark, kept.Theme);
+        Assert.AreEqual(AppThemeOptions.Dark, store.Value.Theme);
+
+        Assert.ThrowsExactly<ArgumentException>(() => service.AdoptLegacyTheme("sepia"));
     }
 
     private static bool ParsePatch(string json, out AppPreferencesPatch? patch)

@@ -1423,6 +1423,7 @@ useKeyboard({
               :history-disabled="revisionHistory.selection.scope === 'multiple'"
               :insert-row-disabled="insertRowDisabled"
               :data-io-busy="dataIoBusy"
+              :data-io-progress="dataIoService.progress.value?.message"
               :data-io-import-disabled="!canImportTableData"
               :data-io-export-disabled="!canExportTableData"
               @select-table="onSelect"

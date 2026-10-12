@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.PocketBase;
 using VibeTable.Infrastructure.Rpc;
 using VibeTable.Infrastructure.Workspace;
 
@@ -654,6 +655,214 @@ public sealed class WorkspaceSessionEnvelopeFilterTests
             JsonSerializer.Serialize(failed.Payload),
             @"""code"":""WORKSPACE_READ_ONLY""");
         Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionAdmitsPreviewImportTaskWithoutProtectionSnapshot()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("一号", "One");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"kind":"data.previewImport","params":{"grantId":"grant-1","collection":"records","schemaRevision":"schema-1"}}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "task.create",
+            "read-only-preview",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        // The zero-write preview keeps the read-only admission the direct
+        // data.previewImport endpoint always had and reaches the gateway…
+        await transport.WaitForWriteAsync();
+        Assert.AreEqual(1, transport.WriteCount);
+        // …without an AlwaysSideEffectOnly protection snapshot.
+        Assert.AreEqual(0, fixture.Protection.CallCount);
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionStillRejectsMutatingTaskKinds()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("二号", "Two");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"kind":"data.applyImport","params":{"grantId":"grant-1","collection":"records","schemaRevision":"schema-1"}}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "task.create",
+            "read-only-import",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(failed.Payload),
+            @"""code"":""WORKSPACE_READ_ONLY""");
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionRejectsForgedPreviewKindWithoutPreviewParams()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("三号", "Three");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(client);
+        var sink = new FakeWebReplySink();
+        var dispatcher = CreateDispatcher(sink, filter);
+        dispatcher.SetProductDataGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            """{"kind":"data.previewImport","params":{"collection":"records"}}""");
+
+        dispatcher.Dispatch(new RoutedWebRequest(
+            "task.create",
+            "forged-preview",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(failed.Payload),
+            @"""code"":""WORKSPACE_READ_ONLY""");
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionCancelsHostRegisteredPreviewTask()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("四号", "Four");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(
+            HostDataIoTaskGateway(client, filter, opened, "data.previewImport", out string taskId));
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink, filter);
+        controller.SetGateway(gateway);
+        using var payload = JsonDocument.Parse(
+            $"{{\"taskId\":\"{taskId}\"}}");
+
+        Task dispatch = controller.DispatchAsync(new RoutedWebRequest(
+            "task.cancel",
+            "read-only-cancel",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        // Cancelling the preview the Host itself registered as data.previewImport
+        // reaches the worker lane instead of bouncing with WORKSPACE_READ_ONLY.
+        await transport.WaitForWriteAsync();
+        transport.CompleteResponse(JsonSerializer.SerializeToElement(true));
+        await dispatch;
+        Assert.AreEqual(1, transport.WriteCount);
+        FakeWebReplySink.Reply? reply = await sink.WaitForAsync("task.cancel", 2000);
+        Assert.IsNotNull(reply);
+        Assert.AreEqual(taskId, JsonDocument.Parse(
+            JsonSerializer.Serialize(reply.Payload)).RootElement
+            .GetProperty("taskId").GetString());
+    }
+
+    [TestMethod]
+    public async Task ReadOnlySessionStillRejectsCancellingWriteTasks()
+    {
+        using var fixture = new SessionFixture();
+        WorkspaceRegistryEntryV2 first = fixture.AddWorkspace("五号", "Five");
+        WorkspaceSessionV2 opened = await fixture.Manager.OpenAsync(
+            first.WorkspaceId,
+            WorkspaceOpenMode.ReadOnly);
+        using var filter = new WorkspaceSessionEnvelopeFilter(fixture.Manager);
+        var transport = new ControlledQueryTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcProductDataGateway(
+            HostDataIoTaskGateway(client, filter, opened, "data.import", out string taskId));
+        var sink = new FakeWebReplySink();
+        var controller = new ProductDataRequestController(sink, filter);
+        controller.SetGateway(gateway);
+        using var payload = JsonDocument.Parse($$"""{"taskId":"{{taskId}}"}""");
+
+        await controller.DispatchAsync(new RoutedWebRequest(
+            "task.cancel",
+            "read-only-cancel-import",
+            payload.RootElement.Clone(),
+            string.Empty,
+            ScopeFor(opened, 1)));
+
+        FakeWebReplySink.Reply? failed = await sink.WaitForFailedAsync();
+        Assert.IsNotNull(failed);
+        StringAssert.Contains(
+            JsonSerializer.Serialize(failed.Payload),
+            @"""code"":""WORKSPACE_READ_ONLY""");
+        Assert.AreEqual(0, transport.WriteCount);
+    }
+
+    /// <summary>
+    /// Builds the real invoker/gateway chain with one Host-admitted task so the
+    /// admission decision reads the Host-registered kind, not test doubles.
+    /// </summary>
+    private static HostProductRpcInvoker HostDataIoTaskGateway(
+        JsonRpcClient client,
+        WorkspaceSessionEnvelopeFilter filter,
+        WorkspaceSessionV2 opened,
+        string kind,
+        out string taskId)
+    {
+        var identity = new ProductSidecarIdentity(
+            (opened.WorkspaceId ?? Guid.NewGuid()).ToString("D"),
+            opened.SessionEpoch,
+            1,
+            Guid.NewGuid().ToString("D"));
+        var taskOwner = new HostDataIoTaskRegistry();
+        taskOwner.BindClient(client, identity);
+        var invoker = new HostProductRpcInvoker(
+            client,
+            new ProductSidecarGenerationSnapshot(
+                new object(),
+                1,
+                new PocketBaseAdminContext(
+                    new Uri("http://127.0.0.1:8090"),
+                    new Uri("http://127.0.0.1:8090"),
+                    "x-session",
+                    "secret"),
+                identity,
+                Array.Empty<ProductSidecarRegistration>()),
+            filter,
+            action => action(),
+            taskOwner: taskOwner);
+        (taskId, _) = taskOwner.Admit(client, identity, kind);
+        return invoker;
     }
 
     [TestMethod]

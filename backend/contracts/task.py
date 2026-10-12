@@ -118,7 +118,7 @@ class StartTaskExecutionParams(CamelModel):
     """Closed Host-only execution admission; public IDs are allocated by Host."""
 
     task_id: str = Field(min_length=1, max_length=128)
-    kind: Literal["data.import", "data.export"]
+    kind: Literal["data.import", "data.export", "data.previewImport"]
     params: dict[str, Any]
 
 

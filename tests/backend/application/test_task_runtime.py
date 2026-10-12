@@ -8,16 +8,22 @@ session path-grant issue/resolve/consume/expiry flow.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
 
+import backend.__main__ as backend_main
 from backend.application.import_service import ImportFlowError
 from backend.application.path_grant import PathGrantError
 from backend.application.task_runtime import (
     CancellationToken,
     HostExecutionRuntime,
 )
+from backend.contracts.task import TaskStatus
+from backend.rpc.dispatcher import RpcDispatcher
+from backend.rpc.framing import MAX_FRAME_BYTES, FrameTooLargeError, read_frame
+from backend.rpc.server import RpcServer
 from tests.backend.legacy_task_runtime import TaskRuntime
 from tests.backend.path_grant_fixture import SessionPathGrantStore
 
@@ -103,6 +109,176 @@ async def test_host_execution_reports_unknown_import_without_zero_write_result()
     assert reports[-1].state == "failed"
     assert "unknown" in reports[-1].error
     assert reports[-1].result is None
+
+
+class _PipeWriter:
+    """Real in-memory pipe transport: server frames flow to a host reader."""
+
+    def __init__(self, host_reader: asyncio.StreamReader) -> None:
+        self._host_reader = host_reader
+
+    def write(self, data: bytes) -> None:
+        self._host_reader.feed_data(data)
+
+    async def drain(self) -> None:
+        return None
+
+
+class _BrokenDrainWriter(_PipeWriter):
+    """A ruptured pipe: bytes are accepted, then the transport fails."""
+
+    def __init__(self, host_reader: asyncio.StreamReader) -> None:
+        super().__init__(host_reader)
+        self.drain_calls = 0
+
+    async def drain(self) -> None:
+        self.drain_calls += 1
+        raise OSError("host pipe broke after a partial write")
+
+
+def _execution_report_pipe() -> tuple[asyncio.StreamReader, HostExecutionRuntime]:
+    """Wire the runtime through the production notification composition.
+
+    The sink mirrors ``backend/__main__.py::notify_task_status``: it hands the
+    ``TaskStatus`` to the production ``_send_execution_report``, which drives
+    the real ``RpcServer.notify``/``write_frame`` over an in-memory pipe, so
+    the 4 MiB frame cap is enforced by the same code the host process uses.
+    """
+    host_reader = asyncio.StreamReader()
+    server = RpcServer(asyncio.StreamReader(), _PipeWriter(host_reader), RpcDispatcher())
+
+    async def sink(status: TaskStatus) -> None:
+        await backend_main._send_execution_report(server, status)
+
+    return host_reader, HostExecutionRuntime(notification_sink=sink)
+
+
+async def _read_status(host_reader: asyncio.StreamReader) -> dict[str, Any]:
+    frame = await asyncio.wait_for(read_frame(host_reader), timeout=5.0)
+    assert frame is not None
+    assert "id" not in frame
+    assert frame["method"] == "task.executionReport"
+    return frame["params"]
+
+
+@pytest.mark.asyncio
+async def test_oversize_terminal_downgrades_to_small_failure_and_releases_slot() -> None:
+    """An oversized result must converge the host, not strand it "running".
+
+    Before the fix the oversized terminal frame raised out of ``execute()``
+    after the handle was popped: the host kept the last "running" report
+    forever, ``cancel`` answered ``False`` for an unknown task, and the Web
+    busy state never converged. Now a compact explicit failure terminal is
+    delivered through the same pipe and only then is the slot released.
+    """
+    host_reader, runtime = _execution_report_pipe()
+
+    async def preview(_task_id, _reporter, _token, _params):  # type: ignore[no-untyped-def]
+        return {"rows": [{"payload": "a" * 8192} for _ in range(1024)]}
+
+    runtime.register("data.previewImport", preview)
+    assert await runtime.start("host-task", "data.previewImport", {}) is True
+
+    running = await _read_status(host_reader)
+    assert running["state"] == "running"
+
+    terminal = await _read_status(host_reader)
+    assert terminal["state"] == "failed"
+    assert terminal["result"] is None
+    # The failure names the real frame cap and claims neither success nor
+    # cancellation, nor any business rollback.
+    assert str(MAX_FRAME_BYTES) in (terminal["error"] or "")
+    assert "取消" not in (terminal["error"] or "")
+    assert "回滚" not in (terminal["error"] or "")
+    # The degraded terminal itself fits the unchanged frame cap.
+    assert len(json.dumps(terminal, ensure_ascii=False).encode("utf-8")) <= MAX_FRAME_BYTES
+    # The execution slot is freed only after a terminal state was delivered.
+    assert await runtime.cancel("host-task") is False
+
+
+@pytest.mark.asyncio
+async def test_real_pipe_success_semantics_unchanged() -> None:
+    host_reader, runtime = _execution_report_pipe()
+
+    async def apply_import(_task_id, _reporter, _token, _params):  # type: ignore[no-untyped-def]
+        return {"createdCount": 1}
+
+    runtime.register("data.import", apply_import)
+    assert await runtime.start("host-task", "data.import", {}) is True
+
+    assert (await _read_status(host_reader))["state"] == "running"
+    terminal = await _read_status(host_reader)
+    assert terminal["state"] == "succeeded"
+    assert terminal["result"] == {"createdCount": 1}
+    assert terminal["error"] is None
+    assert await runtime.cancel("host-task") is False
+
+
+@pytest.mark.asyncio
+async def test_real_pipe_cancel_semantics_unchanged() -> None:
+    host_reader, runtime = _execution_report_pipe()
+    entered = asyncio.Event()
+
+    async def preview(_task_id, _reporter, token, _params):  # type: ignore[no-untyped-def]
+        entered.set()
+        await token.wait()
+        raise asyncio.CancelledError
+
+    runtime.register("data.previewImport", preview)
+    assert await runtime.start("host-task", "data.previewImport", {}) is True
+    await entered.wait()
+    assert await runtime.cancel("host-task") is True
+
+    assert (await _read_status(host_reader))["state"] == "running"
+    terminal = await _read_status(host_reader)
+    assert terminal["state"] == "cancelled"
+    assert terminal["result"] is None
+    assert terminal["error"] is None
+    assert await runtime.cancel("host-task") is False
+
+
+@pytest.mark.asyncio
+async def test_partial_write_failure_propagates_without_degraded_resend() -> None:
+    """Only the provable pre-write oversize boundary degrades.
+
+    A drain failure after ``write`` accepted bytes may already have delivered
+    a partial frame; resending a terminal then could interleave frames. The
+    original transport error must propagate unchanged (worker retirement
+    semantics), and no degraded terminal may follow the partial write.
+    """
+    host_reader = asyncio.StreamReader()
+    writer = _BrokenDrainWriter(host_reader)
+    server = RpcServer(asyncio.StreamReader(), writer, RpcDispatcher())
+
+    with pytest.raises(OSError, match="host pipe broke"):
+        await backend_main._send_execution_report(
+            server,
+            TaskStatus(task_id="host-task", kind="data.previewImport", state="succeeded"),
+        )
+
+    assert writer.drain_calls == 1
+    # Only the original (partial-wire) frame was accepted; nothing was resent.
+    delivered = [line for line in bytes(host_reader._buffer).split(b"\n") if line]  # type: ignore[attr-defined]
+    assert len(delivered) == 1
+    assert json.loads(delivered[0])["params"]["state"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_oversize_non_terminal_status_is_never_degraded_to_a_terminal() -> None:
+    """A non-terminal report must not be turned into a fabricated terminal."""
+    host_reader = asyncio.StreamReader()
+    server = RpcServer(asyncio.StreamReader(), _PipeWriter(host_reader), RpcDispatcher())
+    oversized_running = TaskStatus(
+        task_id="host-task",
+        kind="data.previewImport",
+        state="running",
+        result={"rows": [{"payload": "a" * 8192} for _ in range(1024)]},
+    )
+
+    with pytest.raises(FrameTooLargeError):
+        await backend_main._send_execution_report(server, oversized_running)
+
+    assert bytes(host_reader._buffer) == b""  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

@@ -2887,6 +2887,11 @@ SCENARIO_SCREENSHOTS = {
         "02-computed-display-reopened.png",
         "02-auto-number-readonly.png",
     ),
+    "12-backup-consistency": (
+        "12-dark-table.png",
+        "12-dark-modal.png",
+        "12-dark-popover.png",
+    ),
     "28-relation-delta-preview": (
         "28-contract-grid.png",
         "28-contract-picker-refresh.png",
@@ -2901,7 +2906,15 @@ SCENARIO_SCREENSHOTS = {
         "45-common-field-display-lookup-cards.png",
         "45-common-field-display-lookup-kanban.png",
     ),
+    "46-dashboard-native-output": (
+        "46-dashboard-export-csv.png",
+        "46-dashboard-export-png.png",
+        "46-dashboard-export-cancelled.png",
+        "46-dashboard-print-dialog-opened.png",
+    ),
     "35-data-io-interoperability": (
+        "35-file-preview-progress.png",
+        "35-file-preview-cancel.json",
         "35-import-management-history.png",
         "35-import-management-reopened.png",
         "35-source-import-history.png",
@@ -3314,6 +3327,20 @@ def test_core_lane_retains_capacity_record_only_after_passing_coverage(
         assert retained.read_bytes() == raw
     else:
         assert not retained.exists()
+
+
+def test_dashboard_download_hardening_rebinds_the_handler_on_load_retry() -> None:
+    bridge = Path(__file__).resolve().parents[1] / (
+        "desktop/src/VibeTable.Desktop/Services/ProductWebViewBridge.cs"
+    )
+    source = bridge.read_text(encoding="utf-8")
+    hardening = source.split("private void ApplyHardening(", 1)[1].split(
+        "private async void OnDownloadStarting(", 1
+    )[0]
+    assert "core.DownloadStarting -= OnDownloadStarting;" in hardening
+    assert hardening.index("core.DownloadStarting -= OnDownloadStarting;") < hardening.index(
+        "core.DownloadStarting += OnDownloadStarting;"
+    )
 
 
 def test_go_gate_uses_the_same_pinned_toolchain_as_package_build(

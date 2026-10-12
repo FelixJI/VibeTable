@@ -55,10 +55,13 @@ import type {
   AppPreferencesHostPayloadMap,
   AppPreferencesWebMessageType,
   AppPreferencesWebPayloadMap,
+  AppearanceHostMessageType,
+  AppearanceHostPayloadMap,
 } from "@/contracts/appPreferencesContracts";
 import {
   APP_PREFERENCES_HOST_MESSAGE_TYPES,
   APP_PREFERENCES_WEB_MESSAGE_TYPES,
+  APPEARANCE_HOST_MESSAGE_TYPES,
 } from "@/contracts/appPreferencesContracts";
 import type {
   ReleaseUpdateHostMessageType,
@@ -115,6 +118,7 @@ type HostMessageType =
   | ClipboardHostMessageType
   | RuntimeDiagnosticsHostMessageType
   | AppPreferencesHostMessageType
+  | AppearanceHostMessageType
   | ReleaseUpdateHostMessageType
   | SurfaceHostMessageType
   | WorkspaceV2HostMessageType;
@@ -123,6 +127,7 @@ type HostPayloadMap =
   & ClipboardHostPayloadMap
   & RuntimeDiagnosticsHostPayloadMap
   & AppPreferencesHostPayloadMap
+  & AppearanceHostPayloadMap
   & ReleaseUpdateHostPayloadMap
   & SurfaceHostPayloadMap
   & WorkspaceV2HostPayloadMap;
@@ -334,6 +339,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   ...RUNTIME_DIAGNOSTICS_HOST_MESSAGE_TYPES,
   ...APP_PREFERENCES_HOST_MESSAGE_TYPES,
   ...CLIPBOARD_HOST_MESSAGE_TYPES,
+  ...APPEARANCE_HOST_MESSAGE_TYPES,
   ...RELEASE_UPDATE_HOST_MESSAGE_TYPES,
   ...WORKSPACE_V2_HOST_MESSAGE_TYPES,
   ...SURFACE_HOST_MESSAGE_TYPES,
@@ -351,6 +357,10 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   "dashboard.queryLoaded",
   "dashboard.saved",
   "dashboard.deleted",
+  "dashboard.exportTargetGranted",
+  "dashboard.exportRetired",
+  "dashboard.exportSettled",
+  "dashboard.printDialogOpened",
   "document.listLoaded",
   "document.actionCompleted",
   "document.diffCompleted",
@@ -493,6 +503,9 @@ const WEB_MESSAGE_TYPES: ReadonlySet<WebMessageType> = new Set<
   "dashboard.saveRequested",
   "dashboard.deleteRequested",
   "dashboard.cancelRequested",
+  "dashboard.exportTargetRequested",
+  "dashboard.exportRetireRequested",
+  "dashboard.printRequested",
   "plugin.catalog.list",
   "plugin.audit.list",
   "plugin.cleanup.listPending",
@@ -570,6 +583,9 @@ const RESPONSE_TYPE_OVERRIDES: Readonly<
   "dashboard.queryRequested": ["dashboard.queryLoaded"],
   "dashboard.saveRequested": ["dashboard.saved"],
   "dashboard.deleteRequested": ["dashboard.deleted"],
+  "dashboard.exportTargetRequested": ["dashboard.exportTargetGranted"],
+  "dashboard.exportRetireRequested": ["dashboard.exportRetired"],
+  "dashboard.printRequested": ["dashboard.printDialogOpened"],
   "interface.listRequested": ["interface.listLoaded"],
   "interface.loadRequested": ["interface.loaded"],
   "interface.commitRequested": ["interface.committed"],
@@ -607,6 +623,9 @@ const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
   "sourceImport.open",
   "file.previewRequested",
   "file.downloadRequested",
+  // The export target request waits in the host-owned SaveFileDialog; the
+  // native dialog owns completion and stop() still clears the pending entry.
+  "dashboard.exportTargetRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -741,6 +760,10 @@ export interface HostBridge {
   on<K extends RuntimeDiagnosticsHostMessageType>(
     type: K,
     handler: (payload: RuntimeDiagnosticsHostPayloadMap[K]) => void,
+  ): () => void;
+  on<K extends AppPreferencesHostMessageType | AppearanceHostMessageType>(
+    type: K,
+    handler: (payload: (AppPreferencesHostPayloadMap & AppearanceHostPayloadMap)[K]) => void,
   ): () => void;
   on<K extends WorkspaceV2HostMessageType>(
     type: K,

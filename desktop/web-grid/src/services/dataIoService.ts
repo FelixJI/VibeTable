@@ -16,6 +16,13 @@ import type {
 import { t } from "@/i18n";
 import { computed, ref } from "vue";
 
+export class DataTaskCancelledError extends Error {
+  constructor() {
+    super("Data task cancelled.");
+    this.name = "DataTaskCancelledError";
+  }
+}
+
 export type DataTaskSessionState = "active" | "draining" | "retired";
 
 export interface ImportPreviewSession {
@@ -80,12 +87,14 @@ export function useDataIoService() {
   const activeTaskId = ref<string | null>(null);
   /** True while `task.create` is awaited but admission is not yet assigned an id. */
   const createPending = ref(false);
+  const progress = ref<DataTaskStatus["progress"] | null>(null);
+  let cancelRequested = false;
   const busy = computed(() => activeTaskId.value !== null || createPending.value);
   let catalogGeneration = 0;
   let activeTaskSession: () => DataTaskSessionState = () => "active";
 
   async function runTask(
-    kind: "data.import" | "data.export",
+    kind: "data.import" | "data.export" | "data.previewImport",
     params: Readonly<Record<string, unknown>>,
     assertCurrent: () => void,
     taskSession: () => DataTaskSessionState,
@@ -98,17 +107,22 @@ export function useDataIoService() {
     // `task.create` reply would both pass the guard and admit two tasks. The
     // lock is released on create failure so later tasks are not blocked.
     createPending.value = true;
+    cancelRequested = false;
+    progress.value = null;
+    activeTaskSession = taskSession;
     try {
       let status = await bridge.request("task.create", { kind, params }) as DataTaskStatus;
       // Admission is already complete. Keep tracking the owned task through its
       // terminal receipt so table changes do not discard busy/cancellation state.
       activeTaskId.value = status.taskId;
-      activeTaskSession = taskSession;
+      progress.value = status.progress;
       try {
+        if (cancelRequested) await cancelActive();
         status = await trackTaskToTerminal(status, taskSession);
         return readTaskResult(kind, status);
       } finally {
         activeTaskId.value = null;
+        progress.value = null;
       }
     } finally {
       createPending.value = false;
@@ -129,6 +143,7 @@ export function useDataIoService() {
         status = await bridge.request("task.status", {
           taskId: status.taskId,
         }) as DataTaskStatus;
+        progress.value = status.progress;
       } catch (error) {
         // Drain cancels the status RPC lease, not the admitted backend task.
         // Keep its last receipt: the next iteration waits for the original
@@ -140,7 +155,8 @@ export function useDataIoService() {
     return status;
   }
 
-  function readTaskResult(kind: "data.import" | "data.export", status: DataTaskStatus): unknown {
+  function readTaskResult(kind: "data.import" | "data.export" | "data.previewImport", status: DataTaskStatus): unknown {
+    if (status.state === "cancelled") throw new DataTaskCancelledError();
     if (status.state !== "succeeded") {
       throw new Error(status.error ?? `Data task ended as ${status.state}.`);
     }
@@ -158,6 +174,7 @@ export function useDataIoService() {
   }
 
   async function cancelActive(): Promise<void> {
+    if (createPending.value) cancelRequested = true;
     const taskId = activeTaskId.value;
     if (taskId && activeTaskSession() === "active") {
       await bridge.request("task.cancel", { taskId });
@@ -169,8 +186,10 @@ export function useDataIoService() {
     collection: string,
     schemaRevision: string,
     columnMapping: readonly ImportColumnMappingPayload[],
+    assertCurrent: () => void,
+    taskSession: () => DataTaskSessionState,
   ): Promise<ImportPlan> {
-    return await bridge.request("data.previewImport", {
+    return await runTask("data.previewImport", {
       grantId: grant.grantId,
       collection,
       schemaRevision,
@@ -181,7 +200,7 @@ export function useDataIoService() {
         relationId: item.relationId,
         matchField: item.matchField,
       })),
-    }) as ImportPlan;
+    }, assertCurrent, taskSession) as ImportPlan;
   }
 
   /** Opens the native import-source picker without previewing any target yet. */
@@ -195,10 +214,11 @@ export function useDataIoService() {
     collection: string,
     schemaRevision: string,
     assertCurrent: () => void = () => undefined,
+    taskSession: () => DataTaskSessionState = () => "active",
   ): Promise<ImportPreviewSession> {
     const grant = await pickImportSource();
     assertCurrent();
-    const plan = await requestPreview(grant, collection, schemaRevision, []);
+    const plan = await requestPreview(grant, collection, schemaRevision, [], assertCurrent, taskSession);
     return { grant, plan, mode: "create_only" };
   }
 
@@ -207,8 +227,10 @@ export function useDataIoService() {
     collection: string,
     schemaRevision: string,
     columnMapping: readonly ImportColumnMappingPayload[],
+    assertCurrent: () => void = () => undefined,
+    taskSession: () => DataTaskSessionState = () => "active",
   ): Promise<ImportPlan> {
-    return await requestPreview(grant, collection, schemaRevision, columnMapping);
+    return await requestPreview(grant, collection, schemaRevision, columnMapping, assertCurrent, taskSession);
   }
 
   async function describeSchema(collection: string) {
@@ -339,6 +361,7 @@ export function useDataIoService() {
 
   return {
     activeTaskId,
+    progress,
     busy,
     pickImportSource,
     previewImport,
