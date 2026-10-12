@@ -8,7 +8,8 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
     waitForCapturedBridgeMessage, insertRowFromToolbar,
-    applyV2FieldChange, chooseToolbarMore, parseCsv } = ports;
+    applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
+    adoptIsolatedNativeClipboardText, beginIsolatedNativeClipboardWrite } = ports;
   const populated = await createSimpleTable(page, "E2E AutoNumber Backfill", "Title");
   await applyProductMutation(page, populated.tableId, Array.from({ length: 3 }, () => ({
     kind: "insert", recordId: null, values: {},
@@ -63,12 +64,25 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   await waitForVisibleRowCount(page, 1);
   const numberCell = page.locator(`.tabulator-cell[tabulator-field="${field.identity.physicalName}"]`).filter({ hasText: "HT-000001" });
   await numberCell.waitFor();
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: "https://app.vibetable.local" });
-  await page.evaluate(async () => navigator.clipboard.writeText("number-copy-sentinel"));
+  await seedIsolatedNativeClipboard(page, "number-copy-sentinel", runtime);
   await numberCell.click();
+  // Register the product's own Host SetText as unconfirmed before the key
+  // press: a timed-out or late-landing copy must keep the finally cleanup
+  // indeterminate instead of clearing the previous owned sentinel.
+  await beginIsolatedNativeClipboardWrite(runtime);
   await page.keyboard.press("Control+c");
-  await page.waitForFunction(async () => (await navigator.clipboard.readText()).includes("HT-000001"));
-  const copied = await page.evaluate(async () => navigator.clipboard.readText());
+  let copied = "";
+  const copyDeadline = Date.now() + 10_000;
+  while (Date.now() < copyDeadline) {
+    const reply = await rawBridgeRequest(page, "clipboard.readText", {});
+    copied = reply.payload?.text ?? "";
+    if (copied.includes("HT-000001")) break;
+    await page.waitForTimeout(100);
+  }
+  // Pre-declared exact outputs of the product's Ctrl+C copy (the actual
+  // bytes, at most one trailing line ending); nothing else is adoptable.
+  const expectedCopyTexts = ["HT-000001", "HT-000001\n", "HT-000001\r\n"];
+  await adoptIsolatedNativeClipboardText(page, expectedCopyTexts, runtime);
   recorder.check("copy preserves the original readonly business number and leading zeroes",
     copied.trim() === "HT-000001", { copied });
   const exportTarget = path.join(runtime.controlsDir, "auto-number.csv");

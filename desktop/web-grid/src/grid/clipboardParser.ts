@@ -6,17 +6,21 @@
  * cell/byte counts the Web layer uses for the 10k cell cap and the C1 overflow
  * redirect.
  *
- * The parser deliberately preserves the semantics the host's preview needs:
+ * The parser is a single state machine (#465) so quoted fields behave exactly
+ * like the encoder on the copy side:
  *
  * * Empty cells stay as `""` (they are NOT dropped) — a paste of
  *   `"a\t\tb"` is three cells, not two.
- * * Quoted fields are unescaped (RFC 4180-style: `""` -> `"`); an embedded
- *   tab/newline inside quotes is part of the cell value.
- * * Both CRLF (`\r\n`) and LF (`\n`) row terminators are supported; a lone CR
- *   is normalized to LF.
+ * * Quoted fields are unescaped (RFC 4180-style: `""` -> `"`); embedded tabs,
+ *   CR, LF and CRLF inside quotes are part of the cell value and survive the
+ *   round trip verbatim (no newline pre-splitting).
+ * * Both CRLF (`\r\n`) and LF (`\n`) row terminators are supported outside
+ *   quotes; a lone CR is also a terminator.
  * * A trailing empty row produced by a final terminator is dropped, but a
  *   trailing empty column (final tab) is preserved so column counts are
  *   stable.
+ * * A quote only opens a quoted field at the START of a field; quotes inside
+ *   an unquoted value (notably JSON object keys) are ordinary data.
  *
  * The caller enforces the 10k cell cap via {@link PASTE_CELL_LIMIT}; oversize
  * clipboards are NOT truncated — the caller surfaces a clear "use file import"
@@ -62,14 +66,16 @@ export interface OverflowClipboard {
  */
 export function parseClipboard(raw: string): ParsedClipboard {
   const byteCount = byteLength(raw);
-  const rows = splitRows(raw);
+  const rows = parseRows(raw);
   if (rows.length === 0) {
     throw new Error("clipboard is empty");
   }
   const grid: ParsedCell[][] = [];
   let columnCount = 0;
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-    const cells = parseRow(rows[rowIndex], rowIndex);
+    const cells = rows[rowIndex].map((value, columnIndex) =>
+      makeCell(rowIndex, columnIndex, value),
+    );
     grid.push(cells);
     if (cells.length > columnCount) {
       columnCount = cells.length;
@@ -83,6 +89,21 @@ export function parseClipboard(raw: string): ParsedClipboard {
     cellCount,
     byteCount,
   };
+}
+
+/**
+ * Encode a cell rectangle as TSV for the system clipboard, the exact inverse
+ * of {@link parseClipboard}: a cell containing a quote, tab, CR or LF is
+ * wrapped in quotes with `"` doubled; everything else is emitted verbatim
+ * (so `0`, `false`, leading zeros and Unicode text keep their raw shape).
+ * Rows are joined with `\n` and cells with `\t` — no trailing terminator, and
+ * a trailing empty cell still yields a trailing tab so the rectangle width
+ * round-trips.
+ */
+export function encodeClipboardTsv(rows: readonly (readonly string[])[]): string {
+  return rows.map(row => row.length === 1 && row[0] === ""
+    ? '""'
+    : row.map(encodeCell).join("\t")).join("\n");
 }
 
 /**
@@ -150,58 +171,112 @@ function byteLength(value: string): number {
   return value.length;
 }
 
-function splitRows(raw: string): string[] {
-  // Normalize CRLF/CR to LF, then split. A trailing terminator yields a final
-  // empty string we drop (a paste ending with a newline is not an extra row).
-  const normalized = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const rows = normalized.split("\n");
-  if (rows.length > 0 && rows[rows.length - 1] === "") {
-    rows.pop();
-  }
-  return rows;
+function encodeCell(value: string): string {
+  return /["\t\r\n]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
+/** States of the TSV field state machine. */
+const enum FieldState {
+  /** At the start of a field; a quote here opens a quoted field. */
+  Start,
+  /** Inside an unquoted field. */
+  Unquoted,
+  /** Inside a quoted field; every char is literal data. */
+  Quoted,
+  /** Just closed a quoted field; a doubled quote re-opens it. */
+  QuotedQuote,
 }
 
 /**
- * Parse one TSV row into cells, honouring quoted fields. A quoted field may
- * contain embedded tabs/newlines (already split across rows by the caller, so
- * in practice only tabs survive here) and escapes `""` as a literal `"`.
+ * Split `raw` into rows of unescaped cell values using a per-character state
+ * machine. Row terminators (LF / CRLF / lone CR) only count OUTSIDE quotes, so
+ * embedded newlines stay inside their cell. A final terminator does not
+ * produce a trailing empty row.
  */
-function parseRow(line: string, rowIndex: number): ParsedCell[] {
-  const cells: ParsedCell[] = [];
-  let columnIndex = 0;
+function parseRows(raw: string): string[][] {
+  const rows: string[][] = [];
+  let cells: string[] = [];
   let current = "";
-  let inQuotes = false;
+  let state: FieldState = FieldState.Start;
 
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    if (inQuotes) {
-      if (char === '"') {
-        if (line[i + 1] === '"') {
-          current += '"';
-          i += 1;
+  const endField = (): void => {
+    cells.push(current);
+    current = "";
+    state = FieldState.Start;
+  };
+  const endRow = (): void => {
+    endField();
+    rows.push(cells);
+    cells = [];
+  };
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i];
+    const next = raw[i + 1];
+    switch (state) {
+      case FieldState.Start:
+        if (char === '"') {
+          state = FieldState.Quoted;
+        } else if (char === "\t") {
+          endField();
+        } else if (char === "\n" || (char === "\r" && next === "\n")) {
+          endRow();
+          if (char === "\r") i += 1; // consume the LF of a CRLF pair
+        } else if (char === "\r") {
+          endRow();
         } else {
-          inQuotes = false;
+          current += char;
+          state = FieldState.Unquoted;
         }
-      } else {
-        current += char;
-      }
-    } else if (char === '"' && current.length === 0) {
-      inQuotes = true;
-    } else if (char === '"') {
-      // A quote only starts RFC-style field quoting at the beginning of the
-      // field. Quotes inside an unquoted value (notably JSON object keys) are
-      // ordinary data and must survive the paste round-trip.
-      current += char;
-    } else if (char === "\t") {
-      cells.push(makeCell(rowIndex, columnIndex, current));
-      columnIndex += 1;
-      current = "";
-    } else {
-      current += char;
+        break;
+      case FieldState.Unquoted:
+        if (char === "\t") {
+          endField();
+        } else if (char === "\n" || (char === "\r" && next === "\n")) {
+          endRow();
+          if (char === "\r") i += 1;
+        } else if (char === "\r") {
+          endRow();
+        } else {
+          // A quote mid-field (notably inside JSON values) is ordinary data.
+          current += char;
+        }
+        break;
+      case FieldState.Quoted:
+        if (char === '"') {
+          state = FieldState.QuotedQuote;
+        } else {
+          // Embedded tab/newline/CR inside quotes is literal cell content.
+          current += char;
+        }
+        break;
+      case FieldState.QuotedQuote:
+        if (char === '"') {
+          current += '"';
+          state = FieldState.Quoted;
+        } else if (char === "\t") {
+          endField();
+        } else if (char === "\n" || (char === "\r" && next === "\n")) {
+          endRow();
+          if (char === "\r") i += 1;
+        } else if (char === "\r") {
+          endRow();
+        } else {
+          // Lenient: trailing garbage right after a closing quote joins the
+          // field (matches the historical `"a"b` -> `ab` behaviour).
+          current += char;
+          state = FieldState.Unquoted;
+        }
+        break;
     }
   }
-  cells.push(makeCell(rowIndex, columnIndex, current));
-  return cells;
+
+  // End of input: keep the pending row only when it carries any cell content;
+  // a row left pending right after a terminator (e.g. "a\tb\n") is dropped.
+  if (state !== FieldState.Start || cells.length > 0) {
+    endRow();
+  }
+  return rows;
 }
 
 function makeCell(rowIndex: number, columnIndex: number, value: string): ParsedCell {

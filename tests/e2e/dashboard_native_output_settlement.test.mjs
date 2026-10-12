@@ -148,4 +148,3 @@ test("a missing settlement fails closed through the capture timeout", async () =
     delete globalThis.window;
   }
 });
-

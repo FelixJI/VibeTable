@@ -72,6 +72,8 @@ public sealed class WebMessageRouter
         "data.exportTargetRequested",
         "dailyQuote.fetch",
         "diagnostics.get",
+        "clipboard.readText",
+        "clipboard.writeText",
         "appPreferences.get",
         "appPreferences.update",
         "settings.readDevice",
@@ -205,6 +207,8 @@ public sealed class WebMessageRouter
         "data.exportTargetRequested",
         "dailyQuote.fetch",
         "diagnostics.get",
+        "clipboard.readText",
+        "clipboard.writeText",
         "appPreferences.get",
         "appPreferences.update",
         "settings.readDevice",
@@ -480,7 +484,7 @@ public sealed class WebMessageRouter
                         "BAD_WORKSPACE_SCOPE");
                 }
             }
-            if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type) || HostSourceImportRequestController.Handles(type)) && scope is null)
+            if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type) || HostSourceImportRequestController.Handles(type) || ClipboardRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (DashboardNativeOutputController.Handles(type) && scope is null)

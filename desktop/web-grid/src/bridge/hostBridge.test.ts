@@ -117,6 +117,24 @@ describe("HostBridge", () => {
     vi.useRealTimers();
   });
 
+  it("round-trips native clipboard text through the closed bridge", async () => {
+    const bridge = createHostBridge({ webview, generateRequestId: () => "clipboard-read" });
+    bridge.start();
+    const result = bridge.request("clipboard.readText", {});
+    webview.emit({ type: "clipboard.readText", requestId: "clipboard-read", payload: { text: "中文\t😀" } });
+    await expect(result).resolves.toEqual({ text: "中文\t😀" });
+    bridge.stop();
+  });
+
+  it("rejects clipboard writes by full UTF-8 envelope size before posting", async () => {
+    const bridge = createHostBridge({ webview, generateRequestId: () => "x".repeat(1024) });
+    bridge.start();
+    const text = "中".repeat(Math.floor((4 * 1024 * 1024 - 512) / 3));
+    await expect(bridge.request("clipboard.writeText", { text })).rejects.toMatchObject({ reason: "tooLarge" });
+    expect(webview.postMessage).not.toHaveBeenCalled();
+    bridge.stop();
+  });
+
   for (const retirementTrigger of ["closeSession", "beginClose", "epochRotate"] as const) {
     it(`settles scoped controller requests on ${retirementTrigger} retirement without waiting for timeout`, async () => {
       vi.useFakeTimers();
@@ -128,6 +146,8 @@ describe("HostBridge", () => {
       window.addEventListener("vibetable:bridge-request-retired", retired);
       const pluginProjectKey = "local:1111111111114111811111111111111";
       const requests = [
+        bridge.request("clipboard.readText", {}),
+        bridge.request("clipboard.writeText", { text: "copied" }),
         bridge.request("dashboard.listRequested", {}),
         bridge.request("dashboard.manifestRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
@@ -156,7 +176,7 @@ describe("HostBridge", () => {
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
       for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-      expect(retired).toHaveBeenCalledTimes(7);
+      expect(retired).toHaveBeenCalledTimes(9);
       const lookupEnvelope = webview.postMessage.mock.calls
         .map(call => call[0] as BridgeMessage)
         .find(message => message.type === "lookup.query");

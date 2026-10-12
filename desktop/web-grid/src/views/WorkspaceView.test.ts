@@ -28,6 +28,7 @@ import { useSurfaceStore } from "@/stores/surfaceStore";
 import { useDashboardDraftStore } from "@/stores/dashboardStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { setLocale } from "@/i18n";
 import {
   setWorkspaceV2UiPort,
@@ -38,8 +39,10 @@ import type {
   NormalizedRelationDescriptor,
   PastePlan,
   PasteSummary,
-  RelationTargetRef,
+  PluginCommandContext,
   PresetEntry,
+  RelationTargetRef,
+  WebPluginActionDescription,
 } from "@/contracts";
 
 /**
@@ -1016,6 +1019,8 @@ describe("WorkspaceView", () => {
         wrapper.find(selectors[entry.view.kind!]).exists(),
         `${entry.view.kind} should render`,
       ).toBe(true);
+      expect(wrapper.find('[data-testid="grid-menu-copy"]').exists()).toBe(entry.view.kind === "table");
+      expect(wrapper.find('[data-testid="grid-menu-paste"]').exists()).toBe(entry.view.kind === "table");
     }
   });
 
@@ -4231,5 +4236,514 @@ describe("WorkspaceView", () => {
       newValue: { approved: false },
       schemaRevision: "schema-1",
     }));
+  });
+
+  // -----------------------------------------------------------------------
+  // #465: native clipboard bridge (closed clipboard.readText/writeText).
+  // -----------------------------------------------------------------------
+
+  describe("native clipboard bridge", () => {
+    function seedTableRange(rows: Array<Record<string, unknown>>, fields: string[]): void {
+      mockTabulatorRef.current.getRanges = () => [{
+        getRows: () => rows.map(data => ({ getData: () => data })),
+        getColumns: () => fields.map(field => ({ getField: () => field })),
+      }];
+    }
+
+    async function openTableView(): Promise<ReturnType<typeof mountView>> {
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "users" }, { collection: "orders" }], {
+        users: "用户", orders: "订单",
+      });
+      workspace.selectTable("users");
+      useUiStore().navigate("tables");
+      const tableStore = useTableStore();
+      tableStore.beginLoad();
+      tableStore.appendPage({
+        table: "users",
+        columns: [
+          { name: "title", title: "Title", dataType: "text", editable: true, nullable: true },
+          { name: "status", title: "Status", dataType: "text", editable: true, nullable: true },
+        ],
+        rows: [{ rowKey: 1, title: null, status: null }],
+        offset: 0,
+        limit: 1,
+        totalRows: 1,
+        mode: "remote",
+        querySnapshot: {
+          snapshotId: "snapshot-1",
+          digest: "digest-1",
+          databaseId: "database-1",
+          table: "users",
+          schemaRevision: "schema-1",
+          dataRevision: 7,
+          normalizedQuery: {},
+        },
+      });
+      const wrapper = mountView();
+      await flushPromises();
+      return wrapper;
+    }
+
+    /** Opens the plugin action panel overlay directly through the store. */
+    function openPluginActionPanel(): void {
+      const context: PluginCommandContext = {
+        contract: "vibetable.command-context.v1",
+        projectKey: "local:default",
+        collection: "users",
+        selectedKeys: [],
+        querySnapshot: null,
+        locale: "zh-CN",
+        theme: "light",
+        density: "comfortable",
+        user: {},
+        hostVersion: "1.0.0",
+      };
+      const description: WebPluginActionDescription = {
+        pluginId: "com.acme.clean",
+        actionId: "normalize",
+        title: "规范化",
+        risk: "write",
+        inputSchema: { type: "object", properties: {} },
+      };
+      usePluginStore().beginAction(description, context);
+    }
+
+    it("Ctrl+C posts clipboard.writeText with TSV-quoted multi-line/quoted cells", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange(
+        [{ title: "多\n行", status: "进行中", rowKey: 1 }, { title: '含"引号"', status: "0", rowKey: 2 }],
+        ["title", "status"],
+      );
+
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      const write = posted.find(item => item.type === "clipboard.writeText");
+      expect(write).toBeDefined();
+      expect(write!.payload).toEqual({ text: '"多\n行"\t进行中\n"含""引号"""\t0' });
+      emit({ type: "clipboard.writeText", requestId: write!.requestId, payload: { written: true } });
+      await flushPromises();
+    });
+
+    it("Ctrl+V reads clipboard.readText and posts the paste preview", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange(
+        [{ title: null, status: null, rowKey: 1 }],
+        ["title", "status"],
+      );
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText");
+      expect(read).toBeDefined();
+
+      emit({
+        type: "clipboard.readText",
+        requestId: read!.requestId,
+        payload: { text: "客户\t进行中" },
+      });
+      await flushPromises();
+
+      const preview = posted.find(item => item.type === "table.previewPasteRequested");
+      expect(preview).toBeDefined();
+      expect(preview!.payload).toMatchObject({
+        collection: "users",
+        schemaRevision: "schema-1",
+        cells: [[
+          { rowIndex: 0, columnIndex: 0, column: "title", rawValue: "客户", parsedValue: "客户" },
+          { rowIndex: 0, columnIndex: 1, column: "status", rawValue: "进行中", parsedValue: "进行中" },
+        ]],
+      });
+    });
+
+    it("a busy clipboard reply stops the paste without a preview", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      emit({
+        type: "operation.failed",
+        requestId: read.requestId,
+        payload: { message: "系统剪贴板正被其他程序占用，请重试。", code: "CLIPBOARD_BUSY" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    it("switching tables during the async read drops the stale paste silently", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      useWorkspaceStore().selectTable("orders");
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "旧表\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    it("Ctrl+C over a plain text selection never posts clipboard.writeText", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      const paragraph = document.createElement("p");
+      paragraph.textContent = "普通文字选择";
+      document.body.appendChild(paragraph);
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+      selection.removeAllRanges();
+      document.body.removeChild(paragraph);
+    });
+
+    it("Ctrl+C with a foreground modal open never posts clipboard.writeText", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      useUiStore().openShortcuts();
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
+    it("opening an overlay during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      useUiStore().openShortcuts();
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    /** Opens the export lookup panel through the real toolbar flow. */
+    async function openExportLookupPanel(
+      wrapper: Awaited<ReturnType<typeof openTableView>>,
+      io: Pick<ReturnType<typeof makeRecordingBridge>, "posted" | "emit">,
+    ): Promise<void> {
+      const { posted, emit } = io;
+      useTableStore().revision = {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      };
+      wrapper.findComponent(AppToolbar).vm.$emit("exportData", "xlsx");
+      await flushPromises();
+      let catalogRequest = posted.at(-2)!;
+      expect(catalogRequest.type).toBe("schema.describe");
+      emit({
+        type: "schema.describe",
+        requestId: catalogRequest.requestId,
+        payload: {
+          contract: "vibetable.schema-describe.v1",
+          collection: "users",
+          requestGeneration: (catalogRequest.payload as { requestGeneration: number }).requestGeneration,
+          schema: { collection: "users", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+          capabilities: {},
+        },
+      });
+      catalogRequest = posted.at(-1)!;
+      expect(catalogRequest.type).toBe("lookup.list");
+      emit({
+        type: "lookup.list",
+        requestId: catalogRequest.requestId,
+        payload: { collection: "users", lookupRevision: "lookup-1", definitions: [] },
+      });
+      await flushPromises();
+      expect(document.body.querySelector('[data-testid="export-lookup-panel"]')).toBeTruthy();
+    }
+
+    it("Ctrl+C with the export lookup panel open never posts clipboard.writeText", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openExportLookupPanel(wrapper, { posted, emit });
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
+    it("opening the export lookup panel during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      await openExportLookupPanel(wrapper, { posted, emit });
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    /** Opens the import preview session through the legacy toolbar flow. */
+    async function openImportPreviewSession(
+      wrapper: Awaited<ReturnType<typeof openTableView>>,
+      io: Pick<ReturnType<typeof makeRecordingBridge>, "posted" | "emit">,
+    ): Promise<void> {
+      const { posted, emit } = io;
+      useTableStore().revision = {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      };
+      posted.length = 0;
+      wrapper.findComponent(AppToolbar).vm.$emit("importData");
+      await flushPromises();
+      let request = posted.find(item => item.type === "data.importSourceRequested")!;
+      emit({ type: request.type, requestId: request.requestId, payload: { grantId: "grant-import", displayName: "users.csv" } });
+      await flushPromises();
+      request = posted.find(item => item.type === "task.create")!;
+      expect(request.payload).toMatchObject({ kind: "data.previewImport" });
+      emit({
+        type: request.type,
+        requestId: request.requestId,
+        payload: {
+          taskId: "task-preview", kind: "data.previewImport", state: "succeeded",
+          progress: { done: 0, total: 0, message: "" }, error: null,
+          result: {
+            collection: "users", schemaRevision: "schema-1", capabilityHash: "cap-1", sourceHash: "source-1",
+            token: { token: "import-token", expiresAt: 9999999999, consumed: false },
+            summary: { validRows: 1, errorRows: 0, warningRows: 0, totalRows: 1, errorCount: 0, warningCount: 0 },
+            rows: [], sourceColumns: ["title"], unmatchedColumns: [], diagnostics: [],
+          },
+        },
+      });
+      await flushPromises();
+      const describeRequest = posted
+        .filter(item => item.type === "schema.describe")
+        .at(-1)!;
+      emit({
+        type: "schema.describe",
+        requestId: describeRequest.requestId,
+        payload: {
+          contract: "vibetable.schema-describe.v1",
+          collection: "users",
+          requestGeneration: (describeRequest.payload as { requestGeneration: number }).requestGeneration,
+          schema: { collection: "users", schemaRevision: "schema-1", columns: [], normalizedRelations: [] },
+          capabilities: {},
+        },
+      });
+      await flushPromises();
+      expect(document.body.querySelector('[data-testid="import-preview-panel"]')).toBeTruthy();
+    }
+
+    it("Ctrl+C with the import preview session open never posts clipboard.writeText", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openImportPreviewSession(wrapper, { posted, emit });
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
+    /** Emits importData and leaves the native picker request unanswered (picker open). */
+    async function openNativeImportPicker(
+      wrapper: Awaited<ReturnType<typeof openTableView>>,
+      posted: ReturnType<typeof makeRecordingBridge>["posted"],
+    ): Promise<void> {
+      useTableStore().revision = {
+        databaseSessionId: "session-1",
+        schemaRevision: "schema-1",
+        dataRevision: 1,
+      };
+      wrapper.findComponent(AppToolbar).vm.$emit("importData");
+      await flushPromises();
+      expect(posted.some(item => item.type === "data.importSourceRequested")).toBe(true);
+    }
+
+    it("Ctrl+C while the native import picker is open never posts clipboard.writeText", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openNativeImportPicker(wrapper, posted);
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+    });
+
+    it("opening the native import picker during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      await openNativeImportPicker(wrapper, posted);
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    it("cancelling the native import picker restores grid clipboard commands", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      const wrapper = await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      await openNativeImportPicker(wrapper, posted);
+      const picker = posted.find(item => item.type === "data.importSourceRequested")!;
+      emit({
+        type: "operation.failed",
+        requestId: picker.requestId,
+        payload: { message: "已取消。", code: "CANCELLED" },
+      });
+      await flushPromises();
+
+      fireKey("c", { ctrlKey: true });
+      await flushPromises();
+      const write = posted.find(item => item.type === "clipboard.writeText");
+      expect(write).toBeDefined();
+      emit({ type: "clipboard.writeText", requestId: write!.requestId, payload: { written: true } });
+      await flushPromises();
+    });
+
+    it("Ctrl+C/Ctrl+V never touch the native clipboard while the plugin action panel is open", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      openPluginActionPanel();
+      fireKey("c", { ctrlKey: true });
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+      expect(posted.some(item => item.type === "clipboard.readText")).toBe(false);
+    });
+
+    it("opening the plugin action panel during the async read retires the stale paste", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: null, status: null, rowKey: 1 }], ["title", "status"]);
+
+      fireKey("v", { ctrlKey: true });
+      await flushPromises();
+      const read = posted.find(item => item.type === "clipboard.readText")!;
+
+      openPluginActionPanel();
+      emit({
+        type: "clipboard.readText",
+        requestId: read.requestId,
+        payload: { text: "迟到\t内容" },
+      });
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "table.previewPasteRequested")).toBe(false);
+    });
+
+    it("the explicit menu copy button posts clipboard.writeText despite button focus", async () => {
+      const { bridge, posted, emit } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange(
+        [{ title: "多\n行", status: "进行中", rowKey: 1 }],
+        ["title", "status"],
+      );
+
+      const button = document.body.querySelector<HTMLButtonElement>('[data-testid="grid-menu-copy"]')!;
+      expect(button).not.toBeNull();
+      button.focus();
+      button.click();
+      await flushPromises();
+
+      const write = posted.find(item => item.type === "clipboard.writeText");
+      expect(write).toBeDefined();
+      expect(write!.payload).toEqual({ text: '"多\n行"\t进行中' });
+      emit({ type: "clipboard.writeText", requestId: write!.requestId, payload: { written: true } });
+      await flushPromises();
+    });
+
+    it("the menu copy button is inert while a grid editor input holds focus", async () => {
+      const { bridge, posted } = makeRecordingBridge();
+      setHostBridgeForTesting(bridge);
+      await openTableView();
+      seedTableRange([{ title: "t", status: "s", rowKey: 1 }], ["title", "status"]);
+
+      const input = document.createElement("input");
+      document.body.appendChild(input);
+      input.focus();
+      const button = document.body.querySelector<HTMLButtonElement>('[data-testid="grid-menu-copy"]')!;
+      const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+      button.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      if (!down.defaultPrevented) button.focus();
+      button.click();
+      await flushPromises();
+
+      expect(posted.some(item => item.type === "clipboard.writeText")).toBe(false);
+      document.body.removeChild(input);
+    });
   });
 });

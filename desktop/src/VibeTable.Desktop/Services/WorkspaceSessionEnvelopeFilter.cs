@@ -205,6 +205,11 @@ public sealed class WorkspaceSessionEnvelopeFilter :
             !lease.CancellationToken.IsCancellationRequested &&
             _sessions.Accept(lease.Scope);
 
+    internal bool TryUseCurrent(WorkspaceRequestEpochLease? lease, Func<bool> action)
+        => lease is not null && _sessions.TryUseCurrentSession(
+            lease.Scope.WorkspaceId, lease.Scope.SessionEpoch,
+            () => !lease.CancellationToken.IsCancellationRequested && action());
+
     public async Task DrainAsync(
         Guid workspaceId,
         ulong sessionEpoch,

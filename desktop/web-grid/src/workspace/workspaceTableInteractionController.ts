@@ -8,8 +8,11 @@ import type {
   PreviewPasteRequestedPayload,
   QuerySnapshot,
 } from "@/contracts";
+import type { ClipboardFailureReason } from "@/contracts/clipboardContracts";
 import { ROW_NUMBER_FIELD } from "@/grid/createGrid";
-import { classifyClipboard, mapCellsToColumns, parseClipboard } from "@/grid/clipboardParser";
+import { classifyClipboard, encodeClipboardTsv, mapCellsToColumns, parseClipboard, PASTE_CELL_LIMIT } from "@/grid/clipboardParser";
+import { clipboardFailureReason, isClipboardStaleFailure } from "@/services/clipboardService";
+import { isGridTextInteractionActive } from "@/composables/useKeyboard";
 import { resolvePasteContext, type PasteContext } from "@/grid/pasteContext";
 import type { ApplyPasteInput, usePasteService } from "@/services/pasteService";
 import type { useMutationService } from "@/services/mutationService";
@@ -131,7 +134,41 @@ export type WorkspaceTableIntent =
   | { readonly type: "keyboard.paste" }
   | { readonly type: "keyboard.delete" }
   | { readonly type: "keyboard.selectAll" }
-  | { readonly type: "keyboard.editCell" };
+  | { readonly type: "keyboard.editCell" }
+  | { readonly type: "menu.copy" }
+  | { readonly type: "menu.paste" };
+
+/** Snapshot of the workspace session/table a clipboard command was issued in. */
+export interface ClipboardCommandScope {
+  readonly workspaceId: string | null;
+  readonly sessionEpoch: number | null;
+  readonly tableId: string | null;
+  /** Monotonic bump on every scope change (sync watch), so A→B→A is stale. */
+  readonly generation: number;
+}
+
+/** Binds async clipboard results to the still-live command context (#465). */
+export interface ClipboardCommandGuard {
+  capture(): ClipboardCommandScope;
+  isCurrent(scope: ClipboardCommandScope): boolean;
+}
+
+/** Grid intents gated by the shared canExecute context at dispatch entry. */
+const GRID_COMMAND_INTENTS: ReadonlySet<WorkspaceTableIntent["type"]> = new Set([
+  "keyboard.copy",
+  "keyboard.paste",
+  "keyboard.delete",
+  "keyboard.selectAll",
+  "keyboard.editCell",
+  "menu.copy",
+  "menu.paste",
+]);
+
+/** Menu intents only exempt button focus, never an active editor/selection. */
+const MENU_COMMAND_INTENTS: ReadonlySet<WorkspaceTableIntent["type"]> = new Set([
+  "menu.copy",
+  "menu.paste",
+]);
 
 export interface WorkspaceTableInteractionController {
   dispatch(intent: WorkspaceTableIntent): Promise<void>;
@@ -151,30 +188,71 @@ export interface WorkspaceTableInteractionDependencies {
   readonly readClipboard: () => Promise<string>;
   readonly writeClipboard: (text: string) => Promise<void>;
   readonly createId: () => string;
+  /** Binds async clipboard results to the still-live workspace session/table. */
+  readonly clipboardGuard: ClipboardCommandGuard;
+  /** Shared copy/paste failure surface (stale failures are dropped upstream). */
+  readonly reportClipboardFailure: (
+    reason: ClipboardFailureReason,
+    action: "copy" | "paste",
+  ) => void;
+  /** Shared command context (view/overlay validity) for every grid intent. */
+  readonly canExecuteGridCommand: () => boolean;
 }
 
 export function createWorkspaceTableInteractionController(
   dependencies: WorkspaceTableInteractionDependencies,
 ): WorkspaceTableInteractionController {
+  const captureScope = (): ClipboardCommandScope => dependencies.clipboardGuard.capture();
+  const scopeIsCurrent = (scope: ClipboardCommandScope): boolean =>
+    dependencies.clipboardGuard.isCurrent(scope);
+
+  /** Report a clipboard failure unless the command context already went stale. */
+  function reportClipboardFailure(
+    error: unknown,
+    action: "copy" | "paste",
+    scope: ClipboardCommandScope,
+  ): void {
+    if (!scopeIsCurrent(scope) || isClipboardStaleFailure(error)) return;
+    dependencies.reportClipboardFailure(clipboardFailureReason(error), action);
+  }
+
   async function copy(): Promise<void> {
+    const scope = captureScope();
+    if (!scopeIsCurrent(scope)) return;
     const range = dependencies.grid.readActiveRange();
     if (!range) return;
     if (range.rows.length === 0 || range.fields.length === 0) return;
-    const tsv = range.rows.map(row => {
-      return range.fields.map(field => String(row[field] ?? "")).join("\t");
-    }).join("\n");
-    await dependencies.writeClipboard(tsv);
+    // Same cell cap as paste: an over-limit copy fails as a whole and points
+    // at the file-export path instead of silently truncating the rectangle.
+    if (range.rows.length * range.fields.length > PASTE_CELL_LIMIT) {
+      dependencies.reportClipboardFailure("tooLarge", "copy");
+      return;
+    }
+    // Raw-value rules are unchanged (String(value ?? "")); the TSV encoder
+    // only quotes cells whose quotes/tabs/newlines would break the rectangle.
+    const tsv = encodeClipboardTsv(
+      range.rows.map(row => range.fields.map(field => String(row[field] ?? ""))),
+    );
+    try {
+      await dependencies.writeClipboard(tsv);
+    } catch (error) {
+      reportClipboardFailure(error, "copy", scope);
+    }
   }
 
   async function paste(): Promise<void> {
+    const scope = captureScope();
     const collection = dependencies.workspace.currentTable;
     if (!collection) return;
     let text: string;
     try {
       text = await dependencies.readClipboard();
-    } catch {
+    } catch (error) {
+      reportClipboardFailure(error, "paste", scope);
       return;
     }
+    // Stale command context: drop silently — no preview, no error overwrite.
+    if (!scopeIsCurrent(scope)) return;
     if (!text) return;
     let parsed;
     try {
@@ -184,6 +262,7 @@ export function createWorkspaceTableInteractionController(
     }
     const classified = classifyClipboard(parsed);
     if ("overflow" in classified) {
+      if (!scopeIsCurrent(scope)) return;
       dependencies.paste.setOverflow();
       return;
     }
@@ -212,6 +291,7 @@ export function createWorkspaceTableInteractionController(
       startCell: context.startCell,
       cells,
     };
+    if (!scopeIsCurrent(scope)) return;
     dependencies.pasteService.preview(payload);
   }
 
@@ -236,6 +316,9 @@ export function createWorkspaceTableInteractionController(
   }
 
   async function dispatch(intent: WorkspaceTableIntent): Promise<void> {
+    if (GRID_COMMAND_INTENTS.has(intent.type)
+      && (!dependencies.canExecuteGridCommand()
+        || (MENU_COMMAND_INTENTS.has(intent.type) && isGridTextInteractionActive()))) return;
     switch (intent.type) {
       case "table.requestDelete": dependencies.ui.openDelete(intent.table); return;
       case "table.create": dependencies.tableAdminService.createTable(); return;
@@ -268,8 +351,14 @@ export function createWorkspaceTableInteractionController(
         dependencies.paste.reset();
         dependencies.ui.closePastePanel();
         return;
-      case "keyboard.copy": await copy(); return;
-      case "keyboard.paste": await paste(); return;
+      case "keyboard.copy":
+      case "menu.copy":
+        await copy();
+        return;
+      case "keyboard.paste":
+      case "menu.paste":
+        await paste();
+        return;
       case "keyboard.delete": removeRows(); return;
       case "keyboard.selectAll": dependencies.grid.selectAll(); return;
       case "keyboard.editCell": dependencies.grid.editActiveCell();

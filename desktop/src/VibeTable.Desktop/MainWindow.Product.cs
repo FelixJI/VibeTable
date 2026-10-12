@@ -513,6 +513,7 @@ public partial class MainWindow : Window
                     _e2eControlsDir), message => _readiness?.Trace(message)),
             new HostSourceImportRequestController(_webBridge, _workspaceSessionFilter,
                 new HostSourceImportActions(OpenSourceImportAsync)),
+            new ClipboardRequestController(_webBridge, _workspaceSessionFilter, new WindowsTextClipboard()),
             TraceHostRequest);
 
         _runtime.ClientReady += OnRuntimeClientReady;

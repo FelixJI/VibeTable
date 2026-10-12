@@ -129,8 +129,12 @@ import { createWorkspacePluginController } from "@/workspace/workspacePluginCont
 import {
   createTabulatorInteractionAdapter,
   createWorkspaceTableInteractionController,
+  type ClipboardCommandScope,
 } from "@/workspace/workspaceTableInteractionController";
 import { createWorkspaceSessionUiController } from "@/workspace/workspaceSessionUiController";
+import { createClipboardService } from "@/services/clipboardService";
+import { isGridTextInteractionActive } from "@/composables/useKeyboard";
+import { useFieldSettingsStore } from "@/field-settings/store";
 import { createAuthoritativeLookupController } from "@/workspace/authoritativeLookupController";
 import type {
   MutationErrorPayload,
@@ -162,6 +166,7 @@ const surfaceService = useSurfaceService(new SurfaceHostRepository(hostBridge));
 provideSurfaceService(surfaceService);
 const relationLookupService = useRelationLookupService();
 const fieldSettingsService = useFieldSettingsService({ onCommitted: refreshTable });
+const fieldSettingsState = useFieldSettingsStore();
 const ui = useUiStore();
 const admin = useTableAdminStore();
 const paste = usePasteStore();
@@ -205,6 +210,7 @@ const workspaceSessionUi = createWorkspaceSessionUiController({
 const {
   busy: dataIoBusy,
   previewSession: importPreviewSession,
+  previewing: importPreviewing,
   applying: importApplying,
   cancelling: importCancelling,
   applyError: importApplyError,
@@ -540,6 +546,62 @@ const structuredDialogFocus = createStructuredDialogFocus({
   ),
   reportOutcome: reportStructuredDialogFocusE2EOutcome,
 });
+// #465: unified grid-command context (keyboard + menu + controller entry) and
+// the async clipboard scope guard. The generation (bumped by the sync watch
+// below on every scope/context change) retires in-flight reads across
+// table A→B→A, view switches and overlay toggles; unmount retires too.
+let clipboardGeneration = 0;
+let clipboardCommandsAlive = true;
+
+const isForegroundOverlayOpen = (): boolean =>
+  showWorkspaceCenter.value
+  || ui.createModalOpen
+  || ui.deleteModalOpen
+  || ui.shortcutsOpen
+  || ui.pastePanelOpen
+  || contentPanelOpen.value
+  || admin.phase !== "idle"
+  || workspaceSessionUi.activationPending.value
+  || relationEditor.value.show
+  || lookupSources.show
+  || attachmentPanel.show
+  || jsonEditor.show
+  || revisionHistory.panelOpen
+  || fieldSettingsState.open
+  || columnContextMenu.value.show
+  || pluginContextMenu.value.show
+  || importPreviewSession.value !== null
+  || exportLookupPanel.value !== null
+  // The native import picker and preview fetch run before a preview session
+  // exists; gate grid commands through that phase too.
+  || importPreviewing.value
+  || plugins.actionOpen;
+
+const canExecuteGridCommand = (): boolean =>
+  ui.activeView === "tables" && activeViewKind.value === "table"
+  // Without workspace-session v2 there is no session state to gate on; the
+  // view check above is the legacy context.
+  && (!workspaceSession.enabled
+    || (workspaceSession.hasOpenWorkspace && !workspaceSession.isTransitioning))
+  && !isForegroundOverlayOpen();
+
+const captureClipboardScope = (): ClipboardCommandScope => ({
+  workspaceId: workspaceSession.activeWorkspaceId,
+  sessionEpoch: workspaceSession.sessionEpoch,
+  tableId: workspace.currentTable,
+  generation: clipboardGeneration,
+});
+
+const isClipboardScopeCurrent = (scope: ClipboardCommandScope): boolean =>
+  clipboardCommandsAlive
+  && clipboardGeneration === scope.generation
+  && workspaceSession.activeWorkspaceId === scope.workspaceId
+  && workspaceSession.sessionEpoch === scope.sessionEpoch
+  && workspace.currentTable === scope.tableId
+  && canExecuteGridCommand();
+
+const clipboardService = createClipboardService(hostBridge);
+
 const tableInteractions = createWorkspaceTableInteractionController({
   workspace,
   table: tableStore,
@@ -550,9 +612,16 @@ const tableInteractions = createWorkspaceTableInteractionController({
   mutationService,
   tableAdminService,
   grid: createTabulatorInteractionAdapter(tabulator),
-  readClipboard: async () => await navigator.clipboard?.readText?.() ?? "",
-  writeClipboard: async text => { await navigator.clipboard?.writeText?.(text); },
+  readClipboard: () => clipboardService.readText(),
+  writeClipboard: text => clipboardService.writeText(text),
   createId: () => crypto.randomUUID(),
+  clipboardGuard: {
+    capture: captureClipboardScope,
+    isCurrent: isClipboardScopeCurrent,
+  },
+  reportClipboardFailure: (reason, action) =>
+    message.error(t(`workspace.clipboard.${action}.${reason}`)),
+  canExecuteGridCommand,
 });
 const structuredCellDialogs = createStructuredCellDialogController({
   bridge: hostBridge,
@@ -1072,6 +1141,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   viewMounted = false;
+  clipboardCommandsAlive = false;
+  clipboardGeneration += 1;
   if (importHistoryPollHandle !== null) {
     window.clearInterval(importHistoryPollHandle);
     importHistoryPollHandle = null;
@@ -1241,8 +1312,33 @@ const unregisterWorkspaceEpochReset = registerWorkspaceEpochReset(
 // so they no-op cleanly when there is no selection or no table loaded.
 // ---------------------------------------------------------------------------
 
+// #465: retire in-flight clipboard commands whenever the effective command
+// context changes (view, overlay, workspace session or table), so a late
+// read can never re-enter after a switch-back.
+watch(
+  () => [
+    canExecuteGridCommand(),
+    workspaceSession.activeWorkspaceId,
+    workspaceSession.sessionEpoch,
+    workspace.currentTable,
+  ] as const,
+  () => { clipboardGeneration += 1; },
+  { flush: "sync" },
+);
+
+function guardClipboardPointer(event: PointerEvent): void {
+  // Preserve editor focus and text selection until the click guard runs.
+  if (isGridTextInteractionActive()) event.preventDefault();
+}
+
+/** Explicit menu actions share the keyboard context; only focus is exempt. */
+function dispatchMenuClipboard(intent: "menu.copy" | "menu.paste"): void {
+  if (!canExecuteGridCommand() || isGridTextInteractionActive()) return;
+  void tableInteractions.dispatch({ type: intent });
+}
+
 useKeyboard({
-  isTableContext: () => ui.activeView === "tables",
+  isTableContext: canExecuteGridCommand,
   onCopy: () => void tableInteractions.dispatch({ type: "keyboard.copy" }),
   onPaste: () => void tableInteractions.dispatch({ type: "keyboard.paste" }),
   onDelete: () => void tableInteractions.dispatch({ type: "keyboard.delete" }),
@@ -1281,6 +1377,24 @@ useKeyboard({
           <span v-else>VibeTable</span>
           <i></i>
           <strong>{{ pageTitle }}</strong>
+        </div>
+        <div v-if="ui.activeView === 'tables' && activeViewKind === 'table'" class="grid-clipboard-actions">
+          <NButton
+            size="tiny"
+            secondary
+            data-testid="grid-menu-copy"
+            :title="t('workspace.clipboard.menu.copy')"
+            @pointerdown="guardClipboardPointer"
+            @click="dispatchMenuClipboard('menu.copy')"
+          >{{ t("workspace.clipboard.menu.copy") }}</NButton>
+          <NButton
+            size="tiny"
+            secondary
+            data-testid="grid-menu-paste"
+            :title="t('workspace.clipboard.menu.paste')"
+            @pointerdown="guardClipboardPointer"
+            @click="dispatchMenuClipboard('menu.paste')"
+          >{{ t("workspace.clipboard.menu.paste") }}</NButton>
         </div>
         <ConnectionPill v-if="!workspaceSession.enabled" @reconnect="openDatabaseWithGuard" />
       </header>
@@ -1980,6 +2094,11 @@ useKeyboard({
   padding: 0 14px 0 16px;
   border-bottom: 1px solid var(--vt-border);
   background: var(--vt-bg);
+}
+
+.grid-clipboard-actions {
+  display: flex;
+  gap: 6px;
 }
 .app-title { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .app-title span { font-weight: 650; letter-spacing: -0.01em; }
