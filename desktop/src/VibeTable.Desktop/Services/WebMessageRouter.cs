@@ -96,6 +96,9 @@ public sealed class WebMessageRouter
         "dashboard.saveRequested",
         "dashboard.deleteRequested",
         "dashboard.cancelRequested",
+        "dashboard.exportTargetRequested",
+        "dashboard.exportRetireRequested",
+        "dashboard.printRequested",
         // Interface authoring uses one closed use case per operation.
         "interface.listRequested",
         "interface.loadRequested",
@@ -222,6 +225,10 @@ public sealed class WebMessageRouter
         "dashboard.queryLoaded",
         "dashboard.saved",
         "dashboard.deleted",
+        "dashboard.exportTargetGranted",
+        "dashboard.exportRetired",
+        "dashboard.exportSettled",
+        "dashboard.printDialogOpened",
         "interface.listLoaded",
         "interface.loaded",
         "interface.committed",
@@ -476,6 +483,9 @@ public sealed class WebMessageRouter
             if ((GridPresentationRequestController.Handles(type) || HostCommandRequestController.Handles(type) || HostSourceImportRequestController.Handles(type)) && scope is null)
                 return BuildOperationFailed(requestId,
                     "Grid presentation requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
+            if (DashboardNativeOutputController.Handles(type) && scope is null)
+                return BuildOperationFailed(requestId,
+                    "Dashboard output requires the current workspace scope.", "BAD_WORKSPACE_SCOPE");
             if (productRoute == ProductRpcRoute.GoSidecar)
             {
                 if (productCapability?.Scope != "workspace")

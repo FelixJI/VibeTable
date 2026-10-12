@@ -140,10 +140,11 @@ export function usePluginService(): PluginService {
     const isCurrentContext = () => store.projectKey === context.projectKey
       && store.projectContextGeneration === context.generation;
     const errorPolicy = options.errorPolicy ?? "foreground";
-    store.startBusy(errorPolicy === "foreground");
+    // Background refreshes must not toggle buttons or release a foreground operation.
+    if (errorPolicy === "foreground") store.startBusy();
     try {
       const result = await bridge.request(type, payload);
-      if (isCurrentContext()) store.finishBusy();
+      if (errorPolicy === "foreground" && isCurrentContext()) store.finishBusy();
       return result as T;
     } catch (error) {
       // A late terminal from a retired generation must not fail or un-busy

@@ -245,7 +245,6 @@ export const usePluginStore = defineStore("plugins", () => {
     lastError.value = error instanceof Error ? error.message : String(error);
   }
   function failIfNoError(error: unknown): void {
-    busy.value = false;
     if (lastError.value === null) {
       lastError.value = error instanceof Error ? error.message : String(error);
     }

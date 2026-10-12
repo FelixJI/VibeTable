@@ -206,6 +206,93 @@ describe("pluginService canonical wire", () => {
     expect(store.busy).toBe(false);
   });
 
+  it("keeps overlapping background catalog refreshes off the foreground busy gate", async () => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `catalog-overlap-${++sequence}`,
+      webview: {
+        postMessage: () => undefined,
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const store = usePluginStore();
+    const service = usePluginService();
+    const first = service.list();
+    const second = service.list();
+    const busyStates = [store.busy];
+    listener?.({ data: {
+      type: "plugin.catalog.list", requestId: "catalog-overlap-1", payload: [snapshot],
+    } });
+    await first;
+    busyStates.push(store.busy);
+    listener?.({ data: {
+      type: "plugin.catalog.list", requestId: "catalog-overlap-2", payload: [snapshot],
+    } });
+    await second;
+    busyStates.push(store.busy);
+    bridge.stop();
+
+    expect(busyStates).toEqual([false, false, false]);
+    expect(store.lastError).toBeNull();
+  });
+
+  it.each(["success", "failure"])(
+    "keeps an in-flight inspection busy across background %s",
+    async (outcome) => {
+      let listener: ((event: { data: unknown }) => void) | undefined;
+      let sequence = 0;
+      const bridge = createHostBridge({
+        generateRequestId: () => `inspect-busy-${++sequence}`,
+        webview: {
+          postMessage: () => undefined,
+          addEventListener: (_type, handler) => { listener = handler; },
+          removeEventListener: () => undefined,
+        },
+      });
+      bridge.start();
+      setHostBridgeForTesting(bridge);
+      const store = usePluginStore();
+      const service = usePluginService();
+      const inspection = service.inspectInstall("host-picker:folder");
+      const busyStates = [store.busy];
+      const refresh = service.list();
+      busyStates.push(store.busy);
+      if (outcome === "success") {
+        listener?.({ data: {
+          type: "plugin.catalog.list", requestId: "inspect-busy-2", payload: [snapshot],
+        } });
+        await refresh;
+      } else {
+        const rejected = expect(refresh).rejects.toThrow("catalog unavailable");
+        listener?.({ data: {
+          type: "operation.failed", requestId: "inspect-busy-2",
+          payload: { code: "PLUGIN_CATALOG_UNAVAILABLE", message: "catalog unavailable" },
+        } });
+        await rejected;
+      }
+      busyStates.push(store.busy);
+      listener?.({ data: {
+        type: "plugin.install.inspect", requestId: "inspect-busy-1",
+        payload: {
+          planId: "plan-inspect-busy", projectKey: "local:default", projectRevision: "r1",
+          sourceType: "package", sourceLocation: "host-managed",
+          packageHash: snapshot.packageHash, manifest: snapshot.manifest, schemas: snapshot.schemas,
+        },
+      } });
+      await inspection;
+      busyStates.push(store.busy);
+      bridge.stop();
+
+      expect(busyStates).toEqual([true, true, true, false]);
+      expect(store.lastError).toBe(outcome === "failure" ? "catalog unavailable" : null);
+      expect(store.installPlan?.planId).toBe("plan-inspect-busy");
+    },
+  );
+
   it("keeps a foreground failure when it settles while a background audit refresh is in flight", async () => {
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
@@ -320,7 +407,7 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
     const stale = service.listAudit(snapshot.pluginId);
     store.setProjectContext("project:b", "r2");
-    const current = service.listAudit(snapshot.pluginId);
+    const current = service.retryCleanup(snapshot.pluginId);
 
     listener?.({
       data: {
@@ -335,7 +422,10 @@ describe("pluginService canonical wire", () => {
     expect(store.busy).toBe(true);
 
     listener?.({
-      data: { type: "plugin.audit.list", requestId: "generation-race-2", payload: [] },
+      data: {
+        type: "plugin.lifecycle.uninstall", requestId: "generation-race-2",
+        payload: { uninstalled: false, privateSettingsRetained: false, cleanupPending: false },
+      },
     });
     await current;
     expect(store.busy).toBe(false);
@@ -392,7 +482,7 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
     const stale = service.listAudit(snapshot.pluginId);
     store.setProjectContext("local:default", "r2");
-    const current = service.listAudit(snapshot.pluginId);
+    const current = service.retryCleanup(snapshot.pluginId);
     expect(store.busy).toBe(true);
 
     listener?.({
@@ -408,7 +498,10 @@ describe("pluginService canonical wire", () => {
     expect(store.busy).toBe(true);
 
     listener?.({
-      data: { type: "plugin.audit.list", requestId: "same-key-race-2", payload: [] },
+      data: {
+        type: "plugin.lifecycle.uninstall", requestId: "same-key-race-2",
+        payload: { uninstalled: false, privateSettingsRetained: false, cleanupPending: false },
+      },
     });
     await current;
     expect(store.busy).toBe(false);
