@@ -20,6 +20,7 @@ internal sealed record DashboardDownloadAdmission(
     private int _retired;
     private string? _failureReason;
     internal ITimer? DeadlineTimer { get; set; }
+    internal CancellationTokenRegistration RetirementRegistration { get; set; }
 
     public bool MarkSettling() => Interlocked.Exchange(ref _settled, 1) == 0;
     public bool RecordFailure(string reason)
@@ -86,7 +87,10 @@ internal sealed class DashboardExportDownloadGate
             admission.DeadlineTimer.Change(
                 TimeSpan.FromTicks(Math.Max(0, (target.Deadline - broker.DownloadTime.GetUtcNow()).Ticks)),
                 Timeout.InfiniteTimeSpan);
-            return true;
+            admission.RetirementRegistration = broker.DownloadRetirement.Register(
+                () => RetireUnadmitted(admission));
+            if (admission.Retired) admission.RetirementRegistration.Unregister();
+            return !admission.Retired;
         }
     }
 
@@ -111,6 +115,18 @@ internal sealed class DashboardExportDownloadGate
             }
         }
         return false;
+    }
+
+    private void RetireUnadmitted(DashboardDownloadAdmission admission)
+    {
+        lock (_gate)
+        {
+            if (admission.Admitted) return;
+            admission.Retire();
+            _registrations.Remove(admission.Token);
+        }
+        // Cancellation may run under the broker lock; settlement must stay asynchronous.
+        _ = SettleAsync(admission, completed: false, "SessionRetired");
     }
 
     public async Task<bool?> RetireAsync(string token, HostSessionFileBroker broker)
@@ -160,6 +176,7 @@ internal sealed class DashboardExportDownloadGate
         if (!admission.MarkSettling()) return;
         lock (_gate) _registrations.Remove(admission.Token);
         admission.DeadlineTimer?.Dispose();
+        admission.RetirementRegistration.Unregister();
         bool commit = outcome == "saved";
         if (commit && admission.Broker.IsRetired)
         {
@@ -245,6 +262,7 @@ internal sealed class DashboardExportDownloadGate
     {
         lock (_gate) _registrations.Remove(admission.Token);
         admission.DeadlineTimer?.Dispose();
+        admission.RetirementRegistration.Unregister();
         try
         {
             await admission.Broker.ExpireDownloadAsync(admission.Token, () =>

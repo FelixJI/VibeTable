@@ -39,6 +39,7 @@ public sealed class DashboardNativeOutputControllerTests
         internal readonly HostSessionFileBroker Broker;
         internal int Retired;
         internal int Leases;
+        internal Action? AfterCommit;
 
         internal BrokerFixture(TimeProvider? time = null)
         {
@@ -64,6 +65,7 @@ public sealed class DashboardNativeOutputControllerTests
                 {
                     Epoch.Token.ThrowIfCancellationRequested();
                     action();
+                    AfterCommit?.Invoke();
                 }, time);
         }
 
@@ -698,6 +700,129 @@ public sealed class DashboardNativeOutputControllerTests
         Assert.IsFalse(JsonSerializer.SerializeToElement(replies[0].Payload).GetProperty("retired").GetBoolean());
         Assert.AreEqual("new", await File.ReadAllTextAsync(fixture.TargetPath()));
         Assert.AreEqual(0, fixture.Leases);
+    }
+
+    [TestMethod]
+    public async Task Restore_releases_unadmitted_capacity_even_when_retirement_uses_a_new_scope()
+    {
+        using var sessions = new SessionFixture();
+        await sessions.OpenAsync();
+        var time = new ManualTimeProvider();
+        await using var owner = new BrokerFixture(time);
+        await using var next = new BrokerFixture(time);
+        var reports = new System.Collections.Concurrent.ConcurrentQueue<JsonElement>();
+        var reported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new DashboardExportDownloadGate(payload =>
+        {
+            reports.Enqueue(JsonSerializer.SerializeToElement(payload));
+            if (reports.Count == 8) reported.TrySetResult();
+        });
+        HostSessionFileBroker currentBroker = owner.Broker;
+        var sink = new FakeWebReplySink();
+        var host = new FakeOutputHost { Target = owner.TargetPath() };
+        var controller = new DashboardNativeOutputController(sink, sessions.Filter,
+            host, () => currentBroker, gate);
+        for (int index = 0; index < 8; index++)
+            await controller.DispatchAsync(Request("dashboard.exportTargetRequested", new
+            {
+                fileName = "board", format = "csv",
+                blobUrl = $"blob:https://app.vibetable.local/old-{index}", byteLength = 3,
+            }, requestId: $"old-{index}", scope: sessions.CurrentScope()));
+        var grants = await sink.WaitForCountAsync("dashboard.exportTargetGranted", 8);
+        string token = PayloadString(grants[0], "token");
+        WorkspaceWireScope oldScope = sessions.CurrentScope();
+
+        owner.Epoch.Cancel();
+        await owner.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        await sessions.Manager.RestartAfterRestoreAsync(oldScope.WorkspaceId, oldScope.SessionEpoch);
+        currentBroker = next.Broker;
+        host.Target = next.TargetPath();
+        await controller.DispatchAsync(Request("dashboard.exportRetireRequested", new { token },
+            requestId: "stale-retirement", scope: oldScope));
+        await controller.DispatchAsync(Request("dashboard.exportRetireRequested", new { token },
+            requestId: "current-retirement", scope: sessions.CurrentScope()));
+        var failures = await sink.WaitForCountAsync("operation.failed", 2);
+        Assert.AreEqual("BAD_WORKSPACE_SCOPE", Code(failures[0]));
+        Assert.AreEqual("BAD_EXPORT_TOKEN", Code(failures[1]));
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+        await reported.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.HasCount(8, reports);
+        Assert.IsTrue(reports.All(report => report.GetProperty("outcome").GetString() == "cancelled"));
+        Assert.AreEqual(0, owner.Leases);
+        for (int index = 0; index < 8; index++)
+        {
+            Assert.IsFalse(gate.TryAdmit($"blob:https://app.vibetable.local/old-{index}", out _));
+            await controller.DispatchAsync(Request("dashboard.exportTargetRequested", new
+            {
+                fileName = "board", format = "csv",
+                blobUrl = $"blob:https://app.vibetable.local/new-{index}", byteLength = 3,
+            }, requestId: $"new-{index}", scope: sessions.CurrentScope()));
+        }
+        var allGrants = await sink.WaitForCountAsync("dashboard.exportTargetGranted", 16);
+        Assert.HasCount(16, allGrants);
+        Assert.AreEqual(8, next.Leases);
+    }
+
+    [TestMethod]
+    public async Task Broker_retirement_only_removes_its_own_unadmitted_registrations()
+    {
+        var time = new ManualTimeProvider();
+        await using var owner = new BrokerFixture(time);
+        await using var other = new BrokerFixture(time);
+        var reports = new List<JsonElement>();
+        var gate = new DashboardExportDownloadGate(payload => reports.Add(JsonSerializer.SerializeToElement(payload)));
+        HostDownloadTarget pending = await owner.Broker.OpenDownloadTargetAsync(owner.TargetPath());
+        HostDownloadTarget active = await other.Broker.OpenDownloadTargetAsync(other.TargetPath());
+        Assert.IsTrue(gate.TryRegister(pending, owner.Broker, "blob:https://app.vibetable.local/retired", 3));
+        Assert.IsTrue(gate.TryRegister(active, other.Broker, "blob:https://app.vibetable.local/current", 3));
+        await File.WriteAllTextAsync(pending.TemporaryPath, "old");
+        await File.WriteAllTextAsync(active.TemporaryPath, "new");
+
+        owner.Broker.Retire();
+        await owner.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(gate.TryAdmit("blob:https://app.vibetable.local/retired", out _));
+        Assert.IsFalse(File.Exists(pending.TemporaryPath));
+        Assert.AreEqual(1, time.ScheduledTimerCount);
+        Assert.IsTrue(gate.TryAdmit("blob:https://app.vibetable.local/current", out var admission));
+        await gate.SettleAsync(admission!, completed: true, null);
+        Assert.AreEqual("new", await File.ReadAllTextAsync(other.TargetPath()));
+        Assert.AreEqual(0, other.Leases);
+        time.Advance(HostSessionFileBroker.DownloadLifetime);
+        Assert.HasCount(2, reports);
+        Assert.AreEqual("cancelled", reports[0].GetProperty("outcome").GetString());
+        Assert.AreEqual("saved", reports[1].GetProperty("outcome").GetString());
+    }
+
+    [TestMethod]
+    public async Task Broker_lock_retirement_and_late_registration_do_not_block_settlement()
+    {
+        var time = new ManualTimeProvider();
+        await using var fixture = new BrokerFixture(time);
+        var reports = new System.Collections.Concurrent.ConcurrentQueue<JsonElement>();
+        var reported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new DashboardExportDownloadGate(payload =>
+        {
+            reports.Enqueue(JsonSerializer.SerializeToElement(payload));
+            if (reports.Count == 2) reported.TrySetResult();
+        });
+        HostDownloadTarget pending = await fixture.Broker.OpenDownloadTargetAsync(fixture.TargetPath());
+        Assert.IsTrue(gate.TryRegister(pending, fixture.Broker, "blob:https://app.vibetable.local/before-retire", 3));
+        await File.WriteAllTextAsync(pending.TemporaryPath, "old");
+        // The commit callback still owns the broker semaphore when retirement fires.
+        fixture.AfterCommit = fixture.Broker.Retire;
+        HostDownloadTarget late = await fixture.Broker.OpenDownloadTargetAsync(fixture.TargetPath("late.csv"))
+            .WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.IsFalse(gate.TryRegister(late, fixture.Broker, "blob:https://app.vibetable.local/after-retire", 3));
+        await fixture.Broker.DrainCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        await reported.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(0, fixture.Leases);
+        Assert.AreEqual(0, time.ScheduledTimerCount);
+        Assert.IsFalse(File.Exists(pending.TemporaryPath));
+        Assert.IsFalse(gate.TryAdmit("blob:https://app.vibetable.local/before-retire", out _));
+        Assert.IsFalse(gate.TryAdmit("blob:https://app.vibetable.local/after-retire", out _));
+        time.Advance(HostSessionFileBroker.DownloadLifetime);
+        Assert.HasCount(2, reports);
+        Assert.IsTrue(reports.All(report => report.GetProperty("outcome").GetString() == "cancelled"));
     }
 
     [TestMethod]

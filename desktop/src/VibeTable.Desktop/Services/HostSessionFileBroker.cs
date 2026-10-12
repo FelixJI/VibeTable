@@ -11,6 +11,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     private const long PluginBytes = 1024 * 1024;
     internal static readonly TimeSpan DownloadLifetime = TimeSpan.FromSeconds(120);
     internal TimeProvider DownloadTime => _time;
+    internal CancellationToken DownloadRetirement => _retired.Token;
     private readonly Func<WorkspaceRequestEpochLease> _capture;
     private readonly Action<Action> _commitCurrent;
     private readonly TimeProvider _time;
