@@ -45,6 +45,8 @@ export default defineConfig({
     },
   },
   test: {
+    // Limit jsdom/component startup contention without increasing test timeouts.
+    maxWorkers: 2,
     environment: "jsdom",
     globals: false,
     include: ["src/**/*.test.ts"],
