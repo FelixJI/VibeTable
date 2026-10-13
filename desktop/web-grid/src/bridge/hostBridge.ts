@@ -1127,7 +1127,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
     const retiresWithWorkspace = type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
-      || type === "settings.readWorkCalendar" || type === "lookup.query"
+      || type === "settings.readWorkCalendar" || type === "lookup.query" || type === "lookup.valuePage"
       || type === "plugin.catalog.list" || type === "plugin.audit.list"
       || type === "plugin.cleanup.listPending"
       || type.startsWith("command.") || type.startsWith("shortcut.")
