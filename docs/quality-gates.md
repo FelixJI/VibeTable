@@ -20,6 +20,8 @@ CI 使用 `windows-latest` 与最小 `contents: read` 权限。PR 的同编号�
 
 ## CD
 
+发起或刷新版本 PR 前，先依据成功 `main` CI 的两份原始产品 E2E 报告和六 lane 报告核对 source、候选绑定及 manifest 的完整、不重复覆盖，再更新[唯一当前证据](e2e-performance.md#当前产品-e2e-证据)，运行 `uv run python scripts/automation_project.py release-evidence`。新增或变更场景后的旧样本可以在普通 CI 中诚实保留 gap/changed，但版本 PR 要求 gap、surplus、changed 全部闭合；不能只清空差距声明或重跑旧提交。证据修订合入 `main` 后，再通过既有 CD prepare 入口刷新版本 PR。
+
 `.github/workflows/cd.yml` 有两个入口，但不重建候选：
 
 1. 手动运行并选择 `patch`、`minor` 或 `major`，创建或刷新唯一的 `automation/release` 版本/changelog PR。
