@@ -7,6 +7,7 @@ import type {
   BridgeMessage,
   DatabaseOpenedPayload,
   LookupQueryParams,
+  LookupValuePageParams,
   RealtimeRecoverySnapshot,
   TablePage,
 } from "@/contracts";
@@ -69,6 +70,15 @@ function lookupQueryPayload(): LookupQueryParams {
     requestGeneration: 1,
     schemaRevision: "schema-rev-1",
     permissionRevision: "permission-rev-1",
+    lookupRevision: "lookup-rev-1",
+  };
+}
+
+function lookupValuePagePayload(): LookupValuePageParams {
+  return {
+    collection: "orders", fieldRef: "customer_name", sourceRecordId: "order-1",
+    offset: 0, limit: 20,
+    schemaRevision: "schema-rev-1", permissionRevision: "permission-rev-1",
     lookupRevision: "lookup-rev-1",
   };
 }
@@ -152,6 +162,7 @@ describe("HostBridge", () => {
         bridge.request("dashboard.manifestRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("lookup.query", lookupQueryPayload()),
+        bridge.request("lookup.valuePage", lookupValuePagePayload()),
         bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
         bridge.request("plugin.audit.list", { projectKey: pluginProjectKey, pluginId: "com.acme.clean" }),
         bridge.request("plugin.cleanup.listPending", { projectKey: pluginProjectKey }),
@@ -176,7 +187,7 @@ describe("HostBridge", () => {
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
       for (const result of await Promise.all(requests)) expect(result).toMatchObject({ name: "AbortError" });
-      expect(retired).toHaveBeenCalledTimes(9);
+      expect(retired).toHaveBeenCalledTimes(10);
       const lookupEnvelope = webview.postMessage.mock.calls
         .map(call => call[0] as BridgeMessage)
         .find(message => message.type === "lookup.query");
@@ -207,31 +218,86 @@ describe("HostBridge", () => {
     });
   }
 
-  it("rejects a current-epoch lookup.query operation.failed instead of swallowing it", async () => {
-    openWorkspaceSessionFixture(useWorkspaceSessionStore());
-    const bridge = createHostBridge({
-      webview,
-      timeoutMs: 1000,
-      generateRequestId: () => "lookup-current-1",
+  for (const state of ["closing", "switching", "closed"] as const) {
+    it(`does not post new scoped controller requests while the workspace is ${state}`, async () => {
+      vi.useFakeTimers();
+      const session = useWorkspaceSessionStore();
+      openWorkspaceSessionFixture(session);
+      const bridge = createHostBridge({ webview, timeoutMs: 1000 });
+      bridge.start();
+      if (state === "closing") expect(session.beginClose()).toBe(true);
+      else if (state === "switching") expect(session.beginSwitch("workspace-b")).toBe(true);
+      else session.closeSession();
+      const pluginProjectKey = "local:1111111111114111811111111111111";
+      const requests = [
+        bridge.request("lookup.query", lookupQueryPayload()),
+        bridge.request("lookup.valuePage", lookupValuePagePayload()),
+        bridge.request("clipboard.readText", {}),
+        bridge.request("clipboard.writeText", { text: "copied" }),
+        bridge.request("dashboard.listRequested", {}),
+        bridge.request("dashboard.manifestRequested", {}),
+        bridge.request("settings.readWorkCalendar", {}),
+        bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
+        bridge.request("plugin.audit.list", { projectKey: pluginProjectKey, pluginId: "com.acme.clean" }),
+        bridge.request("plugin.cleanup.listPending", { projectKey: pluginProjectKey }),
+      ].map(promise => promise.catch(error => error));
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(1001);
+      const results = await Promise.all(requests);
+      bridge.stop();
+      expect(webview.postMessage).not.toHaveBeenCalled();
+      for (const result of results) expect(result).toMatchObject({ name: "AbortError" });
     });
-    bridge.start();
-    const pending = bridge.request("lookup.query", lookupQueryPayload());
-    webview.emit({
-      type: "operation.failed",
-      requestId: "lookup-current-1",
-      payload: {
+  }
+
+  for (const [type, payload] of [
+    ["lookup.query", lookupQueryPayload()],
+    ["lookup.valuePage", lookupValuePagePayload()],
+  ] as const) {
+    it(`resumes ${type} when a failed close restores the session`, async () => {
+      const session = useWorkspaceSessionStore();
+      openWorkspaceSessionFixture(session);
+      const bridge = createHostBridge({ webview });
+      bridge.start();
+      expect(session.beginClose()).toBe(true);
+      await expect(bridge.request(type, payload)).rejects.toMatchObject({ name: "AbortError" });
+      session.failSwitch("close failed");
+      const pending = bridge.requestWithHandle(type, payload);
+      expect(webview.postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        type, requestId: pending.requestId,
+        scope: expect.objectContaining({ sessionEpoch: 7 }),
+      }));
+      webview.emit({ type, requestId: pending.requestId, payload: { rows: [] } });
+      await expect(pending.promise).resolves.toEqual({ rows: [] });
+      bridge.stop();
+    });
+
+    it(`rejects a current-epoch ${type} operation.failed instead of swallowing it`, async () => {
+      openWorkspaceSessionFixture(useWorkspaceSessionStore());
+      const bridge = createHostBridge({
+        webview,
+        timeoutMs: 1000,
+        generateRequestId: () => "lookup-current-1",
+      });
+      bridge.start();
+      const pending = bridge.request(type, payload);
+      webview.emit({
+        type: "operation.failed",
+        requestId: "lookup-current-1",
+        payload: {
+          code: "workspace.session_stale",
+          message: "session stale",
+          operation: type,
+        },
+      });
+      await expect(pending).rejects.toBeInstanceOf(BridgeOperationError);
+      await expect(pending).rejects.toMatchObject({
         code: "workspace.session_stale",
-        message: "session stale",
-        operation: "lookup.query",
-      },
+        operation: type,
+      });
+      bridge.stop();
     });
-    await expect(pending).rejects.toBeInstanceOf(BridgeOperationError);
-    await expect(pending).rejects.toMatchObject({
-      code: "workspace.session_stale",
-      operation: "lookup.query",
-    });
-    bridge.stop();
-  });
+  }
 
   it("does not fan out a late database projection while its workspace is switching", () => {
     const session = useWorkspaceSessionStore();
