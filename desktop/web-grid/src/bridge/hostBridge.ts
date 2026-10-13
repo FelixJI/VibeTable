@@ -1126,6 +1126,19 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
     payload: WebPayloadMap[K],
   ): { readonly requestId: string; readonly promise: Promise<unknown> } {
     const requestId = generateRequestId();
+    const retiresWithWorkspace = type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
+      || type === "settings.readWorkCalendar" || type === "lookup.query"
+      || type === "plugin.catalog.list" || type === "plugin.audit.list"
+      || type === "plugin.cleanup.listPending"
+      || type.startsWith("command.") || type.startsWith("shortcut.")
+      || type.startsWith("clipboard.");
+    if (retiresWithWorkspace && getActivePinia()) {
+      const session = useWorkspaceSessionStore();
+      // A watcher retires existing requests, but cannot admit new work during drain.
+      if (session.enabled && (session.isTransitioning || !session.hasOpenWorkspace)) {
+        return { requestId, promise: Promise.reject(new BridgeRequestRetiredError()) };
+      }
+    }
     const env = outboundEnvelope(type, payload, requestId);
     const requestTimeoutMs: number | null = type === "update.install"
       ? updateInstallTimeoutMs
@@ -1158,13 +1171,8 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             }
           }, requestTimeoutMs);
       pending.set(requestId, {
-        retirementScope: (type === "dashboard.listRequested" || type === "dashboard.manifestRequested"
-          || type === "settings.readWorkCalendar" || type === "lookup.query"
-          || type === "plugin.catalog.list" || type === "plugin.audit.list"
-          || type === "plugin.cleanup.listPending"
-          || type.startsWith("command.") || type.startsWith("shortcut.")
-          || type.startsWith("clipboard."))
-          && env.scope ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
+        retirementScope: retiresWithWorkspace && env.scope
+          ? { workspaceId: env.scope.workspaceId, sessionEpoch: env.scope.sessionEpoch }
           : undefined,
         messageType: type,
         responseTypes: responseTypesFor(type),
