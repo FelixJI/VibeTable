@@ -164,7 +164,7 @@ internal sealed class HostPluginTaskRegistry
         return authority.Context is null ? null : new(null, 0, authority.Context, authority);
     }
 
-    internal (CancellationToken Token, PluginEventEnvelope Envelope) NativeTask(HostPluginTaskBinding binding, PluginRuntimeTaskSnapshot snapshot)
+    internal (CancellationToken Token, PluginEventEnvelope Envelope) NativeTask(HostPluginTaskBinding binding, PluginRuntimeTaskSnapshot snapshot, bool nativeOnlyApproval = false)
     {
         lock (_gate)
         {
@@ -172,6 +172,7 @@ internal sealed class HostPluginTaskRegistry
                 throw new PluginSurfacePolicyException("plugin_concurrency_limit", "Too many active plugin tasks.");
             if (!AdmitTask(binding, snapshot)) throw new InvalidOperationException("Plugin session is stale.");
             var record = _tasks[snapshot.TaskId];
+            record.NativeOnlyApproval = nativeOnlyApproval;
             return (record.Lifetime.Token, ProjectLocked(record, "plugin.task.changed"));
         }
     }
@@ -199,7 +200,7 @@ internal sealed class HostPluginTaskRegistry
                 throw new OperationCanceledException();
             string interactionId = Guid.NewGuid().ToString("N");
             double expires = Now() + 120;
-            var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+            var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously), NativeOnlyApproval = record.NativeOnlyApproval };
             _interactions[record.Snapshot.RunId] = pending;
             var preview = new PluginRuntimeConfirmationPreview(
                 [new Dictionary<string, JsonElement> { ["collection"] = plan.GetProperty("collection").Clone() }],
@@ -410,9 +411,28 @@ internal sealed class HostPluginTaskRegistry
         }
     }
 
+    internal bool RequiresNativeConfirmation(string runId)
+    {
+        lock (_gate) return _interactions.TryGetValue(runId, out var pending) && pending.NativeOnlyApproval;
+    }
+
+    internal bool IsInteractionPending(PluginResolveInteractionParams request)
+    {
+        lock (_gate)
+        {
+            return _interactions.TryGetValue(request.RunId, out var pending)
+                && pending.InteractionId == request.InteractionId
+                && pending.Decision is null && pending.ExpiresAt > Now()
+                && _tasksByRun.TryGetValue(request.RunId, out var record)
+                && ReferenceEquals(record.Binding, pending.Binding)
+                && IsVisibleInCurrentContextLocked(record) && IsCurrentLocked(pending.Binding)
+                && !IsTerminalLocked(record) && !record.Snapshot.CancelRequested;
+        }
+    }
+
     /// <summary>Atomically decides a current confirmation before contacting Python.</summary>
     public PluginRuntimeInteractionResolveResult BeginInteractionResolve(
-        PluginResolveInteractionParams request, out IPluginRpcGateway? gateway)
+        PluginResolveInteractionParams request, out IPluginRpcGateway? gateway, bool fromNativeHost = false)
     {
         gateway = null;
         lock (_gate)
@@ -425,6 +445,7 @@ internal sealed class HostPluginTaskRegistry
                 || !IsCurrentLocked(pending.Binding)
                 || IsTerminalLocked(record)
                 || record.Snapshot.CancelRequested) return new("expired", null);
+            if (pending.NativeOnlyApproval && !fromNativeHost) return new("native-required", null);
             if (pending.Decision is not null)
                 return new("already-resolved", pending.Decision);
             if (pending.ExpiresAt <= Now()) return new("expired", null);
@@ -633,6 +654,7 @@ internal sealed class HostPluginTaskRegistry
         public int Revision { get; set; } = revision;
         public long Order { get; } = System.Threading.Interlocked.Increment(ref _orderCounter);
         public bool ExecutionReportSeen { get; set; }
+        public bool NativeOnlyApproval { get; set; }
         public CancellationTokenSource Lifetime { get; } = new();
     }
 
@@ -642,6 +664,7 @@ internal sealed class HostPluginTaskRegistry
         HostPluginTaskBinding binding, string interactionId, double expiresAt)
     {
         public TaskCompletionSource<bool>? NativeDecision { get; init; }
+        public bool NativeOnlyApproval { get; init; }
         public HostPluginTaskBinding Binding { get; } = binding;
         public string InteractionId { get; } = interactionId;
         public double ExpiresAt { get; } = expiresAt;

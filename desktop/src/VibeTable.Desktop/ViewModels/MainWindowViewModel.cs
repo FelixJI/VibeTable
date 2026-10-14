@@ -58,10 +58,22 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// <see cref="StartupState.StartingBackend"/>; the caller drives the first
     /// transition by awaiting <see cref="StartAsync"/>.
     /// </summary>
-    public MainWindowViewModel(IBackendLifecycle backend, IWebViewBridge webView)
+    public MainWindowViewModel(
+        IBackendLifecycle backend,
+        IWebViewBridge webView,
+        Action? stopPlugins = null,
+        Action? returnToPlatform = null,
+        Action? managePlugins = null,
+        Func<string, Task>? recoverRenderer = null)
     {
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _webView = webView ?? throw new ArgumentNullException(nameof(webView));
+        StopPluginsCommand = new RelayCommand(execute: () => stopPlugins?.Invoke(), canExecute: () => true);
+        ReturnToPlatformCommand = new RelayCommand(execute: () => returnToPlatform?.Invoke(), canExecute: () => true);
+        ManagePluginsCommand = new RelayCommand(execute: () => managePlugins?.Invoke(), canExecute: () => true);
+        RecoverRendererCommand = new RelayCommand(
+            execute: () => _ = RunRendererRecoveryAsync(recoverRenderer),
+            canExecute: () => State is StartupState.Ready or StartupState.LoadingWeb or StartupState.Faulted);
         RetryCommand = new RelayCommand(
             execute: () => _ = StartAsync(),
             canExecute: () => State == StartupState.Faulted);
@@ -86,6 +98,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 RaisePropertyChanged(nameof(IsHostFallbackVisible));
                 RaisePropertyChanged(nameof(IsRetryVisible));
                 ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
+                ((RelayCommand)RecoverRendererCommand).RaiseCanExecuteChanged();
             }
         }
     }
@@ -96,7 +109,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string StatusText => State switch
     {
         StartupState.StartingBackend => "正在启动后端…",
-        StartupState.LoadingWeb => "正在加载界面…",
+        StartupState.LoadingWeb => IsRendererRecovering ? "正在恢复界面…" : "正在加载界面…",
         StartupState.Ready => "就绪",
         StartupState.Faulted => "出现错误",
         _ => State.ToString(),
@@ -177,6 +190,49 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// </summary>
     public ICommand RetryCommand { get; }
 
+    /// <summary>Native host-chrome bindings; always reachable, independent of the WebView.</summary>
+    public ICommand StopPluginsCommand { get; }
+
+    public ICommand ReturnToPlatformCommand { get; }
+
+    public ICommand ManagePluginsCommand { get; }
+
+    /// <summary>Renderer-only recovery; does not restart the backend.</summary>
+    public ICommand RecoverRendererCommand { get; }
+
+    private bool _isRendererRecovering;
+
+    /// <summary>True while a renderer-only recovery is rebuilding the WebView control.</summary>
+    public bool IsRendererRecovering
+    {
+        get => _isRendererRecovering;
+        private set
+        {
+            if (_isRendererRecovering != value)
+            {
+                _isRendererRecovering = value;
+                RaisePropertyChanged(nameof(IsRendererRecovering));
+                RaisePropertyChanged(nameof(StatusText));
+            }
+        }
+    }
+
+    private string? _rendererRecoveryDetail;
+
+    /// <summary>Human-readable detail of the last failed renderer recovery.</summary>
+    public string? RendererRecoveryDetail
+    {
+        get => _rendererRecoveryDetail;
+        private set
+        {
+            if (_rendererRecoveryDetail != value)
+            {
+                _rendererRecoveryDetail = value;
+                RaisePropertyChanged(nameof(RendererRecoveryDetail));
+            }
+        }
+    }
+
     internal Exception? LastStartupError { get; private set; }
 
     /// <summary>
@@ -215,6 +271,65 @@ public sealed class MainWindowViewModel : ViewModelBase
         // Fire-and-forget the WebView load so StartAsync returns in LoadingWeb;
         // a completion/failure here drives the final Ready / Faulted move.
         _ = DriveWebViewLoadAsync();
+    }
+
+    /// <summary>
+    /// Begins a renderer-only recovery: the shell is unavailable while the
+    /// WebView control is rebuilt; the backend and workspace session stay.
+    /// Legal from Ready/LoadingWeb/Faulted and re-enters LoadingWeb without a
+    /// backend restart (the explicit Faulted→StartingBackend retry stays the
+    /// full-restart path).
+    /// </summary>
+    public void BeginRendererRecovery()
+    {
+        if (State is not (StartupState.Ready or StartupState.LoadingWeb or StartupState.Faulted))
+        {
+            throw new InvalidOperationException(
+                $"BeginRendererRecovery is not legal from state {State}.");
+        }
+        IsRendererRecovering = true;
+        TransitionTo(StartupState.LoadingWeb);
+    }
+
+    /// <summary>Ends a successful renderer recovery after real app.ready.</summary>
+    public void CompleteRendererRecovery()
+    {
+        if (!IsRendererRecovering) return;
+        IsRendererRecovering = false;
+        if (State == StartupState.LoadingWeb)
+        {
+            MarkShellLoaded();
+            TransitionTo(StartupState.Ready);
+        }
+    }
+
+    /// <summary>Fails a renderer recovery; the full-restart retry stays available.</summary>
+    public void FailRendererRecovery(string detail)
+    {
+        if (!IsRendererRecovering) return;
+        IsRendererRecovering = false;
+        RendererRecoveryDetail = detail;
+        if (State is StartupState.LoadingWeb or StartupState.Ready)
+        {
+            MarkShellUnavailable();
+            TransitionTo(StartupState.Faulted);
+        }
+    }
+
+    private async Task RunRendererRecoveryAsync(Func<string, Task>? recoverRenderer)
+    {
+        if (recoverRenderer is null) return;
+        if (!IsRendererRecovering)
+        {
+            try
+            {
+                await recoverRenderer("native-recovery-command").ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                FailRendererRecovery(ex.Message);
+            }
+        }
     }
 
     /// <summary>
@@ -283,7 +398,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Encodes the legal-transition table from the Task 9 brief. Internal so
+    /// Encodes the legal-transition table from the Task 9 brief, plus the
+    /// #482 renderer-only recovery re-entry into LoadingWeb. Internal so
     /// tests can assert the table directly without re-deriving it.
     /// </summary>
     internal static bool IsLegalTransition(StartupState from, StartupState to)
@@ -296,6 +412,10 @@ public sealed class MainWindowViewModel : ViewModelBase
             (StartupState.LoadingWeb, StartupState.Faulted) => true,
             (StartupState.Ready, StartupState.Faulted) => true,
             (StartupState.Faulted, StartupState.StartingBackend) => true,
+            // Renderer-only recovery rebuilds the WebView control without a
+            // backend restart; only BeginRendererRecovery uses this edge.
+            (StartupState.Ready, StartupState.LoadingWeb) => true,
+            (StartupState.Faulted, StartupState.LoadingWeb) => true,
             // Idempotent re-transition to the same state is allowed so a
             // retried MoveToFaulted under a race is not fatal.
             _ when from == to => true,

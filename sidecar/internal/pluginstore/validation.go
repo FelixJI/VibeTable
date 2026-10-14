@@ -61,13 +61,29 @@ func validateManifest(value any, pluginID, version string) error {
 				return invalidPayload()
 			}
 		}
-		if err := validateObject(action, "actionId displayName description mode risk invocation placements requires workerEntry formSchema inputSchema outputSchema", required); err != nil {
+		if err := validateObject(action, "actionId displayName description mode risk invocation placements requires workerEntry formSchema inputSchema outputSchema presentation entry", required); err != nil {
 			return err
 		}
 		if risk := action["risk"]; risk != "read" && risk != "write" && risk != "destructive" {
 			return invalidPayload()
 		}
 		if invocation := action["invocation"]; invocation != "manual" && invocation != "webhook" {
+			return invalidPayload()
+		}
+		presentation, hasPresentation := action["presentation"].(string)
+		if !hasPresentation {
+			presentation = "surface"
+		} else if presentation != "surface" && presentation != "application" && presentation != "headless" {
+			return invalidPayload()
+		}
+		entry, _ := action["entry"].(string)
+		if presentation == "surface" {
+			if action["entry"] != nil {
+				return invalidPayload()
+			}
+		} else if !native || entry == "" {
+			return invalidPayload()
+		} else if action["formSchema"] != nil || action["inputSchema"] != nil || action["outputSchema"] != nil {
 			return invalidPayload()
 		}
 		if native {
@@ -80,7 +96,10 @@ func validateManifest(value any, pluginID, version string) error {
 					found = true
 				}
 			}
-			if !found {
+			if found && presentation != "surface" {
+				return invalidPayload()
+			}
+			if !found && presentation == "surface" {
 				return invalidPayload()
 			}
 		}

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>任务台示例应用</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; font: 14px/1.6 system-ui, "Segoe UI", sans-serif; color: var(--vt-plugin-text, #222); background: var(--vt-plugin-bg, #fff); }
+    header { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--vt-plugin-border, #ddd); }
+    header strong { font-size: 16px; }
+    nav { display: flex; gap: 6px; }
+    nav a { padding: 5px 12px; border-radius: 8px; color: inherit; text-decoration: none; border: 1px solid transparent; }
+    nav a[aria-current="page"] { border-color: var(--vt-plugin-primary, #3b82f6); background: color-mix(in srgb, var(--vt-plugin-primary, #3b82f6) 12%, transparent); }
+    main { padding: 20px; }
+    table { border-collapse: collapse; min-width: 320px; }
+    th, td { padding: 6px 12px; border: 1px solid var(--vt-plugin-border, #ddd); text-align: left; }
+    .muted { color: var(--vt-plugin-text-muted, #777); }
+    .error { color: var(--vt-plugin-danger, #dc2626); white-space: pre-wrap; }
+    button { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--vt-plugin-border, #ddd); background: transparent; color: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>任务台</strong>
+    <nav aria-label="应用内导航">
+      <a href="#tasks" data-page="tasks">任务列表</a>
+      <a href="#detail" data-page="detail">详情</a>
+      <a href="#stats" data-page="stats">统计</a>
+    </nav>
+    <span id="status" class="muted" role="status"></span>
+  </header>
+  <main>
+    <section id="page-tasks" hidden>
+      <h2>任务列表</h2>
+      <p class="muted">来自当前活动数据表的前若干条记录。</p>
+      <div id="tasks-body"><p class="muted">加载中…</p></div>
+    </section>
+    <section id="page-detail" hidden>
+      <h2>详情</h2>
+      <div id="detail-body"><p class="muted">加载中…</p></div>
+      <p><button id="reload" type="button">刷新数据</button></p>
+    </section>
+    <section id="page-stats" hidden>
+      <h2>统计</h2>
+      <div id="stats-body"><p class="muted">加载中…</p></div>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

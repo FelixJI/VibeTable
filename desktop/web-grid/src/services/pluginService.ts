@@ -477,11 +477,33 @@ function projectAction(
 ): WebPluginActionDescription {
   const schema = action.inputSchema ? plugin.schemas[action.inputSchema] : undefined;
   const uiSchema = action.formSchema ? plugin.schemas[action.formSchema] : undefined;
+  const title = localize(action.displayName, locale, action.actionId);
+  if (action.presentation === "application" || action.presentation === "headless") {
+    // Application/headless surfaces are host-projected onto the action
+    // itself; the legacy ui.customViews channel is not consulted.
+    return {
+      pluginId: plugin.pluginId,
+      actionId: action.actionId,
+      title,
+      description: localize(action.description, locale, ""),
+      risk: action.risk,
+      inputSchema: { type: "object", properties: {} },
+      uiSchema: undefined,
+      presentation: action.presentation,
+      surface: action.surfaceSrc && action.surfaceToken
+        ? {
+          src: action.surfaceSrc,
+          surfaceToken: action.surfaceToken,
+          title: action.surfaceTitle ?? title,
+        }
+        : null,
+    };
+  }
   const customView = readCustomView(plugin.manifest.ui, action.actionId);
   return {
     pluginId: plugin.pluginId,
     actionId: action.actionId,
-    title: localize(action.displayName, locale, action.actionId),
+    title,
     description: localize(action.description, locale, ""),
     risk: action.risk,
     inputSchema: schema ?? { type: "object", properties: {} },

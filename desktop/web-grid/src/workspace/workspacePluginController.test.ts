@@ -100,6 +100,7 @@ describe("workspacePluginController", () => {
         theme: "dark",
         selectedKeys: ["row-1", 2],
       }),
+      true,
     );
     expect(controller.toolbarActions.value).toEqual([
       expect.objectContaining({ key: "com.acme.clean/normalize", risk: "write", disabled: false }),

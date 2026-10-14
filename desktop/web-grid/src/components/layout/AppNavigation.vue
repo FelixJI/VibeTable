@@ -22,13 +22,23 @@ import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { t } from "@/i18n";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 
+export interface PluginAppNavEntry {
+  readonly key: string;
+  readonly label: string;
+}
+
 const ui = useUiStore();
 const workspaceSession = useWorkspaceSessionStore();
 const protection = useWorkspaceProtectionStore();
+defineProps<{
+  pluginApps?: readonly PluginAppNavEntry[];
+  activePluginAppKey?: string | null;
+}>();
 const emit = defineEmits<{
   navigate: [view: AppView];
   openAdmin: [];
   openHelp: [];
+  openPluginApp: [key: string];
 }>();
 
 const primary = computed(() => [
@@ -79,6 +89,25 @@ function navigate(view: AppView) {
           </NButton>
         </template>
         {{ t(item.label) }}
+      </NTooltip>
+    </div>
+
+    <div v-if="pluginApps && pluginApps.length" class="nav-group nav-group--apps">
+      <NTooltip v-for="item in pluginApps" :key="item.key" placement="right" :delay="450">
+        <template #trigger>
+          <NButton
+            quaternary
+            class="nav-button nav-button--plugin-app"
+            :class="{ 'nav-button--active': activePluginAppKey === item.key }"
+            :aria-label="item.label"
+            :aria-current="activePluginAppKey === item.key ? 'page' : undefined"
+            :data-testid="`nav-plugin-app-${item.key}`"
+            @click="emit('openPluginApp', item.key)"
+          >
+            <template #icon><NIcon :size="17"><LayoutTemplate /></NIcon></template>
+          </NButton>
+        </template>
+        {{ item.label }} · {{ item.key }}
       </NTooltip>
     </div>
 
@@ -159,6 +188,14 @@ function navigate(view: AppView) {
 }
 .nav-group--secondary {
   margin-top: auto;
+}
+.nav-group--apps {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--vt-border);
+}
+.nav-button--plugin-app {
+  height: 32px;
 }
 .nav-button {
   position: relative;

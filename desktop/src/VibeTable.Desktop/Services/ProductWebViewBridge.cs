@@ -21,7 +21,15 @@ namespace VibeTable.Desktop.Services;
 public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
 {
     private readonly Window _owner;
-    private readonly WebView2 _webView;
+    private WebView2? _webView;
+    /// <summary>
+    /// #482 renderer generation. Incremented on control replacement and on
+    /// recovery sealing; queued emissions and inbound events capture it and
+    /// are dropped when they belong to a retired generation.
+    /// </summary>
+    internal static readonly TimeSpan HeadlessExecutionBudget = TimeSpan.FromMinutes(2);
+    private long _rendererGeneration;
+    private CoreWebView2? _currentCore;
     private readonly WebMessageRouter _router;
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly TestModeReadinessWriter? _readiness;
@@ -64,6 +72,59 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     internal PluginSurfaceApi? PluginApi { get; set; }
 
     /// <summary>
+    /// Raised (on the emission path) for every pending native plugin
+    /// confirmation. The #482 host chrome listens and shows the native
+    /// confirmation window; both the web footer and the window resolve through
+    /// the same one-shot registry decision, so neither is a bypass.
+    /// </summary>
+    internal event Action<object?>? PluginInteractionRequested;
+
+    /// <summary>
+    /// Current renderer generation; #482 recovery and tests compare against
+    /// it to reject late work from retired renderers.
+    /// </summary>
+    internal long RendererGeneration => Volatile.Read(ref _rendererGeneration);
+
+    /// <summary>
+    /// Raised with each queued emission's commit result so tests can verify
+    /// that a retired generation's queued notification was dropped instead of
+    /// posted to a newer renderer.
+    /// </summary>
+    internal event Action<bool>? EmissionCommitted;
+
+    /// <summary>
+    /// #482 renderer recovery: detaches from the old control (null) so late
+    /// events die with it, or binds a freshly created control for the next
+    /// full LoadAsync. The environment/UDF stay; only the control is new. The
+    /// renderer generation is retired so queued old notifications can never
+    /// reach the new renderer.
+    /// </summary>
+    internal void AttachControl(WebView2? webView)
+    {
+        _webView = webView;
+        _currentCore = null;
+        Interlocked.Increment(ref _rendererGeneration);
+    }
+
+    /// <summary>
+    /// Seals host→web routing for a renderer-only recovery: no new inbound
+    /// requests are accepted, realtime delivery retires and the renderer
+    /// generation is retired, so a late emission or callback from the old
+    /// renderer can never reach the new renderer generation.
+    /// </summary>
+    internal void SealForRendererRecovery()
+    {
+        _router.IsReady = false;
+        Realtime.Retire();
+        Interlocked.Increment(ref _rendererGeneration);
+        _currentCore = null;
+        lock (_loadGate)
+        {
+            _loadTask = null;
+        }
+    }
+
+    /// <summary>
     /// Optional dashboard download admission source. Assigned before
     /// <see cref="LoadAsync"/> runs; when unset every WebView download is
     /// cancelled.
@@ -74,9 +135,13 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     {
         if (!_router.IsHostNotificationAllowed(type))
             throw new InvalidOperationException("Realtime notification is not registered.");
+        if (_currentCore is not { } core)
+        {
+            throw new InvalidOperationException("The WebView control is not available.");
+        }
         string json = JsonSerializer.Serialize(new { type, requestId = (string?)null, payload },
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        _webView.CoreWebView2!.PostWebMessageAsString(json);
+        core.PostWebMessageAsString(json);
     }
 
     /// <summary>
@@ -100,7 +165,13 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     }
 
     public void PostNotification(string type, object? payload)
-        => PostEnvelope(type, requestId: null, payload);
+    {
+        if (string.Equals(type, "plugin.interaction.requested", StringComparison.Ordinal))
+        {
+            PluginInteractionRequested?.Invoke(payload);
+        }
+        PostEnvelope(type, requestId: null, payload);
+    }
 
     public void PostResponse(string type, string? requestId, object? payload)
         => PostEnvelope(type, requestId, payload);
@@ -175,14 +246,23 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     /// </summary>
     private void EnqueueUiEmission(string json, Func<Func<bool>, bool>? emitGate)
     {
+        // #482: the generation is captured at ENQUEUE time. An emission queued
+        // by the old renderer (or before a recovery seal) must never be posted
+        // to a newer renderer generation.
+        long generation = Volatile.Read(ref _rendererGeneration);
         _uiEmit(() =>
         {
             Func<bool> commit = () =>
             {
-                CoreWebView2? core = _webView.CoreWebView2;
-                if (core is null) return false;
-                core.PostWebMessageAsString(json);
-                return true;
+                bool posted = false;
+                if (Volatile.Read(ref _rendererGeneration) == generation
+                    && _currentCore is { } core)
+                {
+                    core.PostWebMessageAsString(json);
+                    posted = true;
+                }
+                EmissionCommitted?.Invoke(posted);
+                return posted;
             };
             if (emitGate is null)
             {
@@ -196,13 +276,31 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     private async Task LoadCoreAsync()
     {
         _readiness?.Trace("ProductWebView: initializing runtime");
-        await _webView.EnsureCoreWebView2Async(await GetEnvironmentAsync())
+        var control = _webView ?? throw new InvalidOperationException(
+            "Renderer recovery has not attached a WebView control.");
+        long startGeneration = Volatile.Read(ref _rendererGeneration);
+        await control.EnsureCoreWebView2Async(await GetEnvironmentAsync())
             .ConfigureAwait(true);
-        CoreWebView2 core = _webView.CoreWebView2
+        // #482: a recovery may have replaced the control while the await was
+        // in flight; the stale load must never wire itself as current.
+        if (!ReferenceEquals(control, _webView)
+            || Volatile.Read(ref _rendererGeneration) != startGeneration)
+        {
+            throw new InvalidOperationException(
+                "Renderer recovery replaced the WebView control during initialization.");
+        }
+        CoreWebView2 core = control.CoreWebView2
             ?? throw new InvalidOperationException(
                 "WebView2 did not provide a CoreWebView2 instance.");
+        _currentCore = core;
         ApplyHardening(core);
         await DisableWebRTCBeforeAnyNavigationAsync(core).ConfigureAwait(true);
+        if (!ReferenceEquals(control, _webView)
+            || Volatile.Read(ref _rendererGeneration) != startGeneration)
+        {
+            throw new InvalidOperationException(
+                "Renderer recovery replaced the WebView control during initialization.");
+        }
         core.WebMessageReceived -= OnWebMessageReceived;
         core.WebMessageReceived += OnWebMessageReceived;
         core.FrameCreated -= OnPluginFrameCreated;
@@ -337,8 +435,18 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         core.Settings.AreBrowserAcceleratorKeysEnabled = false;
 #endif
         core.Settings.IsStatusBarEnabled = false;
-        core.ProcessFailed += (_, args) =>
+        core.ProcessFailed += (sender, args) =>
         {
+            // #482 generation seal: a late ProcessFailed from a retired
+            // (old/disposed) renderer must never tear down the healthy new
+            // generation. The check runs synchronously here AND the recovery
+            // owner re-verifies after its dispatcher hop.
+            if (sender is not CoreWebView2 failedCore || !ReferenceEquals(failedCore, _currentCore))
+            {
+                _readiness?.Trace(
+                    $"Ignored a late renderer failure from a retired generation: kind={args.ProcessFailedKind}");
+                return;
+            }
             string reason =
                 $"WebView2 process failed: kind={args.ProcessFailedKind}; " +
                 $"reason={args.Reason}; exitCode={args.ExitCode}; " +
@@ -458,15 +566,49 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
 
     private void OnPluginFrameCreated(object? sender, CoreWebView2FrameCreatedEventArgs args)
     {
+        if (!ReferenceEquals(sender, _currentCore)) return;
+        long generation = RendererGeneration;
         CoreWebView2Frame frame = args.Frame;
         // Name was assigned by the trusted app's iframe element before plugin code runs.
         string token = frame.Name;
         if (!_pluginResources.TryGetSurface(token, out var surface) || surface is null || surface.ApiVersion != "3.x") return;
         string source = surface.DocumentUri.AbsoluteUri;
         bool active = true;
+        DispatcherTimer? headlessDeadline = null;
+        Action<string>? headlessRetired = null;
+        if (surface.DocumentUri.AbsolutePath == "/" + PluginResourceHost.HeadlessDocumentPath)
+        {
+            // A native timer retires and rebuilds even when the renderer is
+            // frozen. Application pages deliberately have no total lifetime.
+            headlessDeadline = new DispatcherTimer(HeadlessExecutionBudget, DispatcherPriority.Normal,
+                (_, _) =>
+                {
+                    headlessDeadline?.Stop();
+                    if (!active || generation != RendererGeneration || !_pluginResources.TryGetSurface(token, out _)) return;
+                    PluginApi?.Retire(token);
+                    _pluginResources.CloseSurface(token);
+                    _processFailed("headless-execution-timeout");
+                }, _owner.Dispatcher);
+            headlessRetired = closed =>
+            {
+                if (closed != token) return;
+                headlessDeadline.Dispatcher.BeginInvoke(() => headlessDeadline.Stop());
+                _pluginResources.SurfaceClosed -= headlessRetired;
+            };
+            _pluginResources.SurfaceClosed += headlessRetired;
+        }
         frame.NavigationStarting += (_, navigation) =>
         {
-            if (navigation.Uri != source)
+            // Single-entry SPA routing: same-document fragment-only changes
+            // keep the initial source identity (AC1 internal pages). Any other
+            // navigation is cancelled and retires the surface.
+            if (navigation.Uri != source
+                && !(Uri.TryCreate(navigation.Uri, UriKind.Absolute, out var target)
+                    && Uri.TryCreate(source, UriKind.Absolute, out var initial)
+                    && string.Equals(
+                        target.GetLeftPart(UriPartial.Query),
+                        initial.GetLeftPart(UriPartial.Query),
+                        StringComparison.Ordinal)))
             {
                 navigation.Cancel = true;
                 active = false;
@@ -476,16 +618,19 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         };
         frame.Destroyed += (_, _) =>
         {
+            headlessDeadline?.Stop();
+            if (headlessRetired is not null) _pluginResources.SurfaceClosed -= headlessRetired;
             active = false;
             PluginApi?.Retire(token);
             _pluginResources.CloseSurface(token);
         };
         frame.WebMessageReceived += async (_, message) =>
         {
-            if (!active || PluginApi is not { } api) return;
+            if (!active || generation != RendererGeneration || PluginApi is not { } api) return;
             _readiness?.Trace("PluginSurfaceAPI: received isolated frame request; owner=Host/Go; worker=false");
             string reply = await api.HandleAsync(token, message.Source, message.WebMessageAsJson);
-            if (active && _pluginResources.TryGetSurface(token, out var remaining)) frame.PostWebMessageAsJson(reply);
+            if (active && generation == RendererGeneration && _pluginResources.TryGetSurface(token, out var currentSurface))
+                frame.PostWebMessageAsJson(reply);
         };
     }
 
@@ -493,7 +638,14 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         object? sender,
         CoreWebView2WebMessageReceivedEventArgs args)
     {
-        CoreWebView2? core = sender as CoreWebView2 ?? _webView.CoreWebView2;
+        // #482 generation seal: only the CURRENT core's messages are routed;
+        // an event from a retired (old/disposed) renderer is dropped before
+        // any reply or notification can be produced.
+        if (sender is not CoreWebView2 senderCore || !ReferenceEquals(senderCore, _currentCore))
+        {
+            return;
+        }
+        CoreWebView2? core = senderCore;
         if (core is null) return;
         if (!WebViewNavigationPolicy.IsAppNavigation(args.Source))
         {

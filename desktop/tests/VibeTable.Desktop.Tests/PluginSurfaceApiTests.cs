@@ -123,6 +123,20 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task InstallationRetirementCancelsPendingConfirmationWithoutFrameAcknowledgement()
+    {
+        using var fixture = new Fixture { Decision = "installation-retire" };
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        JsonElement response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")
+            .WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        Assert.IsTrue(response.TryGetProperty("error", out _));
+        Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
+        Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId,
+            fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+    }
+
+    [TestMethod]
     public async Task AuthorityConflictIsDefiniteAndIncompleteSuccessReceiptRemainsUnknown()
     {
         foreach (bool conflict in new[] { true, false })
@@ -353,6 +367,7 @@ public sealed class PluginSurfaceApiTests
                     Api.Retire(Surface.SurfaceToken);
                     Surfaces.Close(Surface.SurfaceToken);
                 }
+                else if (Decision == "installation-retire") Surfaces.CloseForInstallation(Surface.ProjectKey, Surface.PluginId);
                 else if (Decision == "cancel") Tasks.RequestCancel(_taskId!, out _, out _);
                 else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision), out _);
             }

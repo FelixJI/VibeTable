@@ -46,6 +46,12 @@ public sealed class PluginWebViewResourceHost : IDisposable
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
     }
 
+    internal event Action<string>? SurfaceClosed
+    {
+        add => _surfaces.Closed += value;
+        remove => _surfaces.Closed -= value;
+    }
+
     public void Attach(CoreWebView2 core)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -141,7 +147,8 @@ public sealed class PluginWebViewResourceHost : IDisposable
         string projectKey,
         string pluginId,
         string entryPath,
-        string actionId = "")
+        string actionId = "",
+        string presentation = "surface")
     {
         PluginPackageRevision revision;
         string normalizedEntry = PluginResourceHost.NormalizePackagePath(entryPath);
@@ -159,7 +166,12 @@ public sealed class PluginWebViewResourceHost : IDisposable
             {
                 return existing!;
             }
-            var opened = _surfaces.Open(projectKey, pluginId, revision, normalizedEntry);
+            // headless actions load a host-owned controlled document that
+            // imports the declared in-package JS entry on the plugin origin.
+            Uri? documentUri = presentation == "headless"
+                ? PluginResourceHost.BuildHeadlessDocumentUri(revision, normalizedEntry)
+                : null;
+            var opened = _surfaces.Open(projectKey, pluginId, revision, normalizedEntry, documentUri);
             _surfaceTokens[key] = opened.SurfaceToken;
             return opened;
         }

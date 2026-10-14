@@ -1,8 +1,10 @@
 /**
- * Product capabilities stay internal until a packaged-host scenario proves
- * their public lifecycle. The underlying bridge contracts remain available
- * for focused development and future evidence runs.
+ * #482 exposes upgrade and uninstall through the Host-bound permission plan
+ * and explicit removal confirmation. Rollback stays internal until a real
+ * packaged-host journey covers its public lifecycle.
  */
 export const publicCapabilityPolicy = {
-  pluginLifecycleMutations: false,
+  pluginUpgrade: true,
+  pluginUninstall: true,
+  pluginRollback: false,
 } as const;

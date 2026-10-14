@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from backend._version import __version__
 
@@ -29,6 +29,11 @@ PluginRisk = Literal["read", "write", "destructive"]
 PluginMode = Literal["local"]
 PluginInvocation = Literal["manual", "webhook"]
 InteractionDecision = Literal["approved", "rejected"]
+# v2 (pluginApi 3.x) action presentation. "surface" keeps the legacy
+# ui.customViews binding and is the default; "application" (in-package HTML
+# full business viewport) and "headless" (in-package JS module) are new v2
+# shapes that declare their entry on the action itself.
+PluginPresentation = Literal["surface", "application", "headless"]
 
 
 class PluginAction(PluginContract):
@@ -44,6 +49,20 @@ class PluginAction(PluginContract):
     form_schema: str | None = None
     input_schema: str | None = None
     output_schema: str | None = None
+    presentation: PluginPresentation = "surface"
+    entry: str | None = Field(default=None, min_length=1)
+
+    @model_serializer(mode="wrap")
+    def _omit_presentation_defaults(self, handler, _info):
+        # Old v1/v2 packages round-trip through install plans and stored
+        # snapshots; the new fields must not appear in serialized manifests
+        # unless a new-shape action actually declares them.
+        data = handler(self)
+        if data.get("presentation") == "surface":
+            data.pop("presentation", None)
+        if data.get("entry") is None:
+            data.pop("entry", None)
+        return data
 
 
 class PluginManifest(PluginContract):
@@ -66,9 +85,40 @@ class PluginManifest(PluginContract):
             raise ValueError("manifest/API version mismatch")
         if any((action.worker_entry is not None) == native for action in self.actions):
             raise ValueError("v1 requires workerEntry; v2 forbids workerEntry")
-        if native:
-            views = self.ui.get("customViews", [])
-            if not isinstance(views, list) or any(
+        views = self.ui.get("customViews", [])
+        view_action_ids = (
+            {
+                view.get("actionId")
+                for view in views
+                if isinstance(view, dict) and isinstance(view.get("actionId"), str)
+            }
+            if isinstance(views, list)
+            else set()
+        )
+        for action in self.actions:
+            new_shape = action.presentation != "surface" or action.entry is not None
+            if new_shape and not native:
+                raise ValueError("presentation/entry are only available on v2 manifests")
+            legacy_schemas = (
+                action.form_schema is not None
+                or action.input_schema is not None
+                or action.output_schema is not None
+            )
+            if action.presentation == "surface":
+                if action.entry is not None:
+                    raise ValueError("surface actions must not declare an entry")
+                continue
+            # application/headless: the entry is declared on the action and is
+            # mutually exclusive with the legacy custom-view/form channels.
+            if action.entry is None:
+                raise ValueError("application/headless actions require an entry")
+            if legacy_schemas:
+                raise ValueError("application/headless actions forbid form/input/output schemas")
+            if action.action_id in view_action_ids:
+                raise ValueError("application/headless actions forbid a custom view declaration")
+        if native and (
+            not isinstance(views, list)
+            or any(
                 not any(
                     isinstance(view, dict)
                     and view.get("actionId") == action.action_id
@@ -77,8 +127,10 @@ class PluginManifest(PluginContract):
                     for view in views
                 )
                 for action in self.actions
-            ):
-                raise ValueError("v2 actions require a declared custom view entry")
+                if action.presentation == "surface"
+            )
+        ):
+            raise ValueError("v2 surface actions require a declared custom view entry")
         return self
 
 
@@ -343,6 +395,7 @@ __all__ = [
     "PluginMetric",
     "PluginMode",
     "PluginPackageRevision",
+    "PluginPresentation",
     "PluginPrivateSetting",
     "PluginProgress",
     "PluginResult",

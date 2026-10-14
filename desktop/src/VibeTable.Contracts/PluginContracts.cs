@@ -229,7 +229,16 @@ public sealed record PluginRuntimeAction(
     string? WorkerEntry,
     string? FormSchema,
     string? InputSchema,
-    string? OutputSchema);
+    string? OutputSchema,
+    string? Presentation = null,
+    string? Entry = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceSrc = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceToken = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceTitle = null)
+{
+    /// <summary>Normalized presentation; absent/empty maps to the legacy surface channel.</summary>
+    public string EffectivePresentation => string.IsNullOrWhiteSpace(Presentation) ? "surface" : Presentation;
+}
 
 public sealed record PluginRuntimeManifest(
     [property: JsonPropertyName("$schema")] string Schema,

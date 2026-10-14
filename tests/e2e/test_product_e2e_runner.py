@@ -6226,6 +6226,7 @@ def _owned_native_uia_window(command: list[str]):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
         creationflags=subprocess.CREATE_NO_WINDOW,
     ) as process:
         native = None
@@ -6270,6 +6271,8 @@ def _owned_native_uia_window(command: list[str]):
 def _native_edit_fixture_command(startup_delay_ms: int = 0, mode: str = "single") -> list[str]:
     target = r"""
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 Add-Type -AssemblyName System.Windows.Forms
 $form = [Windows.Forms.Form]::new()
 $edit = [Windows.Forms.TextBox]::new()

@@ -396,6 +396,7 @@ public partial class MainWindow : Window
         var dailyQuotes = new DailyQuoteHostClient();
         _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
             () => _runtime.CaptureProductSidecarGeneration(), _webBridge);
+        _webBridge.PluginInteractionRequested += OnPluginInteractionRequested;
         _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);
         ProductWorkspaceController? productWorkspace = null;
@@ -524,7 +525,13 @@ public partial class MainWindow : Window
         _runtime.RecoveryFailed += OnRuntimeRecoveryFailed;
         _runtime.BindingChanged += OnRuntimeBindingChanged;
         _workspaceSessions.Changed += OnWorkspaceSessionChanged;
-        _viewModel = new MainWindowViewModel(_runtime, _webBridge);
+        _viewModel = new MainWindowViewModel(
+            _runtime,
+            _webBridge,
+            stopPlugins: StopAllPluginSurfaces,
+            returnToPlatform: ReturnToPlatformFromNativeChrome,
+            managePlugins: ManagePluginsFromNativeChrome,
+            recoverRenderer: RecoverRendererAsync);
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         DataContext = _viewModel;
 
@@ -971,11 +978,187 @@ public partial class MainWindow : Window
 
     private void OnRendererProcessFailed(string reason)
     {
-        _viewModel.MarkShellUnavailable();
-        if (_viewModel.State is StartupState.LoadingWeb or StartupState.Ready)
+        // #482: a renderer fault triggers the single-flight renderer-only
+        // recovery (seal surfaces → drain ≤6s → rebuild control → wait for the
+        // real business app.ready). The full-restart retry remains available
+        // when recovery itself fails.
+        _ = RecoverRendererAsync($"renderer:{reason}");
+    }
+
+    /// <summary>Single-flight guard for the renderer-only recovery.</summary>
+    private int _rendererRecoveryGate;
+
+    /// <summary>
+    /// Completed by <see cref="OnRendererReady"/> when the NEW renderer
+    /// reaches the real business phase; recovery waits on it, never on a
+    /// navigation event or a cached load task.
+    /// </summary>
+    private TaskCompletionSource? _rendererBusinessReady;
+
+    /// <summary>
+    /// #482 renderer-only recovery. The order is fixed: seal inbound routing,
+    /// synchronously close every plugin surface (tokens die first, including
+    /// surfaces that never issued a request), drain in-flight surface writes
+    /// within 6s keeping unknown/success sticky, dispose the old WebView
+    /// control, rebuild a fresh control in the same row (same environment/
+    /// UDF), rebind and wait for the new renderer's real business app.ready
+    /// before declaring success. The backend, workspace session and PocketBase
+    // authority are untouched, and no plugin app is reopened automatically.
+    /// </summary>
+    private async Task RecoverRendererAsync(string reason)
+    {
+        if (Interlocked.Exchange(ref _rendererRecoveryGate, 1) == 1) return;
+        try
         {
-            _viewModel.MoveToFaulted(reason);
+            // #482: capture the renderer generation at entry; if another
+            // recovery already replaced the control while this handler waited
+            // on its dispatcher hop, this run aborts instead of tearing down
+            // the newer generation a second time.
+            long generation = _webBridge.RendererGeneration;
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (_viewModel.State is StartupState.Ready or StartupState.LoadingWeb or StartupState.Faulted)
+                {
+                    _viewModel.BeginRendererRecovery();
+                }
+            });
+            if (_webBridge.RendererGeneration != generation)
+            {
+                return;
+            }
+            // 1. Seal inbound host routing and retire realtime delivery so no
+            // late emission reaches the new page.
+            _webBridge.SealForRendererRecovery();
+            // 2. Close every plugin surface token synchronously (covers tokens
+            // that never issued a request), then drain in-flight writes.
+            _pluginResources.CloseAllSurfaces();
+            _readiness?.Trace($"Renderer recovery sealed plugin sessions; reason={reason}; generation={generation}");
+            if (_webBridge.PluginApi is { } pluginApi)
+            {
+                await pluginApi.DrainAsync().ConfigureAwait(true);
+            }
+            // 3. Dispose the old control and rebuild a fresh one on the UI
+            // thread; no BrowserProcessExited wait, no shared process kills.
+            var businessReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _rendererBusinessReady = businessReady;
+            await Dispatcher.InvokeAsync(RebuildWebViewControl);
+            // A fresh bootstrap delivers workspace/catalog after the new
+            // app.ready; do not auto-reopen any plugin app.
+            Interlocked.Exchange(ref _rendererBootstrapCompleted, 0);
+            await _webBridge.LoadAsync(CancellationToken.None).ConfigureAwait(true);
+            await businessReady.Task.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(true);
+            await Dispatcher.InvokeAsync(() => _viewModel.CompleteRendererRecovery());
         }
+        catch (Exception ex)
+        {
+            string detail = $"界面恢复失败：{ex.Message}（可重试完整重启，或再次恢复）";
+            await Dispatcher.InvokeAsync(() =>
+            {
+                _readiness?.Trace($"Renderer recovery failed: {ex}");
+                if (_viewModel.State is StartupState.Ready or StartupState.LoadingWeb or StartupState.Faulted)
+                {
+                    _viewModel.FailRendererRecovery(detail);
+                }
+            });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _rendererBusinessReady, null);
+            Interlocked.Exchange(ref _rendererRecoveryGate, 0);
+        }
+    }
+
+    /// <summary>
+    /// Disposes the current WebView control and creates a fresh instance in
+    /// the webview row with the same bindings; the bridge re-runs its full
+    /// hardening + resource interception during the next LoadAsync.
+    /// </summary>
+    private void RebuildWebViewControl()
+    {
+        var old = AppWebView;
+        RootGrid.Children.Remove(old);
+        _webBridge.AttachControl(null); // detach + retire the renderer generation
+        try
+        {
+            old.Dispose();
+        }
+        catch (Exception ex)
+        {
+            // WebView teardown may already have released the underlying COM
+            // objects; the trace keeps the failure visible instead of hiding
+            // it, and the fresh control below remains the recovery guarantee.
+            _readiness?.Trace($"Renderer recovery: disposing the old WebView failed: {ex.GetType().Name}");
+        }
+        var fresh = new Microsoft.Web.WebView2.Wpf.WebView2 { AllowExternalDrop = true };
+        // Restore the exact shell bindings the XAML-declared control had, so
+        // visibility keeps following the view model across generations.
+        fresh.SetBinding(
+            System.Windows.UIElement.VisibilityProperty,
+            new System.Windows.Data.Binding(nameof(ViewModels.MainWindowViewModel.IsWebViewVisible))
+            {
+                Converter = new System.Windows.Controls.BooleanToVisibilityConverter(),
+            });
+        System.Windows.Controls.Grid.SetRow(fresh, 1);
+        RootGrid.Children.Add(fresh);
+        AppWebView = fresh;
+        _webBridge.AttachControl(fresh);
+    }
+
+    /// <summary>
+    /// Native 停止插件：closes every plugin surface token and drains in-flight
+    /// plugin writes, without touching the platform page or the backend.
+    /// </summary>
+    private void StopAllPluginSurfaces()
+    {
+        // Closing the control also stops a plugin CPU loop; token retirement
+        // alone cannot stop code already executing in a frozen renderer.
+        _ = RecoverRendererAsync("host-stop");
+    }
+
+    private void ReturnToPlatformFromNativeChrome() => PostHostPluginChrome("returnPlatform");
+
+    private void ManagePluginsFromNativeChrome() => PostHostPluginChrome("manage");
+
+    private void PostHostPluginChrome(string action)
+    {
+        if (!_router.IsReady)
+        {
+            return; // A frozen/absent renderer cannot process the request; the
+            // recovery button covers that path.
+        }
+        _webBridge.PostNotification("host.pluginChrome", new { action });
+    }
+
+    /// <summary>
+    /// Shows the native confirmation for application/headless surface
+    /// mutations. Scheduled through the dispatcher — never synchronously in
+    /// the WebMessageReceived callback stack — and resolves through the
+    /// dispatcher's single registry decision entry.
+    /// </summary>
+    private void OnPluginInteractionRequested(object? envelopePayload)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            NativeConfirmationRequest? pending = NativeConfirmationRequest.TryParse(envelopePayload);
+            if (pending is null || !_pluginDispatcher.Tasks.RequiresNativeConfirmation(pending.RunId)) return;
+            try
+            {
+                var window = NativePluginConfirmationWindow.TryCreate(
+                    this,
+                    envelopePayload,
+                    request => _pluginDispatcher.ResolveInteractionForHostAsync(request),
+                    request => _pluginDispatcher.Tasks.IsInteractionPending(request));
+                if (window is null) return;
+                window.Owner = this;
+                window.Show();
+            }
+            catch (Exception error)
+            {
+                _readiness?.Trace($"Native plugin confirmation failed: {error.GetType().Name}");
+                _ = _pluginDispatcher.ResolveInteractionForHostAsync(
+                    new(pending.RunId, pending.InteractionId, "rejected"));
+            }
+        });
     }
 
     private void OnRoutedWebRequest(RoutedWebRequest request) =>
@@ -996,6 +1179,11 @@ public partial class MainWindow : Window
         _router.IsReady = true;
         _dispatcher.RotateDocumentCapabilityEpoch();
         _pluginResources.CloseAllSurfaces();
+        if (phase == RendererReadyPhase.Business)
+        {
+            var pending = Interlocked.Exchange(ref _rendererBusinessReady, null);
+            pending?.TrySetResult();
+        }
         if (_updateWorkspaceHealth is null)
         {
             CompleteRendererBootstrap();

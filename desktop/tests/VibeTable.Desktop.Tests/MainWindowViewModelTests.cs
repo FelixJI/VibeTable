@@ -221,6 +221,57 @@ public sealed class MainWindowViewModelTests
         await vm.StartAsync();
         return vm;
     }
+    [TestMethod]
+    public void RendererRecoveryRoundTripFromReadyKeepsBackendRunning()
+    {
+        var backend = new FakeBackendLifecycle();
+        var bridge = new FakeWebViewBridge();
+        var viewModel = new MainWindowViewModel(backend, bridge);
+
+        viewModel.StartAsync().Wait(TimeSpan.FromSeconds(5));
+        bridge.CompleteLoad();
+        Assert.AreEqual(StartupState.Ready, viewModel.State);
+
+        // #482 renderer-only recovery: Ready -> LoadingWeb without a backend
+        // restart, then back to Ready after the real app.ready.
+        viewModel.BeginRendererRecovery();
+        Assert.AreEqual(StartupState.LoadingWeb, viewModel.State);
+        Assert.IsTrue(viewModel.IsRendererRecovering);
+        Assert.AreEqual(0, backend.StopCalls);
+
+        viewModel.CompleteRendererRecovery();
+        Assert.AreEqual(StartupState.Ready, viewModel.State);
+        Assert.IsFalse(viewModel.IsRendererRecovering);
+    }
+
+    [TestMethod]
+    public void RendererRecoveryFailureFallsBackToFaultedWithRetry()
+    {
+        var backend = new FakeBackendLifecycle();
+        var bridge = new FakeWebViewBridge();
+        var viewModel = new MainWindowViewModel(backend, bridge);
+        viewModel.StartAsync().Wait(TimeSpan.FromSeconds(5));
+        bridge.CompleteLoad();
+        viewModel.MoveToFaulted("renderer");
+
+        viewModel.BeginRendererRecovery();
+        Assert.AreEqual(StartupState.LoadingWeb, viewModel.State);
+
+        viewModel.FailRendererRecovery("timeout");
+        Assert.AreEqual(StartupState.Faulted, viewModel.State);
+        Assert.AreEqual("timeout", viewModel.RendererRecoveryDetail);
+        // The full-restart retry stays available after a failed recovery.
+        Assert.IsTrue(MainWindowViewModel.IsLegalTransition(StartupState.Faulted, StartupState.StartingBackend));
+    }
+
+    [TestMethod]
+    public void RendererRecoveryTransitionsStayWithinTheRecoveryEdges()
+    {
+        Assert.IsTrue(MainWindowViewModel.IsLegalTransition(StartupState.Ready, StartupState.LoadingWeb));
+        Assert.IsTrue(MainWindowViewModel.IsLegalTransition(StartupState.Faulted, StartupState.LoadingWeb));
+        // StartingBackend is untouched by renderer recovery.
+        Assert.IsFalse(MainWindowViewModel.IsLegalTransition(StartupState.StartingBackend, StartupState.Ready));
+    }
 }
 
 /// <summary>
@@ -261,10 +312,12 @@ internal sealed class FakeBackendLifecycle : IBackendLifecycle
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        StopCalls++;
         return Task.CompletedTask;
     }
-}
 
+    public int StopCalls { get; private set; }
+}
 /// <summary>
 /// Fake <see cref="IWebViewBridge"/> for ViewModel tests. LoadAsync completes
 /// or fails only when the test signals it. The TCS does NOT use

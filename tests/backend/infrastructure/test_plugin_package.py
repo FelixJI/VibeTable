@@ -87,7 +87,7 @@ def test_native_action_requires_its_own_page(tmp_path: Path, views: list[dict[st
         inspect_plugin_package(plugin)
     from backend.contracts.plugin import PluginManifest
 
-    with pytest.raises(ValueError, match="v2 actions require"):
+    with pytest.raises(ValueError, match="v2 surface actions require"):
         PluginManifest.model_validate(manifest)
 
 

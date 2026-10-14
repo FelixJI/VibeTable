@@ -55,6 +55,21 @@ function formatAuditTimestamp(value: string): string {
 function permissions(snapshot: PluginSnapshot): string[] {
   return flatten(snapshot.manifest.permissions);
 }
+// #482 AC4: an upgrade plan shows the permission DELTA against the currently
+// installed snapshot, not just the new full declaration.
+const upgradePermissionDelta = computed<{ added: string[]; removed: string[] } | null>(() => {
+  const pluginId = plannedUpgradePluginId.value;
+  const plan = store.installPlan;
+  if (!pluginId || !plan) return null;
+  const existing = store.plugins.find(item => item.pluginId === pluginId);
+  if (!existing) return null;
+  const before = new Set(flatten(existing.manifest.permissions));
+  const after = new Set(flatten(plan.manifest.permissions));
+  return {
+    added: [...after].filter(item => !before.has(item)),
+    removed: [...before].filter(item => !after.has(item)),
+  };
+});
 function blockingReasons(snapshot: PluginSnapshot): readonly string[] {
   if (snapshot.blockingReasons?.length) return snapshot.blockingReasons;
   return snapshot.disabledReason ? [snapshot.disabledReason] : [];
@@ -112,7 +127,7 @@ async function commitPlan(): Promise<void> {
       ? store.plugins.find((item) => item.pluginId === plannedUpgradePluginId.value)
       : null;
     if (existing) {
-      if (!publicCapabilityPolicy.pluginLifecycleMutations) return;
+      if (!publicCapabilityPolicy.pluginUpgrade) return;
       await service.upgrade(existing, plan);
     }
     else {
@@ -185,6 +200,7 @@ onBeforeUnmount(() => service.dispose());
         <p>安装、权限和运行状态均限定在当前项目。</p>
       </div>
       <div class="install-source">
+        <button type="button" class="quiet-button" data-testid="plugin-refresh" :disabled="store.busy" @click="safely(() => service.list())">刷新目录</button>
         <input
           v-model="githubRepository"
           aria-label="GitHub 插件仓库"
@@ -226,6 +242,14 @@ onBeforeUnmount(() => service.dispose());
       </div>
       <div><small>PACKAGE HASH</small><code>{{ store.installPlan.packageHash }}</code></div>
       <div><small>PERMISSIONS</small><p>{{ flatten(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
+      <div v-if="upgradePermissionDelta">
+        <small>PERMISSION CHANGES</small>
+        <p v-if="!upgradePermissionDelta.added.length && !upgradePermissionDelta.removed.length">本次升级权限无变化。</p>
+        <ul v-else data-testid="plugin-upgrade-permission-delta">
+          <li v-for="item in upgradePermissionDelta.added" :key="`+${item}`">+ {{ item }}</li>
+          <li v-for="item in upgradePermissionDelta.removed" :key="`-${item}`">- {{ item }}</li>
+        </ul>
+      </div>
       <div><small>COMPATIBILITY</small><p>{{ compatibility(store.installPlan.manifest.compatibility) }}</p></div>
       <div><small>ACTIONS / RISK</small><p>{{ store.installPlan.manifest.actions.map((action) => `${localize(action.displayName, action.actionId)}:${riskLabel(action.risk)}`).join(' · ') || '无动作' }}</p></div>
       <div><small>LOCAL WORKERS</small><p>{{ store.installPlan.manifest.actions.map((action) => action.workerEntry).join(' · ') || '无本地动作' }}</p></div>
@@ -233,7 +257,7 @@ onBeforeUnmount(() => service.dispose());
       <div class="plan-actions">
         <button data-testid="plugin-install-cancel" type="button" class="quiet-button" @click="cancelPlan">取消</button>
         <span
-          v-if="plannedUpgradePluginId && !publicCapabilityPolicy.pluginLifecycleMutations"
+          v-if="plannedUpgradePluginId && !publicCapabilityPolicy.pluginUpgrade"
           data-testid="plugin-upgrade-internal-only"
         >升级提交暂未公开</span>
         <button
@@ -317,9 +341,9 @@ onBeforeUnmount(() => service.dispose());
 
         <footer class="lifecycle-actions">
           <button data-testid="plugin-upgrade" type="button" class="quiet-button" title="选择新版本并先检查变更计划" @click="inspectUpgrade(plugin)"><Upload :size="13" />{{ plugin.sourceType === 'local-folder' ? (plugin.sourceChanged ? '检查文件夹变更' : '检查并重新加载文件夹') : '检查离线升级' }}</button>
-          <button v-if="publicCapabilityPolicy.pluginLifecycleMutations" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
-          <button v-if="publicCapabilityPolicy.pluginLifecycleMutations && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
-          <div v-else-if="publicCapabilityPolicy.pluginLifecycleMutations" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
+          <button v-if="publicCapabilityPolicy.pluginRollback" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
+          <button v-if="publicCapabilityPolicy.pluginUninstall && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
+          <div v-else-if="publicCapabilityPolicy.pluginUninstall" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
         </footer>
       </main>
 

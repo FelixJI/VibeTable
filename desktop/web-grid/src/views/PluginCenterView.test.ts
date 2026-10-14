@@ -267,7 +267,7 @@ describe("PluginCenterView", () => {
     expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
   });
 
-  it("keeps upgrade mutation internal while retaining the native inspection path", async () => {
+  it("shows the upgrade permission delta and commits only after approval", async () => {
     usePluginStore().setProjectContext("local:default", "r2");
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
@@ -286,7 +286,8 @@ describe("PluginCenterView", () => {
                 sourceType: "package",
                 sourceLocation: "host-managed",
                 packageHash: "sha256:new",
-                manifest: { ...blockedPlugin.manifest, version: "1.3.0" },
+                manifest: { ...blockedPlugin.manifest, version: "1.3.0",
+                  permissions: { data: ["customers:read", "customers:write", "orders:read"] } },
                 schemas: {},
               }
             : { ...blockedPlugin, version: "1.3.0", packageHash: "sha256:new", revision: 8 };
@@ -314,13 +315,70 @@ describe("PluginCenterView", () => {
     });
     expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("1.3.0");
 
-    expect(wrapper.get('[data-testid="plugin-upgrade-internal-only"]').text()).toContain(
-      "升级提交暂未公开",
+    expect(wrapper.find('[data-testid="plugin-upgrade-internal-only"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="plugin-upgrade-permission-delta"]').text()).toContain(
+      "+ data:orders:read",
     );
-    expect(wrapper.find('[data-testid="plugin-install-commit"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="plugin-rollback"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="plugin-uninstall"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="plugin-uninstall"]').exists()).toBe(true);
     expect(posted).toHaveLength(1);
+    await wrapper.get('[data-testid="plugin-install-cancel"]').trigger("click");
+    await flushPromises();
+    expect(posted).toHaveLength(2);
+    expect(posted[1]).toMatchObject({ type: "plugin.install.cancel", payload: { planId: "plan-upgrade" } });
+    expect(usePluginStore().plugins[0]?.revision).toBe(7);
+
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click");
+    await flushPromises();
+    expect(posted).toHaveLength(3);
+    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
+    await flushPromises();
+    expect(posted).toHaveLength(4);
+    expect(posted[3]).toMatchObject({
+      type: "plugin.lifecycle.upgrade",
+      payload: { projectKey: "local:default", pluginId: blockedPlugin.pluginId,
+        planId: "plan-upgrade", projectRevision: "r2" },
+    });
+    expect(usePluginStore().plugins[0]?.revision).toBe(8);
+    expect(usePluginStore().installPlan).toBeNull();
+  });
+
+  it.each([false, true])("requires explicit uninstall confirmation and keeps private cleanup opt-in (%s)", async (cleanup) => {
+    const posted: unknown[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => "uninstall-approved",
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type, requestId: request.requestId,
+            payload: { uninstalled: true, privateSettingsRetained: !cleanup, cleanupPending: false },
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    expect(wrapper.find('[data-testid="plugin-rollback"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect(posted).toHaveLength(0);
+    const privateCleanup = wrapper.get('[data-testid="plugin-uninstall-private-settings"]');
+    expect((privateCleanup.element as HTMLInputElement).checked).toBe(false);
+    if (cleanup) await privateCleanup.setValue(true);
+    await wrapper.get('[data-testid="plugin-uninstall-confirm"]').trigger("click");
+    await flushPromises();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      type: "plugin.lifecycle.uninstall",
+      payload: { projectKey: "local:default", pluginId: blockedPlugin.pluginId,
+        cleanupPrivateSettings: cleanup },
+    });
+    expect(usePluginStore().plugins).toHaveLength(0);
   });
 
   it("enables a new plugin after the user approves its permissions and install", async () => {

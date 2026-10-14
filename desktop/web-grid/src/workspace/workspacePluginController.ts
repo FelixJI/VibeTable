@@ -19,7 +19,7 @@ type PluginStorePort = Pick<PluginStore,
   | "plugins" | "projectKey" | "currentUser" | "hostVersion"
   | "describedAction" | "activeContext" | "activeTask">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
-type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density">;
+type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type WorkspacePluginServicePort = Pick<PluginService,
   "describeAction" | "startAction" | "resolveInteraction" | "cancelTask">;
@@ -48,6 +48,7 @@ interface ToolbarAction {
 
 export type WorkspacePluginIntent =
   | { readonly type: "action.open"; readonly key: string }
+  | { readonly type: "app.open"; readonly key: string }
   | {
     readonly type: "rowMenu.open";
     readonly rowKey: string | number;
@@ -179,7 +180,7 @@ export function createWorkspacePluginController(
     });
   }
 
-  async function openAction(key: string, keys = selectedRowKeys()): Promise<void> {
+  async function openAction(key: string, keys = selectedRowKeys(), openPanel = true): Promise<void> {
     const registered = registeredActions.value.find(item => item.key === key);
     if (!registered) return;
     try {
@@ -187,7 +188,34 @@ export function createWorkspacePluginController(
         registered.plugin.pluginId,
         registered.action.actionId,
         commandContext(keys),
+        openPanel,
       );
+    } catch (error) {
+      dependencies.reportError(errorMessage(error));
+    }
+  }
+
+  async function openPluginApp(key: string): Promise<void> {
+    const registered = registeredActions.value.find(item => item.key === key);
+    if (!registered) {
+      dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
+      return;
+    }
+    if (registered.action.presentation !== "application") {
+      dependencies.reportError("该入口不是插件应用");
+      return;
+    }
+    try {
+      // describeAction refreshes the catalog for 3.x plugins, revalidates the
+      // live surface and binds the command context without opening the
+      // action overlay; the viewport then mounts from the fresh projection.
+      await dependencies.service.describeAction(
+        registered.plugin.pluginId,
+        registered.action.actionId,
+        commandContext([]),
+        false,
+      );
+      dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
     } catch (error) {
       dependencies.reportError(errorMessage(error));
     }
@@ -196,6 +224,7 @@ export function createWorkspacePluginController(
   async function dispatch(intent: WorkspacePluginIntent): Promise<void> {
     switch (intent.type) {
       case "action.open": await openAction(intent.key); return;
+      case "app.open": await openPluginApp(intent.key); return;
       case "rowMenu.open":
         rowMenu.value = { show: true, ...intent, field: intent.field ?? null };
         return;

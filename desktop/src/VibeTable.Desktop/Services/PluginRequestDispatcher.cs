@@ -648,6 +648,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         if (result.Uninstalled)
         {
             _resourceHost.UnregisterInstalled(request.ProjectKey, request.PluginId);
+            _nativePlugins.TryRemove((request.ProjectKey, request.PluginId), out _);
         }
         return result;
     }
@@ -756,13 +757,20 @@ public sealed class PluginRequestDispatcher : IDisposable
     /// Resolves a confirmation only while its run is pending on the current
     /// generation. Late confirmations are answered as expired without ever
     /// reaching an executor, so they cannot revive a retired run.
+    /// #482: application/headless confirmations are NATIVE-ONLY — a resolve
+    /// arriving from the web bridge is rejected before the one-shot registry
+    /// decision is consumed; the native host window keeps the sole entry.
     /// </summary>
     private async Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(
         PluginResolveInteractionParams request,
-        CancellationToken token)
+        CancellationToken token,
+        bool fromNativeHost = false)
     {
         PluginRuntimeInteractionResolveResult decision =
-            _taskRegistry.BeginInteractionResolve(request, out IPluginRpcGateway? gateway);
+            _taskRegistry.BeginInteractionResolve(request, out IPluginRpcGateway? gateway, fromNativeHost);
+        if (decision.Status == "native-required")
+            throw new PluginDispatchException("PLUGIN_NATIVE_CONFIRMATION_REQUIRED",
+                "无界面/全视口插件动作的确认只能由宿主原生窗口批准。");
         if (gateway is null) return decision;
         // Python only wakes the execution future. Host has already consumed
         // the public decision; transport failure cannot turn it into a retry.
@@ -924,24 +932,45 @@ public sealed class PluginRequestDispatcher : IDisposable
     private sealed record NativeActions(IReadOnlyList<PluginRuntimeAction> Declared, string[] Available);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), NativeActions> _nativePlugins = new();
 
+    /// <summary>
+    /// Native confirmation entry: the same one-shot registry decision the web
+    /// footer used for legacy surfaces — the host window is not a second
+    /// approval state, and it is the ONLY entry for application/headless.
+    /// </summary>
+    internal Task<PluginRuntimeInteractionResolveResult> ResolveInteractionForHostAsync(
+        PluginResolveInteractionParams request)
+        => ResolveInteractionAsync(request, CancellationToken.None, fromNativeHost: true);
+
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
     {
         string? localPackage = PluginRetainedPackage.PathFor(
             _packageCacheRoot?.Invoke(snapshot.ProjectKey), snapshot.PackageHash);
-        bool registered = localPackage is not null && _resourceHost.TryRegisterInstalled(
+        bool registered = snapshot.Status == "enabled" && localPackage is not null && _resourceHost.TryRegisterInstalled(
             snapshot.ProjectKey,
             snapshot.PluginId,
             localPackage,
             snapshot.PackageHash);
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
-        PluginRuntimeManifest manifest = snapshot.Manifest with { Ui = ProjectCustomViews(snapshot, registered) };
+        PluginRuntimeManifest manifest = snapshot.Manifest with
+        {
+            Ui = ProjectCustomViews(snapshot, registered),
+            Actions = ProjectActionSurfaces(snapshot, registered),
+        };
         if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
         {
-            string[] available = manifest.Ui.TryGetProperty("customViews", out var views) && views.ValueKind == JsonValueKind.Array
-                ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
-                    && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
-                    .Select(view => view.GetProperty("actionId").GetString()!).ToArray() : [];
-            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(snapshot.Manifest.Actions, available);
+            List<string> availableActions =
+            [
+                .. (manifest.Ui.TryGetProperty("customViews", out var views) && views.ValueKind == JsonValueKind.Array
+                    ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
+                        && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
+                        .Select(view => view.GetProperty("actionId").GetString()!) : []),
+                .. manifest.Actions
+                    .Where(action => (action.EffectivePresentation == "application" || action.EffectivePresentation == "headless")
+                        && action.SurfaceToken is not null
+                        && _surfaces.TryGet(action.SurfaceToken, out _))
+                    .Select(action => action.ActionId),
+            ];
+            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(manifest.Actions, [.. availableActions]);
         }
         else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         return snapshot with
@@ -949,6 +978,58 @@ public sealed class PluginRequestDispatcher : IDisposable
             SourceLocation = HostManagedSource,
             Manifest = manifest,
         };
+    }
+
+    /// <summary>
+    /// Derives host-owned surfaces for application/headless actions. The
+    /// declared entry stays on the action; src/token are projection-only
+    /// fields that never persist in the stored manifest.
+    /// </summary>
+    private IReadOnlyList<PluginRuntimeAction> ProjectActionSurfaces(PluginRuntimeSnapshot snapshot, bool registered)
+    {
+        var projected = new List<PluginRuntimeAction>(snapshot.Manifest.Actions.Count);
+        foreach (PluginRuntimeAction action in snapshot.Manifest.Actions)
+        {
+            if (action.EffectivePresentation is not ("application" or "headless"))
+            {
+                projected.Add(action);
+                continue;
+            }
+            if (!registered || string.IsNullOrWhiteSpace(action.Entry))
+            {
+                projected.Add(action with { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null });
+                continue;
+            }
+            var surface = _resourceHost.OpenSurface(
+                snapshot.ProjectKey,
+                snapshot.PluginId,
+                action.Entry,
+                action.ActionId,
+                action.EffectivePresentation);
+            if (_projectContext() is { } context)
+                _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
+                    snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,
+                    action.Risk, action.Entry, action.EffectivePresentation);
+            projected.Add(action with
+            {
+                SurfaceSrc = surface.DocumentUri.ToString(),
+                SurfaceToken = surface.SurfaceToken,
+                SurfaceTitle = LocalizeTitle(action.DisplayName, action.ActionId),
+            });
+        }
+        return projected;
+    }
+
+    private static string LocalizeTitle(IReadOnlyDictionary<string, string> displayName, string fallback)
+    {
+        foreach (string locale in new[] { "zh-CN", "en-US" })
+        {
+            if (displayName.TryGetValue(locale, out string? value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+        return displayName.Values.FirstOrDefault() ?? fallback;
     }
 
     private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot, bool registered)

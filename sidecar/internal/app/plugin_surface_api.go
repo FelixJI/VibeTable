@@ -66,8 +66,10 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 	var native struct {
 		Manifest struct {
 			Actions []struct {
-				ActionID string `json:"actionId"`
-				Risk     string `json:"risk"`
+				ActionID     string `json:"actionId"`
+				Risk         string `json:"risk"`
+				Presentation string `json:"presentation"`
+				Entry        string `json:"entry"`
 			} `json:"actions"`
 			UI struct {
 				CustomViews []struct {
@@ -87,7 +89,19 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 		}
 	}
 	for _, action := range native.Manifest.Actions {
-		if bound && action.ActionID == input.ActionID && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
+		if action.ActionID != input.ActionID {
+			continue
+		}
+		// application/headless actions bind through the presentation entry
+		// declared on the action itself instead of a legacy custom view.
+		if action.Presentation == "application" || action.Presentation == "headless" {
+			if action.Entry != "" && action.Entry == input.Entry {
+				bound = true
+			} else {
+				bound = false
+			}
+		}
+		if bound && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
 			installed.ActionRisk = action.Risk
 			return installed, nil
 		}

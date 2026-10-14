@@ -2035,6 +2035,20 @@ def _prepare_complete_product_reports(
             ),
             encoding="utf-8",
         )
+        if "48-plugin-applications" in selected[stage]:
+            for phase, filenames in {
+                "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
+                "resume": (
+                    "48-native-application.png",
+                    "48-native-approved.png",
+                    "48-native-rejected.png",
+                    "48-plugin-applications-trace.zip",
+                ),
+            }.items():
+                phase_root = run_root / "48-plugin-applications" / phase / "20260817T010204Z"
+                phase_root.mkdir(parents=True)
+                for filename in filenames:
+                    (phase_root / filename).write_bytes(b"synthetic unit-test image/trace payload")
         if "39-file-workflow-combination" in selected[stage]:
             for phase, filenames in S39_SCREENSHOTS.items():
                 phase_root = run_root / "39-file-workflow-combination" / phase / "20260817T010204Z"
@@ -2877,6 +2891,23 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
 
 
 SCENARIO_SCREENSHOTS = {
+    "49-plugin-application-security": (
+        "48-native-dark.png",
+        "48-native-scaled.png",
+        "48-native-contrast.png",
+        "48-native-contrast-restored.png",
+        "48-native-loop.png",
+        "48-native-recovered.png",
+        "48-native-crashed.png",
+        "49-security-observations.json",
+        "49-plugin-application-security-trace.zip",
+    ),
+    "50-plugin-headless-budget": ("48-native-recovered.png", "50-plugin-headless-budget-trace.zip"),
+    "51-plugin-application-commit-unknown": (
+        "48-native-cancelled.png",
+        "48-native-recovered.png",
+        "51-plugin-application-commit-unknown-trace.zip",
+    ),
     "02-all-field-schema": (
         "02-number-display-fixed.png",
         "02-number-display-currency.png",

@@ -842,3 +842,75 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal("foreign workspace accepted")
 	}
 }
+
+func TestSurfaceInstallationBindsPresentationEntry(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkspaceMutationReplayFixture(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	store := pluginstore.New(f.pb, workspace)
+	pluginID, hash := "com.example.presentation-binding", strings.Repeat("e", 64)
+	manifest := map[string]any{
+		"$schema":       "vibetable.plugin-manifest.v2",
+		"pluginId":      pluginID,
+		"version":       "1.0.0",
+		"displayName":   map[string]any{"zh-CN": "示例"},
+		"description":   map[string]any{},
+		"compatibility": map[string]any{"pluginApi": "3.x"},
+		"permissions":   map[string]any{"privateStorage": true},
+		"actions": []any{
+			map[string]any{"actionId": "open", "mode": "local", "risk": "read", "invocation": "manual", "presentation": "application", "entry": "ui/index.html"},
+			map[string]any{"actionId": "run", "mode": "local", "risk": "write", "invocation": "manual", "presentation": "headless", "entry": "ui/run.js"},
+		},
+		"ui": map[string]any{"customViews": []any{}},
+	}
+	snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}})
+	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
+		t.Fatal(err)
+	}
+	base := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1}
+
+	for _, tc := range []struct {
+		name     string
+		actionID string
+		entry    string
+		wantRisk string
+		wantDeny bool
+	}{{
+		name:     "application-entry",
+		actionID: "open",
+		entry:    "ui/index.html",
+		wantRisk: "read",
+	}, {
+		name:     "headless-entry",
+		actionID: "run",
+		entry:    "ui/run.js",
+		wantRisk: "write",
+	}, {
+		name:     "application-wrong-entry",
+		actionID: "open",
+		entry:    "ui/other.html",
+		wantDeny: true,
+	}, {
+		name:     "headless-empty-entry",
+		actionID: "run",
+		entry:    "",
+		wantDeny: true,
+	}} {
+		input := base
+		input.ActionID = tc.actionID
+		input.Entry = tc.entry
+		installed, err := surfaceInstallation(ctx, f.pb, workspace, input)
+		if tc.wantDeny {
+			if err == nil {
+				t.Fatal(tc.name, " admitted")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(tc.name, err)
+		}
+		if installed.ActionRisk != tc.wantRisk {
+			t.Fatal(tc.name, " risk ", installed.ActionRisk)
+		}
+	}
+}

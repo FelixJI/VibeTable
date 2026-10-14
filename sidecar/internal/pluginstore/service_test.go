@@ -833,3 +833,76 @@ func TestGetAuditUsesExactBoundedLookup(t *testing.T) {
 	}
 
 }
+
+func presentationTestManifest() map[string]any {
+	return map[string]any{
+		"$schema":       "vibetable.plugin-manifest.v2",
+		"pluginId":      "com.example.presentation",
+		"version":       "1.0.0",
+		"displayName":   map[string]any{"zh-CN": "示例"},
+		"description":   map[string]any{},
+		"compatibility": map[string]any{"pluginApi": "3.x"},
+		"permissions":   map[string]any{},
+		"ui":            map[string]any{"customViews": []any{}},
+		"actions": []any{map[string]any{
+			"actionId": "open", "mode": "local", "risk": "read", "invocation": "manual",
+		}},
+	}
+}
+
+func TestPresentationActionsValidateAndBindClosedSet(t *testing.T) {
+	build := func(presentation, entry string, extra map[string]any, views []any) map[string]any {
+		action := map[string]any{
+			"actionId": "open", "mode": "local", "risk": "read", "invocation": "manual",
+		}
+		for key, value := range extra {
+			action[key] = value
+		}
+		if presentation != "" {
+			action["presentation"] = presentation
+			action["entry"] = entry
+		}
+		return map[string]any{
+			"$schema":       "vibetable.plugin-manifest.v2",
+			"pluginId":      "com.example.presentation",
+			"version":       "1.0.0",
+			"displayName":   map[string]any{"zh-CN": "示例"},
+			"description":   map[string]any{},
+			"compatibility": map[string]any{"pluginApi": "3.x"},
+			"permissions":   map[string]any{},
+			"ui":            map[string]any{"customViews": views},
+			"actions":       []any{action},
+		}
+	}
+	check := func(name string, manifest map[string]any, wantValid bool) {
+		t.Helper()
+		err := validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string))
+		if wantValid && err != nil {
+			t.Fatal(name, " rejected:", err)
+		}
+		if !wantValid && err == nil {
+			t.Fatal(name, " accepted")
+		}
+	}
+
+	// Old stacks required a custom view for every v2 action; the new shapes
+	// install with the entry declared on the action itself.
+	check("application", build("application", "ui/index.html", nil, nil), true)
+	check("headless", build("headless", "ui/app.js", nil, nil), true)
+
+	view := []any{map[string]any{"viewId": "v", "actionId": "open", "entry": "ui/index.html"}}
+	check("surface-with-entry", build("surface", "ui/index.html", nil, view), false)
+	check("missing-entry", build("application", "", nil, nil), false)
+	check("unknown-presentation", build("widget", "ui/index.html", nil, nil), false)
+	check("legacy-schema-channel", build("headless", "ui/app.js", map[string]any{"inputSchema": "schemas/input.json"}, nil), false)
+	check("legacy-view-channel", build("application", "ui/index.html", nil, view), false)
+	// A surface action still needs its legacy view binding.
+	check("surface-without-view", build("surface", "", nil, nil), false)
+	check("surface-with-view", build("", "", nil, view), true)
+
+	// v1 manifests keep rejecting the new shapes entirely.
+	v1 := build("application", "ui/index.html", map[string]any{"workerEntry": "dist/worker.js"}, nil)
+	v1["$schema"] = "vibetable.plugin-manifest.v1"
+	v1["compatibility"] = map[string]any{"pluginApi": "1.x"}
+	check("v1-presentation", v1, false)
+}

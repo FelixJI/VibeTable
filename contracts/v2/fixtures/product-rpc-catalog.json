@@ -16029,6 +16029,27 @@
                   }
                 ],
                 "default": null
+              },
+              "presentation": {
+                "default": "surface",
+                "enum": [
+                  "surface",
+                  "application",
+                  "headless"
+                ],
+                "type": "string"
+              },
+              "entry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -16401,6 +16422,27 @@
               "outputSchema": {
                 "anyOf": [
                   {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "presentation": {
+                "default": "surface",
+                "enum": [
+                  "surface",
+                  "application",
+                  "headless"
+                ],
+                "type": "string"
+              },
+              "entry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
                     "type": "string"
                   },
                   {
@@ -16877,6 +16919,27 @@
               "outputSchema": {
                 "anyOf": [
                   {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "presentation": {
+                "default": "surface",
+                "enum": [
+                  "surface",
+                  "application",
+                  "headless"
+                ],
+                "type": "string"
+              },
+              "entry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
                     "type": "string"
                   },
                   {
@@ -17510,6 +17573,27 @@
                   }
                 ],
                 "default": null
+              },
+              "presentation": {
+                "default": "surface",
+                "enum": [
+                  "surface",
+                  "application",
+                  "headless"
+                ],
+                "type": "string"
+              },
+              "entry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               }
             },
             "required": [
@@ -17816,6 +17900,27 @@
               "outputSchema": {
                 "anyOf": [
                   {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "presentation": {
+                "default": "surface",
+                "enum": [
+                  "surface",
+                  "application",
+                  "headless"
+                ],
+                "type": "string"
+              },
+              "entry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
                     "type": "string"
                   },
                   {
@@ -18558,6 +18663,27 @@
               "outputSchema": {
                 "anyOf": [
                   {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "presentation": {
+                "default": "surface",
+                "enum": [
+                  "surface",
+                  "application",
+                  "headless"
+                ],
+                "type": "string"
+              },
+              "entry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
                     "type": "string"
                   },
                   {

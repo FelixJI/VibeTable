@@ -235,8 +235,10 @@ def _protected_inputs(source: Path, manifest: dict[str, Any]) -> frozenset[Path]
     refs = {"manifest.json"}
     for action in manifest.get("actions", []):
         if isinstance(action, dict):
-            for key in ("formSchema", "inputSchema", "outputSchema"):
-                if isinstance(action.get(key), str):
+            for key in ("formSchema", "inputSchema", "outputSchema", "entry"):
+                if isinstance(action.get(key), str) and not (
+                    key == "entry" and action.get("presentation") == "headless"
+                ):
                     refs.add(normalize_member_path(action[key]))
     for view in manifest.get("ui", {}).get("customViews", []):
         if isinstance(view, dict):
@@ -292,9 +294,20 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
     if manifest.get("$schema") == "vibetable.plugin-manifest.v2":
         entries = sorted(
             {
-                view["script"]
-                for view in manifest.get("ui", {}).get("customViews", [])
-                if isinstance(view, dict) and isinstance(view.get("script"), str)
+                *entries,
+                *(
+                    view["script"]
+                    for view in manifest.get("ui", {}).get("customViews", [])
+                    if isinstance(view, dict) and isinstance(view.get("script"), str)
+                ),
+                *(
+                    action["entry"]
+                    for action in manifest.get("actions", [])
+                    if isinstance(action, dict)
+                    and action.get("presentation") == "headless"
+                    and isinstance(action.get("entry"), str)
+                    and (source / "src" / f"{Path(action['entry']).stem}.ts").is_file()
+                ),
             }
         )
     if not entries:

@@ -96,3 +96,25 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     },
   };
 }
+
+const TrustedParentOrigin = "https://app.vibetable.local";
+
+/**
+ * Signals the terminal outcome of a headless run to the trusted Host page.
+ * The Host shows the status and releases the surface token/frame; this never
+ * grants or approves anything by itself.
+ */
+export function finishHeadlessRun(surfaceToken: string, status: "succeeded" | "failed", summary: string): void {
+  const globalWindow = globalThis as typeof globalThis & { parent?: Window };
+  try {
+    globalWindow.parent?.postMessage({
+      contract: "vibetable.plugin-surface.v1",
+      surfaceToken,
+      event: "close",
+      payload: { status, summary },
+    }, TrustedParentOrigin);
+  } catch {
+    // Finishing must never throw into plugin logic; the Host cancel path
+    // still retires the surface when the message cannot be delivered.
+  }
+}

@@ -1347,6 +1347,26 @@ def persist_product_e2e_evidence(
                 "46-dashboard-export-cancelled.png",
                 "46-dashboard-print-dialog-opened.png",
             ),
+            "49-plugin-application-security": (
+                "48-native-dark.png",
+                "48-native-scaled.png",
+                "48-native-contrast.png",
+                "48-native-contrast-restored.png",
+                "48-native-loop.png",
+                "48-native-recovered.png",
+                "48-native-crashed.png",
+                "49-security-observations.json",
+                "49-plugin-application-security-trace.zip",
+            ),
+            "51-plugin-application-commit-unknown": (
+                "48-native-cancelled.png",
+                "48-native-recovered.png",
+                "51-plugin-application-commit-unknown-trace.zip",
+            ),
+            "50-plugin-headless-budget": (
+                "48-native-recovered.png",
+                "50-plugin-headless-budget-trace.zip",
+            ),
             "47-plugin-surface-api": (
                 "47-surface-read.png",
                 "47-surface-confirm.png",
@@ -1388,6 +1408,15 @@ def persist_product_e2e_evidence(
                 if not copied and item["status"] == "passed":
                     raise ValueError(f"passing S42 report lacks native evidence: {filename}")
         phase_evidence = {
+            "48-plugin-applications": {
+                "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
+                "resume": (
+                    "48-native-application.png",
+                    "48-native-approved.png",
+                    "48-native-rejected.png",
+                    "48-plugin-applications-trace.zip",
+                ),
+            },
             "39-file-workflow-combination": {
                 "seed": (
                     "39-record-file-entry.png",

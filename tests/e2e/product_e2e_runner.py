@@ -116,6 +116,14 @@ CAPACITY_REQUIRED_IDENTITY_FIELDS = ("workspaceId", "sessionEpoch")
 # resume phase needs; the two scenarios deliberately require different seed
 # contracts instead of sharing a generic state shape.
 _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "48-plugin-applications": (
+        "workspaceId",
+        "projectKey",
+        "tableId",
+        "pluginId",
+        "packageHash",
+        "sessionEpoch",
+    ),
     "33-host-grid-presentation": (
         "workspaceId",
         "tableId",
@@ -1975,6 +1983,32 @@ def _run_node_runner(
     process_network: dict[str, Any] | None = None,
     measure_diff_worker: bool = False,
 ) -> tuple[int, str, str]:
+    from tests.e2e.plugin_application_native import restore_system_contrast
+
+    try:
+        return _run_node_runner_guarded(
+            command,
+            scenario_dir=scenario_dir,
+            local_data=local_data,
+            host_scope=host_scope,
+            process_network=process_network,
+            measure_diff_worker=measure_diff_worker,
+        )
+    finally:
+        restored = restore_system_contrast()
+        if restored is not None:
+            _write_json_atomic(scenario_dir / "plugin-contrast-cleanup.json", restored)
+
+
+def _run_node_runner_guarded(
+    command: list[str],
+    *,
+    scenario_dir: Path,
+    local_data: Path,
+    host_scope: _HostObservationScope,
+    process_network: dict[str, Any] | None = None,
+    measure_diff_worker: bool = False,
+) -> tuple[int, str, str]:
     fault_request = scenario_dir / "fault-request.json"
     fault_result = scenario_dir / "fault-result.json"
     storage_request = scenario_dir / "storage-proof-request.json"
@@ -1993,6 +2027,7 @@ def _run_node_runner(
     invalid_fault_reported = False
     handled_storage_proof_ids: set[str] = set()
     handled_document_native_ids: set[str] = set()
+    handled_plugin_native_ids: set[str] = set()
     controls = (
         Path(command[command.index("--controls-dir") + 1]) if "--controls-dir" in command else None
     )
@@ -2097,6 +2132,31 @@ def _run_node_runner(
                     stdout, stderr = node_process.communicate(timeout=10)
                     raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
                 _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
+        plugin_native_path = scenario_dir / "plugin-native-request.json"
+        plugin_native_request = _read_json(plugin_native_path)
+        if plugin_native_request is not None:
+            native_id = plugin_native_request.get("requestId")
+            if isinstance(native_id, str) and native_id not in handled_plugin_native_ids:
+                plugin_native_path.unlink()
+                handled_plugin_native_ids.add(native_id)
+                if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
+                    "48-plugin-applications",
+                    "49-plugin-application-security",
+                    "50-plugin-headless-budget",
+                    "51-plugin-application-commit-unknown",
+                }:
+                    native_result = {
+                        "requestId": native_id,
+                        "status": "failed",
+                        "error": "native plugin scenario not authorized",
+                    }
+                else:
+                    from tests.e2e.plugin_application_native import handle_plugin_native_request
+
+                    native_result = handle_plugin_native_request(
+                        plugin_native_request, host_pid=host_scope.root.pid, evidence=scenario_dir
+                    )
+                _write_json_atomic(scenario_dir / "plugin-native-result.json", native_result)
         if process_network is not None and time.monotonic() >= next_network_sample:
             _record_process_network(host_scope, process_network)
             _write_json_atomic(
@@ -2466,6 +2526,15 @@ def run_scenario(
                 cwd=ROOT,
                 check=True,
             )
+    if scenario.id in {
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
+    }:
+        from tests.e2e.plugin_application_packages import prepare_application_packages
+
+        prepare_application_packages(controls_dir)
     if scenario.id == "47-plugin-surface-api":
         source = ROOT / "examples/plugins/surface-data-editor"
         plugin_cli = ROOT / "scripts/vibetable_plugin.py"
@@ -2584,7 +2653,13 @@ def run_scenario(
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
-    if scenario.id == "47-plugin-surface-api":
+    if scenario.id in {
+        "47-plugin-surface-api",
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
+    }:
         environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-gpu"
@@ -2598,6 +2673,9 @@ def run_scenario(
         environment["VIBETABLE_E2E_MIGRATION_FAULT_FILE"] = str(
             (controls_dir / "migration-fault.phase").resolve()
         )
+    if scenario.id == "51-plugin-application-commit-unknown":
+        (controls_dir / "mutation-barrier.arm").write_text("armed\n", encoding="utf-8")
+        environment["VIBETABLE_E2E_MUTATION_BARRIER_DIR"] = str(controls_dir)
     mutation_barrier = None
     if (
         scenario.id == "44-file-restore-crash"
@@ -3043,7 +3121,17 @@ def run_product_acceptance(
     # completed subset can never be mistaken for a passing run.
     write_aggregate(report_path, audit=audit, results=results)
     native_observer_error: str | None = None
-    if any(scenario.id == "42-file-document-native-operations" for scenario in scenarios):
+    if any(
+        scenario.id
+        in {
+            "42-file-document-native-operations",
+            "48-plugin-applications",
+            "49-plugin-application-security",
+            "50-plugin-headless-budget",
+            "51-plugin-application-commit-unknown",
+        }
+        for scenario in scenarios
+    ):
         try:
             _prepare_native_uia_observer()
         except (OSError, subprocess.SubprocessError) as exception:
@@ -3060,7 +3148,14 @@ def run_product_acceptance(
         print(f"[product-e2e] scenario {scenario.id} start", flush=True)
         scenario_started = time.monotonic()
         if (
-            scenario.id == "42-file-document-native-operations"
+            scenario.id
+            in {
+                "42-file-document-native-operations",
+                "48-plugin-applications",
+                "49-plugin-application-security",
+                "50-plugin-headless-budget",
+                "51-plugin-application-commit-unknown",
+            }
             and native_observer_error is not None
         ):
             result = _failure_result(

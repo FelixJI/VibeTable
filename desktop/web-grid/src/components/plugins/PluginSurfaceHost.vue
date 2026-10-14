@@ -10,12 +10,14 @@ const props = defineProps<{
   title: string;
   theme: PluginSurfaceThemeSnapshot;
   task?: PluginTaskViewSnapshot | null;
+  variant?: "panel" | "app" | "headless";
 }>();
 const emit = defineEmits<{
   close: [];
   action: [payload: Readonly<Record<string, unknown>>];
   resolve: [decision: "approved" | "rejected"];
   cancel: [];
+  finish: [status: string, summary: string];
 }>();
 const bridge = useHostBridge();
 const frame = ref<HTMLIFrameElement | null>(null);
@@ -58,7 +60,18 @@ function onMessage(event: MessageEvent): void {
       : {};
     emit("action", payload);
   }
-  if (event.data.event === "close") close();
+  if (event.data.event === "close") {
+    // Headless modules report their terminal status through the close
+    // payload; visible surfaces close without one.
+    const payload = typeof event.data.payload === "object" && event.data.payload !== null
+      && !Array.isArray(event.data.payload)
+      ? event.data.payload as Readonly<Record<string, unknown>>
+      : {};
+    if (typeof payload.status === "string" && payload.status) {
+      emit("finish", payload.status, typeof payload.summary === "string" ? payload.summary : "");
+    }
+    close();
+  }
 }
 
 function close(): void {
@@ -85,8 +98,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="surface-shell" role="region" :aria-label="title">
-    <header>
+  <section
+    class="surface-shell"
+    :class="variant === 'app' ? 'surface-shell--app' : null"
+    role="region"
+    :aria-label="title"
+  >
+    <header v-if="variant !== 'app' && variant !== 'headless'">
       <div><span>ISOLATED SURFACE</span><strong>{{ title }}</strong></div>
       <button type="button" aria-label="关闭插件页面" @click="close">×</button>
     </header>
@@ -96,6 +114,7 @@ onBeforeUnmount(() => {
       :src="src"
       :name="surfaceToken"
       :title="title"
+      :class="variant === 'headless' ? 'surface-frame--hidden' : null"
       sandbox="allow-scripts allow-same-origin"
       referrerpolicy="no-referrer"
       :data-required-csp="PLUGIN_SURFACE_CSP"
@@ -115,7 +134,8 @@ onBeforeUnmount(() => {
       </div>
       <section v-if="task.confirmation" class="host-confirmation" role="alertdialog" aria-modal="true">
         <div><span>HOST FINAL {{ task.confirmation.risk.toUpperCase() }} CONFIRMATION</span><strong>{{ task.confirmation.title }}</strong><p>{{ task.confirmation.summary }}</p></div>
-        <div class="confirmation-actions">
+        <p v-if="variant === 'app' || variant === 'headless'">请在宿主原生确认窗口中批准或拒绝。</p>
+        <div v-else class="confirmation-actions">
           <button type="button" @click="emit('resolve', 'rejected')">拒绝</button>
           <button data-testid="plugin-surface-confirm-approve" class="approve" type="button" @click="emit('resolve', 'approved')">由宿主确认并继续</button>
         </div>
@@ -131,6 +151,9 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .surface-shell { display: flex; min-height: 360px; flex-direction: column; overflow: hidden; border: 1px solid var(--vt-border); border-radius: var(--vt-radius-md); background: var(--vt-bg-sunken); }
+.surface-shell--app { min-height: 0; height: 100%; border: 0; border-radius: 0; }
+.surface-shell--app iframe { min-height: 0; }
+.surface-frame--hidden { position: absolute; width: 1px; height: 1px; min-height: 0; overflow: hidden; clip-path: inset(50%); pointer-events: none; }
 header { display: flex; flex: 0 0 42px; align-items: center; justify-content: space-between; padding: 0 10px 0 13px; border-bottom: 1px solid var(--vt-border); background: var(--vt-bg); }
 header div { display: flex; align-items: baseline; gap: 10px; }
 header span { color: var(--vt-color-success); font: 600 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .12em; }

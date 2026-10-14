@@ -249,6 +249,7 @@ const HOST_EVENT_TYPES: ReadonlySet<HostMessageType> = new Set<
   HostMessageType
 >([
   "host.startupStateChanged",
+  "host.pluginChrome",
   "database.opened",
   "database.openCancelled",
   "plugin.projectContext.unavailable",
