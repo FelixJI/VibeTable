@@ -4201,8 +4201,12 @@ def test_node_runner_enforces_closed_history_and_no_external_http() -> None:
     assert '["history.restorePreviewReady"]' in source
     assert '["history.restoreApplied"]' in source
     assert "externalRequests.length === 0" in source
-    assert 'url.hostname === "app.vibetable.local"' in source
-    assert '["127.0.0.1", "::1", "localhost"]' in source
+    assert "collectExternalRendererRequests(networkEntries)" in source
+    policy = runner.NODE_RUNNER.with_name("renderer_diagnostics_policy.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert 'url.hostname === "app.vibetable.local"' in policy
+    assert '["127.0.0.1", "::1", "localhost"]' in policy
     assert "process-network-observations.json" in source
     assert "unexpectedProductNonLoopback.length === 0" in source
     assert "assertCleanBridgeDiagnostics(recorder" in source
@@ -4910,6 +4914,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
+        runner.NODE_RUNNER.with_name("renderer_diagnostics_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("dialog_focus_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("field_settings_drawer.test.mjs"),
         runner.NODE_RUNNER.with_name("dashboard_panel_editor_completion.test.mjs"),
