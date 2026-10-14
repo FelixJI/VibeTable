@@ -70,6 +70,27 @@ def _write_local_plugin(root: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "views", [[], [{"viewId": "other", "actionId": "other", "entry": "ui/index.html"}]]
+)
+def test_native_action_requires_its_own_page(tmp_path: Path, views: list[dict[str, str]]) -> None:
+    plugin = tmp_path / "surface"
+    _write_local_plugin(plugin)
+    path = plugin / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["$schema"] = "vibetable.plugin-manifest.v2"
+    manifest["compatibility"]["pluginApi"] = "3.x"
+    manifest["actions"][0].pop("workerEntry")
+    manifest["ui"] = {"customViews": views}
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(PluginPackageError):
+        inspect_plugin_package(plugin)
+    from backend.contracts.plugin import PluginManifest
+
+    with pytest.raises(ValueError, match="v2 actions require"):
+        PluginManifest.model_validate(manifest)
+
+
 def test_native_manifest_negotiates_without_worker_and_rejects_mismatch(tmp_path: Path) -> None:
     plugin = tmp_path / "surface"
     _write_local_plugin(plugin)
@@ -78,6 +99,13 @@ def test_native_manifest_negotiates_without_worker_and_rejects_mismatch(tmp_path
     manifest["$schema"] = "vibetable.plugin-manifest.v2"
     manifest["compatibility"]["pluginApi"] = "3.x"
     del manifest["actions"][0]["workerEntry"]
+    manifest["ui"] = {
+        "customViews": [
+            {"viewId": "reader", "actionId": "read-selection", "entry": "ui/index.html"}
+        ]
+    }
+    (plugin / "ui").mkdir()
+    (plugin / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
     path.write_text(json.dumps(manifest), encoding="utf-8")
     assert inspect_plugin_package(plugin).manifest["compatibility"]["pluginApi"] == "3.x"
     for schema, api in (

@@ -31,7 +31,8 @@ expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 
 ### 2.1 无 Worker 的隔离页面 API
 
 `manifest.v2` 必须声明 `compatibility.pluginApi: "3.x"`，动作不允许 `workerEntry`；通过
-`ui.customViews` 声明 `entry` 与 `script`。CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
+`ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`；本版本不支持无页面动作。
+CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
 编译到声明的 `script`，打包仍走既有完整性契约。旧 Host 拒绝 v2，未知 API/合同版本拒绝；
 旧 SDK `data.mutate` 不改变拒绝语义。
 
@@ -46,6 +47,9 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 `storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
 查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
 中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
+只有获准读取 `id` 时才返回 rowGuards，按 ID 更新也要求该授权。`context.read` 保留绑定的用户上下文；
+选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
+隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
 
 写入计划使用 `vibetable.surface-mutation-plan.v1`，包含 `collection`、`schemaRevision` 和
 `create/update` operations；更新必须带查询的 `expectedDigest`。`mutation.preview` 返回不可转移的
@@ -57,6 +61,12 @@ revision/status、权限、包修订。拒绝/提交前取消零写入，冲突�
 Host 在真实 frame 创建时捕获可信 iframe name/token，验证 WebMessage 的实际 source 文档，
 并绑定安装、workspace UUID/sessionEpoch 和授权上下文。插件 payload 的 `pluginId/projectKey/scope`
 不受信任且作为额外字段拒绝。私设由 Go pluginstore 按安装私有目录、CAS 和当前授权管理。
+私设 key 必须符合 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`，JSON 值最多 65536 UTF-8 字节。
+
+每次真实保存 run 在确认前持久记录 `action.started`；记录失败不进入确认或提交。
+成功的 `action` 审计和数据在同一 Go 事务提交，其他终态由原 run 身份记录，禁用不删除该历史。
+回执丢失时 Host 的 `action.observed/unknown` 不覆盖 Go 已确定的成功审计。异常退出只留下
+`action.started/unknown` 表示没有可确认的终态；宿主退役有界收束，无法访问原 generation 时不向新工作区补写。
 
 每条消息及 Go请求上限 1 MiB，分页最多 200 行，每 surface 最多 8 个在途请求/8 个预览计划、
 64 个游标句柄；普通请求 15 秒，Host 确认/提交请求 120 秒，句柄一次消费。长驻页面没有旧

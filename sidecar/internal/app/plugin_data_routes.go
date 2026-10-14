@@ -217,7 +217,7 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 			guards := map[string]any{}
 			complete := true
 			for _, row := range page.Rows {
-				if id, ok := row["id"].(string); ok {
+				if id, ok := row["id"].(string); ok && scoped.names["id"] != "" {
 					guards[id] = row[productrow.DigestField]
 				}
 				item := map[string]any{}

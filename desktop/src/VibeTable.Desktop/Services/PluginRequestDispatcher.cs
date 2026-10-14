@@ -291,8 +291,13 @@ public sealed class PluginRequestDispatcher : IDisposable
                 bool native = _nativePlugins.TryGetValue((describe.ProjectKey, describe.PluginId), out var actions);
                 if (native)
                 {
-                    if (!actions!.Contains(describe.ActionId)) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
+                    if (!actions!.Declared.Contains(describe.ActionId)) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
                     if (_projectContext()?.ProjectKey != describe.ProjectKey || describe.Context.ProjectKey != describe.ProjectKey) throw StaleTask();
+                    if (!actions.Available.Contains(describe.ActionId))
+                    {
+                        _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
+                        return;
+                    }
                     _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.Context);
                     _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(true, []));
                     return;
@@ -902,13 +907,11 @@ public sealed class PluginRequestDispatcher : IDisposable
         "PLUGIN_TASK_NOT_FOUND",
         "Plugin task was not found for the current project session.");
 
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), string[]> _nativePlugins = new();
+    private sealed record NativeActions(string[] Declared, string[] Available);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), NativeActions> _nativePlugins = new();
 
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
     {
-        if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
-            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = snapshot.Manifest.Actions.Select(action => action.ActionId).ToArray();
-        else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         string? localPackage = PluginRetainedPackage.PathFor(
             _packageCacheRoot?.Invoke(snapshot.ProjectKey), snapshot.PackageHash);
         bool registered = localPackage is not null && _resourceHost.TryRegisterInstalled(
@@ -918,6 +921,15 @@ public sealed class PluginRequestDispatcher : IDisposable
             snapshot.PackageHash);
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
         PluginRuntimeManifest manifest = snapshot.Manifest with { Ui = ProjectCustomViews(snapshot, registered) };
+        if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
+        {
+            string[] available = manifest.Ui.TryGetProperty("customViews", out var views) && views.ValueKind == JsonValueKind.Array
+                ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
+                    && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
+                    .Select(view => view.GetProperty("actionId").GetString()!).ToArray() : [];
+            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(snapshot.Manifest.Actions.Select(action => action.ActionId).ToArray(), available);
+        }
+        else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         return snapshot with
         {
             SourceLocation = HostManagedSource,
@@ -942,6 +954,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
 
         var candidates = views.OfType<JsonObject>().ToArray();
+        bool native = snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x";
         foreach (JsonObject view in candidates)
         {
             view.Remove("src");
@@ -953,6 +966,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                 continue;
             }
             string? actionId = ReadNodeString(view["actionId"]);
+            if (native && (string.IsNullOrWhiteSpace(actionId)
+                || !snapshot.Manifest.Actions.Any(action => action.ActionId == actionId))) continue;
             if (string.IsNullOrWhiteSpace(actionId))
             {
                 string? viewId = ReadNodeString(view["viewId"]);

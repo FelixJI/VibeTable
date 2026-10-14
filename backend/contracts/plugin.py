@@ -66,6 +66,19 @@ class PluginManifest(PluginContract):
             raise ValueError("manifest/API version mismatch")
         if any((action.worker_entry is not None) == native for action in self.actions):
             raise ValueError("v1 requires workerEntry; v2 forbids workerEntry")
+        if native:
+            views = self.ui.get("customViews", [])
+            if not isinstance(views, list) or any(
+                not any(
+                    isinstance(view, dict)
+                    and view.get("actionId") == action.action_id
+                    and isinstance(view.get("entry"), str)
+                    and bool(view["entry"].strip())
+                    for view in views
+                )
+                for action in self.actions
+            ):
+                raise ValueError("v2 actions require a declared custom view entry")
         return self
 
 

@@ -70,6 +70,20 @@ func validateManifest(value any, pluginID, version string) error {
 		if invocation := action["invocation"]; invocation != "manual" && invocation != "webhook" {
 			return invalidPayload()
 		}
+		if native {
+			ui := manifest["ui"].(map[string]any)
+			views, _ := ui["customViews"].([]any)
+			found := false
+			for _, value := range views {
+				view, ok := value.(map[string]any)
+				if ok && view["actionId"] == action["actionId"] && textValue(view["viewId"]) != "" && textValue(view["entry"]) != "" {
+					found = true
+				}
+			}
+			if !found {
+				return invalidPayload()
+			}
+		}
 	}
 	return nil
 }

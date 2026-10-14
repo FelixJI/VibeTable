@@ -76,6 +76,15 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
     recorder.check(`surface ${decision} has authoritative terminal and expected data`,
       task.payload?.state === (decision === "approved" ? "succeeded" : "cancelled")
         && await value() === (decision === "approved" ? "native-approved" : original), { task, current: await value() });
+    const audit = await rawBridgeRequest(page, "plugin.audit.list", {
+      projectKey, pluginId: "com.vibetable.examples.surface-data-editor",
+    });
+    const events = Array.isArray(audit.payload) ? audit.payload : [];
+    recorder.check(`surface ${decision} has a durable terminal linked to its Host run`,
+      events.some(event => event.eventType === "action"
+        && event.runId === task.payload.runId && event.actionId === "surface.save"
+        && event.details?.taskId === taskId
+        && event.outcome === (decision === "approved" ? "succeeded" : decision)), { events, taskId });
   }
   await page.screenshot({ path: path.join(runtime.evidenceDir, "47-surface-saved.png"), fullPage: true });
   recorder.check("surface task preserves installation identity", (await frame.locator("#result").innerText()).includes("保存成功"));

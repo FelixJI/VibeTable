@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +23,8 @@ import (
 
 const pluginSurfaceAPIPath = "/api/vibetable/v3/plugins/surface"
 
+var pluginSurfaceStorageKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
 // This seam is session-authenticated Host-only; no Product RPC registration exists.
 type pluginSurfaceAPIRequest struct {
 	Method               string                            `json:"method"`
@@ -33,11 +38,13 @@ type pluginSurfaceAPIRequest struct {
 	Request              json.RawMessage                   `json:"request"`
 	Cursor               string                            `json:"cursor,omitempty"`
 	Dependencies         map[string]pluginComputedRevision `json:"dependencies,omitempty"`
+	InvocationContext    json.RawMessage                   `json:"invocationContext,omitempty"`
 }
 
 type pluginSurfaceInstallation struct {
 	pluginInstallation
 	PackageHash string `json:"packageHash"`
+	Version     string `json:"version"`
 }
 
 func surfaceInstallation(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (pluginSurfaceInstallation, error) {
@@ -88,11 +95,52 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 }
 
 func executePluginSurfaceAPI(ctx context.Context, app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate) (any, error) {
+	if input.Method == "audit.finish" {
+		var terminal struct {
+			Outcome   string `json:"outcome"`
+			ErrorCode string `json:"errorCode"`
+		}
+		if decodePluginParams(input.Request, &terminal) != nil || !pluginHas([]string{"rejected", "cancelled", "failed", "unknown"}, terminal.Outcome) {
+			return nil, pluginDataError("plugin_audit_invalid")
+		}
+		return nil, runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.surface.audit.finish", input.RequestID+":"+terminal.Outcome, func(ctx context.Context) error {
+			return surfaceAuditFinish(ctx, app, workspace, input, terminal.Outcome, terminal.ErrorCode)
+		})
+	}
 	installed, err := surfaceInstallation(ctx, app, workspace, input)
 	if err != nil {
 		return nil, err
 	}
 	switch input.Method {
+	case "audit.start":
+		var start struct {
+			TaskID string          `json:"taskId"`
+			Plan   json.RawMessage `json:"plan"`
+		}
+		if decodePluginParams(input.Request, &start) != nil || start.TaskID == "" {
+			return nil, pluginDataError("plugin_audit_invalid")
+		}
+		planInput := input
+		planInput.Request = start.Plan
+		request, err := surfaceMutationRequest(ctx, app, workspace, planInput)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = kernel.Preview(ctx, request); err != nil {
+			return nil, err
+		}
+		now := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+		event, _ := json.Marshal(map[string]any{"eventId": input.RequestID + ":started", "projectKey": input.ProjectKey, "pluginId": input.PluginID, "pluginVersion": installed.Version, "packageHash": installed.PackageHash,
+			"eventType": "action.started", "outcome": "unknown", "actionId": "surface.save", "runId": input.RequestID, "actor": "local-user", "risk": "write", "targetCollection": request.TableID, "targetCount": len(request.Operations), "startedAt": now, "finishedAt": nil, "durationMs": nil, "errorCode": nil,
+			"details": map[string]any{"taskId": start.TaskID, "state": "running", "installationRevision": input.InstallationRevision, "sessionEpoch": input.SessionEpoch, "plan": start.Plan}})
+		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.surface.audit.start", input.RequestID+":started", func(ctx context.Context) error {
+			if _, err := surfaceInstallation(ctx, app, workspace, input); err != nil {
+				return err
+			}
+			_, err := pluginstore.New(app, workspace).RecordAudit(ctx, event)
+			return err
+		})
+		return nil, err
 	case "data.describe", "data.query":
 		operation := "describe"
 		if input.Method == "data.query" {
@@ -103,17 +151,13 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		if string(input.Request) != "{}" {
 			return nil, pluginDataError("plugin_capability_invalid")
 		}
-		var active any
-		if installed.grant(input.ActiveCollection, input.ActiveCollection) != nil {
-			active = input.ActiveCollection
-		}
-		return map[string]any{"contract": "vibetable.command-context.v1", "projectKey": input.ProjectKey, "collection": active, "selectedKeys": []any{}, "querySnapshot": nil, "locale": "zh-CN", "theme": "light", "density": "comfortable", "user": map[string]any{}, "hostVersion": ""}, nil
+		return surfaceCommandContext(ctx, app, source, installed, input)
 	case "storage.get", "storage.set", "storage.delete":
 		var request struct {
 			Key   string          `json:"key"`
 			Value json.RawMessage `json:"value,omitempty"`
 		}
-		if decodePluginParams(input.Request, &request) != nil || len(request.Key) < 1 || len(request.Key) > 128 || input.Method != "storage.set" && request.Value != nil || input.Method == "storage.set" && request.Value == nil {
+		if decodePluginParams(input.Request, &request) != nil || !pluginSurfaceStorageKey.MatchString(request.Key) || !surfaceStorageValueFits(request.Value) || input.Method != "storage.set" && request.Value != nil || input.Method == "storage.set" && request.Value == nil {
 			return nil, pluginDataError("plugin_capability_invalid")
 		}
 		var result any
@@ -179,15 +223,188 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			return map[string]any{"affectedCount": len(preview.Operations), "collection": request.TableID, "schemaRevision": request.SchemaRevision}, nil
 		}
 		var receipt mutation.Receipt
+		start, err := surfaceAuditStarted(ctx, app, workspace, input)
+		if err != nil {
+			return nil, err
+		}
+		var recorded, submitted any
+		recordedDecoder := json.NewDecoder(bytes.NewReader(start["details"].(map[string]any)["plan"].(json.RawMessage)))
+		recordedDecoder.UseNumber()
+		submittedDecoder := json.NewDecoder(bytes.NewReader(input.Request))
+		submittedDecoder.UseNumber()
+		if recordedDecoder.Decode(&recorded) != nil || submittedDecoder.Decode(&submitted) != nil {
+			return nil, pluginDataError("plugin_audit_invalid")
+		}
+		if !reflect.DeepEqual(recorded, submitted) {
+			return nil, pluginDataError("plugin_audit_invalid")
+		}
 		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.surface.mutation", input.RequestID, func(ctx context.Context) error {
 			var applyErr error
-			receipt, applyErr = kernel.Apply(ctx, request)
+			receipt, applyErr = kernel.ApplyWithCommit(ctx, request, func(tx core.App, receipt mutation.Receipt) error {
+				return surfaceAuditFinish(ctx, tx, workspace, input, "succeeded", "")
+			})
 			return applyErr
 		})
 		return receipt, err
 	default:
 		return nil, pluginDataError("plugin_api_unsupported")
 	}
+}
+
+func surfaceStorageValueFits(raw json.RawMessage) bool {
+	if raw == nil {
+		return true
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) != nil {
+		return false
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(value) == nil && encoded.Len()-1 <= 65536
+}
+
+func surfaceAuditStarted(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (map[string]any, error) {
+	events, err := pluginstore.New(app, workspace).ListAudit(ctx, input.ProjectKey, input.PluginID)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range events {
+		var event map[string]json.RawMessage
+		if json.Unmarshal(raw, &event) != nil {
+			continue
+		}
+		var id, hash string
+		_ = json.Unmarshal(event["eventId"], &id)
+		_ = json.Unmarshal(event["packageHash"], &hash)
+		if id != input.RequestID+":started" || strings.TrimPrefix(hash, "sha256:") != input.PackageHash {
+			continue
+		}
+		var details map[string]json.RawMessage
+		_ = json.Unmarshal(event["details"], &details)
+		var revision int64
+		var epoch uint64
+		_ = json.Unmarshal(details["installationRevision"], &revision)
+		_ = json.Unmarshal(details["sessionEpoch"], &epoch)
+		if revision != input.InstallationRevision || epoch != input.SessionEpoch {
+			return nil, pluginDataError("plugin_audit_invalid")
+		}
+		result := map[string]any{}
+		for key, value := range event {
+			result[key] = value
+		}
+		result["details"] = map[string]any{"plan": details["plan"], "taskId": details["taskId"]}
+		return result, nil
+	}
+	return nil, pluginDataError("plugin_audit_invalid")
+}
+
+func surfaceAuditFinish(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, outcome, code string) error {
+	start, err := surfaceAuditStarted(ctx, app, workspace, input)
+	if err != nil {
+		return err
+	}
+	var started time.Time
+	var timestamp string
+	_ = json.Unmarshal(start["startedAt"].(json.RawMessage), &timestamp)
+	started, _ = time.Parse(time.RFC3339, timestamp)
+	now := time.Now().UTC()
+	start["eventId"] = input.RequestID + ":terminal"
+	start["eventType"] = "action"
+	start["outcome"] = outcome
+	if outcome == "unknown" {
+		start["eventId"] = input.RequestID + ":observed"
+		start["eventType"] = "action.observed"
+	}
+	start["finishedAt"] = now.Truncate(time.Second).Format(time.RFC3339)
+	start["durationMs"] = max(0, now.Sub(started).Milliseconds())
+	start["errorCode"] = nil
+	if code != "" {
+		start["errorCode"] = code
+	}
+	details := start["details"].(map[string]any)
+	delete(details, "plan")
+	details["state"] = outcome
+	raw, _ := json.Marshal(start)
+	_, err = pluginstore.New(app, workspace).RecordAudit(ctx, raw)
+	return err
+}
+
+// Invocation data is supplied only by Host; business identities and predicates
+// still require the installation's current canonical field grants.
+func surfaceCommandContext(ctx context.Context, app core.App, source *queryschema.Source, installed pluginSurfaceInstallation, input pluginSurfaceAPIRequest) (map[string]any, error) {
+	var invocation struct {
+		SelectedKeys  []any           `json:"selectedKeys"`
+		QuerySnapshot json.RawMessage `json:"querySnapshot"`
+		User          map[string]any  `json:"user"`
+	}
+	if len(input.InvocationContext) != 0 && decodePluginParams(input.InvocationContext, &invocation) != nil {
+		return nil, pluginDataError("plugin_capability_invalid")
+	}
+	selected := []any{}
+	var snapshot any
+	var active any
+	grant := installed.grant(input.ActiveCollection, input.ActiveCollection)
+	if grant != nil {
+		active = input.ActiveCollection
+		_, schema, err := source.DescribeSelectionTable(ctx, app, input.ActiveCollection)
+		if err != nil {
+			return nil, pluginDataError("plugin_query_failed")
+		}
+		allowed := pluginAllowed(*grant, schema)
+		if allowed["id"] != "" {
+			selected = append(selected, invocation.SelectedKeys...)
+		}
+		var candidate query.QuerySnapshot
+		if len(invocation.QuerySnapshot) != 0 && string(invocation.QuerySnapshot) != "null" && decodePluginParams(invocation.QuerySnapshot, &candidate) == nil && candidate.Table == input.ActiveCollection {
+			aliases := map[string]string{}
+			for id, name := range allowed {
+				aliases[id] = id
+				aliases[name] = id
+			}
+			valid := candidate.NormalizedQuery.Keyword == "" || len(allowed) == len(schema.Fields)+1
+			check := func(field string) (string, bool) {
+				id, ok := aliases[field]
+				if !ok {
+					return "", false
+				}
+				for _, field := range schema.Fields {
+					if field.Identity.FieldID == id && field.Relation != nil && installed.grant(field.Relation.TargetTableID, input.ActiveCollection) == nil {
+						return "", false
+					}
+				}
+				return id, true
+			}
+			var walk func([]query.FilterExpression)
+			walk = func(filters []query.FilterExpression) {
+				for i := range filters {
+					if len(filters[i].Filters) != 0 {
+						walk(filters[i].Filters)
+						continue
+					}
+					id, ok := check(filters[i].Field)
+					valid = valid && ok
+					filters[i].Field = id
+				}
+			}
+			walk(candidate.NormalizedQuery.Filters)
+			for i := range candidate.NormalizedQuery.Sorts {
+				id, ok := check(candidate.NormalizedQuery.Sorts[i].Field)
+				valid = valid && ok
+				candidate.NormalizedQuery.Sorts[i].Field = id
+			}
+			if valid {
+				snapshot = map[string]any{"table": input.ActiveCollection, "schemaRevision": candidate.SchemaRevision, "dataRevision": candidate.DataRevision, "normalizedQuery": candidate.NormalizedQuery}
+			}
+		}
+	}
+	if invocation.User == nil {
+		invocation.User = map[string]any{}
+	}
+	return map[string]any{"contract": "vibetable.command-context.v1", "projectKey": input.ProjectKey, "collection": active, "selectedKeys": selected, "querySnapshot": snapshot, "locale": "zh-CN", "theme": "light", "density": "comfortable", "user": invocation.User, "hostVersion": ""}, nil
 }
 
 func surfaceMutationRequest(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (mutation.Request, error) {
@@ -244,6 +461,9 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 				return pluginDataError("plugin_write_denied")
 			}
 			allowed := pluginAllowed(*grant, table.Snapshot)
+			if operation.Kind == mutation.OperationUpdate && allowed["id"] == "" {
+				return pluginDataError("plugin_write_denied")
+			}
 			for key := range operation.Values {
 				field, found := table.Field(key)
 				if !found || allowed[field.Identity.FieldID] == "" {

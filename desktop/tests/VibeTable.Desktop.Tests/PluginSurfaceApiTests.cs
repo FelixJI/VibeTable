@@ -10,6 +10,22 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceApiTests
 {
     [TestMethod]
+    public async Task ContextUsesBoundInvocationThroughAuthorityProjection()
+    {
+        using var fixture = new Fixture();
+        var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", fixture.Context.ProjectKey, "orders",
+            [JsonSerializer.SerializeToElement("selected")], JsonSerializer.SerializeToElement(new { hidden = "never copy directly" }),
+            "zh-CN", "dark", "comfortable", JsonSerializer.SerializeToElement(new { id = "local-user" }), "1.0");
+        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, context);
+        var response = await fixture.Call("context.read", "{}");
+        var invocation = fixture.Http.Calls.Single().GetProperty("invocationContext");
+        Assert.AreEqual("selected", invocation.GetProperty("selectedKeys")[0].GetString());
+        Assert.AreEqual("local-user", invocation.GetProperty("user").GetProperty("id").GetString());
+        Assert.IsFalse(response.GetProperty("result").TryGetProperty("querySnapshot", out _));
+        Assert.AreEqual("dark", response.GetProperty("result").GetProperty("theme").GetString());
+    }
+
+    [TestMethod]
     public async Task ActualSourceTokenVersionAndUnmappedIdentityFailBeforeAuthority()
     {
         using var fixture = new Fixture();
@@ -94,6 +110,34 @@ public sealed class PluginSurfaceApiTests
         }
     }
 
+    [TestMethod]
+    public async Task AuditStartFailurePreventsConfirmationAndMutation()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.FailAuditStart = true;
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.AreEqual("plugin_audit_failed", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+        Assert.AreEqual(0, fixture.Confirmations);
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "mutation.commit"));
+    }
+
+    [TestMethod]
+    public async Task RetirementAuditsOriginalRunWithoutCurrentSurfaceOrGeneration()
+    {
+        using var fixture = new Fixture { Decision = "retire" };
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+        Assert.IsTrue(response.TryGetProperty("error", out _));
+        var start = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "audit.start");
+        var finish = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "audit.finish");
+        Assert.AreEqual(start.GetProperty("requestId").GetString(), finish.GetProperty("requestId").GetString());
+        Assert.AreEqual(fixture.Context.ProjectKey, finish.GetProperty("projectKey").GetString());
+        Assert.AreEqual(7, finish.GetProperty("sessionEpoch").GetInt32());
+        Assert.AreEqual("cancelled", finish.GetProperty("request").GetProperty("outcome").GetString());
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        await fixture.Api.DrainAsync();
+    }
+
     private const string Plan = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"update","primaryKey":"r1","expectedDigest":"sha256:existing","values":{"name":"new"}}]}""";
     private static string? Code(JsonElement result) => result.GetProperty("error").GetProperty("code").GetString();
     private static string? Code(string result) => Code(JsonDocument.Parse(result).RootElement);
@@ -108,6 +152,9 @@ public sealed class PluginSurfaceApiTests
         internal Peer Http { get; } = new();
         internal PluginSurfaceApi Api { get; }
         internal string Decision { get; init; } = "approved";
+        internal int Confirmations { get; private set; }
+        private bool _generationCurrent = true;
+        private ProductSidecarGenerationSnapshot? _generation;
         private readonly ProductAuthorityEpoch _authority = new();
         private string? _taskId;
         internal Fixture(PluginProjectContext? context = null)
@@ -119,10 +166,11 @@ public sealed class PluginSurfaceApiTests
             var revision = PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64));
             Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html");
             Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0");
-            var generation = new ProductSidecarGenerationSnapshot(this, 1,
+            _generation = new ProductSidecarGenerationSnapshot(this, 1,
                 new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "private-test-secret"),
-                new ProductSidecarIdentity(Guid.ParseExact(Context.ProjectKey["local:".Length..], "N").ToString("D"), Context.SessionGeneration, 1, "claim"), []);
-            Api = new(Surfaces, Tasks, () => generation, this, Http);
+                new ProductSidecarIdentity(Guid.ParseExact(Context.ProjectKey["local:".Length..], "N").ToString("D"), Context.SessionGeneration, 1, "claim"), [],
+                action => _generationCurrent && action());
+            Api = new(Surfaces, Tasks, () => _generation, this, Http);
         }
         internal string Wire(string method, string parameters, string? token = null, string? version = null) => JsonSerializer.Serialize(new
         { contract = version ?? PluginSurfaceApi.Contract, surfaceToken = token ?? Surface.SurfaceToken, requestId = Guid.NewGuid().ToString("N"), method, @params = JsonDocument.Parse(parameters).RootElement });
@@ -134,9 +182,17 @@ public sealed class PluginSurfaceApiTests
             if (type == "plugin.task.changed") _taskId = envelope.EntityId;
             if (type == "plugin.interaction.requested")
             {
+                Confirmations++;
                 var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
                 Assert.AreEqual("new", interaction.PendingConfirmation!.Preview.SampleRows[0]["values"].GetProperty("name").GetString());
-                if (Decision == "cancel") Tasks.RequestCancel(_taskId!, out _, out _);
+                if (Decision == "retire")
+                {
+                    _generationCurrent = false;
+                    _generation = null;
+                    Api.Retire(Surface.SurfaceToken);
+                    Surfaces.Close(Surface.SurfaceToken);
+                }
+                else if (Decision == "cancel") Tasks.RequestCancel(_taskId!, out _, out _);
                 else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision), out _);
             }
         }
@@ -151,12 +207,14 @@ public sealed class PluginSurfaceApiTests
         internal bool LoseCommit { get; set; }
         internal bool Conflict { get; set; }
         internal bool Incomplete { get; set; }
+        internal bool FailAuditStart { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Assert.AreEqual("private-test-secret", request.Headers.GetValues("X-VibeTable-Session").Single());
             var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone();
             Calls.Add(call);
             string method = call.GetProperty("method").GetString()!;
+            if (method == "audit.start" && FailAuditStart) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"plugin_audit_failed"}""") };
             if (method == "mutation.commit" && LoseCommit) throw new HttpRequestException("synthetic lost receipt");
             if (method == "mutation.commit" && Conflict) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"mutation.digest_conflict"}""") };
             if (method == "mutation.commit" && Incomplete) return new(HttpStatusCode.OK) { Content = new StringContent("""{"contractVersion":"2.0","status":"applied","affectedRows":[]}""") };

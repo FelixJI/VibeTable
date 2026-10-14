@@ -71,8 +71,18 @@ def test_native_cli_accepts_explicit_v2_without_worker_and_rejects_unknown_api(
     manifest["$schema"] = "vibetable.plugin-manifest.v2"
     manifest["compatibility"]["pluginApi"] = "3.x"
     manifest["actions"][0].pop("workerEntry")
+    manifest["ui"] = {
+        "customViews": [{"viewId": "reader", "actionId": "read", "entry": "ui/index.html"}]
+    }
+    (plugin / "ui").mkdir()
+    (plugin / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert _run_cli("validate", str(plugin), "--json").returncode == 0
+    manifest["ui"]["customViews"] = []
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    rejected = _run_cli("validate", str(plugin), "--json")
+    assert rejected.returncode == 2
+    assert json.loads(rejected.stdout)["code"] == "ui_invalid"
     manifest["compatibility"]["pluginApi"] = "99.x"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     rejected = _run_cli("validate", str(plugin), "--json")

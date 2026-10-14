@@ -678,3 +678,34 @@ func mustRead(t *testing.T, path string) []byte {
 }
 
 func int64Ptr(value int64) *int64 { return &value }
+
+func TestNativeManifestRequiresPageForEveryAction(t *testing.T) {
+	var snapshot map[string]any
+	if err := json.Unmarshal(loadFrozenOracleCase(t, "install-snapshot"), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	manifest := snapshot["manifest"].(map[string]any)
+	manifest["$schema"] = "vibetable.plugin-manifest.v2"
+	manifest["compatibility"].(map[string]any)["pluginApi"] = "3.x"
+	actions := manifest["actions"].([]any)
+	for _, value := range actions {
+		delete(value.(map[string]any), "workerEntry")
+	}
+	manifest["ui"] = map[string]any{"customViews": []any{}}
+	if validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string)) == nil {
+		t.Fatal("native action without page accepted")
+	}
+	views := []any{}
+	for _, value := range actions {
+		action := value.(map[string]any)
+		views = append(views, map[string]any{"viewId": action["actionId"], "actionId": action["actionId"], "entry": "ui/index.html"})
+	}
+	manifest["ui"] = map[string]any{"customViews": views}
+	if err := validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	views[0].(map[string]any)["actionId"] = "other-action"
+	if validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string)) == nil {
+		t.Fatal("unmatched native page accepted")
+	}
+}

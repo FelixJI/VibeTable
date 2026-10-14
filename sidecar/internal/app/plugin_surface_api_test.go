@@ -181,6 +181,88 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 	}
 	input.Cursor = ""
 	input.Dependencies = nil
+	t.Run("Host invocation context is authorized rather than discarded", func(t *testing.T) {
+		id := allRows[0].(map[string]any)["id"].(string)
+		for _, field := range []string{amount.Identity.PhysicalName, secret.Identity.PhysicalName, "id"} {
+			input.InvocationContext, _ = json.Marshal(map[string]any{"selectedKeys": []string{id}, "user": map[string]any{"id": "local-user", "displayName": "Synthetic"}, "querySnapshot": map[string]any{"table": table.TableID, "schemaRevision": first["schemaRevision"], "dataRevision": first["dataRevision"], "normalizedQuery": map[string]any{"filters": []any{map[string]any{"field": field, "operator": "eq", "value": 0}}, "limit": 100}}})
+			result, err := call("context.read", map[string]any{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := result.(map[string]any)
+			if len(value["selectedKeys"].([]any)) != 1 || value["user"].(map[string]any)["id"] != "local-user" {
+				t.Fatalf("trusted invocation lost %#v", value)
+			}
+			if (value["querySnapshot"] == nil) != (field == secret.Identity.PhysicalName) {
+				t.Fatalf("query context authorization incorrect %#v", value)
+			}
+		}
+		input.InvocationContext = nil
+	})
+	t.Run("storage trust boundary", func(t *testing.T) {
+		for _, key := range []string{"", "_invalid", "你好", "with space", "control\nkey", strings.Repeat("k", 129)} {
+			for _, method := range []string{"storage.get", "storage.set", "storage.delete"} {
+				params := map[string]any{"key": key}
+				if method == "storage.set" {
+					params["value"] = true
+				}
+				if _, err := call(method, params); err == nil {
+					t.Errorf("accepted %s key %q", method, key)
+				}
+			}
+		}
+		for _, value := range []string{strings.Repeat("x", 65535), strings.Repeat("界", 21845)} {
+			if _, err := call("storage.set", map[string]any{"key": "oversize", "value": value}); err == nil {
+				t.Error("accepted >65536 encoded UTF-8 bytes")
+			}
+		}
+		for _, value := range []string{strings.Repeat("x", 65534), strings.Repeat("界", 21844), "control\nvalue"} {
+			if _, err := call("storage.set", map[string]any{"key": "valid.boundary", "value": value}); err != nil {
+				t.Fatal("valid UTF-8 boundary rejected", err)
+			}
+		}
+	})
+	t.Run("business-only grant never reveals ID guards or updates by ID", func(t *testing.T) {
+		var limited map[string]any
+		_ = json.Unmarshal(raw, &limited)
+		limited["pluginId"] = "com.example.noid"
+		m := limited["manifest"].(map[string]any)
+		m["pluginId"] = limited["pluginId"]
+		m["permissions"].(map[string]any)["data"] = []any{map[string]any{"collection": table.TableID, "operations": []string{"read", "query", "update"}, "fields": []string{amount.Identity.FieldID}}}
+		limitedRaw, _ := json.Marshal(limited)
+		if _, err := store.SaveInstallation(ctx, limitedRaw, nil); err != nil {
+			t.Fatal(err)
+		}
+		input.PluginID = "com.example.noid"
+		defer func() { input.PluginID = pluginID; input.Cursor = ""; input.Dependencies = nil }()
+		output, err := call("data.query", map[string]any{"contract": "vibetable.plugin-query.v2", "collection": table.TableID, "fields": []string{amount.Identity.FieldID}, "pageSize": 200})
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := output.(map[string]any)
+		if len(page["rowGuards"].(map[string]any)) != 0 {
+			t.Error("internal cursor IDs/digests escaped business-only grant")
+		}
+		input.Cursor = *page["nextCursor"].(*string)
+		input.Dependencies = page["dependencies"].(map[string]pluginComputedRevision)
+		next, err := call("data.query", map[string]any{"contract": "vibetable.plugin-query.v2", "collection": table.TableID, "fields": []string{amount.Identity.FieldID}, "pageSize": 200})
+		if err != nil || len(next.(map[string]any)["items"].([]any)) != 200 || len(next.(map[string]any)["rowGuards"].(map[string]any)) != 0 {
+			t.Fatal("internal keyset cursor lost business-only pagination", err)
+		}
+		input.Cursor = ""
+		input.Dependencies = nil
+		input.InvocationContext = json.RawMessage(`{"selectedKeys":["ungranted-id"],"user":{"id":"local-user"},"querySnapshot":null}`)
+		contextResult, err := call("context.read", map[string]any{})
+		if err != nil || len(contextResult.(map[string]any)["selectedKeys"].([]any)) != 0 {
+			t.Fatal("selection ID escaped grant", err)
+		}
+		input.InvocationContext = nil
+		id := allRows[0].(map[string]any)["id"].(string)
+		guard := first["rowGuards"].(map[string]any)[id]
+		if _, err := call("mutation.preview", map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": table.TableID, "schemaRevision": first["schemaRevision"], "operations": []any{map[string]any{"kind": "update", "primaryKey": id, "expectedDigest": guard, "values": map[string]any{amount.Identity.FieldID: 77}}}}); err == nil {
+			t.Error("update accepted an ungranted primary key")
+		}
+	})
 	for _, patch := range []map[string]any{{"fields": []string{secret.Identity.FieldID}}, {"sorts": []any{map[string]any{"field": secret.Identity.FieldID}}}, {"filters": []any{map[string]any{"field": secret.Identity.FieldID, "operator": "eq", "value": "never expose"}}}, {"sql": "select *"}, {"pluginId": "fake"}} {
 		bad := map[string]any{}
 		for k, v := range query {
@@ -275,13 +357,69 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.InstallationRevision = 3
+	for _, outcome := range []string{"rejected", "cancelled", "failed"} {
+		input.RequestID = "surface-audit-" + outcome
+		if _, err = call("audit.start", map[string]any{"taskId": "task-" + outcome, "plan": plan}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = call("audit.finish", map[string]any{"outcome": outcome, "errorCode": ""}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input.RequestID = "surface-audit-rollback"
+	if _, err = call("audit.start", map[string]any{"taskId": "task-rollback", "plan": plan}); err != nil {
+		t.Fatal(err)
+	}
+	// Failure of the existing audit store must roll back the entire business transaction.
+	if _, err = pb.DB().NewQuery(`CREATE TRIGGER reject_surface_terminal BEFORE INSERT ON vibetable_plugin_records WHEN NEW.item_key = 'surface-audit-rollback:terminal' BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END`).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = call("mutation.commit", plan); err == nil {
+		t.Fatal("audit callback failure accepted")
+	}
+	unchanged, err = pb.FindRecordById(collection, id)
+	if err != nil || unchanged.GetFloat(amount.Identity.PhysicalName) == 999 {
+		t.Fatal("audit failure failed to roll back data", err)
+	}
+	if _, err = pb.DB().NewQuery(`DROP TRIGGER reject_surface_terminal`).Execute(); err != nil {
+		t.Fatal(err)
+	}
 	input.RequestID = "surface-single-commit"
+	if _, err = call("audit.start", map[string]any{"taskId": "task-success", "plan": plan}); err != nil {
+		t.Fatal(err)
+	}
 	receipt, err := call("mutation.commit", plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if receipt.(mutation.Receipt).Status != mutation.StatusApplied {
 		t.Fatalf("commit %#v", receipt)
+	}
+	if _, err = call("audit.finish", map[string]any{"outcome": "unknown", "errorCode": "plugin_commit_unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	audits, err := store.ListAudit(ctx, input.ProjectKey, pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminals := map[string]string{}
+	for _, raw := range audits {
+		var event struct {
+			EventID  string `json:"eventId"`
+			Outcome  string `json:"outcome"`
+			RunID    string `json:"runId"`
+			ActionID string `json:"actionId"`
+		}
+		_ = json.Unmarshal(raw, &event)
+		if strings.HasSuffix(event.EventID, ":terminal") {
+			terminals[event.RunID] = event.Outcome
+			if event.ActionID != "surface.save" {
+				t.Fatal("audit action identity lost")
+			}
+		}
+	}
+	if terminals["surface-single-commit"] != "succeeded" || terminals["surface-audit-rejected"] != "rejected" || terminals["surface-audit-cancelled"] != "cancelled" || terminals["surface-audit-failed"] != "failed" || terminals["surface-audit-rollback"] != "" {
+		t.Fatalf("incorrect durable outcomes %#v", terminals)
 	}
 	replay, err := call("mutation.commit", plan)
 	if err != nil || replay.(mutation.Receipt).Status != mutation.StatusReplayed {
@@ -300,6 +438,9 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.RequestID = "surface-single-commit"
+	if _, err = call("audit.finish", map[string]any{"outcome": "unknown", "errorCode": "plugin_commit_unknown"}); err != nil {
+		t.Fatal("original run could not be audited after disable", err)
+	}
 	if _, err = call("mutation.commit", plan); err == nil {
 		t.Fatal("disabled installation accepted replay")
 	}
@@ -309,6 +450,9 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 	}
 	input.PluginID = pluginID
 	input.ProjectKey = "local:11111111111141118111111111111111"
+	if _, err = call("audit.finish", map[string]any{"outcome": "unknown", "errorCode": "plugin_commit_unknown"}); err == nil {
+		t.Fatal("terminal audit crossed workspace")
+	}
 	if _, err = call("data.query", query); err == nil {
 		t.Fatal("foreign workspace accepted")
 	}

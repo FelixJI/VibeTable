@@ -459,6 +459,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     if not isinstance(ui, dict) or not isinstance(ui.get("customViews", []), list):
         raise PluginPackageError("ui_invalid", "ui.customViews must be an array")
     view_ids: set[str] = set()
+    view_actions: set[str] = set()
     for raw_view in ui.get("customViews", []):
         view = _require_object(raw_view, "custom view")
         view_id = view.get("viewId")
@@ -470,6 +471,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             raise PluginPackageError(
                 "ui_invalid", f"custom view {view_id!r} must reference a declared actionId"
             )
+        view_actions.add(action_id)
         if "src" in view or "surfaceToken" in view:
             raise PluginPackageError(
                 "ui_invalid", "custom view origin and surface token are assigned by the host"
@@ -481,6 +483,10 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         for key in ("entry", "html", "script", "style"):
             if key in view:
                 _validate_reference(contents, view[key], schema=False)
+    if native and action_ids - view_actions:
+        raise PluginPackageError(
+            "ui_invalid", "API 3.x actions require a declared custom view entry"
+        )
     return manifest
 
 

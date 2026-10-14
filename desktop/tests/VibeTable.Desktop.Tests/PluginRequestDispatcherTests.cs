@@ -11,6 +11,34 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    public async Task NativeActionWithoutUsablePageIsUnavailableWithoutWorkerFallback()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var snapshot = FakePluginGateway.DefaultSnapshot with
+        {
+            Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+            {
+                Schema = "vibetable.plugin-manifest.v2",
+                Actions = [new PluginRuntimeAction("clean", new Dictionary<string, string>(), new Dictionary<string, string>(),
+                    "local", PluginRisk.Write, "manual", [], JsonSerializer.SerializeToElement(new { }), null, null, null, null)],
+                Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x" }),
+                Ui = JsonSerializer.SerializeToElement(new { customViews = Array.Empty<object>() }),
+            },
+        };
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { snapshot })));
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "catalog-native-empty", """{"projectKey":"project-1"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.describe", "describe-native-empty",
+            """{"projectKey":"project-1","pluginId":"com.acme.clean","actionId":"clean","context":{"contract":"vibetable.command-context.v1","projectKey":"project-1","collection":null,"selectedKeys":[],"querySnapshot":null,"locale":"zh-CN","theme":"light","density":"comfortable","user":{},"hostVersion":"1.0.0"}}"""));
+        var availability = Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload);
+        Assert.IsFalse(availability.Available);
+        CollectionAssert.Contains(availability.Reasons.ToArray(), "plugin_surface_unavailable");
+    }
+
+    [TestMethod]
     public async Task DispatchUsesCorrelatedClosedResponseTypeAndNeverGenericRpc()
     {
         var reply = new RecordingReplySink();

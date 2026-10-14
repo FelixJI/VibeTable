@@ -3,5 +3,6 @@
   "manifestSchema": "vibetable.plugin-manifest.v2",
   "pluginApi": "3.x",
   "methods": ["context.read", "data.describe", "data.query", "storage.get", "storage.set", "storage.delete", "mutation.preview", "mutation.submit", "request.cancel"],
-  "limits": { "messageBytes": 1048576, "pageRows": 200, "concurrentRequests": 8, "requestSeconds": 15, "confirmationSeconds": 120, "cursorHandles": 64, "pendingPlans": 8, "mutationOperations": 1000 }
+  "limits": { "messageBytes": 1048576, "pageRows": 200, "concurrentRequests": 8, "requestSeconds": 15, "confirmationSeconds": 120, "cursorHandles": 64, "pendingPlans": 8, "mutationOperations": 1000, "privateStorageValueBytes": 65536 },
+  "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 }

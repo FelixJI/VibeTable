@@ -525,6 +525,14 @@ internal sealed class HostPluginTaskRegistry
         foreach (HostPluginTaskRecord record in _tasks.Values.Where(filter).ToList())
         {
             if (IsTerminalLocked(record)) continue;
+            if (record.Binding.Gateway is null)
+            {
+                // Native execution owns its final outcome and durable audit. A
+                // retired session requests cancellation; it cannot invent rollback.
+                CancelLifetimeLocked(record);
+                ClearPendingLocked(record.Snapshot.RunId);
+                continue;
+            }
             PluginRuntimeSafeError error = new(
                 "vibetable.plugin-error.v1",
                 AbortedErrorCode,

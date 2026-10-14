@@ -21,6 +21,8 @@ internal sealed class PluginSurfaceApi : IDisposable
     private readonly IWebReplySink _reply;
     private readonly HttpClient _http;
     private readonly ConcurrentDictionary<string, SurfaceState> _states = new(StringComparer.Ordinal);
+    private sealed record NativeWrite(PluginProjectContext Context, TaskCompletionSource Completion);
+    private readonly ConcurrentDictionary<string, NativeWrite> _writes = new(StringComparer.Ordinal);
 
     internal PluginSurfaceApi(PluginSurfaceSessionManager surfaces, HostPluginTaskRegistry tasks,
         Func<ProductSidecarGenerationSnapshot?> generation,
@@ -128,23 +130,32 @@ internal sealed class PluginSurfaceApi : IDisposable
                         string runId = $"plugin-run-{Guid.NewGuid():N}";
                         var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, "surface.save", surface.ProjectKey,
                             plan.Payload.GetProperty("collection").GetString(), plan.Count, "write", "running", false, null, null, null);
+                        var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
                         var task = _tasks.NativeTask(binding, snapshot);
                         _reply.PostNotification("plugin.task.changed", task.Envelope);
                         using var operation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, task.Token);
+                        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        _writes[runId] = new(binding.Context, completion);
+                        bool started = false;
+                        string outcome = "failed";
+                        string errorCode = "";
                         try
                         {
+                            await CallAsync(surface, "audit.start", JsonSerializer.SerializeToElement(new { taskId, plan = plan.Payload }, Json), operation.Token, commitId: runId);
+                            started = true;
                             // A plugin can request confirmation, but cannot supply or resolve a decision.
                             var confirmation = _tasks.NativeConfirmation(taskId, plan.Payload, plan.Count);
                             _reply.PostNotification("plugin.interaction.requested", confirmation.Envelope);
                             bool approved = await confirmation.Decision.WaitAsync(operation.Token);
                             operation.Token.ThrowIfCancellationRequested();
                             CurrentSurface(frameToken, source);
-                            if (!approved) { Finish(taskId, "cancelled"); result = new { status = "rejected", taskId }; break; }
+                            if (!approved) { outcome = "rejected"; Finish(taskId, "cancelled"); result = new { status = "rejected", taskId }; break; }
                             await CallAsync(surface, "mutation.preview", plan.Payload, operation.Token);
                             operation.Token.ThrowIfCancellationRequested();
                             committing = true;
                             JsonElement receipt = await CallAsync(surface, "mutation.commit", plan.Payload, operation.Token, commitId: runId);
                             ValidateReceipt(receipt, plan.Payload);
+                            outcome = "succeeded";
                             Finish(taskId, "succeeded", new PluginRuntimeResult(PluginContractVersions.Result, "success", $"已保存 {plan.Count} 条修改", [], null, [], null, []));
                             result = new { status = "succeeded", taskId, receipt };
                         }
@@ -159,8 +170,30 @@ internal sealed class PluginSurfaceApi : IDisposable
                                 SurfaceAuthorityException authorityError => authorityError.Code,
                                 _ => "plugin_request_failed",
                             };
+                            outcome = committing ? "unknown" : code == "plugin_cancel_requested" ? "cancelled" : "failed";
+                            errorCode = code;
                             Finish(taskId, committing ? "aborted" : code == "plugin_cancel_requested" ? "cancelled" : "failed", error: SafeError(code));
                             throw Error(code);
+                        }
+                        finally
+                        {
+                            // Success is durably audited in Go's business transaction. Other
+                            // outcomes use the original run/generation, even after retirement.
+                            if (started && outcome != "succeeded")
+                            {
+                                using var auditDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                                try
+                                {
+                                    await CallAsync(surface, "audit.finish", JsonSerializer.SerializeToElement(new { outcome, errorCode }, Json), auditDeadline.Token,
+                                        commitId: runId, auditGeneration: auditGeneration);
+                                }
+                                catch (Exception)
+                                {
+                                    System.Diagnostics.Trace.TraceWarning($"Native plugin terminal audit unavailable for run {runId}; durable started event remains unknown.");
+                                }
+                            }
+                            _writes.TryRemove(runId, out _);
+                            completion.TrySetResult();
                         }
                         break;
                     }
@@ -198,10 +231,12 @@ internal sealed class PluginSurfaceApi : IDisposable
     }
 
     private async Task<JsonElement> CallAsync(PluginSurfaceSession surface, string method, JsonElement parameters,
-        CancellationToken token, string? cursor = null, JsonElement? dependencies = null, string? commitId = null)
+        CancellationToken token, string? cursor = null, JsonElement? dependencies = null, string? commitId = null,
+        ProductSidecarGenerationSnapshot? auditGeneration = null)
     {
-        CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
-        var generation = _generation() ?? throw Error("plugin_session_stale");
+        bool terminalAudit = method == "audit.finish" && auditGeneration is not null;
+        if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
+        var generation = auditGeneration ?? _generation() ?? throw Error("plugin_session_stale");
         var payload = new JsonObject
         {
             ["method"] = method,
@@ -216,6 +251,9 @@ internal sealed class PluginSurfaceApi : IDisposable
         };
         if (cursor is not null) payload["cursor"] = cursor;
         if (dependencies is not null) payload["dependencies"] = JsonNode.Parse(dependencies.Value.GetRawText());
+        if (method == "context.read" && surface.InvocationContext is { } invocation)
+            payload["invocationContext"] = JsonSerializer.SerializeToNode(new
+            { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json);
         byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString());
         if (bytes.Length > MaxBytes) throw Error("plugin_message_too_large");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(generation.Context.Origin, "/api/vibetable/v3/plugins/surface"));
@@ -223,7 +261,8 @@ internal sealed class PluginSurfaceApi : IDisposable
         request.Content = new ByteArrayContent(bytes);
         request.Content.Headers.ContentType = new("application/json");
         Task<HttpResponseMessage>? sending = null;
-        if (!generation.TryUseCurrent(() => { sending = _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token); return true; })) throw Error("plugin_session_stale");
+        if (terminalAudit) sending = _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
+        else if (!generation.TryUseCurrent(() => { sending = _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token); return true; })) throw Error("plugin_session_stale");
         using var response = await sending!;
         using var stream = await response.Content.ReadAsStreamAsync(token);
         using var memory = new System.IO.MemoryStream();
@@ -234,7 +273,7 @@ internal sealed class PluginSurfaceApi : IDisposable
         using var document = JsonDocument.Parse(memory.ToArray());
         if (!response.IsSuccessStatusCode)
             throw new SurfaceAuthorityException(document.RootElement.TryGetProperty("code", out var code) ? code.GetString() ?? "plugin_request_failed" : "plugin_request_failed");
-        CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
+        if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         return document.RootElement.Clone();
     }
 
@@ -263,8 +302,15 @@ internal sealed class PluginSurfaceApi : IDisposable
     private sealed class SurfaceAuthorityException(string code) : Exception { internal string Code { get; } = code; }
     private static string Reply(string? id, object? result) => JsonSerializer.Serialize(new { contract = Contract, requestId = id, result }, Json);
     internal void Retire(string token)
-    { if (_states.TryRemove(token, out var state)) { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); } }
+    { _surfaces.Close(token); if (_states.TryRemove(token, out var state)) { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); } }
     public void Dispose() { foreach (string token in _states.Keys) Retire(token); _http.Dispose(); }
+    internal async Task DrainAsync(PluginProjectContext? nextContext = null)
+    {
+        foreach (var pair in _states) if (pair.Value.Identity.Context != nextContext) Retire(pair.Key);
+        try { await Task.WhenAll(_writes.Values.Where(value => value.Context != nextContext).Select(value => value.Completion.Task)).WaitAsync(TimeSpan.FromSeconds(6)); }
+        catch (TimeoutException) { /* Unfinished durable started events remain unknown. */ }
+    }
+    internal bool HasWrites => !_writes.IsEmpty;
     private sealed record ApiRequest(string Contract, string SurfaceToken, string RequestId, string Method, JsonElement Params);
     private sealed record Cursor(string Query, string GoCursor, JsonElement Dependencies, DateTimeOffset Expires);
     private sealed record Plan(JsonElement Payload, int Count, DateTimeOffset Expires);
