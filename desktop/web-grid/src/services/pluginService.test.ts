@@ -843,6 +843,7 @@ describe("pluginService canonical wire", () => {
     };
     const responses: Record<string, unknown> = {
       "plugin.install.inspect": plan,
+      "plugin.catalog.list": [],
       "plugin.action.describe": { available: true, reasons: [] },
       "plugin.lifecycle.uninstall": {
         uninstalled: true, privateSettingsRetained: false, cleanupPending: false,
@@ -888,6 +889,7 @@ describe("pluginService canonical wire", () => {
       { type: "plugin.lifecycle.uninstall", payload: {
         projectKey: "local:default", pluginId: "com.acme.clean", cleanupPrivateSettings: true,
       } },
+      { type: "plugin.catalog.list", payload: { projectKey: "local:default" } },
     ]);
   });
 
@@ -1112,24 +1114,79 @@ describe("pluginService canonical wire", () => {
         if (automaticLists && request.type === "plugin.catalog.list") queueMicrotask(() => reply(request, authority));
       }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
     bridge.start(); setHostBridgeForTesting(bridge);
-    return { posted, reply, fail(request: (typeof posted)[number], message: string) { listener?.({ data: {
-      type: "operation.failed", requestId: request.requestId, payload: { code: "PLUGIN_OPERATION_FAILED", message } } }); }, auto(value: readonly PluginSnapshot[]) { authority = value; automaticLists = true; },
+    return { posted, reply, fail(request: (typeof posted)[number], message: string, code = "PLUGIN_OPERATION_FAILED") { listener?.({ data: {
+      type: "operation.failed", requestId: request.requestId, payload: { code, message } } }); }, auto(value: readonly PluginSnapshot[]) { authority = value; automaticLists = true; },
       event(value: PluginSnapshot) { listener?.({ data: { type: "plugin.catalog.changed", payload: {
         contract: "vibetable.plugin-event.v1", eventType: "plugin.catalog.changed", projectKey: value.projectKey,
         entityId: value.pluginId, revision: value.revision, snapshot: value } } }); } };
   }
 
-  it.each([true, false])("preserves a consumed catalog notification when another lifecycle fails (refresh success=%s)", async (refreshSucceeds) => {
+  it.each([
+    [false, false, true], [true, false, true],
+    [false, true, true], [true, true, true],
+    [false, false, false], [true, true, false],
+  ])("refreshes when a retired notification read ends before the write (write=%s, cancelled=%s, refresh=%s)", async (writeSucceeds, readCancelled, refreshSucceeds) => {
+    const current = { ...snapshot, installationId: "a", status: "disabled" as const, revision: 2 };
+    const unrelated = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    const changed = { ...unrelated, revision: 2 };
+    const harness = catalogHarness([current, changed]);
+    const store = usePluginStore(); store.applyPlugin({ ...snapshot, installationId: "a" }); store.applyPlugin(unrelated);
+    const first = usePluginService(); const second = usePluginService(); second.init();
+    harness.event(current); await flushPromises();
+    const initialRead = harness.posted[0]!;
+    const write = first.setEnabled(unrelated, true);
+    const completion = writeSucceeds ? write : expect(write).rejects.toThrow("write failed");
+    if (readCancelled) harness.fail(initialRead, "catalog cancelled", "PLUGIN_REQUEST_CANCELLED");
+    else harness.reply(initialRead, [current, changed]);
+    await flushPromises();
+    expect(harness.posted).toHaveLength(2);
+    expect(store.lastError).toBeNull();
+    if (writeSucceeds) harness.reply(harness.posted[1]!, changed);
+    else harness.fail(harness.posted[1]!, "write failed");
+    await completion; await flushPromises();
+    const reads = harness.posted.filter(request => request.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    if (refreshSucceeds) harness.reply(reads[1]!, [current, changed]);
+    else harness.fail(reads[1]!, "refresh failed");
+    await flushPromises();
+    expect(store.plugins.find(plugin => plugin.pluginId === current.pluginId)?.status).toBe(refreshSucceeds ? "disabled" : "enabled");
+    expect(store.lastError).toBe(writeSucceeds ? refreshSucceeds ? null : "refresh failed" : "write failed");
+    expect(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
+    expect(harness.posted).toHaveLength(3);
+    second.dispose();
+  });
+
+  it.each([true, false])("does not refresh the retired workspace when the write settles (success=%s)", async (succeeds) => {
+    const current = { ...snapshot, installationId: "a", revision: 2 };
+    const harness = catalogHarness([current]);
+    const first = usePluginService(); const second = usePluginService(); second.init();
+    harness.event(current); await flushPromises();
+    const write = first.setEnabled(snapshot, true);
+    const completion = succeeds ? write : expect(write).rejects.toThrow("old write failed");
+    harness.reply(harness.posted[0]!, [current]); await flushPromises();
+    const store = usePluginStore(); store.setProjectContext("local:next", "r2"); store.fail(new Error("next error"));
+    if (succeeds) harness.reply(harness.posted[1]!, current);
+    else harness.fail(harness.posted[1]!, "old write failed");
+    await completion; await flushPromises();
+    expect(harness.posted).toHaveLength(2);
+    expect(store.plugins).toEqual([]);
+    expect(store.lastError).toBe("next error");
+    second.dispose();
+  });
+
+  it.each([[false, true], [false, false], [true, true], [true, false]])("preserves a consumed catalog notification when lifecycle settles first (write=%s, refresh=%s)", async (writeSucceeds, refreshSucceeds) => {
     const current = { ...snapshot, installationId: "a", status: "disabled" as const, revision: 2 };
     const unrelated = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
     const harness = catalogHarness([current]);
     const store = usePluginStore(); store.applyPlugin({ ...snapshot, installationId: "a" });
     const first = usePluginService(); const second = usePluginService(); second.init();
     const write = first.setEnabled(unrelated, true);
-    const failed = expect(write).rejects.toThrow("write failed");
+    const completion = writeSucceeds ? write : expect(write).rejects.toThrow("write failed");
     harness.event(current); await flushPromises();
     const initialRead = harness.posted.find(request => request.type === "plugin.catalog.list")!;
-    harness.fail(harness.posted[0]!, "write failed"); await failed;
+    if (writeSucceeds) harness.reply(harness.posted[0]!, { ...unrelated, revision: 2 });
+    else harness.fail(harness.posted[0]!, "write failed");
+    await completion;
     harness.reply(initialRead, [current]); await flushPromises();
     const reads = harness.posted.filter(request => request.type === "plugin.catalog.list");
     expect(reads).toHaveLength(2);
@@ -1137,7 +1194,7 @@ describe("pluginService canonical wire", () => {
     else harness.fail(reads[1]!, "refresh failed");
     await flushPromises();
     expect(store.plugins[0]?.status).toBe(refreshSucceeds ? "disabled" : "enabled");
-    expect(store.lastError).toBe("write failed");
+    expect(store.lastError).toBe(writeSucceeds ? refreshSucceeds ? null : "refresh failed" : "write failed");
     expect(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
     expect(harness.posted).toHaveLength(3);
     second.dispose();
@@ -1189,7 +1246,7 @@ describe("pluginService canonical wire", () => {
     const uninstall = second.uninstall(old, false);
     harness.reply(harness.posted[1]!, { uninstalled: true, privateSettingsRetained: true }); await uninstall;
     const newEnable = second.setEnabled(current, true);
-    harness.reply(harness.posted[2]!, current); await newEnable;
+    harness.reply(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled").pop()!, current); await newEnable;
     harness.reply(harness.posted[0]!, old); await oldEnable; await flushPromises();
     expect(store.plugins[0]?.installationId).toBe("current");
   });

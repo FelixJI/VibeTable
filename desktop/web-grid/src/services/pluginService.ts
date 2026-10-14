@@ -183,23 +183,16 @@ export function usePluginService(): PluginService {
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const sequence = store.beginCatalogRead();
-    let succeeded = false;
-    let applied = false;
     const currentContext = () => store.projectKey === projectKey && store.projectContextGeneration === generation;
     try {
       const result = await request();
-      succeeded = true;
       if (currentContext() && store.isCurrentCatalogRead(sequence)) {
         apply(result);
-        applied = true;
       }
       return result;
     } finally {
-      // Completion also retires reads issued while the write was in flight.
-      if (currentContext()) {
-        store.invalidateCatalogReads();
-        if (succeeded && !applied) store.refreshCatalog(list);
-      }
+      // A consumed notification may have settled before this write; read authority in either order.
+      if (currentContext()) store.refreshCatalog(list);
     }
   }
 

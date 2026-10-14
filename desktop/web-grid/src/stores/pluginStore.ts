@@ -71,11 +71,7 @@ export const usePluginStore = defineStore("plugins", () => {
 
   function beginCatalogRead(): number { return ++catalogReadSequence; }
   function isCurrentCatalogRead(sequence: number): boolean { return sequence === catalogReadSequence; }
-  function invalidateCatalogReads(): void {
-    catalogReadSequence++;
-    // A consumed notification still needs an authority read after retirement.
-    if (catalogRefreshRunning && catalogRefreshReader) catalogRefreshAgain = true;
-  }
+  function invalidateCatalogReads(): void { catalogReadSequence++; }
   function refreshCatalog(read: () => Promise<readonly PluginSnapshot[]>): void {
     invalidateCatalogReads();
     catalogRefreshReader = read;
@@ -325,7 +321,6 @@ export const usePluginStore = defineStore("plugins", () => {
   return {
     beginCatalogRead,
     isCurrentCatalogRead,
-    invalidateCatalogReads,
     refreshCatalog,
     taskForId,
     taskForAction,
