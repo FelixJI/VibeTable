@@ -37,6 +37,7 @@ internal sealed class PluginSurfaceApi : IDisposable
     {
         string? requestId = null;
         bool committing = false;
+        bool committed = false;
         SurfaceState? state = null;
         ApiRequest? request = null;
         bool admitted = false;
@@ -51,7 +52,8 @@ internal sealed class PluginSurfaceApi : IDisposable
             PluginSurfaceSession surface = CurrentSurface(frameToken, source);
             state = _states.GetOrAdd(frameToken, _ => new SurfaceState(surface));
             if (state.Identity.Context != surface.Context || state.Identity.InstallationRevision != surface.InstallationRevision
-                || state.Identity.ActiveCollection != surface.ActiveCollection) throw Error("plugin_session_stale");
+                || state.Identity.ActiveCollection != surface.ActiveCollection || state.Identity.ActionId != surface.ActionId
+                || state.Identity.Risk != surface.Risk || state.Identity.Entry != surface.Entry) throw Error("plugin_session_stale");
             foreach (var expired in state.Plans.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Plans.TryRemove(expired.Key, out _);
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
@@ -113,6 +115,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                     }
                 case "mutation.preview":
                     {
+                        if (surface.Risk is not ("write" or "destructive")) throw Error("plugin_write_denied");
                         JsonElement preview = await CallAsync(surface, request.Method, request.Params, deadline.Token);
                         if (state.Plans.Count >= 8) throw Error("plugin_plan_limit");
                         string handle = Guid.NewGuid().ToString("N");
@@ -128,8 +131,8 @@ internal sealed class PluginSurfaceApi : IDisposable
                         if (binding.Context != surface.Context) throw Error("plugin_session_stale");
                         string taskId = $"plugin-task-{Guid.NewGuid():N}";
                         string runId = $"plugin-run-{Guid.NewGuid():N}";
-                        var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, "surface.save", surface.ProjectKey,
-                            plan.Payload.GetProperty("collection").GetString(), plan.Count, "write", "running", false, null, null, null);
+                        var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
+                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null);
                         var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
                         var task = _tasks.NativeTask(binding, snapshot);
                         _reply.PostNotification("plugin.task.changed", task.Envelope);
@@ -154,7 +157,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                             operation.Token.ThrowIfCancellationRequested();
                             committing = true;
                             JsonElement receipt = await CallAsync(surface, "mutation.commit", plan.Payload, operation.Token, commitId: runId);
-                            ValidateReceipt(receipt, plan.Payload);
+                            committed = true;
                             outcome = "succeeded";
                             Finish(taskId, "succeeded", new PluginRuntimeResult(PluginContractVersions.Result, "success", $"已保存 {plan.Count} 条修改", [], null, [], null, []));
                             result = new { status = "succeeded", taskId, receipt };
@@ -199,7 +202,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                     }
                 default: throw Error("plugin_api_unsupported");
             }
-            CurrentSurface(frameToken, source);
+            if (!committed) CurrentSurface(frameToken, source);
             string response = Reply(requestId, result);
             if (Encoding.UTF8.GetByteCount(response) > MaxBytes) throw Error("plugin_message_too_large");
             return response;
@@ -242,6 +245,8 @@ internal sealed class PluginSurfaceApi : IDisposable
             ["method"] = method,
             ["projectKey"] = surface.ProjectKey,
             ["pluginId"] = surface.PluginId,
+            ["actionId"] = surface.ActionId,
+            ["entry"] = surface.Entry,
             ["packageHash"] = surface.Revision.PackageHash,
             ["sessionEpoch"] = surface.Context!.SessionGeneration,
             ["installationRevision"] = surface.InstallationRevision,
@@ -274,7 +279,10 @@ internal sealed class PluginSurfaceApi : IDisposable
         if (!response.IsSuccessStatusCode)
             throw new SurfaceAuthorityException(document.RootElement.TryGetProperty("code", out var code) ? code.GetString() ?? "plugin_request_failed" : "plugin_request_failed",
                 document.RootElement.TryGetProperty("commitOutcome", out var outcome) && outcome.ValueKind == JsonValueKind.String && outcome.GetString() == "not-committed");
-        if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
+        // A fully read and validated commit receipt settles the captured run even
+        // when retirement follows the response. Other responses require a live session.
+        if (method == "mutation.commit") ValidateReceipt(document.RootElement, parameters);
+        else if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         return document.RootElement.Clone();
     }
 

@@ -28,6 +28,8 @@ var pluginSurfaceStorageKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,1
 
 // This seam is session-authenticated Host-only; no Product RPC registration exists.
 type pluginSurfaceAPIRequest struct {
+	ActionID             string                            `json:"actionId"`
+	Entry                string                            `json:"entry"`
 	Method               string                            `json:"method"`
 	ProjectKey           string                            `json:"projectKey"`
 	PluginID             string                            `json:"pluginId"`
@@ -46,6 +48,7 @@ type pluginSurfaceInstallation struct {
 	pluginInstallation
 	PackageHash string `json:"packageHash"`
 	Version     string `json:"version"`
+	ActionRisk  string `json:"-"`
 }
 
 func surfaceInstallation(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (pluginSurfaceInstallation, error) {
@@ -60,7 +63,36 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 	if input.InstallationRevision != installed.Revision {
 		return installed, pluginDataError("plugin_cursor_stale")
 	}
-	return installed, nil
+	var native struct {
+		Manifest struct {
+			Actions []struct {
+				ActionID string `json:"actionId"`
+				Risk     string `json:"risk"`
+			} `json:"actions"`
+			UI struct {
+				CustomViews []struct {
+					ActionID string `json:"actionId"`
+					Entry    string `json:"entry"`
+				} `json:"customViews"`
+			} `json:"ui"`
+		} `json:"manifest"`
+	}
+	if json.Unmarshal(raw, &native) != nil {
+		return installed, pluginDataError("plugin_capability_invalid")
+	}
+	bound := false
+	for _, view := range native.Manifest.UI.CustomViews {
+		if view.ActionID == input.ActionID && view.Entry == input.Entry && input.Entry != "" {
+			bound = true
+		}
+	}
+	for _, action := range native.Manifest.Actions {
+		if bound && action.ActionID == input.ActionID && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
+			installed.ActionRisk = action.Risk
+			return installed, nil
+		}
+	}
+	return installed, pluginDataError("plugin_capability_invalid")
 }
 
 func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, epoch uint64, gate businessWriteGate) {
@@ -70,7 +102,11 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 		if err != nil || len(raw) > maxMutationRequestBytes || decodePluginParams(raw, &input) != nil || input.SessionEpoch != epoch || epoch == 0 || input.RequestID == "" {
 			return event.JSON(http.StatusBadRequest, map[string]any{"code": "plugin_capability_invalid"})
 		}
-		ctx, cancel := context.WithTimeout(event.Request.Context(), 15*time.Second)
+		budget := 15 * time.Second
+		if input.Method == "mutation.commit" {
+			budget = 120 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(event.Request.Context(), budget)
 		defer cancel()
 		result, err := executePluginSurfaceAPI(ctx, app, source, kernel, workspace, input, gate)
 		if err != nil {
@@ -152,6 +188,9 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 	}
 	switch input.Method {
 	case "audit.start":
+		if installed.ActionRisk == "read" {
+			return nil, pluginDataError("plugin_write_denied")
+		}
 		var start struct {
 			TaskID string          `json:"taskId"`
 			Plan   json.RawMessage `json:"plan"`
@@ -170,8 +209,8 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		}
 		now := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
 		event, _ := json.Marshal(map[string]any{"eventId": input.RequestID + ":started", "projectKey": input.ProjectKey, "pluginId": input.PluginID, "pluginVersion": installed.Version, "packageHash": installed.PackageHash,
-			"eventType": "action.started", "outcome": "unknown", "actionId": "surface.save", "runId": input.RequestID, "actor": "local-user", "risk": "write", "targetCollection": request.TableID, "targetCount": len(request.Operations), "startedAt": now, "finishedAt": nil, "durationMs": nil, "errorCode": nil,
-			"details": map[string]any{"taskId": start.TaskID, "state": "running", "installationRevision": input.InstallationRevision, "sessionEpoch": input.SessionEpoch, "plan": start.Plan}})
+			"eventType": "action.started", "outcome": "unknown", "actionId": input.ActionID, "runId": input.RequestID, "actor": "local-user", "risk": installed.ActionRisk, "targetCollection": request.TableID, "targetCount": len(request.Operations), "startedAt": now, "finishedAt": nil, "durationMs": nil, "errorCode": nil,
+			"details": map[string]any{"taskId": start.TaskID, "state": "running", "installationRevision": input.InstallationRevision, "sessionEpoch": input.SessionEpoch, "plan": start.Plan, "entry": input.Entry}})
 		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.surface.audit.start", input.RequestID+":started", func(ctx context.Context) error {
 			if _, err := surfaceInstallation(ctx, app, workspace, input); err != nil {
 				return err
@@ -250,6 +289,9 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		}
 		return result, err
 	case "mutation.preview", "mutation.commit":
+		if installed.ActionRisk == "read" {
+			return nil, pluginDataError("plugin_write_denied")
+		}
 		request, err := surfaceMutationRequest(ctx, app, workspace, input)
 		if err != nil {
 			return nil, err
@@ -307,38 +349,37 @@ func surfaceStorageValueFits(raw json.RawMessage) bool {
 }
 
 func surfaceAuditStarted(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (map[string]any, error) {
-	events, err := pluginstore.New(app, workspace).ListAudit(ctx, input.ProjectKey, input.PluginID)
+	raw, err := pluginstore.New(app, workspace).GetAudit(ctx, input.ProjectKey, input.PluginID, input.RequestID+":started")
 	if err != nil {
 		return nil, err
 	}
-	for _, raw := range events {
-		var event map[string]json.RawMessage
-		if json.Unmarshal(raw, &event) != nil {
-			continue
-		}
-		var id, hash string
-		_ = json.Unmarshal(event["eventId"], &id)
-		_ = json.Unmarshal(event["packageHash"], &hash)
-		if id != input.RequestID+":started" || strings.TrimPrefix(hash, "sha256:") != input.PackageHash {
-			continue
-		}
-		var details map[string]json.RawMessage
-		_ = json.Unmarshal(event["details"], &details)
-		var revision int64
-		var epoch uint64
-		_ = json.Unmarshal(details["installationRevision"], &revision)
-		_ = json.Unmarshal(details["sessionEpoch"], &epoch)
-		if revision != input.InstallationRevision || epoch != input.SessionEpoch {
-			return nil, pluginDataError("plugin_audit_invalid")
-		}
-		result := map[string]any{}
-		for key, value := range event {
-			result[key] = value
-		}
-		result["details"] = map[string]any{"plan": details["plan"], "taskId": details["taskId"]}
-		return result, nil
+	var event map[string]json.RawMessage
+	if json.Unmarshal(raw, &event) != nil {
+		return nil, pluginDataError("plugin_audit_invalid")
 	}
-	return nil, pluginDataError("plugin_audit_invalid")
+	var hash, action, run, eventType, risk string
+	_ = json.Unmarshal(event["packageHash"], &hash)
+	_ = json.Unmarshal(event["actionId"], &action)
+	_ = json.Unmarshal(event["runId"], &run)
+	_ = json.Unmarshal(event["eventType"], &eventType)
+	_ = json.Unmarshal(event["risk"], &risk)
+	var details map[string]json.RawMessage
+	_ = json.Unmarshal(event["details"], &details)
+	var revision int64
+	var entry string
+	_ = json.Unmarshal(details["entry"], &entry)
+	var epoch uint64
+	_ = json.Unmarshal(details["installationRevision"], &revision)
+	_ = json.Unmarshal(details["sessionEpoch"], &epoch)
+	if strings.TrimPrefix(hash, "sha256:") != input.PackageHash || action != input.ActionID || run != input.RequestID || eventType != "action.started" || !pluginHas([]string{"write", "destructive"}, risk) || entry != input.Entry || revision != input.InstallationRevision || epoch != input.SessionEpoch {
+		return nil, pluginDataError("plugin_audit_invalid")
+	}
+	result := map[string]any{}
+	for key, value := range event {
+		result[key] = value
+	}
+	result["details"] = map[string]any{"plan": details["plan"], "taskId": details["taskId"]}
+	return result, nil
 }
 
 func surfaceAuditFinish(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, outcome, code string) error {
@@ -483,6 +524,9 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 		installed, err := surfaceInstallation(ctx, tx, workspace, input)
 		if err != nil {
 			return err
+		}
+		if installed.ActionRisk != "write" && installed.ActionRisk != "destructive" {
+			return pluginDataError("plugin_write_denied")
 		}
 		table, err := schemaexecution.Describe(ctx, tx, plan.Collection)
 		if err != nil {

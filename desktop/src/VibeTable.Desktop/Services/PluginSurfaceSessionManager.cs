@@ -20,6 +20,9 @@ public sealed record PluginSurfaceSession(
     public int InstallationRevision { get; init; }
     public string ApiVersion { get; init; } = "";
     public string PluginVersion { get; init; } = "";
+    public string ActionId { get; init; } = "";
+    public string Risk { get; init; } = "";
+    public string Entry { get; init; } = "";
     public string ActiveCollection { get; init; } = "";
     public PluginRuntimeCommandContext? InvocationContext { get; init; }
 }
@@ -156,10 +159,10 @@ public sealed class PluginSurfaceSessionManager
 
     public void CloseAll() => _sessions.Clear();
 
-    internal void BindIdentity(string token, PluginProjectContext context, int revision, string apiVersion, string pluginVersion = "")
+    internal void BindIdentity(string token, PluginProjectContext context, int revision, string apiVersion, string pluginVersion = "", string actionId = "", string risk = "", string entry = "")
     {
         if (_sessions.TryGetValue(token, out var session))
-            _sessions[token] = session with { Context = context, InstallationRevision = revision, ApiVersion = apiVersion, PluginVersion = pluginVersion };
+            _sessions[token] = session with { Context = context, InstallationRevision = revision, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry };
     }
 
     internal void BindActiveCollection(string projectKey, string pluginId, PluginRuntimeCommandContext context)

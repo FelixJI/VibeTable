@@ -993,7 +993,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                 entry);
             if (_projectContext() is { } context)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
-                    snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version);
+                    snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, actionId,
+                    snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry);
             view["actionId"] = actionId;
             view["src"] = surface.DocumentUri.ToString();
             view["surfaceToken"] = surface.SurfaceToken;

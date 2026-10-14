@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -194,6 +195,65 @@ public sealed class PluginSurfaceApiTests
         await fixture.Api.DrainAsync();
     }
 
+    [TestMethod]
+    public async Task ReceivedCommitReceiptSurvivesLateRetirementWithoutNewWorkspaceNotification()
+    {
+        foreach (string status in new[] { "applied", "replayed", "invalid" })
+        {
+            bool invalid = status == "invalid";
+            using var fixture = new Fixture();
+            fixture.Http.ReplayCommit = status == "replayed";
+            fixture.Http.Incomplete = invalid;
+            fixture.Http.AfterCommitRead = fixture.RetireAfterReceipt;
+            string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+            var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+            if (invalid) Assert.AreEqual("plugin_commit_unknown", Code(response));
+            else Assert.AreEqual("succeeded", response.GetProperty("result").GetProperty("status").GetString());
+            Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+            Assert.AreEqual(0, fixture.LateNotifications);
+            fixture.Tasks.SetWorkspaceContext(fixture.Context);
+            Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+            Assert.AreEqual(invalid ? "aborted" : "succeeded", task.State);
+            if (!invalid) Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "audit.finish"));
+        }
+    }
+
+    [TestMethod]
+    public async Task ActualBoundActionAndRiskReachTaskConfirmationAndAuthority()
+    {
+        foreach (string risk in new[] { "write", "destructive" })
+        {
+            using var fixture = new Fixture(actionId: "actual-" + risk, risk: risk);
+            string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+            var result = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+            Assert.AreEqual("succeeded", result.GetProperty("result").GetProperty("status").GetString());
+            Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+            Assert.AreEqual("actual-" + risk, task.ActionId);
+            Assert.AreEqual(risk, task.Risk);
+            Assert.AreEqual(task.ActionId, fixture.LastInteraction!.ActionId);
+            Assert.AreEqual(risk, fixture.LastInteraction.PendingConfirmation!.Risk);
+            foreach (var call in fixture.Http.Calls)
+            {
+                Assert.AreEqual(task.ActionId, call.GetProperty("actionId").GetString());
+                Assert.AreEqual("ui/index.html", call.GetProperty("entry").GetString());
+                Assert.IsFalse(call.TryGetProperty("risk", out _));
+            }
+        }
+        using var read = new Fixture(actionId: "read-page", risk: "read");
+        Assert.AreEqual("plugin_write_denied", Code(await read.Call("mutation.preview", Plan)));
+        Assert.AreEqual(0, read.Http.Calls.Count);
+    }
+
+    [TestMethod]
+    public async Task ReadResponseStillRejectsLateRetiredSurface()
+    {
+        using var fixture = new Fixture();
+        fixture.Http.AfterReadMethod = "data.query";
+        fixture.Http.AfterCommitRead = fixture.RetireAfterReceipt;
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("data.query", "{\"collection\":\"orders\"}")));
+        Assert.AreEqual(0, fixture.LateNotifications);
+    }
+
     private const string Plan = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"update","primaryKey":"r1","expectedDigest":"sha256:existing","values":{"name":"new"}}]}""";
     private static string? Code(JsonElement result) => result.GetProperty("error").GetProperty("code").GetString();
     private static string? Code(string result) => Code(JsonDocument.Parse(result).RootElement);
@@ -209,12 +269,26 @@ public sealed class PluginSurfaceApiTests
         internal PluginSurfaceApi Api { get; }
         internal string Decision { get; init; } = "approved";
         internal int Confirmations { get; private set; }
+        internal PluginRuntimeInteractionSnapshot? LastInteraction { get; private set; }
+        internal int LateNotifications { get; private set; }
+        private bool _retired;
+        internal void RetireAfterReceipt()
+        {
+            _retired = true;
+            _generationCurrent = false;
+            _generation = null;
+            Api.Retire(Surface.SurfaceToken);
+            var next = new PluginProjectContext("local:22222222222242228222222222222222", "workspace:8", 8);
+            _authority.Transition(next);
+            Tasks.SetContext(next);
+            Tasks.SetWorkspaceContext(next);
+        }
         private bool _generationCurrent = true;
         private ProductSidecarGenerationSnapshot? _generation;
         private readonly ProductAuthorityEpoch _authority = new();
         private string? _taskId;
         internal string TaskId => _taskId!;
-        internal Fixture(PluginProjectContext? context = null)
+        internal Fixture(PluginProjectContext? context = null, string actionId = "save", string risk = "destructive")
         {
             Context = context ?? Context;
             _authority.Transition(Context);
@@ -222,7 +296,7 @@ public sealed class PluginSurfaceApiTests
             Tasks.SetWorkspaceContext(Context);
             var revision = PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64));
             Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html");
-            Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0");
+            Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html");
             _generation = new ProductSidecarGenerationSnapshot(this, 1,
                 new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "private-test-secret"),
                 new ProductSidecarIdentity(Guid.ParseExact(Context.ProjectKey["local:".Length..], "N").ToString("D"), Context.SessionGeneration, 1, "claim"), [],
@@ -235,12 +309,14 @@ public sealed class PluginSurfaceApiTests
         { string reply = await Api.HandleAsync(Surface.SurfaceToken, source ?? Source, Wire(method, parameters, token, version)); return JsonDocument.Parse(reply).RootElement.Clone(); }
         public void PostNotification(string type, object? payload)
         {
+            if (_retired) LateNotifications++;
             if (payload is not PluginEventEnvelope envelope) return;
             if (type == "plugin.task.changed") _taskId = envelope.EntityId;
             if (type == "plugin.interaction.requested")
             {
                 Confirmations++;
                 var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+                LastInteraction = interaction;
                 Assert.AreEqual("new", interaction.PendingConfirmation!.Preview.SampleRows[0]["values"].GetProperty("name").GetString());
                 if (Decision == "retire")
                 {
@@ -258,9 +334,23 @@ public sealed class PluginSurfaceApiTests
         public void Dispose() { Api.Dispose(); _authority.Dispose(); }
     }
 
+    private sealed class ReceiptStream(byte[] bytes, Action after) : MemoryStream(bytes)
+    {
+        private bool _finished;
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+        {
+            int count = await base.ReadAsync(buffer, token);
+            if (count == 0 && !_finished) { _finished = true; after(); }
+            return count;
+        }
+    }
+
     private sealed class Peer : HttpMessageHandler
     {
         internal List<JsonElement> Calls { get; } = [];
+        internal Action? AfterCommitRead { get; set; }
+        internal string AfterReadMethod { get; set; } = "mutation.commit";
+        internal bool ReplayCommit { get; set; }
         internal bool LoseCommit { get; set; }
         internal bool Conflict { get; set; }
         internal bool Incomplete { get; set; }
@@ -292,7 +382,7 @@ public sealed class PluginSurfaceApiTests
             if (method == "mutation.commit" && LoseCommit) throw new HttpRequestException("synthetic lost receipt");
             if (method == "mutation.commit" && CommitErrorBody is { } errorBody) return new(HttpStatusCode.Conflict) { Content = new StringContent(errorBody) };
             if (method == "mutation.commit" && Conflict) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"mutation.digest_conflict","commitOutcome":"not-committed"}""") };
-            if (method == "mutation.commit" && Incomplete) return new(HttpStatusCode.OK) { Content = new StringContent("""{"contractVersion":"2.0","status":"applied","affectedRows":[]}""") };
+
             string result = method switch
             {
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
@@ -300,7 +390,10 @@ public sealed class PluginSurfaceApiTests
                 "mutation.commit" => """{"contractVersion":"2.0","status":"applied","affectedRows":[{"recordId":"r1","operation":"update"}]}""",
                 _ => "{}",
             };
-            return new(HttpStatusCode.OK) { Content = new StringContent(result) };
+            if (method == "mutation.commit" && Incomplete) result = """{"contractVersion":"2.0","status":"applied","affectedRows":[]}""";
+            if (method == "mutation.commit" && ReplayCommit) result = result.Replace("applied", "replayed", StringComparison.Ordinal);
+            return new(HttpStatusCode.OK) { Content = method == AfterReadMethod && AfterCommitRead is { } after
+                ? new StreamContent(new ReceiptStream(Encoding.UTF8.GetBytes(result), after)) : new StringContent(result) };
         }
     }
 }

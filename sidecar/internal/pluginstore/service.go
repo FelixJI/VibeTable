@@ -299,6 +299,34 @@ func (service *Service) GetPrivateSetting(
 	return nil, nil
 }
 
+// GetAudit reads one immutable event without materializing the plugin's history.
+func (service *Service) GetAudit(ctx context.Context, projectKey, pluginID, eventID string) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return nil, err
+	}
+	if pluginID == "" || eventID == "" {
+		return nil, requestError("plugin.request_invalid", "audit identity is required", nil)
+	}
+	stored, err := findRecord(service.app, KindAudit, projectKey, pluginID, eventID)
+	if err != nil || stored == nil {
+		return nil, err
+	}
+	row, err := recordFromStored(stored)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.validateLegacyRow(row); err != nil {
+		return nil, storageError()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return row.Payload, nil
+}
+
 func (service *Service) ListAudit(
 	ctx context.Context,
 	projectKey string,

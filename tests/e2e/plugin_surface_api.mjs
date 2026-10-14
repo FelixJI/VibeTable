@@ -82,7 +82,7 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
     const events = Array.isArray(audit.payload) ? audit.payload : [];
     recorder.check(`surface ${decision} has a durable terminal linked to its Host run`,
       events.some(event => event.eventType === "action"
-        && event.runId === task.payload.runId && event.actionId === "surface.save"
+        && event.runId === task.payload.runId && event.actionId === "open-editor"
         && event.details?.taskId === taskId
         && event.outcome === (decision === "approved" ? "succeeded" : decision)), { events, taskId });
   }

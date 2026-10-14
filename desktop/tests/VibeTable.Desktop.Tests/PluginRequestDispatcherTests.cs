@@ -1459,7 +1459,9 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
-    public async Task CatalogProjectionCreatesSafeCustomSurfaceWithoutExposingPackagePath()
+    [DataRow("2.x")]
+    [DataRow("3.x")]
+    public async Task CatalogProjectionCreatesSafeCustomSurfaceWithoutExposingPackagePath(string apiVersion)
     {
         string packageRoot = Path.Combine(
             Path.GetTempPath(),
@@ -1472,17 +1474,19 @@ public sealed class PluginRequestDispatcherTests
                 new Dictionary<string, string> { ["en-US"] = "Open dashboard" },
                 new Dictionary<string, string>(),
                 "local",
-                PluginRisk.Read,
+                PluginRisk.Destructive,
                 "manual",
                 [],
                 JsonSerializer.SerializeToElement(new { }),
-                "dist/workers/open-dashboard.js",
+                apiVersion == "3.x" ? null : "dist/workers/open-dashboard.js",
                 null,
                 null,
                 null);
             var manifest = FakePluginGateway.DefaultSnapshot.Manifest with
             {
-                Actions = [action],
+                Schema = apiVersion == "3.x" ? "vibetable.plugin-manifest.v2" : "vibetable.plugin-manifest.v1",
+                Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = apiVersion }),
+                Actions = [action, action with { ActionId = "other", Risk = PluginRisk.Write }],
                 Ui = JsonSerializer.SerializeToElement(new
                 {
                     customViews = new[]
@@ -1493,6 +1497,7 @@ public sealed class PluginRequestDispatcherTests
                             actionId = "open-dashboard",
                             entry = "ui/index.html",
                         },
+                        new { viewId = "other", actionId = "other", entry = "ui/other.html" },
                     },
                 }),
             };
@@ -1518,7 +1523,7 @@ public sealed class PluginRequestDispatcherTests
                 packageCacheRoot: _ => currentCacheRoot);
             string retained = PluginRetainedPackage.PathFor(packageRoot, gateway.CatalogSnapshot.PackageHash)!;
             using (var package = System.IO.Compression.ZipFile.Open(retained, System.IO.Compression.ZipArchiveMode.Create))
-                package.CreateEntry("ui/index.html");
+                { package.CreateEntry("ui/index.html"); package.CreateEntry("ui/other.html"); }
             dispatcher.SetGateway(gateway);
 
             await dispatcher.DispatchAsync(Request(
@@ -1532,6 +1537,15 @@ public sealed class PluginRequestDispatcherTests
             Assert.IsTrue(serialized.Contains(
                 ".plugins.vibetable.local/ui/index.html",
                 StringComparison.Ordinal));
+
+            foreach (var view in JsonSerializer.SerializeToElement(reply.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)).EnumerateArray().Single().GetProperty("manifest").GetProperty("ui").GetProperty("customViews").EnumerateArray())
+            {
+                Assert.IsTrue(surfaces.TryGet(view.GetProperty("surfaceToken").GetString()!, out var bound));
+                string actionId = view.GetProperty("actionId").GetString()!;
+                Assert.AreEqual(actionId, bound!.ActionId);
+                Assert.AreEqual(actionId == "other" ? PluginRisk.Write : PluginRisk.Destructive, bound.Risk);
+                Assert.AreEqual(view.GetProperty("entry").GetString(), bound.Entry);
+            }
 
             // A relocated workspace must not reuse the original source path or
             // the old runtime's retained resource when its local cache is absent.

@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
@@ -36,6 +37,8 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 	} {
 		t.Run(failure.name, func(t *testing.T) {
 			armed := false
+			probing := false
+			var cancelCaller context.CancelFunc
 			f := newWorkspaceMutationReplayFixture(t, func(point writecoordinator.PersistenceFaultPoint) error {
 				if armed && point == writecoordinator.FaultBeforeFinishCommittedMutation {
 					return failure.err
@@ -45,7 +48,7 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 			workspace := "11111111-1111-4111-8111-111111111111"
 			store := pluginstore.New(f.pb, workspace)
 			pluginID, hash := "com.example.after-commit", strings.Repeat("d", 64)
-			manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"*"}}}}, "actions": []any{}, "ui": map[string]any{}}
+			manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"*"}}}}, "actions": []any{map[string]any{"actionId": "save", "risk": "destructive", "mode": "local", "invocation": "manual"}}, "ui": map[string]any{"customViews": []any{map[string]any{"viewId": "save", "actionId": "save", "entry": "ui/index.html"}}}}
 			snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}})
 			if _, err := store.SaveInstallation(context.Background(), snapshot, nil); err != nil {
 				t.Fatal(err)
@@ -62,17 +65,49 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			bindVibetableSessionAuth(r, secret)
-			registerPluginSurfaceAPIRoutes(r, f.pb, source, mutation.New(f.pb, mutation.MetadataSchemaSource{}), workspace, 7, f.runtime.CoordinateBusinessWrite)
+			registerPluginSurfaceAPIRoutes(r, f.pb, source, mutation.New(f.pb, mutation.MetadataSchemaSource{}), workspace, 7, func(ctx context.Context, kind, id string, fn func(context.Context) error) error {
+				if cancelCaller != nil {
+					cancelCaller()
+					if !errors.Is(ctx.Err(), context.Canceled) {
+						t.Fatal("caller cancellation not inherited")
+					}
+					return ctx.Err()
+				}
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("route did not set deadline")
+				}
+				remaining := time.Until(deadline)
+				if probing {
+					if kind != "plugin.surface.mutation" || remaining > 7*time.Second || remaining < 5*time.Second {
+						t.Fatalf("caller deadline not inherited: %v", remaining)
+					}
+					if ctx.Err() != nil {
+						t.Fatal("live caller was cancelled")
+					}
+					return errors.New("bounded deadline probe")
+				}
+				if kind == "plugin.surface.mutation" && remaining < 110*time.Second {
+					t.Fatalf("commit budget prematurely capped: %v", remaining)
+				}
+				if kind != "plugin.surface.mutation" && remaining > 16*time.Second {
+					t.Fatalf("ordinary request budget widened: %v", remaining)
+				}
+				return f.runtime.CoordinateBusinessWrite(ctx, kind, id, fn)
+			})
 			mux, err := r.BuildMux()
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
-			call := func(method string, params any) *httptest.ResponseRecorder {
+			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
+			call := func(method string, params any, caller ...context.Context) *httptest.ResponseRecorder {
 				input.Method = method
 				input.Request, _ = json.Marshal(params)
 				raw, _ := json.Marshal(input)
 				request := httptest.NewRequest(http.MethodPost, pluginSurfaceAPIPath, bytes.NewReader(raw))
+				if len(caller) != 0 {
+					request = request.WithContext(caller[0])
+				}
 				request.Header.Set("X-VibeTable-Session", strings.Repeat("2", 64))
 				response := httptest.NewRecorder()
 				mux.ServeHTTP(response, request)
@@ -92,6 +127,23 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 				changed.RequestID, changed.IdempotencyKey = "concurrent-update", "concurrent-update"
 				changed.Operations = []mutation.Operation{{Kind: mutation.OperationUpdate, RecordID: &original.AffectedRows[0].RecordID, ExpectedDigest: &original.AffectedRows[0].Digest, Values: map[string]any{f.field: "concurrent edit"}}}
 				workspaceMutationReplayReceipt(t, f.call(t, context.Background(), changed))
+			}
+			// Fast probe: inspect the actual context entering the production mutation gate.
+			probing = true
+			caller, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+			probe := call("mutation.commit", plan, caller)
+			cancel()
+			probing = false
+			callerCancelled, cancelRequest := context.WithCancel(context.Background())
+			cancelCaller = cancelRequest
+			cancelledProbe := call("mutation.commit", plan, callerCancelled)
+			cancelCaller = nil
+			cancelRequest()
+			if cancelledProbe.Code != http.StatusConflict {
+				t.Fatal("cancelled probe unexpectedly committed")
+			}
+			if probe.Code != http.StatusConflict {
+				t.Fatal("deadline probe unexpectedly committed")
 			}
 			before := f.state(t)
 			armed = true
@@ -175,7 +227,9 @@ func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 	workspace := "11111111-1111-4111-8111-111111111111"
 	store := pluginstore.New(f.pb, workspace)
 	pluginID, hash := "com.example.writer-surface", strings.Repeat("c", 64)
-	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"*"}}}}, "actions": []any{}, "ui": map[string]any{}}
+	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"*"}}}}, "actions": []any{map[string]any{"actionId": "save", "risk": "destructive", "mode": "local", "invocation": "manual"}}, "ui": map[string]any{"customViews": []any{map[string]any{"viewId": "save", "actionId": "save", "entry": "ui/index.html"}}}}
+	manifest["actions"] = append(manifest["actions"].([]any), map[string]any{"actionId": "read-page", "risk": "read", "mode": "local", "invocation": "manual"})
+	manifest["ui"].(map[string]any)["customViews"] = append(manifest["ui"].(map[string]any)["customViews"].([]any), map[string]any{"viewId": "read", "actionId": "read-page", "entry": "ui/read.html"})
 	snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}})
 	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
 		t.Fatal(err)
@@ -185,7 +239,7 @@ func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)
@@ -201,10 +255,34 @@ func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 		return len(events)
 	}
 	plan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": f.request.TableID, "schemaRevision": f.request.SchemaRevision, "operations": []any{map[string]any{"kind": "create", "values": map[string]any{f.field: "created"}}}}
+	// An authenticated Host cannot borrow an action or a page outside this installation.
+	for _, identity := range []struct{ action, entry string }{{"undeclared", "ui/index.html"}, {"save", "ui/read.html"}, {"read-page", "ui/read.html"}} {
+		before := f.state(t)
+		input.ActionID, input.Entry = identity.action, identity.entry
+		for _, method := range []string{"mutation.preview", "audit.start", "mutation.commit"} {
+			params := any(plan)
+			if method == "audit.start" {
+				params = map[string]any{"taskId": "denied-task", "plan": plan}
+			}
+			if _, err := call(method, params); err == nil {
+				t.Fatalf("action/page/risk admitted: %+v %s", identity, method)
+			}
+		}
+		if !reflect.DeepEqual(before, f.state(t)) || auditCount() != 0 {
+			t.Fatal("denied action wrote data or audit")
+		}
+	}
+	input.ActionID, input.Entry = "save", "ui/index.html"
 	input.RequestID = "surface-writer-create"
 	beforeStart := f.state(t)
 	if _, err := call("audit.start", map[string]any{"taskId": "task-create", "plan": plan}); err != nil {
 		t.Fatal(err)
+	}
+	startedRaw, err := store.GetAudit(ctx, input.ProjectKey, pluginID, input.RequestID+":started")
+	var startIdentity map[string]any
+	_ = json.Unmarshal(startedRaw, &startIdentity)
+	if err != nil || startIdentity["actionId"] != "save" || startIdentity["risk"] != "destructive" {
+		t.Fatal("declared action/risk not persisted before confirmation", startIdentity, err)
 	}
 	started := f.state(t)
 	if started.proofs != beforeStart.proofs+1 || started.revision != beforeStart.revision+1 || auditCount() != 1 {
@@ -281,6 +359,13 @@ func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 	events, err := store.ListAudit(ctx, input.ProjectKey, pluginID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, raw := range events {
+		var event map[string]any
+		_ = json.Unmarshal(raw, &event)
+		if event["actionId"] != "save" || event["risk"] != "destructive" {
+			t.Fatal("declared action/risk lost", event)
+		}
 	}
 	var independent map[string]any
 	_ = json.Unmarshal(events[0], &independent)
@@ -367,14 +452,14 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 	store := pluginstore.New(pb, workspace)
 	pluginID := "com.example.surface"
 	hash := strings.Repeat("a", 64)
-	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": table.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"id", amount.Identity.FieldID, flag.Identity.FieldID}}}, "privateStorage": true}, "actions": []any{}, "ui": map[string]any{}}
+	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": table.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"id", amount.Identity.FieldID, flag.Identity.FieldID}}}, "privateStorage": true}, "actions": []any{map[string]any{"actionId": "save", "risk": "destructive", "mode": "local", "invocation": "manual"}}, "ui": map[string]any{"customViews": []any{map[string]any{"viewId": "save", "actionId": "save", "entry": "ui/index.html"}}}}
 	snapshot := map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}}
 	raw, _ := json.Marshal(snapshot)
 	if _, err = store.SaveInstallation(ctx, raw, nil); err != nil {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: table.TableID, RequestID: "surface-test-read"}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: table.TableID, RequestID: "surface-test-read"}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)
@@ -713,7 +798,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		_ = json.Unmarshal(raw, &event)
 		if strings.HasSuffix(event.EventID, ":terminal") {
 			terminals[event.RunID] = event.Outcome
-			if event.ActionID != "surface.save" {
+			if event.ActionID != "save" {
 				t.Fatal("audit action identity lost")
 			}
 		}
