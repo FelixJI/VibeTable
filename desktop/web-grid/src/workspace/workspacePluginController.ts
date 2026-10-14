@@ -115,7 +115,9 @@ export function createWorkspacePluginController(
   const actionTask = computed(() => {
     const active = dependencies.plugins.describedAction;
     if (!active) return null;
-    if (active.presentation === "headless" || active.presentation === "application")
+    const nativeCustom = active.presentation === "custom"
+      && dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.compatibility.pluginApi === "3.x";
+    if (active.presentation === "headless" || active.presentation === "application" || nativeCustom)
       return active.surface?.surfaceToken ? dependencies.plugins.taskForAction(active.pluginId, active.actionId, active.surface.surfaceToken) : null;
     return dependencies.plugins.taskForAction(active.pluginId, active.actionId);
   });

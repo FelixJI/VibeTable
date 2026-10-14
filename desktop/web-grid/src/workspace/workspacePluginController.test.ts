@@ -214,6 +214,55 @@ describe("workspacePluginController", () => {
     expect(controller.applicationTask.value?.taskId).toBe("current");
   });
 
+  it.each(["3.x", "2.x"])("isolates native custom runs while preserving %s task admission", async (pluginApi) => {
+    const plugins = usePluginStore();
+    plugins.setProjectContext("local:default", "r1");
+    const custom: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest,
+      compatibility: { pluginApi }, actions: plugin.manifest.actions.map(action => ({ ...action, presentation: "surface" })) } };
+    plugins.replaceCatalog("local:default", [custom]);
+    const context = { contract: "vibetable.command-context.v1" as const, projectKey: custom.projectKey,
+      collection: "orders", selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light" as const,
+      density: "comfortable", user: {}, hostVersion: "1.0.0" };
+    const description = { pluginId: custom.pluginId, actionId: "normalize", title: "custom", risk: "write" as const,
+      inputSchema: {}, presentation: "custom" as const,
+      surface: { src: "https://custom.plugins.vibetable.local/ui/index.html", surfaceToken: "current-surface", title: "custom" } };
+    plugins.beginAction(description, context);
+    const task: PluginTaskSnapshot = { taskId: "old", runId: "old-run", pluginId: custom.pluginId,
+      actionId: "normalize", pluginVersion: custom.version, installationRevision: custom.revision,
+      installationId: custom.installationId, projectKey: custom.projectKey, collection: "orders",
+      targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null,
+      surfaceToken: pluginApi === "3.x" ? "old-surface" : null };
+    const cancelTask = vi.fn(async () => plugins.taskForAction(custom.pluginId, "normalize")!);
+    const resolveInteraction = vi.fn(async () => plugins.taskForAction(custom.pluginId, "normalize")!);
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui: useUiStore(), plugins,
+      service: { describeAction: vi.fn(), startAction: vi.fn(), cancelTask, resolveInteraction },
+      selectedRows: () => [], openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: vi.fn(),
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
+    const oldView = plugins.applyTask(task);
+    expect(controller.actionTask.value?.taskId ?? null).toBe(pluginApi === "3.x" ? null : "old");
+    await controller.dispatch({ type: "task.cancel", taskId: "old" });
+    await controller.dispatch({ type: "interaction.resolve", taskId: "old", decision: "rejected" });
+    if (pluginApi === "3.x") {
+      expect(cancelTask).not.toHaveBeenCalled();
+      expect(resolveInteraction).not.toHaveBeenCalled();
+      plugins.applyTask({ ...task, taskId: "missing-source", runId: "missing-run", surfaceToken: null });
+      expect(controller.actionTask.value).toBeNull();
+      plugins.applyTask({ ...task, taskId: "current", runId: "current-run", surfaceToken: "current-surface" });
+      expect(controller.actionTask.value?.taskId).toBe("current");
+      await controller.dispatch({ type: "task.cancel", taskId: "current" });
+      expect(cancelTask).toHaveBeenCalledWith("current");
+      plugins.beginAction({ ...description, surface: { ...description.surface, surfaceToken: "reopened-surface" } }, context);
+      expect(controller.actionTask.value).toBeNull();
+      plugins.beginAction({ ...description, surface: null }, context);
+      expect(controller.actionTask.value).toBeNull();
+    } else {
+      expect(cancelTask).toHaveBeenCalledWith("old");
+      expect(resolveInteraction).toHaveBeenCalledWith(oldView, "rejected");
+      plugins.beginAction({ ...description, surface: null }, context);
+      expect(controller.actionTask.value?.taskId).toBe("old");
+    }
+  });
+
   it("keeps application and action task controls bound across other plugin/action updates", async () => {
     const plugins = usePluginStore();
     plugins.setProjectContext("local:default", "r1");
