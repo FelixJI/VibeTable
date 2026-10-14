@@ -61,6 +61,25 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_native_cli_accepts_explicit_v2_without_worker_and_rejects_unknown_api(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "surface"
+    _write_readonly_plugin(plugin)
+    manifest_path = plugin / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["$schema"] = "vibetable.plugin-manifest.v2"
+    manifest["compatibility"]["pluginApi"] = "3.x"
+    manifest["actions"][0].pop("workerEntry")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert _run_cli("validate", str(plugin), "--json").returncode == 0
+    manifest["compatibility"]["pluginApi"] = "99.x"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    rejected = _run_cli("validate", str(plugin), "--json")
+    assert rejected.returncode == 2
+    assert json.loads(rejected.stdout)["code"] == "version_incompatible"
+
+
 def test_validate_reports_plugin_identity_as_json(tmp_path: Path) -> None:
     plugin = tmp_path / "reader"
     _write_readonly_plugin(plugin)

@@ -2,8 +2,10 @@ package mutation
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/pocketbase/pocketbase/core"
 	"io"
 )
 
@@ -33,6 +35,8 @@ type Request struct {
 	// InternalBypassMigrationFence is set only by the migration-owned
 	// authoritative backfill adapter. It is never accepted from JSON.
 	InternalBypassMigrationFence bool `json:"-"`
+	// Authorize is supplied only by trusted callers and runs inside the business transaction.
+	Authorize func(context.Context, core.App) error `json:"-"`
 }
 
 type Actor struct {

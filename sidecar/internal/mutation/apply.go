@@ -105,6 +105,11 @@ func (kernel *Kernel) ApplyWithCommit(ctx context.Context, request Request, comm
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if request.Authorize != nil {
+			if err := request.Authorize(ctx, txApp); err != nil {
+				return err
+			}
+		}
 		replayed, found, replayErr := kernel.replayOrReject(txApp, request, requestHash)
 		if replayErr != nil {
 			return replayErr

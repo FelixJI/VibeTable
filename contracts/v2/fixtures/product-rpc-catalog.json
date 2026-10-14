@@ -15986,8 +15986,16 @@
                 "type": "object"
               },
               "workerEntry": {
-                "minLength": 1,
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "formSchema": {
                 "anyOf": [
@@ -16025,8 +16033,7 @@
             },
             "required": [
               "actionId",
-              "risk",
-              "workerEntry"
+              "risk"
             ],
             "type": "object"
           },
@@ -16034,8 +16041,11 @@
             "additionalProperties": false,
             "properties": {
               "$schema": {
-                "const": "vibetable.plugin-manifest.v1",
                 "default": "vibetable.plugin-manifest.v1",
+                "enum": [
+                  "vibetable.plugin-manifest.v1",
+                  "vibetable.plugin-manifest.v2"
+                ],
                 "type": "string"
               },
               "pluginId": {
@@ -16355,8 +16365,16 @@
                 "type": "object"
               },
               "workerEntry": {
-                "minLength": 1,
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "formSchema": {
                 "anyOf": [
@@ -16394,8 +16412,7 @@
             },
             "required": [
               "actionId",
-              "risk",
-              "workerEntry"
+              "risk"
             ],
             "type": "object"
           },
@@ -16403,8 +16420,11 @@
             "additionalProperties": false,
             "properties": {
               "$schema": {
-                "const": "vibetable.plugin-manifest.v1",
                 "default": "vibetable.plugin-manifest.v1",
+                "enum": [
+                  "vibetable.plugin-manifest.v1",
+                  "vibetable.plugin-manifest.v2"
+                ],
                 "type": "string"
               },
               "pluginId": {
@@ -16821,8 +16841,16 @@
                 "type": "object"
               },
               "workerEntry": {
-                "minLength": 1,
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "formSchema": {
                 "anyOf": [
@@ -16860,8 +16888,7 @@
             },
             "required": [
               "actionId",
-              "risk",
-              "workerEntry"
+              "risk"
             ],
             "type": "object"
           },
@@ -16869,8 +16896,11 @@
             "additionalProperties": false,
             "properties": {
               "$schema": {
-                "const": "vibetable.plugin-manifest.v1",
                 "default": "vibetable.plugin-manifest.v1",
+                "enum": [
+                  "vibetable.plugin-manifest.v1",
+                  "vibetable.plugin-manifest.v2"
+                ],
                 "type": "string"
               },
               "pluginId": {
@@ -17437,8 +17467,16 @@
                 "type": "object"
               },
               "workerEntry": {
-                "minLength": 1,
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "formSchema": {
                 "anyOf": [
@@ -17476,8 +17514,7 @@
             },
             "required": [
               "actionId",
-              "risk",
-              "workerEntry"
+              "risk"
             ],
             "type": "object"
           },
@@ -17485,8 +17522,11 @@
             "additionalProperties": false,
             "properties": {
               "$schema": {
-                "const": "vibetable.plugin-manifest.v1",
                 "default": "vibetable.plugin-manifest.v1",
+                "enum": [
+                  "vibetable.plugin-manifest.v1",
+                  "vibetable.plugin-manifest.v2"
+                ],
                 "type": "string"
               },
               "pluginId": {
@@ -17740,8 +17780,16 @@
                 "type": "object"
               },
               "workerEntry": {
-                "minLength": 1,
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "formSchema": {
                 "anyOf": [
@@ -17779,8 +17827,7 @@
             },
             "required": [
               "actionId",
-              "risk",
-              "workerEntry"
+              "risk"
             ],
             "type": "object"
           },
@@ -17788,8 +17835,11 @@
             "additionalProperties": false,
             "properties": {
               "$schema": {
-                "const": "vibetable.plugin-manifest.v1",
                 "default": "vibetable.plugin-manifest.v1",
+                "enum": [
+                  "vibetable.plugin-manifest.v1",
+                  "vibetable.plugin-manifest.v2"
+                ],
                 "type": "string"
               },
               "pluginId": {
@@ -18472,8 +18522,16 @@
                 "type": "object"
               },
               "workerEntry": {
-                "minLength": 1,
-                "type": "string"
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
               },
               "formSchema": {
                 "anyOf": [
@@ -18511,8 +18569,7 @@
             },
             "required": [
               "actionId",
-              "risk",
-              "workerEntry"
+              "risk"
             ],
             "type": "object"
           },
@@ -18520,8 +18577,11 @@
             "additionalProperties": false,
             "properties": {
               "$schema": {
-                "const": "vibetable.plugin-manifest.v1",
                 "default": "vibetable.plugin-manifest.v1",
+                "enum": [
+                  "vibetable.plugin-manifest.v1",
+                  "vibetable.plugin-manifest.v2"
+                ],
                 "type": "string"
               },
               "pluginId": {

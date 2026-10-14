@@ -229,6 +229,14 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
             if isinstance(action, dict) and isinstance(action.get("workerEntry"), str)
         }
     )
+    if manifest.get("$schema") == "vibetable.plugin-manifest.v2":
+        entries = sorted(
+            {
+                view["script"]
+                for view in manifest.get("ui", {}).get("customViews", [])
+                if isinstance(view, dict) and isinstance(view.get("script"), str)
+            }
+        )
     if not entries:
         return 0
     node = _find_node()
@@ -304,7 +312,7 @@ def _command_build(args: argparse.Namespace) -> int:
                 f"{artifact.relative_to(package_source)}",
             )
     print(
-        f"build valid ({compiled_count} Workers compiled, "
+        f"build valid ({compiled_count} {'surface scripts' if manifest.get('$schema') == 'vibetable.plugin-manifest.v2' else 'Workers'} compiled, "
         f"{len(artifacts)} self-contained JavaScript artifacts)"
     )
     return 0

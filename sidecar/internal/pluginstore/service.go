@@ -570,6 +570,11 @@ func (service *Service) DeletePrivateSettings(
 	return int(count), err
 }
 
+func (service *Service) DeletePrivateSetting(ctx context.Context, projectKey, pluginID, key string) (bool, error) {
+	count, err := service.deleteWhere(ctx, KindSetting, projectKey, pluginID, key)
+	return count > 0, err
+}
+
 // RecordAudit appends one audit event with a per-project monotonic
 // sequence so list order matches the previous owner's insertion order.
 func (service *Service) RecordAudit(

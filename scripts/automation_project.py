@@ -41,13 +41,15 @@ NPM_PROJECTS = (
     Path("sdk/plugin"),
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
+    Path("examples/plugins/surface-data-editor"),
 )
 # Example plugins the resilience lane's product E2E rebuilds through the plugin
-# CLI (scenario 11-plugin-mutation). The CLI resolves the SDK from source and
-# only needs each example's local esbuild restore to bundle Workers offline.
+# CLI (scenarios 11-plugin-mutation and 47-plugin-surface-api). The CLI resolves
+# the SDK from source and bundles declared Worker or surface scripts offline.
 PLUGIN_BUILD_PROJECTS = (
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
+    Path("examples/plugins/surface-data-editor"),
 )
 CI_PREPARE_MODE_ENV = "VIBETABLE_CI_PREPARE_MODE"
 

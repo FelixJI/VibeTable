@@ -3,6 +3,7 @@ import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapsh
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
+import { runPluginSurfaceApi } from "./plugin_surface_api.mjs";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import fsSync from "node:fs";
@@ -12660,6 +12661,10 @@ const scenarios = {
   },
   "45-common-field-display": scenario45,
   "46-dashboard-native-output": scenario46,
+  "47-plugin-surface-api": (page, recorder, _network, runtime) => runPluginSurfaceApi(page, recorder, runtime, {
+    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+  }),
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

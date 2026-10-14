@@ -61,6 +61,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     }
 
     internal ProductRealtimeDelivery Realtime { get; }
+    internal PluginSurfaceApi? PluginApi { get; set; }
 
     /// <summary>
     /// Optional dashboard download admission source. Assigned before
@@ -203,6 +204,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         ApplyHardening(core);
         core.WebMessageReceived -= OnWebMessageReceived;
         core.WebMessageReceived += OnWebMessageReceived;
+        core.FrameCreated -= OnPluginFrameCreated;
+        core.FrameCreated += OnPluginFrameCreated;
 
         var navigation = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -425,6 +428,39 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                     operation.InterruptReason.ToString());
                 break;
         }
+    }
+
+    private void OnPluginFrameCreated(object? sender, CoreWebView2FrameCreatedEventArgs args)
+    {
+        CoreWebView2Frame frame = args.Frame;
+        // Name was assigned by the trusted app's iframe element before plugin code runs.
+        string token = frame.Name;
+        if (!_pluginResources.TryGetSurface(token, out var surface) || surface is null || surface.ApiVersion != "3.x") return;
+        string source = surface.DocumentUri.AbsoluteUri;
+        bool active = true;
+        frame.NavigationStarting += (_, navigation) =>
+        {
+            if (navigation.Uri != source)
+            {
+                navigation.Cancel = true;
+                active = false;
+                PluginApi?.Retire(token);
+                _pluginResources.CloseSurface(token);
+            }
+        };
+        frame.Destroyed += (_, _) =>
+        {
+            active = false;
+            PluginApi?.Retire(token);
+            _pluginResources.CloseSurface(token);
+        };
+        frame.WebMessageReceived += async (_, message) =>
+        {
+            if (!active || PluginApi is not { } api) return;
+            _readiness?.Trace("PluginSurfaceAPI: received isolated frame request; owner=Host/Go; worker=false");
+            string reply = await api.HandleAsync(token, message.Source, message.WebMessageAsJson);
+            if (active && _pluginResources.TryGetSurface(token, out var remaining)) frame.PostWebMessageAsJson(reply);
+        };
     }
 
     private void OnWebMessageReceived(

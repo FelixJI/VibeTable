@@ -105,6 +105,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
+    internal HostPluginTaskRegistry Tasks => _taskRegistry;
 
     public static bool Handles(string requestType) =>
         requestType.StartsWith("plugin.", StringComparison.Ordinal);
@@ -284,6 +285,19 @@ public sealed class PluginRequestDispatcher : IDisposable
                 or "plugin.lifecycle.rollback" or "plugin.lifecycle.uninstall"
                 or "plugin.action.describe" or "plugin.action.start"))
                 throw new PluginDispatchException("UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'.");
+            if (request.Type == "plugin.action.describe")
+            {
+                var describe = Read<PluginDescribeActionParams>(request.Payload);
+                bool native = _nativePlugins.TryGetValue((describe.ProjectKey, describe.PluginId), out var actions);
+                if (native)
+                {
+                    if (!actions!.Contains(describe.ActionId)) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
+                    if (_projectContext()?.ProjectKey != describe.ProjectKey || describe.Context.ProjectKey != describe.ProjectKey) throw StaleTask();
+                    _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.Context);
+                    _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(true, []));
+                    return;
+                }
+            }
             if (_ensureGateway is not null)
             {
                 PluginProjectContext? context = _projectContext();
@@ -655,7 +669,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginRuntimeTaskSnapshot reported;
         try
         {
-            reported = await binding.Gateway.StartActionAsync(
+            reported = await binding.Gateway!.StartActionAsync(
                 request with { TaskId = taskId, RunId = runId }, token).ConfigureAwait(false);
         }
         catch (Exception)
@@ -663,14 +677,14 @@ public sealed class PluginRequestDispatcher : IDisposable
             PostSingleSettlement(_taskRegistry.AbortTask(taskId));
             throw;
         }
-        if (!_taskRegistry.TryApplyStartResult(binding.Gateway, reported))
+        if (!_taskRegistry.TryApplyStartResult(binding.Gateway!, reported))
         {
             SafeDiagnosticTrace(
                 "Plugin action start was rejected as stale; " +
                 $"taskId={taskId}");
             PostSingleSettlement(_taskRegistry.AbortTask(taskId));
             await ObserveCancelAsync(
-                () => binding.Gateway.CancelTaskAsync(
+                () => binding.Gateway!.CancelTaskAsync(
                     new PluginTaskParams(taskId),
                     CancellationToken.None)).ConfigureAwait(false);
             throw StaleTask();
@@ -710,7 +724,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             out PluginRuntimeTaskSnapshot snapshot,
             out HostPluginTaskBinding binding);
         if (outcome == HostPluginTaskCancelOutcome.NotFound) throw UnknownTask();
-        if (outcome == HostPluginTaskCancelOutcome.Active)
+        if (outcome == HostPluginTaskCancelOutcome.Active && binding.Gateway is not null)
         {
             _ = ObserveRevokeRunAsync(binding.Gateway, snapshot.RunId);
             await ObserveCancelAsync(
@@ -888,8 +902,13 @@ public sealed class PluginRequestDispatcher : IDisposable
         "PLUGIN_TASK_NOT_FOUND",
         "Plugin task was not found for the current project session.");
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), string[]> _nativePlugins = new();
+
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
     {
+        if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
+            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = snapshot.Manifest.Actions.Select(action => action.ActionId).ToArray();
+        else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         string? localPackage = PluginRetainedPackage.PathFor(
             _packageCacheRoot?.Invoke(snapshot.ProjectKey), snapshot.PackageHash);
         bool registered = localPackage is not null && _resourceHost.TryRegisterInstalled(
@@ -957,6 +976,9 @@ public sealed class PluginRequestDispatcher : IDisposable
                 snapshot.ProjectKey,
                 snapshot.PluginId,
                 entry);
+            if (_projectContext() is { } context)
+                _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
+                    snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version);
             view["actionId"] = actionId;
             view["src"] = surface.DocumentUri.ToString();
             view["surfaceToken"] = surface.SurfaceToken;

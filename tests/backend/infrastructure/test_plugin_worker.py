@@ -39,6 +39,16 @@ from tests.backend.schema_v2_fixtures import field_v2, snapshot_v2
 _UNRETAINED_PACKAGE_HASH = f"sha256:{'c' * 64}"
 
 
+async def test_explicit_worker_disable_prevents_node_even_with_a_configured_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIBETABLE_DISABLE_PLUGIN_WORKER", "1")
+    worker = _make_adapter(node_executable="node")
+    assert not worker.available
+    with pytest.raises(PluginWorkerError, match=r"Node\.js was not found"):
+        await worker.run("dist/worker.js", {}, {})
+
+
 class FakePluginStore:
     """Async in-memory shared-state fake for the Worker boundary."""
 

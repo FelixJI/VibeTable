@@ -2912,6 +2912,12 @@ SCENARIO_SCREENSHOTS = {
         "46-dashboard-export-cancelled.png",
         "46-dashboard-print-dialog-opened.png",
     ),
+    "47-plugin-surface-api": (
+        "47-surface-read.png",
+        "47-surface-confirm.png",
+        "47-surface-saved.png",
+        "47-plugin-surface-api-trace.zip",
+    ),
     "35-data-io-interoperability": (
         "35-file-preview-progress.png",
         "35-file-preview-cancel.json",

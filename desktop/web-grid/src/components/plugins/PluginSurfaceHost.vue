@@ -93,6 +93,7 @@ onBeforeUnmount(() => {
       v-if="valid"
       ref="frame"
       :src="src"
+      :name="surfaceToken"
       :title="title"
       sandbox="allow-scripts allow-same-origin"
       referrerpolicy="no-referrer"

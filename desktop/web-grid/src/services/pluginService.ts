@@ -370,6 +370,8 @@ export function usePluginService(): PluginService {
     context: PluginCommandContext,
     openPanel = true,
   ): Promise<PluginActionAvailability> {
+    if (store.plugins.find(item => item.pluginId === pluginId)?.manifest.compatibility.pluginApi === "3.x")
+      await list();
     const availability = await call<"plugin.action.describe", PluginActionAvailability>(
       "plugin.action.describe",
       { projectKey: store.projectKey, pluginId, actionId, context },

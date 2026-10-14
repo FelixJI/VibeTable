@@ -2466,6 +2466,33 @@ def run_scenario(
                 cwd=ROOT,
                 check=True,
             )
+    if scenario.id == "47-plugin-surface-api":
+        source = ROOT / "examples/plugins/surface-data-editor"
+        plugin_cli = ROOT / "scripts/vibetable_plugin.py"
+        subprocess.run(
+            [sys.executable, str(plugin_cli), "build", str(source)], cwd=ROOT, check=True
+        )
+        archive = controls_dir / "surface-data-editor.vtplugin"
+        subprocess.run(
+            [sys.executable, str(plugin_cli), "pack", str(source), "--output", str(archive)],
+            cwd=ROOT,
+            check=True,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                str(plugin_cli),
+                "pack",
+                str(plugin_fixture),
+                "--output",
+                str(controls_dir / "worker-disabled-probe.vtplugin"),
+            ],
+            cwd=ROOT,
+            check=True,
+        )
+        (controls_dir / "plugin-source.txt").write_text(
+            str(archive.resolve()) + "\n", encoding="utf-8"
+        )
     plugin_read_source = controls_dir / "plugin-read-source.txt"
     plugin_read_source.write_text("native plugin file grant\n", encoding="utf-8")
     (controls_dir / "plugin-file-read.txt").write_text(
@@ -2557,6 +2584,8 @@ def run_scenario(
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
+    if scenario.id == "47-plugin-surface-api":
+        environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-gpu"
     )

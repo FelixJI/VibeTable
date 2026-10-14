@@ -240,6 +240,11 @@ func (kernel *Kernel) Preview(ctx context.Context, request Request) (PreviewResu
 }
 
 func (kernel *Kernel) preview(ctx context.Context, app core.App, request Request) (PreviewResult, error) {
+	if request.Authorize != nil {
+		if err := request.Authorize(ctx, app); err != nil {
+			return PreviewResult{}, err
+		}
+	}
 	if err := validateRequestShape(request); err != nil {
 		return PreviewResult{}, err
 	}

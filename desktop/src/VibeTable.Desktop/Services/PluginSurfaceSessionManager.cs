@@ -14,7 +14,15 @@ public sealed record PluginSurfaceSession(
     PluginPackageRevision Revision,
     Uri DocumentUri,
     string IframeSandbox,
-    string ContentSecurityPolicy);
+    string ContentSecurityPolicy)
+{
+    public PluginProjectContext? Context { get; init; }
+    public int InstallationRevision { get; init; }
+    public string ApiVersion { get; init; } = "";
+    public string PluginVersion { get; init; } = "";
+    public string ActiveCollection { get; init; } = "";
+    public PluginRuntimeCommandContext? InvocationContext { get; init; }
+}
 
 public sealed class PluginSurfacePolicyException : Exception
 {
@@ -147,6 +155,19 @@ public sealed class PluginSurfaceSessionManager
     }
 
     public void CloseAll() => _sessions.Clear();
+
+    internal void BindIdentity(string token, PluginProjectContext context, int revision, string apiVersion, string pluginVersion = "")
+    {
+        if (_sessions.TryGetValue(token, out var session))
+            _sessions[token] = session with { Context = context, InstallationRevision = revision, ApiVersion = apiVersion, PluginVersion = pluginVersion };
+    }
+
+    internal void BindActiveCollection(string projectKey, string pluginId, PluginRuntimeCommandContext context)
+    {
+        foreach (var pair in _sessions)
+            if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId)
+                _sessions[pair.Key] = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
+    }
 
     private static void ValidateTheme(PluginSurfaceThemeSnapshot theme)
     {

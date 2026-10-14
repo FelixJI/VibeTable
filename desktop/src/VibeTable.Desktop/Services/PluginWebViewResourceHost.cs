@@ -169,6 +169,7 @@ public sealed class PluginWebViewResourceHost : IDisposable
         ForgetSurfaceToken(surfaceToken);
         return _surfaces.Close(surfaceToken);
     }
+    internal bool TryGetSurface(string token, out PluginSurfaceSession? surface) => _surfaces.TryGet(token, out surface);
 
     public void ForgetSurfaceToken(string surfaceToken)
     {

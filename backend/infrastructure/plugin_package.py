@@ -160,7 +160,7 @@ def _validate_compatibility(
         )
 
     plugin_api = compatibility["pluginApi"]
-    if plugin_api not in {policy.plugin_api, "2.x"}:
+    if plugin_api not in {policy.plugin_api, "2.x", "3.x"}:
         raise PluginPackageError(
             "version_incompatible",
             f"compatibility.pluginApi {plugin_api} is not supported by {policy.plugin_api}",
@@ -306,7 +306,11 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     manifest = _require_object(
         _decode_json(contents, "manifest.json", code="manifest_invalid"), "manifest"
     )
-    if manifest.get("$schema") != "vibetable.plugin-manifest.v1":
+    native = manifest.get("$schema") == "vibetable.plugin-manifest.v2"
+    if manifest.get("$schema") not in {
+        "vibetable.plugin-manifest.v1",
+        "vibetable.plugin-manifest.v2",
+    }:
         raise PluginPackageError("manifest_schema", "unsupported plugin manifest schema")
     plugin_id = manifest.get("pluginId")
     if not isinstance(plugin_id, str) or not _is_valid_plugin_id(plugin_id):
@@ -327,6 +331,8 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
 
     permissions = _require_object(manifest.get("permissions"), "permissions")
     _validate_compatibility(manifest.get("compatibility"))
+    if native != (manifest["compatibility"]["pluginApi"] == "3.x"):
+        raise PluginPackageError("version_incompatible", "manifest/API version mismatch")
     data_permissions = permissions.get("data", [])
     if not isinstance(data_permissions, list):
         raise PluginPackageError("permissions_invalid", "permissions.data must be an array")
@@ -355,7 +361,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
                 "permissions_invalid", "data permission fields must be strings"
             )
         if "query" in operations and (
-            "read" not in operations or manifest["compatibility"]["pluginApi"] != "2.x"
+            "read" not in operations or manifest["compatibility"]["pluginApi"] not in {"2.x", "3.x"}
         ):
             raise PluginPackageError(
                 "permissions_invalid", "query requires read and plugin API 2.x"
@@ -432,6 +438,10 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             if key in action:
                 _validate_reference(contents, action[key], schema=True)
         worker_entry = action.get("workerEntry")
+        if native:
+            if worker_entry is not None:
+                raise PluginPackageError("worker_entry", "API 3.x forbids workerEntry")
+            continue
         if "entryFlow" in action:
             raise PluginPackageError(
                 "legacy_manifest_field",
