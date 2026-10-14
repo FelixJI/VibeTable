@@ -226,7 +226,7 @@ public sealed record PluginRuntimeAction(
     string Invocation,
     IReadOnlyList<string> Placements,
     JsonElement Requires,
-    string WorkerEntry,
+    string? WorkerEntry,
     string? FormSchema,
     string? InputSchema,
     string? OutputSchema);

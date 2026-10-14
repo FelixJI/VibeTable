@@ -145,7 +145,11 @@ class NodePluginWorkerAdapter:
             raise ValueError("Worker message limit is too small")
         if max_capability_calls < 1:
             raise ValueError("Worker capability-call limit must be at least one")
-        self._node = node_executable or shutil.which("node")
+        self._node = (
+            None
+            if os.environ.get("VIBETABLE_DISABLE_PLUGIN_WORKER") == "1"
+            else node_executable or shutil.which("node")
+        )
         self._timeout = timeout_seconds
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._max_message_bytes = max_message_bytes

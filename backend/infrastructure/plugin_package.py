@@ -160,7 +160,7 @@ def _validate_compatibility(
         )
 
     plugin_api = compatibility["pluginApi"]
-    if plugin_api not in {policy.plugin_api, "2.x"}:
+    if plugin_api not in {policy.plugin_api, "2.x", "3.x"}:
         raise PluginPackageError(
             "version_incompatible",
             f"compatibility.pluginApi {plugin_api} is not supported by {policy.plugin_api}",
@@ -281,7 +281,7 @@ def _require_object(value: Any, label: str) -> dict[str, Any]:
 def _validate_reference(contents: dict[str, bytes], reference: Any, *, schema: bool) -> str:
     if not isinstance(reference, str):
         raise PluginPackageError("manifest_invalid", "package references must be strings")
-    path = _normalize_member_path(reference)
+    path = normalize_member_path(reference)
     if path not in contents:
         raise PluginPackageError(
             "missing_reference", f"referenced package file is missing: {path}", path=path
@@ -299,6 +299,23 @@ def _validate_reference(contents: dict[str, bytes], reference: Any, *, schema: b
     return path
 
 
+def _require_canonical_reference(reference: str, label: str) -> None:
+    """The Host serves ui members by their raw manifest value, so the reference
+    must already be in the canonical package path form."""
+    # Mirror PluginResourceHost.NormalizePackagePath: no query/fragment/percent/
+    # colon forms, no leading or trailing whitespace, no empty segments.
+    host_canonical = all(
+        segment and segment == segment.strip() and not re.search(r"[?#%:]", segment)
+        for segment in reference.split("/")
+    )
+    if not host_canonical or reference != normalize_member_path(reference):
+        raise PluginPackageError(
+            "reference_non_canonical",
+            f"{label} must use the host-canonical package path form",
+            path=reference,
+        )
+
+
 def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]:
     """Validate manifest structure and all package-local references."""
 
@@ -306,7 +323,11 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     manifest = _require_object(
         _decode_json(contents, "manifest.json", code="manifest_invalid"), "manifest"
     )
-    if manifest.get("$schema") != "vibetable.plugin-manifest.v1":
+    native = manifest.get("$schema") == "vibetable.plugin-manifest.v2"
+    if manifest.get("$schema") not in {
+        "vibetable.plugin-manifest.v1",
+        "vibetable.plugin-manifest.v2",
+    }:
         raise PluginPackageError("manifest_schema", "unsupported plugin manifest schema")
     plugin_id = manifest.get("pluginId")
     if not isinstance(plugin_id, str) or not _is_valid_plugin_id(plugin_id):
@@ -327,6 +348,8 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
 
     permissions = _require_object(manifest.get("permissions"), "permissions")
     _validate_compatibility(manifest.get("compatibility"))
+    if native != (manifest["compatibility"]["pluginApi"] == "3.x"):
+        raise PluginPackageError("version_incompatible", "manifest/API version mismatch")
     data_permissions = permissions.get("data", [])
     if not isinstance(data_permissions, list):
         raise PluginPackageError("permissions_invalid", "permissions.data must be an array")
@@ -355,7 +378,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
                 "permissions_invalid", "data permission fields must be strings"
             )
         if "query" in operations and (
-            "read" not in operations or manifest["compatibility"]["pluginApi"] != "2.x"
+            "read" not in operations or manifest["compatibility"]["pluginApi"] not in {"2.x", "3.x"}
         ):
             raise PluginPackageError(
                 "permissions_invalid", "query requires read and plugin API 2.x"
@@ -432,6 +455,10 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             if key in action:
                 _validate_reference(contents, action[key], schema=True)
         worker_entry = action.get("workerEntry")
+        if native:
+            if worker_entry is not None:
+                raise PluginPackageError("worker_entry", "API 3.x forbids workerEntry")
+            continue
         if "entryFlow" in action:
             raise PluginPackageError(
                 "legacy_manifest_field",
@@ -449,6 +476,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     if not isinstance(ui, dict) or not isinstance(ui.get("customViews", []), list):
         raise PluginPackageError("ui_invalid", "ui.customViews must be an array")
     view_ids: set[str] = set()
+    view_actions: set[str] = set()
     for raw_view in ui.get("customViews", []):
         view = _require_object(raw_view, "custom view")
         view_id = view.get("viewId")
@@ -460,6 +488,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             raise PluginPackageError(
                 "ui_invalid", f"custom view {view_id!r} must reference a declared actionId"
             )
+        view_actions.add(action_id)
         if "src" in view or "surfaceToken" in view:
             raise PluginPackageError(
                 "ui_invalid", "custom view origin and surface token are assigned by the host"
@@ -470,11 +499,17 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             )
         for key in ("entry", "html", "script", "style"):
             if key in view:
+                if isinstance(view[key], str):
+                    _require_canonical_reference(view[key], f"ui.customViews.{view_id}.{key}")
                 _validate_reference(contents, view[key], schema=False)
+    if native and action_ids - view_actions:
+        raise PluginPackageError(
+            "ui_invalid", "API 3.x actions require a declared custom view entry"
+        )
     return manifest
 
 
-def _normalize_member_path(name: str) -> str:
+def normalize_member_path(name: str) -> str:
     candidate = unicodedata.normalize("NFC", name.replace("\\", "/"))
     parts = PurePosixPath(candidate).parts
     if (
@@ -527,7 +562,7 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
         paths = [
             path
             for path in source.rglob("*")
-            if not _is_local_development_path(path.relative_to(source))
+            if not is_local_development_path(path.relative_to(source))
         ]
         symlink = next((path for path in paths if path.is_symlink()), None)
         if symlink is not None:
@@ -537,7 +572,7 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
             )
         files = [path for path in paths if path.is_file()]
         metadata = [
-            (_normalize_member_path(path.relative_to(source).as_posix()), path.stat().st_size)
+            (normalize_member_path(path.relative_to(source).as_posix()), path.stat().st_size)
             for path in files
         ]
         if sum(size for _, size in metadata) > policy.max_package_bytes:
@@ -563,7 +598,7 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
                     path=member.filename,
                 )
         metadata = [
-            (_normalize_member_path(member.filename), member.file_size) for member in members
+            (normalize_member_path(member.filename), member.file_size) for member in members
         ]
         _check_entry_limits(metadata, policy)
         entries = [
@@ -574,12 +609,12 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
         return entries
 
 
-def _is_local_development_path(path: Path) -> bool:
+def is_local_development_path(path: Path) -> bool:
     """Exclude build inputs that must never leak into an offline package."""
 
-    if path.parts and path.parts[0] in _LOCAL_DEVELOPMENT_DIRECTORIES:
+    if path.parts and path.parts[0].casefold() in _LOCAL_DEVELOPMENT_DIRECTORIES:
         return True
-    return len(path.parts) == 1 and path.name in _LOCAL_DEVELOPMENT_FILES
+    return len(path.parts) == 1 and path.name.casefold() in _LOCAL_DEVELOPMENT_FILES
 
 
 def inspect_plugin_package(
@@ -619,7 +654,7 @@ def read_plugin_package_member(
     root = Path(source)
     entries = _read_entries(root, policy)
     _verify_integrity(entries, required=root.is_file())
-    normalized = _normalize_member_path(member_path)
+    normalized = normalize_member_path(member_path)
     contents = dict(entries)
     if normalized not in contents:
         raise PluginPackageError(
@@ -673,6 +708,8 @@ __all__ = [
     "PluginCompatibilityPolicy",
     "PluginPackageError",
     "inspect_plugin_package",
+    "is_local_development_path",
+    "normalize_member_path",
     "pack_plugin",
     "read_plugin_package_member",
     "validate_plugin_manifest",

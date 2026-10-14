@@ -3,6 +3,7 @@ import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapsh
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
+import { runPluginSurfaceApi } from "./plugin_surface_api.mjs";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import fsSync from "node:fs";
@@ -44,6 +45,7 @@ import {
   requestLifecycleWorkspaceV2InPage,
   requestWorkspaceV2InPage,
 } from "./bridge_raw_request.mjs";
+import { collectExternalRendererRequests } from "./renderer_diagnostics_policy.mjs";
 import {
   beginWorkspaceActivationCapture,
   waitForCapturedBridgeMessage,
@@ -154,17 +156,7 @@ function assertCleanRendererDiagnostics(recorder, consoleEntries, pageErrors, ne
     if (ALWAYS_FATAL_CONSOLE_PATTERNS.some((pattern) => pattern.test(entry.text))) return true;
     return true;
   });
-  const externalRequests = networkEntries.filter((entry) => {
-    let url;
-    try {
-      url = new URL(entry.url);
-    } catch {
-      return false;
-    }
-    if (!["http:", "https:"].includes(url.protocol)) return false;
-    if (url.protocol === "https:" && url.hostname === "app.vibetable.local") return false;
-    return !["127.0.0.1", "::1", "localhost"].includes(url.hostname);
-  });
+  const externalRequests = collectExternalRendererRequests(networkEntries);
   recorder.check(
     "renderer completed without errors, unexpected diagnostics, or external HTTP traffic",
     pageErrors.length === 0
@@ -12660,6 +12652,10 @@ const scenarios = {
   },
   "45-common-field-display": scenario45,
   "46-dashboard-native-output": scenario46,
+  "47-plugin-surface-api": (page, recorder, _network, runtime) => runPluginSurfaceApi(page, recorder, runtime, {
+    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+  }),
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {

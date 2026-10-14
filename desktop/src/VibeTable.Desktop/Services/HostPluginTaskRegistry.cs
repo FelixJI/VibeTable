@@ -14,7 +14,7 @@ namespace VibeTable.Desktop.Services;
 /// another binding are rejected instead of being replayed.
 /// </summary>
 internal sealed record HostPluginTaskBinding(
-    IPluginRpcGateway Gateway,
+    IPluginRpcGateway? Gateway,
     long GatewayGeneration,
     PluginProjectContext Context,
     ProductAuthoritySnapshot Authority);
@@ -75,7 +75,7 @@ internal sealed class HostPluginTaskRegistry
         lock (_gate)
         {
             IReadOnlyList<HostPluginTaskSettlement> settled =
-                SettleAllLocked("backend-client-replaced");
+                SettleLocked(record => record.Binding.Gateway is not null, "backend-client-replaced");
             _gateway = gateway;
             _context = context;
             _gatewayGeneration += 1;
@@ -91,7 +91,7 @@ internal sealed class HostPluginTaskRegistry
         {
             if (!ReferenceEquals(_gateway, expected)) return [];
             IReadOnlyList<HostPluginTaskSettlement> settled =
-                SettleAllLocked("backend-client-unavailable");
+                SettleLocked(record => ReferenceEquals(record.Binding.Gateway, expected), "backend-client-unavailable");
             _gateway = null;
             _gatewayGeneration += 1;
             return settled;
@@ -155,6 +155,61 @@ internal sealed class HostPluginTaskRegistry
                     _gatewayGeneration,
                     _context,
                     snapshot);
+        }
+    }
+
+    internal HostPluginTaskBinding? CaptureNative()
+    {
+        ProductAuthoritySnapshot authority = _authority.Snapshot();
+        return authority.Context is null ? null : new(null, 0, authority.Context, authority);
+    }
+
+    internal (CancellationToken Token, PluginEventEnvelope Envelope) NativeTask(HostPluginTaskBinding binding, PluginRuntimeTaskSnapshot snapshot)
+    {
+        lock (_gate)
+        {
+            if (_tasks.Values.Count(record => !IsTerminalLocked(record)) >= 64)
+                throw new PluginSurfacePolicyException("plugin_concurrency_limit", "Too many active plugin tasks.");
+            if (!AdmitTask(binding, snapshot)) throw new InvalidOperationException("Plugin session is stale.");
+            var record = _tasks[snapshot.TaskId];
+            return (record.Lifetime.Token, ProjectLocked(record, "plugin.task.changed"));
+        }
+    }
+
+    internal PluginEventEnvelope? FinishNative(string taskId, string state, PluginRuntimeResult? result = null, PluginRuntimeSafeError? error = null)
+    {
+        lock (_gate)
+        {
+            if (!_tasks.TryGetValue(taskId, out var record) || record.Binding.Gateway is not null || IsTerminalLocked(record)) return null;
+            record.Snapshot = record.Snapshot with { State = state, Result = result, Error = error };
+            record.Revision++;
+            CancelLifetimeLocked(record);
+            ClearPendingLocked(record.Snapshot.RunId);
+            return IsCurrentLocked(record.Binding) && IsVisibleInCurrentContextLocked(record)
+                ? ProjectLocked(record, "plugin.task.changed") : null;
+        }
+    }
+
+    internal (PluginEventEnvelope Envelope, Task<bool> Decision) NativeConfirmation(string taskId, JsonElement plan, int count)
+    {
+        lock (_gate)
+        {
+            var record = _tasks[taskId];
+            if (record.Binding.Gateway is not null || !IsCurrentLocked(record.Binding) || record.Snapshot.CancelRequested || IsTerminalLocked(record))
+                throw new OperationCanceledException();
+            string interactionId = Guid.NewGuid().ToString("N");
+            double expires = Now() + 120;
+            var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+            _interactions[record.Snapshot.RunId] = pending;
+            var preview = new PluginRuntimeConfirmationPreview(
+                [new Dictionary<string, JsonElement> { ["collection"] = plan.GetProperty("collection").Clone() }],
+                plan.GetProperty("operations").EnumerateArray().Take(10)
+                    .Select(operation => (IReadOnlyDictionary<string, JsonElement>)operation.EnumerateObject().ToDictionary(property => property.Name, property => property.Value.Clone())).ToArray(), count, []);
+            var confirmation = new PluginRuntimePendingConfirmation(interactionId, record.Snapshot.Risk!, "批准插件保存当前精确计划", preview, expires);
+            var interaction = new PluginRuntimeInteractionSnapshot(record.Snapshot.RunId, record.Snapshot.ProjectKey, record.Snapshot.PluginId, record.Snapshot.ActionId, "desktop-host", null, confirmation, false);
+            record.Revision++;
+            return (new(PluginContractVersions.Event, "plugin.interaction.requested", record.Snapshot.ProjectKey, record.Snapshot.RunId, record.Revision,
+                JsonSerializer.SerializeToElement(interaction, PluginTaskJson.Options)), pending.NativeDecision.Task);
         }
     }
 
@@ -376,6 +431,7 @@ internal sealed class HostPluginTaskRegistry
             if (request.Decision is not ("approved" or "rejected"))
                 return new("expired", null);
             pending.Decision = request.Decision;
+            pending.NativeDecision?.TrySetResult(request.Decision == "approved");
             gateway = pending.Binding.Gateway;
             return new("resolved", request.Decision);
         }
@@ -470,6 +526,14 @@ internal sealed class HostPluginTaskRegistry
         foreach (HostPluginTaskRecord record in _tasks.Values.Where(filter).ToList())
         {
             if (IsTerminalLocked(record)) continue;
+            if (record.Binding.Gateway is null)
+            {
+                // Native execution owns its final outcome and durable audit. A
+                // retired session requests cancellation; it cannot invent rollback.
+                CancelLifetimeLocked(record);
+                ClearPendingLocked(record.Snapshot.RunId);
+                continue;
+            }
             PluginRuntimeSafeError error = new(
                 "vibetable.plugin-error.v1",
                 AbortedErrorCode,
@@ -506,9 +570,9 @@ internal sealed class HostPluginTaskRegistry
         JsonSerializer.SerializeToElement(record.Snapshot, PluginTaskJson.Options));
 
     private bool IsCurrentLocked(HostPluginTaskBinding binding) =>
-        ReferenceEquals(_gateway, binding.Gateway)
+        (binding.Gateway is null || (ReferenceEquals(_gateway, binding.Gateway)
         && _gatewayGeneration == binding.GatewayGeneration
-        && _context == binding.Context
+        && _context == binding.Context))
         && _authority.IsCurrent(binding.Authority);
 
     private static bool IsTerminalLocked(HostPluginTaskRecord record)
@@ -577,6 +641,7 @@ internal sealed class HostPluginTaskRegistry
     private sealed class HostPluginInteractionRecord(
         HostPluginTaskBinding binding, string interactionId, double expiresAt)
     {
+        public TaskCompletionSource<bool>? NativeDecision { get; init; }
         public HostPluginTaskBinding Binding { get; } = binding;
         public string InteractionId { get; } = interactionId;
         public double ExpiresAt { get; } = expiresAt;

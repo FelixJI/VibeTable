@@ -47,9 +47,15 @@ class PluginRegistryError(Exception):
 
 
 def validate_install_plan(plan: InstallPlan) -> None:
-    """Reject plans whose manifest leaves the closed local-worker contract."""
+    """Reject plans whose manifest leaves the closed execution contract."""
 
-    if any(action.mode != "local" or not action.worker_entry for action in plan.manifest.actions):
+    # workerEntry is the v1 local-worker contract; v2 (pluginApi 3.x)
+    # workerless custom-view actions are pinned by the manifest contract.
+    worker_entry_required = plan.manifest.schema_id == "vibetable.plugin-manifest.v1"
+    if any(
+        action.mode != "local" or (worker_entry_required and not action.worker_entry)
+        for action in plan.manifest.actions
+    ):
         raise PluginRegistryError(
             "only local-worker actions are supported",
             code="plugin_manifest_legacy",

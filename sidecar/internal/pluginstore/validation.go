@@ -26,7 +26,15 @@ func validateObject(object map[string]any, allowed, texts string) error {
 
 func validateManifest(value any, pluginID, version string) error {
 	manifest, ok := value.(map[string]any)
-	if !ok || manifest["pluginId"] != pluginID || manifest["version"] != version || manifest["$schema"] != "vibetable.plugin-manifest.v1" {
+	if !ok || manifest["pluginId"] != pluginID || manifest["version"] != version {
+		return invalidPayload()
+	}
+	compatibility, valid := manifest["compatibility"].(map[string]any)
+	if !valid {
+		return invalidPayload()
+	}
+	native := manifest["$schema"] == "vibetable.plugin-manifest.v2" && compatibility["pluginApi"] == "3.x"
+	if !native && (manifest["$schema"] != "vibetable.plugin-manifest.v1" || compatibility["pluginApi"] == "3.x") {
 		return invalidPayload()
 	}
 	if err := validateObject(manifest, "$schema pluginId version displayName description compatibility permissions actions ui", "pluginId version"); err != nil {
@@ -46,7 +54,14 @@ func validateManifest(value any, pluginID, version string) error {
 		if !ok || action["mode"] != "local" {
 			return invalidPayload()
 		}
-		if err := validateObject(action, "actionId displayName description mode risk invocation placements requires workerEntry formSchema inputSchema outputSchema", "actionId workerEntry"); err != nil {
+		required := "actionId workerEntry"
+		if native {
+			required = "actionId"
+			if action["workerEntry"] != nil {
+				return invalidPayload()
+			}
+		}
+		if err := validateObject(action, "actionId displayName description mode risk invocation placements requires workerEntry formSchema inputSchema outputSchema", required); err != nil {
 			return err
 		}
 		if risk := action["risk"]; risk != "read" && risk != "write" && risk != "destructive" {
@@ -54,6 +69,20 @@ func validateManifest(value any, pluginID, version string) error {
 		}
 		if invocation := action["invocation"]; invocation != "manual" && invocation != "webhook" {
 			return invalidPayload()
+		}
+		if native {
+			ui := manifest["ui"].(map[string]any)
+			views, _ := ui["customViews"].([]any)
+			found := false
+			for _, value := range views {
+				view, ok := value.(map[string]any)
+				if ok && view["actionId"] == action["actionId"] && textValue(view["viewId"]) != "" && textValue(view["entry"]) != "" {
+					found = true
+				}
+			}
+			if !found {
+				return invalidPayload()
+			}
 		}
 	}
 	return nil

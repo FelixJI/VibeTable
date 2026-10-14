@@ -1,32 +1,86 @@
 # VibeTable 插件开发与 GitHub 发布
 
-VibeTable 插件是离线优先的 `.vtplugin` 包。插件 Worker 通过声明式 capability 读取数据，返回
-MutationPlan 请求修改；由 Host 展示最终确认后交给 Go 提交。Worker
-当前工作区，不能直接访问 PocketBase、SQLite、本机路径或任意网络。宿主在安装前展示 manifest
+VibeTable 插件是离线优先的 `.vtplugin` 包。新代码页面通过隔离 WebView2 frame 的闭集 SDK 读取数据、
+保留草稿并请求 MutationPlan 预览/保存；Host 展示精确计划并一次确认，Go 完成事务。
+旧 1.x/2.x 包暂时保留 Worker 链。两条链均不能直接访问 PocketBase、SQLite、本机路径或任意网络。宿主在安装前展示 manifest
 中的权限、兼容性和动作风险，用户批准后才会提交安装事务。
 
 ## 1. 权威工具与版本边界
 
-- Manifest schema：`vibetable.plugin-manifest.v1`
+- Manifest schema：旧包 `vibetable.plugin-manifest.v1`；新页面 `vibetable.plugin-manifest.v2`
 - Plugin result：`vibetable.plugin-result.v1`
 - TypeScript SDK：`sdk/plugin/`
 - 开发与打包 CLI：`scripts/vibetable_plugin.py`
 - 包解析与完整性契约：`backend/infrastructure/plugin_package.py`
-- 可运行示例：`examples/plugins/data-overview/`、`examples/plugins/normalize-text/`
+- 可运行示例：`examples/plugins/surface-data-editor/`（无 Worker）、`examples/plugins/data-overview/`、`examples/plugins/normalize-text/`（旧链）
 
-当前 SDK 支持 Plugin API 1.x/2.x，包标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
+当前 SDK 支持 Plugin API 1.x/2.x/3.x，包标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
 外部插件仓库不得声明一个并不存在的 npm 版本；应在 CI 中 checkout 明确的 VibeTable commit，
 并用该 commit 的 SDK/CLI 完成最终 validate/build/pack。固定 commit 需要由插件维护者显式更新，
 这样一次 Release 的包契约不会随 `main` 漂移。
 
 Host 产品版本取唯一版本源 `backend/_version.py`；SDK 的 `1.0.0` 和 manifest 的
-`pluginApi: "1.x"` / `"2.x"` 是不同的版本边界。示例当前 `minHostVersion: "0.5.1"`，不要求不存在的
+`pluginApi: "1.x"` / `"2.x"` / `"3.x"` 是不同的版本边界。旧示例 `minHostVersion: "0.5.1"`，新示例为 `0.5.3`，不要求不存在的
 Host 1.0。该最低版本号不承诺已发布的 0.5.1 包实现本分支新增合同；新增 rowGuards /
 expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 Host 配套验证。本 Task
 不升级产品版本、不发版。使用仓库锁定的 Python、Node/npm；Python 环境通过 `uv sync --frozen --group dev
 --group build` 恢复，插件不会启动额外的数据库权威。
 
 ## 2. 推荐目录
+
+### 2.1 无 Worker 的隔离页面 API
+
+`manifest.v2` 必须声明 `compatibility.pluginApi: "3.x"`，动作不允许 `workerEntry`；通过
+`ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`；本版本不支持无页面动作。
+CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
+编译到声明的 `script`，打包仍走既有完整性契约；`build` 在任何编译前先按包路径规则校验每个声明输出
+（绝对路径、`..` 穿越与 reparse point 逃逸直接拒绝，且输出必须是 Host 实际执行的 `.js`/`.mjs` 成员、
+不得覆盖 `manifest.json`、entry/html/style 或 schema 等插件输入），声明输出（含 `dist/` 之外的路径）执行与 `dist/` 产物
+一致的自包含检查。`ui.customViews` 的 `entry/html/script/style` 引用必须是 Host canonical 形式
+（拒绝 `./` 前缀、反斜杠与未规范化的 Unicode，不做静默改写）。旧 Host 拒绝 v2，未知 API/合同版本拒绝；
+旧 SDK `data.mutate` 不改变拒绝语义。
+
+```typescript
+import { createSurfaceClient } from "@vibetable/plugin-sdk";
+const api = createSurfaceClient(window.name);
+const context = await api.context.read();
+const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"] });
+```
+
+公开合同是 `contracts/plugin-surface-api.v1.json`。方法闭集为 `context.read`、`data.describe/query`、
+`storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
+查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
+中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
+只有获准读取 `id` 时才返回 rowGuards，按 ID 更新也要求该授权。`context.read` 保留绑定的用户上下文；
+选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
+隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
+
+写入计划使用 `vibetable.surface-mutation-plan.v1`，包含 `collection`、`schemaRevision` 和
+`create/update` operations；更新必须带查询的 `expectedDigest`。`mutation.preview` 返回不可转移的
+`planId`，`mutation.submit(planId, signal?)` 只请求宿主确认，不能传入 `approved`。
+Host 展示真实操作样本和数量、绑定精确计划并单次消费；surface 的 actionId 和风险固定为实际
+customView 对应的声明动作。同 entry 的不同动作持有独立 surface token 和调用上下文；
+Go 独立核对当前 manifest 的 action/entry 绑定。read 页面不能请求写计划，
+write/destructive 风险原样进入任务、确认和持久审计。`requires.selection` 的 one-or-more/exactly-one
+在 Host describe 时校验，不满足时不改变已绑定上下文。Interface 的动作按钮目前仅支持 Worker 动作，
+3.x 页面动作不进入其选择器，已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
+revision/status、权限、包修订。拒绝/提交前取消零写入，冲突返回权威错误；丢失或不完整回执为
+`plugin_commit_unknown`，不得自动重放，迟到取消或工作区退役保留已读取并完整校验的 applied/replayed 回执成功；旧任务通知不投递到新会话。
+
+Host 在真实 frame 创建时捕获可信 iframe name/token，验证 WebMessage 的实际 source 文档，
+并绑定安装、workspace UUID/sessionEpoch 和授权上下文。插件 payload 的 `pluginId/projectKey/scope`
+不受信任且作为额外字段拒绝。私设由 Go pluginstore 按安装私有目录、CAS 和当前授权管理。
+私设 key 必须符合 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`，JSON 值最多 65536 UTF-8 字节。
+
+每次真实保存 run 在确认前持久记录 `action.started`；记录失败不进入确认或提交。
+成功的 `action` 审计和数据在同一 Go 事务提交，其他终态由原 run 身份记录，禁用不删除该历史。
+回执丢失时 Host 的 `action.observed/unknown` 不覆盖 Go 已确定的成功审计。异常退出只留下
+`action.started/unknown` 表示没有可确认的终态；宿主退役有界收束，无法访问原 generation 时不向新工作区补写。
+
+每条消息及 Go请求上限 1 MiB，分页最多 200 行，每 surface 最多 8 个在途请求/8 个预览计划、
+64 个游标句柄；普通请求 15 秒，Host 确认/提交请求 120 秒，句柄一次消费。长驻页面没有旧
+Worker 的 15 秒/64 次总寿命。完整示例和同包 `47-plugin-surface-api` 会在禁用旧 Node 执行器时
+完成 550 条查询和拒绝/取消/批准保存；测试环境开关仅设置在该合成 Host 子进程。
 
 ```text
 manifest.json
@@ -72,7 +126,13 @@ uv run python scripts/vibetable_plugin.py pack examples/plugins/data-overview `
 ```
 
 `build` 会用插件本地、锁定的 esbuild 将 Worker 打成自包含 ESM，并拒绝动态 import、未打包
-runtime import 和 Worker 网络全局。`pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
+runtime import、Worker 网络全局与 WebRTC 出站 API（`RTCPeerConnection` 及其 webkit 别名）；
+v2 surface 声明的 `script` 输出（即使位于 `dist/` 之外）同样纳入
+这些检查与产物计数，包内其它宿主以 `text/javascript` 服务的 `.js`/`.mjs` 成员（大小写不敏感，
+页面可经 `script-src 'self'` 加载）也在检查范围内；`src`/`tests`/`node_modules` 等本地开发输入不参与。
+运行时纵深：Host 在首次 Navigate 前以 document-created 注入统一禁用两别名（不可写、不可配置），
+构建检查为纵深，不单独承担封锁保证；不依赖 Runtime 尚不支持的 CSP `webrtc` 指令。
+`pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
 `dist` 或 `integrity.json` 后跳过 build/pack。
 
 示例 `npm test` 会先调用上述真实 CLI build，再测试编译后的 Worker。CLI 的 `validate`

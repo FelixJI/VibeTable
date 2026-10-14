@@ -105,6 +105,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
+    internal HostPluginTaskRegistry Tasks => _taskRegistry;
 
     public static bool Handles(string requestType) =>
         requestType.StartsWith("plugin.", StringComparison.Ordinal);
@@ -284,6 +285,38 @@ public sealed class PluginRequestDispatcher : IDisposable
                 or "plugin.lifecycle.rollback" or "plugin.lifecycle.uninstall"
                 or "plugin.action.describe" or "plugin.action.start"))
                 throw new PluginDispatchException("UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'.");
+            if (request.Type == "plugin.action.describe")
+            {
+                var describe = Read<PluginDescribeActionParams>(request.Payload);
+                bool native = _nativePlugins.TryGetValue((describe.ProjectKey, describe.PluginId), out var actions);
+                if (native)
+                {
+                    var action = actions!.Declared.FirstOrDefault(action => action.ActionId == describe.ActionId);
+                    if (action is null) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
+                    if (_projectContext()?.ProjectKey != describe.ProjectKey || describe.Context.ProjectKey != describe.ProjectKey) throw StaleTask();
+                    if (!actions.Available.Contains(describe.ActionId))
+                    {
+                        _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
+                        return;
+                    }
+                    string? selection = action.Requires.ValueKind == JsonValueKind.Object
+                        && action.Requires.TryGetProperty("selection", out var required) && required.ValueKind == JsonValueKind.String ? required.GetString() : null;
+                    string? reason = selection switch
+                    {
+                        "one-or-more" when describe.Context.SelectedKeys.Count == 0 => "selection_required",
+                        "exactly-one" when describe.Context.SelectedKeys.Count != 1 => "single_selection_required",
+                        _ => null,
+                    };
+                    if (reason is not null)
+                    {
+                        _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, [reason]));
+                        return;
+                    }
+                    _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context);
+                    _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(true, []));
+                    return;
+                }
+            }
             if (_ensureGateway is not null)
             {
                 PluginProjectContext? context = _projectContext();
@@ -655,7 +688,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginRuntimeTaskSnapshot reported;
         try
         {
-            reported = await binding.Gateway.StartActionAsync(
+            reported = await binding.Gateway!.StartActionAsync(
                 request with { TaskId = taskId, RunId = runId }, token).ConfigureAwait(false);
         }
         catch (Exception)
@@ -663,14 +696,14 @@ public sealed class PluginRequestDispatcher : IDisposable
             PostSingleSettlement(_taskRegistry.AbortTask(taskId));
             throw;
         }
-        if (!_taskRegistry.TryApplyStartResult(binding.Gateway, reported))
+        if (!_taskRegistry.TryApplyStartResult(binding.Gateway!, reported))
         {
             SafeDiagnosticTrace(
                 "Plugin action start was rejected as stale; " +
                 $"taskId={taskId}");
             PostSingleSettlement(_taskRegistry.AbortTask(taskId));
             await ObserveCancelAsync(
-                () => binding.Gateway.CancelTaskAsync(
+                () => binding.Gateway!.CancelTaskAsync(
                     new PluginTaskParams(taskId),
                     CancellationToken.None)).ConfigureAwait(false);
             throw StaleTask();
@@ -710,7 +743,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             out PluginRuntimeTaskSnapshot snapshot,
             out HostPluginTaskBinding binding);
         if (outcome == HostPluginTaskCancelOutcome.NotFound) throw UnknownTask();
-        if (outcome == HostPluginTaskCancelOutcome.Active)
+        if (outcome == HostPluginTaskCancelOutcome.Active && binding.Gateway is not null)
         {
             _ = ObserveRevokeRunAsync(binding.Gateway, snapshot.RunId);
             await ObserveCancelAsync(
@@ -888,6 +921,9 @@ public sealed class PluginRequestDispatcher : IDisposable
         "PLUGIN_TASK_NOT_FOUND",
         "Plugin task was not found for the current project session.");
 
+    private sealed record NativeActions(IReadOnlyList<PluginRuntimeAction> Declared, string[] Available);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), NativeActions> _nativePlugins = new();
+
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
     {
         string? localPackage = PluginRetainedPackage.PathFor(
@@ -899,6 +935,15 @@ public sealed class PluginRequestDispatcher : IDisposable
             snapshot.PackageHash);
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
         PluginRuntimeManifest manifest = snapshot.Manifest with { Ui = ProjectCustomViews(snapshot, registered) };
+        if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
+        {
+            string[] available = manifest.Ui.TryGetProperty("customViews", out var views) && views.ValueKind == JsonValueKind.Array
+                ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
+                    && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
+                    .Select(view => view.GetProperty("actionId").GetString()!).ToArray() : [];
+            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(snapshot.Manifest.Actions, available);
+        }
+        else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         return snapshot with
         {
             SourceLocation = HostManagedSource,
@@ -923,6 +968,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         }
 
         var candidates = views.OfType<JsonObject>().ToArray();
+        bool native = snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x";
         foreach (JsonObject view in candidates)
         {
             view.Remove("src");
@@ -934,6 +980,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                 continue;
             }
             string? actionId = ReadNodeString(view["actionId"]);
+            if (native && (string.IsNullOrWhiteSpace(actionId)
+                || !snapshot.Manifest.Actions.Any(action => action.ActionId == actionId))) continue;
             if (string.IsNullOrWhiteSpace(actionId))
             {
                 string? viewId = ReadNodeString(view["viewId"]);
@@ -956,7 +1004,11 @@ public sealed class PluginRequestDispatcher : IDisposable
             var surface = _resourceHost.OpenSurface(
                 snapshot.ProjectKey,
                 snapshot.PluginId,
-                entry);
+                entry, actionId);
+            if (_projectContext() is { } context)
+                _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
+                    snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, actionId,
+                    snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry);
             view["actionId"] = actionId;
             view["src"] = surface.DocumentUri.ToString();
             view["surfaceToken"] = surface.SurfaceToken;

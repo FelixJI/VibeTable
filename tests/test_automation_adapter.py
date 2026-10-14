@@ -81,6 +81,9 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
         (("npm", "run", "typecheck"), "examples/plugins/normalize-text"),
         (("npm", "run", "test"), "examples/plugins/normalize-text"),
         (("npm", "run", "build"), "examples/plugins/normalize-text"),
+        (("npm", "run", "typecheck"), "examples/plugins/surface-data-editor"),
+        (("npm", "run", "test"), "examples/plugins/surface-data-editor"),
+        (("npm", "run", "build"), "examples/plugins/surface-data-editor"),
         (("npm", "run", "test:coverage"), "desktop/web-grid"),
     ]
 
@@ -89,7 +92,7 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
     ("project", "script", "expected_calls"),
     [
         ("examples/plugins/data-overview", "test", 4),
-        ("desktop/web-grid", "test:coverage", 9),
+        ("desktop/web-grid", "test:coverage", 12),
     ],
 )
 def test_node_stage_stops_on_plugin_or_web_failure(
@@ -516,7 +519,7 @@ def test_bootstrap_runs_npm_with_the_locked_node_toolchain(
     automation_project.bootstrap()
 
     npm_calls = [(command, env) for command, env in observed if command[:2] == ("npm", "ci")]
-    assert len(npm_calls) == 4
+    assert len(npm_calls) == len(automation_project.NPM_PROJECTS)
     assert all(env is not None for _command, env in npm_calls)
     assert all(
         env is not None
@@ -1169,10 +1172,10 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
 @pytest.mark.parametrize(
     ("lane", "expected"),
     [
-        ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci"]),
+        ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("race-a", ["w64devkit"]),
         ("race-b", ["w64devkit"]),
-        ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci"]),
+        ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("data-io", ["uv-sync", "npm-ci"]),
         ("release", []),
     ],
@@ -1242,6 +1245,7 @@ def test_resilience_prepare_restores_the_example_plugins_its_e2e_rebuilds(
         ("npm ci", "desktop/web-grid"),
         ("npm ci", "examples/plugins/data-overview"),
         ("npm ci", "examples/plugins/normalize-text"),
+        ("npm ci", "examples/plugins/surface-data-editor"),
     ]
 
     observed.clear()

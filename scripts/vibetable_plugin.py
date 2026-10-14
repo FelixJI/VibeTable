@@ -21,6 +21,8 @@ from backend._version import __version__  # noqa: E402
 from backend.infrastructure.plugin_package import (  # noqa: E402
     PluginPackageError,
     inspect_plugin_package,
+    is_local_development_path,
+    normalize_member_path,
     pack_plugin,
 )
 from scripts.node_toolchain import resolve_node  # noqa: E402
@@ -176,7 +178,13 @@ def _command_init(args: argparse.Namespace) -> int:
 
 _DYNAMIC_IMPORT = re.compile(r"\bimport\s*\(")
 _STATIC_RUNTIME_IMPORT = re.compile(r"(?:\bfrom\s*|\bimport\s*)[\"']([^\"']+)[\"']")
-_NETWORK_GLOBAL = re.compile(r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|importScripts)\b")
+_NETWORK_GLOBAL = re.compile(
+    r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|importScripts|RTCPeerConnection"
+    r"|webkitRTCPeerConnection)\b"
+)
+# The Host serves these members as text/javascript (script-src 'self'), so
+# every page can load them regardless of manifest declarations.
+_PAGE_SCRIPT_SUFFIXES = frozenset({".js", ".mjs"})
 
 _BUNDLE_SCRIPT = r"""
 const esbuild = require(process.argv[1]);
@@ -221,7 +229,59 @@ def _find_esbuild(source: Path) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
-def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
+def _protected_inputs(source: Path, manifest: dict[str, Any]) -> frozenset[Path]:
+    """Plugin inputs a declared output must never overwrite, resolved to their
+    physical targets so case differences and in-root junctions still collide."""
+    refs = {"manifest.json"}
+    for action in manifest.get("actions", []):
+        if isinstance(action, dict):
+            for key in ("formSchema", "inputSchema", "outputSchema"):
+                if isinstance(action.get(key), str):
+                    refs.add(normalize_member_path(action[key]))
+    for view in manifest.get("ui", {}).get("customViews", []):
+        if isinstance(view, dict):
+            for key in ("entry", "html", "style"):
+                if isinstance(view.get(key), str):
+                    refs.add(normalize_member_path(view[key]))
+    root = source.resolve()
+    return frozenset((root / ref).resolve() for ref in refs)
+
+
+def _validated_output(source: Path, entry: str, protected: frozenset[Path]) -> Path:
+    """Resolve one declared output, rejecting non-script targets, plugin input
+    collisions, unpackagable locations, and paths that could escape the root."""
+    relative = normalize_member_path(entry)
+    if Path(relative).suffix.lower() not in _PAGE_SCRIPT_SUFFIXES:
+        raise PluginPackageError(
+            "output_suffix_unsupported",
+            f"declared output must be a host-executable .js/.mjs script: {entry}",
+            path=entry,
+        )
+    if is_local_development_path(Path(relative)):
+        raise PluginPackageError(
+            "output_overwrites_input",
+            f"declared output is excluded from the plugin package: {entry}",
+            path=entry,
+        )
+    root = source.resolve()
+    destination = (root / relative).resolve()
+    if destination == root or not destination.is_relative_to(root):
+        raise PluginPackageError(
+            "unsafe_path",
+            f"declared output escapes the plugin root: {entry}",
+            path=entry,
+        )
+    if destination in protected or is_local_development_path(destination.relative_to(root)):
+        raise PluginPackageError(
+            "output_overwrites_input",
+            f"declared output would overwrite a plugin input: {entry}",
+            path=entry,
+        )
+    return destination
+
+
+def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[Path]:
+    """Compile every declared entry in place and return its validated output paths."""
     entries = sorted(
         {
             action["workerEntry"]
@@ -229,8 +289,20 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
             if isinstance(action, dict) and isinstance(action.get("workerEntry"), str)
         }
     )
+    if manifest.get("$schema") == "vibetable.plugin-manifest.v2":
+        entries = sorted(
+            {
+                view["script"]
+                for view in manifest.get("ui", {}).get("customViews", [])
+                if isinstance(view, dict) and isinstance(view.get("script"), str)
+            }
+        )
     if not entries:
-        return 0
+        return []
+    # Every output is validated before any bundler call, so a rejected build
+    # never overwrites plugin inputs or writes outside the plugin root.
+    protected = _protected_inputs(source, manifest)
+    outputs = [(entry, _validated_output(source, entry, protected)) for entry in entries]
     node = _find_node()
     bundler = _find_esbuild(source)
     sdk_entry = REPO_ROOT / "sdk" / "plugin" / "src" / "index.ts"
@@ -239,8 +311,7 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
             "bundler_missing",
             "Node.js, a plugin-local esbuild dependency and Plugin SDK are required to build Workers",
         )
-    for entry in entries:
-        destination = source / entry
+    for entry, destination in outputs:
         worker_source = source / "src" / f"{Path(entry).stem}.ts"
         if not worker_source.is_file():
             raise PluginPackageError(
@@ -271,7 +342,7 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
                 "worker_bundle_failed",
                 f"failed to bundle {worker_source.relative_to(source)}: {detail}",
             )
-    return len(entries)
+    return [destination for _, destination in outputs]
 
 
 def _command_build(args: argparse.Namespace) -> int:
@@ -280,10 +351,24 @@ def _command_build(args: argparse.Namespace) -> int:
     if not manifest_path.is_file():
         raise PluginPackageError("missing_manifest", "manifest.json is required")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    compiled_count = _transpile_declared_workers(package_source, manifest)
-    inspect_plugin_package(package_source)
-    artifacts = sorted((package_source / "dist").rglob("*.js"))
-    for artifact in artifacts:
+    compiled_outputs = _transpile_declared_workers(package_source, manifest)
+    inspected = inspect_plugin_package(package_source)
+    # The validated outputs are this build's real artifacts, so they pass the
+    # same checks even when they live outside dist/.
+    artifacts = {*(package_source / "dist").rglob("*.js")}
+    artifacts.update(compiled_outputs)
+    # Pages execute any same-origin script, so every inspected .js/.mjs member
+    # is checked too. Members are matched through the physical tree because
+    # normalized names (for example NFC) can differ from the name on disk.
+    inspected_members = {member.path for member in inspected.files}
+    artifacts.update(
+        path
+        for path in package_source.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in _PAGE_SCRIPT_SUFFIXES
+        and normalize_member_path(path.relative_to(package_source).as_posix()) in inspected_members
+    )
+    for artifact in sorted(artifacts):
         source = artifact.read_text(encoding="utf-8")
         if _DYNAMIC_IMPORT.search(source):
             raise PluginPackageError(
@@ -304,7 +389,7 @@ def _command_build(args: argparse.Namespace) -> int:
                 f"{artifact.relative_to(package_source)}",
             )
     print(
-        f"build valid ({compiled_count} Workers compiled, "
+        f"build valid ({len(compiled_outputs)} {'surface scripts' if manifest.get('$schema') == 'vibetable.plugin-manifest.v2' else 'Workers'} compiled, "
         f"{len(artifacts)} self-contained JavaScript artifacts)"
     )
     return 0

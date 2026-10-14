@@ -299,6 +299,34 @@ func (service *Service) GetPrivateSetting(
 	return nil, nil
 }
 
+// GetAudit reads one immutable event without materializing the plugin's history.
+func (service *Service) GetAudit(ctx context.Context, projectKey, pluginID, eventID string) (json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return nil, err
+	}
+	if pluginID == "" || eventID == "" {
+		return nil, requestError("plugin.request_invalid", "audit identity is required", nil)
+	}
+	stored, err := findRecord(service.app, KindAudit, projectKey, pluginID, eventID)
+	if err != nil || stored == nil {
+		return nil, err
+	}
+	row, err := recordFromStored(stored)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.validateLegacyRow(row); err != nil {
+		return nil, storageError()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return row.Payload, nil
+}
+
 func (service *Service) ListAudit(
 	ctx context.Context,
 	projectKey string,
@@ -570,13 +598,18 @@ func (service *Service) DeletePrivateSettings(
 	return int(count), err
 }
 
+func (service *Service) DeletePrivateSetting(ctx context.Context, projectKey, pluginID, key string) (bool, error) {
+	count, err := service.deleteWhere(ctx, KindSetting, projectKey, pluginID, key)
+	return count > 0, err
+}
+
 // RecordAudit appends one audit event with a per-project monotonic
 // sequence so list order matches the previous owner's insertion order.
 func (service *Service) RecordAudit(
 	ctx context.Context,
 	event json.RawMessage,
 ) (json.RawMessage, error) {
-	projectKey, pluginID, eventID, err := validateAuditPayload(event)
+	projectKey, _, _, err := validateAuditPayload(event)
 	if err != nil {
 		return nil, err
 	}
@@ -584,31 +617,40 @@ func (service *Service) RecordAudit(
 		return nil, err
 	}
 	err = service.transact(ctx, func(txApp core.App) error {
-		stored, findErr := findRecord(
-			txApp, KindAudit, projectKey, pluginID, eventID,
-		)
-		if findErr != nil {
-			return findErr
-		}
-		if stored != nil {
-			// Audit events are immutable; replaying the same event id is a
-			// no-op instead of silently rewriting history.
-			return nil
-		}
-		seq, seqErr := nextProjectSeq(txApp, KindAudit, projectKey)
-		if seqErr != nil {
-			return seqErr
-		}
-		return saveRecord(txApp, record{
-			Kind: KindAudit, ProjectKey: projectKey,
-			PluginID: pluginID, ItemKey: eventID,
-			Payload: event, Seq: seq,
-		}, false)
+		_, err := New(txApp, service.workspaceID).RecordAuditInTransaction(ctx, event)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return event, nil
+}
+
+// RecordAuditInTransaction appends an immutable audit inside a caller-owned
+// transaction. The caller owns its single business receipt and commit notification.
+func (service *Service) RecordAuditInTransaction(ctx context.Context, event json.RawMessage) (json.RawMessage, error) {
+	if !service.app.IsTransactional() {
+		return nil, requestError("plugin.transaction_required", "audit requires a caller-owned transaction", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	projectKey, pluginID, eventID, err := validateAuditPayload(event)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return nil, err
+	}
+	stored, err := findRecord(service.app, KindAudit, projectKey, pluginID, eventID)
+	if err != nil {
+		return nil, err
+	}
+	if stored != nil {
+		// Audit events are immutable; duplicate event ids never rewrite history.
+		return event, nil
+	}
+	return service.recordAuditTx(service.app, event)
 }
 
 // SetEnabled applies the Go-owned enable/disable transition: it validates

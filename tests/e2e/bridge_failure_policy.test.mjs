@@ -1009,3 +1009,49 @@ test("lookup close acknowledges only the exact retired epoch's late stale termin
     globalThis.__vibetableE2EBridgeDiagnostics = previous;
   }
 });
+
+test("auto-number copy polling collects only busy replies and preserves its deadline", async (t) => {
+  const { waitForCopiedNumber } = await import("./auto_number_journey.mjs");
+  const busy = id => ({
+    type: "operation.failed",
+    requestId: id,
+    payload: { message: "系统剪贴板正被其他程序占用，请重试。", code: "CLIPBOARD_BUSY" },
+  });
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const page = { waitForTimeout: async milliseconds => { now += milliseconds; } };
+  const calls = [];
+
+  // Busy replies racing the landing copy are collected (exact code only);
+  // other failure codes are not; polling still returns the landed copy text.
+  const replies = [
+    busy("e2e-busy-1"),
+    { type: "operation.failed", requestId: "e2e-unavailable",
+      payload: { message: "系统剪贴板当前不可用。", code: "CLIPBOARD_UNAVAILABLE" } },
+    busy("e2e-busy-2"),
+    { type: "clipboard.readText", requestId: "e2e-ok", payload: { text: "HT-000001" } },
+  ];
+  const landed = await waitForCopiedNumber(page, (_page, type, payload) => {
+    calls.push({ type, payload });
+    return replies.shift();
+  }, "HT-000001", Date.now() + 5_000);
+  assert.equal(landed.text, "HT-000001");
+  assert.deepEqual(landed.clipboardBusyReplies.map(reply => reply.requestId), ["e2e-busy-1", "e2e-busy-2"]);
+  assert.ok(calls.every(call => call.type === "clipboard.readText" && JSON.stringify(call.payload) === "{}"));
+
+  // Persistent busy until the deadline: the text never lands, so the journey
+  // would never acknowledge and the hygiene assertion keeps failing.
+  let polls = 0;
+  const stuck = await waitForCopiedNumber(page, () => busy(`e2e-busy-${polls += 1}`),
+    "HT-000001", Date.now() + 200);
+  assert.equal(stuck.text, "");
+  assert.ok(stuck.clipboardBusyReplies.length > 0);
+
+  // Any other failure code is never collected as expected.
+  const other = await waitForCopiedNumber(page, () => ({
+    type: "operation.failed", requestId: "e2e-timeout",
+    payload: { message: "系统剪贴板操作超时，请重试。", code: "CLIPBOARD_TIMEOUT" },
+  }), "HT-000001", Date.now() + 100);
+  assert.equal(other.text, "");
+  assert.deepEqual(other.clipboardBusyReplies, []);
+});

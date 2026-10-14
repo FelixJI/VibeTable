@@ -43,6 +43,7 @@ var workspaceV2ReadOnlyPosts = map[string]struct{}{
 }
 
 var workspaceV2CoordinatedPosts = map[string]struct{}{
+	pluginSurfaceAPIPath:                           {},
 	sourceImportPath + "/start":                    {},
 	sourceImportPath + "/finish":                   {},
 	sourceImportPath + "/execute":                  {},

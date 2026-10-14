@@ -139,6 +139,8 @@ class PluginExecutionRuntime:
         installation = await self._registry.get(context.project_key, plugin_id)
         if installation is None:
             return ActionAvailability(available=False, reasons=["plugin_not_installed"])
+        if installation.manifest.compatibility.get("pluginApi") == "3.x":
+            return ActionAvailability(available=False, reasons=["plugin_surface_api_required"])
         reasons = list(installation.blocking_reasons)
         if installation.status != "enabled":
             reasons.append("plugin_disabled")
@@ -266,6 +268,8 @@ class PluginExecutionRuntime:
         try:
             if self._worker is None:
                 raise ValueError("plugin worker is unavailable")
+            if action.worker_entry is None:
+                raise ValueError("plugin_surface_api_required")
             handle = self._executions[initial.task_id]
             try:
                 if cancel.cancelled:

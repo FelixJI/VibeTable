@@ -184,3 +184,44 @@ def test_validate_install_plan_rejects_legacy_remote_actions() -> None:
         validate_install_plan(plan)
 
     assert error.value.code == "plugin_manifest_legacy"
+
+
+def test_validate_install_plan_accepts_v2_surface_actions_without_worker_entries() -> None:
+    # Mirrors examples/plugins/surface-data-editor: v2 workerless custom-view
+    # actions are pinned by the manifest contract, Go store and Host checks.
+    manifest = PluginManifest.model_validate(
+        {
+            "$schema": "vibetable.plugin-manifest.v2",
+            "pluginId": "com.example.surface",
+            "version": "1.0.0",
+            "displayName": {"en": "Surface"},
+            "compatibility": {"pluginApi": "3.x"},
+            "permissions": {"data": [], "files": [], "privateStorage": True},
+            "actions": [
+                {
+                    "actionId": "open-editor",
+                    "displayName": {"en": "Open"},
+                    "mode": "local",
+                    "risk": "write",
+                    "invocation": "manual",
+                }
+            ],
+            "ui": {
+                "customViews": [
+                    {"viewId": "editor", "actionId": "open-editor", "entry": "ui/index.html"}
+                ]
+            },
+        }
+    )
+
+    validate_install_plan(
+        InstallPlan(
+            plan_id="plan-v2",
+            project_key="local:default",
+            project_revision="project-1",
+            source_type="package",
+            source_location="surface.vtplugin",
+            package_hash="sha256:v2",
+            manifest=manifest,
+        )
+    )

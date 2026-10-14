@@ -316,6 +316,39 @@ describe("InterfaceRuntime", () => {
     wrapper.unmount();
   });
 
+  it("rejects existing native page action bindings without describing or starting a Worker", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const plugins = usePluginStore();
+    plugins.setProjectContext("local:default", "interface-session:1");
+    const native: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest,
+      $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
+      actions: plugin.manifest.actions.map(action => ({ ...action, workerEntry: null })),
+      ui: { customViews: [{ viewId: "native", actionId: "normalize", entry: "ui/index.html" }] },
+    } };
+    plugins.applyPlugin(native);
+    const h = host();
+    const request = vi.fn(async (type: string, payload: Record<string, unknown>) => {
+      if (type === "plugin.catalog.list") return [native];
+      if (type === "plugin.action.describe") return { available: true, reasons: [] };
+      if (type === "plugin.action.start") return { ...runningPluginTask(), state: "succeeded" };
+      return (h.request as (type: string, payload: Record<string, unknown>) => Promise<unknown>)(type, payload);
+    });
+    setHostBridgeForTesting({ ...h.bridge, request } as HostBridge);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const wrapper = mount(InterfaceRuntime, {
+      props: { definition: pluginDefinition(), activePageId: "list", previewWidth: "desktop" },
+      global: { plugins: [pinia] },
+    });
+    await flushPromises();
+    await wrapper.get('[data-testid="interface-runtime-plugin"] button').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("此插件动作需要独立插件页面，暂不支持界面按钮执行。");
+    expect(request.mock.calls.filter(([type]) => type === "plugin.action.describe" || type === "plugin.action.start")).toEqual([]);
+    expect(wrapper.text()).not.toContain("操作已完成");
+    wrapper.unmount();
+  });
+
   it("keeps a plugin action running until its broker confirmation is approved", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);

@@ -1,0 +1,15 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.surface-data-editor",
+  "version": "1.0.0",
+  "displayName": { "zh-CN": "无 Worker 数据编辑示例" },
+  "compatibility": { "minHostVersion": "0.5.3", "pluginApi": "3.x" },
+  "permissions": {
+    "data": [{ "collection": "$active", "operations": ["read", "query", "update"], "fields": ["*"] }],
+    "privateStorage": true,
+    "files": [],
+    "network": { "domains": [], "methods": [] }
+  },
+  "actions": [{ "actionId": "open-editor", "displayName": { "zh-CN": "打开无 Worker 编辑器" }, "mode": "local", "risk": "write", "invocation": "manual", "placements": ["table.toolbar"] }],
+  "ui": { "customViews": [{ "viewId": "editor", "actionId": "open-editor", "entry": "ui/index.html", "script": "dist/surface.js" }] }
+}

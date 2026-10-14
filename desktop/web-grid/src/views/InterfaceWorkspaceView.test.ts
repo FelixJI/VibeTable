@@ -4,6 +4,8 @@ import { defineComponent, h } from "vue";
 import { NSelect } from "naive-ui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { PluginSnapshot } from "@/contracts";
+import { usePluginStore } from "@/stores/pluginStore";
 import type { HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { provideSurfaceService, useSurfaceService } from "@/services/surfaceService";
@@ -30,11 +32,12 @@ function mountView(repository: SurfaceRepository = new InMemorySurfaceRepository
       return () => h(InterfaceWorkspaceView);
     },
   });
+  const pinia = createPinia();
   const wrapper = mount(Host, {
     attachTo: document.body,
-    global: { plugins: [createPinia()] },
+    global: { plugins: [pinia] },
   });
-  return { wrapper, service };
+  return { wrapper, service, pinia };
 }
 
 describe("InterfaceWorkspaceView", () => {
@@ -49,6 +52,48 @@ describe("InterfaceWorkspaceView", () => {
     setHostBridgeForTesting(null);
     document.body.innerHTML = "";
     vi.restoreAllMocks();
+  });
+
+  it("offers only Worker actions and cannot select native actions even through a stale plugin value", async () => {
+    const { wrapper, service, pinia } = mountView();
+    await flushPromises();
+    service.create("动作选择");
+    const legacy: PluginSnapshot = {
+      projectKey: "local:default", pluginId: "legacy", version: "1.0.0", packageHash: "sha256:synthetic",
+      sourceType: "package", sourceLocation: "host-managed", status: "enabled", revision: 1, schemas: {}, disabledReason: null,
+      manifest: { $schema: "vibetable.plugin-manifest.v1", pluginId: "legacy", version: "1.0.0", displayName: { "zh-CN": "旧动作" },
+        description: {}, compatibility: { pluginApi: "2.x" }, permissions: {}, ui: {},
+        actions: [{ actionId: "run", displayName: { "zh-CN": "执行" }, description: {}, mode: "local", risk: "write", invocation: "manual", placements: [], requires: {}, workerEntry: "dist/run.js", formSchema: null, inputSchema: null, outputSchema: null }],
+      },
+    };
+    const native: PluginSnapshot = { ...legacy, pluginId: "native", manifest: { ...legacy.manifest, pluginId: "native", $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" }, displayName: { "zh-CN": "页面动作" }, actions: legacy.manifest.actions.map(action => ({ ...action, workerEntry: null })), ui: { customViews: [{ viewId: "native", actionId: "run", entry: "ui/index.html" }] } } };
+    usePluginStore(pinia).setProjectContext("local:default", "selector:1");
+    usePluginStore(pinia).applyPlugin(legacy);
+    usePluginStore(pinia).applyPlugin(native);
+    await wrapper.vm.$nextTick();
+    wrapper.get('[data-testid="interface-action-kind"]').findComponent(NSelect).vm.$emit("update:value", "plugin");
+    await wrapper.vm.$nextTick();
+    const labels = wrapper.findAll("label");
+    const pluginSelect = labels.find(label => label.text().startsWith("插件") && !label.text().startsWith("插件动作"))!.findComponent(NSelect);
+    expect(pluginSelect.props("options")).toEqual([{ value: "legacy", label: "旧动作" }]);
+    pluginSelect.vm.$emit("update:value", "native");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll("label").find(label => label.text().startsWith("插件动作"))!.findComponent(NSelect).props("options")).toEqual([]);
+    const nativeActionSelect = wrapper.findAll("label").find(label => label.text().startsWith("插件动作"))!.findComponent(NSelect);
+    nativeActionSelect.vm.$emit("update:value", "run");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[data-testid="interface-add-action"]').attributes("disabled")).toBeDefined();
+    await wrapper.get('[data-testid="interface-add-action"]').trigger("click");
+    expect(service.state.value.draft!.actions).toHaveLength(0);
+    pluginSelect.vm.$emit("update:value", "legacy");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findAll("label").find(label => label.text().startsWith("插件动作"))!.findComponent(NSelect).props("options")).toEqual([{ value: "run", label: "执行" }]);
+    wrapper.findAll("label").find(label => label.text().startsWith("插件动作"))!.findComponent(NSelect).vm.$emit("update:value", "run");
+    await wrapper.vm.$nextTick();
+    await wrapper.get('[data-testid="interface-add-action"]').trigger("click");
+    expect(service.state.value.draft!.actions).toHaveLength(1);
+    expect(service.state.value.draft!.actions[0]).toMatchObject({ pluginId: "legacy", pluginActionId: "run" });
+    wrapper.unmount();
   });
 
   it("builds nested pages, changes preview modes, saves, discards, reopens, and deletes", async () => {

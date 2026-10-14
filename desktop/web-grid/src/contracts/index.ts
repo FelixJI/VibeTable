@@ -1049,14 +1049,14 @@ export interface PluginAction {
   readonly invocation: "manual" | "webhook";
   readonly placements: readonly string[];
   readonly requires: Readonly<Record<string, unknown>>;
-  readonly workerEntry: string;
+  readonly workerEntry?: string | null;
   readonly formSchema: string | null;
   readonly inputSchema: string | null;
   readonly outputSchema: string | null;
 }
 
 export interface PluginManifest {
-  readonly $schema: "vibetable.plugin-manifest.v1";
+  readonly $schema: "vibetable.plugin-manifest.v1" | "vibetable.plugin-manifest.v2";
   readonly pluginId: string;
   readonly version: string;
   readonly displayName: Readonly<Record<string, string>>;

@@ -14,6 +14,18 @@
 
 ## 宿主 Product 调用与 Go owner
 
+无 Worker 插件页面使用 `CoreWebView2.FrameCreated` / `CoreWebView2Frame.WebMessageReceived`
+进入 `PluginSurfaceApi`。可信父页面只分配 iframe name；Host 捕获实际 frame、验证 source/token，
+从安装快照与 workspace epoch 形成 principal。公开 Surface API 没有 Product 任意 method 转发。
+Go 的私有 `/api/vibetable/v3/plugins/surface` 重用 v2 query.Source、pluginstore、MutationKernel；
+Host-only 凭据不进入插件 JSON。MutationKernel 的可信 `Authorize` 回调在事务内、幂等回放之前
+核对撤权和安装代际，业务行 guard 与审计保持原权威路径。
+
+`HostPluginTaskRegistry` 同时拥有迁移期旧 Python gateway 任务和无 gateway 的 native surface
+保存任务、确认消费及公开终态。新页面提交不启动 Python 插件执行器或 Node Worker；Python
+仍可负责旧包安装管理，不能作为新业务执行 fallback。native confirmation 仍由可信 Host UI
+解析与批准，插件仅得到 opaque planId；回执未知不补发，真实成功不被迟到取消覆盖。
+
 `JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method 与严格 Schema v2 解析；
 invoker 按生成 policy/Workspace catalog 选择 Go、Host 或 Python owner。Go HTTP 握手独立持有
 workspace epoch lease 至实际请求完成，单 caller 取消仅结束自身等待。

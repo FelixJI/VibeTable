@@ -23,24 +23,25 @@ const activeToken = ref(props.surfaceToken);
 const valid = computed(() => validatePluginSurfaceUrl(props.src));
 const origin = computed(() => valid.value ? new URL(props.src).origin : "");
 
-function sendTheme(): void {
+function postToSurface(event: "themeChanged" | "taskChanged", payload: unknown): void {
   if (!valid.value || !activeToken.value) return;
+  // postMessage structured-clones its argument, and Vue reactive proxies
+  // cannot be cloned; theme/task are JSON contract snapshots, so post a plain copy.
   frame.value?.contentWindow?.postMessage({
     contract: "vibetable.plugin-surface.v1",
     surfaceToken: activeToken.value,
-    event: "themeChanged",
-    payload: props.theme,
+    event,
+    payload: JSON.parse(JSON.stringify(payload)),
   }, origin.value);
 }
 
+function sendTheme(): void {
+  postToSurface("themeChanged", props.theme);
+}
+
 function sendTask(): void {
-  if (!valid.value || !activeToken.value || !props.task) return;
-  frame.value?.contentWindow?.postMessage({
-    contract: "vibetable.plugin-surface.v1",
-    surfaceToken: activeToken.value,
-    event: "taskChanged",
-    payload: props.task,
-  }, origin.value);
+  if (!props.task) return;
+  postToSurface("taskChanged", props.task);
 }
 
 function onMessage(event: MessageEvent): void {
@@ -93,6 +94,7 @@ onBeforeUnmount(() => {
       v-if="valid"
       ref="frame"
       :src="src"
+      :name="surfaceToken"
       :title="title"
       sandbox="allow-scripts allow-same-origin"
       referrerpolicy="no-referrer"

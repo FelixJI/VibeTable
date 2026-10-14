@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Windows;
@@ -13,6 +14,51 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class ProductWebViewBridgeNativeObjectTests
 {
+    [TestMethod]
+    public void WebRtcDisableScriptLocksBothAliasesAsUndefinedBeforePageScript()
+    {
+        // Execute the production constant with the Node supplied by bootstrap.
+        var start = new ProcessStartInfo("node")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        start.ArgumentList.Add("-e");
+        start.ArgumentList.Add("""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const script = JSON.parse(fs.readFileSync(0, "utf8"));
+const context = { window: { RTCPeerConnection() {}, webkitRTCPeerConnection() {} } };
+vm.createContext(context);
+vm.runInContext(script, context);
+for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection"]) {
+  const descriptor = Object.getOwnPropertyDescriptor(context.window, name);
+  assert.equal(descriptor.value, undefined);
+  assert.equal(descriptor.writable, false);
+  assert.equal(descriptor.configurable, false);
+  assert.throws(() => Object.defineProperty(context.window, name, { value: function () {} }), TypeError);
+}
+console.log("ok");
+""");
+        using var process = Process.Start(start)
+            ?? throw new AssertFailedException("Could not start the configured Node runtime.");
+        process.StandardInput.Write(System.Text.Json.JsonSerializer.Serialize(ProductWebViewBridge.WebRtcDisableScript));
+        process.StandardInput.Close();
+        if (!process.WaitForExit(TimeSpan.FromSeconds(30)))
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit();
+            Assert.Fail("The WebRTC script check exceeded its 30-second deadline.");
+        }
+        string stdout = process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        Assert.AreEqual(0, process.ExitCode, stderr);
+        Assert.AreEqual("ok", stdout.Trim());
+    }
     [TestMethod]
     public void InspectNativeFileIngress_ConvertsAdditionalObjectsFailureToStableError()
     {

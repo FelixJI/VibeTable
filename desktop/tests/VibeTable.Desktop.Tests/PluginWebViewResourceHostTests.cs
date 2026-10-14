@@ -98,6 +98,15 @@ public sealed class PluginWebViewResourceHostTests
                 "project-1", "com.acme.clean",
                 PluginPackageRevision.Create(root, PackageHash));
             var oldSurface = host.OpenSurface("project-1", "com.acme.clean", "ui/index.html");
+            var destructive = host.OpenSurface("project-1", "com.acme.clean", "ui/index.html", "destroy");
+            var write = host.OpenSurface("project-1", "com.acme.clean", "ui/index.html", "write");
+            Assert.AreEqual(destructive.DocumentUri, write.DocumentUri);
+            Assert.AreNotEqual(destructive.SurfaceToken, write.SurfaceToken);
+            Assert.AreEqual(write.SurfaceToken, host.OpenSurface("project-1", "com.acme.clean", "ui/index.html", "write").SurfaceToken);
+            host.CloseSurface(destructive.SurfaceToken);
+            var reopened = host.OpenSurface("project-1", "com.acme.clean", "ui/index.html", "destroy");
+            Assert.AreNotEqual(destructive.SurfaceToken, reopened.SurfaceToken);
+            Assert.AreEqual(write.SurfaceToken, host.OpenSurface("project-1", "com.acme.clean", "ui/index.html", "write").SurfaceToken);
             string newHash = new('f', 64);
 
             host.RegisterInstalled(
@@ -105,11 +114,18 @@ public sealed class PluginWebViewResourceHostTests
                 PluginPackageRevision.Create(root, newHash));
             var upgraded = host.OpenSurface("project-1", "com.acme.clean", "ui/index.html");
 
+            Assert.IsFalse(surfaces.IsActive(write.SurfaceToken));
+            Assert.IsFalse(surfaces.IsActive(reopened.SurfaceToken));
             Assert.IsFalse(surfaces.IsActive(oldSurface.SurfaceToken));
             Assert.AreNotEqual(oldSurface.SurfaceToken, upgraded.SurfaceToken);
             Assert.AreNotEqual(oldSurface.DocumentUri.Host, upgraded.DocumentUri.Host);
             Assert.IsFalse(host.IsRegisteredUri(oldSurface.DocumentUri));
             Assert.IsTrue(host.IsRegisteredUri(upgraded.DocumentUri));
+            var upgradedAction = host.OpenSurface("project-1", "com.acme.clean", "ui/index.html", "write");
+            Assert.AreNotEqual(write.SurfaceToken, upgradedAction.SurfaceToken);
+            host.UnregisterInstalled("project-1", "com.acme.clean");
+            Assert.IsFalse(surfaces.IsActive(upgraded.SurfaceToken));
+            Assert.IsFalse(surfaces.IsActive(upgradedAction.SurfaceToken));
         }
         finally
         {

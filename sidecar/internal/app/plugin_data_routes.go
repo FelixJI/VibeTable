@@ -12,6 +12,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
+	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
@@ -57,7 +58,8 @@ type pluginInstallation struct {
 			PluginAPI string `json:"pluginApi"`
 		} `json:"compatibility"`
 		Permissions struct {
-			Data []pluginReadGrant `json:"data"`
+			Data           []pluginReadGrant `json:"data"`
+			PrivateStorage bool              `json:"privateStorage"`
 		} `json:"permissions"`
 	} `json:"manifest"`
 }
@@ -128,7 +130,9 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 			return pluginDataError("plugin_cursor_stale")
 		}
 		if installed.Manifest.Compatibility.PluginAPI != "2.x" {
-			return pluginDataError("plugin_api_unsupported")
+			if installed.Manifest.Compatibility.PluginAPI != "3.x" {
+				return pluginDataError("plugin_api_unsupported")
+			}
 		}
 		switch input.Operation {
 		case "describe":
@@ -210,8 +214,12 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 				return pluginDataError("plugin_cursor_invalid")
 			}
 			items := []any{}
+			guards := map[string]any{}
 			complete := true
 			for _, row := range page.Rows {
+				if id, ok := row["id"].(string); ok && scoped.names["id"] != "" {
+					guards[id] = row[productrow.DigestField]
+				}
 				item := map[string]any{}
 				for _, id := range request.Fields {
 					name := scoped.names[id]
@@ -236,7 +244,7 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 				items = append(items, item)
 			}
 			result = map[string]any{"contract": "vibetable.plugin-query-page.v2", "items": items, "nextCursor": page.NextCursor, "filteredRows": page.FilteredRows, "totalRows": page.TotalRows,
-				"schemaRevision": page.Snapshot.SchemaRevision, "dataRevision": page.Snapshot.DataRevision, "complete": complete, "dependencies": scoped.current}
+				"schemaRevision": page.Snapshot.SchemaRevision, "dataRevision": page.Snapshot.DataRevision, "complete": complete, "dependencies": scoped.current, "rowGuards": guards}
 			return nil
 		default:
 			return pluginDataError("plugin_capability_invalid")
@@ -454,8 +462,7 @@ func (s *pluginQuerySource) DescribeSelectionTable(ctx context.Context, app core
 	archivePresence := d.PresenceFields[d.ArchiveField]
 	d.Fields = narrowed
 	d.PresenceFields = presence
-	d.DigestFields = nil
-	d.DigestProjector = nil
+	// Digest fields remain internal and produce only the existing opaque row guard.
 	// Archive filtering remains internal; it must not turn into a visible field.
 	if d.ArchiveField != "" {
 		if _, ok := d.Fields[d.ArchiveField]; !ok {

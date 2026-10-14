@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend._version import __version__
 
@@ -40,14 +40,14 @@ class PluginAction(PluginContract):
     invocation: PluginInvocation = "manual"
     placements: list[str] = Field(default_factory=list)
     requires: dict[str, Any] = Field(default_factory=dict)
-    worker_entry: str = Field(min_length=1)
+    worker_entry: str | None = Field(default=None, min_length=1)
     form_schema: str | None = None
     input_schema: str | None = None
     output_schema: str | None = None
 
 
 class PluginManifest(PluginContract):
-    schema_id: Literal["vibetable.plugin-manifest.v1"] = Field(
+    schema_id: Literal["vibetable.plugin-manifest.v1", "vibetable.plugin-manifest.v2"] = Field(
         default="vibetable.plugin-manifest.v1", alias="$schema"
     )
     plugin_id: str = Field(min_length=3, max_length=255)
@@ -58,6 +58,28 @@ class PluginManifest(PluginContract):
     permissions: dict[str, Any] = Field(default_factory=dict)
     actions: list[PluginAction] = Field(default_factory=list)
     ui: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_execution_contract(self) -> PluginManifest:
+        native = self.schema_id == "vibetable.plugin-manifest.v2"
+        if native != (self.compatibility.get("pluginApi") == "3.x"):
+            raise ValueError("manifest/API version mismatch")
+        if any((action.worker_entry is not None) == native for action in self.actions):
+            raise ValueError("v1 requires workerEntry; v2 forbids workerEntry")
+        if native:
+            views = self.ui.get("customViews", [])
+            if not isinstance(views, list) or any(
+                not any(
+                    isinstance(view, dict)
+                    and view.get("actionId") == action.action_id
+                    and isinstance(view.get("entry"), str)
+                    and bool(view["entry"].strip())
+                    for view in views
+                )
+                for action in self.actions
+            ):
+                raise ValueError("v2 actions require a declared custom view entry")
+        return self
 
 
 class InstallPlan(PluginContract):

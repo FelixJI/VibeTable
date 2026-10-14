@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：45
-- 唯一能力：66
-- 场景—能力关联：105
+- 场景：46
+- 唯一能力：67
+- 场景—能力关联：107
 - `release.smoke` 场景：5
 
 ## 能力到场景
@@ -58,7 +58,8 @@
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
 | `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
-| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理） |
+| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理）、<code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写） |
+| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
@@ -132,3 +133,4 @@
 | <code>44-file-restore-crash</code> | 真实Restore提交断点崩溃与同UUID冷恢复 | 合成TXT经真实picker导入并经既有picker RPC契约准备较新formal fixture后（真实UI升级独立由S43验收），从所选历史修订真实UI Restore；暂停并原样释放唯一outbound envelope，在该operation的持久head/receipt、prepared intent与applied材料化日志均独立匹配后，终止本次唯一verified sidecar及其自有Host作用域，核崩溃后持久状态未被自动重启恢复且全部自有进程与端口退出。第二正常Host重开同UUID，验证只恢复一条新formal Restore、parent/source/ordinal、旧历史和字面bytes保持、intent收敛及journal清理；相同旧请求被拒绝、不再追加。崩溃前保留干净renderer及仅此Restore在途的bridge检查点，不把同进程Close/Open或故障seam单测当真实崩溃资格。 | `history.restore`、`file-history.branches`、`workspace.recovery` |
 | <code>45-common-field-display</code> | 常用字段显示、重开与快照恢复旅程 | 独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。 | `schema.v2`、`release.smoke` |
 | <code>46-dashboard-native-output</code> | 仪表盘真实 WebView 下载与原生输出 | 独立场景验证仪表盘原生输出闭环：真实 WebView2 下载 CSV 落盘内容含 BOM、表头与权威行；PNG 下载落盘为非平凡 PNG 签名字节；取消保存经显式合成控制seam回报 CANCELLED 且零落盘；打印仅验证原生对话框打开回执，不假报完成。全程经宿主保存对话框授权与单一 blob URL 门控。 | `dashboard.export`、`dashboard.print` |
+| <code>47-plugin-surface-api</code> | 无 Worker 插件真实页面读写 | 仅在本次合成Host进程禁用NodePluginWorkerAdapter，以真实manifest.v2安装和实际隔离frame通过公开SDK读取550条200/200/150记录、保存私设、编辑草稿并由Host一次确认后经Go提交；拒绝和提交前取消零写入，记录页面/确认截图、Host任务及权威结果。旧Worker场景11完整保留。 | `plugin.surface-api`、`plugin.mutation` |

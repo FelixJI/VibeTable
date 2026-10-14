@@ -61,6 +61,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     }
 
     internal ProductRealtimeDelivery Realtime { get; }
+    internal PluginSurfaceApi? PluginApi { get; set; }
 
     /// <summary>
     /// Optional dashboard download admission source. Assigned before
@@ -201,8 +202,11 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             ?? throw new InvalidOperationException(
                 "WebView2 did not provide a CoreWebView2 instance.");
         ApplyHardening(core);
+        await DisableWebRTCBeforeAnyNavigationAsync(core).ConfigureAwait(true);
         core.WebMessageReceived -= OnWebMessageReceived;
         core.WebMessageReceived += OnWebMessageReceived;
+        core.FrameCreated -= OnPluginFrameCreated;
+        core.FrameCreated += OnPluginFrameCreated;
 
         var navigation = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -237,6 +241,31 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         => e2eMode
             ? $"{WebViewAssetService.AppOrigin}?vibetable-e2e=1"
             : WebViewAssetService.AppOrigin;
+
+    // Registered through the stable AddScriptToExecuteOnDocumentCreatedAsync API,
+    // which runs in every future top-level and child frame before any page
+    // script. One script handles both aliases so no ordering is assumed; the
+    // bindings are undefined and non-writable/non-configurable, so construction
+    // is impossible, redefinition throws, and delete cannot restore them.
+    internal const string WebRtcDisableScript =
+        """
+        (function () {
+          Object.defineProperty(window, 'RTCPeerConnection', { value: undefined, writable: false, configurable: false });
+          Object.defineProperty(window, 'webkitRTCPeerConnection', { value: undefined, writable: false, configurable: false });
+        })();
+        """;
+
+    private CoreWebView2? _webRtcDisabledCore;
+
+    private async Task DisableWebRTCBeforeAnyNavigationAsync(CoreWebView2 core)
+    {
+        if (ReferenceEquals(_webRtcDisabledCore, core)) return;
+        // A failed registration must stop navigation instead of shipping an
+        // unhardened renderer; await before the first Navigate.
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(WebRtcDisableScript)
+            .ConfigureAwait(true);
+        _webRtcDisabledCore = core;
+    }
 
     private void ApplyHardening(CoreWebView2 core)
     {
@@ -425,6 +454,39 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                     operation.InterruptReason.ToString());
                 break;
         }
+    }
+
+    private void OnPluginFrameCreated(object? sender, CoreWebView2FrameCreatedEventArgs args)
+    {
+        CoreWebView2Frame frame = args.Frame;
+        // Name was assigned by the trusted app's iframe element before plugin code runs.
+        string token = frame.Name;
+        if (!_pluginResources.TryGetSurface(token, out var surface) || surface is null || surface.ApiVersion != "3.x") return;
+        string source = surface.DocumentUri.AbsoluteUri;
+        bool active = true;
+        frame.NavigationStarting += (_, navigation) =>
+        {
+            if (navigation.Uri != source)
+            {
+                navigation.Cancel = true;
+                active = false;
+                PluginApi?.Retire(token);
+                _pluginResources.CloseSurface(token);
+            }
+        };
+        frame.Destroyed += (_, _) =>
+        {
+            active = false;
+            PluginApi?.Retire(token);
+            _pluginResources.CloseSurface(token);
+        };
+        frame.WebMessageReceived += async (_, message) =>
+        {
+            if (!active || PluginApi is not { } api) return;
+            _readiness?.Trace("PluginSurfaceAPI: received isolated frame request; owner=Host/Go; worker=false");
+            string reply = await api.HandleAsync(token, message.Source, message.WebMessageAsJson);
+            if (active && _pluginResources.TryGetSurface(token, out var remaining)) frame.PostWebMessageAsJson(reply);
+        };
     }
 
     private void OnWebMessageReceived(

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 	// Registers the PocketBase system migrations, mirroring the CLI package's
 	// own blank import because core.NewBaseApp does not import them itself.
@@ -678,3 +680,156 @@ func mustRead(t *testing.T, path string) []byte {
 }
 
 func int64Ptr(value int64) *int64 { return &value }
+
+func TestCallerOwnedAuditRequiresTransactionAndPreservesRollback(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	event := installAuditFromOracle(t)
+	project, plugin, _, err := validateAuditPayload(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecordAuditInTransaction(ctx, event); err == nil {
+		t.Fatal("caller-owned audit accepted a nontransactional app")
+	}
+	notified := 0
+	rollback := errors.New("synthetic outer rollback")
+	err = service.app.RunInTransaction(func(tx core.App) error {
+		owned := New(tx, service.workspaceID, func() { notified++ })
+		if _, err := owned.RecordAuditInTransaction(ctx, event); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
+	audits, err := service.ListAudit(ctx, project, plugin)
+	if err != nil || len(audits) != 0 || notified != 0 {
+		t.Fatal("caller-owned audit escaped rollback or emitted early", err)
+	}
+	err = service.app.RunInTransaction(func(tx core.App) error {
+		owned := New(tx, service.workspaceID)
+		if _, err := owned.RecordAuditInTransaction(ctx, event); err != nil {
+			return err
+		}
+		_, err := owned.RecordAuditInTransaction(ctx, event)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits, err = service.ListAudit(ctx, project, plugin)
+	if err != nil || len(audits) != 1 {
+		t.Fatal("caller-owned audit lost immutable idempotency", err)
+	}
+}
+
+func TestNativeManifestRequiresPageForEveryAction(t *testing.T) {
+	var snapshot map[string]any
+	if err := json.Unmarshal(loadFrozenOracleCase(t, "install-snapshot"), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	manifest := snapshot["manifest"].(map[string]any)
+	manifest["$schema"] = "vibetable.plugin-manifest.v2"
+	manifest["compatibility"].(map[string]any)["pluginApi"] = "3.x"
+	actions := manifest["actions"].([]any)
+	for _, value := range actions {
+		delete(value.(map[string]any), "workerEntry")
+	}
+	manifest["ui"] = map[string]any{"customViews": []any{}}
+	if validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string)) == nil {
+		t.Fatal("native action without page accepted")
+	}
+	views := []any{}
+	for _, value := range actions {
+		action := value.(map[string]any)
+		views = append(views, map[string]any{"viewId": action["actionId"], "actionId": action["actionId"], "entry": "ui/index.html"})
+	}
+	manifest["ui"] = map[string]any{"customViews": views}
+	if err := validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	views[0].(map[string]any)["actionId"] = "other-action"
+	if validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string)) == nil {
+		t.Fatal("unmatched native page accepted")
+	}
+}
+
+// Reject materialization of unrelated history while observing exact record lookup.
+type auditLookupApp struct {
+	core.App
+	lists   int
+	lookups int
+}
+
+func (app *auditLookupApp) FindRecordsByFilter(collection any, filter, sort string, limit, offset int, params ...dbx.Params) ([]*core.Record, error) {
+	app.lists++
+	return nil, errors.New("unbounded audit enumeration forbidden")
+}
+func (app *auditLookupApp) FindFirstRecordByFilter(collection any, filter string, params ...dbx.Params) (*core.Record, error) {
+	app.lookups++
+	return app.App.FindFirstRecordByFilter(collection, filter, params...)
+}
+func TestGetAuditUsesExactBoundedLookup(t *testing.T) {
+	service := newTestService(t)
+	raw := installAuditFromOracle(t)
+	if _, err := service.RecordAudit(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]any
+	_ = json.Unmarshal(raw, &event)
+	project, plugin, id := event["projectKey"].(string), event["pluginId"].(string), event["eventId"].(string)
+	unrelated := map[string]any{}
+	_ = json.Unmarshal(raw, &unrelated)
+	unrelated["eventId"] = "unrelated-history"
+	unrelated["details"] = map[string]any{"plan": strings.Repeat("large prior plan", 10000)}
+	unrelatedRaw, _ := json.Marshal(unrelated)
+	if _, err := service.RecordAudit(context.Background(), unrelatedRaw); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedRecord, _ := findRecord(service.app, KindAudit, project, plugin, "unrelated-history")
+	unrelatedRecord.Set("payload_json", map[string]any{"corrupt": true})
+	if err := service.app.Save(unrelatedRecord); err != nil {
+		t.Fatal(err)
+	}
+	spy := &auditLookupApp{App: service.app}
+	lookup := New(spy, oracleWorkspaceID)
+	actual, err := lookup.GetAudit(context.Background(), project, plugin, id)
+	var actualValue, expectedValue any
+	_ = json.Unmarshal(actual, &actualValue)
+	_ = json.Unmarshal(raw, &expectedValue)
+	if err != nil || !reflect.DeepEqual(actualValue, expectedValue) {
+		t.Fatal("exact audit lookup failed", err)
+	}
+	if spy.lists != 0 || spy.lookups != 1 {
+		t.Fatal("lookup enumerated history", spy.lists, spy.lookups)
+	}
+	if raw, err := lookup.GetAudit(context.Background(), project, plugin, "missing"); err != nil || raw != nil {
+		t.Fatal("missing event semantics", err)
+	}
+	if raw, err := lookup.GetAudit(context.Background(), project, "other-plugin", id); err != nil || raw != nil {
+		t.Fatal("cross-plugin audit leak", err)
+	}
+	if _, err := lookup.GetAudit(context.Background(), "local:foreign", plugin, id); err == nil {
+		t.Fatal("foreign project accepted")
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	before := spy.lookups
+	if _, err := lookup.GetAudit(cancelled, project, plugin, id); !errors.Is(err, context.Canceled) || spy.lookups != before {
+		t.Fatal("cancelled lookup queried store", err)
+	}
+	stored, err := findRecord(service.app, KindAudit, project, plugin, id)
+	if err != nil || stored == nil {
+		t.Fatal("missing fixture", err)
+	}
+	stored.Set("payload_json", map[string]any{"corrupt": true})
+	if err := service.app.Save(stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lookup.GetAudit(context.Background(), project, plugin, id); err == nil {
+		t.Fatal("corrupt audit accepted")
+	}
+
+}

@@ -84,6 +84,8 @@ public partial class MainWindow : Window
     private ShellBootstrapResult? _shellBootstrapResult;
     private TrayIconController? _trayIcon;
     private bool _explicitExitRequested;
+    private bool _nativeCloseDrainPending;
+    private bool _nativeCloseDrainCompleted;
     private int _closing;
     private int _rendererBootstrapCompleted;
     private int _updateHealthProbeInProgress;
@@ -392,6 +394,8 @@ public partial class MainWindow : Window
                         "state", "plugin-packages") : null;
             });
         var dailyQuotes = new DailyQuoteHostClient();
+        _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
+            () => _runtime.CaptureProductSidecarGeneration(), _webBridge);
         _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);
         ProductWorkspaceController? productWorkspace = null;
@@ -898,7 +902,7 @@ public partial class MainWindow : Window
         });
     }
 
-    private void OnWorkspaceSessionChanged(
+    private async void OnWorkspaceSessionChanged(
         object? sender,
         WorkspaceSessionChangedEventArgs args)
     {
@@ -907,6 +911,8 @@ public partial class MainWindow : Window
             return;
         }
         PluginProjectContext? context = PluginProjectContext.FromSession(args.Session);
+        if (_webBridge.PluginApi is { } surfaceApi) await surfaceApi.DrainAsync(context);
+        if (Volatile.Read(ref _closing) != 0 || args.Session != _workspaceSessions.Current) return;
         _pluginDispatcher.SetWorkspaceContext(context);
         _authorityTransition.Transition(context, _session.Token);
         if (context is null)
@@ -1058,12 +1064,22 @@ public partial class MainWindow : Window
     private TrayIconController EnsureTrayIcon() =>
         _trayIcon ??= new TrayIconController(RestoreFromTray, RequestExit);
 
-    private void OnClosing(object? sender, CancelEventArgs args)
+    private async void OnClosing(object? sender, CancelEventArgs args)
     {
         if (!WindowClosePolicy.ShouldMinimizeToTray(
                 _applicationRequests.CurrentPreferences,
                 _explicitExitRequested))
         {
+            if (!_nativeCloseDrainCompleted && _webBridge.PluginApi is { HasWrites: true } surfaceApi)
+            {
+                args.Cancel = true;
+                if (_nativeCloseDrainPending) return;
+                _nativeCloseDrainPending = true;
+                await surfaceApi.DrainAsync();
+                _nativeCloseDrainCompleted = true;
+                _nativeCloseDrainPending = false;
+                Close();
+            }
             return;
         }
 
@@ -1242,6 +1258,7 @@ public partial class MainWindow : Window
         _databaseOpens.Dispose();
         _dispatcher.Dispose();
         _pluginDispatcher.Dispose();
+        _webBridge.PluginApi?.Dispose();
         _applicationRequests.Dispose();
         _pluginGateway?.Dispose();
         _pluginResources.Dispose();
