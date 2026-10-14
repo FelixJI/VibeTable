@@ -37,7 +37,13 @@ InteractionDecision = Literal["approved", "rejected"]
 PluginPresentation = Literal["surface", "application", "headless"]
 
 
+def plugin_entry_is_host_reserved(entry: str) -> bool:
+    return entry.startswith("__vibetable_host__/")
+
+
 def plugin_entry_has_supported_type(presentation: str, entry: str) -> bool:
+    if plugin_entry_is_host_reserved(entry):
+        return False
     suffix = PurePosixPath(entry).suffix.lower()
     if presentation == "application":
         return suffix == ".html"
@@ -67,7 +73,9 @@ class PluginAction(PluginContract):
             and self.entry is not None
             and not plugin_entry_has_supported_type(self.presentation, self.entry)
         ):
-            raise ValueError("entry type must match application HTML or headless JavaScript MIME")
+            raise ValueError(
+                "entry type must match application HTML or headless JavaScript MIME outside Host-reserved paths"
+            )
         return self
 
     @model_serializer(mode="wrap")
@@ -104,6 +112,14 @@ class PluginManifest(PluginContract):
         if any((action.worker_entry is not None) == native for action in self.actions):
             raise ValueError("v1 requires workerEntry; v2 forbids workerEntry")
         views = self.ui.get("customViews", [])
+        if isinstance(views, list) and any(
+            isinstance(view, dict)
+            and isinstance(view.get(key), str)
+            and plugin_entry_is_host_reserved(view[key])
+            for view in views
+            for key in ("entry", "html", "script", "style")
+        ):
+            raise ValueError("custom view entry/resources must not use Host-reserved paths")
         view_action_ids = (
             {
                 view.get("actionId")

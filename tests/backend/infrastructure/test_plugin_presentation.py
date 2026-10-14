@@ -221,6 +221,10 @@ def test_serialization_omits_presentation_defaults_for_legacy_actions() -> None:
         ("application", "ui/ENTRY.htm", False),
         ("headless", "ui/ENTRY.html", False),
         ("headless", "ui/ENTRY", False),
+        ("application", "__vibetable_host__/headless.html", False),
+        ("application", "__vibetable_host__/nested/index.HTML", False),
+        ("headless", "__vibetable_host__/headless.js", False),
+        ("headless", "__vibetable_host__/nested/entry.MJS", False),
     ],
 )
 def test_presentation_entry_matches_served_mime_on_all_python_paths(
@@ -237,6 +241,7 @@ def test_presentation_entry_matches_served_mime_on_all_python_paths(
         "entry": entry,
     }
     source = _write_package(tmp_path / "source", [action])
+    (source / entry).parent.mkdir(parents=True, exist_ok=True)
     (source / entry).write_text(
         "<!doctype html>" if presentation == "application" else "export {};", encoding="utf-8"
     )
@@ -256,3 +261,26 @@ def test_presentation_entry_matches_served_mime_on_all_python_paths(
             inspect_plugin_package(source)
         with pytest.raises(PluginPackageError, match="entry"):
             pack_plugin(source, output)
+
+
+@pytest.mark.parametrize("resource", ["entry", "html", "script", "style"])
+def test_custom_views_reject_declared_host_reserved_resources(
+    tmp_path: Path, resource: str
+) -> None:
+    action = {"actionId": "open", "mode": "local", "risk": "read"}
+    view = {
+        "viewId": "custom",
+        "actionId": "open",
+        "entry": "ui/index.html",
+        resource: "__vibetable_host__/nested/resource.html",
+    }
+    source = _write_package(tmp_path / "source", [action], [view])
+    member = source / view[resource]
+    member.parent.mkdir(parents=True, exist_ok=True)
+    member.write_text("reserved resource", encoding="utf-8")
+    with pytest.raises(ValidationError, match="Host-reserved"):
+        PluginManifest.model_validate(json.loads((source / "manifest.json").read_text()))
+    with pytest.raises(PluginPackageError, match="Host-reserved"):
+        inspect_plugin_package(source)
+    with pytest.raises(PluginPackageError, match="Host-reserved"):
+        pack_plugin(source, tmp_path / "reserved.vtplugin")

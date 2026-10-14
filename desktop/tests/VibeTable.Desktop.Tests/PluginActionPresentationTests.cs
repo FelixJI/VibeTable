@@ -128,6 +128,74 @@ public sealed class PluginActionPresentationTests
     }
 
     [TestMethod]
+    [DataRow("entry")]
+    [DataRow("html")]
+    [DataRow("script")]
+    [DataRow("style")]
+    public async Task DeclaredCustomHostReservedResourcesReceiveNoProjection(string resource)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-reserved-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var view = new Dictionary<string, string> { ["viewId"] = "custom", ["actionId"] = "open", ["entry"] = "ui/index.html" };
+            view[resource] = "__vibetable_host__/nested/resource.html";
+            var baseline = PresentationSnapshot();
+            var snapshot = baseline with { Manifest = baseline.Manifest with {
+                Actions = [Action("open", PluginRisk.Read, "surface", "ui/index.html") with { Entry = null }],
+                Ui = JsonSerializer.SerializeToElement(new { customViews = new[] { view } }) } };
+            using (var zip = ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, ZipArchiveMode.Create))
+            { zip.CreateEntry("ui/index.html"); zip.CreateEntry(view[resource]); }
+            var reply = new PluginRequestDispatcherTestsAccessibleSink(); var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePickerForPresentation(null), resources,
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { snapshot })), packageCacheRoot: _ => root);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "reserved", "{\"projectKey\":\"project-1\"}"));
+            var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Ui.GetProperty("customViews")[0];
+            Assert.IsFalse(projected.TryGetProperty("surfaceToken", out _));
+            Assert.IsFalse(projected.TryGetProperty("src", out _));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task SamePackageRevisionChangeRetiresProjectedTokensButSameRevisionReadKeepsThem()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-revision-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var current = PresentationSnapshot() with { Revision = 1, InstallationId = "same-record" };
+            using (var zip = ZipFile.Open(PluginRetainedPackage.PathFor(root, current.PackageHash)!, ZipArchiveMode.Create))
+            { zip.CreateEntry("ui/index.html"); zip.CreateEntry("ui/run.js"); }
+            var reply = new PluginRequestDispatcherTestsAccessibleSink();
+            var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePickerForPresentation(null), resources,
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { current })), packageCacheRoot: _ => root);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "before", "{\"projectKey\":\"project-1\"}"));
+            var old = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Where(a => a.SurfaceToken is not null).ToArray();
+            Assert.IsTrue(old.Length >= 2);
+            current = current with { Revision = 2 };
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "after", "{\"projectKey\":\"project-1\"}"));
+            var updated = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Where(a => a.SurfaceToken is not null).ToArray();
+            foreach (var prior in old)
+            {
+                Assert.IsFalse(surfaces.IsActive(prior.SurfaceToken!), "Same-package revision reused an old capability.");
+                var replacement = updated.Single(a => a.ActionId == prior.ActionId);
+                Assert.AreNotEqual(prior.SurfaceToken, replacement.SurfaceToken);
+                Assert.IsTrue(surfaces.TryGet(replacement.SurfaceToken!, out var surface));
+                Assert.AreEqual(2, surface!.InstallationRevision);
+                Assert.AreEqual("same-record", surface.InstallationId);
+            }
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "unchanged", "{\"projectKey\":\"project-1\"}"));
+            var unchanged = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions;
+            foreach (var action in updated) Assert.AreEqual(action.SurfaceToken, unchanged.Single(a => a.ActionId == action.ActionId).SurfaceToken);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     [DataRow("application", "ui/ENTRY.html", true)]
     [DataRow("application", "ui/ENTRY.HTML", true)]
     [DataRow("headless", "ui/ENTRY.js", true)]
@@ -136,10 +204,14 @@ public sealed class PluginActionPresentationTests
     [DataRow("headless", "ui/ENTRY.MJS", true)]
     [DataRow("application", "ui/ENTRY.js", false)]
     [DataRow("headless", "ui/ENTRY.html", false)]
+    [DataRow("application", "__vibetable_host__/headless.html", false)]
+    [DataRow("headless", "__vibetable_host__/nested/entry.mjs", false)]
+    [DataRow("surface", "__vibetable_host__/nested/index.html", false)]
     public void RuntimeEntryTypeMustMatchServedMime(string presentation, string entry, bool valid)
     {
         string root = Path.Combine(Path.GetTempPath(), $"vibetable-mime-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(root, "ui"));
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(root, entry.Replace('/', Path.DirectorySeparatorChar)))!);
         File.WriteAllText(Path.Combine(root, entry.Replace('/', Path.DirectorySeparatorChar)), "entry");
         try
         {

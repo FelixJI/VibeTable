@@ -32,6 +32,48 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    [DataRow("confirmation")]
+    [DataRow("commit")]
+    [DataRow("receipt")]
+    public async Task SamePackageRevisionRetiresPlansConfirmationAndPreservesCommitOutcome(string boundary)
+    {
+        using var fixture = new Fixture();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), fixture.Surfaces);
+        var original = fixture.Surface;
+        resources.RegisterInstalled(original.ProjectKey, original.PluginId, original.Revision, original.InstallationId, 1);
+        await fixture.Call("context.read", "{}");
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        Action reload = () => resources.RegisterInstalled(original.ProjectKey, original.PluginId, original.Revision, original.InstallationId, 2);
+        if (boundary == "confirmation") fixture.OnConfirmation = reload;
+        else if (boundary == "commit") fixture.Http.OnCommit = reload;
+        else fixture.Http.AfterCommitRead = reload;
+        var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}").WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(fixture.Surfaces.IsActive(original.SurfaceToken));
+        Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId, fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+        Assert.AreEqual(boundary == "confirmation" ? "cancelled" : boundary == "commit" ? "aborted" : "succeeded", task.State);
+        if (boundary == "commit")
+        {
+            Assert.IsTrue(fixture.Http.CommitObservedCancellation);
+            Assert.AreEqual("plugin_commit_unknown", Code(response));
+            Assert.AreEqual("plugin_commit_unknown", task.Error!.Code);
+        }
+        if (boundary == "receipt") Assert.AreEqual("succeeded", response.GetProperty("result").GetProperty("status").GetString());
+        int commits = fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit");
+        Assert.AreEqual(boundary == "confirmation" ? 0 : 1, commits);
+        Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(fixture.TaskId, out _, out _));
+        fixture.Tasks.FinishNative(fixture.TaskId, "cancelled");
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var sticky));
+        Assert.AreEqual(task.State, sticky.State);
+        var replacement = resources.OpenSurface(original.ProjectKey, original.PluginId, "ui/index.html");
+        Assert.AreNotEqual(original.SurfaceToken, replacement.SurfaceToken);
+        fixture.Surfaces.BindIdentity(replacement.SurfaceToken, fixture.Context, 2, "3.x", "1.0.0", "save", "destructive", "ui/index.html", installationId: original.InstallationId);
+        Assert.IsFalse(JsonDocument.Parse(await fixture.Api.HandleAsync(replacement.SurfaceToken, replacement.DocumentUri.AbsoluteUri, fixture.Wire("context.read", "{}", replacement.SurfaceToken))).RootElement.TryGetProperty("error", out _));
+        Assert.AreEqual("plugin_plan_stale", Code(await fixture.Api.HandleAsync(replacement.SurfaceToken, replacement.DocumentUri.AbsoluteUri, fixture.Wire("mutation.submit", $"{{\"planId\":\"{plan}\"}}", replacement.SurfaceToken))));
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("context.read", "{}")));
+    }
+
+    [TestMethod]
     public async Task ContextUsesBoundInvocationThroughAuthorityProjection()
     {
         using var fixture = new Fixture();
@@ -389,6 +431,7 @@ public sealed class PluginSurfaceApiTests
         internal string Decision { get; init; } = "approved";
         internal int Confirmations { get; private set; }
         internal PluginRuntimeInteractionSnapshot? LastInteraction { get; private set; }
+        internal Action? OnConfirmation { get; set; }
         internal int LateNotifications { get; private set; }
         private bool _retired;
         internal void RetireAfterReceipt()
@@ -438,6 +481,7 @@ public sealed class PluginSurfaceApiTests
                 Confirmations++;
                 var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
                 LastInteraction = interaction;
+                if (OnConfirmation is { } onConfirmation) { onConfirmation(); return; }
                 Assert.AreEqual("new", interaction.PendingConfirmation!.Preview.SampleRows[0]["values"].GetProperty("name").GetString());
                 if (Decision == "retire")
                 {

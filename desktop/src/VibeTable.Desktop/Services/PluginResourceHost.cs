@@ -104,6 +104,7 @@ public sealed class PluginResourceHost
     /// </summary>
     internal static bool SupportsPresentationEntry(string presentation, string entry)
     {
+        if (IsHostReservedPath(entry)) return false;
         string extension = Path.GetExtension(entry);
         return presentation switch
         {
@@ -116,6 +117,8 @@ public sealed class PluginResourceHost
 
     public const string HeadlessDocumentPath = "__vibetable_host__/headless.html";
     private const string ReservedHostPrefix = "__vibetable_host__/";
+    internal static bool IsHostReservedPath(string entry)
+        => entry.StartsWith(ReservedHostPrefix, StringComparison.Ordinal);
 
     private const string HeadlessBootstrapPath = "__vibetable_host__/headless.js";
     private const string HeadlessDocumentHtml =

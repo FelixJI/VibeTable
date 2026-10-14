@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from backend._version import __version__
-from backend.contracts.plugin import plugin_entry_has_supported_type
+from backend.contracts.plugin import plugin_entry_has_supported_type, plugin_entry_is_host_reserved
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -485,7 +485,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             if not plugin_entry_has_supported_type(presentation, entry):
                 raise PluginPackageError(
                     "action_invalid",
-                    "entry type must match application HTML or headless JavaScript MIME",
+                    "entry type must match application HTML or headless JavaScript MIME outside Host-reserved paths",
                 )
             _validate_reference(contents, entry, schema=False)
         for key in _SCHEMA_REFERENCE_KEYS:
@@ -549,6 +549,10 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             if key in view:
                 if isinstance(view[key], str):
                     _require_canonical_reference(view[key], f"ui.customViews.{view_id}.{key}")
+                    if plugin_entry_is_host_reserved(view[key]):
+                        raise PluginPackageError(
+                            "ui_invalid", "custom view entry/resources use a Host-reserved path"
+                        )
                 _validate_reference(contents, view[key], schema=False)
     surface_action_ids = {
         action.get("actionId")

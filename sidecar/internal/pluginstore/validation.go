@@ -46,6 +46,16 @@ func validateManifest(value any, pluginID, version string) error {
 			return invalidPayload()
 		}
 	}
+	ui := manifest["ui"].(map[string]any)
+	views, _ := ui["customViews"].([]any)
+	for _, value := range views {
+		view, _ := value.(map[string]any)
+		for _, key := range []string{"entry", "html", "script", "style"} {
+			if entry, ok := view[key].(string); ok && strings.HasPrefix(entry, "__vibetable_host__/") {
+				return invalidPayload()
+			}
+		}
+	}
 	actions, ok := manifest["actions"].([]any)
 	if !ok {
 		return invalidPayload()
@@ -82,7 +92,7 @@ func validateManifest(value any, pluginID, version string) error {
 			if action["entry"] != nil {
 				return invalidPayload()
 			}
-		} else if !native || entry == "" {
+		} else if !native || entry == "" || strings.HasPrefix(entry, "__vibetable_host__/") {
 			return invalidPayload()
 		} else if suffix := strings.ToLower(path.Ext(entry)); (presentation == "application" && suffix != ".html") || (presentation == "headless" && suffix != ".js" && suffix != ".mjs") {
 			return invalidPayload()

@@ -1061,7 +1061,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             snapshot.ProjectKey,
             snapshot.PluginId,
             localPackage,
-            snapshot.PackageHash, snapshot.InstallationId);
+            snapshot.PackageHash, snapshot.InstallationId, snapshot.Revision);
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
         PluginRuntimeManifest manifest = snapshot.Manifest with
         {
@@ -1169,7 +1169,9 @@ public sealed class PluginRequestDispatcher : IDisposable
             view.Remove("surfaceToken");
             if (!registered) continue;
             string? entry = ReadNodeString(view["entry"]);
-            if (string.IsNullOrWhiteSpace(entry))
+            if (string.IsNullOrWhiteSpace(entry)
+                || new[] { "entry", "html", "script", "style" }.Any(key =>
+                    ReadNodeString(view[key]) is string resource && PluginResourceHost.IsHostReservedPath(resource)))
             {
                 continue;
             }

@@ -896,6 +896,10 @@ func TestPresentationActionsValidateAndBindClosedSet(t *testing.T) {
 	check("application-htm", build("application", "ui/index.htm", nil, nil), false)
 	check("headless-html", build("headless", "ui/index.html", nil, nil), false)
 	check("headless-no-suffix", build("headless", "ui/ENTRY", nil, nil), false)
+	check("reserved-application", build("application", "__vibetable_host__/headless.html", nil, nil), false)
+	check("reserved-application-nested", build("application", "__vibetable_host__/nested/entry.HTML", nil, nil), false)
+	check("reserved-headless", build("headless", "__vibetable_host__/headless.js", nil, nil), false)
+	check("reserved-headless-nested", build("headless", "__vibetable_host__/nested/entry.MJS", nil, nil), false)
 
 	view := []any{map[string]any{"viewId": "v", "actionId": "open", "entry": "ui/index.html"}}
 	check("surface-with-entry", build("surface", "ui/index.html", nil, view), false)
@@ -906,6 +910,11 @@ func TestPresentationActionsValidateAndBindClosedSet(t *testing.T) {
 	// A surface action still needs its legacy view binding.
 	check("surface-without-view", build("surface", "", nil, nil), false)
 	check("surface-with-view", build("", "", nil, view), true)
+	for _, key := range []string{"entry", "html", "script", "style"} {
+		reservedView := map[string]any{"viewId": "v", "actionId": "open", "entry": "ui/index.html"}
+		reservedView[key] = "__vibetable_host__/nested/resource.html"
+		check("reserved-custom-"+key, build("", "", nil, []any{reservedView}), false)
+	}
 
 	// v1 manifests keep rejecting the new shapes entirely.
 	v1 := build("application", "ui/index.html", map[string]any{"workerEntry": "dist/worker.js"}, nil)
