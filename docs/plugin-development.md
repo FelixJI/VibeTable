@@ -33,8 +33,9 @@ expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 
 `manifest.v2` 必须声明 `compatibility.pluginApi: "3.x"`，动作不允许 `workerEntry`；通过
 `ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`；本版本不支持无页面动作。
 CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
-编译到声明的 `script`，打包仍走既有完整性契约；`build` 对声明的 `script` 输出（含 `dist/` 之外的路径）
-执行与 `dist/` 产物一致的自包含检查。旧 Host 拒绝 v2，未知 API/合同版本拒绝；
+编译到声明的 `script`，打包仍走既有完整性契约；`build` 在任何编译前先按包路径规则校验每个声明输出
+（绝对路径、`..` 穿越与 reparse point 逃逸直接拒绝），声明输出（含 `dist/` 之外的路径）执行与 `dist/` 产物
+一致的自包含检查。旧 Host 拒绝 v2，未知 API/合同版本拒绝；
 旧 SDK `data.mutate` 不改变拒绝语义。
 
 ```typescript
@@ -124,7 +125,9 @@ uv run python scripts/vibetable_plugin.py pack examples/plugins/data-overview `
 
 `build` 会用插件本地、锁定的 esbuild 将 Worker 打成自包含 ESM，并拒绝动态 import、未打包
 runtime import 和 Worker 网络全局；v2 surface 声明的 `script` 输出（即使位于 `dist/` 之外）同样纳入
-这些检查与产物计数。`pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
+这些检查与产物计数，包内其它宿主以 `text/javascript` 服务的 `.js`/`.mjs` 成员（大小写不敏感，
+页面可经 `script-src 'self'` 加载）也在检查范围内；`src`/`tests`/`node_modules` 等本地开发输入不参与。
+`pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
 `dist` 或 `integrity.json` 后跳过 build/pack。
 
 示例 `npm test` 会先调用上述真实 CLI build，再测试编译后的 Worker。CLI 的 `validate`

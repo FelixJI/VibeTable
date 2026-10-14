@@ -281,7 +281,7 @@ def _require_object(value: Any, label: str) -> dict[str, Any]:
 def _validate_reference(contents: dict[str, bytes], reference: Any, *, schema: bool) -> str:
     if not isinstance(reference, str):
         raise PluginPackageError("manifest_invalid", "package references must be strings")
-    path = _normalize_member_path(reference)
+    path = normalize_member_path(reference)
     if path not in contents:
         raise PluginPackageError(
             "missing_reference", f"referenced package file is missing: {path}", path=path
@@ -490,7 +490,7 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
     return manifest
 
 
-def _normalize_member_path(name: str) -> str:
+def normalize_member_path(name: str) -> str:
     candidate = unicodedata.normalize("NFC", name.replace("\\", "/"))
     parts = PurePosixPath(candidate).parts
     if (
@@ -553,7 +553,7 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
             )
         files = [path for path in paths if path.is_file()]
         metadata = [
-            (_normalize_member_path(path.relative_to(source).as_posix()), path.stat().st_size)
+            (normalize_member_path(path.relative_to(source).as_posix()), path.stat().st_size)
             for path in files
         ]
         if sum(size for _, size in metadata) > policy.max_package_bytes:
@@ -579,7 +579,7 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
                     path=member.filename,
                 )
         metadata = [
-            (_normalize_member_path(member.filename), member.file_size) for member in members
+            (normalize_member_path(member.filename), member.file_size) for member in members
         ]
         _check_entry_limits(metadata, policy)
         entries = [
@@ -635,7 +635,7 @@ def read_plugin_package_member(
     root = Path(source)
     entries = _read_entries(root, policy)
     _verify_integrity(entries, required=root.is_file())
-    normalized = _normalize_member_path(member_path)
+    normalized = normalize_member_path(member_path)
     contents = dict(entries)
     if normalized not in contents:
         raise PluginPackageError(
@@ -689,6 +689,7 @@ __all__ = [
     "PluginCompatibilityPolicy",
     "PluginPackageError",
     "inspect_plugin_package",
+    "normalize_member_path",
     "pack_plugin",
     "read_plugin_package_member",
     "validate_plugin_manifest",

@@ -4,7 +4,10 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = ROOT / "scripts" / "vibetable_plugin.py"
@@ -176,14 +179,9 @@ def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(
     assert json.loads(packed.stdout)["packageHash"].startswith("sha256:")
 
 
-def _write_surface_script_plugin(root: Path, script: str, source: str) -> None:
-    """A v2 (3.x) package whose declared surface script may live outside ``dist/``."""
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "ui").mkdir()
-    (root / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
-    (root / "src").mkdir()
-    (root / "src" / f"{Path(script).stem}.ts").write_text(source, encoding="utf-8")
-    manifest = {
+def _surface_manifest(views: Sequence[dict[str, str]]) -> dict[str, object]:
+    """A minimal v2 (3.x) manifest; ``views`` become ``ui.customViews``."""
+    return {
         "$schema": "vibetable.plugin-manifest.v2",
         "pluginId": "com.example.surface-editor",
         "version": "1.0.0",
@@ -205,22 +203,270 @@ def _write_surface_script_plugin(root: Path, script: str, source: str) -> None:
                 "placements": ["table.toolbar"],
             }
         ],
-        "ui": {
-            "customViews": [
-                {
-                    "viewId": "editor",
-                    "actionId": "open-editor",
-                    "entry": "ui/index.html",
-                    "script": script,
-                }
-            ]
-        },
+        "ui": {"customViews": list(views)},
     }
+
+
+def _write_surface_scripts_plugin(root: Path, scripts: Sequence[tuple[str, str]]) -> None:
+    """A v2 (3.x) package declaring one custom view ``script`` per (script, source) pair."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "ui").mkdir()
+    (root / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (root / "src").mkdir()
+    views: list[dict[str, str]] = []
+    for index, (script, source) in enumerate(scripts):
+        (root / "src" / f"{Path(script).stem}.ts").write_text(source, encoding="utf-8")
+        views.append(
+            {
+                "viewId": f"editor-{index}",
+                "actionId": "open-editor",
+                "entry": "ui/index.html",
+                "script": script,
+            }
+        )
+    manifest = _surface_manifest(views)
     (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_surface_script_plugin(root: Path, script: str, source: str) -> None:
+    """A v2 (3.x) package whose declared surface script may live outside ``dist/``."""
+    _write_surface_scripts_plugin(root, [(script, source)])
 
 
 def _bundler_env() -> dict[str, str]:
     return {"VIBETABLE_ESBUILD_JS": str(TRUSTED_ESBUILD)}
+
+
+_SELF_CONTAINED_TS = (
+    "export async function main() {\n"
+    '  return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ready" };\n'
+    "}\n"
+)
+
+_SPY_BUNDLER_SOURCE = (
+    "const fs = require('node:fs');\n"
+    "module.exports.build = (options) => {\n"
+    '  fs.appendFileSync(process.env.PLUGIN_481_SPY_LOG, JSON.stringify(options.outfile) + "\\n");\n'
+    "  return Promise.resolve();\n"
+    "};\n"
+)
+
+
+def _spy_bundler_env(root: Path, name: str) -> tuple[dict[str, str], Path]:
+    """An owned stand-in bundler that only records invocations and never writes."""
+    spy = root / f"{name}-spy.cjs"
+    spy.write_text(_SPY_BUNDLER_SOURCE, encoding="utf-8")
+    calls = root / f"{name}-spy-calls.log"
+    return {"VIBETABLE_ESBUILD_JS": str(spy), "PLUGIN_481_SPY_LOG": str(calls)}, calls
+
+
+def _write_surface_page_plugin(root: Path, member: str, source: str) -> None:
+    """A v2 (3.x) package whose entry page loads an undeclared package script."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "ui").mkdir()
+    (root / "ui" / "index.html").write_text(
+        f'<!doctype html><script type="module" src="./{Path(member).name}"></script>',
+        encoding="utf-8",
+    )
+    runtime = root / member
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_text(source, encoding="utf-8")
+    manifest = _surface_manifest(
+        [{"viewId": "editor", "actionId": "open-editor", "entry": "ui/index.html"}]
+    )
+    (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+
+def test_build_rejects_escaping_script_paths_before_any_bundler_call(
+    tmp_path: Path,
+) -> None:
+    cases = {
+        "traversal": ("../escape-target.js", tmp_path / "escape-target.js"),
+        "windows-traversal": ("..\\escape-target.js", tmp_path / "escape-target.js"),
+        "absolute": (str(tmp_path / "abs-target.js"), tmp_path / "abs-target.js"),
+    }
+    for name, (script, target) in cases.items():
+        plugin = tmp_path / name
+        env, spy_calls = _spy_bundler_env(tmp_path, name)
+        _write_surface_scripts_plugin(plugin, [(script, _SELF_CONTAINED_TS)])
+
+        built = _run_cli("build", str(plugin), env=env)
+
+        assert built.returncode == 2, (name, built.stdout, built.stderr)
+        error = json.loads(built.stdout)
+        assert error["code"] == "unsafe_path", (name, error)
+        assert not spy_calls.exists(), f"{name}: the bundler must not run for escaping outputs"
+        assert not target.exists(), f"{name}: nothing may be written outside the plugin root"
+
+
+def test_build_validates_every_declared_output_before_compiling_any(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "mixed"
+    env, spy_calls = _spy_bundler_env(tmp_path, "mixed")
+    _write_surface_scripts_plugin(
+        plugin, [("ui/ok.js", _SELF_CONTAINED_TS), ("zz/../../evil.js", _SELF_CONTAINED_TS)]
+    )
+
+    built = _run_cli("build", str(plugin), env=env)
+
+    assert built.returncode == 2, built.stdout + built.stderr
+    assert json.loads(built.stdout)["code"] == "unsafe_path"
+    assert not spy_calls.exists(), "a legal entry must not be compiled before a later bad one"
+    assert not (plugin / "ui" / "ok.js").exists()
+    assert not (tmp_path / "evil.js").exists()
+
+
+def test_build_rejects_declared_outputs_escaping_through_reparse_points(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "reparse"
+    _write_surface_scripts_plugin(plugin, [("link/editor.js", _SELF_CONTAINED_TS)])
+    outside = tmp_path / "outside-owned"
+    outside.mkdir()
+    try:
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(plugin / "link"))
+    except (ImportError, OSError) as exc:
+        pytest.skip(f"reparse point creation is unavailable here: {exc}")
+    env, spy_calls = _spy_bundler_env(tmp_path, "reparse")
+
+    built = _run_cli("build", str(plugin), env=env)
+
+    assert built.returncode == 2, built.stdout + built.stderr
+    assert json.loads(built.stdout)["code"] == "unsafe_path"
+    assert not spy_calls.exists(), "the bundler must not run through a reparse point"
+    assert not (outside / "editor.js").exists()
+
+
+def test_build_counts_and_checks_undeclared_package_scripts_pages_can_load(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "page-plugin"
+    _write_surface_page_plugin(plugin, "ui/runtime.js", 'const runtime = { status: "ready" };\n')
+
+    built = _run_cli("build", str(plugin))
+
+    assert built.returncode == 0, built.stdout + built.stderr
+    assert "1 self-contained JavaScript artifacts" in built.stdout
+
+
+def test_build_rejects_unsafe_undeclared_package_scripts(tmp_path: Path) -> None:
+    boundaries = (
+        (
+            "network",
+            "ui/runtime.js",
+            "network_api",
+            "export async function refresh() {\n"
+            '  const response = await fetch("https://example.invalid/updates.json");\n'
+            "  return await response.json();\n"
+            "}\n",
+        ),
+        (
+            "dynamic-import",
+            "ui/runtime.mjs",
+            "dynamic_import",
+            "export async function load(specifier) {\n  return await import(specifier);\n}\n",
+        ),
+        (
+            "static-import",
+            "ui/RUNTIME.JS",
+            "unbundled_dependency",
+            'import { helper } from "https://example.invalid/lib.js";\n'
+            "export const value = helper;\n",
+        ),
+    )
+    for name, member, code, source in boundaries:
+        plugin = tmp_path / name
+        _write_surface_page_plugin(plugin, member, source)
+
+        built = _run_cli("build", str(plugin))
+
+        assert built.returncode == 2, (name, built.stdout, built.stderr)
+        error = json.loads(built.stdout)
+        assert error["code"] == code, (name, error)
+        assert Path(member).name in error["message"], (name, error)
+
+
+def test_build_scans_the_real_normalized_output_of_declared_scripts(
+    tmp_path: Path,
+) -> None:
+    # "cafe\u0301" (NFD) and "caf\u00e9" (NFC) are distinct names on NTFS; the
+    # normalizer compiles to NFC, so only the real output path is scannable.
+    scenarios = (
+        (
+            "clean",
+            "export async function main() {\n"
+            '  return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ready" };\n'
+            "}\n",
+            False,
+        ),
+        (
+            "network",
+            "export async function main() {\n"
+            '  await fetch("https://example.invalid/updates.json");\n'
+            "}\n",
+            True,
+        ),
+    )
+    for name, source, expect_rejected in scenarios:
+        plugin = tmp_path / name
+        _write_surface_script_plugin(plugin, "ui/cafe\u0301.js", source)
+
+        built = _run_cli("build", str(plugin), env=_bundler_env())
+
+        if expect_rejected:
+            assert built.returncode == 2, (name, built.stdout, built.stderr)
+            assert json.loads(built.stdout)["code"] == "network_api", (name, built.stdout)
+            assert "caf\u00e9.js" in json.loads(built.stdout)["message"], (name, built.stdout)
+        else:
+            assert built.returncode == 0, (name, built.stdout, built.stderr)
+            assert (
+                "1 surface scripts compiled, 1 self-contained JavaScript artifacts" in built.stdout
+            )
+            assert (plugin / "ui" / "caf\u00e9.js").is_file(), name
+
+
+def test_build_scans_undeclared_scripts_whose_names_need_normalization(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "nfd-member"
+    _write_surface_page_plugin(
+        plugin,
+        "ui/cafe\u0301.js",
+        "export async function refresh() {\n"
+        '  const response = await fetch("https://example.invalid/updates.json");\n'
+        "  return await response.json();\n"
+        "}\n",
+    )
+
+    built = _run_cli("build", str(plugin))
+
+    assert built.returncode == 2, built.stdout + built.stderr
+    assert json.loads(built.stdout)["code"] == "network_api", built.stdout
+
+
+def test_build_does_not_scan_local_development_inputs(tmp_path: Path) -> None:
+    plugin = tmp_path / "dev-inputs"
+    _write_surface_page_plugin(plugin, "ui/runtime.js", 'const runtime = { status: "ready" };\n')
+    (plugin / "src").mkdir(exist_ok=True)
+    (plugin / "src" / "helper.js").write_text(
+        'fetch("https://example.invalid/updates.json");\n', encoding="utf-8"
+    )
+    (plugin / "tests").mkdir()
+    (plugin / "tests" / "unit.test.mjs").write_text(
+        "const module = await import(name);\n", encoding="utf-8"
+    )
+    (plugin / "node_modules").mkdir()
+    (plugin / "node_modules" / "tool.js").write_text(
+        'fetch("https://example.invalid/updates.json");\n', encoding="utf-8"
+    )
+
+    built = _run_cli("build", str(plugin))
+
+    assert built.returncode == 0, built.stdout + built.stderr
+    assert "1 self-contained JavaScript artifacts" in built.stdout
 
 
 def test_build_counts_and_checks_v2_surface_scripts_declared_outside_dist(
