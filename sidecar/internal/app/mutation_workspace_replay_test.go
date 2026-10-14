@@ -35,7 +35,7 @@ type workspaceMutationReplayFixture struct {
 	request             mutation.Request
 }
 
-func newWorkspaceMutationReplayFixture(t *testing.T) workspaceMutationReplayFixture {
+func newWorkspaceMutationReplayFixture(t *testing.T, fault ...writecoordinator.PersistenceFaultInjector) workspaceMutationReplayFixture {
 	t.Helper()
 	ctx := context.Background()
 	metadata := filepath.Join(t.TempDir(), "workspace", ".vibetable")
@@ -84,6 +84,12 @@ func newWorkspaceMutationReplayFixture(t *testing.T) workspaceMutationReplayFixt
 		App: pb, DataDir: dataDir, WorkspaceID: workspaceID, SessionEpoch: 7,
 		FenceEpoch: 3, ClaimID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		Ledger: ledger, Audit: history, DeferBackgroundWorkers: true,
+		PersistenceFaultInjector: func(point writecoordinator.PersistenceFaultPoint) error {
+			if len(fault) != 0 {
+				return fault[0](point)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

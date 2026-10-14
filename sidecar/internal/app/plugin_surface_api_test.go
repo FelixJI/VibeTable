@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,154 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
+
+func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		err  error
+	}{
+		{"finish", errors.New("synthetic committed finish failure")},
+		{"cancel", context.Canceled},
+		{"timeout", context.DeadlineExceeded},
+		{"typed_conflict_after_commit", &mutation.ProductError{Code: "mutation.digest_conflict"}},
+		{"precommit_conflict", nil},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			armed := false
+			f := newWorkspaceMutationReplayFixture(t, func(point writecoordinator.PersistenceFaultPoint) error {
+				if armed && point == writecoordinator.FaultBeforeFinishCommittedMutation {
+					return failure.err
+				}
+				return nil
+			})
+			workspace := "11111111-1111-4111-8111-111111111111"
+			store := pluginstore.New(f.pb, workspace)
+			pluginID, hash := "com.example.after-commit", strings.Repeat("d", 64)
+			manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"*"}}}}, "actions": []any{}, "ui": map[string]any{}}
+			snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}})
+			if _, err := store.SaveInstallation(context.Background(), snapshot, nil); err != nil {
+				t.Fatal(err)
+			}
+			source, err := queryschema.New(f.pb.DataDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := router.NewRouter(func(w http.ResponseWriter, req *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
+				return &core.RequestEvent{App: f.pb, Event: router.Event{Response: w, Request: req}}, nil
+			})
+			secret, err := auth.Parse(strings.Repeat("2", 64))
+			if err != nil {
+				t.Fatal(err)
+			}
+			bindVibetableSessionAuth(r, secret)
+			registerPluginSurfaceAPIRoutes(r, f.pb, source, mutation.New(f.pb, mutation.MetadataSchemaSource{}), workspace, 7, f.runtime.CoordinateBusinessWrite)
+			mux, err := r.BuildMux()
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
+			call := func(method string, params any) *httptest.ResponseRecorder {
+				input.Method = method
+				input.Request, _ = json.Marshal(params)
+				raw, _ := json.Marshal(input)
+				request := httptest.NewRequest(http.MethodPost, pluginSurfaceAPIPath, bytes.NewReader(raw))
+				request.Header.Set("X-VibeTable-Session", strings.Repeat("2", 64))
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, request)
+				return response
+			}
+			plan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": f.request.TableID, "schemaRevision": f.request.SchemaRevision, "operations": []any{map[string]any{"kind": "create", "values": map[string]any{f.field: "committed"}}}}
+			var original mutation.Receipt
+			if failure.name == "precommit_conflict" {
+				original = workspaceMutationReplayReceipt(t, f.call(t, context.Background(), f.request))
+				plan["operations"] = []any{map[string]any{"kind": "update", "primaryKey": original.AffectedRows[0].RecordID, "expectedDigest": original.AffectedRows[0].Digest, "values": map[string]any{f.field: "must not write"}}}
+			}
+			if response := call("audit.start", map[string]any{"taskId": "task-after-commit", "plan": plan}); response.Code != http.StatusOK {
+				t.Fatal(response.Body.String())
+			}
+			if failure.name == "precommit_conflict" {
+				changed := f.request
+				changed.RequestID, changed.IdempotencyKey = "concurrent-update", "concurrent-update"
+				changed.Operations = []mutation.Operation{{Kind: mutation.OperationUpdate, RecordID: &original.AffectedRows[0].RecordID, ExpectedDigest: &original.AffectedRows[0].Digest, Values: map[string]any{f.field: "concurrent edit"}}}
+				workspaceMutationReplayReceipt(t, f.call(t, context.Background(), changed))
+			}
+			before := f.state(t)
+			armed = true
+			response := call("mutation.commit", plan)
+			armed = false
+			var wire struct {
+				Code    string `json:"code"`
+				Outcome string `json:"commitOutcome"`
+			}
+			_ = json.Unmarshal(response.Body.Bytes(), &wire)
+			t.Logf("actual HTTP commit response: %d %s", response.Code, response.Body.String())
+			if failure.name == "precommit_conflict" {
+				if response.Code != http.StatusConflict || wire.Code != "mutation.digest_conflict" || wire.Outcome != "not-committed" {
+					t.Fatal("precommit conflict lost definite rejection", response.Body.String())
+				}
+				if !reflect.DeepEqual(before, f.state(t)) {
+					t.Fatal("precommit conflict wrote data or receipt")
+				}
+				events, err := store.ListAudit(context.Background(), input.ProjectKey, pluginID)
+				if err != nil || len(events) != 1 {
+					t.Fatal("precommit conflict produced success audit", err)
+				}
+				for _, fact := range []struct {
+					workspace, kind, run string
+					expected             string
+				}{
+					{"22222222-2222-4222-8222-222222222222", "plugin.surface.mutation", input.RequestID, "not-committed"},
+					{workspace, "plugin.surface.audit.start", input.RequestID, "not-committed"},
+					{workspace, "plugin.surface.mutation", "other-run", "not-committed"},
+					{workspace, "plugin.surface.mutation", input.RequestID, "unknown"},
+				} {
+					if _, err := f.pb.DB().NewQuery(`INSERT INTO workspace_v2_imported_completions (workspace_id,kind,identity) VALUES ({:workspace},{:kind},{:run})`).Bind(map[string]any{"workspace": fact.workspace, "kind": fact.kind, "run": fact.run}).Execute(); err != nil {
+						t.Fatal(err)
+					}
+					response := call("mutation.commit", plan)
+					_ = json.Unmarshal(response.Body.Bytes(), &wire)
+					if wire.Outcome != fact.expected {
+						t.Fatal("imported completion scope/proof ignored", response.Body.String())
+					}
+				}
+				return
+			}
+			rows, err := f.pb.FindRecordsByFilter(f.definition.PhysicalName, "", "", 0, 0)
+			if err != nil || len(rows) != 1 || rows[0].GetString(f.field) != "committed" {
+				t.Fatal("after-commit fault lost real row", err)
+			}
+			if after := f.state(t); after.proofs != before.proofs+1 {
+				t.Fatal("committed PB receipt missing")
+			}
+			events, err := store.ListAudit(context.Background(), input.ProjectKey, pluginID)
+			if err != nil || len(events) != 2 || !strings.Contains(string(events[1]), `"outcome":"succeeded"`) {
+				t.Fatal("committed successful audit missing", err)
+			}
+			if response.Code != http.StatusConflict || wire.Code != "plugin_commit_unknown" || wire.Outcome != "unknown" {
+				t.Errorf("committed error was classified as definite failure: %s", response.Body.String())
+			}
+			_ = call("audit.finish", map[string]any{"outcome": "unknown", "errorCode": "plugin_commit_unknown"})
+			afterEvents, err := store.ListAudit(context.Background(), input.ProjectKey, pluginID)
+			if err != nil || !reflect.DeepEqual(events, afterEvents) {
+				t.Fatal("Host observation overwrote authority or replayed business data", err)
+			}
+		})
+	}
+}
+
+func TestPluginSurfaceMissingCommitProofNeverEstablishesRollback(t *testing.T) {
+	// A PB fixture without the Workspace v2 proof tables cannot prove rollback,
+	// even when an error looks like a known digest conflict.
+	pb := schemaProductStore(t)
+	input := pluginSurfaceAPIRequest{RequestID: "proof-unavailable", SessionEpoch: 7}
+	for _, result := range []any{nil, mutation.Receipt{Status: mutation.StatusApplied}} {
+		if outcome := surfaceCommitOutcome(context.Background(), pb, "11111111-1111-4111-8111-111111111111", input, result, "mutation.digest_conflict"); outcome != "unknown" {
+			t.Fatal("missing or contradictory proof established rollback", outcome)
+		}
+	}
+}
 
 func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 	ctx := context.Background()

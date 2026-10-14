@@ -161,7 +161,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                         }
                         catch (Exception ex)
                         {
-                            if (ex is SurfaceAuthorityException) committing = false;
+                            if (ex is SurfaceAuthorityException { NotCommitted: true } rejection && IsCommitRejection(rejection.Code)) committing = false;
                             bool timedOut = deadline.IsCancellationRequested && !state.Lifetime.IsCancellationRequested && !state.Cancelled.ContainsKey(requestId);
                             string code = committing ? "plugin_commit_unknown" : ex switch
                             {
@@ -272,7 +272,8 @@ internal sealed class PluginSurfaceApi : IDisposable
         { if (memory.Length + count > MaxBytes) throw Error("plugin_message_too_large"); memory.Write(buffer, 0, count); }
         using var document = JsonDocument.Parse(memory.ToArray());
         if (!response.IsSuccessStatusCode)
-            throw new SurfaceAuthorityException(document.RootElement.TryGetProperty("code", out var code) ? code.GetString() ?? "plugin_request_failed" : "plugin_request_failed");
+            throw new SurfaceAuthorityException(document.RootElement.TryGetProperty("code", out var code) ? code.GetString() ?? "plugin_request_failed" : "plugin_request_failed",
+                document.RootElement.TryGetProperty("commitOutcome", out var outcome) && outcome.ValueKind == JsonValueKind.String && outcome.GetString() == "not-committed");
         if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         return document.RootElement.Clone();
     }
@@ -299,7 +300,11 @@ internal sealed class PluginSurfaceApi : IDisposable
     private static string ReadHandle(JsonElement parameters, string name)
     { if (parameters.ValueKind != JsonValueKind.Object || parameters.EnumerateObject().Count() != 1 || !parameters.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString())) throw Error("plugin_capability_invalid"); return value.GetString()!; }
     private static PluginSurfacePolicyException Error(string code) => new(code, "插件请求未完成。");
-    private sealed class SurfaceAuthorityException(string code) : Exception { internal string Code { get; } = code; }
+    private static bool IsCommitRejection(string code) => code is
+        "plugin_read_denied" or "plugin_write_denied" or "plugin_cursor_stale" or "plugin_api_unsupported" or "plugin_capability_invalid" or "plugin_guard_required" or "plugin_audit_invalid"
+        or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict";
+    private sealed class SurfaceAuthorityException(string code, bool notCommitted) : Exception
+    { internal string Code { get; } = code; internal bool NotCommitted { get; } = notCommitted; }
     private static string Reply(string? id, object? result) => JsonSerializer.Serialize(new { contract = Contract, requestId = id, result }, Json);
     internal void Retire(string token)
     { _surfaces.Close(token); if (_states.TryRemove(token, out var state)) { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); } }

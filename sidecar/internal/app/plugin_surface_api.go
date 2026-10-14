@@ -19,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
+	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
 
 const pluginSurfaceAPIPath = "/api/vibetable/v3/plugins/surface"
@@ -88,10 +89,48 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 			if errors.Is(err, context.DeadlineExceeded) {
 				code = "plugin_timeout"
 			}
-			return event.JSON(http.StatusConflict, map[string]any{"code": code, "message": "plugin request could not be completed"})
+			failure := map[string]any{"code": code, "message": "plugin request could not be completed"}
+			if input.Method == "mutation.commit" {
+				outcome := surfaceCommitOutcome(ctx, app, workspace, input, result, code)
+				failure["commitOutcome"] = outcome
+				if outcome == "unknown" {
+					failure["code"] = "plugin_commit_unknown"
+				}
+			}
+			return event.JSON(http.StatusConflict, failure)
 		}
 		return event.JSON(http.StatusOK, result)
 	})
+}
+
+func surfaceCommitRejection(code string) bool {
+	switch code {
+	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
+		"mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict":
+		return true
+	default:
+		return false
+	}
+}
+
+// Error type/status alone cannot establish rollback: the workspace writer can
+// fail after PB committed. Only an exact rejection plus absent recovery proof can.
+func surfaceCommitOutcome(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, result any, code string) string {
+	if !surfaceCommitRejection(code) {
+		return "unknown"
+	}
+	if receipt, ok := result.(mutation.Receipt); ok && receipt.Status != "" {
+		return "unknown"
+	}
+	proofContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	// The route already validates the current session. A completion from any
+	// session or imported snapshot is stronger evidence than a current receipt.
+	committed, err := writecoordinator.HasPocketBaseReceiptIdentity(proofContext, app, workspace, "plugin.surface.mutation", input.RequestID)
+	if err != nil || committed {
+		return "unknown"
+	}
+	return "not-committed"
 }
 
 func executePluginSurfaceAPI(ctx context.Context, app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate) (any, error) {

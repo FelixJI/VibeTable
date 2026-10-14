@@ -122,6 +122,59 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task CommitHttpFailureWithoutRollbackProofIsUnknownAndNeverReplayed()
+    {
+        foreach (string body in new[]
+        {
+            """{"code":"plugin_request_failed","message":"plugin request could not be completed"}""",
+            """{"code":"plugin_commit_unknown","commitOutcome":"unknown","message":"plugin request could not be completed"}""",
+            """{"code":"mutation.digest_conflict","commitOutcome":"unknown","message":"plugin request could not be completed"}""",
+            """{"code":"mutation.digest_conflict","message":"plugin request could not be completed"}""",
+            """{"code":"plugin_request_failed","commitOutcome":"not-committed","message":"plugin request could not be completed"}""",
+            """{"code":"mutation.future_conflict","commitOutcome":"not-committed","message":"plugin request could not be completed"}""",
+        })
+        {
+            using var fixture = new Fixture();
+            fixture.Http.CommitErrorBody = body;
+            string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+            Assert.AreEqual("plugin_commit_unknown", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+            var start = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "audit.start");
+            string taskId = start.GetProperty("request").GetProperty("taskId").GetString()!;
+            Assert.IsTrue(fixture.Tasks.TryGetTask(taskId, out var task));
+            Assert.AreEqual("aborted", task.State);
+            Assert.AreEqual("plugin_commit_unknown", task.Error!.Code);
+            var finish = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "audit.finish");
+            Assert.AreEqual("unknown", finish.GetProperty("request").GetProperty("outcome").GetString());
+            Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+            Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+        }
+    }
+
+    [TestMethod]
+    public async Task ExplicitAuthorityProofPreservesPermissionRejectionAndCommitCancellationIsUnknown()
+    {
+        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale" })
+        {
+            using var fixture = new Fixture();
+            fixture.Http.CommitErrorBody = JsonSerializer.Serialize(new { code, commitOutcome = "not-committed" });
+            string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+            Assert.AreEqual(code, Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+            var start = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "audit.start");
+            Assert.IsTrue(fixture.Tasks.TryGetTask(start.GetProperty("request").GetProperty("taskId").GetString()!, out var task));
+            Assert.AreEqual("failed", task.State);
+            Assert.AreEqual(code, task.Error!.Code);
+        }
+        using var cancelled = new Fixture();
+        cancelled.Http.OnCommit = () => cancelled.Tasks.RequestCancel(cancelled.TaskId, out _, out _);
+        string pending = (await cancelled.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.AreEqual("plugin_commit_unknown", Code(await cancelled.Call("mutation.submit", $"{{\"planId\":\"{pending}\"}}")));
+        Assert.IsTrue(cancelled.Tasks.TryGetTask(cancelled.TaskId, out var unknown));
+        Assert.AreEqual("aborted", unknown.State);
+        Assert.AreEqual("plugin_commit_unknown", unknown.Error!.Code);
+        Assert.AreEqual(1, cancelled.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+    }
+
+    [TestMethod]
     public async Task RetirementAuditsOriginalRunWithoutCurrentSurfaceOrGeneration()
     {
         using var fixture = new Fixture { Decision = "retire" };
@@ -157,6 +210,7 @@ public sealed class PluginSurfaceApiTests
         private ProductSidecarGenerationSnapshot? _generation;
         private readonly ProductAuthorityEpoch _authority = new();
         private string? _taskId;
+        internal string TaskId => _taskId!;
         internal Fixture(PluginProjectContext? context = null)
         {
             Context = context ?? Context;
@@ -208,15 +262,19 @@ public sealed class PluginSurfaceApiTests
         internal bool Conflict { get; set; }
         internal bool Incomplete { get; set; }
         internal bool FailAuditStart { get; set; }
+        internal string? CommitErrorBody { get; set; }
+        internal Action? OnCommit { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Assert.AreEqual("private-test-secret", request.Headers.GetValues("X-VibeTable-Session").Single());
             var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone();
             Calls.Add(call);
             string method = call.GetProperty("method").GetString()!;
+            if (method == "mutation.commit") { OnCommit?.Invoke(); token.ThrowIfCancellationRequested(); }
             if (method == "audit.start" && FailAuditStart) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"plugin_audit_failed"}""") };
             if (method == "mutation.commit" && LoseCommit) throw new HttpRequestException("synthetic lost receipt");
-            if (method == "mutation.commit" && Conflict) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"mutation.digest_conflict"}""") };
+            if (method == "mutation.commit" && CommitErrorBody is { } errorBody) return new(HttpStatusCode.Conflict) { Content = new StringContent(errorBody) };
+            if (method == "mutation.commit" && Conflict) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"mutation.digest_conflict","commitOutcome":"not-committed"}""") };
             if (method == "mutation.commit" && Incomplete) return new(HttpStatusCode.OK) { Content = new StringContent("""{"contractVersion":"2.0","status":"applied","affectedRows":[]}""") };
             string result = method switch
             {
