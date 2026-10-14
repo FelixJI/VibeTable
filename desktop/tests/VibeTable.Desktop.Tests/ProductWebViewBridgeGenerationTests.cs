@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Wpf;
 using VibeTable.Desktop.Services;
+using VibeTable.Desktop.ViewModels;
 
 namespace VibeTable.Desktop.Tests;
 
@@ -109,6 +110,52 @@ public sealed class ProductWebViewBridgeGenerationTests
 
         harness.Bridge.SealForRendererRecovery();
         Assert.AreEqual(2, harness.Bridge.RendererGeneration);
+    }
+
+    [TestMethod]
+    public async Task NavigatedRecoveryTimeoutRequiresFullRetryToReloadAndAwaitBusinessReadiness()
+    {
+        using var harness = new StaBridge();
+        var cache = typeof(ProductWebViewBridge).GetField("_loadTask",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        cache.SetValue(harness.Bridge, Task.CompletedTask);
+        var backend = new FakeBackendLifecycle();
+        var business = new TaskCompletionSource();
+        var freshNavigation = new TaskCompletionSource();
+        int recoveries = 0;
+        MainWindowViewModel vm = null!;
+        vm = new MainWindowViewModel(backend, harness.Bridge, recoverRenderer: async reason =>
+        {
+            recoveries++;
+            Assert.IsTrue(vm.TryBeginRendererRecovery(rendererFailure: reason.StartsWith("renderer:")));
+            harness.Bridge.SealForRendererRecovery();
+            harness.Bridge.AttachControl(harness.CreateReplacementControl());
+            // Substitute only navigation completion at the existing bridge cache seam.
+            cache.SetValue(harness.Bridge, recoveries == 1 ? Task.CompletedTask : freshNavigation.Task);
+            await harness.Bridge.LoadAsync(CancellationToken.None);
+            await business.Task;
+            vm.CompleteRendererRecovery();
+        });
+        await vm.StartAsync(); Assert.AreEqual(StartupState.Ready, vm.State);
+        vm.RecoverRendererCommand.Execute(null);
+        Assert.AreEqual(StartupState.LoadingWeb, vm.State);
+        Assert.IsTrue(((Task)cache.GetValue(harness.Bridge)!).IsCompletedSuccessfully);
+        business.SetException(new TimeoutException("business app.ready was not received"));
+        Assert.AreEqual(StartupState.Faulted, vm.State);
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+        business = new TaskCompletionSource();
+        long retiredGeneration = harness.Bridge.RendererGeneration;
+        await vm.StartAsync();
+        Assert.AreEqual(0, backend.StopCalls);
+        Assert.AreEqual(2, recoveries, "full retry must re-enter the real renderer reset/reload boundary");
+        Assert.IsTrue(harness.Bridge.RendererGeneration > retiredGeneration);
+        Assert.AreEqual(StartupState.LoadingWeb, vm.State);
+        freshNavigation.SetResult();
+        Assert.AreEqual(StartupState.LoadingWeb, vm.State, "navigation success is not business app.ready");
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+        business.SetResult();
+        Assert.AreEqual(StartupState.Ready, vm.State);
+        Assert.IsFalse(vm.IsRendererRecovering);
     }
 
     [TestMethod]

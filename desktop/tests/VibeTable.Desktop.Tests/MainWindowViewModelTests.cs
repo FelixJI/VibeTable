@@ -59,6 +59,43 @@ public sealed class MainWindowViewModelTests
     }
 
     [TestMethod]
+    public async Task FullRendererRetryDoesNotBypassBackendFailureOrDeclareReadyWithoutRecoveryAdmission()
+    {
+        var backend = new FakeBackendLifecycle(); var web = new FakeWebViewBridge();
+        int recoveries = 0;
+        var vm = new MainWindowViewModel(backend, web, recoverRenderer: _ => { recoveries++; return Task.CompletedTask; });
+        await vm.StartAsync(); web.CompleteLoad();
+        vm.BeginRendererRecovery(); vm.FailRendererRecovery("app.ready timeout");
+        backend.ShouldFail = true;
+        await vm.StartAsync();
+        Assert.AreEqual(StartupState.Faulted, vm.State); Assert.AreEqual(0, recoveries);
+        Assert.IsNotNull(vm.LastStartupError);
+        backend.ShouldFail = false;
+        await vm.StartAsync();
+        Assert.AreEqual(1, recoveries);
+        Assert.AreEqual(StartupState.Faulted, vm.State, "a no-op recovery cannot reuse completed navigation as readiness");
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+    }
+
+    [TestMethod]
+    public async Task FullRendererRetryCallbackFailureSettlesItsActiveRecovery()
+    {
+        var web = new FakeWebViewBridge(); MainWindowViewModel vm = null!;
+        vm = new MainWindowViewModel(new FakeBackendLifecycle(), web, recoverRenderer: _ =>
+        {
+            Assert.IsTrue(vm.TryBeginRendererRecovery(rendererFailure: true));
+            return Task.FromException(new TimeoutException("new business app.ready timeout"));
+        });
+        await vm.StartAsync(); web.CompleteLoad();
+        vm.BeginRendererRecovery(); vm.FailRendererRecovery("first timeout");
+        await vm.StartAsync();
+        Assert.AreEqual(StartupState.Faulted, vm.State);
+        Assert.IsFalse(vm.IsRendererRecovering);
+        Assert.AreEqual("new business app.ready timeout", vm.DetailMessage);
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+    }
+
+    [TestMethod]
     public async Task NativeStopCannotRaceInitialBackendOrWebLoad()
     {
         var backend = new FakeBackendLifecycle().BlockStart();

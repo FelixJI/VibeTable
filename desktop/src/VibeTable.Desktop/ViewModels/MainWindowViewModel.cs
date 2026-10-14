@@ -51,6 +51,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 {
     private readonly IBackendLifecycle _backend;
     private readonly IWebViewBridge _webView;
+    private readonly Func<string, Task>? _recoverRenderer;
     private StartupState _state = StartupState.StartingBackend;
 
     /// <summary>
@@ -68,11 +69,12 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _webView = webView ?? throw new ArgumentNullException(nameof(webView));
+        _recoverRenderer = recoverRenderer;
         StopPluginsCommand = new RelayCommand(execute: () => { if (CanRecoverRenderer) stopPlugins?.Invoke(); }, canExecute: () => CanRecoverRenderer);
         ReturnToPlatformCommand = new RelayCommand(execute: () => returnToPlatform?.Invoke(), canExecute: () => true);
         ManagePluginsCommand = new RelayCommand(execute: () => managePlugins?.Invoke(), canExecute: () => true);
         RecoverRendererCommand = new RelayCommand(
-            execute: () => _ = RunRendererRecoveryAsync(recoverRenderer),
+            execute: () => _ = RunRendererRecoveryAsync(_recoverRenderer),
             canExecute: () => CanRecoverRenderer);
         RetryCommand = new RelayCommand(
             execute: () => _ = StartAsync(),
@@ -245,10 +247,13 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// The method returns as soon as the WebView load has been ISSUED — i.e.
     /// the state is <see cref="StartupState.LoadingWeb"/>. The
     /// <c>LoadingWeb -&gt; Ready</c> transition happens later, when
-    /// <see cref="IWebViewBridge.LoadAsync"/> completes.
+    /// <see cref="IWebViewBridge.LoadAsync"/> completes. A retry after renderer
+    /// failure instead delegates reset/reload and real app.ready settlement to
+    /// the existing renderer recovery owner.
     /// </remarks>
     public async Task StartAsync()
     {
+        bool rebuildRenderer = State == StartupState.Faulted && _rendererLoadStarted && _recoverRenderer is not null;
         LastStartupError = null;
         // Retry re-enters StartingBackend from Faulted; the legal-transition
         // guard in TransitionTo enforces this.
@@ -270,7 +275,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         // Fire-and-forget the WebView load so StartAsync returns in LoadingWeb;
         // a completion/failure here drives the final Ready / Faulted move.
-        _ = DriveWebViewLoadAsync();
+        _ = DriveWebViewLoadAsync(rebuildRenderer);
     }
 
     /// <summary>
@@ -354,18 +359,31 @@ public sealed class MainWindowViewModel : ViewModelBase
         TransitionTo(StartupState.Faulted);
     }
 
-    private async Task DriveWebViewLoadAsync()
+    private async Task DriveWebViewLoadAsync(bool rebuildRenderer)
     {
         try
         {
+            if (rebuildRenderer && _recoverRenderer is { } recoverRenderer)
+            {
+                // A completed navigation cache cannot settle a failed business app.ready handshake.
+                await recoverRenderer("renderer:full-retry").ConfigureAwait(true);
+                if (State == StartupState.LoadingWeb && !IsRendererRecovering)
+                    throw new InvalidOperationException("Renderer retry did not complete its recovery admission.");
+                // The existing recovery owner settles Ready/Faulted after the new app.ready.
+                return;
+            }
             await _webView.LoadAsync(CancellationToken.None)
                 .ConfigureAwait(true);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             // The WebView faulted (runtime missing, renderer crash, etc.).
             // MoveToFaulted guards against double-fault races.
-            if (IsRendererRecovering) return;
+            if (IsRendererRecovering)
+            {
+                if (rebuildRenderer) FailRendererRecovery(ex.Message);
+                return;
+            }
             if (State != StartupState.Faulted)
             {
                 MarkShellUnavailable();

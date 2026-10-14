@@ -12,6 +12,7 @@ import ContentRecordPanel from "@/content/ContentRecordPanel.vue";
 import FileWorkspaceView from "./FileWorkspaceView.vue";
 import ManagedAttachmentCell from "@/components/attachments/ManagedAttachmentCell.vue";
 import AppToolbar from "@/components/layout/AppToolbar.vue";
+import WorkspaceSwitcher from "@/components/workspace/WorkspaceSwitcher.vue";
 import { createHostBridge, type HostBridge } from "@/bridge/hostBridge";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import { useUiStore } from "@/stores/uiStore";
@@ -779,14 +780,15 @@ describe("WorkspaceView", () => {
   });
 
   describe("native plugin view consumers", () => {
-    async function prepare() {
+    async function prepare(withWorkspaceCenter = false) {
+      if (withWorkspaceCenter) configureWorkspaceEpochPair();
       const plugins = usePluginStore();
       const workspace = useWorkspaceStore();
       workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
       workspace.selectTable("orders");
       useUiStore().navigate("tables");
       const plugin: PluginSnapshot = {
-        installationId: "native-installation", projectKey: "local:default", pluginId: "com.acme.native", version: "1.0.0",
+        installationId: "native-installation", projectKey: withWorkspaceCenter ? "local:11111111111141118111111111111111" : "local:default", pluginId: "com.acme.native", version: "1.0.0",
         packageHash: "sha256:fixture", sourceType: "package", sourceLocation: "host-managed", schemas: {},
         status: "enabled", disabledReason: null, revision: 2,
         manifest: { $schema: "vibetable.plugin-manifest.v2", pluginId: "com.acme.native", version: "1.0.0",
@@ -845,6 +847,22 @@ describe("WorkspaceView", () => {
       plugins.applyPlugin({ ...plugin, status: "disabled", revision: 3 }); await flushPromises();
       expect(useUiStore().activePluginApp).toBeNull(); expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
       expect(document.body.textContent).toContain("插件入口已失效或被移除，已返回平台");
+    });
+
+    it("retires an application when the actual workspace center opens and does not remount its dead token on active navigation", async () => {
+      const { wrapper, record } = await prepare(true);
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(true);
+      const center = wrapper.getComponent(WorkspaceSwitcher).getComponent(NDropdown).props("onSelect") as (key: string) => void;
+      center("__center__"); await flushPromises();
+      expect(wrapper.get('[data-testid="workspace-center"]').isVisible()).toBe(true);
+      expect(useUiStore().activePluginApp).toBeNull();
+      const closes = () => record.posted.filter(item => item.type === "plugin.surface.event" && (item.payload as { event: string }).event === "close");
+      expect(closes().map(item => item.payload)).toEqual([{ contract: "vibetable.plugin-surface.v1", surfaceToken: "application-token", event: "close", payload: {} }]);
+      await wrapper.get('[data-testid="nav-tables"]').trigger("click"); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(wrapper.get(".tables-view").isVisible()).toBe(true);
+      expect(closes()).toHaveLength(1);
     });
 
     it("consumes native chrome return, management and stop without leaving a live plugin panel", async () => {
