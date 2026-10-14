@@ -29,7 +29,7 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   const { createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
     openWorkspaceCenterFromSwitcher, replicaUiMethod, beginWritableWorkspaceBootstrapCapture,
-    waitForCapturedBridgeMessage, insertRowFromToolbar,
+    waitForCapturedBridgeMessage, acknowledgeExpectedBridgeFailure, insertRowFromToolbar,
     applyV2FieldChange, chooseToolbarMore, parseCsv, seedIsolatedNativeClipboard,
     adoptIsolatedNativeClipboardText, beginIsolatedNativeClipboardWrite } = ports;
   const populated = await createSimpleTable(page, "E2E AutoNumber Backfill", "Title");
