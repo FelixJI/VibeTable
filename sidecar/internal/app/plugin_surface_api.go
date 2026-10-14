@@ -240,7 +240,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		}
 		err = runBusinessWrite(ctx, []businessWriteGate{gate}, "plugin.surface.mutation", input.RequestID, func(ctx context.Context) error {
 			var applyErr error
-			receipt, applyErr = kernel.ApplyWithCommit(ctx, request, func(tx core.App, receipt mutation.Receipt) error {
+			receipt, applyErr = kernel.ApplyWithCommit(mutation.WithBusinessReplay(ctx, "plugin.surface.mutation"), request, func(tx core.App, receipt mutation.Receipt) error {
 				return surfaceAuditFinish(ctx, tx, workspace, input, "succeeded", "")
 			})
 			return applyErr
@@ -329,7 +329,12 @@ func surfaceAuditFinish(ctx context.Context, app core.App, workspace string, inp
 	delete(details, "plan")
 	details["state"] = outcome
 	raw, _ := json.Marshal(start)
-	_, err = pluginstore.New(app, workspace).RecordAudit(ctx, raw)
+	store := pluginstore.New(app, workspace)
+	if outcome == "succeeded" {
+		_, err = store.RecordAuditInTransaction(ctx, raw)
+	} else {
+		_, err = store.RecordAudit(ctx, raw)
+	}
 	return err
 }
 

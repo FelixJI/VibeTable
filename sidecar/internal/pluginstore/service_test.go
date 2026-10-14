@@ -679,6 +679,50 @@ func mustRead(t *testing.T, path string) []byte {
 
 func int64Ptr(value int64) *int64 { return &value }
 
+func TestCallerOwnedAuditRequiresTransactionAndPreservesRollback(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	event := installAuditFromOracle(t)
+	project, plugin, _, err := validateAuditPayload(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecordAuditInTransaction(ctx, event); err == nil {
+		t.Fatal("caller-owned audit accepted a nontransactional app")
+	}
+	notified := 0
+	rollback := errors.New("synthetic outer rollback")
+	err = service.app.RunInTransaction(func(tx core.App) error {
+		owned := New(tx, service.workspaceID, func() { notified++ })
+		if _, err := owned.RecordAuditInTransaction(ctx, event); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
+	audits, err := service.ListAudit(ctx, project, plugin)
+	if err != nil || len(audits) != 0 || notified != 0 {
+		t.Fatal("caller-owned audit escaped rollback or emitted early", err)
+	}
+	err = service.app.RunInTransaction(func(tx core.App) error {
+		owned := New(tx, service.workspaceID)
+		if _, err := owned.RecordAuditInTransaction(ctx, event); err != nil {
+			return err
+		}
+		_, err := owned.RecordAuditInTransaction(ctx, event)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits, err = service.ListAudit(ctx, project, plugin)
+	if err != nil || len(audits) != 1 {
+		t.Fatal("caller-owned audit lost immutable idempotency", err)
+	}
+}
+
 func TestNativeManifestRequiresPageForEveryAction(t *testing.T) {
 	var snapshot map[string]any
 	if err := json.Unmarshal(loadFrozenOracleCase(t, "install-snapshot"), &snapshot); err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -19,6 +20,157 @@ import (
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
 )
+
+func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkspaceMutationReplayFixture(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	store := pluginstore.New(f.pb, workspace)
+	pluginID, hash := "com.example.writer-surface", strings.Repeat("c", 64)
+	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"*"}}}}, "actions": []any{}, "ui": map[string]any{}}
+	snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}})
+	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
+		t.Fatal(err)
+	}
+	source, err := queryschema.New(f.pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID}
+	call := func(method string, params any) (any, error) {
+		input.Method = method
+		input.Request, _ = json.Marshal(params)
+		// The actual Workspace v2 runtime prepares the intent and verifies its
+		// PocketBase receipt; an apply-through gate would hide double inserts.
+		return executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, f.runtime.CoordinateBusinessWrite)
+	}
+	auditCount := func() int {
+		events, err := store.ListAudit(ctx, input.ProjectKey, pluginID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(events)
+	}
+	plan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": f.request.TableID, "schemaRevision": f.request.SchemaRevision, "operations": []any{map[string]any{"kind": "create", "values": map[string]any{f.field: "created"}}}}
+	input.RequestID = "surface-writer-create"
+	beforeStart := f.state(t)
+	if _, err := call("audit.start", map[string]any{"taskId": "task-create", "plan": plan}); err != nil {
+		t.Fatal(err)
+	}
+	started := f.state(t)
+	if started.proofs != beforeStart.proofs+1 || started.revision != beforeStart.revision+1 || auditCount() != 1 {
+		t.Fatal("independent start did not persist its own receipt")
+	}
+	result, err := call("mutation.commit", plan)
+	if err != nil {
+		t.Fatal("real Workspace v2 create failed", err)
+	}
+	created := result.(mutation.Receipt)
+	if created.Status != mutation.StatusApplied || len(created.AffectedRows) != 1 {
+		t.Fatalf("invalid create receipt %#v", created)
+	}
+	committed := f.state(t)
+	createdRows, err := f.pb.FindRecordsByFilter(f.definition.PhysicalName, "", "", 0, 0)
+	if err != nil || len(createdRows) != 1 || createdRows[0].GetString(f.field) != "created" {
+		t.Fatal("created row missing or duplicated", err)
+	}
+	if committed.proofs != started.proofs+1 || committed.revision != started.revision+1 || auditCount() != 2 {
+		t.Fatalf("create or terminal audit did not commit with exactly one receipt: before=%+v after=%+v audits=%d", started, committed, auditCount())
+	}
+	if replay, err := call("mutation.commit", plan); err != nil || replay.(mutation.Receipt).Status != mutation.StatusReplayed {
+		t.Fatal("real gated replay failed", err)
+	}
+	if !reflect.DeepEqual(committed, f.state(t)) || auditCount() != 2 {
+		t.Fatal("replay changed data, audit or business receipts")
+	}
+	id, digest := created.AffectedRows[0].RecordID, created.AffectedRows[0].Digest
+	plan["operations"] = []any{map[string]any{"kind": "update", "primaryKey": id, "expectedDigest": digest, "values": map[string]any{f.field: "updated"}}}
+	input.RequestID = "surface-writer-update"
+	if _, err := call("audit.start", map[string]any{"taskId": "task-update", "plan": plan}); err != nil {
+		t.Fatal(err)
+	}
+	beforeUpdate := f.state(t)
+	result, err = call("mutation.commit", plan)
+	if err != nil {
+		t.Fatal("real Workspace v2 update failed", err)
+	}
+	updated := result.(mutation.Receipt)
+	row, err := f.pb.FindRecordById(f.definition.PhysicalName, id)
+	if err != nil || row.GetString(f.field) != "updated" {
+		t.Fatal("update missing", err)
+	}
+	afterUpdate := f.state(t)
+	if afterUpdate.proofs != beforeUpdate.proofs+1 || afterUpdate.revision != beforeUpdate.revision+1 || auditCount() != 4 {
+		t.Fatal("update did not persist exactly one receipt and terminal audit")
+	}
+	plan["operations"] = []any{map[string]any{"kind": "update", "primaryKey": id, "expectedDigest": updated.AffectedRows[0].Digest, "values": map[string]any{f.field: "must roll back"}}}
+	input.RequestID = "surface-writer-failed-audit"
+	if _, err := call("audit.start", map[string]any{"taskId": "task-failed-audit", "plan": plan}); err != nil {
+		t.Fatal(err)
+	}
+	beforeFailure := f.state(t)
+	if _, err := f.pb.DB().NewQuery(`CREATE TRIGGER reject_surface_writer_audit BEFORE INSERT ON vibetable_plugin_records WHEN NEW.item_key = 'surface-writer-failed-audit:terminal' BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END`).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call("mutation.commit", plan); err == nil {
+		t.Fatal("audit failure accepted")
+	}
+	if !reflect.DeepEqual(beforeFailure, f.state(t)) || auditCount() != 5 {
+		t.Fatal("audit failure did not atomically roll back data and receipt")
+	}
+	if _, err := f.pb.DB().NewQuery(`DROP TRIGGER reject_surface_writer_audit`).Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call("audit.finish", map[string]any{"outcome": "failed", "errorCode": "plugin_request_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if after := f.state(t); after.proofs != beforeFailure.proofs+1 || after.revision != beforeFailure.revision+1 || auditCount() != 6 {
+		t.Fatal("independent finish lost its receipt")
+	}
+	// The existing standalone owner must still persist its receipt, notify
+	// exactly once per commit and keep duplicate event ids immutable.
+	events, err := store.ListAudit(ctx, input.ProjectKey, pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var independent map[string]any
+	_ = json.Unmarshal(events[0], &independent)
+	independent["eventId"] = "surface-standalone-audit"
+	independent["outcome"] = "cancelled"
+	notified := 0
+	standalone := pluginstore.New(f.pb, workspace, func() { notified++ })
+	beforeStandalone := f.state(t)
+	for i := 0; i < 2; i++ {
+		if i == 1 {
+			independent["outcome"] = "succeeded"
+		}
+		raw, _ := json.Marshal(independent)
+		if err := f.runtime.CoordinateBusinessWrite(ctx, "plugin.store.record_audit", fmt.Sprintf("surface-independent-%d", i), func(writeCtx context.Context) error {
+			_, err := standalone.RecordAudit(writeCtx, raw)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := f.state(t); after.proofs != beforeStandalone.proofs+2 || after.revision != beforeStandalone.revision+2 || auditCount() != 7 || notified != 2 {
+		t.Fatal("standalone receipt, notification or idempotency changed")
+	}
+	events, err = store.ListAudit(ctx, input.ProjectKey, pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range events {
+		var event struct {
+			EventID string `json:"eventId"`
+			Outcome string `json:"outcome"`
+		}
+		_ = json.Unmarshal(raw, &event)
+		if event.EventID == "surface-standalone-audit" && event.Outcome != "cancelled" {
+			t.Fatal("duplicate standalone audit rewrote immutable history")
+		}
+	}
+}
 
 func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 	ctx := context.Background()

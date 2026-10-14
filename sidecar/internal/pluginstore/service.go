@@ -581,7 +581,7 @@ func (service *Service) RecordAudit(
 	ctx context.Context,
 	event json.RawMessage,
 ) (json.RawMessage, error) {
-	projectKey, pluginID, eventID, err := validateAuditPayload(event)
+	projectKey, _, _, err := validateAuditPayload(event)
 	if err != nil {
 		return nil, err
 	}
@@ -589,31 +589,40 @@ func (service *Service) RecordAudit(
 		return nil, err
 	}
 	err = service.transact(ctx, func(txApp core.App) error {
-		stored, findErr := findRecord(
-			txApp, KindAudit, projectKey, pluginID, eventID,
-		)
-		if findErr != nil {
-			return findErr
-		}
-		if stored != nil {
-			// Audit events are immutable; replaying the same event id is a
-			// no-op instead of silently rewriting history.
-			return nil
-		}
-		seq, seqErr := nextProjectSeq(txApp, KindAudit, projectKey)
-		if seqErr != nil {
-			return seqErr
-		}
-		return saveRecord(txApp, record{
-			Kind: KindAudit, ProjectKey: projectKey,
-			PluginID: pluginID, ItemKey: eventID,
-			Payload: event, Seq: seq,
-		}, false)
+		_, err := New(txApp, service.workspaceID).RecordAuditInTransaction(ctx, event)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return event, nil
+}
+
+// RecordAuditInTransaction appends an immutable audit inside a caller-owned
+// transaction. The caller owns its single business receipt and commit notification.
+func (service *Service) RecordAuditInTransaction(ctx context.Context, event json.RawMessage) (json.RawMessage, error) {
+	if !service.app.IsTransactional() {
+		return nil, requestError("plugin.transaction_required", "audit requires a caller-owned transaction", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	projectKey, pluginID, eventID, err := validateAuditPayload(event)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return nil, err
+	}
+	stored, err := findRecord(service.app, KindAudit, projectKey, pluginID, eventID)
+	if err != nil {
+		return nil, err
+	}
+	if stored != nil {
+		// Audit events are immutable; duplicate event ids never rewrite history.
+		return event, nil
+	}
+	return service.recordAuditTx(service.app, event)
 }
 
 // SetEnabled applies the Go-owned enable/disable transition: it validates
