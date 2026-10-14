@@ -11,6 +11,64 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LateReadOrUninstallCannotRetireCommittedReplacement(bool lateUninstall)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-reinstall-read-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var action = new PluginRuntimeAction("open-app", new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Read, "manual", [],
+                JsonSerializer.SerializeToElement(new { }), null, null, null, null, "application", "ui/index.html");
+            var current = FakePluginGateway.DefaultSnapshot with
+            {
+                Revision = 2, InstallationId = "replacement-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x" }), Actions = [action],
+                },
+            };
+            var old = current with { Revision = 4, InstallationId = "retired-record", PackageHash = "sha256:" + new string('b', 64) };
+            foreach (var snapshot in new[] { current, old })
+            {
+                using var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create);
+                package.CreateEntry("ui/index.html");
+            }
+            var pendingList = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pendingUninstall = new TaskCompletionSource<PluginRuntimeUninstallResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var gateway = new FakePluginGateway { CatalogSnapshot = current, PendingUninstall = lateUninstall ? pendingUninstall : null };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources,
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => pendingList.Task, packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            Task late = dispatcher.DispatchAsync(Request(lateUninstall ? "plugin.lifecycle.uninstall" : "plugin.catalog.list", "old",
+                """{"projectKey":"project-1","pluginId":"com.acme.clean","projectRevision":"1","cleanupPrivateSettings":false}"""));
+            await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-replacement",
+                """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+            string planId = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload).PlanId;
+            await dispatcher.DispatchAsync(Request("plugin.install.commit", "commit-replacement",
+                $$"""{"planId":"{{planId}}","projectRevision":"1"}"""));
+            var installed = Assert.IsInstanceOfType<PluginRuntimeSnapshot>(reply.Payload);
+            string token = installed.Manifest.Actions.Single().SurfaceToken!;
+            Assert.IsTrue(surfaces.IsActive(token));
+            if (lateUninstall) pendingUninstall.SetResult(new PluginRuntimeUninstallResult(true, true));
+            else pendingList.SetResult(JsonSerializer.SerializeToElement(new[] { old }));
+            await late;
+            Assert.IsTrue(surfaces.TryGet(token, out var session), "An old reply retired the committed replacement.");
+            Assert.IsNotNull(session);
+            Assert.AreEqual("replacement-record", session.InstallationId);
+            if (!lateUninstall) Assert.AreEqual("PLUGIN_REQUEST_CANCELLED", reply.FailureCode);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task PublicLifecycleMessagesReachDispatcherWithApprovedPlanWhileRollbackStaysInternal()
     {
         var reply = new RecordingReplySink();
@@ -2345,10 +2403,11 @@ public sealed class PluginRequestDispatcherTests
         public Task<PluginRuntimeSnapshot> RollbackAsync(PluginRollbackParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
         public PluginUninstallParams? UninstallRequest { get; private set; }
+        public TaskCompletionSource<PluginRuntimeUninstallResult>? PendingUninstall { get; set; }
         public Task<PluginRuntimeUninstallResult> UninstallAsync(PluginUninstallParams request, CancellationToken token)
         {
             UninstallRequest = request;
-            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
+            return PendingUninstall?.Task ?? System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
         }
         public Task<PluginRuntimeActionAvailability> DescribeActionAsync(PluginDescribeActionParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(new PluginRuntimeActionAvailability(true, []));

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { flushPromises } from "@vue/test-utils";
 import { createHostBridge } from "@/bridge/hostBridge";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type { PluginSnapshot, PluginTaskSnapshot } from "@/contracts";
@@ -1097,4 +1098,89 @@ describe("pluginService canonical wire", () => {
     expect(usePluginStore().describedAction?.surface?.surfaceToken).toBe("token-second");
     service.dispose();
   });
+  function catalogHarness(current: readonly PluginSnapshot[]) {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const posted: Array<{ type: string; requestId: string; payload: unknown }> = [];
+    let automaticLists = false;
+    let authority = current;
+    const reply = (request: (typeof posted)[number], payload: unknown) => listener?.({ data: {
+      type: request.type, requestId: request.requestId, payload } });
+    const bridge = createHostBridge({ generateRequestId: () => `catalog-${++sequence}`,
+      webview: { postMessage(message) {
+        const request = message as (typeof posted)[number]; posted.push(request);
+        if (automaticLists && request.type === "plugin.catalog.list") queueMicrotask(() => reply(request, authority));
+      }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
+    bridge.start(); setHostBridgeForTesting(bridge);
+    return { posted, reply, auto(value: readonly PluginSnapshot[]) { authority = value; automaticLists = true; },
+      event(value: PluginSnapshot) { listener?.({ data: { type: "plugin.catalog.changed", payload: {
+        contract: "vibetable.plugin-event.v1", eventType: "plugin.catalog.changed", projectKey: value.projectKey,
+        entityId: value.pluginId, revision: value.revision, snapshot: value } } }); } };
+  }
+
+  it("shares catalog read retirement across two service instances", async () => {
+    const old = { ...snapshot, installationId: "retired", revision: 4 };
+    const current = { ...snapshot, installationId: "current", revision: 2 };
+    const harness = catalogHarness([current]);
+    const first = usePluginService(); const second = usePluginService();
+    const oldRead = first.list(); const newRead = second.list();
+    harness.reply(harness.posted[1]!, [current]); await newRead;
+    harness.reply(harness.posted[0]!, [old]); await oldRead;
+    expect(usePluginStore().plugins[0]?.installationId).toBe("current");
+  });
+
+  it("treats old, unknown and new catalog notifications as bounded invalidations of the authority", async () => {
+    const old = { ...snapshot, installationId: "retired", revision: 4 };
+    const current = { ...snapshot, installationId: "current", revision: 2 };
+    const harness = catalogHarness([current]); harness.auto([current]);
+    const store = usePluginStore(); store.applyPlugin(old);
+    const task: PluginTaskSnapshot = { taskId: "old-task", runId: "old-run", pluginId: old.pluginId,
+      pluginVersion: old.version, installationId: old.installationId, installationRevision: 4,
+      actionId: "normalize", projectKey: old.projectKey, collection: "orders", targetCount: 1,
+      risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    store.applyTask(task); store.removePlugin(old.pluginId);
+    const service = usePluginService(); service.init(); await service.list(); harness.posted.length = 0;
+    for (const value of [old, { ...old, installationId: "never-seen", revision: 9 },
+      { ...current, revision: 1 }, current]) harness.event(value);
+    await flushPromises();
+    expect(store.plugins[0]?.installationId).toBe("current");
+    expect(store.taskForId(task.taskId)).toBeNull();
+    expect(harness.posted.filter(request => request.type === "plugin.catalog.list")).toHaveLength(1);
+    const replacement = { ...current, installationId: "replacement", revision: 1 };
+    harness.auto([replacement]); harness.event(replacement); await flushPromises();
+    expect(store.plugins[0]?.installationId).toBe("replacement");
+    harness.auto([]); harness.event(replacement); await flushPromises();
+    expect(store.plugins).toEqual([]);
+    service.dispose();
+  });
+
+  it("retires old lifecycle replies that follow a new installation through another service", async () => {
+    const old = { ...snapshot, installationId: "retired", revision: 4 };
+    const current = { ...snapshot, installationId: "current", revision: 2 };
+    const harness = catalogHarness([current]); harness.auto([current]);
+    const store = usePluginStore(); store.applyPlugin(old);
+    const first = usePluginService(); const second = usePluginService();
+    const oldEnable = first.setEnabled(old, true);
+    const uninstall = second.uninstall(old, false);
+    harness.reply(harness.posted[1]!, { uninstalled: true, privateSettingsRetained: true }); await uninstall;
+    const newEnable = second.setEnabled(current, true);
+    harness.reply(harness.posted[2]!, current); await newEnable;
+    harness.reply(harness.posted[0]!, old); await oldEnable; await flushPromises();
+    expect(store.plugins[0]?.installationId).toBe("current");
+  });
+
+  it("invalidates reads begun during a lifecycle operation when that operation completes", async () => {
+    const previous = { ...snapshot, installationId: "same-record", revision: 1 };
+    const current = { ...previous, revision: 2 };
+    const harness = catalogHarness([current]);
+    const store = usePluginStore(); store.applyPlugin(previous);
+    const first = usePluginService(); const second = usePluginService();
+    const enable = first.setEnabled(previous, true);
+    const olderRead = second.list();
+    harness.auto([current]);
+    harness.reply(harness.posted[0]!, current); await enable;
+    harness.reply(harness.posted[1]!, [previous]); await olderRead; await flushPromises();
+    expect(store.plugins[0]?.revision).toBe(2);
+  });
+
 });

@@ -32,6 +32,9 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly Func<string, string?>? _packageCacheRoot;
     private readonly Func<CancellationToken, Task>? _ensureGateway;
     private readonly object _gatewayGate = new();
+    // Orders local resource projection only; PocketBase remains the authority.
+    private readonly object _catalogProjectionGate = new();
+    private long _catalogProjectionGeneration;
     private readonly HostInstallPlanLeaseRegistry _installLeases;
     private readonly HostPluginTaskRegistry _taskRegistry;
     private readonly ProductAuthorityEpoch _authority;
@@ -175,6 +178,7 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context)
     {
+        AdvanceCatalogProjection();
         ReleaseLeases(_installLeases.SetContextAfterAuthorityTransition(context));
         PostSettlements(_taskRegistry.SetContext(context));
     }
@@ -220,8 +224,11 @@ public sealed class PluginRequestDispatcher : IDisposable
                 Func<Func<bool>, bool>? emitGate = sharedRead
                     ? GateSharedReadTerminal(request.Type, context)
                     : null;
+                bool catalogMutation = sharedMethod == "plugin.setEnabled";
+                long catalogGeneration = catalogMutation ? AdvanceCatalogProjection() : CaptureCatalogProjection();
+                bool catalogCompleted = false;
                 JsonElement shared;
-                object projected;
+                object projected = null!;
                 try
                 {
                     shared = await sharedRpc(sharedMethod, request.Payload, token).ConfigureAwait(false);
@@ -229,14 +236,39 @@ public sealed class PluginRequestDispatcher : IDisposable
                     // original stale reply for a rotated context; gated reads
                     // rely on the session emission gate instead.
                     if (context != _projectContext() && (!sharedRead || emitGate is null)) throw StaleTask();
-                    projected = sharedMethod switch
+                    PluginProjectContext? projectionContext = _projectContext();
+                    PluginRuntimeSnapshot[]? snapshots = sharedMethod == "plugin.listCatalog"
+                        ? shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions) ?? throw new JsonException("Invalid plugin catalog.") : null;
+                    PluginRuntimeSnapshot? snapshot = catalogMutation
+                        ? shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions) ?? throw new JsonException("Invalid plugin snapshot.") : null;
+                    string? cacheRoot = _packageCacheRoot?.Invoke(context.ProjectKey);
+                    bool ProjectCurrentCatalog()
                     {
-                        "plugin.listCatalog" => (shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
-                            ?? throw new JsonException("Invalid plugin catalog.")).Select(ProjectSnapshot).ToArray(),
-                        "plugin.setEnabled" => ProjectSnapshot(shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions)
-                            ?? throw new JsonException("Invalid plugin snapshot.")),
-                        _ => shared,
-                    };
+                        lock (_catalogProjectionGate)
+                        {
+                            bool current = catalogGeneration == _catalogProjectionGeneration && context == projectionContext;
+                            if (snapshots is not null && !current)
+                                throw new PluginDispatchException("PLUGIN_REQUEST_CANCELLED", "Plugin catalog read was superseded.");
+                            projected = snapshots is not null
+                                ? snapshots.Select(item => ProjectSnapshot(item, projectionContext, cacheRoot)).ToArray()
+                                : snapshot is not null
+                                    ? current ? ProjectSnapshot(snapshot, projectionContext, cacheRoot) : SanitizeSnapshot(snapshot)
+                                    : shared;
+                            if (catalogMutation)
+                            {
+                                ++_catalogProjectionGeneration;
+                                catalogCompleted = true;
+                            }
+                            return true;
+                        }
+                    }
+                    // The publication gate precedes the projection lock. No
+                    // session/cache callback or network await runs in that lock.
+                    if (snapshots is not null && emitGate is not null)
+                    {
+                        if (!emitGate(ProjectCurrentCatalog)) return;
+                    }
+                    else ProjectCurrentCatalog();
                 }
                 catch (Exception ex) when (emitGate is not null)
                 {
@@ -246,6 +278,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     PostSharedReadFailure(request, ex, token, emitGate);
                     return;
                 }
+                finally { if (catalogMutation && !catalogCompleted) AdvanceCatalogProjection(); }
                 if (sharedRead)
                 {
                     _reply.TryPostResponse(request.Type, request.RequestId, projected, emitGate);
@@ -356,8 +389,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
                     Read<PluginGitHubInspectParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.lifecycle.rollback" => ProjectSnapshot(await gateway.RollbackAsync(
-                    Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
+                "plugin.lifecycle.rollback" => await RollbackAsync(
+                    gateway, Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
                     Read<PluginUninstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.action.describe" => await gateway.DescribeActionAsync(
@@ -545,6 +578,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             token,
             operation.Authority.Token);
+        long catalogGeneration = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
         try
         {
             HostInstallPlanBinding binding = operation.Plan.Binding;
@@ -565,12 +600,18 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
                 .ConfigureAwait(false);
+            PluginProjectContext? projectionContext = _projectContext();
+            string? cacheRoot = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
             if (!_installLeases.TryFinishOperation(operation, () =>
             {
-                _reply.PostResponse(
-                    routed.Type,
-                    routed.RequestId,
-                    ProjectSnapshot(snapshot));
+                lock (_catalogProjectionGate)
+                {
+                    _reply.PostResponse(routed.Type, routed.RequestId,
+                        catalogGeneration == _catalogProjectionGeneration
+                            ? ProjectSnapshot(snapshot, projectionContext, cacheRoot) : SanitizeSnapshot(snapshot));
+                    ++_catalogProjectionGeneration;
+                    catalogCompleted = true;
+                }
             }))
             {
                 throw StaleInstallPlan();
@@ -580,6 +621,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             throw StaleInstallPlan();
         }
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
     }
 
     private async Task UpgradeAsync(
@@ -593,6 +635,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             token,
             operation.Authority.Token);
+        long catalogGeneration = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
         try
         {
             HostInstallPlanBinding binding = operation.Plan.Binding;
@@ -612,12 +656,18 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
                 .ConfigureAwait(false);
+            PluginProjectContext? projectionContext = _projectContext();
+            string? cacheRoot = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
             if (!_installLeases.TryFinishOperation(operation, () =>
             {
-                _reply.PostResponse(
-                    routed.Type,
-                    routed.RequestId,
-                    ProjectSnapshot(snapshot));
+                lock (_catalogProjectionGate)
+                {
+                    _reply.PostResponse(routed.Type, routed.RequestId,
+                        catalogGeneration == _catalogProjectionGeneration
+                            ? ProjectSnapshot(snapshot, projectionContext, cacheRoot) : SanitizeSnapshot(snapshot));
+                    ++_catalogProjectionGeneration;
+                    catalogCompleted = true;
+                }
             }))
             {
                 throw StaleInstallPlan();
@@ -627,6 +677,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             throw StaleInstallPlan();
         }
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
     }
 
     private PluginInstallCancelResult CancelInstall(
@@ -640,17 +691,50 @@ public sealed class PluginRequestDispatcher : IDisposable
         return new PluginInstallCancelResult(owned);
     }
 
+    private async Task<PluginRuntimeSnapshot> RollbackAsync(
+        IPluginRpcGateway gateway, PluginRollbackParams request, CancellationToken token)
+    {
+        long generation = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
+        try
+        {
+            var snapshot = await gateway.RollbackAsync(request, token).ConfigureAwait(false);
+            PluginProjectContext? context = _projectContext();
+            string? cacheRoot = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
+            lock (_catalogProjectionGate)
+            {
+                var projected = generation == _catalogProjectionGeneration
+                    ? ProjectSnapshot(snapshot, context, cacheRoot) : SanitizeSnapshot(snapshot);
+                ++_catalogProjectionGeneration;
+                catalogCompleted = true;
+                return projected;
+            }
+        }
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
+    }
+
     private async Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request,
         CancellationToken token)
     {
-        var result = await _gateway!.UninstallAsync(request, token).ConfigureAwait(false);
-        if (result.Uninstalled)
+        long generation = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
+        try
         {
-            _resourceHost.UnregisterInstalled(request.ProjectKey, request.PluginId);
-            _nativePlugins.TryRemove((request.ProjectKey, request.PluginId), out _);
+            var result = await _gateway!.UninstallAsync(request, token).ConfigureAwait(false);
+            lock (_catalogProjectionGate)
+            {
+                if (result.Uninstalled && generation == _catalogProjectionGeneration)
+                {
+                    _resourceHost.UnregisterInstalled(request.ProjectKey, request.PluginId);
+                    _nativePlugins.TryRemove((request.ProjectKey, request.PluginId), out _);
+                }
+                ++_catalogProjectionGeneration;
+                catalogCompleted = true;
+            }
+            return result;
         }
-        return result;
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
     }
 
     /// <summary>
@@ -941,10 +1025,20 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginResolveInteractionParams request)
         => ResolveInteractionAsync(request, CancellationToken.None, fromNativeHost: true);
 
-    private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
+    private long CaptureCatalogProjection()
     {
-        string? localPackage = PluginRetainedPackage.PathFor(
-            _packageCacheRoot?.Invoke(snapshot.ProjectKey), snapshot.PackageHash);
+        lock (_catalogProjectionGate) return _catalogProjectionGeneration;
+    }
+
+    private long AdvanceCatalogProjection()
+    {
+        lock (_catalogProjectionGate) return ++_catalogProjectionGeneration;
+    }
+
+    private PluginRuntimeSnapshot ProjectSnapshot(
+        PluginRuntimeSnapshot snapshot, PluginProjectContext? context, string? cacheRoot)
+    {
+        string? localPackage = PluginRetainedPackage.PathFor(cacheRoot, snapshot.PackageHash);
         bool registered = snapshot.Status == "enabled" && localPackage is not null && _resourceHost.TryRegisterInstalled(
             snapshot.ProjectKey,
             snapshot.PluginId,
@@ -953,8 +1047,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
         PluginRuntimeManifest manifest = snapshot.Manifest with
         {
-            Ui = ProjectCustomViews(snapshot, registered),
-            Actions = ProjectActionSurfaces(snapshot, registered),
+            Ui = ProjectCustomViews(snapshot, registered, context),
+            Actions = ProjectActionSurfaces(snapshot, registered, context),
         };
         if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
         {
@@ -985,7 +1079,7 @@ public sealed class PluginRequestDispatcher : IDisposable
     /// declared entry stays on the action; src/token are projection-only
     /// fields that never persist in the stored manifest.
     /// </summary>
-    private IReadOnlyList<PluginRuntimeAction> ProjectActionSurfaces(PluginRuntimeSnapshot snapshot, bool registered)
+    private IReadOnlyList<PluginRuntimeAction> ProjectActionSurfaces(PluginRuntimeSnapshot snapshot, bool registered, PluginProjectContext? context)
     {
         var projected = new List<PluginRuntimeAction>(snapshot.Manifest.Actions.Count);
         foreach (PluginRuntimeAction action in snapshot.Manifest.Actions)
@@ -1007,7 +1101,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 action.Entry,
                 action.ActionId,
                 action.EffectivePresentation);
-            if (_projectContext() is { } context)
+            if (context is not null)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,
                     action.Risk, action.Entry, action.EffectivePresentation, snapshot.InstallationId);
@@ -1033,7 +1127,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         return displayName.Values.FirstOrDefault() ?? fallback;
     }
 
-    private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot, bool registered)
+    private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot, bool registered, PluginProjectContext? context)
     {
         JsonObject? ui;
         try
@@ -1087,7 +1181,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 snapshot.ProjectKey,
                 snapshot.PluginId,
                 entry, actionId);
-            if (_projectContext() is { } context)
+            if (context is not null)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, actionId,
                     snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry, installationId: snapshot.InstallationId);
@@ -1122,7 +1216,33 @@ public sealed class PluginRequestDispatcher : IDisposable
             || envelope.Revision != snapshot.Revision || envelope.Revision < 1
             || _projectContext()?.ProjectKey != envelope.ProjectKey)
             throw new JsonException("Plugin catalog event identity is invalid.");
-        return envelope with { Snapshot = JsonSerializer.SerializeToElement(ProjectSnapshot(snapshot), JsonOptions) };
+        AdvanceCatalogProjection();
+        snapshot = SanitizeSnapshot(snapshot);
+        return envelope with { Snapshot = JsonSerializer.SerializeToElement(snapshot, JsonOptions) };
+    }
+
+    private static PluginRuntimeSnapshot SanitizeSnapshot(PluginRuntimeSnapshot snapshot)
+    {
+        // Recoverable SSE carries history. It invalidates the renderer catalog;
+        // only an authority list/lifecycle result may bind or retire surfaces.
+        var ui = JsonNode.Parse(snapshot.Manifest.Ui.GetRawText())!.AsObject();
+        if (ui["customViews"] is JsonArray views)
+            foreach (JsonObject view in views.OfType<JsonObject>())
+            {
+                view.Remove("src");
+                view.Remove("surfaceToken");
+            }
+        snapshot = snapshot with
+        {
+            SourceLocation = HostManagedSource,
+            Manifest = snapshot.Manifest with
+            {
+                Ui = JsonSerializer.SerializeToElement(ui, JsonOptions),
+                Actions = snapshot.Manifest.Actions.Select(action => action with
+                    { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null }).ToArray(),
+            },
+        };
+        return snapshot;
     }
 
     private void OnTaskChanged(IPluginRpcGateway gateway, PluginEventEnvelope envelope)

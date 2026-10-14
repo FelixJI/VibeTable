@@ -105,7 +105,8 @@ export function usePluginService(): PluginService {
     } else if (envelope.eventType === "plugin.interaction.requested" && isInteractionSnapshot(snapshot)) {
       store.applyInteraction(snapshot, envelope.revision);
     } else if (envelope.eventType === "plugin.catalog.changed" && isPluginSnapshot(snapshot)) {
-      store.applyPlugin(snapshot, envelope.revision);
+      // SSE can replay an old installation; only a current authority read may replace it.
+      store.refreshCatalog(list);
     }
   }
 
@@ -135,11 +136,11 @@ export function usePluginService(): PluginService {
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly errorPolicy?: RequestErrorPolicy } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean } = {},
   ): Promise<T> {
     const context = ensureProjectReady();
     const isCurrentContext = () => store.projectKey === context.projectKey
-      && store.projectContextGeneration === context.generation;
+      && store.projectContextGeneration === context.generation && (options.isCurrent?.() ?? true);
     const errorPolicy = options.errorPolicy ?? "foreground";
     // Background refreshes must not toggle buttons or release a foreground operation.
     if (errorPolicy === "foreground") store.startBusy();
@@ -166,14 +167,40 @@ export function usePluginService(): PluginService {
   async function list(): Promise<readonly PluginSnapshot[]> {
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
+    const sequence = store.beginCatalogRead();
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
-      { errorPolicy: "background" },
+      { errorPolicy: "background", isCurrent: () => store.isCurrentCatalogRead(sequence) },
     );
-    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation) return snapshots;
+    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation
+      || !store.isCurrentCatalogRead(sequence)) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
     return snapshots;
+  }
+
+  async function mutateCatalog<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
+    const projectKey = store.projectKey;
+    const generation = store.projectContextGeneration;
+    const sequence = store.beginCatalogRead();
+    let succeeded = false;
+    let applied = false;
+    const currentContext = () => store.projectKey === projectKey && store.projectContextGeneration === generation;
+    try {
+      const result = await request();
+      succeeded = true;
+      if (currentContext() && store.isCurrentCatalogRead(sequence)) {
+        apply(result);
+        applied = true;
+      }
+      return result;
+    } finally {
+      // Completion also retires reads issued while the write was in flight.
+      if (currentContext()) {
+        store.invalidateCatalogReads();
+        if (succeeded && !applied) store.refreshCatalog(list);
+      }
+    }
   }
 
   async function inspectInstall(sourceLocation: string): Promise<PluginInstallPlan> {
@@ -251,12 +278,10 @@ export function usePluginService(): PluginService {
 
   async function commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot> {
     const consumed = consumeInstallPlan(plan);
-    const snapshot = await call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
+    return mutateCatalog(() => call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
       planId: consumed.planId,
       projectRevision: store.projectRevision,
-    });
-    store.applyPlugin(snapshot);
-    return snapshot;
+    }), snapshot => store.applyPlugin(snapshot));
   }
 
   async function releaseInstallPlan(planId: string): Promise<void> {
@@ -288,9 +313,7 @@ export function usePluginService(): PluginService {
     | "plugin.lifecycle.upgrade"
     | "plugin.lifecycle.rollback"
   >(type: K, payload: WebPayloadMap[K]): Promise<PluginSnapshot> {
-    const snapshot = await call<K, PluginSnapshot>(type, payload);
-    store.applyPlugin(snapshot);
-    return snapshot;
+    return mutateCatalog(() => call<K, PluginSnapshot>(type, payload), snapshot => store.applyPlugin(snapshot));
   }
 
   async function upgrade(
@@ -424,12 +447,10 @@ export function usePluginService(): PluginService {
       pluginId: plugin.pluginId,
     }),
     uninstall: async (plugin, cleanupPrivateSettings) => {
-      const result = await call<"plugin.lifecycle.uninstall", PluginUninstallResult>(
+      return mutateCatalog(() => call<"plugin.lifecycle.uninstall", PluginUninstallResult>(
         "plugin.lifecycle.uninstall",
         { projectKey: plugin.projectKey, pluginId: plugin.pluginId, cleanupPrivateSettings },
-      );
-      if (result.uninstalled) store.removePlugin(plugin.pluginId);
-      return result;
+      ), result => { if (result.uninstalled) store.removePlugin(plugin.pluginId); });
     },
     describeAction,
     startAction: async (pluginId, actionId, input, context) => {

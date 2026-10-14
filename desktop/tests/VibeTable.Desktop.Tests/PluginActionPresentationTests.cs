@@ -19,6 +19,88 @@ public sealed class PluginActionPresentationTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    public async Task HistoricalCatalogInvalidationCannotRetireCurrentSurface()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-catalog-history-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var current = PresentationSnapshot() with { Revision = 2, InstallationId = "current-record" };
+            var history = current with { Revision = 4, InstallationId = "retired-record", PackageHash = "sha256:" + new string('b', 64) };
+            foreach (var snapshot in new[] { current, history })
+            {
+                using var package = ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, ZipArchiveMode.Create);
+                package.CreateEntry("ui/index.html"); package.CreateEntry("ui/run.js");
+            }
+            var reply = new PluginRequestDispatcherTestsAccessibleSink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePickerForPresentation(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { current })), packageCacheRoot: _ => root);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "current", """{"projectKey":"project-1"}"""));
+            var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single();
+            string token = projected.Manifest.Actions.Single(action => action.ActionId == "open-app").SurfaceToken!;
+            Assert.IsTrue(surfaces.TryGet(token, out _));
+            var payload = JsonSerializer.SerializeToElement(new PluginEventEnvelope(PluginContractVersions.Event,
+                "plugin.catalog.changed", current.ProjectKey, current.PluginId, history.Revision,
+                JsonSerializer.SerializeToElement(history, new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+            var invalidation = dispatcher.ProjectCatalogEvent(payload);
+            Assert.IsTrue(surfaces.TryGet(token, out _), "Historical payload retired the current native token.");
+            Assert.IsFalse(invalidation.Snapshot.GetRawText().Contains("surfaceToken", StringComparison.Ordinal));
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "still-current", """{"projectKey":"project-1"}"""));
+            projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single();
+            Assert.AreEqual(token, projected.Manifest.Actions.Single(action => action.ActionId == "open-app").SurfaceToken);
+            Assert.AreEqual("current-record", projected.InstallationId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LateCatalogReadOrLifecycleReplyCannotRetireReplacementSurface(bool lateWrite)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-catalog-late-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var current = PresentationSnapshot() with { Revision = 2, InstallationId = "replacement-record" };
+            var old = current with { Revision = 4, InstallationId = "retired-record", PackageHash = "sha256:" + new string('b', 64) };
+            foreach (var snapshot in new[] { current, old })
+            {
+                using var package = ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, ZipArchiveMode.Create);
+                package.CreateEntry("ui/index.html"); package.CreateEntry("ui/run.js");
+            }
+            var pending = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var reply = new PluginRequestDispatcherTestsAccessibleSink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            int calls = 0;
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePickerForPresentation(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => ++calls == 1 ? pending.Task : Task.FromResult(JsonSerializer.SerializeToElement(current)),
+                packageCacheRoot: _ => root);
+            var late = dispatcher.DispatchAsync(Request(lateWrite ? "plugin.lifecycle.setEnabled" : "plugin.catalog.list",
+                "old", """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+            await dispatcher.DispatchAsync(Request("plugin.lifecycle.setEnabled", "replacement",
+                """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+            var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot>(reply.Payload);
+            string token = projected.Manifest.Actions.Single(action => action.ActionId == "open-app").SurfaceToken!;
+            Assert.IsTrue(surfaces.TryGet(token, out _));
+            pending.SetResult(lateWrite ? JsonSerializer.SerializeToElement(old) : JsonSerializer.SerializeToElement(new[] { old }));
+            await late;
+            Assert.IsTrue(surfaces.TryGet(token, out var session), "Late authority reply retired the replacement surface.");
+            Assert.IsNotNull(session);
+            Assert.AreEqual("replacement-record", session.InstallationId);
+            if (lateWrite)
+                Assert.IsNull(Assert.IsInstanceOfType<PluginRuntimeSnapshot>(reply.Payload).Manifest.Actions.Single(action => action.ActionId == "open-app").SurfaceToken);
+            else Assert.AreEqual("PLUGIN_REQUEST_CANCELLED", reply.FailureCode);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     [DataRow("application", "ui/ENTRY.html", true)]
     [DataRow("application", "ui/ENTRY.HTML", true)]
     [DataRow("headless", "ui/ENTRY.js", true)]

@@ -16,6 +16,11 @@ export const usePluginStore = defineStore("plugins", () => {
   const projectRevision = ref("");
   const projectContextReady = ref(false);
   const projectContextGeneration = ref(0);
+  // Shared by every service instance; this orders UI reads, not authority data.
+  let catalogReadSequence = 0;
+  let catalogRefreshRunning = false;
+  let catalogRefreshAgain = false;
+  let catalogRefreshReader: (() => Promise<readonly PluginSnapshot[]>) | null = null;
   const currentUser = ref<Readonly<Record<string, unknown>>>({});
   const hostVersion = ref("unknown");
   const catalogRevision = ref(-1);
@@ -64,11 +69,45 @@ export const usePluginStore = defineStore("plugins", () => {
       && task.actionId === actionId && currentTask(task)) ?? null;
   }
 
+  function beginCatalogRead(): number { return ++catalogReadSequence; }
+  function isCurrentCatalogRead(sequence: number): boolean { return sequence === catalogReadSequence; }
+  function invalidateCatalogReads(): void { catalogReadSequence++; }
+  function refreshCatalog(read: () => Promise<readonly PluginSnapshot[]>): void {
+    invalidateCatalogReads();
+    catalogRefreshReader = read;
+    catalogRefreshAgain = true;
+    if (catalogRefreshRunning) return;
+    catalogRefreshRunning = true;
+    void Promise.resolve().then(async () => {
+      try {
+        // One active read and one dirty bit coalesce a recovered event backlog.
+        while (catalogRefreshAgain && catalogRefreshReader) {
+          const reader = catalogRefreshReader;
+          catalogRefreshAgain = false;
+          const generation = projectContextGeneration.value;
+          const reading = reader();
+          const sequence = catalogReadSequence;
+          try { await reading; }
+          catch (error) {
+            if (generation === projectContextGeneration.value && isCurrentCatalogRead(sequence))
+              failIfNoError(error);
+          }
+        }
+      } finally {
+        catalogRefreshRunning = false;
+        catalogRefreshReader = null;
+      }
+    });
+  }
+
   function projectInstallPlan(plan: PluginInstallPlan | null): void {
     installPlan.value = plan;
   }
 
   function setProjectContext(key: string, revision: string): void {
+    invalidateCatalogReads();
+    catalogRefreshAgain = false;
+    catalogRefreshReader = null;
     projectContextGeneration.value += 1;
     if (projectKey.value !== key) {
       pluginById.value = {};
@@ -136,7 +175,8 @@ export const usePluginStore = defineStore("plugins", () => {
   function applyPlugin(snapshot: PluginSnapshot, eventRevision?: number): void {
     if (snapshot.projectKey !== projectKey.value) return;
     const current = pluginById.value[snapshot.pluginId];
-    if (current && snapshot.revision <= current.revision) return;
+    if (current && current.installationId === snapshot.installationId
+      && snapshot.revision <= current.revision) return;
     pluginById.value = { ...pluginById.value, [snapshot.pluginId]: snapshot };
     catalogRevision.value = Math.max(catalogRevision.value, eventRevision ?? snapshot.revision);
     selectedPluginId.value ??= snapshot.pluginId;
@@ -279,6 +319,10 @@ export const usePluginStore = defineStore("plugins", () => {
   }
 
   return {
+    beginCatalogRead,
+    isCurrentCatalogRead,
+    invalidateCatalogReads,
+    refreshCatalog,
     taskForId,
     taskForAction,
     projectKey,
