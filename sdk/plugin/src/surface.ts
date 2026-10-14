@@ -39,7 +39,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const channel = transport ?? browser.chrome?.webview;
   if (!channel || !surfaceToken) throw new PluginCapabilityError("plugin_api_unsupported", "A plugin surface Host is required.");
   let closed = false;
-  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; cleanup: () => void }>();
+  const pending = new Map<string, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; cleanup: () => void }>();
   const receive = (event: { readonly data: unknown }): void => {
     if (!event.data || typeof event.data !== "object") return;
     const reply = event.data as { contract?: string; requestId?: string; result?: unknown; error?: { code?: string; message?: string } };
@@ -70,7 +70,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
         cancel();
         reject(new PluginCapabilityError(method === "mutation.submit" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
       }, method === "mutation.submit" ? 125_000 : 20_000);
-      pending.set(requestId, { resolve: value => resolve(value as T), reject, timer, cleanup });
+      pending.set(requestId, { method, resolve: value => resolve(value as T), reject, timer, cleanup });
       signal?.addEventListener("abort", cancel, { once: true });
       try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); }
       catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError("plugin_transport_failed", "Plugin transport failed.")); }
@@ -84,7 +84,14 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     dispose: () => {
       closed = true;
       channel.removeEventListener("message", receive);
-      for (const request of pending.values()) { clearTimeout(request.timer); request.cleanup(); request.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed.")); }
+      // A sent submit may already be committing; dispose reports unknown and resends nothing.
+      for (const request of pending.values()) {
+        clearTimeout(request.timer);
+        request.cleanup();
+        request.reject(request.method === "mutation.submit"
+          ? new PluginCapabilityError("plugin_commit_unknown", "Plugin surface closed before the commit receipt; outcome unknown; no automatic retry.")
+          : new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
+      }
       pending.clear();
     },
   };

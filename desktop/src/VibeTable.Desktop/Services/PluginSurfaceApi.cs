@@ -95,9 +95,9 @@ internal sealed class PluginSurfaceApi : IDisposable
                         var parameters = JsonNode.Parse(request.Params.GetRawText()) as JsonObject ?? throw Error("plugin_capability_invalid");
                         string? cursor = parameters["cursor"]?.GetValue<string>();
                         parameters.Remove("cursor");
-                        string query = parameters.ToJsonString();
                         Cursor? prior = null;
-                        if (cursor is not null && (!state.Cursors.TryRemove(cursor, out prior) || prior.Query != query || prior.Expires < DateTimeOffset.UtcNow)) throw Error("plugin_cursor_invalid");
+                        // The cursor binds the structured query; reordered object properties are still the same query.
+                        if (cursor is not null && (!state.Cursors.TryRemove(cursor, out prior) || !JsonNode.DeepEquals(prior.Query, parameters) || prior.Expires < DateTimeOffset.UtcNow)) throw Error("plugin_cursor_invalid");
                         JsonElement page = await CallAsync(surface, request.Method, JsonSerializer.SerializeToElement(parameters), deadline.Token,
                             cursor: prior?.GoCursor, dependencies: prior?.Dependencies);
                         var output = JsonNode.Parse(page.GetRawText())!.AsObject();
@@ -106,7 +106,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                         {
                             if (state.Cursors.Count >= 64) throw Error("plugin_query_limit");
                             string handle = Guid.NewGuid().ToString("N");
-                            state.Cursors[handle] = new(query, next, page.GetProperty("dependencies").Clone(), DateTimeOffset.UtcNow.AddMinutes(5));
+                            state.Cursors[handle] = new(parameters.DeepClone()!.AsObject(), next, page.GetProperty("dependencies").Clone(), DateTimeOffset.UtcNow.AddMinutes(5));
                             output["nextCursor"] = handle;
                         }
                         output.Remove("dependencies");
@@ -325,7 +325,7 @@ internal sealed class PluginSurfaceApi : IDisposable
     }
     internal bool HasWrites => !_writes.IsEmpty;
     private sealed record ApiRequest(string Contract, string SurfaceToken, string RequestId, string Method, JsonElement Params);
-    private sealed record Cursor(string Query, string GoCursor, JsonElement Dependencies, DateTimeOffset Expires);
+    private sealed record Cursor(JsonObject Query, string GoCursor, JsonElement Dependencies, DateTimeOffset Expires);
     private sealed record Plan(JsonElement Payload, int Count, DateTimeOffset Expires);
     private sealed class SurfaceState(PluginSurfaceSession identity)
     {

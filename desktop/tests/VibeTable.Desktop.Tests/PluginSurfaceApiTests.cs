@@ -64,6 +64,32 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task PaginationCursorBindsQueryByJsonSemanticsNotPropertyOrder()
+    {
+        using var fixture = new Fixture();
+        string query = """{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","name"],"filters":[{"field":"name","operator":"eq","value":{"deep":{"a":1,"b":[1,2]}}}]}""";
+        string first = (await fixture.Call("data.query", query)).GetProperty("result").GetProperty("nextCursor").GetString()!;
+        // Same query with top-level and nested object properties reordered stays valid.
+        string reordered = """{"fields":["id","name"],"filters":[{"operator":"eq","field":"name","value":{"deep":{"b":[1,2],"a":1}}}],"collection":"orders","contract":"vibetable.plugin-query.v2","cursor":"CURSOR"}""".Replace("CURSOR", first, StringComparison.Ordinal);
+        var continued = await fixture.Call("data.query", reordered);
+        Assert.IsFalse(continued.TryGetProperty("error", out _));
+        Assert.AreEqual("go-cursor", fixture.Http.Calls[^1].GetProperty("cursor").GetString());
+        // Each negative keeps contract/filters identical to the first request and
+        // changes exactly one target: fields content, fields order, or the nested b array.
+        string[] continuations =
+        [
+            """{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","status"],"filters":[{"field":"name","operator":"eq","value":{"deep":{"a":1,"b":[1,2]}}}],"cursor":"CURSOR"}""",
+            """{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["name","id"],"filters":[{"field":"name","operator":"eq","value":{"deep":{"a":1,"b":[1,2]}}}],"cursor":"CURSOR"}""",
+            """{"contract":"vibetable.plugin-query.v2","collection":"orders","fields":["id","name"],"filters":[{"field":"name","operator":"eq","value":{"deep":{"a":1,"b":[1,3]}}}],"cursor":"CURSOR"}""",
+        ];
+        foreach (string continuation in continuations)
+        {
+            string cursor = (await fixture.Call("data.query", query)).GetProperty("result").GetProperty("nextCursor").GetString()!;
+            Assert.AreEqual("plugin_cursor_invalid", Code(await fixture.Call("data.query", continuation.Replace("CURSOR", cursor, StringComparison.Ordinal))));
+        }
+    }
+
+    [TestMethod]
     public async Task HostConfirmsExactPlanOnceAndLateCancelPreservesSuccessWithoutPythonGateway()
     {
         using var fixture = new Fixture { Decision = "approved" };

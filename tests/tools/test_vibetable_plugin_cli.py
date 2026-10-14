@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = ROOT / "scripts" / "vibetable_plugin.py"
+TRUSTED_ESBUILD = (
+    ROOT
+    / "examples"
+    / "plugins"
+    / "normalize-text"
+    / "node_modules"
+    / "esbuild"
+    / "lib"
+    / "main.js"
+)
 
 
 def _write_readonly_plugin(root: Path) -> None:
@@ -49,10 +60,12 @@ def _write_readonly_plugin(root: Path) -> None:
     )
 
 
-def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    environment = {**os.environ, **(env or {})}
     return subprocess.run(
         [sys.executable, str(CLI), *args],
         cwd=ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -161,6 +174,105 @@ def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(
     assert packed.returncode == 0, packed.stdout + packed.stderr
     assert package.is_file()
     assert json.loads(packed.stdout)["packageHash"].startswith("sha256:")
+
+
+def _write_surface_script_plugin(root: Path, script: str, source: str) -> None:
+    """A v2 (3.x) package whose declared surface script may live outside ``dist/``."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "ui").mkdir()
+    (root / "ui" / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    (root / "src").mkdir()
+    (root / "src" / f"{Path(script).stem}.ts").write_text(source, encoding="utf-8")
+    manifest = {
+        "$schema": "vibetable.plugin-manifest.v2",
+        "pluginId": "com.example.surface-editor",
+        "version": "1.0.0",
+        "displayName": {"zh-CN": "编辑器"},
+        "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "3.x"},
+        "permissions": {
+            "data": [],
+            "files": [],
+            "privateStorage": False,
+            "network": {"domains": [], "methods": []},
+        },
+        "actions": [
+            {
+                "actionId": "open-editor",
+                "displayName": {"zh-CN": "打开编辑器"},
+                "mode": "local",
+                "risk": "read",
+                "invocation": "manual",
+                "placements": ["table.toolbar"],
+            }
+        ],
+        "ui": {
+            "customViews": [
+                {
+                    "viewId": "editor",
+                    "actionId": "open-editor",
+                    "entry": "ui/index.html",
+                    "script": script,
+                }
+            ]
+        },
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+
+def _bundler_env() -> dict[str, str]:
+    return {"VIBETABLE_ESBUILD_JS": str(TRUSTED_ESBUILD)}
+
+
+def test_build_counts_and_checks_v2_surface_scripts_declared_outside_dist(
+    tmp_path: Path,
+) -> None:
+    plugin = tmp_path / "surface-editor"
+    _write_surface_script_plugin(
+        plugin,
+        "ui/editor.js",
+        "export async function editor() {\n"
+        '  return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ready" };\n'
+        "}\n",
+    )
+
+    built = _run_cli("build", str(plugin), env=_bundler_env())
+
+    assert built.returncode == 0, built.stdout + built.stderr
+    assert (plugin / "ui" / "editor.js").is_file()
+    assert "1 surface scripts compiled, 1 self-contained JavaScript artifacts" in built.stdout
+
+
+def test_build_rejects_unsafe_code_compiled_to_v2_scripts_outside_dist(
+    tmp_path: Path,
+) -> None:
+    boundaries = (
+        (
+            "network",
+            "network_api",
+            "export async function editor() {\n"
+            '  const response = await fetch("https://example.invalid/updates.json");\n'
+            "  return await response.json();\n"
+            "}\n",
+        ),
+        (
+            "dynamic-import",
+            "dynamic_import",
+            "export async function editor(specifier: string) {\n"
+            "  const loaded = await import(specifier);\n"
+            "  return loaded;\n"
+            "}\n",
+        ),
+    )
+    for name, code, source in boundaries:
+        plugin = tmp_path / name
+        _write_surface_script_plugin(plugin, "ui/editor.js", source)
+
+        built = _run_cli("build", str(plugin), env=_bundler_env())
+
+        assert built.returncode == 2, (name, built.stdout, built.stderr)
+        error = json.loads(built.stdout)
+        assert error["code"] == code, (name, error)
+        assert "editor.js" in error["message"], (name, error)
 
 
 def test_init_rejects_removed_flow_flag(tmp_path: Path) -> None:

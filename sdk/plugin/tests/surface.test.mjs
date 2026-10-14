@@ -50,6 +50,35 @@ test("submit requests a plan handle and abort requests cancellation without appr
   client.dispose();
 });
 
+test("dispose reports an in-flight submit as an unknown commit without resending it", async () => {
+  const transport = channel();
+  const client = sdk.createSurfaceClient("surface-a", transport);
+  const submitted = client.mutation.submit("plan-under-way");
+  assert.equal(transport.calls[0].method, "mutation.submit");
+  client.dispose();
+  await assert.rejects(submitted, error => error.code === "plugin_commit_unknown");
+  assert.equal(transport.calls.filter(item => item.method === "mutation.submit").length, 1);
+  assert.equal(transport.calls.filter(item => item.method === "request.cancel").length, 0);
+  assert.equal(transport.listeners.size, 0);
+  await assert.rejects(client.mutation.submit("plan-after-close"), error => error.code === "plugin_surface_closed");
+});
+
+test("dispose keeps settled results and stays safe when repeated", async () => {
+  const transport = channel();
+  const client = sdk.createSurfaceClient("surface-a", transport);
+  const done = client.mutation.submit("plan-done");
+  const wire = transport.calls[0];
+  transport.reply(wire, { status: "succeeded", taskId: "task-1" });
+  assert.deepEqual(await done, { status: "succeeded", taskId: "task-1" });
+  const reading = client.data.query({ contract: "vibetable.plugin-query.v2", collection: "orders", fields: ["id"] });
+  client.dispose();
+  await assert.rejects(reading, error => error.code === "plugin_surface_closed");
+  const settled = transport.calls.length;
+  client.dispose();
+  assert.equal(transport.calls.length, settled);
+  assert.equal(transport.listeners.size, 0);
+});
+
 test("parallel surface requests are bounded and dispose settles every outstanding call", async () => {
   const transport = channel();
   const client = sdk.createSurfaceClient("surface-a", transport);

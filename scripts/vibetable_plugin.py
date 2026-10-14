@@ -221,7 +221,8 @@ def _find_esbuild(source: Path) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
-def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
+def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[str]:
+    """Compile every declared entry in place and return its output paths."""
     entries = sorted(
         {
             action["workerEntry"]
@@ -238,7 +239,7 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
             }
         )
     if not entries:
-        return 0
+        return []
     node = _find_node()
     bundler = _find_esbuild(source)
     sdk_entry = REPO_ROOT / "sdk" / "plugin" / "src" / "index.ts"
@@ -279,7 +280,7 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> int:
                 "worker_bundle_failed",
                 f"failed to bundle {worker_source.relative_to(source)}: {detail}",
             )
-    return len(entries)
+    return entries
 
 
 def _command_build(args: argparse.Namespace) -> int:
@@ -288,10 +289,12 @@ def _command_build(args: argparse.Namespace) -> int:
     if not manifest_path.is_file():
         raise PluginPackageError("missing_manifest", "manifest.json is required")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    compiled_count = _transpile_declared_workers(package_source, manifest)
+    compiled_entries = _transpile_declared_workers(package_source, manifest)
     inspect_plugin_package(package_source)
-    artifacts = sorted((package_source / "dist").rglob("*.js"))
-    for artifact in artifacts:
+    # Declared entries are this build's outputs, so they pass the same checks even outside dist/.
+    artifacts = {*(package_source / "dist").rglob("*.js")}
+    artifacts.update(package_source / entry for entry in compiled_entries)
+    for artifact in sorted(artifacts):
         source = artifact.read_text(encoding="utf-8")
         if _DYNAMIC_IMPORT.search(source):
             raise PluginPackageError(
@@ -312,7 +315,7 @@ def _command_build(args: argparse.Namespace) -> int:
                 f"{artifact.relative_to(package_source)}",
             )
     print(
-        f"build valid ({compiled_count} {'surface scripts' if manifest.get('$schema') == 'vibetable.plugin-manifest.v2' else 'Workers'} compiled, "
+        f"build valid ({len(compiled_entries)} {'surface scripts' if manifest.get('$schema') == 'vibetable.plugin-manifest.v2' else 'Workers'} compiled, "
         f"{len(artifacts)} self-contained JavaScript artifacts)"
     )
     return 0
