@@ -167,7 +167,10 @@ public sealed class PluginSurfaceApiTests
         using var cancelled = new Fixture();
         cancelled.Http.OnCommit = () => cancelled.Tasks.RequestCancel(cancelled.TaskId, out _, out _);
         string pending = (await cancelled.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
-        Assert.AreEqual("plugin_commit_unknown", Code(await cancelled.Call("mutation.submit", $"{{\"planId\":\"{pending}\"}}")));
+        var cancelledSubmit = await cancelled.Call("mutation.submit", $"{{\"planId\":\"{pending}\"}}");
+        Assert.IsTrue(cancelled.Http.CommitObservedCancellation,
+            "cancel-in-flight seam never observed the requested cancellation within its watchdog");
+        Assert.AreEqual("plugin_commit_unknown", Code(cancelledSubmit));
         Assert.IsTrue(cancelled.Tasks.TryGetTask(cancelled.TaskId, out var unknown));
         Assert.AreEqual("aborted", unknown.State);
         Assert.AreEqual("plugin_commit_unknown", unknown.Error!.Code);
@@ -264,13 +267,27 @@ public sealed class PluginSurfaceApiTests
         internal bool FailAuditStart { get; set; }
         internal string? CommitErrorBody { get; set; }
         internal Action? OnCommit { get; set; }
+        internal bool CommitObservedCancellation { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Assert.AreEqual("private-test-secret", request.Headers.GetValues("X-VibeTable-Session").Single());
             var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone();
             Calls.Add(call);
             string method = call.GetProperty("method").GetString()!;
-            if (method == "mutation.commit") { OnCommit?.Invoke(); token.ThrowIfCancellationRequested(); }
+            if (method == "mutation.commit" && OnCommit is { } onCommit)
+            {
+                onCommit();
+                // RequestCancel flips the task lifetime synchronously, but this
+                // commit's linked token only observes it through CancelAsync
+                // callbacks; hang token-aware until the cancellation reaches the
+                // in-flight commit instead of assuming it already did. A 10s
+                // watchdog bounds the hang; the test fails explicitly if the
+                // cancellation never arrives instead of silently succeeding.
+                Task hang = Task.Delay(Timeout.InfiniteTimeSpan, token);
+                Task watchdog = Task.Delay(TimeSpan.FromSeconds(10));
+                if (await Task.WhenAny(hang, watchdog) == hang) CommitObservedCancellation = true;
+                token.ThrowIfCancellationRequested();
+            }
             if (method == "audit.start" && FailAuditStart) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"plugin_audit_failed"}""") };
             if (method == "mutation.commit" && LoseCommit) throw new HttpRequestException("synthetic lost receipt");
             if (method == "mutation.commit" && CommitErrorBody is { } errorBody) return new(HttpStatusCode.Conflict) { Content = new StringContent(errorBody) };
