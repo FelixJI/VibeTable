@@ -455,6 +455,14 @@ func (service *Service) SaveInstallation(
 		if saveErr := saveRecord(txApp, row, current != nil); saveErr != nil {
 			return saveErr
 		}
+		persisted, readErr := findInstallation(txApp, identity.projectKey, identity.pluginID)
+		if readErr != nil {
+			return readErr
+		}
+		if persisted == nil {
+			return storageError()
+		}
+		snapshot = persisted.Payload
 		event, eventErr := catalogChangedEvent(service.newID(), service.now(), snapshot)
 		if eventErr != nil {
 			return eventErr
@@ -709,6 +717,14 @@ func (service *Service) SetEnabled(
 		}, true); saveErr != nil {
 			return saveErr
 		}
+		persisted, readErr := findInstallation(txApp, projectKey, pluginID)
+		if readErr != nil {
+			return readErr
+		}
+		if persisted == nil {
+			return storageError()
+		}
+		updated = persisted.Payload
 		audit, auditErr := lifecycleAudit(
 			service.now(), updated,
 			map[bool]string{true: "enable", false: "disable"}[enabled],
@@ -1027,6 +1043,12 @@ func recordFromStored(stored *core.Record) (record, error) {
 	if !json.Valid(raw) || len(raw) > maxPayloadBytes {
 		return record{}, storageError()
 	}
+	if stored.GetString("kind") == KindInstallation {
+		raw, err = updateSnapshot(raw, map[string]any{"installationId": stored.Id})
+		if err != nil {
+			return record{}, err
+		}
+	}
 	return record{
 		Kind:       stored.GetString("kind"),
 		ProjectKey: stored.GetString("project_key"),
@@ -1099,6 +1121,21 @@ func saveRecord(app core.App, row record, exists bool) error {
 	stored.Set("project_key", row.ProjectKey)
 	stored.Set("plugin_id", row.PluginID)
 	stored.Set("item_key", row.ItemKey)
+	if row.Kind == KindInstallation {
+		payload, err := decodePayload(row.Payload)
+		if err != nil {
+			return err
+		}
+		// The caller can echo an identity, but only PocketBase owns it.
+		if claimed := textValue(payload["installationId"]); claimed != "" && (!exists || claimed != stored.Id) {
+			return invalidPayload()
+		}
+		delete(payload, "installationId")
+		row.Payload, err = json.Marshal(payload)
+		if err != nil {
+			return storageError()
+		}
+	}
 	stored.Set("payload_json", pbtypes.JSONRaw(row.Payload))
 	stored.Set("seq", row.Seq)
 	if err := app.Save(stored); err != nil {

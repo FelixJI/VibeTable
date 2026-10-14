@@ -111,8 +111,13 @@ func validateManifest(value any, pluginID, version string) error {
 }
 
 func validateSnapshotFields(object map[string]any) error {
-	if err := validateObject(object, "projectKey pluginId version packageHash sourceType sourceLocation developmentSourceLocation sourceChanged manifest schemas status disabledReason blockingReasons revision", "projectKey pluginId version packageHash sourceType sourceLocation status"); err != nil {
+	if err := validateObject(object, "projectKey pluginId version packageHash sourceType sourceLocation developmentSourceLocation sourceChanged manifest schemas status disabledReason blockingReasons revision installationId", "projectKey pluginId version packageHash sourceType sourceLocation status"); err != nil {
 		return err
+	}
+	if value := object["installationId"]; value != nil {
+		if text, ok := value.(string); !ok || text == "" {
+			return invalidPayload()
+		}
 	}
 	if source := object["sourceType"]; source != "package" && source != "local-folder" {
 		return invalidPayload()

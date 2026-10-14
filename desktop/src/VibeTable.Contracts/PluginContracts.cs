@@ -201,7 +201,8 @@ public sealed record PluginRuntimeTaskSnapshot(
     PluginRuntimeProgress? Progress,
     PluginRuntimeResult? Result,
     PluginRuntimeSafeError? Error,
-    int? InstallationRevision = null);
+    int? InstallationRevision = null,
+    string? InstallationId = null);
 
 public sealed record PluginRuntimeSafeError(
     string Contract,
@@ -231,13 +232,14 @@ public sealed record PluginRuntimeAction(
     string? FormSchema,
     string? InputSchema,
     string? OutputSchema,
-    string? Presentation = null,
-    string? Entry = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Presentation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Entry = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceSrc = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceToken = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceTitle = null)
 {
     /// <summary>Normalized presentation; absent/empty maps to the legacy surface channel.</summary>
+    [JsonIgnore]
     public string EffectivePresentation => string.IsNullOrWhiteSpace(Presentation) ? "surface" : Presentation;
 }
 
@@ -275,7 +277,8 @@ public sealed record PluginRuntimeSnapshot(
     string? DisabledReason,
     int Revision,
     IReadOnlyList<string>? BlockingReasons = null,
-    bool SourceChanged = false);
+    bool SourceChanged = false,
+    string? InstallationId = null);
 
 public sealed record PluginRuntimeUninstallResult(
     bool Uninstalled,

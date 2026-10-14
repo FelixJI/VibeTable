@@ -110,6 +110,7 @@ onBeforeUnmount(() => {
     </header>
     <iframe
       v-if="valid"
+      :key="surfaceToken"
       ref="frame"
       :src="src"
       :name="surfaceToken"

@@ -16119,6 +16119,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "installationId": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "projectKey": {
             "type": "string"
           },
@@ -16222,6 +16234,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-055",
         "result": {
+          "installationId": null,
           "projectKey": "local:default",
           "pluginId": "sample-plugin",
           "version": "1.0.0",
@@ -17016,6 +17029,18 @@
           "PluginSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "installationId": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "projectKey": {
                 "type": "string"
               },
@@ -17125,6 +17150,7 @@
         "id": "rpc-059",
         "result": [
           {
+            "installationId": null,
             "projectKey": "local:default",
             "pluginId": "sample-plugin",
             "version": "1.0.0",
@@ -17663,6 +17689,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "installationId": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "projectKey": {
             "type": "string"
           },
@@ -17766,6 +17804,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-063",
         "result": {
+          "installationId": null,
           "projectKey": "local:default",
           "pluginId": "sample-plugin",
           "version": "1.0.0",
@@ -17997,6 +18036,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "installationId": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "projectKey": {
             "type": "string"
           },
@@ -18101,6 +18152,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-064",
         "result": {
+          "installationId": null,
           "projectKey": "local:default",
           "pluginId": "sample-plugin",
           "version": "1.0.0",
@@ -18350,6 +18402,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "installationId": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "installationRevision": {
             "anyOf": [
               {
@@ -18494,6 +18558,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-065",
         "result": {
+          "installationId": null,
           "installationRevision": null,
           "taskId": "00000000-0000-4000-8000-000000000001",
           "runId": "00000000-0000-4000-8000-000000000001",
@@ -18773,6 +18838,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "installationId": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "projectKey": {
             "type": "string"
           },
@@ -18878,6 +18955,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-067",
         "result": {
+          "installationId": null,
           "projectKey": "local:default",
           "pluginId": "sample-plugin",
           "version": "1.0.0",

@@ -28,6 +28,7 @@ var pluginSurfaceStorageKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,1
 
 // This seam is session-authenticated Host-only; no Product RPC registration exists.
 type pluginSurfaceAPIRequest struct {
+	InstallationID       string                            `json:"installationId"`
 	ActionID             string                            `json:"actionId"`
 	Entry                string                            `json:"entry"`
 	Method               string                            `json:"method"`
@@ -46,9 +47,10 @@ type pluginSurfaceAPIRequest struct {
 
 type pluginSurfaceInstallation struct {
 	pluginInstallation
-	PackageHash string `json:"packageHash"`
-	Version     string `json:"version"`
-	ActionRisk  string `json:"-"`
+	InstallationID string `json:"installationId"`
+	PackageHash    string `json:"packageHash"`
+	Version        string `json:"version"`
+	ActionRisk     string `json:"-"`
 }
 
 func surfaceInstallation(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (pluginSurfaceInstallation, error) {
@@ -60,7 +62,7 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 	if installed.Manifest.Compatibility.PluginAPI != "3.x" {
 		return installed, pluginDataError("plugin_api_unsupported")
 	}
-	if input.InstallationRevision != installed.Revision {
+	if input.InstallationID == "" || input.InstallationID != installed.InstallationID || input.InstallationRevision != installed.Revision {
 		return installed, pluginDataError("plugin_cursor_stale")
 	}
 	var native struct {

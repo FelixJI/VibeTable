@@ -15,6 +15,7 @@ import { useUiStore } from "@/stores/uiStore";
 import InterfaceRuntime from "./InterfaceRuntime.vue";
 
 const plugin: PluginSnapshot = {
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -222,7 +223,7 @@ function runningPluginTask(): PluginTaskSnapshot {
     taskId: "task-interface",
     runId: "run-interface",
     pluginId: plugin.pluginId,
-    pluginVersion: plugin.version, installationRevision: plugin.revision,
+    pluginVersion: plugin.version, installationRevision: plugin.revision, installationId: plugin.installationId,
     actionId: "normalize",
     projectKey: plugin.projectKey,
     collection: "orders",

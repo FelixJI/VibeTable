@@ -209,4 +209,25 @@ describe("PluginSurfaceHost", () => {
     expect(wrapper.text()).toContain("输出不符合契约");
     expect(wrapper.text()).toContain("reinstall");
   });
+  it("recreates the native frame for a new token while internal hash routing keeps the same frame", async () => {
+    const posted: unknown[] = [];
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage: message => posted.push(message),
+      addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const wrapper = mount(PluginSurfaceHost, { props: { src, surfaceToken: "surface-a", title: "A", theme } });
+    const first = wrapper.get("iframe").element;
+    const firstSource = first.contentWindow;
+    await wrapper.setProps({ src: src.replace("index.html", "second.html"), surfaceToken: "surface-b", title: "B" });
+    const second = wrapper.get("iframe").element;
+    expect(second).not.toBe(first);
+    expect(wrapper.get("iframe").attributes("name")).toBe("surface-b");
+    window.dispatchEvent(new MessageEvent("message", { origin: new URL(src).origin, source: firstSource,
+      data: { contract: "vibetable.plugin-surface.v1", surfaceToken: "surface-a", event: "close", payload: {} } }));
+    expect(JSON.stringify(posted)).not.toContain('"surfaceToken":"surface-b"');
+    expect(wrapper.get("iframe").element).toBe(second);
+    await wrapper.setProps({ src: src.replace("index.html", "second.html#stats") });
+    expect(wrapper.get("iframe").element).toBe(second);
+    wrapper.unmount();
+    expect(JSON.stringify(posted)).toContain('"surfaceToken":"surface-b"');
+  });
+
 });

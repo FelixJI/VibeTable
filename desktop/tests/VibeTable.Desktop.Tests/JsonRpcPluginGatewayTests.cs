@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -108,6 +109,29 @@ public sealed class JsonRpcPluginGatewayTests
         Assert.AreEqual("opaque",
             transport.Requests[8].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
         Assert.IsFalse(transport.SerializedRequests.Contains("trusted", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ActualInstallAndUpgradeWireMatchesPythonValidatedPlans()
+    {
+        DirectoryInfo? root = new(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-install-host-plans.json"))) root = root.Parent;
+        Assert.IsNotNull(root);
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-install-host-plans.json")));
+        foreach (var item in fixture.RootElement.EnumerateArray())
+        {
+            var expected = item.GetProperty("params");
+            var plan = expected.GetProperty("plan").Deserialize<PluginRuntimeInstallPlan>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            var transport = new AutoRespondTransport();
+            await using var client = new JsonRpcClient(transport);
+            using var gateway = new JsonRpcPluginGateway(client);
+            await gateway.CommitInstallAsync(new("project-1", plan, "revision-1"), CancellationToken.None);
+            Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected.GetRawText()), JsonNode.Parse(transport.Requests[0].GetProperty("params").GetRawText())), item.GetProperty("name").GetString());
+            await gateway.UpgradeAsync(new("project-1", plan.Manifest.PluginId, plan, "revision-1"), CancellationToken.None);
+            var upgrade = JsonNode.Parse(expected.GetRawText())!.AsObject();
+            upgrade["pluginId"] = plan.Manifest.PluginId;
+            Assert.IsTrue(JsonNode.DeepEquals(upgrade, JsonNode.Parse(transport.Requests[1].GetProperty("params").GetRawText())));
+        }
     }
 
     private static PluginRuntimeInstallPlan Plan(string planId) => new(

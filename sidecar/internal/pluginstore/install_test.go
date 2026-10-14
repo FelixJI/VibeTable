@@ -41,7 +41,13 @@ func TestCommitInstallMatchesFrozenOracleAndIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sameJSON(t, snapshot, frozenInstallation(t))
+	// The frozen legacy payload remains identical; the only extension is
+	// the existing authority record Id, independently checked below.
+	stored, err := findRecord(service.app, KindInstallation, jsonText(snapshot, "projectKey"), jsonText(snapshot, "pluginId"), "current")
+	if err != nil || stored == nil || jsonText(snapshot, "installationId") != stored.Id {
+		t.Fatal("missing PB identity projection")
+	}
+	sameJSON(t, snapshot, replaceJSON(t, frozenInstallation(t), map[string]any{"installationId": stored.Id}))
 	if service.ProjectKey() != "local:"+oracleWorkspaceID {
 		t.Fatal(service.ProjectKey())
 	}
@@ -139,5 +145,50 @@ func TestWholeDatabaseSnapshotRestoresFourKindsAndMigrationMarkerAtNewPath(t *te
 		if !reflect.DeepEqual(original, reopened) {
 			t.Fatalf("restored %s drift: %+v / %+v", kind, original, reopened)
 		}
+	}
+}
+
+func TestInstallationUsesExistingRecordIdentityAcrossReinstall(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := jsonText(first, "installationId")
+	if id == "" {
+		t.Fatal("missing authoritative PB record identity")
+	}
+	stored, err := findRecord(service.app, KindInstallation, jsonText(first, "projectKey"), jsonText(first, "pluginId"), "current")
+	if err != nil || stored == nil || id != stored.Id {
+		t.Fatal("identity differs from the existing PB record")
+	}
+	var persisted map[string]any
+	raw, _ := json.Marshal(stored.GetRaw("payload_json"))
+	if json.Unmarshal(raw, &persisted) != nil {
+		t.Fatal("invalid persisted installation")
+	}
+	if _, exists := persisted["installationId"]; exists {
+		t.Fatal("persisted a second installation identity")
+	}
+	enabled, err := service.SetEnabled(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"), true)
+	if err != nil || jsonText(enabled, "installationId") != id {
+		t.Fatal("state update changed installation identity")
+	}
+	actual := jsonInt(enabled, "revision")
+	forged := replaceJSON(t, enabled, map[string]any{"installationId": "forged", "revision": actual + 1})
+	if _, err := service.SaveInstallation(ctx, forged, &actual); err == nil {
+		t.Fatal("caller rewrote record identity")
+	}
+	if _, err := service.DeleteInstallation(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId")); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonText(second, "installationId") == "" || jsonText(second, "installationId") == id {
+		t.Fatal("same-version same-package reinstall reused the old record identity")
 	}
 }

@@ -1010,7 +1010,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             if (_projectContext() is { } context)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,
-                    action.Risk, action.Entry, action.EffectivePresentation);
+                    action.Risk, action.Entry, action.EffectivePresentation, snapshot.InstallationId);
             projected.Add(action with
             {
                 SurfaceSrc = surface.DocumentUri.ToString(),
@@ -1090,7 +1090,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             if (_projectContext() is { } context)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, actionId,
-                    snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry);
+                    snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry, installationId: snapshot.InstallationId);
             view["actionId"] = actionId;
             view["src"] = surface.DocumentUri.ToString();
             view["surfaceToken"] = surface.SurfaceToken;

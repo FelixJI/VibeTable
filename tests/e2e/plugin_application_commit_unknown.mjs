@@ -41,7 +41,7 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   const terminal = await helpers.rawBridgeRequest(page, "plugin.task.get", { taskId });
-  recorder.check("lost commit receipt is unknown rather than rolled back or replayed", terminal.payload.state === "unknown" && terminal.payload.error?.code === "plugin_commit_unknown", { terminal });
+  recorder.check("lost commit receipt is unknown rather than rolled back or replayed", terminal.payload.state === "aborted" && terminal.payload.error?.code === "plugin_commit_unknown", { terminal });
   const query = () => helpers.rawBridgeRequest(page, "query.page", { tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
   const observed = await query();
   recorder.check("authority read is bounded after unknown and does not invent a rollback", observed.payload.rows.length <= 1, { observed });
@@ -50,7 +50,7 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   recorder.check("unknown run cannot resurrect the old execution token", stale === "plugin_source_denied", { stale });
   const later = await helpers.rawBridgeRequest(page, "plugin.task.get", { taskId });
   const unchanged = await query();
-  recorder.check("navigation preserves unknown and never automatically repeats its write", later.payload.state === "unknown" && JSON.stringify(observed.payload.rows) === JSON.stringify(unchanged.payload.rows), { later, unchanged });
+  recorder.check("navigation preserves unknown and never automatically repeats its write", later.payload.state === "aborted" && later.payload.error?.code === "plugin_commit_unknown" && JSON.stringify(observed.payload.rows) === JSON.stringify(unchanged.payload.rows), { later, unchanged });
   await nativePluginInput(runtime, "observe", "plugin-recover", "recovered").then(result => recorder.check("unknown commit recovery has actual WPF evidence", result.status === "completed", { result }));
   await page.getByTestId("plugin-app-return").click();
   return { taskId, projectKey: opened.payload.projectKey };

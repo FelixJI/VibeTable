@@ -70,6 +70,14 @@ func (service *Service) CommitInstall(ctx context.Context, planRaw, revisionRaw 
 		if err := saveRecord(tx, record{Kind: KindInstallation, ProjectKey: identity.projectKey, PluginID: identity.pluginID, ItemKey: "current", Payload: snapshot}, false); err != nil {
 			return err
 		}
+		installed, err := findInstallation(tx, identity.projectKey, identity.pluginID)
+		if err != nil {
+			return err
+		}
+		if installed == nil {
+			return storageError()
+		}
+		snapshot = installed.Payload
 		stored, err := findRecord(tx, KindRevision, identity.projectKey, identity.pluginID, hash)
 		if err != nil {
 			return err

@@ -1009,6 +1009,39 @@ def _event_cases(fixtures: Path, topics: list[str]) -> list[dict[str, object]]:
     return result
 
 
+def _plugin_host_install_fixture() -> str:
+    from backend.contracts.plugin_rpc import CommitInstallExecutionParams
+
+    legacy = json.loads(
+        (REPO_ROOT / "tests/contract/fixtures/plugin-platform-v1.json").read_text(encoding="utf-8")
+    )["manifest"]
+    native = json.loads(
+        (REPO_ROOT / "tests/fixtures/plugins/application-boundary/manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cases = []
+    for name, manifest in (("legacy", legacy), ("native", native)):
+        params = CommitInstallExecutionParams.model_validate(
+            {
+                "projectKey": "project-1",
+                "projectRevision": "revision-1",
+                "plan": {
+                    "planId": f"plan-{name}",
+                    "projectKey": "project-1",
+                    "projectRevision": "revision-1",
+                    "sourceType": "package",
+                    "sourceLocation": "package.vtplugin",
+                    "packageHash": "a" * 64,
+                    "manifest": manifest,
+                    "schemas": {},
+                },
+            }
+        )
+        cases.append({"name": name, "params": params.model_dump(mode="json", by_alias=True)})
+    return json.dumps(cases, ensure_ascii=False, indent=2) + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if the catalog is stale")
@@ -1103,6 +1136,13 @@ def main() -> None:
             }
         )
     catalog["eventCases"] = _event_cases(path.parent, topics)
+    host_path = path.parent / "plugin-install-host-plans.json"
+    host_rendered = _plugin_host_install_fixture()
+    if args.check:
+        if not host_path.exists() or host_path.read_text(encoding="utf-8") != host_rendered:
+            raise SystemExit(f"{host_path.relative_to(REPO_ROOT)} is stale")
+    else:
+        host_path.write_text(host_rendered, encoding="utf-8", newline="\n")
     rendered = json.dumps(catalog, ensure_ascii=False, indent=2) + "\n"
     if args.check:
         current = path.read_text(encoding="utf-8") if path.exists() else ""

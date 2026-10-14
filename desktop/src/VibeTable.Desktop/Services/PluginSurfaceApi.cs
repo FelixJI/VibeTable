@@ -54,6 +54,7 @@ internal sealed class PluginSurfaceApi : IDisposable
             state = _states.GetOrAdd(frameToken, _ => new SurfaceState(surface));
             if (!_surfaces.IsActive(frameToken)) { RetireState(frameToken); throw Error("plugin_source_denied"); }
             if (state.Identity.Context != surface.Context || state.Identity.InstallationRevision != surface.InstallationRevision
+                || state.Identity.InstallationId != surface.InstallationId
                 || state.Identity.ActiveCollection != surface.ActiveCollection || state.Identity.ActionId != surface.ActionId
                 || state.Identity.Risk != surface.Risk || state.Identity.Entry != surface.Entry
                 || state.Identity.Presentation != surface.Presentation) throw Error("plugin_session_stale");
@@ -135,7 +136,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                         string taskId = $"plugin-task-{Guid.NewGuid():N}";
                         string runId = $"plugin-run-{Guid.NewGuid():N}";
                         var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
-                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision);
+                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId);
                         var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
                         var task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless");
                         _reply.PostNotification("plugin.task.changed", task.Envelope);
@@ -228,7 +229,7 @@ internal sealed class PluginSurfaceApi : IDisposable
     private PluginSurfaceSession CurrentSurface(string token, string source)
     {
         if (!_surfaces.TryGet(token, out var surface) || surface is null || surface.ApiVersion != "3.x"
-            || surface.Context is null || !IsSameDocumentSource(surface.DocumentUri, source)) throw Error("plugin_source_denied");
+            || surface.Context is null || string.IsNullOrWhiteSpace(surface.InstallationId) || !IsSameDocumentSource(surface.DocumentUri, source)) throw Error("plugin_source_denied");
         var generation = _generation();
         if (generation is null || generation.Identity.SessionEpoch != surface.Context.SessionGeneration
             || $"local:{Guid.Parse(generation.Identity.WorkspaceId):N}" != surface.ProjectKey
@@ -268,6 +269,7 @@ internal sealed class PluginSurfaceApi : IDisposable
             ["packageHash"] = surface.Revision.PackageHash,
             ["sessionEpoch"] = surface.Context!.SessionGeneration,
             ["installationRevision"] = surface.InstallationRevision,
+            ["installationId"] = surface.InstallationId,
             ["activeCollection"] = surface.ActiveCollection,
             ["requestId"] = commitId ?? Guid.NewGuid().ToString("N"),
             ["request"] = JsonNode.Parse(parameters.GetRawText()),

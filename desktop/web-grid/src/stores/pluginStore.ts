@@ -50,6 +50,7 @@ export const usePluginStore = defineStore("plugins", () => {
   function currentTask(task: PluginTaskViewSnapshot): boolean {
     const plugin = pluginById.value[task.pluginId];
     return task.projectKey === projectKey.value && plugin?.status === "enabled"
+      && Boolean(task.installationId) && task.installationId === plugin.installationId
       && task.installationRevision === plugin.revision
       && task.pluginVersion === plugin.version
       && plugin.manifest.actions.some(action => action.actionId === task.actionId);
@@ -163,6 +164,7 @@ export const usePluginStore = defineStore("plugins", () => {
     const projected: PluginTaskViewSnapshot = {
       ...snapshot,
       installationRevision: current ? current.installationRevision : snapshot.installationRevision,
+      installationId: current ? current.installationId : snapshot.installationId,
       revision: Math.max(taskRevision, interactionRevision),
       progressPercent: snapshot.progress?.total
         ? Math.min(100, Math.round((snapshot.progress.current / snapshot.progress.total) * 100))

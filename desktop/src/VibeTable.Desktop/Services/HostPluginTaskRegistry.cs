@@ -263,8 +263,9 @@ internal sealed class HostPluginTaskRegistry
             record.Snapshot = reported with
             {
                 CancelRequested = stickyCancel || reported.CancelRequested,
-                // Only the creation report may bind installation identity.
+                // The first non-null executor metadata binds the creation identity.
                 InstallationRevision = record.Snapshot.InstallationRevision ?? reported.InstallationRevision,
+                InstallationId = record.Snapshot.InstallationId ?? reported.InstallationId,
             };
             return true;
         }
@@ -319,8 +320,9 @@ internal sealed class HostPluginTaskRegistry
             record.Snapshot = reported with
             {
                 CancelRequested = stickyCancel || reported.CancelRequested,
-                // Only the creation report may bind installation identity.
+                // The first non-null executor metadata binds the creation identity.
                 InstallationRevision = record.Snapshot.InstallationRevision ?? reported.InstallationRevision,
+                InstallationId = record.Snapshot.InstallationId ?? reported.InstallationId,
             };
             record.ExecutionReportSeen = true;
             record.Revision += 1;

@@ -99,7 +99,7 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
+			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
 			call := func(method string, params any, caller ...context.Context) *httptest.ResponseRecorder {
 				input.Method = method
 				input.Request, _ = json.Marshal(params)
@@ -239,7 +239,7 @@ func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: f.request.TableID}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)
@@ -459,7 +459,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: table.TableID, RequestID: "surface-test-read"}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: table.TableID, RequestID: "surface-test-read"}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)
@@ -619,7 +619,13 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		input.PluginID = "com.example.noid"
-		defer func() { input.PluginID = pluginID; input.Cursor = ""; input.Dependencies = nil }()
+		input.InstallationID = installationRecordID(t, store, input.PluginID)
+		defer func() {
+			input.PluginID = pluginID
+			input.InstallationID = installationRecordID(t, store, pluginID)
+			input.Cursor = ""
+			input.Dependencies = nil
+		}()
 		output, err := call("data.query", map[string]any{"contract": "vibetable.plugin-query.v2", "collection": table.TableID, "fields": []string{amount.Identity.FieldID}, "pageSize": 200})
 		if err != nil {
 			t.Fatal(err)
@@ -686,6 +692,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.PluginID = "com.example.other"
+	input.InstallationID = installationRecordID(t, store, input.PluginID)
 	input.PackageHash = strings.Repeat("b", 64)
 	if borrowed, err := call("storage.get", map[string]any{"key": "settings"}); err != nil || borrowed != nil {
 		t.Fatalf("private settings crossed installations %#v %v", borrowed, err)
@@ -695,6 +702,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal("borrowed package revision admitted")
 	}
 	input.PluginID = pluginID
+	input.InstallationID = installationRecordID(t, store, pluginID)
 	input.PackageHash = hash
 	if _, err = call("storage.delete", map[string]any{"key": "settings"}); err != nil {
 		t.Fatal(err)
@@ -834,6 +842,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal("foreign plugin accepted")
 	}
 	input.PluginID = pluginID
+	input.InstallationID = installationRecordID(t, store, pluginID)
 	input.ProjectKey = "local:11111111111141118111111111111111"
 	if _, err = call("audit.finish", map[string]any{"outcome": "unknown", "errorCode": "plugin_commit_unknown"}); err == nil {
 		t.Fatal("terminal audit crossed workspace")
@@ -867,7 +876,7 @@ func TestSurfaceInstallationBindsPresentationEntry(t *testing.T) {
 	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
 		t.Fatal(err)
 	}
-	base := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1}
+	base := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID)}
 
 	for _, tc := range []struct {
 		name     string
@@ -913,4 +922,39 @@ func TestSurfaceInstallationBindsPresentationEntry(t *testing.T) {
 			t.Fatal(tc.name, " risk ", installed.ActionRisk)
 		}
 	}
+	old := base
+	old.ActionID, old.Entry = "open", "ui/index.html"
+	if _, err := store.DeleteInstallation(ctx, store.ProjectKey(), pluginID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := surfaceInstallation(ctx, f.pb, workspace, old); err == nil {
+		t.Fatal("reinstall accepted old native installation identity")
+	}
+	old.InstallationID = ""
+	if _, err := surfaceInstallation(ctx, f.pb, workspace, old); err == nil {
+		t.Fatal("missing native installation identity accepted")
+	}
+	old.InstallationID = installationRecordID(t, store, pluginID)
+	if _, err := surfaceInstallation(ctx, f.pb, workspace, old); err != nil {
+		t.Fatal("new installation identity rejected", err)
+	}
+
+}
+
+func installationRecordID(t *testing.T, store *pluginstore.Service, pluginID string) string {
+	t.Helper()
+	raw, err := store.GetInstallation(context.Background(), store.ProjectKey(), pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		InstallationID string `json:"installationId"`
+	}
+	if err := json.Unmarshal(raw, &snapshot); err != nil || snapshot.InstallationID == "" {
+		t.Fatal("missing installation record identity", err)
+	}
+	return snapshot.InstallationID
 }

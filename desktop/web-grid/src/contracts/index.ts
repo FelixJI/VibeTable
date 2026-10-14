@@ -1079,6 +1079,7 @@ export interface PluginManifest {
 
 /** Canonical Python PluginSnapshot; WPF forwards it unchanged. */
 export interface PluginSnapshot {
+  readonly installationId?: string | null;
   readonly projectKey: string;
   readonly pluginId: string;
   readonly version: string;
@@ -1199,6 +1200,7 @@ export interface PluginResult {
 
 /** Host-owned task snapshot — revision lives on PluginEventEnvelope, not the task. */
 export interface PluginTaskSnapshot {
+  readonly installationId?: string | null;
   /** Installation revision captured by the task creator, never inferred from the catalog. */
   readonly installationRevision?: number | null;
   readonly taskId: string;

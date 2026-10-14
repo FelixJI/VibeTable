@@ -15,6 +15,7 @@ import {
 } from "./workspacePluginController";
 
 const plugin: PluginSnapshot = {
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.0.0",
@@ -143,7 +144,7 @@ describe("workspacePluginController", () => {
       taskId: "task-1",
       runId: "run-1",
       pluginId: "com.acme.clean",
-      pluginVersion: "1.0.0", installationRevision: 1,
+      pluginVersion: "1.0.0", installationRevision: 1, installationId: plugin.installationId,
       actionId: "normalize",
       projectKey: "local:default",
       collection: "orders",
@@ -205,7 +206,7 @@ describe("workspacePluginController", () => {
     plugins.beginAction({ pluginId: plugin.pluginId, actionId: "normalize", title: "owned", risk: "write",
       inputSchema: { type: "object" } }, context);
     const own: PluginTaskSnapshot = { taskId: "own", runId: "own-run", pluginId: plugin.pluginId,
-      actionId: "normalize", pluginVersion: plugin.version, installationRevision: plugin.revision, projectKey: "local:default", collection: "orders",
+      actionId: "normalize", pluginVersion: plugin.version, installationRevision: plugin.revision, installationId: plugin.installationId, projectKey: "local:default", collection: "orders",
       targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
     const ownView = plugins.applyTask(own);
     plugins.applyTask({ ...own, taskId: "foreign", runId: "foreign-run", pluginId: "com.acme.other" });

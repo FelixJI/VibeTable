@@ -4,6 +4,7 @@ import type { PluginInteractionSnapshot, PluginSnapshot, PluginTaskSnapshot } fr
 import { usePluginStore } from "./pluginStore";
 
 const plugin = (revision: number, status: PluginSnapshot["status"] = "enabled"): PluginSnapshot => ({
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -278,7 +279,7 @@ describe("pluginStore", () => {
       displayName: {}, description: {}, mode: "local", risk: "write", invocation: "manual", placements: [],
       requires: {}, workerEntry: "dist/worker.js", formSchema: null, inputSchema: null, outputSchema: null }] } });
     const own: PluginTaskSnapshot = { taskId: "own", runId: "run", pluginId: installed.pluginId,
-      pluginVersion: installed.version, installationRevision: installed.revision, actionId: "normalize", projectKey: "local:default", collection: "orders",
+      pluginVersion: installed.version, installationRevision: installed.revision, installationId: installed.installationId, actionId: "normalize", projectKey: "local:default", collection: "orders",
       targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
     store.applyTask(own);
     store.applyTask({ ...own, taskId: "old-version", pluginVersion: "0.1.0" });
@@ -298,6 +299,27 @@ describe("pluginStore", () => {
     store.setProjectContext("local:default", "r1");
     expect(store.taskForId("fresh")).toBeNull();
     expect(store.taskForAction(installed.pluginId, "normalize")).toBeNull();
+  });
+
+  it("does not attach known or first-seen old tasks to a same-version same-package reinstall", () => {
+    const store = usePluginStore(); store.setProjectContext("local:default", "r1");
+    const installed = { ...plugin(1), installationId: "old-record", manifest: { ...plugin(1).manifest,
+      actions: [{ actionId: "open", displayName: {}, description: {}, mode: "local" as const, risk: "write" as const,
+        invocation: "manual" as const, placements: [], requires: {}, workerEntry: "worker.js", formSchema: null, inputSchema: null, outputSchema: null }] } };
+    const task: PluginTaskSnapshot = { taskId: "old-known", runId: "old-run", pluginId: installed.pluginId,
+      pluginVersion: installed.version, installationId: "old-record", installationRevision: 1, actionId: "open",
+      projectKey: "local:default", collection: null, targetCount: 1, risk: "write", state: "succeeded",
+      cancelRequested: false, result: null, error: null };
+    store.applyPlugin(installed); store.applyTask(task);
+    store.removePlugin(installed.pluginId);
+    store.applyPlugin({ ...installed, installationId: "new-record" });
+    expect(store.taskForId(task.taskId)).toBeNull();
+    store.applyTask({ ...task, taskId: "old-first", runId: "old-first-run", state: "running" });
+    expect(store.taskForAction(installed.pluginId, "open")).toBeNull();
+    store.applyTask({ ...task, taskId: "unidentified", runId: "unidentified-run", installationId: null });
+    expect(store.taskForId("unidentified")).toBeNull();
+    store.applyTask({ ...task, taskId: "new-task", runId: "new-run", installationId: "new-record" });
+    expect(store.taskForAction(installed.pluginId, "open")?.taskId).toBe("new-task");
   });
 
 });

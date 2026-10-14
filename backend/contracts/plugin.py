@@ -164,6 +164,7 @@ class InstallPlan(PluginContract):
 
 
 class PluginSnapshot(PluginContract):
+    installation_id: str | None = Field(default=None, min_length=1)
     project_key: str
     plugin_id: str
     version: str
@@ -333,6 +334,7 @@ class PluginCommitUnknownError(PluginExecutionError):
 
 
 class PluginTaskSnapshot(PluginContract):
+    installation_id: str | None = Field(default=None, min_length=1)
     # Optional for wire compatibility; absent identity is never controllable in the renderer.
     installation_revision: int | None = Field(default=None, ge=1)
     task_id: str

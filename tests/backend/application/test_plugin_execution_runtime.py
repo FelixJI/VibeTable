@@ -81,6 +81,7 @@ def _snapshot(
         manifest=manifest,
         status=status,
         revision=1,
+        installation_id="record-summary",
     )
 
 
@@ -214,6 +215,8 @@ async def test_read_action_runs_once_with_immutable_package_identity() -> None:
     terminal = await _wait_terminal(events)
 
     assert terminal == "succeeded"
+    assert started.installation_id == "record-summary"
+    assert all(event.snapshot["installationId"] == "record-summary" for event in events)
     assert started.installation_revision == 1
     assert all(event.snapshot["installationRevision"] == 1 for event in events)
     assert [event.snapshot["state"] for event in events] == [
