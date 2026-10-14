@@ -11,6 +11,71 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    [DataRow("uninstall-notification")]
+    [DataRow("empty-authority")]
+    [DataRow("same-package-replacement")]
+    public async Task InstallationRetirementClosesUnmountedSurfaceAndReinstallationGetsNewToken(string transition)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-retire-install-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var action = new PluginRuntimeAction("open-app", new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Read, "manual", [],
+                JsonSerializer.SerializeToElement(new { }), null, null, null, null, "application", "ui/index.html");
+            var old = FakePluginGateway.DefaultSnapshot with
+            {
+                Revision = 4, InstallationId = "old-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x" }), Actions = [action],
+                },
+            };
+            var replacement = old with { Revision = 2, InstallationId = "new-record" };
+            using (var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, old.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create))
+                package.CreateEntry("ui/index.html");
+            var authority = new[] { old };
+            var pendingUninstall = new TaskCompletionSource<PluginRuntimeUninstallResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var gateway = new FakePluginGateway { CatalogSnapshot = old, PendingUninstall = pendingUninstall };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(authority)), packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "old-catalog", """{"projectKey":"project-1"}"""));
+            string oldToken = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken!;
+            var closed = new List<string>(); surfaces.Closed += closed.Add;
+            if (transition == "uninstall-notification")
+            {
+                Task uninstall = dispatcher.DispatchAsync(Request("plugin.lifecycle.uninstall", "uninstall",
+                    """{"projectKey":"project-1","pluginId":"com.acme.clean","cleanupPrivateSettings":false}"""));
+                dispatcher.ProjectCatalogEvent(JsonSerializer.SerializeToElement(new PluginEventEnvelope(PluginContractVersions.Event,
+                    "plugin.catalog.changed", old.ProjectKey, old.PluginId, old.Revision,
+                    JsonSerializer.SerializeToElement(old, new JsonSerializerOptions(JsonSerializerDefaults.Web)))));
+                pendingUninstall.SetResult(new PluginRuntimeUninstallResult(true, true)); await uninstall;
+                Assert.IsFalse(surfaces.IsActive(oldToken), "A notification suppressed successful uninstall retirement.");
+            }
+            else
+            {
+                authority = transition == "empty-authority" ? [] : [replacement];
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", "changed-catalog", """{"projectKey":"project-1"}"""));
+                Assert.IsFalse(surfaces.IsActive(oldToken), "An absent or replaced installation kept its unmounted surface.");
+            }
+            Assert.AreEqual(1, closed.Count(token => token == oldToken));
+            authority = [replacement];
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "replacement-catalog", """{"projectKey":"project-1"}"""));
+            string token = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken!;
+            Assert.AreNotEqual(oldToken, token, "Same-package reinstall reused the retired API token.");
+            Assert.IsTrue(surfaces.TryGet(token, out var session)); Assert.IsNotNull(session);
+            Assert.AreEqual("new-record", session.InstallationId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task LateReadOrUninstallCannotRetireCommittedReplacement(bool lateUninstall)
@@ -43,10 +108,18 @@ public sealed class PluginRequestDispatcherTests
             var reply = new RecordingReplySink();
             var surfaces = new PluginSurfaceSessionManager();
             var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            bool initialCatalog = lateUninstall;
             using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
                 new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources,
-                projectContext: ReadyContext, sharedRpc: (_, _, _) => pendingList.Task, packageCacheRoot: _ => root);
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => initialCatalog
+                    ? Task.FromResult(JsonSerializer.SerializeToElement(new[] { old })) : pendingList.Task, packageCacheRoot: _ => root);
             dispatcher.SetGateway(gateway);
+            if (lateUninstall)
+            {
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", "initial-old-installation", """{"projectKey":"project-1"}"""));
+                Assert.IsNotNull(Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken);
+                initialCatalog = false;
+            }
             Task late = dispatcher.DispatchAsync(Request(lateUninstall ? "plugin.lifecycle.uninstall" : "plugin.catalog.list", "old",
                 """{"projectKey":"project-1","pluginId":"com.acme.clean","projectRevision":"1","cleanupPrivateSettings":false}"""));
             await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-replacement",

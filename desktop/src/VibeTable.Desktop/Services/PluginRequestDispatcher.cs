@@ -249,6 +249,13 @@ public sealed class PluginRequestDispatcher : IDisposable
                             bool current = catalogGeneration == _catalogProjectionGeneration && context == projectionContext;
                             if (snapshots is not null && !current)
                                 throw new PluginDispatchException("PLUGIN_REQUEST_CANCELLED", "Plugin catalog read was superseded.");
+                            if (snapshots is not null)
+                            {
+                                var retained = snapshots.Select(item => item.PluginId).ToHashSet(StringComparer.Ordinal);
+                                _resourceHost.RetireAbsentInstallations(context.ProjectKey, retained);
+                                foreach (var key in _nativePlugins.Keys.Where(key => key.Item1 == context.ProjectKey && !retained.Contains(key.Item2)))
+                                    _nativePlugins.TryRemove(key, out _);
+                            }
                             projected = snapshots is not null
                                 ? snapshots.Select(item => ProjectSnapshot(item, projectionContext, cacheRoot)).ToArray()
                                 : snapshot is not null
@@ -717,16 +724,22 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginUninstallParams request,
         CancellationToken token)
     {
-        long generation = AdvanceCatalogProjection();
+        string? installationId;
+        bool registered;
+        lock (_catalogProjectionGate)
+        {
+            ++_catalogProjectionGeneration;
+            registered = _resourceHost.TryGetInstallationIdentity(request.ProjectKey, request.PluginId, out installationId);
+        }
         bool catalogCompleted = false;
         try
         {
             var result = await _gateway!.UninstallAsync(request, token).ConfigureAwait(false);
             lock (_catalogProjectionGate)
             {
-                if (result.Uninstalled && generation == _catalogProjectionGeneration)
+                if (result.Uninstalled && registered
+                    && _resourceHost.UnregisterInstalledIfCurrent(request.ProjectKey, request.PluginId, installationId))
                 {
-                    _resourceHost.UnregisterInstalled(request.ProjectKey, request.PluginId);
                     _nativePlugins.TryRemove((request.ProjectKey, request.PluginId), out _);
                 }
                 ++_catalogProjectionGeneration;
@@ -1043,7 +1056,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             snapshot.ProjectKey,
             snapshot.PluginId,
             localPackage,
-            snapshot.PackageHash);
+            snapshot.PackageHash, snapshot.InstallationId);
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
         PluginRuntimeManifest manifest = snapshot.Manifest with
         {

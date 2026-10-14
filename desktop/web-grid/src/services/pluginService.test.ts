@@ -1112,11 +1112,36 @@ describe("pluginService canonical wire", () => {
         if (automaticLists && request.type === "plugin.catalog.list") queueMicrotask(() => reply(request, authority));
       }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
     bridge.start(); setHostBridgeForTesting(bridge);
-    return { posted, reply, auto(value: readonly PluginSnapshot[]) { authority = value; automaticLists = true; },
+    return { posted, reply, fail(request: (typeof posted)[number], message: string) { listener?.({ data: {
+      type: "operation.failed", requestId: request.requestId, payload: { code: "PLUGIN_OPERATION_FAILED", message } } }); }, auto(value: readonly PluginSnapshot[]) { authority = value; automaticLists = true; },
       event(value: PluginSnapshot) { listener?.({ data: { type: "plugin.catalog.changed", payload: {
         contract: "vibetable.plugin-event.v1", eventType: "plugin.catalog.changed", projectKey: value.projectKey,
         entityId: value.pluginId, revision: value.revision, snapshot: value } } }); } };
   }
+
+  it.each([true, false])("preserves a consumed catalog notification when another lifecycle fails (refresh success=%s)", async (refreshSucceeds) => {
+    const current = { ...snapshot, installationId: "a", status: "disabled" as const, revision: 2 };
+    const unrelated = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    const harness = catalogHarness([current]);
+    const store = usePluginStore(); store.applyPlugin({ ...snapshot, installationId: "a" });
+    const first = usePluginService(); const second = usePluginService(); second.init();
+    const write = first.setEnabled(unrelated, true);
+    const failed = expect(write).rejects.toThrow("write failed");
+    harness.event(current); await flushPromises();
+    const initialRead = harness.posted.find(request => request.type === "plugin.catalog.list")!;
+    harness.fail(harness.posted[0]!, "write failed"); await failed;
+    harness.reply(initialRead, [current]); await flushPromises();
+    const reads = harness.posted.filter(request => request.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    if (refreshSucceeds) harness.reply(reads[1]!, [current]);
+    else harness.fail(reads[1]!, "refresh failed");
+    await flushPromises();
+    expect(store.plugins[0]?.status).toBe(refreshSucceeds ? "disabled" : "enabled");
+    expect(store.lastError).toBe("write failed");
+    expect(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
+    expect(harness.posted).toHaveLength(3);
+    second.dispose();
+  });
 
   it("shares catalog read retirement across two service instances", async () => {
     const old = { ...snapshot, installationId: "retired", revision: 4 };

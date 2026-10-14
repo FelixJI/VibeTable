@@ -11,6 +11,27 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceApiTests
 {
     [TestMethod]
+    public async Task SamePackageInstallationReplacementRetiresApiPlansWithoutFrameAcknowledgement()
+    {
+        using var fixture = new Fixture();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), fixture.Surfaces);
+        var revision = fixture.Surface.Revision;
+        resources.RegisterInstalled(fixture.Surface.ProjectKey, fixture.Surface.PluginId, revision, fixture.Surface.InstallationId);
+        string planId = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        fixture.Http.AfterReadMethod = "context.read";
+        fixture.Http.AfterCommitRead = () => resources.RegisterInstalled(fixture.Surface.ProjectKey, fixture.Surface.PluginId, revision, "replacement-record");
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("context.read", "{}")));
+        Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
+        var replacement = resources.OpenSurface(fixture.Surface.ProjectKey, fixture.Surface.PluginId, "ui/index.html");
+        Assert.AreNotEqual(fixture.Surface.SurfaceToken, replacement.SurfaceToken);
+        fixture.Surfaces.BindIdentity(replacement.SurfaceToken, fixture.Context, 1, "3.x", "1.0.0", "save", "destructive", "ui/index.html", installationId: "replacement-record");
+        string response = await fixture.Api.HandleAsync(replacement.SurfaceToken, replacement.DocumentUri.AbsoluteUri,
+            fixture.Wire("mutation.submit", $"{{\"planId\":\"{planId}\"}}", replacement.SurfaceToken));
+        Assert.AreEqual("plugin_plan_stale", Code(response));
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "mutation.commit"));
+    }
+
+    [TestMethod]
     public async Task ContextUsesBoundInvocationThroughAuthorityProjection()
     {
         using var fixture = new Fixture();
