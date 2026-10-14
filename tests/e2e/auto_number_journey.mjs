@@ -3,6 +3,28 @@ import fs from "node:fs/promises";
 
 const query = { filters: [], sorts: [], offset: 0, limit: 100 };
 
+// Between the key press and the copy actually landing, clipboard.readText
+// polls can transiently observe CLIPBOARD_BUSY even though the copy succeeds
+// moments later (observed in CI resilience runs). The helper only collects
+// those exact replies; the journey registers them as expected failures by
+// their precise requestId only after the exact expected copy text was
+// adopted, so persistent busy, any other failure code or a failed copy keeps
+// the failures for the scenario-end bridge hygiene assertion.
+export async function waitForCopiedNumber(page, rawBridgeRequest, marker, deadline) {
+  let copied = "";
+  const clipboardBusyReplies = [];
+  while (Date.now() < deadline) {
+    const reply = await rawBridgeRequest(page, "clipboard.readText", {});
+    if (reply.type === "operation.failed" && reply.payload?.code === "CLIPBOARD_BUSY") {
+      clipboardBusyReplies.push(reply);
+    }
+    copied = reply.payload?.text ?? "";
+    if (copied.includes(marker)) break;
+    await page.waitForTimeout(100);
+  }
+  return { text: copied, clipboardBusyReplies };
+}
+
 export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   const { createEmptyTable, createSimpleTable, closeFieldSettingsDrawer, selectVisibleNOption,
     rawBridgeRequest, applyProductMutation, selectTable, waitForVisibleRowCount,
@@ -71,18 +93,18 @@ export async function runAutoNumberJourney(page, recorder, runtime, ports) {
   // indeterminate instead of clearing the previous owned sentinel.
   await beginIsolatedNativeClipboardWrite(runtime);
   await page.keyboard.press("Control+c");
-  let copied = "";
-  const copyDeadline = Date.now() + 10_000;
-  while (Date.now() < copyDeadline) {
-    const reply = await rawBridgeRequest(page, "clipboard.readText", {});
-    copied = reply.payload?.text ?? "";
-    if (copied.includes("HT-000001")) break;
-    await page.waitForTimeout(100);
-  }
+  const { text: copied, clipboardBusyReplies } = await waitForCopiedNumber(
+    page, rawBridgeRequest, "HT-000001", Date.now() + 10_000);
   // Pre-declared exact outputs of the product's Ctrl+C copy (the actual
   // bytes, at most one trailing line ending); nothing else is adoptable.
   const expectedCopyTexts = ["HT-000001", "HT-000001\n", "HT-000001\r\n"];
   await adoptIsolatedNativeClipboardText(page, expectedCopyTexts, runtime);
+  // Only after the exact expected copy text was adopted are the transient
+  // CLIPBOARD_BUSY replies registered as expected; anything else keeps its
+  // failure for the end-of-scenario diagnostics assertion.
+  for (const busy of clipboardBusyReplies) {
+    await acknowledgeExpectedBridgeFailure(page, busy);
+  }
   recorder.check("copy preserves the original readonly business number and leading zeroes",
     copied.trim() === "HT-000001", { copied });
   const exportTarget = path.join(runtime.controlsDir, "auto-number.csv");
