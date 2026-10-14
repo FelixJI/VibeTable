@@ -596,9 +596,7 @@ public sealed class WebMessageRouterTests
 
         foreach (string type in new[]
         {
-            "plugin.lifecycle.upgrade",
             "plugin.lifecycle.rollback",
-            "plugin.lifecycle.uninstall",
         })
         {
             HostReplyMessage? reply = router.Route(JsonSerializer.Serialize(new

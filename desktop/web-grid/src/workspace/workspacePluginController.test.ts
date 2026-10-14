@@ -1,3 +1,6 @@
+import { createHostBridge } from "@/bridge/hostBridge";
+import { setHostBridgeForTesting } from "@/services/bridgeContext";
+import { usePluginService } from "@/services/pluginService";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -111,6 +114,8 @@ describe("workspacePluginController", () => {
     const plugins = usePluginStore();
     const workspace = useWorkspaceStore();
     workspace.selectTable("orders");
+    plugins.setProjectContext("local:default", "r1");
+    plugins.replaceCatalog("local:default", [plugin]);
     const context = {
       contract: "vibetable.command-context.v1" as const,
       projectKey: "local:default",
@@ -138,7 +143,7 @@ describe("workspacePluginController", () => {
       taskId: "task-1",
       runId: "run-1",
       pluginId: "com.acme.clean",
-      pluginVersion: "1.0.0",
+      pluginVersion: "1.0.0", installationRevision: 1,
       actionId: "normalize",
       projectKey: "local:default",
       collection: "orders",
@@ -176,8 +181,8 @@ describe("workspacePluginController", () => {
     });
 
     await controller.dispatch({ type: "action.start", payload: { mode: "trim" } });
-    await controller.dispatch({ type: "interaction.resolve", decision: "approved" });
-    await controller.dispatch({ type: "task.cancel" });
+    await controller.dispatch({ type: "interaction.resolve", taskId: "task-1", decision: "approved" });
+    await controller.dispatch({ type: "task.cancel", taskId: "task-1" });
 
     expect(startAction).toHaveBeenCalledWith(
       "com.acme.clean",
@@ -188,4 +193,72 @@ describe("workspacePluginController", () => {
     expect(resolveInteraction).toHaveBeenCalledWith(activeTask, "approved");
     expect(cancelTask).toHaveBeenCalledWith("task-1");
   });
+  it("keeps application and action task controls bound across other plugin/action updates", async () => {
+    const plugins = usePluginStore();
+    plugins.setProjectContext("local:default", "r1");
+    plugins.replaceCatalog("local:default", [plugin]);
+    const ui = useUiStore();
+    ui.openPluginApp(plugin.pluginId, "normalize");
+    const context = { contract: "vibetable.command-context.v1" as const, projectKey: "local:default",
+      collection: "orders", selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light" as const,
+      density: "comfortable", user: {}, hostVersion: "1.0.0" };
+    plugins.beginAction({ pluginId: plugin.pluginId, actionId: "normalize", title: "owned", risk: "write",
+      inputSchema: { type: "object" } }, context);
+    const own: PluginTaskSnapshot = { taskId: "own", runId: "own-run", pluginId: plugin.pluginId,
+      actionId: "normalize", pluginVersion: plugin.version, installationRevision: plugin.revision, projectKey: "local:default", collection: "orders",
+      targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    const ownView = plugins.applyTask(own);
+    plugins.applyTask({ ...own, taskId: "foreign", runId: "foreign-run", pluginId: "com.acme.other" });
+    plugins.applyTask({ ...own, taskId: "other-action", runId: "other-run", actionId: "other" });
+    const cancelTask = vi.fn(async () => ownView);
+    const resolveInteraction = vi.fn(async () => ownView);
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
+      service: { describeAction: vi.fn(async () => ({ available: true, reasons: [] })),
+        startAction: vi.fn(async () => ownView), cancelTask, resolveInteraction },
+      selectedRows: () => [], openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(),
+      reportError: vi.fn(), historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
+    expect(controller.applicationTask.value?.taskId).toBe("own");
+    expect(controller.actionTask.value?.taskId).toBe("own");
+    await controller.dispatch({ type: "task.cancel", taskId: "own" });
+    await controller.dispatch({ type: "interaction.resolve", taskId: "own", decision: "rejected" });
+    expect(cancelTask).toHaveBeenCalledWith("own");
+    expect(resolveInteraction).toHaveBeenCalledWith(ownView, "rejected");
+    cancelTask.mockClear();
+    await controller.dispatch({ type: "task.cancel", taskId: "foreign" });
+    expect(cancelTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["action.open", "rowMenu.select"] as const)("routes the actual %s application caller without a Worker panel", async (entry) => {
+    const plugins = usePluginStore();
+    plugins.setProjectContext("local:default", "r1");
+    const app: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest,
+      $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
+      actions: plugin.manifest.actions.map(action => ({ ...action, workerEntry: null,
+        presentation: "application", entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "token" })) } };
+    plugins.replaceCatalog("local:default", [app]);
+    const posted: { type: string; payload: Record<string, unknown>; requestId: string }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({ generateRequestId: () => `app-entry-${++sequence}`,
+      webview: { postMessage(message) {
+        const request = message as (typeof posted)[number]; posted.push(request);
+        queueMicrotask(() => listener?.({ data: { type: request.type, requestId: request.requestId,
+          payload: request.type === "plugin.catalog.list" ? [app] : { available: true, reasons: [] } } }));
+      }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
+    bridge.start(); setHostBridgeForTesting(bridge);
+    const ui = useUiStore();
+    const workspace = useWorkspaceStore(); workspace.selectTable("orders");
+    const controller = createWorkspacePluginController({ workspace, table: useTableStore(), ui, plugins, service: usePluginService(),
+      selectedRows: () => [{ rowKey: "selected" }], openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(),
+      reportError: vi.fn(), historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
+    if (entry === "rowMenu.select") await controller.dispatch({ type: "rowMenu.open", rowKey: "row-menu", x: 1, y: 1 });
+    await controller.dispatch({ type: entry, key: `${app.pluginId}/normalize` });
+    expect(ui.activePluginApp).toEqual({ pluginId: app.pluginId, actionId: "normalize" });
+    expect(plugins.actionOpen).toBe(false);
+    expect(plugins.activeContext?.selectedKeys).toEqual([entry === "rowMenu.select" ? "row-menu" : "selected"]);
+    await expect(usePluginService().startAction(app.pluginId, "normalize", {}, plugins.activeContext!)).rejects.toThrow("Worker");
+    expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
+    bridge.stop(); setHostBridgeForTesting(null);
+  });
+
 });

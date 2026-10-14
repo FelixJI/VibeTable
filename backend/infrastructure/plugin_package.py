@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from backend._version import __version__
+from backend.contracts.plugin import plugin_entry_has_supported_type
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -481,6 +482,11 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
                     f"{presentation} action {action_id} forbids form/input/output schemas",
                 )
             _require_canonical_reference(entry, f"actions.{action_id}.entry")
+            if not plugin_entry_has_supported_type(presentation, entry):
+                raise PluginPackageError(
+                    "action_invalid",
+                    "entry type must match application HTML or headless JavaScript MIME",
+                )
             _validate_reference(contents, entry, schema=False)
         for key in _SCHEMA_REFERENCE_KEYS:
             if key in action:

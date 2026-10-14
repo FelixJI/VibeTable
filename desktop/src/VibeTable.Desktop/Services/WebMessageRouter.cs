@@ -165,9 +165,7 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> RendererInternalOnlyRequestTypes =
         new(StringComparer.Ordinal)
         {
-            "plugin.lifecycle.upgrade",
             "plugin.lifecycle.rollback",
-            "plugin.lifecycle.uninstall",
         };
 
     /// <summary>

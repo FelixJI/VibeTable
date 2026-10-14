@@ -61,6 +61,7 @@ describe("pluginStore", () => {
 
   it("drops stale canonical plugin snapshots by revision", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     store.replaceCatalog("local:default", [plugin(8, "enabled")], 8);
     store.applyPlugin(plugin(9, "disabled"), 9);
     store.applyPlugin(plugin(8, "enabled"), 8);
@@ -71,6 +72,7 @@ describe("pluginStore", () => {
 
   it("keeps task truth after an action panel closes", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-1",
       runId: "run-1",
@@ -95,6 +97,7 @@ describe("pluginStore", () => {
 
   it("retains an embedded action description without opening the global panel", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const description = {
       pluginId: "com.acme.clean",
       actionId: "normalize",
@@ -123,6 +126,7 @@ describe("pluginStore", () => {
 
   it("replays an interaction notification that arrives before the task snapshot", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const interaction: PluginInteractionSnapshot = {
       runId: "run-early",
       projectKey: "local:default",
@@ -167,6 +171,7 @@ describe("pluginStore", () => {
 
   it("keeps task and interaction revisions independent and clears resolved confirmation", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-independent",
       runId: "run-independent",
@@ -212,6 +217,7 @@ describe("pluginStore", () => {
 
   it("keeps a terminal task closed when older interaction or task events arrive", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-sticky", runId: "run-sticky", pluginId: "com.acme.clean",
       pluginVersion: "1.2.0", actionId: "normalize", projectKey: "local:default",
@@ -243,6 +249,7 @@ describe("pluginStore", () => {
   });
   it("clears confirmation when a task reaches a terminal state", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-terminal", runId: "run-terminal", pluginId: "com.acme.clean",
       pluginVersion: "1.2.0", actionId: "normalize", projectKey: "local:default",
@@ -264,4 +271,33 @@ describe("pluginStore", () => {
 
     expect(store.pendingConfirmation).toBeNull();
   });
+  it("retires scoped task lookups on same-workspace session rotation and checks the installation", () => {
+    const store = usePluginStore(); store.setProjectContext("local:default", "r1");
+    const installed = plugin(1);
+    store.applyPlugin({ ...installed, manifest: { ...installed.manifest, actions: [{ actionId: "normalize",
+      displayName: {}, description: {}, mode: "local", risk: "write", invocation: "manual", placements: [],
+      requires: {}, workerEntry: "dist/worker.js", formSchema: null, inputSchema: null, outputSchema: null }] } });
+    const own: PluginTaskSnapshot = { taskId: "own", runId: "run", pluginId: installed.pluginId,
+      pluginVersion: installed.version, installationRevision: installed.revision, actionId: "normalize", projectKey: "local:default", collection: "orders",
+      targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    store.applyTask(own);
+    store.applyTask({ ...own, taskId: "old-version", pluginVersion: "0.1.0" });
+    expect(store.taskForAction(installed.pluginId, "normalize")?.taskId).toBe("own");
+    expect(store.taskForId("old-version")).toBeNull();
+    store.applyPlugin({ ...store.plugins[0]!, revision: 2, packageHash: "sha256:replacement" });
+    expect(store.taskForId("own")).toBeNull();
+    store.applyTask({ ...own, state: "succeeded" }, 3);
+    expect(store.taskForId("own")).toBeNull();
+    // The first report of an old task can arrive after a same-version replacement.
+    store.applyTask({ ...own, taskId: "late-first", runId: "late-first-run", installationRevision: 1 });
+    expect(store.taskForId("late-first")).toBeNull();
+    store.applyTask({ ...own, taskId: "unbound", runId: "unbound-run", installationRevision: null });
+    expect(store.taskForId("unbound")).toBeNull();
+    store.applyTask({ ...own, taskId: "fresh", runId: "fresh-run", installationRevision: 2 });
+    expect(store.taskForAction(installed.pluginId, "normalize")?.taskId).toBe("fresh");
+    store.setProjectContext("local:default", "r1");
+    expect(store.taskForId("fresh")).toBeNull();
+    expect(store.taskForAction(installed.pluginId, "normalize")).toBeNull();
+  });
+
 });

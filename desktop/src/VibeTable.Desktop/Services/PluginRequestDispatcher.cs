@@ -995,7 +995,8 @@ public sealed class PluginRequestDispatcher : IDisposable
                 projected.Add(action);
                 continue;
             }
-            if (!registered || string.IsNullOrWhiteSpace(action.Entry))
+            if (!registered || string.IsNullOrWhiteSpace(action.Entry)
+                || !PluginResourceHost.SupportsPresentationEntry(action.EffectivePresentation, action.Entry))
             {
                 projected.Add(action with { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null });
                 continue;

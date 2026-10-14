@@ -47,6 +47,22 @@ export const usePluginStore = defineStore("plugins", () => {
     activeTask.value?.confirmation ?? null,
   );
 
+  function currentTask(task: PluginTaskViewSnapshot): boolean {
+    const plugin = pluginById.value[task.pluginId];
+    return task.projectKey === projectKey.value && plugin?.status === "enabled"
+      && task.installationRevision === plugin.revision
+      && task.pluginVersion === plugin.version
+      && plugin.manifest.actions.some(action => action.actionId === task.actionId);
+  }
+  function taskForId(taskId: string): PluginTaskViewSnapshot | null {
+    const task = taskById.value[taskId];
+    return task && currentTask(task) ? task : null;
+  }
+  function taskForAction(pluginId: string, actionId: string): PluginTaskViewSnapshot | null {
+    return Object.values(taskById.value).reverse().find(task => task.pluginId === pluginId
+      && task.actionId === actionId && currentTask(task)) ?? null;
+  }
+
   function projectInstallPlan(plan: PluginInstallPlan | null): void {
     installPlan.value = plan;
   }
@@ -68,6 +84,13 @@ export const usePluginStore = defineStore("plugins", () => {
       busy.value = false;
       lastError.value = null;
     } else {
+      // Tasks/confirmations belong to the previous workspace session even
+      // when its stable project key is unchanged.
+      taskById.value = {};
+      taskRevisionById.value = {};
+      interactionRevisionByRun.value = {};
+      pendingInteractionByRun.value = {};
+      activeTaskId.value = null;
       // A same-key reopen rotates the generation: the previous generation's
       // busy/error state is settled synchronously here, and its late
       // terminals stay inert against the new generation in the service.
@@ -139,6 +162,7 @@ export const usePluginStore = defineStore("plugins", () => {
     const terminal = ["succeeded", "failed", "cancelled", "aborted"].includes(snapshot.state);
     const projected: PluginTaskViewSnapshot = {
       ...snapshot,
+      installationRevision: current ? current.installationRevision : snapshot.installationRevision,
       revision: Math.max(taskRevision, interactionRevision),
       progressPercent: snapshot.progress?.total
         ? Math.min(100, Math.round((snapshot.progress.current / snapshot.progress.total) * 100))
@@ -171,6 +195,8 @@ export const usePluginStore = defineStore("plugins", () => {
       }
       return;
     }
+    if (snapshot.projectKey !== projectKey.value || snapshot.pluginId !== current.pluginId
+      || snapshot.actionId !== current.actionId) return;
     if (["succeeded", "failed", "cancelled", "aborted"].includes(current.state)) return;
     const currentInteractionRevision = interactionRevisionByRun.value[snapshot.runId] ?? 0;
     if (eventRevision <= currentInteractionRevision) return;
@@ -251,6 +277,8 @@ export const usePluginStore = defineStore("plugins", () => {
   }
 
   return {
+    taskForId,
+    taskForAction,
     projectKey,
     projectRevision,
     projectContextReady,

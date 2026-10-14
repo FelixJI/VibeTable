@@ -16,6 +16,7 @@ import type {
 } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
 import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
+import { useUiStore } from "@/stores/uiStore";
 import { usePluginStore } from "@/stores/pluginStore";
 import {
   PluginInstallPlanLease,
@@ -380,7 +381,10 @@ export function usePluginService(): PluginService {
     const plugin = store.plugins.find((item) => item.pluginId === pluginId);
     const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
     if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
-    store.beginAction(projectAction(plugin, action, context.locale), context, openPanel);
+    const description = projectAction(plugin, action, context.locale);
+    const application = description.presentation === "application";
+    store.beginAction(description, context, openPanel && !application);
+    if (application && openPanel) useUiStore().openPluginApp(pluginId, actionId);
     return availability;
   }
 
@@ -429,6 +433,10 @@ export function usePluginService(): PluginService {
     },
     describeAction,
     startAction: async (pluginId, actionId, input, context) => {
+      const action = store.plugins.find(plugin => plugin.pluginId === pluginId)
+        ?.manifest.actions.find(item => item.actionId === actionId);
+      if (action?.presentation === "application" || action?.presentation === "headless")
+        throw new Error("应用与无界面动作通过受限页面API执行，不启动Worker");
       const task = await call<"plugin.action.start", PluginTaskSnapshot>("plugin.action.start", {
         projectKey: store.projectKey,
         pluginId,

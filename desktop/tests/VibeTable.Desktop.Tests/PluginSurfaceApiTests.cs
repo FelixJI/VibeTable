@@ -103,6 +103,7 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
         Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(taskId, out var snapshot, out _));
         Assert.AreEqual("succeeded", snapshot.State);
+        Assert.AreEqual(1, snapshot.InstallationRevision);
         Assert.AreEqual("com.example.surface", fixture.Http.Calls[^1].GetProperty("pluginId").GetString());
     }
 

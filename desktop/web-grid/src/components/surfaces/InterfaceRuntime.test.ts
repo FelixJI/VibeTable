@@ -222,7 +222,7 @@ function runningPluginTask(): PluginTaskSnapshot {
     taskId: "task-interface",
     runId: "run-interface",
     pluginId: plugin.pluginId,
-    pluginVersion: plugin.version,
+    pluginVersion: plugin.version, installationRevision: plugin.revision,
     actionId: "normalize",
     projectKey: plugin.projectKey,
     collection: "orders",
@@ -384,6 +384,9 @@ describe("InterfaceRuntime", () => {
     expect(wrapper.text()).not.toContain("操作已完成");
 
     plugins.applyInteraction(pluginInteraction(), 2);
+    // Unrelated realtime notifications cannot steal this Interface's task.
+    plugins.applyTask({ ...runningPluginTask(), taskId: "foreign-task", runId: "foreign-run", pluginId: "com.acme.other" });
+    plugins.applyTask({ ...runningPluginTask(), taskId: "other-action", runId: "other-run", actionId: "different-action" });
     await flushPromises();
     expect(wrapper.get('[data-testid="plugin-confirmation"]').text()).toContain("确认规范化");
     await wrapper.get('[data-testid="plugin-confirm-approve"]').trigger("click");

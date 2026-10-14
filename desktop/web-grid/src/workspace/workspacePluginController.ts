@@ -2,7 +2,7 @@ import { computed, ref, type ComputedRef, type Ref } from "vue";
 import type { DropdownOption } from "naive-ui";
 
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
-import type { PluginRisk, PluginSurfaceThemeSnapshot } from "@/contracts";
+import type { PluginRisk, PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { createPluginCommandContext, type usePluginService } from "@/services/pluginService";
 import type { usePluginStore } from "@/stores/pluginStore";
 import type { useTableStore } from "@/stores/tableStore";
@@ -17,9 +17,9 @@ type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 
 type PluginStorePort = Pick<PluginStore,
   | "plugins" | "projectKey" | "currentUser" | "hostVersion"
-  | "describedAction" | "activeContext" | "activeTask">;
+  | "describedAction" | "activeContext" | "taskForAction">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
-type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp">;
+type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp" | "activePluginApp">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type WorkspacePluginServicePort = Pick<PluginService,
   "describeAction" | "startAction" | "resolveInteraction" | "cancelTask">;
@@ -62,10 +62,12 @@ export type WorkspacePluginIntent =
   | { readonly type: "columnMenu.visible"; readonly show: boolean }
   | { readonly type: "columnMenu.select"; readonly key: string }
   | { readonly type: "action.start"; readonly payload: Readonly<Record<string, unknown>> }
-  | { readonly type: "interaction.resolve"; readonly decision: "approved" | "rejected" }
-  | { readonly type: "task.cancel" };
+  | { readonly type: "interaction.resolve"; readonly taskId: string; readonly decision: "approved" | "rejected" }
+  | { readonly type: "task.cancel"; readonly taskId: string };
 
 export interface WorkspacePluginController {
+  readonly applicationTask: ComputedRef<PluginTaskViewSnapshot | null>;
+  readonly actionTask: ComputedRef<PluginTaskViewSnapshot | null>;
   readonly theme: ComputedRef<PluginSurfaceThemeSnapshot>;
   readonly toolbarActions: ComputedRef<ToolbarAction[]>;
   readonly rowMenuOptions: ComputedRef<DropdownOption[]>;
@@ -102,6 +104,17 @@ function errorMessage(error: unknown): string {
 export function createWorkspacePluginController(
   dependencies: WorkspacePluginDependencies,
 ): WorkspacePluginController {
+  const applicationTask = computed(() => {
+    const active = dependencies.ui.activePluginApp;
+    return active ? dependencies.plugins.taskForAction(active.pluginId, active.actionId) : null;
+  });
+  const actionTask = computed(() => {
+    const active = dependencies.plugins.describedAction;
+    return active ? dependencies.plugins.taskForAction(active.pluginId, active.actionId) : null;
+  });
+  function controlledTask(taskId: string): PluginTaskViewSnapshot | null {
+    return [actionTask.value, applicationTask.value].find(task => task?.taskId === taskId) ?? null;
+  }
   const theme = computed(() => projectPluginTheme({
     effectiveTheme: dependencies.ui.effectiveTheme,
     locale: dependencies.ui.locale,
@@ -290,28 +303,34 @@ export function createWorkspacePluginController(
         }
         return;
       }
-      case "interaction.resolve":
-        if (!dependencies.plugins.activeTask) return;
+      case "interaction.resolve": {
+        const task = controlledTask(intent.taskId);
+        if (!task) return;
         try {
           await dependencies.service.resolveInteraction(
-            dependencies.plugins.activeTask,
+            task,
             intent.decision,
           );
         } catch (error) {
           dependencies.reportError(errorMessage(error));
         }
         return;
-      case "task.cancel":
-        if (!dependencies.plugins.activeTask) return;
+      }
+      case "task.cancel": {
+        const task = controlledTask(intent.taskId);
+        if (!task) return;
         try {
-          await dependencies.service.cancelTask(dependencies.plugins.activeTask.taskId);
+          await dependencies.service.cancelTask(task.taskId);
         } catch (error) {
           dependencies.reportError(errorMessage(error));
         }
+      }
     }
   }
 
   return {
+    applicationTask,
+    actionTask,
     theme,
     toolbarActions,
     rowMenuOptions,

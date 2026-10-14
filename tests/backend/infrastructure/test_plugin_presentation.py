@@ -9,11 +9,13 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from backend.contracts.plugin import PluginAction, PluginManifest
 from backend.infrastructure.plugin_package import (
     PluginPackageError,
     inspect_plugin_package,
+    pack_plugin,
 )
 
 
@@ -204,3 +206,53 @@ def test_serialization_omits_presentation_defaults_for_legacy_actions() -> None:
     application_payload = json.loads(application.model_dump_json(by_alias=True))
     assert application_payload["presentation"] == "application"
     assert application_payload["entry"] == "ui/index.html"
+
+
+@pytest.mark.parametrize(
+    ("presentation", "entry", "valid"),
+    [
+        ("application", "ui/ENTRY.html", True),
+        ("application", "ui/ENTRY.HTML", True),
+        ("headless", "ui/ENTRY.js", True),
+        ("headless", "ui/ENTRY.JS", True),
+        ("headless", "ui/ENTRY.mjs", True),
+        ("headless", "ui/ENTRY.MJS", True),
+        ("application", "ui/ENTRY.js", False),
+        ("application", "ui/ENTRY.htm", False),
+        ("headless", "ui/ENTRY.html", False),
+        ("headless", "ui/ENTRY", False),
+    ],
+)
+def test_presentation_entry_matches_served_mime_on_all_python_paths(
+    tmp_path: Path,
+    presentation: str,
+    entry: str,
+    valid: bool,
+) -> None:
+    action = {
+        "actionId": "open",
+        "mode": "local",
+        "risk": "read",
+        "presentation": presentation,
+        "entry": entry,
+    }
+    source = _write_package(tmp_path / "source", [action])
+    (source / entry).write_text(
+        "<!doctype html>" if presentation == "application" else "export {};", encoding="utf-8"
+    )
+    output = tmp_path / "package.vtplugin"
+    if valid:
+        PluginAction.model_validate(action)
+        PluginManifest.model_validate(
+            json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+        )
+        inspect_plugin_package(source)
+        pack_plugin(source, output)
+        inspect_plugin_package(output)
+    else:
+        with pytest.raises(ValidationError, match="entry"):
+            PluginAction.model_validate(action)
+        with pytest.raises(PluginPackageError, match="entry"):
+            inspect_plugin_package(source)
+        with pytest.raises(PluginPackageError, match="entry"):
+            pack_plugin(source, output)

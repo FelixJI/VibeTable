@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
@@ -36,6 +37,13 @@ InteractionDecision = Literal["approved", "rejected"]
 PluginPresentation = Literal["surface", "application", "headless"]
 
 
+def plugin_entry_has_supported_type(presentation: str, entry: str) -> bool:
+    suffix = PurePosixPath(entry).suffix.lower()
+    if presentation == "application":
+        return suffix == ".html"
+    return presentation == "headless" and suffix in {".js", ".mjs"}
+
+
 class PluginAction(PluginContract):
     action_id: str = Field(min_length=1, max_length=128)
     display_name: dict[str, str] = Field(default_factory=dict)
@@ -51,6 +59,16 @@ class PluginAction(PluginContract):
     output_schema: str | None = None
     presentation: PluginPresentation = "surface"
     entry: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_entry_type(self) -> PluginAction:
+        if (
+            self.presentation != "surface"
+            and self.entry is not None
+            and not plugin_entry_has_supported_type(self.presentation, self.entry)
+        ):
+            raise ValueError("entry type must match application HTML or headless JavaScript MIME")
+        return self
 
     @model_serializer(mode="wrap")
     def _omit_presentation_defaults(self, handler, _info):
@@ -315,6 +333,8 @@ class PluginCommitUnknownError(PluginExecutionError):
 
 
 class PluginTaskSnapshot(PluginContract):
+    # Optional for wire compatibility; absent identity is never controllable in the renderer.
+    installation_revision: int | None = Field(default=None, ge=1)
     task_id: str
     run_id: str
     plugin_id: str

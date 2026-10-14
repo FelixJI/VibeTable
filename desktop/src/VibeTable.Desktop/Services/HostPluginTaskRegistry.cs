@@ -260,7 +260,12 @@ internal sealed class HostPluginTaskRegistry
                 return true;
             }
             bool stickyCancel = record.Snapshot.CancelRequested;
-            record.Snapshot = reported with { CancelRequested = stickyCancel || reported.CancelRequested };
+            record.Snapshot = reported with
+            {
+                CancelRequested = stickyCancel || reported.CancelRequested,
+                // Only the creation report may bind installation identity.
+                InstallationRevision = record.Snapshot.InstallationRevision ?? reported.InstallationRevision,
+            };
             return true;
         }
     }
@@ -311,7 +316,12 @@ internal sealed class HostPluginTaskRegistry
                 return null;
             }
             bool stickyCancel = record.Snapshot.CancelRequested;
-            record.Snapshot = reported with { CancelRequested = stickyCancel || reported.CancelRequested };
+            record.Snapshot = reported with
+            {
+                CancelRequested = stickyCancel || reported.CancelRequested,
+                // Only the creation report may bind installation identity.
+                InstallationRevision = record.Snapshot.InstallationRevision ?? reported.InstallationRevision,
+            };
             record.ExecutionReportSeen = true;
             record.Revision += 1;
             if (IsTerminalLocked(record))

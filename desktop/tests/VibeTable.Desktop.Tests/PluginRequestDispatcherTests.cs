@@ -11,6 +11,40 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    public async Task PublicLifecycleMessagesReachDispatcherWithApprovedPlanWhileRollbackStaysInternal()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        Task routed = Task.CompletedTask;
+        int calls = 0;
+        var router = new WebMessageRouter(request => { calls++; routed = dispatcher.DispatchAsync(request); }) { IsReady = true };
+        async Task Route(string type, string id, object payload)
+        {
+            Assert.IsNull(router.Route(JsonSerializer.Serialize(new { type, requestId = id, payload })), type);
+            await routed;
+            Assert.IsNull(reply.FailureCode, type);
+            Assert.AreEqual(type, reply.ResponseType);
+            Assert.AreEqual(id, reply.RequestId);
+        }
+        await Route("plugin.install.inspect", "inspect", new { projectKey = "project-1", projectRevision = "1", sourceLocation = "host-picker" });
+        var plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
+        await Route("plugin.lifecycle.upgrade", "upgrade", new { projectKey = "project-1", pluginId = "com.acme.clean", planId = plan.PlanId, projectRevision = "1" });
+        Assert.AreEqual(plan.PlanId, gateway.UpgradeRequest!.Plan.PlanId);
+        await Route("plugin.lifecycle.uninstall", "uninstall", new { projectKey = "project-1", pluginId = "com.acme.clean", cleanupPrivateSettings = false });
+        Assert.AreEqual("com.acme.clean", gateway.UninstallRequest!.PluginId);
+        Assert.IsFalse(gateway.UninstallRequest.CleanupPrivateSettings);
+        var blocked = router.Route("""{"type":"plugin.lifecycle.rollback","requestId":"rollback","payload":{}}""");
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", blocked!.Payload!.Code);
+        Assert.AreEqual(3, calls);
+    }
+
+
+    [TestMethod]
     public async Task NativeActionWithoutUsablePageIsUnavailableWithoutWorkerFallback()
     {
         var reply = new RecordingReplySink();
@@ -1644,6 +1678,7 @@ public sealed class PluginRequestDispatcherTests
         var surfaces = new PluginSurfaceSessionManager();
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
         using var gateway = new FakePluginGateway();
+        gateway.StartResult = gateway.LastStarted with { InstallationRevision = 7 };
         using var dispatcher = new PluginRequestDispatcher(
             reply,
             surfaces,
@@ -1658,12 +1693,16 @@ public sealed class PluginRequestDispatcherTests
         PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
         StringAssert.StartsWith(started.TaskId, "plugin-task-");
         StringAssert.StartsWith(started.RunId, "plugin-run-");
-        gateway.RaiseTaskChanged(TaskState(started, "running"));
+        Assert.AreEqual(7, started.InstallationRevision);
+        gateway.RaiseTaskChanged(TaskState(started, "running") with { InstallationRevision = 8 });
+        var notification = Assert.IsInstanceOfType<PluginEventEnvelope>(reply.NotificationPayload);
+        Assert.AreEqual(7, notification.Snapshot.GetProperty("installationRevision").GetInt32());
         await dispatcher.DispatchAsync(Request(
             "plugin.task.get", "get-running",
             $$"""{"taskId":"{{started.TaskId}}"}"""));
         var running = AssertIsTaskSnapshot(reply.Payload);
         Assert.AreEqual("running", running.State);
+        Assert.AreEqual(7, running.InstallationRevision);
 
         await dispatcher.DispatchAsync(Request(
             "plugin.task.cancel", "cancel-1",
@@ -2304,8 +2343,12 @@ public sealed class PluginRequestDispatcherTests
         }
         public Task<PluginRuntimeSnapshot> RollbackAsync(PluginRollbackParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        public PluginUninstallParams? UninstallRequest { get; private set; }
         public Task<PluginRuntimeUninstallResult> UninstallAsync(PluginUninstallParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
+        {
+            UninstallRequest = request;
+            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
+        }
         public Task<PluginRuntimeActionAvailability> DescribeActionAsync(PluginDescribeActionParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(new PluginRuntimeActionAvailability(true, []));
         public Task<PluginRuntimeTaskSnapshot> StartActionAsync(PluginStartActionParams request, CancellationToken token)

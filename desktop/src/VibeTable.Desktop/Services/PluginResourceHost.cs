@@ -102,6 +102,18 @@ public sealed class PluginResourceHost
     /// reserved: packages can never shadow it, so a user package cannot
     /// forge trusted host HTML on the plugin origin.
     /// </summary>
+    internal static bool SupportsPresentationEntry(string presentation, string entry)
+    {
+        string extension = Path.GetExtension(entry);
+        return presentation switch
+        {
+            "application" => string.Equals(extension, ".html", StringComparison.OrdinalIgnoreCase),
+            "headless" => string.Equals(extension, ".js", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".mjs", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+    }
+
     public const string HeadlessDocumentPath = "__vibetable_host__/headless.html";
     private const string ReservedHostPrefix = "__vibetable_host__/";
 

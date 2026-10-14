@@ -200,7 +200,8 @@ public sealed record PluginRuntimeTaskSnapshot(
     bool CancelRequested,
     PluginRuntimeProgress? Progress,
     PluginRuntimeResult? Result,
-    PluginRuntimeSafeError? Error);
+    PluginRuntimeSafeError? Error,
+    int? InstallationRevision = null);
 
 public sealed record PluginRuntimeSafeError(
     string Contract,

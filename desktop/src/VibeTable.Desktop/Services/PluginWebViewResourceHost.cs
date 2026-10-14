@@ -152,6 +152,9 @@ public sealed class PluginWebViewResourceHost : IDisposable
     {
         PluginPackageRevision revision;
         string normalizedEntry = PluginResourceHost.NormalizePackagePath(entryPath);
+        if (presentation is "application" or "headless"
+            && !PluginResourceHost.SupportsPresentationEntry(presentation, normalizedEntry))
+            throw new PluginSurfacePolicyException("PLUGIN_ENTRY_TYPE_INVALID", "Plugin entry MIME does not match its presentation.");
         lock (_gate)
         {
             if (!_installations.TryGetValue((projectKey, pluginId), out revision!))

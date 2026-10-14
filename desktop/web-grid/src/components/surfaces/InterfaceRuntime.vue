@@ -49,7 +49,7 @@ const actionState = ref<{
 }>({ state: "idle", message: "" });
 const pluginTaskId = ref<string | null>(null);
 const activePluginTask = computed(() => {
-  const task = plugins.activeTask;
+  const task = plugins.taskForId(pluginTaskId.value ?? "");
   return task?.taskId === pluginTaskId.value ? task : null;
 });
 const runtime = new SurfaceRuntimeController({
@@ -249,7 +249,7 @@ async function execute(actionId: string, bindingId: string | null, elementId: st
 }
 
 function waitForPluginTask(taskId: string, signal: AbortSignal): Promise<PluginTaskViewSnapshot> {
-  const current = plugins.activeTask;
+  const current = plugins.taskForId(taskId);
   if (current?.taskId === taskId && ["succeeded", "failed", "cancelled", "aborted"].includes(current.state)) {
     return Promise.resolve(current);
   }
@@ -262,7 +262,7 @@ function waitForPluginTask(taskId: string, signal: AbortSignal): Promise<PluginT
       reject(signal.reason ?? new DOMException("Plugin task cancelled", "AbortError"));
     };
     stop = watch(
-      () => plugins.activeTask,
+      () => plugins.taskForId(taskId),
       (task) => {
         if (task?.taskId !== taskId || !["succeeded", "failed", "cancelled", "aborted"].includes(task.state)) return;
         signal.removeEventListener("abort", abort);

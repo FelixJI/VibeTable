@@ -18350,6 +18350,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "installationRevision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "taskId": {
             "type": "string"
           },
@@ -18482,6 +18494,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-065",
         "result": {
+          "installationRevision": null,
           "taskId": "00000000-0000-4000-8000-000000000001",
           "runId": "00000000-0000-4000-8000-000000000001",
           "pluginId": "sample-plugin",

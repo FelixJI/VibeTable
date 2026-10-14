@@ -2,6 +2,7 @@ package pluginstore
 
 import (
 	"encoding/json"
+	"path"
 	"strings"
 )
 
@@ -82,6 +83,8 @@ func validateManifest(value any, pluginID, version string) error {
 				return invalidPayload()
 			}
 		} else if !native || entry == "" {
+			return invalidPayload()
+		} else if suffix := strings.ToLower(path.Ext(entry)); (presentation == "application" && suffix != ".html") || (presentation == "headless" && suffix != ".js" && suffix != ".mjs") {
 			return invalidPayload()
 		} else if action["formSchema"] != nil || action["inputSchema"] != nil || action["outputSchema"] != nil {
 			return invalidPayload()

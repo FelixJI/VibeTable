@@ -68,6 +68,29 @@ const auditEvent: PluginAuditEvent = {
   details: {},
 };
 
+function replyingBridge(response: (type: string) => unknown) {
+  const posted: { type: string; requestId: string; payload: Record<string, unknown> }[] = [];
+  let listener: ((event: { data: unknown }) => void) | undefined;
+  let sequence = 0;
+  const bridge = createHostBridge({
+    generateRequestId: () => `review-${++sequence}`,
+    webview: {
+      postMessage: (message) => {
+        const request = message as (typeof posted)[number];
+        posted.push(request);
+        queueMicrotask(() => listener?.({ data: {
+          type: request.type, requestId: request.requestId, payload: response(request.type),
+        } }));
+      },
+      addEventListener: (_type, handler) => { listener = handler; },
+      removeEventListener: () => undefined,
+    },
+  });
+  bridge.start();
+  setHostBridgeForTesting(bridge);
+  return { posted };
+}
+
 describe("PluginCenterView", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -610,4 +633,67 @@ describe("PluginCenterView", () => {
     expect(wrapper.get('[data-testid="plugin-source-changed"]').text()).toContain("本地开发文件夹已变化");
     expect(wrapper.get('[data-testid="plugin-upgrade"]').text()).toContain("检查文件夹变更");
   });
+  it("retires an uninstall confirmation on selection/revision changes and resets cleanup on cancel", async () => {
+    const other = { ...blockedPlugin, pluginId: "com.acme.other", manifest: { ...blockedPlugin.manifest, pluginId: "com.acme.other" } };
+    usePluginStore().applyPlugin(other);
+    const { posted } = replyingBridge(() => []);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    await wrapper.findAll(".plugin-row")[1]!.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.lifecycle.uninstall")).toHaveLength(0);
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    await wrapper.get('[data-testid="plugin-uninstall-cancel"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
+    usePluginStore().applyPlugin({ ...other, revision: other.revision + 1 });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.lifecycle.uninstall")).toHaveLength(0);
+  });
+
+  it.each([false, true])("compares complete permission declarations with semantic ordering (%s)", async (equivalent) => {
+    const before = [{ collection: "A", operations: ["read", "query"], fields: ["title", "id"] },
+      { collection: "B", operations: ["write"], fields: ["*"] }];
+    const after = equivalent
+      ? [{ fields: ["*"], operations: ["write"], collection: "B" },
+        { fields: ["id", "title"], operations: ["query", "read"], collection: "A" }]
+      : [{ collection: "A", operations: ["write"], fields: ["*"] },
+        { collection: "B", operations: ["read", "query"], fields: ["title", "id"] }];
+    usePluginStore().applyPlugin({ ...blockedPlugin, revision: 8,
+      manifest: { ...blockedPlugin.manifest, permissions: { data: before } } });
+    replyingBridge(() => ({ planId: "permission-plan", projectKey: "local:default", projectRevision: "r2",
+      sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
+      manifest: { ...blockedPlugin.manifest, version: "1.3.0", permissions: { data: after } }, schemas: {} }));
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click");
+    await flushPromises();
+    const delta = wrapper.find('[data-testid="plugin-upgrade-permission-delta"]');
+    expect(delta.exists()).toBe(!equivalent);
+    if (!equivalent) {
+      expect(delta.text()).toContain('"collection":"A"');
+      expect(delta.text()).toContain('"operations":["write"]');
+      expect(delta.findAll("li")).toHaveLength(4);
+    }
+  });
+
+  it("routes the plugin center Run button for an application to the full viewport", async () => {
+    const application: PluginSnapshot = { ...blockedPlugin, status: "enabled", blockingReasons: [],
+      manifest: { ...blockedPlugin.manifest, $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
+        actions: blockedPlugin.manifest.actions.map(action => ({ ...action, workerEntry: null,
+          presentation: "application", entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "owned" })) } };
+    usePluginStore().replaceCatalog("local:default", [application]);
+    const { posted } = replyingBridge(type => type === "plugin.catalog.list" ? [application] : { available: true, reasons: [] });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get(".run-button").trigger("click");
+    await flushPromises();
+    expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize" });
+    expect(usePluginStore().actionOpen).toBe(false);
+    expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
+  });
+
 });

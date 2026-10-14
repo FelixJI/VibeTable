@@ -186,6 +186,7 @@ class PluginExecutionRuntime:
             run_id=run_id,
             plugin_id=plugin_id,
             plugin_version=installation.version,
+            installation_revision=installation.revision,
             action_id=action_id,
             project_key=context.project_key,
             collection=context.collection,

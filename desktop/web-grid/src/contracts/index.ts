@@ -1199,6 +1199,8 @@ export interface PluginResult {
 
 /** Host-owned task snapshot — revision lives on PluginEventEnvelope, not the task. */
 export interface PluginTaskSnapshot {
+  /** Installation revision captured by the task creator, never inferred from the catalog. */
+  readonly installationRevision?: number | null;
   readonly taskId: string;
   readonly runId: string;
   readonly pluginId: string;

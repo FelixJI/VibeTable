@@ -889,6 +889,13 @@ func TestPresentationActionsValidateAndBindClosedSet(t *testing.T) {
 	// install with the entry declared on the action itself.
 	check("application", build("application", "ui/index.html", nil, nil), true)
 	check("headless", build("headless", "ui/app.js", nil, nil), true)
+	check("application-upper-html", build("application", "ui/ENTRY.HTML", nil, nil), true)
+	check("headless-module", build("headless", "ui/ENTRY.mjs", nil, nil), true)
+	check("headless-upper-module", build("headless", "ui/ENTRY.MJS", nil, nil), true)
+	check("application-js", build("application", "ui/app.js", nil, nil), false)
+	check("application-htm", build("application", "ui/index.htm", nil, nil), false)
+	check("headless-html", build("headless", "ui/index.html", nil, nil), false)
+	check("headless-no-suffix", build("headless", "ui/ENTRY", nil, nil), false)
 
 	view := []any{map[string]any{"viewId": "v", "actionId": "open", "entry": "ui/index.html"}}
 	check("surface-with-entry", build("surface", "ui/index.html", nil, view), false)

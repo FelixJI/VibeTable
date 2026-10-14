@@ -10,7 +10,6 @@ defineProps<{
   task?: PluginTaskViewSnapshot | null;
 }>();
 const emit = defineEmits<{
-  action: [payload: Readonly<Record<string, unknown>>];
   resolve: [decision: "approved" | "rejected"];
   cancel: [];
   close: [];
@@ -44,7 +43,6 @@ const emit = defineEmits<{
         :theme="theme"
         :task="task"
         variant="app"
-        @action="payload => emit('action', payload)"
         @resolve="decision => emit('resolve', decision)"
         @cancel="() => emit('cancel')"
         @close="() => emit('close')"

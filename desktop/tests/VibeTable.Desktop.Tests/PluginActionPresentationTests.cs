@@ -18,6 +18,48 @@ public sealed class PluginActionPresentationTests
 {
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
+    [TestMethod]
+    [DataRow("application", "ui/ENTRY.html", true)]
+    [DataRow("application", "ui/ENTRY.HTML", true)]
+    [DataRow("headless", "ui/ENTRY.js", true)]
+    [DataRow("headless", "ui/ENTRY.JS", true)]
+    [DataRow("headless", "ui/ENTRY.mjs", true)]
+    [DataRow("headless", "ui/ENTRY.MJS", true)]
+    [DataRow("application", "ui/ENTRY.js", false)]
+    [DataRow("headless", "ui/ENTRY.html", false)]
+    public void RuntimeEntryTypeMustMatchServedMime(string presentation, string entry, bool valid)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-mime-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "ui"));
+        File.WriteAllText(Path.Combine(root, entry.Replace('/', Path.DirectorySeparatorChar)), "entry");
+        try
+        {
+            var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            var revision = PluginPackageRevision.Create(root, new string('a', 64));
+            resources.RegisterInstalled("project-1", "com.acme.clean", revision);
+            if (valid)
+            {
+                var surface = resources.OpenSurface("project-1", "com.acme.clean", entry, "open", presentation);
+                Assert.IsTrue(surfaces.IsActive(surface.SurfaceToken));
+            }
+            else
+            {
+                try
+                {
+                    resources.OpenSurface("project-1", "com.acme.clean", entry, "open", presentation);
+                    Assert.Fail("Unsupported entry MIME obtained a surface token");
+                }
+                catch (PluginSurfacePolicyException error)
+                {
+                    Assert.AreEqual("PLUGIN_ENTRY_TYPE_INVALID", error.Code);
+                }
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+
     private static PluginRuntimeAction Action(
         string actionId,
         string risk,

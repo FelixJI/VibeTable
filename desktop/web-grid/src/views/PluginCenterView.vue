@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NIcon } from "naive-ui";
 import { Box, GitBranch, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "@lucide/vue";
 import type { PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
@@ -10,6 +10,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
+import { permissionDeclarations } from "@/services/pluginPermissionDeclarations";
 import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
 
@@ -22,12 +23,32 @@ const table = useTableStore();
 const systemTimeZone = useSystemTimeZone();
 const plannedUpgradePluginId = ref<string | null>(null);
 const cleanupPrivateSettings = ref(false);
-const uninstalling = ref(false);
+const uninstallTarget = ref<{ pluginId: string; revision: number; projectKey: string } | null>(null);
+const uninstalling = computed(() => uninstallTarget.value !== null);
 const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
 const githubRepository = ref("");
 
 const plugin = computed(() => store.selectedPlugin);
+function cancelUninstall(): void {
+  uninstallTarget.value = null;
+  cleanupPrivateSettings.value = false;
+}
+function beginUninstall(): void {
+  cancelUninstall();
+  if (plugin.value) uninstallTarget.value = { pluginId: plugin.value.pluginId,
+    revision: plugin.value.revision, projectKey: plugin.value.projectKey };
+}
+async function confirmUninstall(): Promise<void> {
+  const target = uninstallTarget.value;
+  const current = plugin.value;
+  const cleanup = cleanupPrivateSettings.value;
+  cancelUninstall();
+  if (!target || !current || current.pluginId !== target.pluginId
+    || current.revision !== target.revision || current.projectKey !== target.projectKey) return;
+  await safely(() => service.uninstall(current, cleanup));
+}
+watch(() => [plugin.value?.pluginId, plugin.value?.revision, store.projectKey], cancelUninstall, { flush: "sync" });
 const theme = computed(() => projectPluginTheme({
   effectiveTheme: ui.effectiveTheme,
   locale: ui.locale,
@@ -53,7 +74,7 @@ function formatAuditTimestamp(value: string): string {
     : date.toLocaleString(ui.locale, { timeZone: systemTimeZone.value });
 }
 function permissions(snapshot: PluginSnapshot): string[] {
-  return flatten(snapshot.manifest.permissions);
+  return permissionDeclarations(snapshot.manifest.permissions);
 }
 // #482 AC4: an upgrade plan shows the permission DELTA against the currently
 // installed snapshot, not just the new full declaration.
@@ -63,8 +84,8 @@ const upgradePermissionDelta = computed<{ added: string[]; removed: string[] } |
   if (!pluginId || !plan) return null;
   const existing = store.plugins.find(item => item.pluginId === pluginId);
   if (!existing) return null;
-  const before = new Set(flatten(existing.manifest.permissions));
-  const after = new Set(flatten(plan.manifest.permissions));
+  const before = new Set(permissionDeclarations(existing.manifest.permissions));
+  const after = new Set(permissionDeclarations(plan.manifest.permissions));
   return {
     added: [...after].filter(item => !before.has(item)),
     removed: [...before].filter(item => !after.has(item)),
@@ -76,14 +97,6 @@ function blockingReasons(snapshot: PluginSnapshot): readonly string[] {
 }
 function compatibility(value: Readonly<Record<string, unknown>>): string {
   return Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`).join(" · ") || "未声明";
-}
-function flatten(value: unknown, prefix = ""): string[] {
-  if (Array.isArray(value)) return value.flatMap((item) => flatten(item, prefix));
-  if (typeof value === "object" && value !== null) {
-    return Object.entries(value).flatMap(([key, item]) => flatten(item, prefix ? `${prefix}.${key}` : key));
-  }
-  if (value === false || value === null || value === undefined) return [];
-  return [prefix ? `${prefix}:${String(value)}` : String(value)];
 }
 function commandContext() {
   return createPluginCommandContext({
@@ -241,7 +254,7 @@ onBeforeUnmount(() => service.dispose());
         <strong>{{ localize(store.installPlan.manifest.displayName, store.installPlan.manifest.pluginId) }} <code>{{ store.installPlan.manifest.version }}</code></strong>
       </div>
       <div><small>PACKAGE HASH</small><code>{{ store.installPlan.packageHash }}</code></div>
-      <div><small>PERMISSIONS</small><p>{{ flatten(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
+      <div><small>PERMISSIONS</small><p>{{ permissionDeclarations(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
       <div v-if="upgradePermissionDelta">
         <small>PERMISSION CHANGES</small>
         <p v-if="!upgradePermissionDelta.added.length && !upgradePermissionDelta.removed.length">本次升级权限无变化。</p>
@@ -342,8 +355,8 @@ onBeforeUnmount(() => service.dispose());
         <footer class="lifecycle-actions">
           <button data-testid="plugin-upgrade" type="button" class="quiet-button" title="选择新版本并先检查变更计划" @click="inspectUpgrade(plugin)"><Upload :size="13" />{{ plugin.sourceType === 'local-folder' ? (plugin.sourceChanged ? '检查文件夹变更' : '检查并重新加载文件夹') : '检查离线升级' }}</button>
           <button v-if="publicCapabilityPolicy.pluginRollback" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
-          <button v-if="publicCapabilityPolicy.pluginUninstall && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
-          <div v-else-if="publicCapabilityPolicy.pluginUninstall" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
+          <button v-if="publicCapabilityPolicy.pluginUninstall && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="beginUninstall"><Trash2 :size="13" />卸载</button>
+          <div v-else-if="publicCapabilityPolicy.pluginUninstall" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" data-testid="plugin-uninstall-cancel" @click="cancelUninstall">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="confirmUninstall">确认卸载</button></div>
         </footer>
       </main>
 
