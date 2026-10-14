@@ -7,7 +7,6 @@ export const PLUGIN_SURFACE_CSP = [
   "img-src 'self' data:",
   "font-src 'self'",
   "connect-src 'none'",
-  "webrtc 'block'",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",

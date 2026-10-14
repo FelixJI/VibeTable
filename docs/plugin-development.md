@@ -131,7 +131,7 @@ v2 surface 声明的 `script` 输出（即使位于 `dist/` 之外）同样纳�
 这些检查与产物计数，包内其它宿主以 `text/javascript` 服务的 `.js`/`.mjs` 成员（大小写不敏感，
 页面可经 `script-src 'self'` 加载）也在检查范围内；`src`/`tests`/`node_modules` 等本地开发输入不参与。
 运行时纵深：Host 在首次 Navigate 前以 document-created 注入统一禁用两别名（不可写、不可配置），
-插件 surface CSP 附加 `webrtc 'block'`；构建检查与 CSP 均为纵深，不单独承担封锁保证。
+构建检查为纵深，不单独承担封锁保证；不依赖 Runtime 尚不支持的 CSP `webrtc` 指令。
 `pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
 `dist` 或 `integrity.json` 后跳过 build/pack。
 

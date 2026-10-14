@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
+import { reactive } from "vue";
 import { createHostBridge } from "@/bridge/hostBridge";
-import type { PluginSurfaceThemeSnapshot } from "@/contracts";
+import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import PluginSurfaceHost from "./PluginSurfaceHost.vue";
 
@@ -82,6 +83,61 @@ describe("PluginSurfaceHost", () => {
         payload: {},
       },
     });
+  });
+
+  it("posts cloneable envelopes for reactive theme and task inputs", async () => {
+    // Reproduces the real S47 DataCloneError: the store hands Vue reactive
+    // proxies to the host, and postMessage structured-clones its argument.
+    // The fake contentWindow applies the real structuredClone boundary instead
+    // of mocking the failure away.
+    setHostBridgeForTesting(createHostBridge({ webview: {
+      postMessage: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } }));
+    const reactiveTheme = reactive(theme);
+    type MutableTaskSnapshot = { -readonly [K in keyof PluginTaskViewSnapshot]: PluginTaskViewSnapshot[K] };
+    const reactiveTask = reactive<MutableTaskSnapshot>({
+      taskId: "task-1", runId: "run-1", pluginId: "com.example.view",
+      pluginVersion: "1.0.0", actionId: "write", projectKey: "local:default",
+      collection: "orders", targetCount: 1, risk: "write", state: "running",
+      cancelRequested: false, progress: null, result: null, error: null,
+      confirmation: null, revision: 1, progressPercent: 0,
+    });
+    const posted: unknown[] = [];
+    const cloneFailures: string[] = [];
+    const wrapper = mount(PluginSurfaceHost, {
+      props: { src, surfaceToken: "surface-1", title: "概览", theme: reactiveTheme, task: reactiveTask },
+    });
+    const iframe = wrapper.get("iframe");
+    Object.defineProperty(iframe.element, "contentWindow", {
+      configurable: true,
+      value: {
+        postMessage: (message: unknown) => {
+          try {
+            structuredClone(message);
+            posted.push(message);
+          } catch (error) {
+            cloneFailures.push(String(error));
+          }
+        },
+      },
+    });
+    await iframe.trigger("load");
+    reactiveTask.state = "succeeded";
+    await wrapper.setProps({ task: reactiveTask });
+    await Promise.resolve();
+
+    expect(cloneFailures).toEqual([]);
+    expect(posted.length).toBeGreaterThanOrEqual(2);
+    expect(posted[0]).toMatchObject({
+      contract: "vibetable.plugin-surface.v1",
+      surfaceToken: "surface-1",
+      event: "themeChanged",
+      payload: JSON.parse(JSON.stringify(theme)),
+    });
+    expect(posted.some(message => (message as { event?: string }).event === "taskChanged"
+      && (message as { payload?: { state?: string } }).payload?.state === "succeeded")).toBe(true);
   });
 
   it("does not navigate an iframe for an untrusted origin", () => {

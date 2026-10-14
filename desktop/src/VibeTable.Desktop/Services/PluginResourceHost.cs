@@ -91,7 +91,6 @@ public sealed class PluginResourceHost
         "font-src 'self'; " +
         "worker-src 'self'; " +
         "connect-src 'none'; " +
-        "webrtc 'block'; " +
         "object-src 'none'; " +
         "frame-src 'none'; " +
         "frame-ancestors https://app.vibetable.local; " +
