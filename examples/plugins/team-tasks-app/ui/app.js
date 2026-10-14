@@ -114,18 +114,20 @@
         host.appendChild(ul);
       } catch (error) { showError("stats-body", error); }
     }
-    const pages = { tasks: renderTasks, detail: renderDetail, stats: renderStats };
+    const pages = ["tasks", "detail", "stats"];
     function route() {
       const hash = (location.hash || "#tasks").slice(1);
-      const page = pages[hash] ? hash : "tasks";
-      for (const name of Object.keys(pages)) {
+      const page = hash === "detail" || hash === "stats" ? hash : "tasks";
+      for (const name of pages) {
         document.getElementById("page-" + name).hidden = name !== page;
       }
       for (const link of document.querySelectorAll("nav a")) {
         if (link.dataset.page === page) link.setAttribute("aria-current", "page");
         else link.removeAttribute("aria-current");
       }
-      pages[page]();
+      if (page === "detail") renderDetail();
+      else if (page === "stats") renderStats();
+      else renderTasks();
     }
     document.getElementById("reload").addEventListener("click", () => { table = null; route(); });
     window.addEventListener("hashchange", route);

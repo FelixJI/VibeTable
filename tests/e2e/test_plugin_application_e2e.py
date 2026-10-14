@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from backend.infrastructure.plugin_package import PluginPackageError, inspect_plugin_package
+from scripts.node_toolchain import ensure_node
 from tests.e2e.plugin_application_native import _validate_request
 from tests.e2e.plugin_application_packages import prepare_application_packages
 
@@ -96,3 +98,17 @@ def test_controlled_contrast_scope_restores_original_flags_and_scheme_on_cleanup
     assert restored["status"] == "restored"
     assert current == {"flags": 2, "scheme": "original scheme"}
     assert calls == [(3, "original scheme"), (2, "original scheme")]
+
+
+def test_team_tasks_authored_script_keeps_hash_routes_closed() -> None:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [str(ensure_node(root)), "--test", "tests/e2e/team_tasks_app_routes.test.mjs"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
