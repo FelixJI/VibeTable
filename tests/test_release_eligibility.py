@@ -121,8 +121,12 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
     assert set(standard) | set(data_io) == {item.id for item in expanded}
     assert extra.id in standard
     assert set(data_io) == {
+        "02-all-field-schema",
+        "05-formula-lifecycle",
+        "06-relation-fanout",
         "23-directory-replica-recovery",
         "24-directory-replica-conflict",
+        "26-lookup-definition-read",
         "34-relation-lookup-data-io",
         "35-data-io-interoperability",
         "37-collection-formula-journey",

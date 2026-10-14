@@ -84,8 +84,12 @@ PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
 # Share long product journeys across both lanes to retain the unchanged 30-minute budgets.
 DATA_IO_SCENARIO_IDS = (
+    "02-all-field-schema",
+    "05-formula-lifecycle",
+    "06-relation-fanout",
     "23-directory-replica-recovery",
     "24-directory-replica-conflict",
+    "26-lookup-definition-read",
     "34-relation-lookup-data-io",
     "35-data-io-interoperability",
     "37-collection-formula-journey",

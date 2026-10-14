@@ -309,6 +309,10 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
     assert set(selected[0]).isdisjoint(selected[1])
     assert set(selected[0]) | set(selected[1]) == manifest_ids
     assert set(selected[1]) == {
+        "02-all-field-schema",
+        "05-formula-lifecycle",
+        "06-relation-fanout",
+        "26-lookup-definition-read",
         "23-directory-replica-recovery",
         "24-directory-replica-conflict",
         "34-relation-lookup-data-io",
