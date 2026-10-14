@@ -62,6 +62,41 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task OversizeEnvelopeRejectsWithOnlyItsBoundedRootRequestId()
+    {
+        using var fixture = new Fixture();
+        string raw = fixture.Wire("storage.set", "{\"key\":\"oversize\",\"value\":\"" + new string('x', 1024 * 1024 + 1) + "\"}");
+        string id = JsonDocument.Parse(raw).RootElement.GetProperty("requestId").GetString()!;
+        var reply = JsonDocument.Parse(await fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source, raw)).RootElement;
+        Assert.AreEqual("plugin_message_too_large", reply.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(id, reply.GetProperty("requestId").GetString());
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
+    public async Task OversizeEnvelopeCannotBorrowAnUnsafeOrNestedRequestId()
+    {
+        using var fixture = new Fixture();
+        string prefix = "{\"contract\":\"vibetable.plugin-api.v1\",\"surfaceToken\":\"owned\",\"method\":\"storage.set\",";
+        foreach (string header in new[] {
+            prefix + "\"params\":{\"requestId\":\"nested\",\"value\":\"",
+            prefix + "\"requestId\":\"" + new string('i', 129) + "\",\"params\":\"",
+            prefix + "\"requestId\":4,\"params\":\"",
+            prefix + "\"requestId\":\"\",\"params\":\"",
+            prefix + "\"requestId\":\"first\",\"requestId\":\"duplicate\",\"params\":\"",
+            "{\"contract\":\"" + new string('h', 4096) + "\",\"requestId\":\"late\",\"params\":\"",
+            "{\"contract\": false garbage,\"requestId\":\"forged\",\"params\":\"",
+            "[" + prefix + "\"requestId\":\"not-root\",\"params\":\"" })
+        {
+            var reply = JsonDocument.Parse(await fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source,
+                header + new string('x', 1024 * 1024 + 1))).RootElement;
+            Assert.AreEqual("plugin_message_too_large", reply.GetProperty("error").GetProperty("code").GetString());
+            Assert.AreEqual(JsonValueKind.Null, reply.GetProperty("requestId").ValueKind);
+        }
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
     public async Task MissingInstallationIdentityFailsBeforeAuthority()
     {
         using var fixture = new Fixture();

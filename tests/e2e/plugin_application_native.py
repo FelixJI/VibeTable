@@ -87,26 +87,61 @@ def _contrast_parameters(flags: int | None = None, scheme: str = "") -> dict[str
     return {"flags": int(value.flags), "scheme": value.scheme or ""}
 
 
-def restore_system_contrast() -> dict[str, object] | None:
+class ContrastRestorationError(OSError):
+    def __init__(self, diagnostic: dict[str, object]) -> None:
+        super().__init__(str(diagnostic["error"]))
+        self.diagnostic = diagnostic
+
+
+def restore_system_contrast(
+    *, evidence: Path | None = None, cleanup: bool = False
+) -> dict[str, object] | None:
     global _contrast_original
     if _contrast_original is None:
         return None
-    original = _contrast_original
-    _contrast_parameters(int(original["flags"]), str(original["scheme"]))
-    restored = _contrast_parameters()
-    if restored != original:
-        raise OSError(
-            "controlled runner system contrast restoration did not match the recorded original"
-        )
+    original = dict(_contrast_original)
+    diagnostic: dict[str, object] = {
+        "status": "attempting",
+        "original": original,
+        "attempt": dict(original),
+        "observed": None,
+    }
+    target = (
+        evidence
+        / ("plugin-contrast-cleanup.json" if cleanup else "plugin-contrast-restoration.json")
+        if evidence is not None
+        else None
+    )
+    try:
+        try:
+            if target is not None:
+                target.write_text(json.dumps(diagnostic), encoding="utf-8")
+        finally:
+            # Evidence I/O must never prevent restoring the owned OS scope.
+            _contrast_parameters(int(original["flags"]), str(original["scheme"]))
+            restored = _contrast_parameters()
+            diagnostic["observed"] = restored
+        if restored != original:
+            raise OSError(
+                "controlled runner system contrast restoration did not match the recorded original"
+            )
+    except OSError as error:
+        diagnostic.update(status="failed", error=str(error))
+        if target is not None:
+            target.write_text(json.dumps(diagnostic), encoding="utf-8")
+        raise ContrastRestorationError(diagnostic) from error
+    diagnostic["status"] = "restored"
+    if target is not None:
+        target.write_text(json.dumps(diagnostic), encoding="utf-8")
     _contrast_original = None
-    return {"status": "restored", "original": original, "observed": restored}
+    return diagnostic
 
 
 def _change_system_contrast(action: str, evidence: Path) -> dict[str, object]:
     global _contrast_original
     _require_controlled_contrast_runner()
     if action == "contrast-off":
-        result = restore_system_contrast()
+        result = restore_system_contrast(evidence=evidence)
         if result is None:
             raise OSError("controlled runner has no active contrast scope")
         return result
@@ -262,7 +297,10 @@ def handle_plugin_native_request(
             "contrast": contrast,
         }
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        return {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
+        result = {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
+        if isinstance(error, ContrastRestorationError):
+            result["contrast"] = error.diagnostic
+        return result
     finally:
         if native is not None:
             native.close()

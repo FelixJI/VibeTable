@@ -112,3 +112,102 @@ def test_team_tasks_authored_script_keeps_hash_routes_closed() -> None:
         timeout=30,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_contrast_restore_mismatch_keeps_exact_facts_and_fails_closed(tmp_path, monkeypatch):
+    from tests.e2e import plugin_application_native as native
+
+    original = {"flags": 126, "scheme": ""}
+    observed = {"flags": 126, "scheme": "unexpected scheme"}
+    calls = []
+
+    def parameters(flags=None, scheme=""):
+        if flags is not None:
+            calls.append((flags, scheme))
+        return dict(observed)
+
+    monkeypatch.setattr(native, "_contrast_original", original)
+    monkeypatch.setattr(native, "_contrast_parameters", parameters)
+    with pytest.raises(OSError, match="restoration did not match"):
+        native.restore_system_contrast(evidence=tmp_path)
+    diagnostic = json.loads((tmp_path / "plugin-contrast-restoration.json").read_text())
+    assert diagnostic == {
+        "status": "failed",
+        "original": original,
+        "attempt": original,
+        "observed": observed,
+        "error": "controlled runner system contrast restoration did not match the recorded original",
+    }
+    assert calls == [(126, "")]
+    assert native._contrast_original == original
+
+
+def test_native_contrast_failure_returns_actual_restoration_facts(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    original = {"flags": 126, "scheme": ""}
+    observed = {"flags": 127, "scheme": ""}
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(native, "_contrast_original", original)
+    monkeypatch.setattr(native, "_contrast_parameters", lambda *_args: dict(observed))
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=lambda *_args: None,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "restoration-request",
+            "action": "contrast-off",
+            "buttonId": "plugin-manage",
+            "stage": "contrast",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert result["requestId"] == "restoration-request"
+    assert result["contrast"]["original"] == original
+    assert result["contrast"]["observed"] == observed
+    assert native._contrast_original == original
+
+
+def test_contrast_evidence_failure_does_not_prevent_os_restoration(tmp_path, monkeypatch):
+    from tests.e2e import plugin_application_native as native
+
+    original = {"flags": 126, "scheme": ""}
+    calls = []
+
+    def parameters(flags=None, scheme=""):
+        if flags is not None:
+            calls.append((flags, scheme))
+        return dict(original)
+
+    real_write = Path.write_text
+
+    def write(path, data, **kwargs):
+        if (
+            path.name == "plugin-contrast-restoration.json"
+            and json.loads(data)["status"] == "attempting"
+        ):
+            raise OSError("diagnostic write failed")
+        return real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(native, "_contrast_original", original)
+    monkeypatch.setattr(native, "_contrast_parameters", parameters)
+    monkeypatch.setattr(Path, "write_text", write)
+    with pytest.raises(OSError, match="diagnostic write failed"):
+        native.restore_system_contrast(evidence=tmp_path)
+    assert calls == [(126, "")]
+    diagnostic = json.loads((tmp_path / "plugin-contrast-restoration.json").read_text())
+    assert diagnostic["observed"] == original
+    assert diagnostic["status"] == "failed"

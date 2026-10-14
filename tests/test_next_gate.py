@@ -3397,3 +3397,43 @@ def test_go_gate_uses_the_same_pinned_toolchain_as_package_build(
         executable.touch()
     monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path)
     assert next_gate._resolve("go") == str(pinned)
+
+
+def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(tmp_path):
+    run = tmp_path / "source" / "20261015T000000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "scenarios": [
+                    {"scenario": "48-plugin-applications", "status": "failed"},
+                    {"scenario": "49-plugin-application-security", "status": "failed"},
+                ],
+            }
+        )
+    )
+    expected = []
+    phase = "48-plugin-applications/seed/20261015T000001Z"
+    for name in (*next_gate.PRODUCT_E2E_EVIDENCE_FILES, "48-plugin-applications-result.json"):
+        expected.append(f"{phase}/{name}")
+    expected.append("48-plugin-applications/persistent/host/vibetable-trace.log")
+    for name in (
+        "plugin-contrast-original.json",
+        "plugin-contrast-restoration.json",
+        "plugin-contrast-cleanup.json",
+        "plugin-native-result.json",
+    ):
+        expected.append(f"49-plugin-application-security/{name}")
+    for relative in expected:
+        target = run / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"raw:{relative}")
+    for relative in (f"{phase}/workspace.db", "49-plugin-application-security/unrelated.json"):
+        (run / relative).write_text("private")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    for relative in expected:
+        assert (retained / relative).read_text() == f"raw:{relative}"
+    assert not (retained / phase / "workspace.db").exists()
+    assert not (retained / "49-plugin-application-security/unrelated.json").exists()

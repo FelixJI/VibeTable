@@ -1985,6 +1985,7 @@ def _run_node_runner(
 ) -> tuple[int, str, str]:
     from tests.e2e.plugin_application_native import restore_system_contrast
 
+    primary_exception: Exception | None = None
     try:
         return _run_node_runner_guarded(
             command,
@@ -1994,8 +1995,31 @@ def _run_node_runner(
             process_network=process_network,
             measure_diff_worker=measure_diff_worker,
         )
+    except Exception as error:
+        primary_exception = error
+        raise
     finally:
-        restored = restore_system_contrast()
+        try:
+            restored = restore_system_contrast(evidence=scenario_dir, cleanup=True)
+        except OSError as error:
+            diagnostic = dict(
+                getattr(error, "diagnostic", {"status": "failed", "error": str(error)})
+            )
+            if "--scenario" in command:
+                scenario_id = command[command.index("--scenario") + 1]
+                if scenario_id == "49-plugin-application-security":
+                    original_result = _read_json(scenario_dir / f"{scenario_id}-result.json")
+                    if original_result is not None and isinstance(
+                        original_result.get("error"), dict
+                    ):
+                        diagnostic["primaryError"] = original_result["error"]
+            if "primaryError" not in diagnostic and primary_exception is not None:
+                diagnostic["primaryError"] = {
+                    "name": type(primary_exception).__name__,
+                    "message": str(primary_exception),
+                }
+            _write_json_atomic(scenario_dir / "plugin-contrast-cleanup.json", diagnostic)
+            raise
         if restored is not None:
             _write_json_atomic(scenario_dir / "plugin-contrast-cleanup.json", restored)
 
@@ -2894,6 +2918,11 @@ def run_scenario(
                 code="E2E_INFRASTRUCTURE_FAILED",
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
+            contrast_cleanup = _read_json(scenario_dir / "plugin-contrast-cleanup.json")
+            if scenario.id == "49-plugin-application-security" and contrast_cleanup is not None:
+                result["pluginContrastCleanup"] = contrast_cleanup
+                if isinstance(contrast_cleanup.get("primaryError"), dict):
+                    result["primaryError"] = contrast_cleanup["primaryError"]
         exit_started = time.monotonic()
         restore_crash = _read_json(scenario_dir / "fault-result.json")
         intentional_restore_crash = (

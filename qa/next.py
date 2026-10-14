@@ -1482,6 +1482,14 @@ def persist_product_e2e_evidence(
 
         scenario_number = scenario_id.partition("-")[0]
         runtime_root = run_source / "_runtime" / scenario_number
+        if scenario_id == "49-plugin-application-security":
+            for filename in (
+                "plugin-contrast-original.json",
+                "plugin-contrast-restoration.json",
+                "plugin-contrast-cleanup.json",
+                "plugin-native-result.json",
+            ):
+                _copy_if_file(scenario_source / filename, scenario_destination / filename)
         if scenario_id == "42-file-document-native-operations":
             for filename in (
                 "file-document-native-request.json",
@@ -1558,6 +1566,7 @@ def persist_product_e2e_evidence(
             "33-host-grid-presentation",
             "39-file-workflow-combination",
             "44-file-restore-crash",
+            "48-plugin-applications",
         }:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase

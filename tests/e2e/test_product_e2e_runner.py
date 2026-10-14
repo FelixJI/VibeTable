@@ -6827,3 +6827,42 @@ def test_document_native_request_slot_delete_failure_propagates_before_handling(
     # No handler ran and no ack was published: deletion is a hard precondition.
     assert handled == []
     assert not (scenario_dir / "file-document-native-result.json").exists()
+
+
+@pytest.mark.parametrize("node_raises", [False, True])
+def test_plugin_contrast_cleanup_failure_preserves_original_node_error(
+    tmp_path, monkeypatch, node_raises
+):
+    from tests.e2e import plugin_application_native as native
+
+    scenario = "49-plugin-application-security"
+    primary = {"code": "SCENARIO_FAILED", "message": "original contrast assertion"}
+    if not node_raises:
+        (tmp_path / f"{scenario}-result.json").write_text(
+            json.dumps({"status": "failed", "error": primary})
+        )
+
+    def guarded(*_args, **_kwargs):
+        if node_raises:
+            raise RuntimeError("node failed before result")
+        return (1, "node failed", "")
+
+    monkeypatch.setattr(runner, "_run_node_runner_guarded", guarded)
+
+    def restore(**_kwargs):
+        raise OSError("restore failed")
+
+    monkeypatch.setattr(native, "restore_system_contrast", restore)
+    with pytest.raises(OSError, match="restore failed"):
+        runner._run_node_runner(
+            ["node", "--scenario", scenario],
+            scenario_dir=tmp_path,
+            local_data=tmp_path,
+            host_scope=SimpleNamespace(),
+        )
+    cleanup = json.loads((tmp_path / "plugin-contrast-cleanup.json").read_text())
+    assert cleanup["status"] == "failed"
+    assert cleanup["error"] == "restore failed"
+    assert cleanup["primaryError"] == (
+        {"name": "RuntimeError", "message": "node failed before result"} if node_raises else primary
+    )

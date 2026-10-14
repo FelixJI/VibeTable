@@ -44,7 +44,11 @@ internal sealed class PluginSurfaceApi : IDisposable
         bool admitted = false;
         try
         {
-            if (Encoding.UTF8.GetByteCount(raw) > MaxBytes) throw Error("plugin_message_too_large");
+            if (Encoding.UTF8.GetByteCount(raw) > MaxBytes)
+            {
+                requestId = ReadOversizeRequestId(raw);
+                throw Error("plugin_message_too_large");
+            }
             request = JsonSerializer.Deserialize<ApiRequest>(raw, Json) ?? throw Error("plugin_capability_invalid");
             requestId = request.RequestId;
             if (request.Contract != Contract) throw Error("plugin_api_unsupported");
@@ -224,6 +228,36 @@ internal sealed class PluginSurfaceApi : IDisposable
             return JsonSerializer.Serialize(new { contract = Contract, requestId, error = new { code, message = "插件请求未完成。" } }, Json);
         }
         finally { if (admitted && requestId is not null) { state?.Pending.TryRemove(requestId, out _); state?.Cancelled.TryRemove(requestId, out _); } }
+    }
+
+    // Only correlates a rejected envelope. Never admits identity or reads params.
+    private static string? ReadOversizeRequestId(string raw)
+    {
+        Span<byte> header = stackalloc byte[4096];
+        int count = Encoding.UTF8.GetBytes(raw.AsSpan(0, Math.Min(raw.Length, 1024)), header);
+        var reader = new Utf8JsonReader(header[..count], isFinalBlock: false, state: default);
+        try
+        {
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject) return null;
+            int seen = 0;
+            string? id = null;
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1) return null;
+                if (reader.ValueTextEquals("params")) return seen == 15 ? id : null;
+                int field = reader.ValueTextEquals("contract") ? 1 : reader.ValueTextEquals("surfaceToken") ? 2
+                    : reader.ValueTextEquals("requestId") ? 4 : reader.ValueTextEquals("method") ? 8 : 0;
+                if (field == 0 || (seen & field) != 0 || !reader.Read() || reader.TokenType != JsonTokenType.String) return null;
+                seen |= field;
+                if (field == 4)
+                {
+                    id = reader.GetString();
+                    if (string.IsNullOrWhiteSpace(id) || id.Length > 128) return null;
+                }
+            }
+        }
+        catch (JsonException) { /* Malformed or incomplete bounded headers have no safe correlation. */ }
+        return null;
     }
 
     private PluginSurfaceSession CurrentSurface(string token, string source)
