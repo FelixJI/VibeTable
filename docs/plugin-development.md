@@ -34,8 +34,10 @@ expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 
 `ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`；本版本不支持无页面动作。
 CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
 编译到声明的 `script`，打包仍走既有完整性契约；`build` 在任何编译前先按包路径规则校验每个声明输出
-（绝对路径、`..` 穿越与 reparse point 逃逸直接拒绝），声明输出（含 `dist/` 之外的路径）执行与 `dist/` 产物
-一致的自包含检查。旧 Host 拒绝 v2，未知 API/合同版本拒绝；
+（绝对路径、`..` 穿越与 reparse point 逃逸直接拒绝，且输出必须是 Host 实际执行的 `.js`/`.mjs` 成员、
+不得覆盖 `manifest.json`、entry/html/style 或 schema 等插件输入），声明输出（含 `dist/` 之外的路径）执行与 `dist/` 产物
+一致的自包含检查。`ui.customViews` 的 `entry/html/script/style` 引用必须是 Host canonical 形式
+（拒绝 `./` 前缀、反斜杠与未规范化的 Unicode，不做静默改写）。旧 Host 拒绝 v2，未知 API/合同版本拒绝；
 旧 SDK `data.mutate` 不改变拒绝语义。
 
 ```typescript
@@ -124,9 +126,12 @@ uv run python scripts/vibetable_plugin.py pack examples/plugins/data-overview `
 ```
 
 `build` 会用插件本地、锁定的 esbuild 将 Worker 打成自包含 ESM，并拒绝动态 import、未打包
-runtime import 和 Worker 网络全局；v2 surface 声明的 `script` 输出（即使位于 `dist/` 之外）同样纳入
+runtime import、Worker 网络全局与 WebRTC 出站 API（`RTCPeerConnection` 及其 webkit 别名）；
+v2 surface 声明的 `script` 输出（即使位于 `dist/` 之外）同样纳入
 这些检查与产物计数，包内其它宿主以 `text/javascript` 服务的 `.js`/`.mjs` 成员（大小写不敏感，
 页面可经 `script-src 'self'` 加载）也在检查范围内；`src`/`tests`/`node_modules` 等本地开发输入不参与。
+运行时纵深：Host 在首次 Navigate 前以 document-created 注入统一禁用两别名（不可写、不可配置），
+插件 surface CSP 附加 `webrtc 'block'`；构建检查与 CSP 均为纵深，不单独承担封锁保证。
 `pack` 会生成确定性 ZIP 和包内 `integrity.json`。不要手改
 `dist` 或 `integrity.json` 后跳过 build/pack。
 

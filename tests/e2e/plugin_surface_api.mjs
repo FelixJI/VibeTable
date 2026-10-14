@@ -88,6 +88,79 @@ export async function runPluginSurfaceApi(page, recorder, runtime, helpers) {
   }
   await page.screenshot({ path: path.join(runtime.evidenceDir, "47-surface-saved.png"), fullPage: true });
   recorder.check("surface task preserves installation identity", (await frame.locator("#result").innerText()).includes("保存成功"));
+
+  async function probeWebRtc() {
+    const surface = page.frames().find(candidate => candidate.url().includes(".plugins.vibetable.local"));
+    if (!surface) throw new Error("surface frame is not attached for the WebRTC probe");
+    // Only typeof/descriptor checks; no RTC connection, ICE, or SDP is created.
+    const probe = await surface.evaluate(() => {
+      const outcome = {
+        standard: typeof RTCPeerConnection,
+        alias: typeof webkitRTCPeerConnection,
+        redefine: "unknown",
+        child: null,
+        childAlias: null,
+        childDescriptor: null,
+        nested: null,
+      };
+      try {
+        Object.defineProperty(window, "RTCPeerConnection", { value: function () {} });
+        outcome.redefine = "redefined";
+      } catch {
+        outcome.redefine = "blocked";
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(window, "RTCPeerConnection");
+      // The document-created injection must cover synchronously created child
+      // documents too; append one source-less iframe, read it in this same
+      // script turn, and remove only that element before returning.
+      const created = document.createElement("iframe");
+      document.body.appendChild(created);
+      try {
+        const child = created.contentWindow;
+        outcome.child = typeof child.RTCPeerConnection;
+        outcome.childAlias = typeof child.webkitRTCPeerConnection;
+        outcome.childDescriptor = (() => {
+          const described = Object.getOwnPropertyDescriptor(child, "RTCPeerConnection");
+          return described ? { value: String(described.value), writable: described.writable, configurable: described.configurable } : null;
+        })();
+        const nestedCreated = child.document.createElement("iframe");
+        child.document.body.appendChild(nestedCreated);
+        try { outcome.nested = typeof nestedCreated.contentWindow.RTCPeerConnection; }
+        finally { nestedCreated.remove(); }
+      } finally {
+        created.remove();
+      }
+      outcome.descriptor = descriptor ? { value: String(descriptor.value), writable: descriptor.writable, configurable: descriptor.configurable } : null;
+      return outcome;
+    });
+    recorder.check("real plugin frame cannot construct or redefine WebRTC",
+      probe.standard === "undefined" && probe.alias === "undefined" && probe.redefine === "blocked",
+      { probe });
+    recorder.check("synchronous child document inherits the WebRTC lock",
+      probe.child === "undefined" && probe.childAlias === "undefined" && probe.nested === "undefined"
+        && probe.childDescriptor?.value === "undefined" && probe.childDescriptor.writable === false
+        && probe.childDescriptor.configurable === false,
+      { probe });
+  }
+  await probeWebRtc();
+
+  const firstToken = await page.locator(".surface-shell iframe").getAttribute("name");
+  await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
+  await page.locator(".action-row").filter({ hasText: "open-editor" }).locator("button.run-button").click();
+  const reopenedFrame = page.frameLocator(".surface-shell iframe");
+  await reopenedFrame.locator("#save").waitFor({ timeout: 30_000 });
+  const reopenDeadline = Date.now() + 30_000;
+  let reopenedStatus = "";
+  while (Date.now() < reopenDeadline) {
+    reopenedStatus = await reopenedFrame.locator("#status").innerText();
+    if (reopenedStatus.includes("550")) break;
+    await page.waitForTimeout(100);
+  }
+  const secondToken = await page.locator(".surface-shell iframe").getAttribute("name");
+  recorder.check("closed surface reopens with a fresh token that still reads",
+    Boolean(firstToken) && Boolean(secondToken) && firstToken !== secondToken && reopenedStatus.includes("550"),
+    { firstToken, secondToken, reopenedStatus });
+  await probeWebRtc();
   await page.getByRole("button", { name: "关闭插件页面", exact: true }).click();
   return { tableId: table.tableId, firstId, nodeWorkerDisabled: true, pluginId: "com.vibetable.examples.surface-data-editor" };
 }

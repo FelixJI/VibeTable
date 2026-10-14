@@ -299,6 +299,23 @@ def _validate_reference(contents: dict[str, bytes], reference: Any, *, schema: b
     return path
 
 
+def _require_canonical_reference(reference: str, label: str) -> None:
+    """The Host serves ui members by their raw manifest value, so the reference
+    must already be in the canonical package path form."""
+    # Mirror PluginResourceHost.NormalizePackagePath: no query/fragment/percent/
+    # colon forms, no leading or trailing whitespace, no empty segments.
+    host_canonical = all(
+        segment and segment == segment.strip() and not re.search(r"[?#%:]", segment)
+        for segment in reference.split("/")
+    )
+    if not host_canonical or reference != normalize_member_path(reference):
+        raise PluginPackageError(
+            "reference_non_canonical",
+            f"{label} must use the host-canonical package path form",
+            path=reference,
+        )
+
+
 def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]:
     """Validate manifest structure and all package-local references."""
 
@@ -482,6 +499,8 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             )
         for key in ("entry", "html", "script", "style"):
             if key in view:
+                if isinstance(view[key], str):
+                    _require_canonical_reference(view[key], f"ui.customViews.{view_id}.{key}")
                 _validate_reference(contents, view[key], schema=False)
     if native and action_ids - view_actions:
         raise PluginPackageError(
@@ -543,7 +562,7 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
         paths = [
             path
             for path in source.rglob("*")
-            if not _is_local_development_path(path.relative_to(source))
+            if not is_local_development_path(path.relative_to(source))
         ]
         symlink = next((path for path in paths if path.is_symlink()), None)
         if symlink is not None:
@@ -590,12 +609,12 @@ def _read_entries(source: Path, policy: PackagePolicy) -> list[tuple[str, bytes]
         return entries
 
 
-def _is_local_development_path(path: Path) -> bool:
+def is_local_development_path(path: Path) -> bool:
     """Exclude build inputs that must never leak into an offline package."""
 
-    if path.parts and path.parts[0] in _LOCAL_DEVELOPMENT_DIRECTORIES:
+    if path.parts and path.parts[0].casefold() in _LOCAL_DEVELOPMENT_DIRECTORIES:
         return True
-    return len(path.parts) == 1 and path.name in _LOCAL_DEVELOPMENT_FILES
+    return len(path.parts) == 1 and path.name.casefold() in _LOCAL_DEVELOPMENT_FILES
 
 
 def inspect_plugin_package(
@@ -689,6 +708,7 @@ __all__ = [
     "PluginCompatibilityPolicy",
     "PluginPackageError",
     "inspect_plugin_package",
+    "is_local_development_path",
     "normalize_member_path",
     "pack_plugin",
     "read_plugin_package_member",

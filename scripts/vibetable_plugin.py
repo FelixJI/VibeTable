@@ -21,6 +21,7 @@ from backend._version import __version__  # noqa: E402
 from backend.infrastructure.plugin_package import (  # noqa: E402
     PluginPackageError,
     inspect_plugin_package,
+    is_local_development_path,
     normalize_member_path,
     pack_plugin,
 )
@@ -177,7 +178,10 @@ def _command_init(args: argparse.Namespace) -> int:
 
 _DYNAMIC_IMPORT = re.compile(r"\bimport\s*\(")
 _STATIC_RUNTIME_IMPORT = re.compile(r"(?:\bfrom\s*|\bimport\s*)[\"']([^\"']+)[\"']")
-_NETWORK_GLOBAL = re.compile(r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|importScripts)\b")
+_NETWORK_GLOBAL = re.compile(
+    r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|importScripts|RTCPeerConnection"
+    r"|webkitRTCPeerConnection)\b"
+)
 # The Host serves these members as text/javascript (script-src 'self'), so
 # every page can load them regardless of manifest declarations.
 _PAGE_SCRIPT_SUFFIXES = frozenset({".js", ".mjs"})
@@ -225,15 +229,52 @@ def _find_esbuild(source: Path) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
-def _validated_output(source: Path, entry: str) -> Path:
-    """Resolve one declared output, rejecting paths that could escape the plugin root."""
+def _protected_inputs(source: Path, manifest: dict[str, Any]) -> frozenset[Path]:
+    """Plugin inputs a declared output must never overwrite, resolved to their
+    physical targets so case differences and in-root junctions still collide."""
+    refs = {"manifest.json"}
+    for action in manifest.get("actions", []):
+        if isinstance(action, dict):
+            for key in ("formSchema", "inputSchema", "outputSchema"):
+                if isinstance(action.get(key), str):
+                    refs.add(normalize_member_path(action[key]))
+    for view in manifest.get("ui", {}).get("customViews", []):
+        if isinstance(view, dict):
+            for key in ("entry", "html", "style"):
+                if isinstance(view.get(key), str):
+                    refs.add(normalize_member_path(view[key]))
+    root = source.resolve()
+    return frozenset((root / ref).resolve() for ref in refs)
+
+
+def _validated_output(source: Path, entry: str, protected: frozenset[Path]) -> Path:
+    """Resolve one declared output, rejecting non-script targets, plugin input
+    collisions, unpackagable locations, and paths that could escape the root."""
     relative = normalize_member_path(entry)
+    if Path(relative).suffix.lower() not in _PAGE_SCRIPT_SUFFIXES:
+        raise PluginPackageError(
+            "output_suffix_unsupported",
+            f"declared output must be a host-executable .js/.mjs script: {entry}",
+            path=entry,
+        )
+    if is_local_development_path(Path(relative)):
+        raise PluginPackageError(
+            "output_overwrites_input",
+            f"declared output is excluded from the plugin package: {entry}",
+            path=entry,
+        )
     root = source.resolve()
     destination = (root / relative).resolve()
     if destination == root or not destination.is_relative_to(root):
         raise PluginPackageError(
             "unsafe_path",
             f"declared output escapes the plugin root: {entry}",
+            path=entry,
+        )
+    if destination in protected or is_local_development_path(destination.relative_to(root)):
+        raise PluginPackageError(
+            "output_overwrites_input",
+            f"declared output would overwrite a plugin input: {entry}",
             path=entry,
         )
     return destination
@@ -259,8 +300,9 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
     if not entries:
         return []
     # Every output is validated before any bundler call, so a rejected build
-    # never writes outside the plugin root (directly or via reparse points).
-    outputs = [(entry, _validated_output(source, entry)) for entry in entries]
+    # never overwrites plugin inputs or writes outside the plugin root.
+    protected = _protected_inputs(source, manifest)
+    outputs = [(entry, _validated_output(source, entry, protected)) for entry in entries]
     node = _find_node()
     bundler = _find_esbuild(source)
     sdk_entry = REPO_ROOT / "sdk" / "plugin" / "src" / "index.ts"

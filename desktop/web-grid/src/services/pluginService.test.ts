@@ -1021,4 +1021,80 @@ describe("pluginService canonical wire", () => {
     expect(taskReads).toBeGreaterThanOrEqual(1);
     service.dispose();
   });
+
+  it("reopens a closed 3.x surface with the fresh token from a refreshed catalog", async () => {
+    const posted: Array<{ type: string; requestId?: string }> = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let requestId = 0;
+    let currentToken = "token-first";
+    const nativeSnapshot = (token: string): PluginSnapshot => ({
+      ...snapshot,
+      manifest: {
+        ...snapshot.manifest,
+        $schema: "vibetable.plugin-manifest.v2",
+        compatibility: { pluginApi: "3.x" },
+        actions: [{ ...snapshot.manifest.actions[0], actionId: "open-editor", workerEntry: null }],
+        ui: {
+          customViews: [{
+            viewId: "editor",
+            actionId: "open-editor",
+            entry: "ui/index.html",
+            src: "https://surface.plugins.vibetable.local/ui/index.html",
+            surfaceToken: token,
+            title: "editor",
+          }],
+        },
+      },
+    });
+    const bridge = createHostBridge({
+      generateRequestId: () => `request-${++requestId}`,
+      webview: {
+        postMessage: message => {
+          const request = message as { type: string; requestId?: string };
+          posted.push(request);
+          const reply = request.type === "plugin.catalog.list"
+            ? { type: request.type, requestId: request.requestId, payload: [nativeSnapshot(currentToken)] }
+            : { type: request.type, requestId: request.requestId, payload: { available: true, reasons: [] } };
+          queueMicrotask(() => listener?.({ data: reply }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const service = usePluginService();
+    service.init();
+    const context = createPluginCommandContext({
+      projectKey: "local:default",
+      collection: "orders",
+      locale: "zh-CN",
+      theme: "light",
+      density: "comfortable",
+    });
+    // Real flows start from the workspace's initial catalog load.
+    await service.list();
+
+    await service.describeAction("com.acme.clean", "open-editor", context);
+    expect(usePluginStore().describedAction?.surface?.surfaceToken).toBe("token-first");
+
+    // The page closes: the host retires token-first. The next open must refresh
+    // the catalog first and open with the freshly projected token.
+    usePluginStore().closeAction();
+    expect(usePluginStore().describedAction).toBeNull();
+    currentToken = "token-second";
+    await service.describeAction("com.acme.clean", "open-editor", context);
+
+    const describeIndexes = posted
+      .map((message, index) => message.type === "plugin.action.describe" ? index : -1)
+      .filter(index => index >= 0);
+    const listIndexes = posted
+      .map((message, index) => message.type === "plugin.catalog.list" ? index : -1)
+      .filter(index => index >= 0);
+    expect(describeIndexes.length).toBe(2);
+    expect(listIndexes.length).toBe(3);
+    expect(listIndexes[listIndexes.length - 1]).toBeLessThan(describeIndexes[1]);
+    expect(usePluginStore().describedAction?.surface?.surfaceToken).toBe("token-second");
+    service.dispose();
+  });
 });

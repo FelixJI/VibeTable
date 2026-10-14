@@ -393,30 +393,46 @@ def test_build_scans_the_real_normalized_output_of_declared_scripts(
     tmp_path: Path,
 ) -> None:
     # "cafe\u0301" (NFD) and "caf\u00e9" (NFC) are distinct names on NTFS; the
-    # normalizer compiles to NFC, so only the real output path is scannable.
+    # The manifest must declare the canonical NFC reference; the scan follows
+    # the real compiled output rather than re-joining a raw (for example NFD)
+    # entry, and a decomposed reference is rejected before packaging.
     scenarios = (
         (
             "clean",
+            "ui/caf\u00e9.js",
             "export async function main() {\n"
             '  return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ready" };\n'
             "}\n",
-            False,
+            "valid",
         ),
         (
             "network",
+            "ui/caf\u00e9.js",
             "export async function main() {\n"
             '  await fetch("https://example.invalid/updates.json");\n'
             "}\n",
-            True,
+            "rejected",
+        ),
+        (
+            "decomposed-reference",
+            "ui/cafe\u0301.js",
+            "export async function main() {\n  return { ready: true };\n}\n",
+            "non_canonical",
         ),
     )
-    for name, source, expect_rejected in scenarios:
+    for name, script, source, expectation in scenarios:
         plugin = tmp_path / name
-        _write_surface_script_plugin(plugin, "ui/cafe\u0301.js", source)
+        _write_surface_script_plugin(plugin, script, source)
 
         built = _run_cli("build", str(plugin), env=_bundler_env())
 
-        if expect_rejected:
+        if expectation == "non_canonical":
+            assert built.returncode == 2, (name, built.stdout, built.stderr)
+            assert json.loads(built.stdout)["code"] == "reference_non_canonical", (
+                name,
+                built.stdout,
+            )
+        elif expectation == "rejected":
             assert built.returncode == 2, (name, built.stdout, built.stderr)
             assert json.loads(built.stdout)["code"] == "network_api", (name, built.stdout)
             assert "caf\u00e9.js" in json.loads(built.stdout)["message"], (name, built.stdout)
@@ -445,6 +461,136 @@ def test_build_scans_undeclared_scripts_whose_names_need_normalization(
 
     assert built.returncode == 2, built.stdout + built.stderr
     assert json.loads(built.stdout)["code"] == "network_api", built.stdout
+
+
+def test_validate_rejects_non_canonical_ui_references(tmp_path: Path) -> None:
+    """Host serves entry/html/script/style raw, so references must already be canonical."""
+    cases = {
+        "dot-segment": ("./ui/index.html", "ui/index.html"),
+        "windows-separator": ("ui\\index.html", "ui/index.html"),
+        "decomposed-unicode": ("ui/cafe\u0301.html", "ui/caf\u00e9.html"),
+    }
+    for name, (entry, physical) in cases.items():
+        plugin = tmp_path / name
+        (plugin / "ui").mkdir(parents=True)
+        (plugin / physical).write_text("<!doctype html>", encoding="utf-8")
+        manifest = {
+            "$schema": "vibetable.plugin-manifest.v2",
+            "pluginId": "com.example.surface-editor",
+            "version": "1.0.0",
+            "displayName": {"zh-CN": "编辑器"},
+            "compatibility": {"minHostVersion": "0.5.1", "pluginApi": "3.x"},
+            "permissions": {
+                "data": [],
+                "files": [],
+                "privateStorage": False,
+                "network": {"domains": [], "methods": []},
+            },
+            "actions": [
+                {
+                    "actionId": "open-editor",
+                    "displayName": {"zh-CN": "打开编辑器"},
+                    "mode": "local",
+                    "risk": "read",
+                    "invocation": "manual",
+                    "placements": ["table.toolbar"],
+                }
+            ],
+            "ui": {
+                "customViews": [{"viewId": "editor", "actionId": "open-editor", "entry": entry}]
+            },
+        }
+        (plugin / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+
+        rejected = _run_cli("validate", str(plugin), "--json")
+
+        assert rejected.returncode == 2, (name, rejected.stdout, rejected.stderr)
+        error = json.loads(rejected.stdout)
+        assert error["code"] == "reference_non_canonical", (name, error)
+
+
+def test_build_rejects_declared_outputs_that_overwrite_plugin_inputs(
+    tmp_path: Path,
+) -> None:
+    """No bundler call may replace manifest, the entry page, or another input."""
+    boundaries = (
+        ("manifest", "manifest.json", "output_suffix_unsupported"),
+        ("entry-page", "ui/index.html", "output_suffix_unsupported"),
+        ("entry-script-collision", "ui/index.js", "output_overwrites_input"),
+        ("entry-script-case-collision", "ui/INDEX.JS", "output_overwrites_input"),
+        ("bundler-dependency", "node_modules/esbuild/lib/main.js", "output_overwrites_input"),
+        ("source-directory", "src/main.js", "output_overwrites_input"),
+        ("uppercase-development-directory", "NODE_MODULES/lib/main.js", "output_overwrites_input"),
+        ("schema", "schemas/input.json", "output_suffix_unsupported"),
+    )
+    for name, script, code in boundaries:
+        plugin = tmp_path / name
+        _write_surface_scripts_plugin(plugin, [(script, _SELF_CONTAINED_TS)])
+        if name in {"entry-script-collision", "entry-script-case-collision"}:
+            (plugin / "ui" / "index.js").write_text(
+                "document.body.textContent = 'entry';\n", encoding="utf-8"
+            )
+            # The colliding output target is the declared entry page itself,
+            # differing only by letter case in the collision variant.
+            manifest_path = plugin / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["ui"]["customViews"][0]["entry"] = "ui/index.js"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        if name == "schema":
+            manifest_path = plugin / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["actions"][0]["inputSchema"] = "schemas/input.json"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        env, spy_calls = _spy_bundler_env(tmp_path, f"overwrite-{name}")
+
+        built = _run_cli("build", str(plugin), env=env)
+
+        assert built.returncode == 2, (name, built.stdout, built.stderr)
+        error = json.loads(built.stdout)
+        assert error["code"] == code, (name, error)
+        assert not spy_calls.exists(), f"{name}: the bundler must not run"
+
+    legal = tmp_path / "repeat-build"
+    _write_surface_scripts_plugin(legal, [("ui/editor.js", _SELF_CONTAINED_TS)])
+    for _ in range(2):
+        repeated = _run_cli("build", str(legal), env=_bundler_env())
+        assert repeated.returncode == 0, repeated.stdout + repeated.stderr
+
+
+def test_build_rejects_output_alias_to_development_inputs(tmp_path: Path) -> None:
+    import _winapi
+
+    plugin = tmp_path / "development-alias"
+    _write_surface_scripts_plugin(plugin, [("alias/main.js", _SELF_CONTAINED_TS)])
+    development = plugin / "node_modules"
+    development.mkdir()
+    _winapi.CreateJunction(str(development), str(plugin / "alias"))
+    env, spy_calls = _spy_bundler_env(tmp_path, "development-alias")
+
+    built = _run_cli("build", str(plugin), env=env)
+
+    assert built.returncode == 2, built.stdout + built.stderr
+    assert json.loads(built.stdout)["code"] == "output_overwrites_input"
+    assert not spy_calls.exists(), "a package alias must not overwrite development inputs"
+
+
+def test_build_rejects_webrtc_outbound_apis(tmp_path: Path) -> None:
+    plugin = tmp_path / "webrtc"
+    _write_surface_page_plugin(
+        plugin,
+        "ui/runtime.js",
+        "const channel = new RTCPeerConnection({ iceServers: [] });\n"
+        "channel.createDataChannel('exfiltrate');\n",
+    )
+
+    built = _run_cli("build", str(plugin))
+
+    assert built.returncode == 2, built.stdout + built.stderr
+    error = json.loads(built.stdout)
+    assert error["code"] == "network_api", error
+    assert "RTCPeerConnection" in error["message"], error
 
 
 def test_build_does_not_scan_local_development_inputs(tmp_path: Path) -> None:

@@ -202,6 +202,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             ?? throw new InvalidOperationException(
                 "WebView2 did not provide a CoreWebView2 instance.");
         ApplyHardening(core);
+        await DisableWebRTCBeforeAnyNavigationAsync(core).ConfigureAwait(true);
         core.WebMessageReceived -= OnWebMessageReceived;
         core.WebMessageReceived += OnWebMessageReceived;
         core.FrameCreated -= OnPluginFrameCreated;
@@ -240,6 +241,31 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         => e2eMode
             ? $"{WebViewAssetService.AppOrigin}?vibetable-e2e=1"
             : WebViewAssetService.AppOrigin;
+
+    // Registered through the stable AddScriptToExecuteOnDocumentCreatedAsync API,
+    // which runs in every future top-level and child frame before any page
+    // script. One script handles both aliases so no ordering is assumed; the
+    // bindings are undefined and non-writable/non-configurable, so construction
+    // is impossible, redefinition throws, and delete cannot restore them.
+    internal const string WebRtcDisableScript =
+        """
+        (function () {
+          Object.defineProperty(window, 'RTCPeerConnection', { value: undefined, writable: false, configurable: false });
+          Object.defineProperty(window, 'webkitRTCPeerConnection', { value: undefined, writable: false, configurable: false });
+        })();
+        """;
+
+    private CoreWebView2? _webRtcDisabledCore;
+
+    private async Task DisableWebRTCBeforeAnyNavigationAsync(CoreWebView2 core)
+    {
+        if (ReferenceEquals(_webRtcDisabledCore, core)) return;
+        // A failed registration must stop navigation instead of shipping an
+        // unhardened renderer; await before the first Navigate.
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(WebRtcDisableScript)
+            .ConfigureAwait(true);
+        _webRtcDisabledCore = core;
+    }
 
     private void ApplyHardening(CoreWebView2 core)
     {
