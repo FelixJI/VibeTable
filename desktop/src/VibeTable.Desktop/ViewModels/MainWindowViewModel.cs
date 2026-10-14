@@ -68,12 +68,12 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         _webView = webView ?? throw new ArgumentNullException(nameof(webView));
-        StopPluginsCommand = new RelayCommand(execute: () => stopPlugins?.Invoke(), canExecute: () => true);
+        StopPluginsCommand = new RelayCommand(execute: () => { if (CanRecoverRenderer) stopPlugins?.Invoke(); }, canExecute: () => CanRecoverRenderer);
         ReturnToPlatformCommand = new RelayCommand(execute: () => returnToPlatform?.Invoke(), canExecute: () => true);
         ManagePluginsCommand = new RelayCommand(execute: () => managePlugins?.Invoke(), canExecute: () => true);
         RecoverRendererCommand = new RelayCommand(
             execute: () => _ = RunRendererRecoveryAsync(recoverRenderer),
-            canExecute: () => State is StartupState.Ready or StartupState.LoadingWeb or StartupState.Faulted);
+            canExecute: () => CanRecoverRenderer);
         RetryCommand = new RelayCommand(
             execute: () => _ = StartAsync(),
             canExecute: () => State == StartupState.Faulted);
@@ -99,6 +99,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 RaisePropertyChanged(nameof(IsRetryVisible));
                 ((RelayCommand)RetryCommand).RaiseCanExecuteChanged();
                 ((RelayCommand)RecoverRendererCommand).RaiseCanExecuteChanged();
+                ((RelayCommand)StopPluginsCommand).RaiseCanExecuteChanged();
             }
         }
     }
@@ -155,6 +156,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsWebViewVisible => true;
 
     private bool _shellLoaded;
+    private bool _rendererLoadStarted;
 
     /// <summary>
     /// The native surface is only an initial WebView2 guard and renderer-error
@@ -213,24 +215,21 @@ public sealed class MainWindowViewModel : ViewModelBase
                 _isRendererRecovering = value;
                 RaisePropertyChanged(nameof(IsRendererRecovering));
                 RaisePropertyChanged(nameof(StatusText));
+                ((RelayCommand)StopPluginsCommand).RaiseCanExecuteChanged();
+                ((RelayCommand)RecoverRendererCommand).RaiseCanExecuteChanged();
             }
         }
     }
 
-    private string? _rendererRecoveryDetail;
+    public bool CanRecoverRenderer => _rendererLoadStarted && !IsRendererRecovering && State is StartupState.Ready or StartupState.Faulted;
 
-    /// <summary>Human-readable detail of the last failed renderer recovery.</summary>
-    public string? RendererRecoveryDetail
+    internal bool TryBeginRendererRecovery(bool rendererFailure = false)
     {
-        get => _rendererRecoveryDetail;
-        private set
-        {
-            if (_rendererRecoveryDetail != value)
-            {
-                _rendererRecoveryDetail = value;
-                RaisePropertyChanged(nameof(RendererRecoveryDetail));
-            }
-        }
+        if (!CanRecoverRenderer && !(rendererFailure && !IsRendererRecovering && State == StartupState.LoadingWeb)) return false;
+        IsRendererRecovering = true;
+        DetailMessage = "正在恢复界面，请等待…";
+        TransitionTo(StartupState.LoadingWeb);
+        return true;
     }
 
     internal Exception? LastStartupError { get; private set; }
@@ -266,6 +265,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
+        _rendererLoadStarted = true;
         TransitionTo(StartupState.LoadingWeb);
 
         // Fire-and-forget the WebView load so StartAsync returns in LoadingWeb;
@@ -287,8 +287,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             throw new InvalidOperationException(
                 $"BeginRendererRecovery is not legal from state {State}.");
         }
-        IsRendererRecovering = true;
-        TransitionTo(StartupState.LoadingWeb);
+        if (!TryBeginRendererRecovery(rendererFailure: true))
+            throw new InvalidOperationException("Renderer recovery is already active.");
     }
 
     /// <summary>Ends a successful renderer recovery after real app.ready.</summary>
@@ -296,6 +296,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (!IsRendererRecovering) return;
         IsRendererRecovering = false;
+        DetailMessage = string.Empty;
         if (State == StartupState.LoadingWeb)
         {
             MarkShellLoaded();
@@ -308,7 +309,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (!IsRendererRecovering) return;
         IsRendererRecovering = false;
-        RendererRecoveryDetail = detail;
+        DetailMessage = detail;
         if (State is StartupState.LoadingWeb or StartupState.Ready)
         {
             MarkShellUnavailable();
@@ -319,7 +320,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task RunRendererRecoveryAsync(Func<string, Task>? recoverRenderer)
     {
         if (recoverRenderer is null) return;
-        if (!IsRendererRecovering)
+        if (CanRecoverRenderer)
         {
             try
             {
@@ -364,6 +365,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         {
             // The WebView faulted (runtime missing, renderer crash, etc.).
             // MoveToFaulted guards against double-fault races.
+            if (IsRendererRecovering) return;
             if (State != StartupState.Faulted)
             {
                 MarkShellUnavailable();
@@ -372,7 +374,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        if (State != StartupState.Faulted)
+        if (!IsRendererRecovering && State != StartupState.Faulted)
         {
             MarkShellLoaded();
             TransitionTo(StartupState.Ready);

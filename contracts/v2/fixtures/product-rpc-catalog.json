@@ -18402,6 +18402,18 @@
         },
         "additionalProperties": false,
         "properties": {
+          "surfaceToken": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "installationId": {
             "anyOf": [
               {
@@ -18558,6 +18570,7 @@
         "jsonrpc": "2.0",
         "id": "rpc-065",
         "result": {
+          "surfaceToken": null,
           "installationId": null,
           "installationRevision": null,
           "taskId": "00000000-0000-4000-8000-000000000001",

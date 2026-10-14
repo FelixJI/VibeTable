@@ -33,14 +33,14 @@ export function derivePluginAppEntries(
     if (plugin.status !== "enabled") continue;
     if (plugin.manifest.compatibility.pluginApi !== "3.x") continue;
     for (const action of plugin.manifest.actions) {
-      if (action.presentation !== "application") continue;
+      if (action.presentation !== "application" || action.invocation !== "manual") continue;
       if (!action.surfaceSrc || !action.surfaceToken) continue;
       entries.push({
         key: `${plugin.pluginId}/${action.actionId}`,
         pluginId: plugin.pluginId,
         actionId: action.actionId,
-        label: action.surfaceTitle
-          ?? action.displayName[locale]
+        label: action.displayName[locale]
+          ?? action.surfaceTitle
           ?? action.displayName["zh-CN"]
           ?? action.displayName["en-US"]
           ?? plugin.manifest.displayName["zh-CN"]

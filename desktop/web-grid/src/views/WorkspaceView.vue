@@ -2016,13 +2016,13 @@ useKeyboard({
         @close="plugins.closeAction"
       />
       <PluginHeadlessRunner
+        :key="plugins.describedAction.surface?.surfaceToken"
         v-else-if="plugins.describedAction.presentation === 'headless'"
         :description="plugins.describedAction"
         :theme="pluginTheme"
         :task="pluginActionTask"
         @resolve="pluginController.dispatch({ type: 'interaction.resolve', taskId: pluginActionTask?.taskId ?? '', decision: $event })"
-        @cancel-task="pluginController.dispatch({ type: 'task.cancel', taskId: pluginActionTask?.taskId ?? '' })"
-        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: pluginActionTask?.taskId ?? '' })"
+        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
         @close="plugins.closeAction"
       />
       <PluginActionPanel

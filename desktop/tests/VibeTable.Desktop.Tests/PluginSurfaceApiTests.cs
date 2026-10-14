@@ -129,6 +129,9 @@ public sealed class PluginSurfaceApiTests
         var submitted = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
         Assert.AreEqual("succeeded", submitted.GetProperty("result").GetProperty("status").GetString());
         string taskId = submitted.GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.IsTrue(fixture.Tasks.TryGetTask(taskId, out var sourceTask));
+        Assert.AreEqual(fixture.Surface.SurfaceToken, sourceTask.SurfaceToken);
+        Assert.AreEqual(fixture.Surface.SurfaceToken, JsonSerializer.SerializeToElement(sourceTask, new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("surfaceToken").GetString());
         Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
         Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
         Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(taskId, out var snapshot, out _));

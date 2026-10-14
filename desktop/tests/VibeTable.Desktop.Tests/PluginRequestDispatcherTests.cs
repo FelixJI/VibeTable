@@ -1809,7 +1809,7 @@ public sealed class PluginRequestDispatcherTests
         var surfaces = new PluginSurfaceSessionManager();
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
         using var gateway = new FakePluginGateway();
-        gateway.StartResult = gateway.LastStarted with { InstallationRevision = 7, InstallationId = "record-original" };
+        gateway.StartResult = gateway.LastStarted with { InstallationRevision = 7, InstallationId = "record-original", SurfaceToken = "executor-first-forged" };
         using var dispatcher = new PluginRequestDispatcher(
             reply,
             surfaces,
@@ -1825,7 +1825,8 @@ public sealed class PluginRequestDispatcherTests
         StringAssert.StartsWith(started.TaskId, "plugin-task-");
         StringAssert.StartsWith(started.RunId, "plugin-run-");
         Assert.AreEqual(7, started.InstallationRevision);
-        gateway.RaiseTaskChanged(TaskState(started, "running") with { InstallationRevision = 8, InstallationId = "record-replaced" });
+        Assert.IsNull(started.SurfaceToken);
+        gateway.RaiseTaskChanged(TaskState(started, "running") with { InstallationRevision = 8, InstallationId = "record-replaced", SurfaceToken = "executor-forged" });
         var notification = Assert.IsInstanceOfType<PluginEventEnvelope>(reply.NotificationPayload);
         Assert.AreEqual(7, notification.Snapshot.GetProperty("installationRevision").GetInt32());
         await dispatcher.DispatchAsync(Request(
@@ -1835,6 +1836,7 @@ public sealed class PluginRequestDispatcherTests
         Assert.AreEqual("running", running.State);
         Assert.AreEqual(7, running.InstallationRevision);
         Assert.AreEqual("record-original", running.InstallationId);
+        Assert.IsNull(running.SurfaceToken, "Worker execution reports cannot acquire a native frame source.");
 
         await dispatcher.DispatchAsync(Request(
             "plugin.task.cancel", "cancel-1",

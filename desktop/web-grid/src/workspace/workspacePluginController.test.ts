@@ -194,6 +194,26 @@ describe("workspacePluginController", () => {
     expect(resolveInteraction).toHaveBeenCalledWith(activeTask, "approved");
     expect(cancelTask).toHaveBeenCalledWith("task-1");
   });
+  it("binds same-action native tasks to the current surface even when an unknown old run first arrives late", async () => {
+    const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
+    const app: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest, actions: plugin.manifest.actions.map(action => ({ ...action,
+      presentation: "application", workerEntry: null, entry: "ui/index.html", surfaceToken: "current-surface", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html" })) } };
+    plugins.replaceCatalog("local:default", [app]); const ui = useUiStore(); ui.openPluginApp(app.pluginId, "normalize");
+    const task: PluginTaskSnapshot = { taskId: "old", runId: "old-run", pluginId: app.pluginId, pluginVersion: app.version,
+      installationId: app.installationId, installationRevision: app.revision, actionId: "normalize", surfaceToken: "old-surface",
+      projectKey: app.projectKey, collection: null, targetCount: 1, risk: "write", state: "succeeded", cancelRequested: false, result: null, error: null };
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
+      service: { describeAction: vi.fn(), startAction: vi.fn(), cancelTask: vi.fn(), resolveInteraction: vi.fn() },
+      selectedRows: () => [], openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: vi.fn(),
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
+    plugins.applyTask(task); expect(controller.applicationTask.value).toBeNull();
+    plugins.applyTask({ ...task, taskId: "worker", runId: "worker-run", surfaceToken: null }); expect(controller.applicationTask.value).toBeNull();
+    plugins.applyTask({ ...task, taskId: "current", runId: "current-run", surfaceToken: "current-surface", state: "running" });
+    expect(controller.applicationTask.value?.taskId).toBe("current");
+    plugins.applyTask({ ...task, taskId: "current", runId: "current-run", surfaceToken: "forged", state: "running" });
+    expect(controller.applicationTask.value?.taskId).toBe("current");
+  });
+
   it("keeps application and action task controls bound across other plugin/action updates", async () => {
     const plugins = usePluginStore();
     plugins.setProjectContext("local:default", "r1");
@@ -229,13 +249,13 @@ describe("workspacePluginController", () => {
     expect(cancelTask).not.toHaveBeenCalled();
   });
 
-  it.each(["action.open", "rowMenu.select"] as const)("routes the actual %s application caller without a Worker panel", async (entry) => {
+  it.each(["action.open", "rowMenu.select", "app.open"] as const)("routes the actual %s application caller without a Worker panel", async (entry) => {
     const plugins = usePluginStore();
     plugins.setProjectContext("local:default", "r1");
     const app: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest,
       $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
       actions: plugin.manifest.actions.map(action => ({ ...action, workerEntry: null,
-        presentation: "application", entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "token" })) } };
+        presentation: "application", requires: { selection: "exactly-one" }, entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "token" })) } };
     plugins.replaceCatalog("local:default", [app]);
     const posted: { type: string; payload: Record<string, unknown>; requestId: string }[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
@@ -244,7 +264,7 @@ describe("workspacePluginController", () => {
       webview: { postMessage(message) {
         const request = message as (typeof posted)[number]; posted.push(request);
         queueMicrotask(() => listener?.({ data: { type: request.type, requestId: request.requestId,
-          payload: request.type === "plugin.catalog.list" ? [app] : { available: true, reasons: [] } } }));
+          payload: request.type === "plugin.catalog.list" ? [app] : { available: ((request.payload.context as { selectedKeys: unknown[] }).selectedKeys.length === 1), reasons: ["single_selection_required"] } } }));
       }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
     bridge.start(); setHostBridgeForTesting(bridge);
     const ui = useUiStore();

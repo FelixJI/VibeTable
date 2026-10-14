@@ -136,7 +136,7 @@ internal sealed class PluginSurfaceApi : IDisposable
                         string taskId = $"plugin-task-{Guid.NewGuid():N}";
                         string runId = $"plugin-run-{Guid.NewGuid():N}";
                         var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
-                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId);
+                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
                         var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
                         var task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless");
                         _reply.PostNotification("plugin.task.changed", task.Envelope);

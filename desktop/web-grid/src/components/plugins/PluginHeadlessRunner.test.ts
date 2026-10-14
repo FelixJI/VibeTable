@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createHostBridge } from "@/bridge/hostBridge";
-import type { PluginSurfaceThemeSnapshot, WebPluginActionDescription } from "@/contracts";
+import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot, WebPluginActionDescription } from "@/contracts";
 import { setHostBridgeForTesting } from "@/services/bridgeContext";
 import PluginHeadlessRunner from "./PluginHeadlessRunner.vue";
 
@@ -46,17 +46,24 @@ function surfaceCloseEnvelope(payload: Readonly<Record<string, unknown>>) {
   };
 }
 
+const runningTask: PluginTaskViewSnapshot & { surfaceToken: string } = {
+  taskId: "native-current", runId: "run-current", pluginId: description.pluginId, actionId: description.actionId,
+  surfaceToken: "headless-token", installationId: "installed", installationRevision: 1,
+  pluginVersion: "1.0.0", projectKey: "local:default", collection: null, targetCount: 1, risk: "write",
+  state: "running", revision: 1, cancelRequested: false, result: null, error: null,
+};
+
 describe("PluginHeadlessRunner", () => {
   afterEach(() => setHostBridgeForTesting(null));
 
-  function mountRunner() {
+  function mountRunner(task: PluginTaskViewSnapshot | null = null) {
     const hostPostMessage = vi.fn();
     setHostBridgeForTesting(createHostBridge({ webview: {
       postMessage: hostPostMessage,
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
     } }));
-    const wrapper = mount(PluginHeadlessRunner, { props: { description, theme, task: null } });
+    const wrapper = mount(PluginHeadlessRunner, { props: { description, theme, task } });
     const iframe = wrapper.get("iframe");
     const postMessage = vi.fn();
     Object.defineProperty(iframe.element, "contentWindow", {
@@ -111,16 +118,52 @@ describe("PluginHeadlessRunner", () => {
     wrapper.unmount();
   });
 
-  it("host cancel settles cancelled, retires the surface and unmounts the frame", async () => {
-    const { wrapper, hostPostMessage } = mountRunner();
+  it.each(["succeeded", "cancelled", "aborted"] as const)("cancel waits for authoritative %s instead of declaring cancellation", async (state) => {
+    const { wrapper } = mountRunner(runningTask);
     await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
-    expect(wrapper.text()).toContain("已取消");
+    expect(wrapper.text()).not.toContain("已取消");
+    expect(wrapper.text()).toContain("等待");
     expect(wrapper.find("iframe").exists()).toBe(false);
-    expect(hostPostMessage).toHaveBeenCalledWith({
-      type: "plugin.surface.event",
-      payload: surfaceCloseEnvelope({}),
-    });
-    expect(wrapper.emitted("cancel")).toHaveLength(1);
+    const error = state === "aborted" ? { contract: "vibetable.plugin-error.v1" as const,
+      code: "plugin_commit_unknown", message: "核对保存结果", recoverability: "none" as const,
+      pluginId: null, actionId: null, runId: null, details: {}, causeId: null } : null;
+    await wrapper.setProps({ task: { ...runningTask, state, error } });
+    expect(wrapper.text()).toContain(state === "succeeded" ? "已完成" : state === "cancelled" ? "已取消" : "结果未知");
     wrapper.unmount();
   });
+
+  it("does not use an unknown late task from an older surface and accepts the current late task", async () => {
+    const { wrapper } = mountRunner();
+    await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
+    expect(wrapper.text()).not.toContain("已取消");
+    await wrapper.setProps({ task: { ...runningTask, surfaceToken: "retired-token", state: "succeeded" } });
+    expect(wrapper.text()).not.toContain("已完成");
+    await wrapper.setProps({ task: { ...runningTask, state: "succeeded" } });
+    expect(wrapper.text()).toContain("已完成");
+    wrapper.unmount();
+  });
+
+  it("requests cancellation for the current task arriving after a no-task local stop", async () => {
+    const { wrapper } = mountRunner();
+    await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
+    expect(wrapper.emitted("cancel")).toBeUndefined();
+    await wrapper.setProps({ task: runningTask });
+    expect(wrapper.emitted("cancel")).toEqual([[runningTask.taskId]]);
+    expect(wrapper.text()).toContain("等待结果");
+    await wrapper.setProps({ task: { ...runningTask, state: "cancelled" } });
+    expect(wrapper.text()).toContain("已取消");
+    wrapper.unmount();
+  });
+
+  it("keeps a known success sticky after cancel and a late module finish", async () => {
+    const { wrapper, dispatchFromFrame } = mountRunner(runningTask);
+    await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
+    expect(wrapper.emitted("cancel")).toEqual([[runningTask.taskId]]);
+    await wrapper.setProps({ task: { ...runningTask, state: "succeeded" } });
+    await wrapper.setProps({ task: { ...runningTask, state: "cancelled" } });
+    dispatchFromFrame({ status: "cancelled", summary: "late module" }); await Promise.resolve();
+    expect(wrapper.text()).toContain("已完成"); expect(wrapper.text()).not.toContain("late module");
+    wrapper.unmount();
+  });
+
 });

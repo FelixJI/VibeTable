@@ -397,6 +397,7 @@ export function usePluginService(): PluginService {
     const plugin = store.plugins.find((item) => item.pluginId === pluginId);
     const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
     if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
+    if (action.invocation !== "manual") throw new Error("该动作不支持手动启动");
     const description = projectAction(plugin, action, context.locale);
     const application = description.presentation === "application";
     store.beginAction(description, context, openPanel && !application);

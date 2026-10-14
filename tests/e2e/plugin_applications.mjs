@@ -78,6 +78,26 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     await installApplication(page, runtime);
     await installApplication(page, runtime, "app-b", B);
   }
+  const viewport = page.viewportSize() || await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  try {
+    await page.setViewportSize({ width: 800, height: 480 });
+    const last = page.locator('.nav-button--plugin-app').last();
+    recorder.check("synthetic installed packages contribute many real application entries", await page.locator('.nav-button--plugin-app').count() >= 38);
+    await last.scrollIntoViewIfNeeded();
+    const lastId = await last.getAttribute("data-testid");
+    await last.click();
+    await page.waitForFunction(id => document.querySelector(`[data-testid="${id}"]`)?.getAttribute("aria-current") === "page", lastId);
+    const reachable = await page.evaluate(() => ["nav-admin", "nav-help", "nav-settings"].every(id => {
+      const button = document.querySelector(`[data-testid="${id}"]`);
+      const box = button.getBoundingClientRect();
+      return box.top >= 0 && box.bottom <= innerHeight && box.height > 0
+        && document.elementFromPoint(box.x + box.width/2, box.y + box.height/2)?.closest(`[data-testid="${id}"]`) === button;
+    }));
+    recorder.check("many real application entries scroll while native product navigation remains reachable in a small viewport", reachable);
+    await page.getByTestId("nav-settings").click();
+    recorder.check("settings remains clickable after scrolling the application rail", await page.getByTestId("nav-settings").getAttribute("aria-current") === "page");
+    await page.screenshot({ path: path.join(runtime.evidenceDir, "application-navigation-small.png") });
+  } finally { await page.setViewportSize(viewport); }
   let frame = await openApplication(page);
   const token = await frame.evaluate(() => window.name);
   const context = await frame.evaluate(() => call("context.read"));
@@ -142,11 +162,27 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
         await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0);
       await page.getByTestId("plugin-headless-close").click();
     }
+    const beforeHeadless = await rawBridgeRequest(page, "query.page", { tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
+    await headless(page, A, "headless-write");
+    await page.locator('[data-testid="plugin-headless-runner"] .host-confirmation').waitFor({ timeout: 30000 });
+    const headlessToken = await page.locator('[data-testid="plugin-headless-runner"] iframe').getAttribute("name");
+    const headlessTaskId = await page.locator('[data-testid="plugin-headless-runner"] .task-status code').innerText();
+    const ownedHeadless = await rawBridgeRequest(page, "plugin.task.get", { taskId: headlessTaskId });
+    recorder.check("real headless write task is bound to its current Host surface", ownedHeadless.payload.surfaceToken === headlessToken);
+    await page.getByTestId("plugin-headless-cancel").click();
+    await page.locator('[data-testid="plugin-headless-runner"] b[data-state="cancelled"]').waitFor({ timeout: 30000 });
+    const cancelledHeadless = await rawBridgeRequest(page, "plugin.task.get", { taskId: headlessTaskId });
+    const afterHeadless = await rawBridgeRequest(page, "query.page", { tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
+    recorder.check("headless cancel displays actual Host cancellation and reclaims its frame without a write", cancelledHeadless.payload.state === "cancelled"
+      && await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0
+      && JSON.stringify(beforeHeadless.payload.rows) === JSON.stringify(afterHeadless.payload.rows));
+    await page.getByTestId("plugin-headless-close").click();
     await headless(page, A, "headless-wait");
     await page.getByTestId("plugin-headless-cancel").click();
-    await page.locator('[data-testid="plugin-headless-runner"] b[data-state="cancelled"]').waitFor();
-    recorder.check("headless cancellation leaves a visible terminal and releases the frame",
-      await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0);
+    await page.locator('[data-testid="plugin-headless-runner"] b[data-state="unknown"]').waitFor();
+    recorder.check("headless local stop releases its frame without guessing a Host write outcome",
+      await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0
+        && (await page.getByTestId("plugin-headless-runner").innerText()).includes("仍待宿主核对"));
     await page.getByTestId("plugin-headless-close").click();
     const catalog = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey });
     state.packageHash = catalog.payload.find(item => item.pluginId === A).packageHash;

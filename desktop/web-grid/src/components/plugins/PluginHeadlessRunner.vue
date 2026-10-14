@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import { useHostBridge } from "@/services/bridgeContext";
 import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot, WebPluginActionDescription } from "@/contracts";
 
-type HeadlessOutcomeStatus = "running" | "succeeded" | "failed" | "cancelled" | "unknown";
+type HeadlessOutcomeStatus = "running" | "succeeded" | "failed" | "cancelled" | "aborted" | "unknown";
 
 const props = defineProps<{
   description: WebPluginActionDescription;
@@ -13,32 +13,53 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   close: [];
-  cancel: [];
+  cancel: [taskId: string];
   resolve: [decision: "approved" | "rejected"];
-  cancelTask: [];
 }>();
 const bridge = useHostBridge();
 const surface = computed(() => props.description.surface);
-const outcome = ref<{ status: HeadlessOutcomeStatus; summary: string }>({
-  status: "running",
-  summary: "",
+const moduleOutcome = ref<{ status: HeadlessOutcomeStatus; summary: string }>({ status: "running", summary: "" });
+const stopped = ref(false);
+const cancelRequested = ref(false);
+const currentTask = computed(() => Boolean(surface.value?.surfaceToken) && props.task?.surfaceToken === surface.value?.surfaceToken
+  && props.task?.pluginId === props.description.pluginId && props.task?.actionId === props.description.actionId ? props.task : null);
+const hostTerminal = ref<{ taskId: string; status: HeadlessOutcomeStatus; summary: string } | null>(null);
+const outcome = computed(() => {
+  if (hostTerminal.value && (!currentTask.value || hostTerminal.value.taskId === currentTask.value.taskId)) return hostTerminal.value;
+  if (currentTask.value) return { status: "running" as const, summary: cancelRequested.value
+    ? "停止请求已发送，等待宿主核对结果；请勿重复执行。" : "宿主任务正在执行。" };
+  return moduleOutcome.value;
 });
-// The restricted frame is mounted ONLY while the run is active. A terminal
-// outcome unmounts the frame (stopping its JS/CPU for real, not just revoking
-// the token) while the Host-owned status above stays visible.
-const frameMounted = computed(() => outcome.value.status === "running" && surface.value !== null);
+const frameMounted = computed(() => !stopped.value && surface.value !== null);
+let cancellationTaskId: string | null = null;
+watch(currentTask, task => {
+  if (!task) return;
+  if (["succeeded", "failed", "cancelled", "aborted"].includes(task.state)) {
+    if (hostTerminal.value?.taskId !== task.taskId) hostTerminal.value = { taskId: task.taskId,
+      status: task.state === "aborted" && task.error?.code === "plugin_commit_unknown" ? "unknown" : task.state as HeadlessOutcomeStatus,
+      summary: task.error?.code === "plugin_commit_unknown" ? "写入结果未知，请核对实际数据；请勿重复执行。"
+        : task.result?.summary || task.error?.message || "" };
+    retireSurface();
+  } else if (cancelRequested.value && cancellationTaskId !== task.taskId) {
+    cancellationTaskId = task.taskId;
+    emit("cancel", task.taskId);
+  }
+}, { immediate: true, deep: true });
 
 const statusLabel = computed(() => {
   switch (outcome.value.status) {
     case "succeeded": return "已完成";
     case "failed": return "失败";
     case "cancelled": return "已取消";
+    case "aborted": return "已中止";
     case "unknown": return "已结束（结果未知）";
-    default: return "运行中";
+    default: return cancelRequested.value ? "停止请求已发送，等待结果" : "运行中";
   }
 });
 
 function retireSurface(): void {
+  if (stopped.value) return;
+  stopped.value = true;
   const token = surface.value?.surfaceToken;
   if (!token) return;
   // Best-effort token retire; unmounting below retires the WPF side through
@@ -52,14 +73,13 @@ function retireSurface(): void {
 }
 
 function settleTerminal(status: HeadlessOutcomeStatus, summary: string): void {
-  if (outcome.value.status !== "running") return;
-  outcome.value = { status, summary };
+  if (cancelRequested.value || moduleOutcome.value.status !== "running") return;
+  moduleOutcome.value = { status, summary };
   retireSurface();
 }
 
 function onFinish(status: string, summary: string): void {
-  // Only the module's explicit status settles a known terminal outcome; any
-  // other status string stays UNKNOWN — never reported as a write success.
+  // Module completion is local; a matching Host task owns any write outcome.
   if (status === "succeeded" || status === "failed" || status === "cancelled") {
     settleTerminal(status, summary);
   } else {
@@ -74,16 +94,22 @@ function onSurfaceClosed(): void {
 }
 
 function cancelRun(): void {
-  settleTerminal("cancelled", "已由宿主取消");
-  emit("cancel");
+  if (cancelRequested.value || hostTerminal.value) return;
+  cancelRequested.value = true;
+  moduleOutcome.value = { status: "unknown", summary: "本地执行已停止，写入结果仍待宿主核对；请勿重复执行。" };
+  if (currentTask.value) {
+    cancellationTaskId = currentTask.value.taskId;
+    emit("cancel", currentTask.value.taskId);
+  }
+  retireSurface();
 }
 </script>
 
 <template>
   <!--
     Visible Host status for a headless (no-UI) action. The restricted frame is
-    hidden while running and UNMOUNTED at the first terminal outcome
-    (finish/failure/cancel), releasing the token/frame; confirmations resolve
+    released on module exit, Host settlement or a local stop request. Host
+    task settlement remains visible after unmount; confirmations resolve
     through the native host window (application/headless are native-only).
   -->
   <section class="headless-runner" data-testid="plugin-headless-runner" role="status" aria-live="polite">
@@ -101,6 +127,7 @@ function cancelRun(): void {
         v-if="outcome.status === 'running'"
         type="button"
         data-testid="plugin-headless-cancel"
+        :disabled="cancelRequested"
         @click="cancelRun"
       >取消执行</button>
       <button
@@ -116,12 +143,12 @@ function cancelRun(): void {
       :surface-token="surface.surfaceToken"
       :title="description.title"
       :theme="theme"
-      :task="task"
+      :task="currentTask"
       variant="headless"
       @finish="(status, summary) => onFinish(status, summary)"
       @close="onSurfaceClosed"
       @resolve="decision => emit('resolve', decision)"
-      @cancel="() => emit('cancelTask')"
+      @cancel="cancelRun"
     />
     <p v-if="!surface" class="headless-error" role="alert">无界面动作没有可用的受限执行环境，请重新触发。</p>
   </section>

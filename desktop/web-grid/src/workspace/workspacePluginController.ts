@@ -106,11 +106,18 @@ export function createWorkspacePluginController(
 ): WorkspacePluginController {
   const applicationTask = computed(() => {
     const active = dependencies.ui.activePluginApp;
-    return active ? dependencies.plugins.taskForAction(active.pluginId, active.actionId) : null;
+    if (!active) return null;
+    const action = dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.actions.find(action => action.actionId === active.actionId);
+    if (action?.presentation === "application")
+      return action.surfaceToken ? dependencies.plugins.taskForAction(active.pluginId, active.actionId, action.surfaceToken) : null;
+    return dependencies.plugins.taskForAction(active.pluginId, active.actionId);
   });
   const actionTask = computed(() => {
     const active = dependencies.plugins.describedAction;
-    return active ? dependencies.plugins.taskForAction(active.pluginId, active.actionId) : null;
+    if (!active) return null;
+    if (active.presentation === "headless" || active.presentation === "application")
+      return active.surface?.surfaceToken ? dependencies.plugins.taskForAction(active.pluginId, active.actionId, active.surface.surfaceToken) : null;
+    return dependencies.plugins.taskForAction(active.pluginId, active.actionId);
   });
   function controlledTask(taskId: string): PluginTaskViewSnapshot | null {
     return [actionTask.value, applicationTask.value].find(task => task?.taskId === taskId) ?? null;
@@ -225,7 +232,7 @@ export function createWorkspacePluginController(
       await dependencies.service.describeAction(
         registered.plugin.pluginId,
         registered.action.actionId,
-        commandContext([]),
+        commandContext(selectedRowKeys()),
         false,
       );
       dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);

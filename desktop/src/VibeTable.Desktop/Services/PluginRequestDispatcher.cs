@@ -334,6 +334,11 @@ public sealed class PluginRequestDispatcher : IDisposable
                     var action = actions!.Declared.FirstOrDefault(action => action.ActionId == describe.ActionId);
                     if (action is null) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
                     if (_projectContext()?.ProjectKey != describe.ProjectKey || describe.Context.ProjectKey != describe.ProjectKey) throw StaleTask();
+                    if (action.Invocation != "manual")
+                    {
+                        _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["manual_invocation_required"]));
+                        return;
+                    }
                     if (!actions.Available.Contains(describe.ActionId))
                     {
                         _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
@@ -1102,7 +1107,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 projected.Add(action);
                 continue;
             }
-            if (!registered || string.IsNullOrWhiteSpace(action.Entry)
+            if (!registered || action.Invocation != "manual" || string.IsNullOrWhiteSpace(action.Entry)
                 || !PluginResourceHost.SupportsPresentationEntry(action.EffectivePresentation, action.Entry))
             {
                 projected.Add(action with { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null });

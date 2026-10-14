@@ -1015,17 +1015,9 @@ public partial class MainWindow : Window
             // on its dispatcher hop, this run aborts instead of tearing down
             // the newer generation a second time.
             long generation = _webBridge.RendererGeneration;
-            await Dispatcher.InvokeAsync(() =>
-            {
-                if (_viewModel.State is StartupState.Ready or StartupState.LoadingWeb or StartupState.Faulted)
-                {
-                    _viewModel.BeginRendererRecovery();
-                }
-            });
-            if (_webBridge.RendererGeneration != generation)
-            {
-                return;
-            }
+            bool admitted = await Dispatcher.InvokeAsync(() => _viewModel.TryBeginRendererRecovery(
+                rendererFailure: reason.StartsWith("renderer:", StringComparison.Ordinal)));
+            if (!admitted || _webBridge.RendererGeneration != generation) return;
             // 1. Seal inbound host routing and retire realtime delivery so no
             // late emission reaches the new page.
             _webBridge.SealForRendererRecovery();

@@ -266,6 +266,8 @@ internal sealed class HostPluginTaskRegistry
                 // The first non-null executor metadata binds the creation identity.
                 InstallationRevision = record.Snapshot.InstallationRevision ?? reported.InstallationRevision,
                 InstallationId = record.Snapshot.InstallationId ?? reported.InstallationId,
+                // Only the native Host creator can bind a task to a frame.
+                SurfaceToken = record.Snapshot.SurfaceToken,
             };
             return true;
         }
@@ -323,6 +325,8 @@ internal sealed class HostPluginTaskRegistry
                 // The first non-null executor metadata binds the creation identity.
                 InstallationRevision = record.Snapshot.InstallationRevision ?? reported.InstallationRevision,
                 InstallationId = record.Snapshot.InstallationId ?? reported.InstallationId,
+                // Only the native Host creator can bind a task to a frame.
+                SurfaceToken = record.Snapshot.SurfaceToken,
             };
             record.ExecutionReportSeen = true;
             record.Revision += 1;

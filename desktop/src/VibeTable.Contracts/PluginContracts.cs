@@ -202,7 +202,8 @@ public sealed record PluginRuntimeTaskSnapshot(
     PluginRuntimeResult? Result,
     PluginRuntimeSafeError? Error,
     int? InstallationRevision = null,
-    string? InstallationId = null);
+    string? InstallationId = null,
+    string? SurfaceToken = null);
 
 public sealed record PluginRuntimeSafeError(
     string Contract,

@@ -64,9 +64,9 @@ export const usePluginStore = defineStore("plugins", () => {
     const task = taskById.value[taskId];
     return task && currentTask(task) ? task : null;
   }
-  function taskForAction(pluginId: string, actionId: string): PluginTaskViewSnapshot | null {
+  function taskForAction(pluginId: string, actionId: string, surfaceToken?: string): PluginTaskViewSnapshot | null {
     return Object.values(taskById.value).reverse().find(task => task.pluginId === pluginId
-      && task.actionId === actionId && currentTask(task)) ?? null;
+      && task.actionId === actionId && (surfaceToken === undefined || task.surfaceToken === surfaceToken) && currentTask(task)) ?? null;
   }
 
   function beginCatalogRead(): number { return ++catalogReadSequence; }
@@ -205,6 +205,7 @@ export const usePluginStore = defineStore("plugins", () => {
       ...snapshot,
       installationRevision: current ? current.installationRevision : snapshot.installationRevision,
       installationId: current ? current.installationId : snapshot.installationId,
+      surfaceToken: current ? current.surfaceToken : snapshot.surfaceToken,
       revision: Math.max(taskRevision, interactionRevision),
       progressPercent: snapshot.progress?.total
         ? Math.min(100, Math.round((snapshot.progress.current / snapshot.progress.total) * 100))

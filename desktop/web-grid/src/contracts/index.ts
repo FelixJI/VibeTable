@@ -1200,6 +1200,8 @@ export interface PluginResult {
 
 /** Host-owned task snapshot — revision lives on PluginEventEnvelope, not the task. */
 export interface PluginTaskSnapshot {
+  /** Native Host surface at task creation; missing Worker source is never a current frame. */
+  readonly surfaceToken?: string | null;
   readonly installationId?: string | null;
   /** Installation revision captured by the task creator, never inferred from the catalog. */
   readonly installationRevision?: number | null;

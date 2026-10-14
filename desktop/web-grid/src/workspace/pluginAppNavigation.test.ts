@@ -102,10 +102,20 @@ describe("derivePluginAppEntries", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       key: "com.example.tasks/open-task-desk",
-      label: "任务台",
+      label: "打开任务台",
       src: "https://aaa.bbb.plugins.vibetable.local/ui/index.html",
       surfaceToken: "token-open",
     });
+  });
+
+  it("uses the active locale before the fixed Host title and omits nonmanual applications", () => {
+    const plugin = appPlugin();
+    const app = plugin.manifest.actions[0]!;
+    const localized = { ...plugin, manifest: { ...plugin.manifest,
+      actions: [{ ...app, displayName: { "zh-CN": "中文应用", "en-US": "English app" }, surfaceTitle: "固定中文" },
+        { ...app, actionId: "event-only", invocation: "webhook" as const }] } };
+    expect(derivePluginAppEntries([localized], "en-US").map(entry => entry.label)).toEqual(["English app"]);
+    expect(derivePluginAppEntries([localized], "fr-FR")[0]?.label).toBe("固定中文");
   });
 
   it("keeps display names distinguishable across duplicate labels", () => {

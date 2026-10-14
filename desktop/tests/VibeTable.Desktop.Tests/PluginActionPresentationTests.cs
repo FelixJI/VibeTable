@@ -19,6 +19,33 @@ public sealed class PluginActionPresentationTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    [DataRow("application")]
+    [DataRow("headless")]
+    public async Task NativeDescribeRejectsNonmanualInvocation(string presentation)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-nonmanual-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var snapshot = PresentationSnapshot() with { Manifest = PresentationSnapshot().Manifest with
+                { Actions = [Action("event-only", PluginRisk.Read, presentation, presentation == "application" ? "ui/index.html" : "ui/run.js") with { Invocation = "webhook" }] } };
+            using (var zip = ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, ZipArchiveMode.Create))
+            { zip.CreateEntry("ui/index.html"); zip.CreateEntry("ui/run.js"); }
+            var reply = new PluginRequestDispatcherTestsAccessibleSink(); var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePickerForPresentation(null), resources,
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { snapshot })), packageCacheRoot: _ => root);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "catalog", """{"projectKey":"project-1"}"""));
+            Assert.IsNull(Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken);
+            var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", "project-1", null, [], null, "zh-CN", "light", "comfortable", JsonSerializer.SerializeToElement(new { }), "1.0.0");
+            await dispatcher.DispatchAsync(Request("plugin.action.describe", "describe", JsonSerializer.Serialize(new { projectKey = "project-1", pluginId = snapshot.PluginId, actionId = "event-only", context })));
+            var result = Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload);
+            Assert.IsFalse(result.Available); CollectionAssert.Contains(result.Reasons.ToArray(), "manual_invocation_required");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task HistoricalCatalogInvalidationCannotRetireCurrentSurface()
     {
         string root = Path.Combine(Path.GetTempPath(), $"vibetable-catalog-history-{Guid.NewGuid():N}");

@@ -334,6 +334,8 @@ class PluginCommitUnknownError(PluginExecutionError):
 
 
 class PluginTaskSnapshot(PluginContract):
+    # Native Host creation source; Worker tasks never infer a frame association.
+    surface_token: str | None = Field(default=None, min_length=1)
     installation_id: str | None = Field(default=None, min_length=1)
     # Optional for wire compatibility; absent identity is never controllable in the renderer.
     installation_revision: int | None = Field(default=None, ge=1)

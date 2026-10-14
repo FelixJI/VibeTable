@@ -24,6 +24,16 @@ def prepare_application_packages(controls: Path) -> None:
         shutil.copytree(source, target)
         manifest = copy.deepcopy(original)
         manifest["pluginId"], manifest["version"] = plugin_id, version
+        writer = copy.deepcopy(manifest["actions"][0])
+        writer.update(actionId="headless-write", presentation="headless", entry="ui/write.js")
+        writer["displayName"] = {"zh-CN": "无界面写任务取消"}
+        manifest["actions"].append(writer)
+        # Real contributed application entries exercise the small-window rail.
+        for index in range(18):
+            action = copy.deepcopy(manifest["actions"][0])
+            action["actionId"] = f"open-extra-{index}"
+            action["displayName"] = {"zh-CN": f"合法应用 {index}"}
+            manifest["actions"].append(action)
         if extra:
             manifest["permissions"]["data"][0]["operations"].append("create")
         (target / "manifest.json").write_text(

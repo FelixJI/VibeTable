@@ -66,6 +66,7 @@ function navigate(view: AppView) {
   <nav class="app-navigation" :aria-label="t('nav.application')">
     <img class="brand-mark" :src="brandIconUrl" alt="" aria-hidden="true" />
 
+    <div class="nav-scroll-region">
     <div class="nav-group nav-group--primary">
       <NTooltip v-for="item in primary" :key="item.view" placement="right" :delay="450">
         <template #trigger>
@@ -111,6 +112,7 @@ function navigate(view: AppView) {
       </NTooltip>
     </div>
 
+    </div>
     <div class="nav-group nav-group--secondary">
       <NTooltip placement="right" :delay="450">
         <template #trigger>
@@ -186,8 +188,16 @@ function navigate(view: AppView) {
   gap: 4px;
   width: 100%;
 }
+.nav-scroll-region {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .nav-group--secondary {
-  margin-top: auto;
+  flex: 0 0 auto;
+  margin-top: 8px;
 }
 .nav-group--apps {
   margin-top: 10px;
@@ -201,6 +211,7 @@ function navigate(view: AppView) {
   position: relative;
   width: 40px;
   height: 36px;
+  flex-shrink: 0;
   color: var(--vt-fg-muted);
   border-radius: var(--vt-radius-md);
 }
