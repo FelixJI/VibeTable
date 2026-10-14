@@ -45,6 +45,8 @@ export async function runApplicationCommitUnknown(page, recorder, runtime, helpe
   const query = () => helpers.rawBridgeRequest(page, "query.page", { tableId: table.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
   const observed = await query();
   recorder.check("authority read is bounded after unknown and does not invent a rollback", observed.payload.rows.length <= 1, { observed });
+  await page.getByTestId("nav-tables").click();
+  await helpers.selectTable(page, "Unknown Commit Tasks");
   frame = await openApplication(page);
   const stale = await frame.evaluate(async token => { try { await call("context.read", {}, token); return "accepted"; } catch(error) { return error.code; } }, oldToken);
   recorder.check("unknown run cannot resurrect the old execution token", stale === "plugin_source_denied", { stale });

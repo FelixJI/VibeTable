@@ -73,7 +73,11 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     const table = await createSimpleTable(page, "Application Tasks", "Text");
     await applyProductMutation(page, table.tableId, [{ kind: "insert", recordId: null,
       values: { [table.field.physicalName]: "synthetic original" } }], "application-seed");
-    state = { workspaceId: opened.payload.session.workspaceId, sessionEpoch: opened.payload.session.sessionEpoch,
+    const session = await page.evaluate(() => window.__vibetableE2EBridgeDiagnostics.workspaceSession);
+    recorder.check("application seed uses the actual opened workspace session",
+      typeof session?.workspaceId === "string" && Number.isSafeInteger(session.sessionEpoch) && session.sessionEpoch > 0
+        && opened.payload.projectKey === `local:${session.workspaceId.replaceAll("-", "").toLowerCase()}`, { session, projectKey: opened.payload.projectKey });
+    state = { workspaceId: session.workspaceId, sessionEpoch: session.sessionEpoch,
       projectKey: opened.payload.projectKey, tableId: table.tableId, pluginId: A };
     await installApplication(page, runtime);
     await installApplication(page, runtime, "app-b", B);
@@ -277,6 +281,8 @@ export async function runHeadlessBudget(page, recorder, runtime, helpers) {
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   recorder.check("native headless deadline recovers even without a module finish signal", Date.now() - began >= 120000 && await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0);
+  await page.getByTestId("nav-tables").click();
+  await helpers.selectTable(page, "Budget Tasks");
   const frame = await openApplication(page);
   const denied = await frame.evaluate(async token => { try { await call("context.read", {}, token); return "accepted"; } catch (e) { return e.code; } }, oldToken);
   recorder.check("timed-out headless authorization is dead after recovery", denied === "plugin_source_denied", { denied });

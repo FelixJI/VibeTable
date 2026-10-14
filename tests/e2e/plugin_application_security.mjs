@@ -45,7 +45,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
       && probes.violations.some(item => item.directive === "connect-src") && probes.violations.some(item => item.directive === "script-src-elem"), { probes });
   recorder.check("real Host denies encoded traversal, top navigation, host objects and forged approval",
     probes.traversal === "blocked" && probes.top === "blocked" && probes.objects === "blocked"
-      && probes.fake === "plugin_capability_invalid" && page.url().startsWith("https://app.vibetable.local/"), { probes });
+      && probes.fake === "plugin_api_unsupported" && page.url().startsWith("https://app.vibetable.local/"), { probes });
   recorder.check("forged parent surface message does not close the application",
     await page.getByTestId("plugin-app-viewport").isVisible()
       && (await frame.evaluate(() => call("context.read"))).collection === table.tableId);
@@ -109,6 +109,8 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   recorder.check("old faulting renderer leaves the shared browser process set",
     !after.processInfo.some(next => next.id === faulting[0].id), { before, looping, faulting, after });
   await nativePluginInput(runtime, "observe", "plugin-manage", "recovered").then(result => recorder.check("actual WPF recovery screenshot remains actionable", result.status === "completed", { result }));
+  await page.getByTestId("nav-tables").click();
+  await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);
   const stale = await frame.evaluate(async old => { try { await call("context.read", {}, old); return "accepted"; } catch(error) { return error.code; } }, faultToken);
   recorder.check("old token and frame authority cannot be revived after CPU recovery", stale === "plugin_source_denied", { stale });
@@ -117,6 +119,8 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   page = await runtime.refreshPluginProductPage();
   await page.getByTestId("nav-home").waitFor({ timeout: 60000 });
   await nativePluginInput(runtime, "observe", "plugin-recover", "crashed").then(result => recorder.check("actual renderer crash recovers into reachable WPF chrome", result.status === "completed", { result }));
+  await page.getByTestId("nav-tables").click();
+  await helpers.selectTable(page, "Security Tasks");
   frame = await openApplication(page);
   recorder.check("after crash the same PocketBase business record is preserved", (await frame.locator("#rows").innerText()).includes("security original"));
   await page.getByTestId("plugin-app-return").click();

@@ -4816,7 +4816,16 @@ async function scenario26(page, recorder, _network, runtime) {
     fullPage: true,
   });
 
-  const currentRow = (await readRows(currentTableId)).find((row) => row.id === "condrow00000001");
+  // Read the CAS digest only after the persisted Lookup fanout, not its live UI projection.
+  const persistedLookup = await waitForQueryPage(page, {
+    tableId: currentTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, (payload) => {
+    const row = payload.rows?.find(item => item.id === "condrow00000001");
+    const value = row?.[lookupFieldKey];
+    return row?.[currentCode.physicalName] === "SKU-9"
+      && Array.isArray(value) && value.length === 1 && value[0] === "重值 甲";
+  });
+  const currentRow = persistedLookup.payload.rows.find(row => row.id === "condrow00000001");
   const currentShifted = await applyProductMutation(page, currentTableId, [{
     kind: "update", recordId: "condrow00000001",
     values: { [currentCode.physicalName]: "SKU-8" },
@@ -12664,13 +12673,13 @@ const scenarios = {
     beginBridgeMessageCapture, waitForCapturedBridgeMessage, listRetainedPluginPackages,
   }),
   "49-plugin-application-security": (page, recorder, _network, runtime) => runApplicationSecurity(page, recorder, runtime, {
-    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, selectTable,
   }),
   "50-plugin-headless-budget": (page, recorder, _network, runtime) => runHeadlessBudget(page, recorder, runtime, {
-    waitForShell, createSimpleTable, applyProductMutation,
+    waitForShell, createSimpleTable, applyProductMutation, selectTable,
   }),
   "51-plugin-application-commit-unknown": (page, recorder, _network, runtime) => runApplicationCommitUnknown(page, recorder, runtime, {
-    waitForShell, createSimpleTable, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+    waitForShell, createSimpleTable, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, selectTable,
   }),
 
 };

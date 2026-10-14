@@ -40,6 +40,8 @@ import type {
   PastePlan,
   PasteSummary,
   PluginCommandContext,
+  PluginSnapshot,
+  PluginTaskSnapshot,
   PresetEntry,
   RelationTargetRef,
   WebPluginActionDescription,
@@ -774,6 +776,125 @@ describe("WorkspaceView", () => {
       && (item.payload as { table: string }).table === "tbl_missing_0")).toBe(false);
     expect(ui.activeView).toBe("imports");
     expect(workspace.currentTable).toBe("tbl_orders_9f2a");
+  });
+
+  describe("native plugin view consumers", () => {
+    async function prepare() {
+      const plugins = usePluginStore();
+      const workspace = useWorkspaceStore();
+      workspace.setOpened([{ collection: "orders" }], { orders: "Orders" });
+      workspace.selectTable("orders");
+      useUiStore().navigate("tables");
+      const plugin: PluginSnapshot = {
+        installationId: "native-installation", projectKey: "local:default", pluginId: "com.acme.native", version: "1.0.0",
+        packageHash: "sha256:fixture", sourceType: "package", sourceLocation: "host-managed", schemas: {},
+        status: "enabled", disabledReason: null, revision: 2,
+        manifest: { $schema: "vibetable.plugin-manifest.v2", pluginId: "com.acme.native", version: "1.0.0",
+          displayName: { "zh-CN": "原生应用" }, description: {}, compatibility: { pluginApi: "3.x" }, permissions: {}, ui: {},
+          actions: (["application", "headless", "surface"] as const).map(presentation => ({
+            actionId: presentation, displayName: { "zh-CN": presentation }, description: {}, mode: "local", risk: "write",
+            invocation: "manual", placements: [], requires: {}, workerEntry: null, entry: "ui/index.html",
+            formSchema: null, inputSchema: null, outputSchema: null,
+            presentation, surfaceSrc: "https://native.plugins.vibetable.local/ui/index.html",
+            surfaceToken: `${presentation}-token`, surfaceTitle: presentation,
+          })) },
+      };
+      plugins.setProjectContext(plugin.projectKey, "r1");
+      plugins.replaceCatalog(plugin.projectKey, [plugin]);
+      const task = (actionId: string, taskId = actionId): PluginTaskSnapshot => ({
+        taskId, runId: `${taskId}-run`, pluginId: plugin.pluginId, pluginVersion: plugin.version,
+        installationId: plugin.installationId, installationRevision: plugin.revision,
+        actionId, surfaceToken: `${actionId}-token`, projectKey: plugin.projectKey, collection: "orders",
+        targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null,
+      });
+      const record = makeRecordingBridge(message => {
+        if (message.type === "plugin.catalog.list") queueMicrotask(() => record.emit({ ...message, payload: [plugin] }));
+        if (message.type === "plugin.action.describe") queueMicrotask(() => record.emit({ ...message, payload: { available: true, reasons: [] } }));
+        if (message.type === "plugin.task.cancel") {
+          const taskId = (message.payload as { taskId: string }).taskId;
+          const current = plugins.taskForId(taskId)!;
+          queueMicrotask(() => record.emit({ ...message, payload: { ...current, cancelRequested: true } }));
+        }
+        if (message.type === "plugin.interaction.resolve") queueMicrotask(() => record.emit({ ...message, payload: { status: "resolved", decision: "rejected" } }));
+      });
+      setHostBridgeForTesting(record.bridge);
+      const wrapper = mountView(); await flushPromises();
+      const context: PluginCommandContext = { contract: "vibetable.command-context.v1", projectKey: plugin.projectKey,
+        collection: "orders", selectedKeys: [], querySnapshot: null, locale: "zh-CN", theme: "light", density: "comfortable", user: {}, hostVersion: "1.0.0" };
+      function openPanel(presentation: "headless" | "custom") {
+        const actionId = presentation === "custom" ? "surface" : "headless";
+        plugins.beginAction({ pluginId: plugin.pluginId, actionId, title: actionId, risk: "write", inputSchema: {}, presentation,
+          surface: { src: "https://native.plugins.vibetable.local/ui/index.html", surfaceToken: `${actionId}-token`, title: actionId } }, context);
+      }
+      return { wrapper, plugins, plugin, record, task, openPanel };
+    }
+
+    it("opens an application through real navigation and returns or retires to the platform", async () => {
+      const { wrapper, plugins, plugin, record } = await prepare();
+      const open = async () => { await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises(); };
+      await open();
+      expect(useUiStore().activePluginApp).toEqual({ pluginId: plugin.pluginId, actionId: "application" });
+      expect(wrapper.get('[data-testid="plugin-app-viewport"]').isVisible()).toBe(true);
+      expect(wrapper.get(".tables-view").isVisible()).toBe(false);
+      expect(record.posted.find(item => item.type === "plugin.action.describe")?.payload).toMatchObject({ context: { collection: "orders" } });
+      await wrapper.get('[data-testid="plugin-app-return"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull(); expect(wrapper.find(".tables-view").exists()).toBe(true);
+      await open(); await wrapper.get('[data-testid="plugin-app-manage"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activeView).toBe("plugins"); expect(useUiStore().activePluginApp).toBeNull();
+      await open();
+      plugins.applyPlugin({ ...plugin, status: "disabled", revision: 3 }); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull(); expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(document.body.textContent).toContain("插件入口已失效或被移除，已返回平台");
+    });
+
+    it("consumes native chrome return, management and stop without leaving a live plugin panel", async () => {
+      const { wrapper, plugins, plugin, record, openPanel } = await prepare();
+      const ui = useUiStore();
+      for (const action of ["returnPlatform", "manage", "stopped"] as const) {
+        ui.openPluginApp(plugin.pluginId, "application"); openPanel("headless"); await flushPromises();
+        const reads = record.posted.filter(item => item.type === "plugin.catalog.list").length;
+        record.emit({ type: "host.pluginChrome", payload: { action } }); await flushPromises();
+        expect(ui.activePluginApp).toBeNull(); expect(plugins.actionOpen).toBe(false);
+        expect(wrapper.find('[data-testid="plugin-headless-runner"]').exists()).toBe(false);
+        if (action === "manage") expect(ui.activeView).toBe("plugins");
+        if (action === "stopped") expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBeGreaterThan(reads);
+      }
+    });
+
+    it("application and custom footer controls use their associated task despite a foreign last event", async () => {
+      const { wrapper, plugins, plugin, record, task, openPanel } = await prepare();
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      plugins.applyTask(task("application")); plugins.applyTask({ ...task("headless", "foreign"), pluginId: "com.acme.other" }); await flushPromises();
+      await wrapper.get('[data-testid="plugin-app-viewport"] .task-status button').trigger("click"); await flushPromises();
+      expect(record.posted.filter(item => item.type === "plugin.task.cancel").map(item => item.payload)).toEqual([{ taskId: "application" }]);
+      await wrapper.get('[data-testid="plugin-app-return"]').trigger("click");
+      openPanel("custom"); plugins.applyTask(task("surface"));
+      plugins.applyInteraction({ runId: "surface-run", pluginId: plugin.pluginId, actionId: "surface", projectKey: plugin.projectKey,
+        caller: "manual", progress: null, cancelRequested: false,
+        pendingConfirmation: { interactionId: "confirmation", title: "Actual confirmation", risk: "write", expiresAt: Math.floor(Date.now() / 1000) + 60,
+          preview: { summary: [], sampleRows: [], affectedCount: 1, warnings: [] } } }, 3);
+      plugins.applyTask({ ...task("headless", "other"), pluginId: "com.acme.other" }); await flushPromises();
+      await wrapper.get('.confirmation-actions button').trigger("click"); await flushPromises();
+      expect(record.posted.filter(item => item.type === "plugin.interaction.resolve").map(item => item.payload)).toEqual([
+        { runId: "surface-run", interactionId: "confirmation", decision: "rejected" },
+      ]);
+    });
+
+    it("headless cancel forwards the current source task and waits for its authoritative terminal", async () => {
+      const { wrapper, plugins, record, task, openPanel } = await prepare();
+      openPanel("headless");
+      plugins.applyTask({ ...task("headless", "old-run"), surfaceToken: "retired-token" }); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-headless-runner"] .host-runtime').exists()).toBe(false);
+      plugins.applyTask(task("headless")); await flushPromises();
+      await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click"); await flushPromises();
+      expect(record.posted.filter(item => item.type === "plugin.task.cancel").map(item => item.payload)).toEqual([{ taskId: "headless" }]);
+      expect(wrapper.find('[data-testid="plugin-headless-runner"] iframe').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="plugin-headless-runner"] b[data-state="cancelled"]').exists()).toBe(false);
+      plugins.applyTask({ ...task("headless"), state: "succeeded" }); await flushPromises();
+      expect(wrapper.get('[data-testid="plugin-headless-runner"] b').attributes("data-state")).toBe("succeeded");
+      await wrapper.get('[data-testid="plugin-headless-close"]').trigger("click"); await flushPromises();
+      expect(plugins.actionOpen).toBe(false);
+    });
   });
 
   it("renders every top-level product workspace from the shared navigation state", async () => {
