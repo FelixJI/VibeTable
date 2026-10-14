@@ -165,10 +165,10 @@ public sealed class PluginSurfaceSessionManager
             _sessions[token] = session with { Context = context, InstallationRevision = revision, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry };
     }
 
-    internal void BindActiveCollection(string projectKey, string pluginId, PluginRuntimeCommandContext context)
+    internal void BindActiveCollection(string projectKey, string pluginId, string actionId, PluginRuntimeCommandContext context)
     {
         foreach (var pair in _sessions)
-            if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId)
+            if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId && pair.Value.ActionId == actionId)
                 _sessions[pair.Key] = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
     }
 

@@ -291,14 +291,28 @@ public sealed class PluginRequestDispatcher : IDisposable
                 bool native = _nativePlugins.TryGetValue((describe.ProjectKey, describe.PluginId), out var actions);
                 if (native)
                 {
-                    if (!actions!.Declared.Contains(describe.ActionId)) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
+                    var action = actions!.Declared.FirstOrDefault(action => action.ActionId == describe.ActionId);
+                    if (action is null) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
                     if (_projectContext()?.ProjectKey != describe.ProjectKey || describe.Context.ProjectKey != describe.ProjectKey) throw StaleTask();
                     if (!actions.Available.Contains(describe.ActionId))
                     {
                         _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
                         return;
                     }
-                    _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.Context);
+                    string? selection = action.Requires.ValueKind == JsonValueKind.Object
+                        && action.Requires.TryGetProperty("selection", out var required) && required.ValueKind == JsonValueKind.String ? required.GetString() : null;
+                    string? reason = selection switch
+                    {
+                        "one-or-more" when describe.Context.SelectedKeys.Count == 0 => "selection_required",
+                        "exactly-one" when describe.Context.SelectedKeys.Count != 1 => "single_selection_required",
+                        _ => null,
+                    };
+                    if (reason is not null)
+                    {
+                        _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, [reason]));
+                        return;
+                    }
+                    _surfaces.BindActiveCollection(describe.ProjectKey, describe.PluginId, describe.ActionId, describe.Context);
                     _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(true, []));
                     return;
                 }
@@ -907,7 +921,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         "PLUGIN_TASK_NOT_FOUND",
         "Plugin task was not found for the current project session.");
 
-    private sealed record NativeActions(string[] Declared, string[] Available);
+    private sealed record NativeActions(IReadOnlyList<PluginRuntimeAction> Declared, string[] Available);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), NativeActions> _nativePlugins = new();
 
     private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
@@ -927,7 +941,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
                     && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
                     .Select(view => view.GetProperty("actionId").GetString()!).ToArray() : [];
-            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(snapshot.Manifest.Actions.Select(action => action.ActionId).ToArray(), available);
+            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(snapshot.Manifest.Actions, available);
         }
         else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         return snapshot with
@@ -990,7 +1004,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             var surface = _resourceHost.OpenSurface(
                 snapshot.ProjectKey,
                 snapshot.PluginId,
-                entry);
+                entry, actionId);
             if (_projectContext() is { } context)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, actionId,

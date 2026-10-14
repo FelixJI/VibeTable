@@ -55,8 +55,11 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 `create/update` operations；更新必须带查询的 `expectedDigest`。`mutation.preview` 返回不可转移的
 `planId`，`mutation.submit(planId, signal?)` 只请求宿主确认，不能传入 `approved`。
 Host 展示真实操作样本和数量、绑定精确计划并单次消费；surface 的 actionId 和风险固定为实际
-customView 对应的声明动作，Go 独立核对当前 manifest 的 action/entry 绑定。read 页面不能请求写计划，
-write/destructive 风险原样进入任务、确认和持久审计。提交前及 MutationKernel 事务内重核安装
+customView 对应的声明动作。同 entry 的不同动作持有独立 surface token 和调用上下文；
+Go 独立核对当前 manifest 的 action/entry 绑定。read 页面不能请求写计划，
+write/destructive 风险原样进入任务、确认和持久审计。`requires.selection` 的 one-or-more/exactly-one
+在 Host describe 时校验，不满足时不改变已绑定上下文。Interface 的动作按钮目前仅支持 Worker 动作，
+3.x 页面动作不进入其选择器，已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
 revision/status、权限、包修订。拒绝/提交前取消零写入，冲突返回权威错误；丢失或不完整回执为
 `plugin_commit_unknown`，不得自动重放，迟到取消或工作区退役保留已读取并完整校验的 applied/replayed 回执成功；旧任务通知不投递到新会话。
 

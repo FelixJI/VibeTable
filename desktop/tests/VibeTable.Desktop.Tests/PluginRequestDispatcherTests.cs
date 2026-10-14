@@ -1459,9 +1459,10 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
-    [DataRow("2.x")]
-    [DataRow("3.x")]
-    public async Task CatalogProjectionCreatesSafeCustomSurfaceWithoutExposingPackagePath(string apiVersion)
+    [DataRow("2.x", false)]
+    [DataRow("3.x", false)]
+    [DataRow("3.x", true)]
+    public async Task CatalogProjectionCreatesSafeCustomSurfaceWithoutExposingPackagePath(string apiVersion, bool sharedEntry)
     {
         string packageRoot = Path.Combine(
             Path.GetTempPath(),
@@ -1477,7 +1478,7 @@ public sealed class PluginRequestDispatcherTests
                 PluginRisk.Destructive,
                 "manual",
                 [],
-                JsonSerializer.SerializeToElement(new { }),
+                JsonSerializer.SerializeToElement(new { selection = "one-or-more" }),
                 apiVersion == "3.x" ? null : "dist/workers/open-dashboard.js",
                 null,
                 null,
@@ -1486,7 +1487,7 @@ public sealed class PluginRequestDispatcherTests
             {
                 Schema = apiVersion == "3.x" ? "vibetable.plugin-manifest.v2" : "vibetable.plugin-manifest.v1",
                 Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = apiVersion }),
-                Actions = [action, action with { ActionId = "other", Risk = PluginRisk.Write }],
+                Actions = [action, action with { ActionId = "other", Risk = PluginRisk.Write, Requires = JsonSerializer.SerializeToElement(new { selection = "exactly-one" }) }],
                 Ui = JsonSerializer.SerializeToElement(new
                 {
                     customViews = new[]
@@ -1497,7 +1498,7 @@ public sealed class PluginRequestDispatcherTests
                             actionId = "open-dashboard",
                             entry = "ui/index.html",
                         },
-                        new { viewId = "other", actionId = "other", entry = "ui/other.html" },
+                        new { viewId = "other", actionId = "other", entry = sharedEntry ? "ui/index.html" : "ui/other.html" },
                     },
                 }),
             };
@@ -1546,6 +1547,64 @@ public sealed class PluginRequestDispatcherTests
                 Assert.AreEqual(actionId == "other" ? PluginRisk.Write : PluginRisk.Destructive, bound.Risk);
                 Assert.AreEqual(view.GetProperty("entry").GetString(), bound.Entry);
             }
+
+            Dictionary<string, string> Tokens() => JsonSerializer.SerializeToElement(reply.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                .EnumerateArray().Single().GetProperty("manifest").GetProperty("ui").GetProperty("customViews").EnumerateArray()
+                .ToDictionary(view => view.GetProperty("actionId").GetString()!, view => view.GetProperty("surfaceToken").GetString()!);
+            var originalTokens = Tokens();
+            Assert.AreNotEqual(originalTokens["open-dashboard"], originalTokens["other"]);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "repeat-catalog", """{"projectKey":"project-1"}"""));
+            CollectionAssert.AreEquivalent(originalTokens.ToArray(), Tokens().ToArray());
+            if (sharedEntry)
+            {
+                surfaces.TryGet(originalTokens["open-dashboard"], out var firstFrame);
+                surfaces.TryGet(originalTokens["other"], out var secondFrame);
+                Assert.AreEqual(firstFrame!.DocumentUri, secondFrame!.DocumentUri);
+                using var authority = new ProductAuthorityEpoch();
+                var tasks = new HostPluginTaskRegistry(authority);
+                using var api = new PluginSurfaceApi(surfaces, tasks, () => null, reply);
+                string forged = JsonSerializer.Serialize(new { contract = PluginSurfaceApi.Contract, surfaceToken = secondFrame.SurfaceToken,
+                    requestId = "cross-action", method = "context.read", @params = new { } });
+                string denied = await api.HandleAsync(firstFrame.SurfaceToken, firstFrame.DocumentUri.AbsoluteUri, forged);
+                Assert.AreEqual("plugin_source_denied", JsonDocument.Parse(denied).RootElement.GetProperty("error").GetProperty("code").GetString());
+            }
+            if (apiVersion == "3.x")
+            {
+                foreach (string id in new[] { "open-dashboard", "other" })
+                {
+                    foreach (int count in new[] { 0, 1, 2 })
+                    {
+                        surfaces.TryGet(originalTokens[id], out var before);
+                        bool available = id == "other" ? count == 1 : count > 0;
+                        var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", "project-1", id,
+                            Enumerable.Range(0, count).Select(index => JsonSerializer.SerializeToElement(id + index)).ToArray(),
+                            JsonSerializer.SerializeToElement(new { action = id, count }), "zh-CN", "light", "comfortable", JsonSerializer.SerializeToElement(new { }), "test");
+                        await dispatcher.DispatchAsync(Request("plugin.action.describe", $"requires-{id}-{count}",
+                            JsonSerializer.Serialize(new PluginDescribeActionParams("project-1", "com.acme.clean", id, context), new JsonSerializerOptions(JsonSerializerDefaults.Web))));
+                        var availability = Assert.IsInstanceOfType<PluginRuntimeActionAvailability>(reply.Payload);
+                        Assert.AreEqual(available, availability.Available, $"{id} selection count {count}");
+                        surfaces.TryGet(originalTokens[id], out var after);
+                        if (!available)
+                        {
+                            CollectionAssert.AreEqual(new[] { id == "other" ? "single_selection_required" : "selection_required" }, availability.Reasons.ToArray());
+                            Assert.AreSame(before!.InvocationContext, after!.InvocationContext);
+                        }
+                        else Assert.AreEqual(JsonSerializer.Serialize(context), JsonSerializer.Serialize(after!.InvocationContext));
+                    }
+                }
+                surfaces.TryGet(originalTokens["open-dashboard"], out var many);
+                surfaces.TryGet(originalTokens["other"], out var single);
+                Assert.AreEqual(2, many!.InvocationContext!.SelectedKeys.Count);
+                Assert.AreEqual("open-dashboard", many.InvocationContext.Collection);
+                Assert.AreEqual("open-dashboard", many.InvocationContext.QuerySnapshot!.Value.GetProperty("action").GetString());
+                Assert.AreEqual(1, single!.InvocationContext!.SelectedKeys.Count);
+                Assert.AreEqual("other", single.InvocationContext.Collection);
+                Assert.AreEqual("other", single.InvocationContext.QuerySnapshot!.Value.GetProperty("action").GetString());
+            }
+            resources.CloseSurface(originalTokens["open-dashboard"]);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "reopen-catalog", """{"projectKey":"project-1"}"""));
+            Assert.AreNotEqual(originalTokens["open-dashboard"], Tokens()["open-dashboard"]);
+            Assert.AreEqual(originalTokens["other"], Tokens()["other"]);
 
             // A relocated workspace must not reuse the original source path or
             // the old runtime's retained resource when its local cache is absent.

@@ -33,7 +33,7 @@ public sealed class PluginWebViewResourceHost : IDisposable
         _installations = [];
     private readonly Dictionary<string, PluginPackageRevision> _origins =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<(string ProjectKey, string PluginId, string Entry), string>
+    private readonly Dictionary<(string ProjectKey, string PluginId, string Entry, string ActionId), string>
         _surfaceTokens = [];
     private CoreWebView2? _core;
     private bool _disposed;
@@ -140,7 +140,8 @@ public sealed class PluginWebViewResourceHost : IDisposable
     public PluginSurfaceSession OpenSurface(
         string projectKey,
         string pluginId,
-        string entryPath)
+        string entryPath,
+        string actionId = "")
     {
         PluginPackageRevision revision;
         string normalizedEntry = PluginResourceHost.NormalizePackagePath(entryPath);
@@ -152,7 +153,7 @@ public sealed class PluginWebViewResourceHost : IDisposable
                     "PLUGIN_REVISION_NOT_REGISTERED",
                     "Plugin package revision is not registered with the host.");
             }
-            var key = (projectKey, pluginId, normalizedEntry);
+            var key = (projectKey, pluginId, normalizedEntry, actionId);
             if (_surfaceTokens.TryGetValue(key, out string? existingToken)
                 && _surfaces.TryGet(existingToken, out var existing))
             {

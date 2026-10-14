@@ -17,7 +17,7 @@ public sealed class PluginSurfaceApiTests
         var context = new PluginRuntimeCommandContext("vibetable.command-context.v1", fixture.Context.ProjectKey, "orders",
             [JsonSerializer.SerializeToElement("selected")], JsonSerializer.SerializeToElement(new { hidden = "never copy directly" }),
             "zh-CN", "dark", "comfortable", JsonSerializer.SerializeToElement(new { id = "local-user" }), "1.0");
-        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, context);
+        fixture.Surfaces.BindActiveCollection(fixture.Context.ProjectKey, fixture.Surface.PluginId, fixture.Surface.ActionId, context);
         var response = await fixture.Call("context.read", "{}");
         var invocation = fixture.Http.Calls.Single().GetProperty("invocationContext");
         Assert.AreEqual("selected", invocation.GetProperty("selectedKeys")[0].GetString());
@@ -297,6 +297,8 @@ public sealed class PluginSurfaceApiTests
             var revision = PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64));
             Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html");
             Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html");
+            Surfaces.TryGet(Surface.SurfaceToken, out var bound);
+            Surface = bound!;
             _generation = new ProductSidecarGenerationSnapshot(this, 1,
                 new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "private-test-secret"),
                 new ProductSidecarIdentity(Guid.ParseExact(Context.ProjectKey["local:".Length..], "N").ToString("D"), Context.SessionGeneration, 1, "claim"), [],

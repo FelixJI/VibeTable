@@ -166,6 +166,12 @@ function changePage(bindingId: string, direction: -1 | 1): void {
 function patchForm(elementId: string, field: string, value: unknown): void {
   forms.value = { ...forms.value, [elementId]: { ...forms.value[elementId], [field]: value } };
 }
+function requireWorkerAction(pluginId: string): void {
+  if (plugins.plugins.find(plugin => plugin.pluginId === pluginId)?.manifest.compatibility.pluginApi === "3.x") {
+    throw Object.assign(new Error("此插件动作需要独立插件页面，暂不支持界面按钮执行。"), { code: "plugin_surface_api_required" });
+  }
+}
+
 async function execute(actionId: string, bindingId: string | null, elementId: string): Promise<void> {
   if (actionController) return;
   const action = props.definition.actions.find((item) => item.actionId === actionId);
@@ -190,6 +196,7 @@ async function execute(actionId: string, bindingId: string | null, elementId: st
     {
       async run(pluginId, pluginActionId, input, signal) {
         signal.throwIfAborted();
+        requireWorkerAction(pluginId);
         const context = createPluginCommandContext({
           projectKey: plugins.projectKey,
 		  collection: bindingId
@@ -204,6 +211,7 @@ async function execute(actionId: string, bindingId: string | null, elementId: st
         });
         await pluginService.describeAction(pluginId, pluginActionId, context, false);
         signal.throwIfAborted();
+        requireWorkerAction(pluginId);
         const task = await pluginService.startAction(pluginId, pluginActionId, input, context);
         pluginTaskId.value = task.taskId;
         const terminal = await waitForPluginTask(task.taskId, signal);

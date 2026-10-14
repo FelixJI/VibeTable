@@ -74,11 +74,12 @@ const fieldOptions = computed(() => bindingSchema.value?.fields.map((field) => (
 const bindingOptions = computed(() => definition.value?.bindings.map((binding) => ({ value: binding.bindingId, label: binding.bindingId })) ?? []);
 const pageOptions = computed(() => definition.value?.pages.map((page) => ({ value: page.pageId, label: page.title })) ?? []);
 const actionOptions = computed(() => definition.value?.actions.map((action) => ({ value: action.actionId, label: `${action.kind} · ${action.actionId}` })) ?? []);
-const pluginOptions = computed(() => plugins.plugins.map((plugin) => ({
+const workerPlugins = computed(() => plugins.plugins.filter(plugin => plugin.manifest.compatibility.pluginApi !== "3.x"));
+const pluginOptions = computed(() => workerPlugins.value.map((plugin) => ({
   value: plugin.pluginId,
   label: localizedName(plugin.manifest.displayName, plugin.pluginId),
 })));
-const pluginActionOptions = computed(() => plugins.plugins
+const pluginActionOptions = computed(() => workerPlugins.value
   .find((item) => item.pluginId === actionPluginId.value)?.manifest.actions.map((action) => ({
     value: action.actionId,
     label: localizedName(action.displayName, action.actionId),
@@ -209,6 +210,7 @@ function removeBinding(bindingId: string): void {
 }
 function addAction(): void {
   if (!definition.value) return;
+  if (actionKind.value === "plugin" && !pluginActionOptions.value.some(option => option.value === actionPluginActionId.value)) return;
   const action: InterfaceAction = {
     actionId: `action-${crypto.randomUUID()}`,
     kind: actionKind.value,
@@ -335,7 +337,7 @@ function addChild(elements: readonly InterfaceElement[], parentId: string, child
               <label v-if="['record.create','record.update','binding.refresh'].includes(actionKind)">绑定<NSelect size="small" v-model:value="actionBindingId" data-testid="interface-action-binding" :options="bindingOptions" /></label>
               <label v-if="actionKind === 'navigate'">目标页面<NSelect size="small" v-model:value="actionTargetPageId" data-testid="interface-action-target-page" :options="pageOptions" /></label>
               <template v-if="actionKind === 'plugin'"><label>插件<NSelect size="small" v-model:value="actionPluginId" :options="pluginOptions" /></label><label>插件动作<NSelect size="small" v-model:value="actionPluginActionId" :options="pluginActionOptions" /></label></template>
-              <NButton size="small" data-testid="interface-add-action" @click="addAction"><NIcon><Plus /></NIcon>添加动作</NButton>
+              <NButton size="small" data-testid="interface-add-action" :disabled="actionKind === 'plugin' && !pluginActionOptions.some(option => option.value === actionPluginActionId)" @click="addAction"><NIcon><Plus /></NIcon>添加动作</NButton>
               <div v-for="action in definition.actions" :key="action.actionId" class="definition-chip"><div><strong>{{ action.kind }}</strong><small>{{ action.actionId }}</small></div><NButton quaternary size="tiny" type="error" aria-label="删除动作" @click="removeAction(action.actionId)"><NIcon><Trash2 /></NIcon></NButton></div>
             </template>
           </aside>
