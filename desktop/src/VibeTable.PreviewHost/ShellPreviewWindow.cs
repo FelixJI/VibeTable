@@ -122,12 +122,14 @@ internal sealed class ShellPreviewSession : IDisposable
     {
         try
         {
-            PreviewHostEntry.TraceStage(PreviewHostStage.ComActivationStarted);
+            PreviewHostEntry.TraceStage(PreviewHostStage.ComActivationStarted, handlerClsid: _handlerClsid);
             Type type = Type.GetTypeFromCLSID(_handlerClsid, throwOnError: true)!;
             _handlerObject = Activator.CreateInstance(type)
                 ?? throw new PreviewHostLoadException();
-            PreviewHostEntry.TraceStage(PreviewHostStage.ComActivationReturned);
+            PreviewHostEntry.TraceStage(PreviewHostStage.ComActivationReturned, handlerClsid: _handlerClsid);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerPreviewQueryStarted, handlerClsid: _handlerClsid);
             _handler = (IPreviewHandler)_handlerObject;
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerPreviewQueryReturned, handlerClsid: _handlerClsid);
             PreviewHostEntry.TraceStage(PreviewHostStage.HandlerInitializeStarted);
             InitializeHandler();
             PreviewHostEntry.TraceStage(PreviewHostStage.HandlerInitializeReturned);
@@ -141,7 +143,7 @@ internal sealed class ShellPreviewSession : IDisposable
         }
         catch (Exception exception)
         {
-            PreviewHostEntry.TraceStage(PreviewHostStage.PreviewSessionFailed, exception);
+            PreviewHostEntry.TraceStage(PreviewHostStage.PreviewSessionFailed, exception, handlerClsid: _handlerClsid);
             Dispose();
             throw new PreviewHostLoadException();
         }
@@ -168,8 +170,12 @@ internal sealed class ShellPreviewSession : IDisposable
 
     private void InitializeHandler()
     {
-        if (_handlerObject is IInitializeWithStream streamInitializer)
+        PreviewHostEntry.TraceStage(PreviewHostStage.HandlerStreamQueryStarted, handlerClsid: _handlerClsid);
+        var streamInitializer = _handlerObject as IInitializeWithStream;
+        PreviewHostEntry.TraceStage(PreviewHostStage.HandlerStreamQueryReturned, handlerClsid: _handlerClsid);
+        if (streamInitializer is not null)
         {
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerStreamCreateStarted, handlerClsid: _handlerClsid);
             int result = SHCreateStreamOnFileEx(
                 _fullPath,
                 StgmRead | StgmShareDenyNone,
@@ -177,14 +183,22 @@ internal sealed class ShellPreviewSession : IDisposable
                 false,
                 null,
                 out var stream);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerStreamCreateReturned, handlerClsid: _handlerClsid, resultHr: result);
             Marshal.ThrowExceptionForHR(result);
             _stream = stream;
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerStreamInitializeStarted, handlerClsid: _handlerClsid);
             streamInitializer.Initialize(stream, 0);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerStreamInitializeReturned, handlerClsid: _handlerClsid);
             return;
         }
-        if (_handlerObject is IInitializeWithFile fileInitializer)
+        PreviewHostEntry.TraceStage(PreviewHostStage.HandlerFileQueryStarted, handlerClsid: _handlerClsid);
+        var fileInitializer = _handlerObject as IInitializeWithFile;
+        PreviewHostEntry.TraceStage(PreviewHostStage.HandlerFileQueryReturned, handlerClsid: _handlerClsid);
+        if (fileInitializer is not null)
         {
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerFileInitializeStarted, handlerClsid: _handlerClsid);
             fileInitializer.Initialize(_fullPath, 0);
+            PreviewHostEntry.TraceStage(PreviewHostStage.HandlerFileInitializeReturned, handlerClsid: _handlerClsid);
             return;
         }
         throw new PreviewHostLoadException();

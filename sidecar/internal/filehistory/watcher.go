@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"os"
 	"path/filepath"
@@ -40,6 +42,7 @@ type Watcher struct {
 	token     func() writecoordinator.Token
 	maxSize   int64
 	onEvent   func(WatchEvent)
+	logger    *slog.Logger
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -52,6 +55,7 @@ func NewWatcher(
 	ingestor *Ingestor,
 	token func() writecoordinator.Token,
 	onEvent func(WatchEvent),
+	logger *slog.Logger,
 ) (*Watcher, error) {
 	if ingestor == nil || token == nil {
 		return nil, errors.New("filehistory.watcher_dependencies_required")
@@ -69,6 +73,7 @@ func NewWatcher(
 		token:     token,
 		maxSize:   defaultWatcherMaxFileSize,
 		onEvent:   onEvent,
+		logger:    logger,
 	}, nil
 }
 
@@ -89,7 +94,7 @@ func (watcher *Watcher) Start(ctx context.Context) error {
 	watcher.done = make(chan struct{})
 	watcher.started = true
 	watcher.mu.Unlock()
-	if err := watcher.Rescan(ctx); err != nil {
+	if err := watcher.rescan(ctx, watcher.logger); err != nil {
 		cancel()
 		close(watcher.done)
 		return err
@@ -222,6 +227,13 @@ func (watcher *Watcher) addDirectoryTree(
 }
 
 func (watcher *Watcher) Rescan(ctx context.Context) error {
+	return watcher.rescan(ctx, nil)
+}
+
+func (watcher *Watcher) rescan(ctx context.Context, logger *slog.Logger) error {
+	if logger != nil {
+		logger.Info("filehistory.initial_scan.started")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -250,8 +262,14 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 		paths = append(paths, relative)
 	}
 	sort.Strings(paths)
+	if logger != nil {
+		logger.Info(fmt.Sprintf("filehistory.initial_scan.enumerated.%d", len(paths)))
+	}
 	token := watcher.token()
-	for _, relative := range paths {
+	for index, relative := range paths {
+		if logger != nil && index > 0 && index%25 == 0 {
+			logger.Info(fmt.Sprintf("filehistory.initial_scan.progress.%d_of_%d", index, len(paths)))
+		}
 		content := onDisk[relative]
 		key, keyErr := windowsPathKey(relative)
 		if keyErr != nil {
@@ -326,6 +344,9 @@ func (watcher *Watcher) Rescan(ctx context.Context) error {
 				CandidateDocumentIDs: []string{document.DocumentID},
 			},
 		})
+	}
+	if logger != nil {
+		logger.Info(fmt.Sprintf("filehistory.initial_scan.completed.%d", len(paths)))
 	}
 	return nil
 }

@@ -1,15 +1,21 @@
 package filehistory
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/vibetable/vibetable/sidecar/internal/diagnostics"
 	"github.com/vibetable/vibetable/sidecar/internal/objectrepo"
 	"github.com/vibetable/vibetable/sidecar/internal/writecoordinator"
 )
@@ -52,6 +58,7 @@ func TestWatcherInitialAndReconnectRescanIngestsStableFilesConservatively(
 		ingestor,
 		func() writecoordinator.Token { return token },
 		func(event WatchEvent) { events = append(events, event) },
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +132,7 @@ func TestWatcherReadStablePreservesMissingAndRejectsUnsafePaths(t *testing.T) {
 	}
 	root := t.TempDir()
 	filesRoot := filepath.Join(root, "files")
-	watcher, err := NewWatcher(filesRoot, ingestor, func() writecoordinator.Token { return fixture.token }, nil)
+	watcher, err := NewWatcher(filesRoot, ingestor, func() writecoordinator.Token { return fixture.token }, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,4 +186,79 @@ func TestWatcherReadStablePreservesMissingAndRejectsUnsafePaths(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestWatcherInitialScanDiagnosticsKeepSafeCountsAndDoNotLogPeriodicScans(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ingestor, err := NewIngestor(fixture.service, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for index := range 26 {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("private-report-%02d.txt", index)), []byte(fmt.Sprintf("content-%d", index)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	logger := slog.New(diagnostics.NewJSONHandler(&output, slog.LevelInfo))
+	watcher, err := NewWatcher(root, ingestor, func() writecoordinator.Token { return fixture.token }, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Close(); err != nil {
+		t.Fatal(err)
+	}
+	initial := output.String()
+	if err := watcher.Rescan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != initial {
+		t.Fatal("periodic rescan emitted startup diagnostics")
+	}
+	var events []string
+	for _, line := range strings.Split(strings.TrimSpace(initial), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if len(record) != 11 || record["errorCode"] != nil || strings.Contains(line, root) || strings.Contains(line, "private-report") || strings.Contains(line, "content-") {
+			t.Fatalf("unsafe diagnostic: %s", line)
+		}
+		events = append(events, record["event"].(string))
+	}
+	expected := []string{"filehistory.initial_scan.started", "filehistory.initial_scan.enumerated.26", "filehistory.initial_scan.progress.25_of_26", "filehistory.initial_scan.completed.26"}
+	if !reflect.DeepEqual(events, expected) {
+		t.Fatalf("events = %#v", events)
+	}
+	if len(fixture.service.List()) != 26 {
+		t.Fatalf("diagnostics changed ingestion: %d", len(fixture.service.List()))
+	}
+}
+
+func TestWatcherFailedInitialScanHasNoSuccessfulCompletionDiagnostic(t *testing.T) {
+	fixture := newHistoryFixture(t)
+	ingestor, err := NewIngestor(fixture.service, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	watcher, err := NewWatcher(t.TempDir(), ingestor, func() writecoordinator.Token { return fixture.token }, nil, slog.New(diagnostics.NewJSONHandler(&output, slog.LevelInfo)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := watcher.Start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if err := watcher.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "filehistory.initial_scan.started") || strings.Contains(output.String(), "completed") {
+		t.Fatalf("failure was reported as complete: %s", output.String())
+	}
 }

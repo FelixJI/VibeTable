@@ -17,6 +17,18 @@ internal enum PreviewHostStage
     ComActivationReturned,
     HandlerInitializeStarted,
     HandlerInitializeReturned,
+    HandlerPreviewQueryStarted,
+    HandlerPreviewQueryReturned,
+    HandlerStreamQueryStarted,
+    HandlerStreamQueryReturned,
+    HandlerFileQueryStarted,
+    HandlerFileQueryReturned,
+    HandlerStreamCreateStarted,
+    HandlerStreamCreateReturned,
+    HandlerStreamInitializeStarted,
+    HandlerStreamInitializeReturned,
+    HandlerFileInitializeStarted,
+    HandlerFileInitializeReturned,
     HandlerSetWindowStarted,
     HandlerSetWindowReturned,
     HandlerDoPreviewStarted,
@@ -27,16 +39,22 @@ internal enum PreviewHostStage
 
 public static class PreviewHostEntry
 {
-    internal static void TraceStage(PreviewHostStage stage, Exception? exception = null)
+    internal static void TraceStage(PreviewHostStage stage, Exception? exception = null,
+        Guid? handlerClsid = null, int? resultHr = null)
     {
         try
         {
+            // Typed facts use the existing closed event field; paths and COM messages never enter logs.
+            string eventName = $"preview.host.phase.{stage}";
+            if (handlerClsid is { } clsid)
+                eventName += $".handler.{clsid:N}.apartment.{Thread.CurrentThread.GetApartmentState()}";
+            if (resultHr is { } hr) eventName += $".hr.0x{hr:X8}";
             Trace.TraceInformation(JsonSerializer.Serialize(new
             {
                 timestamp = DateTimeOffset.UtcNow,
                 level = exception is null ? "info" : "error",
                 module = "document-preview",
-                @event = $"preview.host.phase.{stage}",
+                @event = eventName,
                 errorCode = exception is null
                     ? null : $"{exception.GetType().Name}(0x{exception.HResult:X8})",
                 requestId = (string?)null,
@@ -89,7 +107,7 @@ public static class PreviewHostEntry
         TraceStage(PreviewHostStage.PreviewEntry);
         application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         if (!PreviewHostArguments.TryParse(args, out var arguments)) return 2;
-        TraceStage(PreviewHostStage.ArgumentsAccepted);
+        TraceStage(PreviewHostStage.ArgumentsAccepted, handlerClsid: arguments.HandlerClsid);
 
         void WriteEvidence(string outcome, IntPtr hwnd = default)
             => PreviewHostEntry.WriteEvidence(arguments, outcome, hwnd);
