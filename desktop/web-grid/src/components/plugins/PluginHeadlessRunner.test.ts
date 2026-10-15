@@ -246,4 +246,16 @@ describe("PluginHeadlessRunner", () => {
     wrapper.unmount();
   });
 
+  it.each(["failed", "cancelled", "aborted"] as const)("summarizes successful writes beside %s as partial results", async state => {
+    const { wrapper, dispatchFromFrame } = mountRunner();
+    await wrapper.setProps({ tasks: [{ ...runningTask, taskId: "saved", state: "succeeded", result: { contract: "vibetable.plugin-result.v1", status: "success", summary: "已保存甲", metrics: [], table: null, artifacts: [], refresh: null, warnings: [] } },
+      { ...runningTask, taskId: "other", state }] });
+    dispatchFromFrame({ status: "succeeded", summary: "done" }); await Promise.resolve();
+    expect(wrapper.get("header b").text()).toBe("部分完成（请核对）");
+    expect(wrapper.get(".headless-summary").text()).toContain("已保存甲");
+    expect(wrapper.get(".headless-summary").text()).toContain("请勿重复执行");
+    expect(wrapper.get('[data-task-id="saved"]').text()).toContain("已保存甲");
+    expect(wrapper.get('[data-task-id="other"]').text()).toContain(state);
+    wrapper.unmount();
+  });
 });

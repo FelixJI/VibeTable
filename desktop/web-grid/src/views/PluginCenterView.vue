@@ -117,9 +117,7 @@ async function safely(task: () => Promise<unknown>): Promise<void> {
 async function inspectInstall(sourceToken: "host-picker:package" | "host-picker:folder"): Promise<void> {
   await safely(async () => {
     const plan = await service.inspectInstall(sourceToken);
-    plannedUpgradePluginId.value = store.plugins.find(
-      (item) => item.pluginId === plan.manifest.pluginId,
-    )?.pluginId ?? null;
+    plannedUpgradePluginId.value = plan.targetInstallationId ? plan.manifest.pluginId : null;
   });
 }
 async function inspectGitHubInstall(): Promise<void> {
@@ -127,18 +125,21 @@ async function inspectGitHubInstall(): Promise<void> {
   if (!repository) return;
   await safely(async () => {
     const plan = await service.inspectGitHubInstall(repository);
-    plannedUpgradePluginId.value = store.plugins.find(
-      (item) => item.pluginId === plan.manifest.pluginId,
-    )?.pluginId ?? null;
+    plannedUpgradePluginId.value = plan.targetInstallationId ? plan.manifest.pluginId : null;
   });
 }
 async function commitPlan(): Promise<void> {
   const plan = store.installPlan;
   if (!plan) return;
   await safely(async () => {
-    const existing = plannedUpgradePluginId.value
-      ? store.plugins.find((item) => item.pluginId === plannedUpgradePluginId.value)
+    const existing = plan.targetInstallationId
+      ? store.plugins.find((item) => item.pluginId === plan.manifest.pluginId)
       : null;
+    if (plan.targetInstallationId && (!existing || existing.installationId !== plan.targetInstallationId
+      || existing.revision !== plan.targetRevision)) {
+      await cancelPlan();
+      throw new Error("升级目标已改变，请重新检查安装计划");
+    }
     if (existing) {
       if (!publicCapabilityPolicy.pluginUpgrade) return;
       await service.upgrade(existing, plan);
@@ -172,13 +173,21 @@ async function inspectUpgrade(current: PluginSnapshot): Promise<void> {
       ? "host-picker:folder"
       : "host-picker:package";
     const plan = await service.inspectInstall(sourceToken);
-    if (plan.manifest.pluginId !== current.pluginId) {
+    if (plan.manifest.pluginId !== current.pluginId || !plan.targetInstallationId
+      || plan.targetInstallationId !== current.installationId || plan.targetRevision !== current.revision) {
       await service.cancelInstall(plan.planId);
       throw new Error("所选来源不是当前插件的新版本");
     }
     plannedUpgradePluginId.value = current.pluginId;
   });
 }
+watch(() => [store.plugins, store.installPlan], () => {
+  const plan = store.installPlan;
+  if (!plan?.targetInstallationId) return;
+  const current = store.plugins.find(item => item.pluginId === plan.manifest.pluginId);
+  if (!current || current.installationId !== plan.targetInstallationId || current.revision !== plan.targetRevision)
+    void cancelPlan();
+}, { deep: true });
 async function openAction(pluginId: string, actionId: string): Promise<void> {
   await safely(() => service.describeAction(pluginId, actionId, commandContext()));
 }

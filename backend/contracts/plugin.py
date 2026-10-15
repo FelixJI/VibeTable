@@ -169,6 +169,8 @@ class PluginManifest(PluginContract):
 
 
 class InstallPlan(PluginContract):
+    target_installation_id: str | None = Field(default=None, min_length=1)
+    target_revision: int | None = Field(default=None, ge=1)
     plan_id: str = Field(min_length=1, max_length=128)
     project_key: str = Field(min_length=1, max_length=2048)
     project_revision: str = Field(min_length=1, max_length=128)

@@ -1096,6 +1096,8 @@ export interface PluginSnapshot {
 }
 
 export interface PluginInstallPlan {
+  readonly targetInstallationId?: string | null;
+  readonly targetRevision?: number | null;
   readonly planId: string;
   readonly projectKey: string;
   readonly projectRevision: string;

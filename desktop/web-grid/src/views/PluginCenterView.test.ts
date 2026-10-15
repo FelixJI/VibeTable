@@ -314,6 +314,7 @@ describe("PluginCenterView", () => {
           } else if (request.type === "plugin.install.inspect") {
             payload = {
               planId: "plan-upgrade",
+              targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
               projectKey: "local:default",
               projectRevision: "r2",
               sourceType: "package",
@@ -702,6 +703,45 @@ describe("PluginCenterView", () => {
     expect(posted.filter(item => item.type === "plugin.lifecycle.uninstall")).toHaveLength(0);
   });
 
+  it.each(["removed", "reinstalled", "revision"])("retires an inspected upgrade when the original target is %s", async transition => {
+    const store = usePluginStore();
+    const { posted } = replyingBridge(type => type === "plugin.install.inspect" ? {
+      planId: "bound-upgrade", projectKey: blockedPlugin.projectKey, projectRevision: store.projectRevision,
+      targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
+      sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
+      manifest: blockedPlugin.manifest, schemas: {},
+    } : type === "plugin.install.cancel" ? { cancelled: true } : []);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click"); await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(true);
+    if (transition === "removed") store.removePlugin(blockedPlugin.pluginId);
+    else store.replaceCatalog(blockedPlugin.projectKey, [{ ...blockedPlugin, installationId: transition === "reinstalled" ? "new-record" : blockedPlugin.installationId,
+      revision: transition === "reinstalled" ? blockedPlugin.revision : blockedPlugin.revision + 1 }]);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.install.cancel")).toHaveLength(1);
+    expect(posted.some(item => item.type === "plugin.lifecycle.upgrade" || item.type === "plugin.install.commit")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("retires a late inspected plan after the catalog already replaced its target", async () => {
+    const store = usePluginStore();
+    const { posted } = replyingBridge(type => {
+      if (type !== "plugin.install.inspect") return { cancelled: true };
+      store.replaceCatalog(blockedPlugin.projectKey, [{ ...blockedPlugin, installationId: "replacement-record" }]);
+      return { planId: "late-upgrade", projectKey: blockedPlugin.projectKey, projectRevision: store.projectRevision,
+        targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
+        sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
+        manifest: blockedPlugin.manifest, schemas: {} };
+    });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click"); await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.install.cancel")).toHaveLength(1);
+    expect(posted.some(item => item.type === "plugin.lifecycle.upgrade" || item.type === "plugin.install.commit")).toBe(false);
+    wrapper.unmount();
+  });
+
   it.each([false, true])("compares complete permission declarations with semantic ordering (%s)", async (equivalent) => {
     const before = [{ collection: "A", operations: ["read", "query"], fields: ["title", "id"] },
       { collection: "B", operations: ["write"], fields: ["*"] }];
@@ -713,6 +753,7 @@ describe("PluginCenterView", () => {
     usePluginStore().applyPlugin({ ...blockedPlugin, revision: 8,
       manifest: { ...blockedPlugin.manifest, permissions: { data: before } } });
     replyingBridge(() => ({ planId: "permission-plan", projectKey: "local:default", projectRevision: "r2",
+      targetInstallationId: blockedPlugin.installationId, targetRevision: 8,
       sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
       manifest: { ...blockedPlugin.manifest, version: "1.3.0", permissions: { data: after } }, schemas: {} }));
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });

@@ -65,6 +65,7 @@ class FakePluginStore:
             ],
         )
         self.installation = SimpleNamespace(
+            installation_id="record-worker",
             plugin_id="com.example.safe-worker",
             version="1.0.0",
             revision=1,
@@ -95,7 +96,11 @@ class FakePluginStore:
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str,
+        installation_revision: int,
     ) -> PluginPrivateSetting:
+        assert installation_id == self.installation.installation_id
+        assert installation_revision == self.installation.revision
         key = (setting.project_key, setting.plugin_id, setting.setting_key)
         current = self.settings.get(key)
         assert expected_revision == (current.revision if current else None)
@@ -279,6 +284,8 @@ def _context() -> dict[str, Any]:
 
 def _execution(*, package_hash: str = _UNRETAINED_PACKAGE_HASH) -> dict[str, Any]:
     return {
+        "installationId": "record-worker",
+        "installationRevision": 1,
         "projectKey": "project-a",
         "pluginId": "com.example.safe-worker",
         "pluginVersion": "1.0.0",
@@ -1503,6 +1510,7 @@ async def test_real_node_worker_consumes_shared_sdk_conformance_corpus(tmp_path:
     class ConformanceRegistry:
         def __init__(self) -> None:
             self.snapshot = PluginSnapshot(
+                installation_id=store.installation.installation_id,
                 project_key="project-a",
                 plugin_id=store.installation.plugin_id,
                 version="1.0.0",

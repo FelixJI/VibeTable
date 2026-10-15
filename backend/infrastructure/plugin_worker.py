@@ -91,6 +91,8 @@ class _PluginInstallationStore(Protocol):
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str,
+        installation_revision: int,
     ) -> PluginPrivateSetting: ...
 
 
@@ -102,6 +104,7 @@ class _ResolvedWorker:
     source: str
     revision: int = 1
     plugin_api: str = "1.x"
+    installation_id: str | None = None
 
 
 class NodePluginWorkerAdapter:
@@ -610,6 +613,8 @@ class NodePluginWorkerAdapter:
                 revision=revision,
             ),
             expected_revision=None if current is None else current.revision,
+            installation_id=resolved.installation_id or "",
+            installation_revision=resolved.revision,
         )
         return None
 
@@ -706,6 +711,12 @@ class NodePluginWorkerAdapter:
         installation = await self._store.get_installation(project_key, plugin_id)
         if installation is None:
             raise PluginWorkerError("plugin installation is unavailable")
+        if (
+            not execution.get("installationId")
+            or installation.installation_id != execution.get("installationId")
+            or installation.revision != execution.get("installationRevision")
+        ):
+            raise PluginWorkerError("plugin Worker installation identity is stale")
         if installation.version != plugin_version or installation.package_hash != package_hash:
             raise PluginWorkerError("plugin Worker package identity is stale")
         action = next(
@@ -736,6 +747,7 @@ class NodePluginWorkerAdapter:
             permissions=installation.manifest.permissions,
             source=source,
             revision=installation.revision,
+            installation_id=installation.installation_id,
             plugin_api=str(installation.manifest.compatibility.get("pluginApi", "")),
         )
 

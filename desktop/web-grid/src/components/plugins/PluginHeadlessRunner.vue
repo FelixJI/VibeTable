@@ -4,7 +4,7 @@ import PluginTaskList from "./PluginTaskList.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot, WebPluginActionDescription } from "@/contracts";
 
-type HeadlessOutcomeStatus = "running" | "succeeded" | "failed" | "cancelled" | "aborted" | "unknown";
+type HeadlessOutcomeStatus = "running" | "succeeded" | "failed" | "cancelled" | "aborted" | "unknown" | "partial";
 
 const props = defineProps<{
   description: WebPluginActionDescription;
@@ -49,6 +49,9 @@ const outcome = computed(() => {
     ? "停止请求已发送，等待宿主核对结果；请勿重复执行。" : "宿主任务正在执行。" };
   if (tasks.some(task => task.error?.code === "plugin_commit_unknown"))
     return { status: "unknown" as const, summary: "写入结果未知，请核对实际数据；请勿重复执行。" };
+  const saved = tasks.filter(task => task.state === "succeeded");
+  if (saved.length && (saved.length !== tasks.length || moduleOutcome.value.status === "failed"))
+    return { status: "partial" as const, summary: `部分写入已完成：${saved.map(task => task.result?.summary || task.taskId).join("；")}。其余结果请核对下方宿主记录；请勿重复执行。` };
   const failed = tasks.find(task => task.state === "failed" || task.state === "aborted");
   if (failed) return { status: failed.state as HeadlessOutcomeStatus, summary: failed.error?.message || "" };
   if (tasks.some(task => task.state === "cancelled")) return { status: "cancelled" as const, summary: "" };
@@ -64,6 +67,7 @@ const statusLabel = computed(() => {
     case "cancelled": return "已取消";
     case "aborted": return "已中止";
     case "unknown": return "已结束（结果未知）";
+    case "partial": return "部分完成（请核对）";
     default: return cancelRequested.value ? "停止请求已发送，等待结果" : "运行中";
   }
 });

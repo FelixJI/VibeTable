@@ -265,7 +265,9 @@ public sealed record PluginRuntimeInstallPlan(
     string SourceLocation,
     string PackageHash,
     PluginRuntimeManifest Manifest,
-    IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas);
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas,
+    string? TargetInstallationId = null,
+    int? TargetRevision = null);
 
 public sealed record PluginRuntimeSnapshot(
     string ProjectKey,

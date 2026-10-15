@@ -313,15 +313,20 @@ func TestPublicErrorWireMatchesFrozenOracle(t *testing.T) {
 func TestPrivateSettingCAS(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
+	installation, err := service.SaveInstallation(ctx, frozenInstallation(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := jsonText(installation, "installationId")
 	setting := []byte(`{"projectKey":"local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7","pluginId":"com.example.reader","settingKey":"token","value":"a","revision":1}`)
-	if _, err := service.SavePrivateSetting(ctx, setting, nil); err != nil {
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err != nil {
 		t.Fatalf("create setting: %v", err)
 	}
-	if _, err := service.SavePrivateSetting(ctx, setting, nil); err == nil {
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err == nil {
 		t.Fatal("setting create must fail when the key exists")
 	}
 	updated := replaceJSON(t, setting, map[string]any{"value": "b", "revision": 2})
-	if _, err := service.SavePrivateSetting(ctx, updated, int64Ptr(1)); err != nil {
+	if _, err := service.SavePrivateSetting(ctx, updated, int64Ptr(1), id, 1); err != nil {
 		t.Fatalf("setting CAS update: %v", err)
 	}
 	loaded, err := service.GetPrivateSetting(ctx, service.ProjectKey(), "com.example.reader", "token")

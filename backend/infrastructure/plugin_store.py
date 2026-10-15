@@ -130,7 +130,17 @@ class InMemoryPluginStore:
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str | None = None,
+        installation_revision: int | None = None,
     ) -> PluginPrivateSetting:
+        if installation_id is not None:
+            installation = self._installations.get((setting.project_key, setting.plugin_id))
+            if (
+                installation is None
+                or installation.installation_id != installation_id
+                or installation.revision != installation_revision
+            ):
+                raise PluginStoreConflictError("plugin installation changed")
         key = (setting.project_key, setting.plugin_id, setting.setting_key)
         current = self._settings.get(key)
         actual = None if current is None else current.revision
@@ -194,6 +204,55 @@ class InMemoryPluginStore:
         self._revisions[revision_key] = package_revision
         self._audit.append(lifecycle_audit_event(snapshot, "install"))
         return snapshot
+
+    async def commit_upgrade(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package(plan, package_revision, "upgrade")
+
+    async def commit_rollback(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package(plan, package_revision, "rollback")
+
+    async def _commit_package(
+        self, plan: InstallPlan, package_revision: PluginPackageRevision, event_type: str
+    ) -> PluginSnapshot:
+        key = (plan.project_key, plan.manifest.plugin_id)
+        current = self._installations.get(key)
+        if (
+            current is None
+            or not plan.target_installation_id
+            or current.installation_id != plan.target_installation_id
+            or current.revision != plan.target_revision
+        ):
+            raise PluginStoreConflictError("plugin installation changed")
+        updated = current.model_copy(
+            update={
+                "version": plan.manifest.version,
+                "package_hash": plan.package_hash,
+                "source_type": plan.source_type,
+                "source_location": plan.source_location,
+                "development_source_location": plan.source_location
+                if plan.source_type == "local-folder"
+                else None,
+                "manifest": plan.manifest,
+                "schemas": plan.schemas,
+                "source_changed": False,
+                "revision": current.revision + 1,
+            }
+        )
+        for revision_key, revision in list(self._revisions.items()):
+            if revision_key[:2] != key:
+                continue
+            if revision.state == "current":
+                self._revisions[revision_key] = revision.model_copy(update={"state": "rollback"})
+            else:
+                del self._revisions[revision_key]
+        self._revisions[(*key, package_revision.package_hash)] = package_revision
+        self._installations[key] = updated
+        self._audit.append(lifecycle_audit_event(updated, event_type))
+        return updated
 
 
 __all__ = [

@@ -16532,6 +16532,30 @@
         },
         "additionalProperties": false,
         "properties": {
+          "targetInstallationId": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "targetRevision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "planId": {
             "maxLength": 128,
             "minLength": 1,
@@ -16600,6 +16624,8 @@
         "jsonrpc": "2.0",
         "id": "rpc-057",
         "result": {
+          "targetInstallationId": null,
+          "targetRevision": null,
           "planId": "00000000-0000-4000-8000-000000000001",
           "projectKey": "local:default",
           "projectRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

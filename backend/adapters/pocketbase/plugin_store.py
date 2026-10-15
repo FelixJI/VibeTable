@@ -191,6 +191,8 @@ class PocketBasePluginStore:
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str,
+        installation_revision: int,
     ) -> PluginPrivateSetting:
         result = await self._call(
             "save_private_setting",
@@ -199,6 +201,8 @@ class PocketBasePluginStore:
                 "pluginId": setting.plugin_id,
                 "payload": setting.model_dump(mode="json", by_alias=True),
                 "expectedRevision": expected_revision,
+                "installationId": installation_id,
+                "installationRevision": installation_revision,
             },
         )
         return PluginPrivateSetting.model_validate(_object(result, "plugin private setting"))
@@ -246,6 +250,28 @@ class PocketBasePluginStore:
     ) -> PluginSnapshot:
         result = await self._call(
             "commit_install",
+            {
+                "plan": plan.model_dump(mode="json", by_alias=True),
+                "packageRevision": package_revision.model_dump(mode="json", by_alias=True),
+            },
+        )
+        return PluginSnapshot.model_validate(_object(result, "plugin installation"))
+
+    async def commit_upgrade(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package("commit_upgrade", plan, package_revision)
+
+    async def commit_rollback(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package("commit_rollback", plan, package_revision)
+
+    async def _commit_package(
+        self, operation: str, plan: InstallPlan, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        result = await self._call(
+            operation,
             {
                 "plan": plan.model_dump(mode="json", by_alias=True),
                 "packageRevision": package_revision.model_dump(mode="json", by_alias=True),

@@ -527,6 +527,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 planId),
             token).ConfigureAwait(false);
         VerifyPlanEcho(plan, planId);
+        plan = await BindPlanTargetAsync(binding, plan, token).ConfigureAwait(false);
         AdmitInstallPlan(binding, plan, null);
         return plan with { SourceLocation = HostManagedSource };
     }
@@ -556,6 +557,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     planId),
                 token).ConfigureAwait(false);
             VerifyPlanEcho(plan, planId);
+            plan = await BindPlanTargetAsync(binding, plan, token).ConfigureAwait(false);
             DownloadedPluginPackage admittedPackage = download;
             download = null;
             AdmitInstallPlan(binding, plan, admittedPackage);
@@ -569,6 +571,22 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     private static string NewInstallPlanId()
         => $"plugin-plan-{Guid.NewGuid():N}"[..24];
+
+    private async Task<PluginRuntimeInstallPlan> BindPlanTargetAsync(
+        HostInstallPlanBinding binding, PluginRuntimeInstallPlan plan, CancellationToken token)
+    {
+        // Production reads the Go authority directly; the renderer never supplies this binding.
+        // Standalone gateways may provide the same binding from their authority-backed inspection.
+        if (_sharedRpc is null) return plan;
+        JsonElement catalog = await _sharedRpc("plugin.listCatalog",
+            JsonSerializer.SerializeToElement(new PluginCatalogListParams(binding.Context.ProjectKey), JsonOptions), token)
+            .ConfigureAwait(false);
+        var current = (catalog.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
+            ?? throw new JsonException("Invalid plugin catalog."))
+            .SingleOrDefault(item => item.PluginId == plan.Manifest.PluginId);
+        if (current is not null && string.IsNullOrWhiteSpace(current.InstallationId)) throw StaleInstallPlan();
+        return plan with { TargetInstallationId = current?.InstallationId, TargetRevision = current?.Revision };
+    }
 
     private static void VerifyPlanEcho(PluginRuntimeInstallPlan plan, string planId)
     {
@@ -587,6 +605,8 @@ public sealed class PluginRequestDispatcher : IDisposable
     {
         await using HostInstallPlanOperation operation =
             BeginInstallPlanOperation(request.PlanId);
+        if (operation.Plan.Plan.TargetInstallationId is not null || operation.Plan.Plan.TargetRevision is not null)
+            throw StaleInstallPlan();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             token,
             operation.Authority.Token);
@@ -644,6 +664,8 @@ public sealed class PluginRequestDispatcher : IDisposable
         await using HostInstallPlanOperation operation = BeginInstallPlanOperation(
             request.PlanId,
             request.PluginId);
+        if (string.IsNullOrWhiteSpace(operation.Plan.Plan.TargetInstallationId)
+            || operation.Plan.Plan.TargetRevision is null or < 1) throw StaleInstallPlan();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             token,
             operation.Authority.Token);

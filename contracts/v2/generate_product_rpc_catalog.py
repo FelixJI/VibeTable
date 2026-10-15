@@ -1028,6 +1028,8 @@ def _plugin_host_install_fixture() -> str:
                 "projectRevision": "revision-1",
                 "plan": {
                     "planId": f"plan-{name}",
+                    "targetInstallationId": "installation-native" if name == "native" else None,
+                    "targetRevision": 7 if name == "native" else None,
                     "projectKey": "project-1",
                     "projectRevision": "revision-1",
                     "sourceType": "package",

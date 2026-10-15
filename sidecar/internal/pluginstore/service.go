@@ -583,6 +583,8 @@ func (service *Service) SavePrivateSetting(
 	ctx context.Context,
 	setting json.RawMessage,
 	expectedRevision *int64,
+	installationID string,
+	installationRevision int64,
 ) (json.RawMessage, error) {
 	projectKey, pluginID, settingKey, err := validateSettingPayload(setting)
 	if err != nil {
@@ -593,6 +595,13 @@ func (service *Service) SavePrivateSetting(
 		return nil, err
 	}
 	err = service.transact(ctx, func(txApp core.App) error {
+		installation, err := findInstallation(txApp, projectKey, pluginID)
+		if err != nil {
+			return err
+		}
+		if installationID == "" || installationRevision < 1 || installation == nil || jsonText(installation.Payload, "installationId") != installationID || jsonInt(installation.Payload, "revision") != installationRevision {
+			return revisionConflict(KindInstallation, installationRevision, "installation changed")
+		}
 		stored, findErr := findRecord(
 			txApp, KindSetting, projectKey, pluginID, settingKey,
 		)

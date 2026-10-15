@@ -294,7 +294,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 					expected = &previous
 				}
 				payload, _ := json.Marshal(map[string]any{"projectKey": input.ProjectKey, "pluginId": input.PluginID, "settingKey": request.Key, "value": request.Value, "revision": setting.Revision + 1})
-				_, err = store.SavePrivateSetting(ctx, payload, expected)
+				_, err = store.SavePrivateSetting(ctx, payload, expected, input.InstallationID, input.InstallationRevision)
 				return err
 			})
 		}

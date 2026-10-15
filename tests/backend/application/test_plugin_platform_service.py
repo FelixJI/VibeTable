@@ -27,7 +27,7 @@ from backend.contracts.plugin import (
 )
 from backend.contracts.task import SessionPathGrant
 from backend.infrastructure.plugin_package_lifecycle import LocalPluginPackageLifecycle
-from backend.infrastructure.plugin_store import InMemoryPluginStore
+from backend.infrastructure.plugin_store import InMemoryPluginStore, PluginStoreConflictError
 from backend.infrastructure.plugin_worker import (
     InMemoryPluginWorkerAdapter,
     NodePluginWorkerAdapter,
@@ -419,14 +419,13 @@ async def test_duplicate_commit_fails_closed_without_local_compensation(
         plan_id="plan-host-duplicate-second",
     )
 
-    with pytest.raises(PluginRegistryError) as error:
+    with pytest.raises(ValueError, match="upgrade plan"):
         await service.commit_install(
             project_key="local:default",
             plan=second,
             project_revision="project-r1",
         )
 
-    assert error.value.code == "plugin_already_installed"
     # One atomic commit keeps the first installation and its package.
     installations = await store.list_installations("local:default")
     assert len(installations) == 1
@@ -644,6 +643,114 @@ async def test_hidden_upgrade_does_not_duplicate_the_go_catalog_event(
     )
 
     assert events == []
+
+
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+async def test_atomic_upgrade_prunes_only_unreferenced_prior_cache_after_success(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    cleanup_failure: bool,
+) -> None:
+    class Packages(InMemoryPluginPackageLifecycle):
+        def discard(self, retained_location: str) -> None:
+            if cleanup_failure:
+                raise OSError("synthetic cleanup failure")
+            super().discard(retained_location)
+
+    packages = Packages()
+    store = InMemoryPluginStore()
+    service = PluginPlatformService(
+        store=store,
+        registry=PluginRegistry(store=store),
+        runtime=PluginExecutionRuntime(
+            registry=PluginRegistry(store=store), worker_adapter=InMemoryPluginWorkerAdapter()
+        ),
+        package_lifecycle=packages,
+    )
+    first_path = ""
+    for index in range(3):
+        source = f"memory://source-{index}"
+        manifest = _reader_manifest().model_copy(update={"version": f"{index + 1}.0.0"})
+        packages.add(source, manifest, f"sha256:{str(index + 1) * 64}")
+        plan = await service.inspect_install(
+            project_key="local:default",
+            project_revision="r1",
+            source_location=source,
+            plan_id=f"p-{index}",
+        )
+        if index == 0:
+            result = await service.commit_install(
+                project_key="local:default", plan=plan, project_revision="r1"
+            )
+            first_path = packages.retained_location(result.package_hash)
+        else:
+            result = await service.upgrade(
+                project_key="local:default",
+                plugin_id=manifest.plugin_id,
+                plan=plan,
+                project_revision="r1",
+            )
+    assert result.version == "3.0.0"
+    assert result.revision == 3
+    assert packages.discard_calls == ([] if cleanup_failure else [first_path])
+    assert ("local cache cleanup deferred" in caplog.text) == cleanup_failure
+
+
+@pytest.mark.parametrize("transition", ["uninstall", "reinstall", "revision"])
+async def test_upgrade_plan_cannot_follow_a_changed_installation(
+    tmp_path: Path, transition: str
+) -> None:
+    source = tmp_path / "reader"
+    _write_plugin(source)
+    store = InMemoryPluginStore()
+    service = _service(store, package_cache=tmp_path / "cache")
+    args = {
+        "project_key": "local:default",
+        "project_revision": "r1",
+        "source_location": str(source),
+    }
+    first = await service.inspect_install(**args, plan_id="first")
+    installed = await service.commit_install(
+        project_key="local:default", plan=first, project_revision="r1"
+    )
+    replacement_source = tmp_path / "reader-next"
+    _write_plugin(replacement_source, version="2.0.0")
+    bound = await service.inspect_install(
+        **{**args, "source_location": str(replacement_source)}, plan_id="bound"
+    )
+    assert bound.target_installation_id == installed.installation_id
+    assert bound.target_revision == installed.revision
+    if transition == "revision":
+        await store.save_installation(
+            installed.model_copy(update={"revision": 2}), expected_revision=1
+        )
+    else:
+        await store.delete_installation(
+            "local:default",
+            installed.plugin_id,
+            installation_id=installed.installation_id or "",
+            expected_revision=1,
+            cleanup_private_settings=True,
+        )
+        if transition == "reinstall":
+            await service.commit_install(
+                project_key="local:default", plan=first, project_revision="r1"
+            )
+    before = await store.get_installation("local:default", installed.plugin_id)
+    revisions = await store.list_package_revisions("local:default", installed.plugin_id)
+    with pytest.raises(PluginStoreConflictError):
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id=installed.plugin_id,
+            plan=bound,
+            project_revision="r1",
+        )
+    assert await store.get_installation("local:default", installed.plugin_id) == before
+    assert await store.list_package_revisions("local:default", installed.plugin_id) == revisions
+    # Failed CAS retains the newly cached package; it never discards any path.
+    assert len(list((tmp_path / "cache").glob("*.vtplugin"))) == 2
+    with pytest.raises(ValueError, match="upgrade plan"):
+        await service.commit_install(project_key="local:default", plan=bound, project_revision="r1")
 
 
 class _CommitCleanupProbeStore(InMemoryPluginStore):

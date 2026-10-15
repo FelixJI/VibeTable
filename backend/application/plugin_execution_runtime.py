@@ -264,6 +264,8 @@ class PluginExecutionRuntime:
             "runId": initial.run_id,
             "pluginId": initial.plugin_id,
             "pluginVersion": initial.plugin_version,
+            "installationId": initial.installation_id,
+            "installationRevision": initial.installation_revision,
             "packageHash": package_hash,
             "actionId": initial.action_id,
             "projectKey": context.project_key,

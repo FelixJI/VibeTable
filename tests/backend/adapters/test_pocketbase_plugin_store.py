@@ -259,7 +259,9 @@ async def test_private_setting_round_trip_uses_item_key_and_revision_guard() -> 
         "com.example.summary",
         "columns",
     )
-    saved = await store.save_private_setting(_setting(), expected_revision=2)
+    saved = await store.save_private_setting(
+        _setting(), expected_revision=2, installation_id="record-summary", installation_revision=7
+    )
     removed = await store.delete_private_settings("local:default", "com.example.summary")
 
     assert saved == _setting()
@@ -280,6 +282,8 @@ async def test_private_setting_round_trip_uses_item_key_and_revision_guard() -> 
             "pluginId": "com.example.summary",
             "payload": payload,
             "expectedRevision": 2,
+            "installationId": "record-summary",
+            "installationRevision": 7,
         },
     )
 
@@ -340,6 +344,26 @@ async def test_revision_conflict_maps_to_frozen_conflict_error() -> None:
         await store.save_installation(_snapshot(), expected_revision=1)
 
     assert str(error.value) == message
+
+
+@pytest.mark.parametrize("operation", ["commit_upgrade", "commit_rollback"])
+async def test_package_change_posts_immutable_target_to_the_atomic_store(operation: str) -> None:
+    client = FakePluginStoreClient([_snapshot_payload()])
+    store = PocketBasePluginStore(client=client, package_cache=Path("cache"))
+    plan = _plan().model_copy(
+        update={"target_installation_id": "original-record", "target_revision": 7}
+    )
+    commit = store.commit_upgrade if operation == "commit_upgrade" else store.commit_rollback
+    await commit(plan, package_revision=_package_revision())
+    assert client.calls == [
+        (
+            operation,
+            {
+                "plan": plan.model_dump(mode="json", by_alias=True),
+                "packageRevision": _package_revision().model_dump(mode="json", by_alias=True),
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

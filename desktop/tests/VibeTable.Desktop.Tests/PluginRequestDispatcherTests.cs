@@ -11,6 +11,36 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    public async Task AuthorityBindsUpgradeTargetAndUpgradeLeaseCannotBeUsedAsInstall()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var gateway = new FakePluginGateway();
+        var authority = gateway.CatalogSnapshot with { InstallationId = "authority-record", Revision = 9 };
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            new PluginWebViewResourceHost(new PluginResourceHost(), surfaces), projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { authority })));
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-target",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+        var plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
+        Assert.AreEqual("authority-record", plan.TargetInstallationId);
+        Assert.AreEqual(9, plan.TargetRevision);
+        await dispatcher.DispatchAsync(Request("plugin.lifecycle.upgrade", "upgrade-target",
+            $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","planId":"{{plan.PlanId}}","projectRevision":"1","targetInstallationId":"forged"}"""));
+        Assert.AreEqual("authority-record", gateway.UpgradeRequest!.Plan.TargetInstallationId);
+        Assert.AreEqual(9, gateway.UpgradeRequest.Plan.TargetRevision);
+        await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-target-again",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+        plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
+        await dispatcher.DispatchAsync(Request("plugin.install.commit", "install-target",
+            $$"""{"planId":"{{plan.PlanId}}","projectRevision":"1"}"""));
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.IsNull(gateway.CommitRequest);
+    }
+
+    [TestMethod]
     [DataRow("uninstall-notification")]
     [DataRow("uninstall-conflict")]
     [DataRow("empty-authority")]
@@ -118,10 +148,12 @@ public sealed class PluginRequestDispatcherTests
             var surfaces = new PluginSurfaceSessionManager();
             var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
             bool initialCatalog = lateUninstall;
+            bool inspectionRead = false;
             using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
                 new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources,
-                projectContext: ReadyContext, sharedRpc: (_, _, _) => initialCatalog
-                    ? Task.FromResult(JsonSerializer.SerializeToElement(new[] { old })) : pendingList.Task, packageCacheRoot: _ => root);
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => inspectionRead
+                    ? Task.FromResult(JsonSerializer.SerializeToElement(Array.Empty<PluginRuntimeSnapshot>()))
+                    : initialCatalog ? Task.FromResult(JsonSerializer.SerializeToElement(new[] { old })) : pendingList.Task, packageCacheRoot: _ => root);
             dispatcher.SetGateway(gateway);
             if (lateUninstall)
             {
@@ -131,6 +163,7 @@ public sealed class PluginRequestDispatcherTests
             }
             Task late = dispatcher.DispatchAsync(Request(lateUninstall ? "plugin.lifecycle.uninstall" : "plugin.catalog.list", "old",
                 """{"projectKey":"project-1","pluginId":"com.acme.clean","projectRevision":"1","installationId":"retired-record","expectedRevision":4,"cleanupPrivateSettings":false}"""));
+            inspectionRead = true;
             await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-replacement",
                 """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
             string planId = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload).PlanId;
@@ -158,7 +191,8 @@ public sealed class PluginRequestDispatcherTests
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
         using var gateway = new FakePluginGateway();
         using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
-            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources, projectContext: ReadyContext);
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources, projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot })));
         dispatcher.SetGateway(gateway);
         Task routed = Task.CompletedTask;
         int calls = 0;
@@ -1037,7 +1071,8 @@ public sealed class PluginRequestDispatcherTests
             surfaces,
             new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
             resources,
-            projectContext: () => context);
+            projectContext: () => context,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot })));
         dispatcher.SetGateway(gateway);
         await dispatcher.DispatchAsync(Request(
             "plugin.install.inspect",
@@ -2304,7 +2339,7 @@ public sealed class PluginRequestDispatcherTests
             "project-1", "com.acme.clean", "1.0.0", "sha256:" + new string('a', 64),
             "package", "package.vtplugin", Manifest,
             new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>(),
-            "enabled", null, 1);
+            "enabled", null, 1, InstallationId: "record-clean");
         private static readonly PluginRuntimeTaskSnapshot Task = new(
             "task-1", "run-1", "com.acme.clean", "1.0.0", "clean", "project-1",
             null, 0, PluginRisk.Read, "queued", false, null, null, null);

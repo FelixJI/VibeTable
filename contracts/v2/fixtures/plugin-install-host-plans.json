@@ -4,6 +4,8 @@
     "params": {
       "projectKey": "project-1",
       "plan": {
+        "targetInstallationId": null,
+        "targetRevision": null,
         "planId": "plan-legacy",
         "projectKey": "project-1",
         "projectRevision": "revision-1",
@@ -67,6 +69,8 @@
     "params": {
       "projectKey": "project-1",
       "plan": {
+        "targetInstallationId": "installation-native",
+        "targetRevision": 7,
         "planId": "plan-native",
         "projectKey": "project-1",
         "projectRevision": "revision-1",

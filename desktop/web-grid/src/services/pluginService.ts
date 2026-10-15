@@ -271,6 +271,10 @@ export function usePluginService(): PluginService {
 
   async function commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot> {
     const consumed = consumeInstallPlan(plan);
+    if (consumed.targetInstallationId != null || consumed.targetRevision != null) {
+      await releaseInstallPlan(consumed.planId);
+      const error = new PluginInstallPlanStaleError(); store.fail(error); throw error;
+    }
     return mutateCatalog(() => call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
       planId: consumed.planId,
       projectRevision: store.projectRevision,
@@ -314,7 +318,10 @@ export function usePluginService(): PluginService {
     plan: PluginInstallPlan,
   ): Promise<PluginSnapshot> {
     const consumed = consumeInstallPlan(plan);
-    if (consumed.manifest.pluginId !== plugin.pluginId) {
+    const current = store.plugins.find(item => item.pluginId === plugin.pluginId);
+    if (consumed.manifest.pluginId !== plugin.pluginId || !consumed.targetInstallationId
+      || consumed.targetInstallationId !== plugin.installationId || consumed.targetRevision !== plugin.revision
+      || current?.installationId !== consumed.targetInstallationId || current.revision !== consumed.targetRevision) {
       await releaseInstallPlan(consumed.planId);
       const error = new PluginInstallPlanStaleError();
       store.fail(error);
