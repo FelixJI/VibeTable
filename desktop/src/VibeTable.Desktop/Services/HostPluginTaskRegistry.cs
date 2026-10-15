@@ -204,15 +204,18 @@ internal sealed class HostPluginTaskRegistry
                 throw new OperationCanceledException();
             string interactionId = Guid.NewGuid().ToString("N");
             double expires = Now() + 120;
-            var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously), NativeOnlyApproval = record.NativeOnlyApproval };
-            _interactions[record.Snapshot.RunId] = pending;
-            // Delete confirmation cannot inherit a lower risk from the declared action.
+            // Any delete — whatever the surface presentation or the action's
+            // declared risk — is native-only: only the exact native-host
+            // decision can consume the pending confirmation, never the renderer.
+            bool hasDelete = false;
             string confirmationRisk = record.Snapshot.Risk!;
             foreach (var operation in plan.GetProperty("operations").EnumerateArray())
             {
                 if (operation.TryGetProperty("kind", out var kind) && kind.GetString() == "delete")
-                { confirmationRisk = "destructive"; break; }
+                { confirmationRisk = "destructive"; hasDelete = true; break; }
             }
+            var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously), NativeOnlyApproval = record.NativeOnlyApproval || hasDelete };
+            _interactions[record.Snapshot.RunId] = pending;
             var preview = new PluginRuntimeConfirmationPreview(
                 [new Dictionary<string, JsonElement> { ["collection"] = plan.GetProperty("collection").Clone() }],
                 plan.GetProperty("operations").EnumerateArray().Take(10)

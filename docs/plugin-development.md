@@ -48,7 +48,7 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 ```
 
 公开合同是 `contracts/plugin-surface-api.v1.json`。方法闭集为 `context.read`、`data.describe/query`、
-`storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
+`data.subscribe/unsubscribe`、`storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
 查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
 中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
 只有获准读取 `id` 时才返回 rowGuards，按 ID 更新或删除也要求该授权。`context.read` 保留绑定的用户上下文；
@@ -72,6 +72,23 @@ write 动作也不能降低删除确认风险，renderer 不能批准。旧 Work
 3.x 页面动作不进入其选择器，已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
 revision/status、权限、包修订。拒绝/提交前取消零写入，冲突返回权威错误；丢失或不完整回执为
 `plugin_commit_unknown`，不得自动重放，迟到取消或工作区退役保留已读取并完整校验的 applied/replayed 回执成功；旧任务通知不投递到新会话。
+
+`data.subscribe({ collection }, listener, signal?)` 订阅一个 canonical 表，返回 `{subscriptionId}`；
+`data.unsubscribe(subscriptionId)` 立即移除本地回调并退订，AbortSignal 或 client.dispose 也会释放。
+每个 surface 最多 8 个，整个 Host API 最多 64 个；超限为 `plugin_subscription_limit`。表 ID 最长
+128 UTF-8 字节。必须有该表当前的 read/query grant；Go 在同一只读事务核对 installationId、revision、
+status、包修订及表存在，订阅时与每次通知前都重新授权，不能转移 handle。
+
+通知沿唯一 ProductRealtimeSession SSE 接线，仅发送获准表的失效信号；SDK 回调为
+`{type:"invalidated", collection, sequence}`，不包含记录 ID、字段、原始事件或隐藏表信息。
+sequence 是当前订阅的本地通知顺序，不是数据 revision；先完成 subscribe 再做初始 query，
+此后收到信号重新 query，不把信号当数据。
+繁忙时同一订阅只保留一个待发失效，Host 单工作者依次处理有界集合，不阻塞平台 SSE。
+恢复连接会使当前获准表失效以便重查。权限变化/流终止/授权检查失败会结束订阅，回调
+`{type:"closed", code}`（如 plugin_read_denied、plugin_cursor_stale、plugin_subscription_failed）；
+frame 投递失败则退役该 surface，不自动重建或重试订阅。重新订阅应由仍有效的当前页面发起。
+最后的 frame post 在实际 UI 回调内核对 renderer、SSE session/generation、当前 surface 与订阅存活；
+关闭、切换工作区、禁用/升级、退订后的迟到通知不能投递，SDK 丢弃重复/乱序通知并阻止已结束 handle 复活。
 
 Host 在真实 frame 创建时捕获可信 iframe name/token，验证 WebMessage 的实际 source 文档，
 并绑定安装、workspace UUID/sessionEpoch 和授权上下文。插件 payload 的 `pluginId/projectKey/scope`

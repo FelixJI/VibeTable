@@ -16,6 +16,9 @@ export interface SurfaceMutationPlan {
 }
 export interface SurfaceMutationPreview { readonly planId: string; readonly affectedCount: number }
 export interface SurfaceMutationOutcome { readonly status: "succeeded" | "rejected"; readonly taskId: string }
+export type SurfaceDataEvent = { readonly type: "invalidated"; readonly collection: string; readonly sequence: number }
+  | { readonly type: "closed"; readonly code: string };
+export interface SurfaceSubscription { readonly subscriptionId: string }
 export interface SurfaceTransport {
   postMessage(message: unknown): void;
   addEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
@@ -26,6 +29,10 @@ export interface SurfaceCapabilities {
   readonly data: {
     describe(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
     query(request: DataQueryRequest): Promise<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }>;
+    subscribe(request: { readonly collection: string }, listener: (event: SurfaceDataEvent) => void, signal?: AbortSignal): Promise<SurfaceSubscription>;
+    /** Unknown handles are a no-op; repeated in-flight releases share the same acknowledgement.
+     * Normal requests and owned-handle releases each have eight slots. Failed releases retain ownership for explicit retry/dispose. */
+    unsubscribe(subscriptionId: string): Promise<void>;
   };
   readonly storage: { get(key: string): Promise<JsonValue>; set(key: string, value: JsonValue): Promise<void>; delete(key: string): Promise<void> };
   readonly mutation: {
@@ -42,11 +49,45 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const channel = transport ?? browser.chrome?.webview;
   if (!channel || !surfaceToken) throw new PluginCapabilityError("plugin_api_unsupported", "A plugin surface Host is required.");
   let closed = false;
+  const subscriptions = new Map<string, { collection: string; listener: (event: SurfaceDataEvent) => void; sequence: number; cleanup: () => void; stopped: boolean; release?: Promise<void> }>();
+  type Notice = { event?: string; subscriptionId?: string; collection?: string; sequence?: number; code?: string };
+  // A Host notification may beat the subscribe reply; retain one per pending handle, at most eight.
+  const early = new Map<string, Notice>();
+  let subscribing = 0;
+  function notice(value: Notice): void {
+    const id = value.subscriptionId;
+    if (!id) return;
+    const subscription = subscriptions.get(id);
+    if (!subscription) {
+      if (subscribing > 0 && (early.has(id) || early.size < 8)) {
+        const prior = early.get(id);
+        if (prior?.event !== "data.subscription.closed" && (!prior || value.event === "data.subscription.closed" || (value.sequence ?? 0) > (prior.sequence ?? 0))) early.set(id, value);
+      }
+      return;
+    }
+    let event: SurfaceDataEvent;
+    if (value.event === "data.subscription.closed" && typeof value.code === "string") {
+      subscriptions.delete(id); subscription.cleanup();
+      if (subscription.stopped) return;
+      event = { type: "closed", code: value.code };
+    } else if (!subscription.stopped && value.event === "data.invalidated" && value.collection === subscription.collection
+      && Number.isSafeInteger(value.sequence) && value.sequence! > subscription.sequence) {
+      subscription.sequence = value.sequence!;
+      event = { type: "invalidated", collection: value.collection, sequence: value.sequence! };
+    } else return;
+    try { subscription.listener(event); } catch { /* A consumer callback cannot break transport settlement. */ }
+  }
+  function release(method: string, params: unknown): void {
+    try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method, params }); }
+    catch { /* Host closes all owned subscriptions when the frame retires. */ }
+  }
   const pending = new Map<string, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; cleanup: () => void }>();
   const receive = (event: { readonly data: unknown }): void => {
     if (!event.data || typeof event.data !== "object") return;
-    const reply = event.data as { contract?: string; requestId?: string; result?: unknown; error?: { code?: string; message?: string } };
-    if (reply.contract !== SURFACE_API_CONTRACT || !reply.requestId) return;
+    const reply = event.data as Notice & { surfaceToken?: string; contract?: string; requestId?: string; result?: unknown; error?: { code?: string; message?: string } };
+    if (closed || reply.contract !== SURFACE_API_CONTRACT) return;
+    if ((reply.event === "data.invalidated" || reply.event === "data.subscription.closed") && reply.surfaceToken === surfaceToken) { notice(reply); return; }
+    if (!reply.requestId) return;
     const request = pending.get(reply.requestId);
     if (!request) return;
     pending.delete(reply.requestId);
@@ -58,7 +99,9 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   channel.addEventListener("message", receive);
   function call<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
     if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
-    if (pending.size >= 8) return Promise.reject(new PluginCapabilityError("plugin_concurrency_limit", "Too many requests."));
+    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe").length;
+    if (method === "data.unsubscribe" ? releases >= 8 : pending.size - releases >= 8)
+      return Promise.reject(new PluginCapabilityError("plugin_concurrency_limit", "Too many requests."));
     if (signal?.aborted) return Promise.reject(new PluginCapabilityError("plugin_cancel_requested", "Request cancelled."));
     const requestId = crypto.randomUUID();
     return new Promise<T>((resolve, reject) => {
@@ -79,16 +122,56 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError("plugin_transport_failed", "Plugin transport failed.")); }
     });
   }
+  async function unsubscribe(subscriptionId: string): Promise<void> {
+    const prior = subscriptions.get(subscriptionId);
+    if (!prior || closed) return;
+    if (prior.release) return prior.release;
+    prior.stopped = true; early.delete(subscriptionId); prior.cleanup();
+    prior.release = call<void>("data.unsubscribe", { subscriptionId }).then(() => {
+      if (subscriptions.get(subscriptionId) === prior) subscriptions.delete(subscriptionId);
+    }, error => { delete prior.release; throw error; });
+    return prior.release;
+  }
+  async function subscribe(request: { readonly collection: string }, listener: (event: SurfaceDataEvent) => void,
+    signal?: AbortSignal): Promise<SurfaceSubscription> {
+    if (subscriptions.size + subscribing >= 8) throw new PluginCapabilityError("plugin_subscription_limit", "Too many subscriptions.");
+    subscribing++;
+    try {
+      const result = await call<SurfaceSubscription>("data.subscribe", request, signal);
+      if (closed || signal?.aborted) {
+        release("data.unsubscribe", { subscriptionId: result.subscriptionId });
+        throw new PluginCapabilityError(closed ? "plugin_surface_closed" : "plugin_cancel_requested", "Subscription cancelled.");
+      }
+      const abort = (): void => {
+        const prior = subscriptions.get(result.subscriptionId);
+        subscriptions.delete(result.subscriptionId); prior?.cleanup();
+        release("data.unsubscribe", { subscriptionId: result.subscriptionId });
+      };
+      const cleanup = (): void => signal?.removeEventListener("abort", abort);
+      subscriptions.set(result.subscriptionId, { collection: request.collection, listener, sequence: 0, cleanup, stopped: false });
+      signal?.addEventListener("abort", abort, { once: true });
+      const queued = early.get(result.subscriptionId);
+      early.delete(result.subscriptionId);
+      if (queued) notice(queued);
+      return result;
+    } finally { subscribing--; if (subscribing === 0) early.clear(); }
+  }
   return {
     context: { read: () => call("context.read", {}) },
-    data: { describe: request => call("data.describe", request), query: request => call("data.query", request) },
+    data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe },
     storage: { get: key => call("storage.get", { key }), set: (key, value) => call("storage.set", { key, value }), delete: key => call("storage.delete", { key }) },
     mutation: { preview: plan => call("mutation.preview", plan), submit: (planId, signal) => call("mutation.submit", { planId }, signal) },
     dispose: () => {
+      if (closed) return;
       closed = true;
+      for (const [subscriptionId, subscription] of subscriptions) {
+        subscription.cleanup(); release("data.unsubscribe", { subscriptionId });
+      }
+      subscriptions.clear(); early.clear();
       channel.removeEventListener("message", receive);
       // A sent submit may already be committing; dispose reports unknown and resends nothing.
-      for (const request of pending.values()) {
+      for (const [requestId, request] of pending) {
+        if (request.method === "data.subscribe") release("request.cancel", { requestId });
         clearTimeout(request.timer);
         request.cleanup();
         request.reject(request.method === "mutation.submit"

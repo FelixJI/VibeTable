@@ -97,13 +97,25 @@ func TestPluginSurfaceControlledDeleteAndRelationWriteBoundaries(t *testing.T) {
 	if _, err := store.SaveInstallation(ctx, installationSnapshot(t, store.ProjectKey(), pluginID, hash, full, 1, "enabled"), nil); err != nil {
 		t.Fatal(err)
 	}
+	// PocketBase owns the installation identity; the test echoes the
+	// persisted id exactly as the Host does after a real install.
+	savedInstallation, err := store.GetInstallation(ctx, store.ProjectKey(), pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		InstallationID string `json:"installationId"`
+	}
+	if json.Unmarshal(savedInstallation, &identity) != nil || identity.InstallationID == "" {
+		t.Fatal("installation identity missing")
+	}
 
 	source, err := queryschema.New(f.pb.DataDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: target.TableID}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: identity.InstallationID, ActiveCollection: target.TableID}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)

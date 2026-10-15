@@ -9,7 +9,7 @@ using VibeTable.Contracts;
 namespace VibeTable.Desktop.Services;
 
 /// <summary>Closed frame API. Installation identity comes from Host, never plugin JSON.</summary>
-internal sealed class PluginSurfaceApi : IDisposable
+internal sealed partial class PluginSurfaceApi : IDisposable
 {
     internal const string Contract = "vibetable.plugin-api.v1";
     private const int MaxBytes = 1024 * 1024;
@@ -69,8 +69,15 @@ internal sealed class PluginSurfaceApi : IDisposable
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
+                CancelSubscriptionRequest(frameToken, target);
                 if (state.Pending.TryGetValue(target, out var active)) { state.Cancelled[target] = true; await active.CancelAsync(); }
                 return Reply(requestId, new { cancelRequested = true });
+            }
+            // Like cancellation, releasing a handle must remain possible when normal requests fill the budget.
+            if (request.Method == "data.unsubscribe")
+            {
+                Unsubscribe(surface.SurfaceToken, ReadHandle(request.Params, "subscriptionId"));
+                return Reply(requestId, new { unsubscribed = true });
             }
             if (!state.Pending.TryAdd(requestId, deadline)) throw Error("plugin_request_duplicate");
             admitted = true;
@@ -97,6 +104,9 @@ internal sealed class PluginSurfaceApi : IDisposable
                 case "storage.delete":
                 case "data.describe":
                     result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
+                    break;
+                case "data.subscribe":
+                    result = await SubscribeAsync(surface, state, requestId, request.Params, deadline.Token);
                     break;
                 case "data.query":
                     {
@@ -371,7 +381,11 @@ internal sealed class PluginSurfaceApi : IDisposable
     internal void Retire(string token)
     { _surfaces.Close(token); RetireState(token); }
     private void RetireState(string token)
-    { if (_states.TryRemove(token, out var state)) { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); } }
+    {
+        ReleaseSubscriptions(token);
+        if (_states.TryRemove(token, out var state))
+        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); }
+    }
     public void Dispose() { _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _http.Dispose(); }
     internal async Task DrainAsync(PluginProjectContext? nextContext = null)
     {
@@ -385,6 +399,7 @@ internal sealed class PluginSurfaceApi : IDisposable
     private sealed record Plan(JsonElement Payload, int Count, DateTimeOffset Expires);
     private sealed class SurfaceState(PluginSurfaceSession identity)
     {
+        internal Func<string, Func<Func<bool>, bool>, CancellationToken, Task<bool>>? FrameNotifier { get; set; }
         internal PluginSurfaceSession Identity { get; } = identity;
         internal CancellationTokenSource Lifetime { get; } = new();
         internal ConcurrentDictionary<string, CancellationTokenSource> Pending { get; } = new();

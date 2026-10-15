@@ -356,6 +356,294 @@ public sealed class ProductRealtimeSessionTests
         }
     }
 
+    [TestMethod]
+    public async Task RealSseFeedsAuthorizedFrameInvalidationAndNeverCopiesRowPayload()
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        using var owned = client = new SubscriptionClient(fixture);
+        string id = await client.Subscribe();
+        fixture.Http.StreamReplies.Enqueue(DataStream("visible", "hidden", "visible"));
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        (await fixture.NextPost())();
+        (await client.NextFrame())();
+        Assert.HasCount(1, client.Notices);
+        var notice = client.Notices[0];
+        Assert.AreEqual("data.invalidated", notice.GetProperty("event").GetString());
+        Assert.AreEqual(id, notice.GetProperty("subscriptionId").GetString());
+        Assert.AreEqual("visible", notice.GetProperty("collection").GetString());
+        Assert.HasCount(6, notice.EnumerateObject().ToArray());
+        Assert.DoesNotContain("secret", notice.GetRawText());
+        (await fixture.NextPost())(); // Hidden table never enters the subscriber's queue.
+        (await fixture.NextPost())();
+        (await client.NextFrame())();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.HasCount(2, client.Notices);
+        Assert.AreEqual(3, client.Http.Authorizations); // Initial grant plus both actual deliveries.
+    }
+
+    [TestMethod]
+    [DataRow("unsubscribe")]
+    [DataRow("close")]
+    [DataRow("installation")]
+    [DataRow("epoch")]
+    [DataRow("epoch-reopen")]
+    [DataRow("installation-replace")]
+    [DataRow("generation")]
+    [DataRow("renderer")]
+    public async Task QueuedFramePostCannotSurviveRetirement(string retirement)
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        using var owned = client = new SubscriptionClient(fixture);
+        string id = await client.Subscribe();
+        fixture.Http.StreamReplies.Enqueue(DataStream("visible"));
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        (await fixture.NextPost())();
+        Action late = await client.NextFrame();
+        switch (retirement)
+        {
+            case "unsubscribe": await client.Call("data.unsubscribe", new { subscriptionId = id }); break;
+            case "close": client.Surfaces.Close(client.Surface.SurfaceToken); break;
+            case "installation": client.Surfaces.CloseForInstallation(client.Context.ProjectKey, client.Surface.PluginId); break;
+            case "epoch": await fixture.Sessions.CloseAsync("subscription-epoch"); break;
+            case "epoch-reopen":
+                var workspace = fixture.Sessions.Current.WorkspaceId!.Value;
+                await fixture.Sessions.CloseAsync("subscription-epoch-reopen");
+                await fixture.Sessions.OpenAsync(workspace, WorkspaceOpenMode.ReadOnly);
+                break;
+            case "installation-replace":
+                client.Surfaces.BindIdentity(client.Surface.SurfaceToken, client.Context, 2, "3.x", "1.0.0", "read", "read", "ui/index.html", installationId: "replacement");
+                break;
+            case "generation":
+                var prior = fixture.Snapshot!;
+                fixture.Snapshot = new ProductSidecarGenerationSnapshot(prior.RuntimeAuthority, 2, prior.Context, prior.Identity, prior.Registrations.ToArray());
+                fixture.Authority.SetCurrent(fixture.Snapshot);
+                break;
+            case "renderer": client.FrameCurrent = false; break;
+        }
+        late();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.HasCount(0, client.Notices);
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+    }
+
+    [TestMethod]
+    public async Task BusySseCoalescesWhileFrameIsHeldAndRevocationClosesSubscription()
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        using var owned = client = new SubscriptionClient(fixture);
+        await client.Subscribe();
+        fixture.Http.StreamReplies.Enqueue(DataStream(Enumerable.Repeat("visible", 50).ToArray()));
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        (await fixture.NextPost())();
+        Action held = await client.NextFrame();
+        for (int i = 1; i < 50; i++) (await fixture.NextPost())();
+        Assert.AreEqual(2, client.Http.Authorizations);
+        Assert.HasCount(0, client.Notices);
+        // The platform SSE has delivered every event despite the plugin frame being held.
+        Assert.HasCount(50, fixture.Posted);
+        client.Http.Denied = true;
+        held();
+        (await client.NextFrame())();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.HasCount(2, client.Notices);
+        Assert.AreEqual("data.subscription.closed", client.Notices[1].GetProperty("event").GetString());
+        Assert.AreEqual("plugin_read_denied", client.Notices[1].GetProperty("code").GetString());
+        Assert.IsFalse(client.Notices[1].TryGetProperty("collection", out _));
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+        Assert.AreEqual(3, client.Http.Authorizations);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task FailedAuthorizationOrStoppedSseExplicitlyClosesLiveUpdates(bool stoppedStream)
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        using var owned = client = new SubscriptionClient(fixture);
+        client.Http.Denied = true;
+        var denied = await client.Call("data.subscribe", new { collection = "visible" });
+        Assert.AreEqual("plugin_read_denied", denied.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+        client.Http.Denied = false;
+        await client.Subscribe();
+        if (stoppedStream)
+        {
+            fixture.Http.StreamReplies.Enqueue(new(HttpStatusCode.OK)
+            { Content = new StringContent("id: rt:1\nevent: unsupported\ndata: {}\n\n", Encoding.UTF8, "text/event-stream") });
+        }
+        else
+        {
+            client.Http.TransportFailure = true;
+            fixture.Http.StreamReplies.Enqueue(DataStream("visible"));
+        }
+        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        await fixture.NextConnection();
+        if (stoppedStream) await fixture.NextFailure();
+        (await fixture.NextPost())();
+        (await client.NextFrame())();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.HasCount(1, client.Notices);
+        Assert.AreEqual("data.subscription.closed", client.Notices[0].GetProperty("event").GetString());
+        Assert.AreEqual("plugin_subscription_failed", client.Notices[0].GetProperty("code").GetString());
+        Assert.DoesNotContain("private", client.Notices[0].GetRawText());
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+    }
+
+    [TestMethod]
+    public async Task SubscriptionBudgetsOwnershipAndRepeatedMountsReleaseExactly()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        using var client = new SubscriptionClient(fixture);
+        var surfaces = new List<PluginSurfaceSession> { client.Surface };
+        var ids = new List<string>();
+        for (int page = 0; page < 8; page++)
+        {
+            var surface = page == 0 ? client.Surface : client.OpenSurface();
+            if (page > 0) surfaces.Add(surface);
+            for (int i = 0; i < 8; i++) ids.Add(await client.Subscribe(surface));
+            var denied = await client.Call("data.subscribe", new { collection = "visible" }, surface);
+            Assert.AreEqual("plugin_subscription_limit", denied.GetProperty("error").GetProperty("code").GetString());
+        }
+        Assert.AreEqual(64, client.Api.SubscriptionCount);
+        var overflow = client.OpenSurface();
+        Assert.AreEqual("plugin_subscription_limit", (await client.Call("data.subscribe", new { collection = "visible" }, overflow)).GetProperty("error").GetProperty("code").GetString());
+        await client.Call("data.unsubscribe", new { subscriptionId = ids[0] }, overflow);
+        Assert.AreEqual(64, client.Api.SubscriptionCount); // A handle cannot be transferred to another surface.
+        foreach (var surface in surfaces) client.Surfaces.Close(surface.SurfaceToken);
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+        for (int i = 0; i < 25; i++)
+        {
+            var surface = client.OpenSurface();
+            await client.Subscribe(surface);
+            client.Surfaces.Close(surface.SurfaceToken);
+            Assert.AreEqual(0, client.Api.SubscriptionCount);
+        }
+        var active = client.OpenSurface();
+        await client.Subscribe(active);
+        // A completed subscribe can still be cancelled by its original request id.
+        await client.Call("request.cancel", new { requestId = client.LastSubscribeRequest }, active);
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+    }
+
+    [TestMethod]
+    public async Task UnsubscribeCannotBeBlockedByTheNormalRequestBudget()
+    {
+        await using var fixture = await Fixture.OpenAsync();
+        using var client = new SubscriptionClient(fixture);
+        string id = await client.Subscribe();
+        client.Http.DescribeHold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<JsonElement>[] reads = Enumerable.Range(0, 8).Select(_ => client.Call("data.describe", new { })).ToArray();
+        await client.Http.EightDescribes.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            var result = await client.Call("data.unsubscribe", new { subscriptionId = id });
+            Assert.IsFalse(result.TryGetProperty("error", out _));
+            Assert.AreEqual(0, client.Api.SubscriptionCount);
+        }
+        finally { client.Http.DescribeHold.TrySetResult(); await Task.WhenAll(reads); }
+    }
+
+    private static HttpResponseMessage DataStream(params string[] tables)
+    {
+        string text = string.Concat(tables.Select((table, index) => $"id: rt:{index + 1}\nevent: data.changed\ndata: "
+            + JsonSerializer.Serialize(new { contractVersion = "2.0", topic = "data.changed", tableId = table,
+                recordIds = new[] { "secret-row" }, hiddenField = "secret-value" }) + "\n\n"));
+        var content = new StreamContent(new TestSseStream(Encoding.UTF8.GetBytes(text), blockAtEnd: true));
+        content.Headers.ContentType = new("text/event-stream");
+        return new(HttpStatusCode.OK) { Content = content };
+    }
+
+    private sealed class SubscriptionClient : IDisposable, IWebReplySink
+    {
+        internal readonly PluginSurfaceSessionManager Surfaces = new();
+        internal readonly SubscriptionPeer Http = new();
+        internal readonly List<JsonElement> Notices = [];
+        private readonly Channel<Action> _frames = Channel.CreateUnbounded<Action>();
+        private readonly ProductAuthorityEpoch _authority = new();
+        internal PluginProjectContext Context { get; }
+        internal PluginSurfaceSession Surface { get; }
+        internal PluginSurfaceApi Api { get; }
+        internal bool FrameCurrent = true;
+        internal string? LastSubscribeRequest;
+        internal SubscriptionClient(Fixture fixture)
+        {
+            Context = PluginProjectContext.FromSession(fixture.Sessions.Current)!;
+            _authority.Transition(Context);
+            var tasks = new HostPluginTaskRegistry(_authority);
+            tasks.SetWorkspaceContext(Context);
+            Api = new(Surfaces, tasks, () => fixture.Snapshot, this, Http);
+            Surface = OpenSurface();
+        }
+        internal PluginSurfaceSession OpenSurface()
+        {
+            var opened = Surfaces.Open(Context.ProjectKey, "com.example.subscription",
+                PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64)), "ui/index.html");
+            Surfaces.BindIdentity(opened.SurfaceToken, Context, 1, "3.x", "1.0.0", "read", "read", "ui/index.html", installationId: "installation");
+            Surfaces.TryGet(opened.SurfaceToken, out var surface);
+            Api.BindFrameNotifier(opened.SurfaceToken, ProductWebViewBridge.CreatePluginFrameNotifier(async (action, token) =>
+            {
+                var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                await _frames.Writer.WriteAsync(() => { action(); completion.TrySetResult(); }, token);
+                await completion.Task.WaitAsync(token);
+            }, () => FrameCurrent, json => Notices.Add(JsonDocument.Parse(json).RootElement.Clone())));
+            return surface!;
+        }
+        internal async Task<JsonElement> Call(string method, object parameters, PluginSurfaceSession? surface = null)
+        {
+            surface ??= Surface;
+            string requestId = Guid.NewGuid().ToString("N");
+            if (method == "data.subscribe") LastSubscribeRequest = requestId;
+            string wire = JsonSerializer.Serialize(new { contract = PluginSurfaceApi.Contract, surfaceToken = surface.SurfaceToken,
+                requestId, method, @params = parameters });
+            string result = await Api.HandleAsync(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri, wire);
+            return JsonDocument.Parse(result).RootElement.Clone();
+        }
+        internal async Task<string> Subscribe(PluginSurfaceSession? surface = null)
+            => (await Call("data.subscribe", new { collection = "visible" }, surface)).GetProperty("result").GetProperty("subscriptionId").GetString()!;
+        internal async Task<Action> NextFrame() => await _frames.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        public void Dispose() { Api.Dispose(); _authority.Dispose(); }
+        public void PostNotification(string type, object? payload) { }
+        public void PostResponse(string type, string? requestId, object? payload) { }
+        public void PostOperationFailed(string? requestId, string message, string? code = null, string? operation = null, string? operationId = null) { }
+    }
+
+    private sealed class SubscriptionPeer : HttpMessageHandler
+    {
+        internal int Authorizations;
+        internal bool Denied;
+        internal bool TransportFailure;
+        internal TaskCompletionSource? DescribeHold;
+        internal readonly TaskCompletionSource EightDescribes = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _describes;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement;
+            if (call.GetProperty("method").GetString() == "data.describe")
+            {
+                if (Interlocked.Increment(ref _describes) == 8) EightDescribes.TrySetResult();
+                if (DescribeHold is { } hold) await hold.Task.WaitAsync(token);
+                return new(HttpStatusCode.OK) { Content = new StringContent("{}") };
+            }
+            Assert.AreEqual("data.authorizeSubscription", call.GetProperty("method").GetString());
+            Assert.AreEqual("installation", call.GetProperty("installationId").GetString());
+            Interlocked.Increment(ref Authorizations);
+            if (TransportFailure) throw new HttpRequestException("private transport detail must not reach a plugin");
+            return new(Denied ? HttpStatusCode.Conflict : HttpStatusCode.OK)
+            { Content = new StringContent(Denied ? "{\"code\":\"plugin_read_denied\"}" : "{\"collection\":\"visible\"}") };
+        }
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly string _root = Path.Combine(Directory.GetCurrentDirectory(),
@@ -376,7 +664,8 @@ public sealed class ProductRealtimeSessionTests
 
         internal static async Task<Fixture> OpenAsync(bool initiallyClosed = false,
             Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null,
-            Action<TableSummary>? applyCatalog = null)
+            Action<TableSummary>? applyCatalog = null,
+            Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? observePluginData = null)
         {
             var fixture = new Fixture();
             var registry = new WorkspaceRegistry(fixture._root);
@@ -424,7 +713,7 @@ public sealed class ProductRealtimeSessionTests
                 {
                     fixture.Delayed.TrySetResult();
                     await fixture.ResumeDelay.Task.WaitAsync(token);
-                }, projectPluginCatalog);
+                }, projectPluginCatalog, observePluginData);
             return fixture;
         }
 

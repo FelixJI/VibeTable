@@ -2,7 +2,59 @@
   "contract": "vibetable.plugin-api.v1",
   "manifestSchema": "vibetable.plugin-manifest.v2",
   "pluginApi": "3.x",
-  "methods": ["context.read", "data.describe", "data.query", "storage.get", "storage.set", "storage.delete", "mutation.preview", "mutation.submit", "request.cancel"],
-  "limits": { "messageBytes": 1048576, "pageRows": 200, "concurrentRequests": 8, "requestSeconds": 15, "confirmationSeconds": 120, "cursorHandles": 64, "pendingPlans": 8, "mutationOperations": 1000, "privateStorageValueBytes": 65536 },
-  "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+  "methods": [
+    "context.read",
+    "data.describe",
+    "data.query",
+    "data.subscribe",
+    "data.unsubscribe",
+    "storage.get",
+    "storage.set",
+    "storage.delete",
+    "mutation.preview",
+    "mutation.submit",
+    "request.cancel"
+  ],
+  "limits": {
+    "messageBytes": 1048576,
+    "pageRows": 200,
+    "concurrentRequests": 8,
+    "requestSeconds": 15,
+    "confirmationSeconds": 120,
+    "cursorHandles": 64,
+    "pendingPlans": 8,
+    "mutationOperations": 1000,
+    "privateStorageValueBytes": 65536,
+    "subscriptionsPerSurface": 8,
+    "subscriptionsTotal": 64,
+    "subscriptionCollectionBytes": 128
+  },
+  "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+  "notifications": [
+    "data.invalidated",
+    "data.subscription.closed"
+  ],
+  "subscriptions": {
+    "permission": [
+      "read",
+      "query"
+    ],
+    "scope": "one canonical table per handle",
+    "delivery": "coalesced invalidation; requery authorized data",
+    "invalidatedFields": [
+      "subscriptionId",
+      "collection",
+      "sequence"
+    ],
+    "closedFields": [
+      "subscriptionId",
+      "code"
+    ],
+    "errors": [
+      "plugin_subscription_limit",
+      "plugin_read_denied",
+      "plugin_cursor_stale",
+      "plugin_subscription_failed"
+    ]
+  }
 }

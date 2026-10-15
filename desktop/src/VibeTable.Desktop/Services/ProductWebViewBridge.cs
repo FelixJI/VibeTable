@@ -624,6 +624,11 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
             PluginApi?.Retire(token);
             _pluginResources.CloseSurface(token);
         };
+        PluginApi?.BindFrameNotifier(token, CreatePluginFrameNotifier(
+            (action, cancellation) => _owner.Dispatcher.InvokeAsync(action, DispatcherPriority.Normal, cancellation).Task,
+            () => active && generation == RendererGeneration && ReferenceEquals(sender, _currentCore)
+                && _pluginResources.TryGetSurface(token, out _),
+            frame.PostWebMessageAsJson));
         frame.WebMessageReceived += async (_, message) =>
         {
             if (!active || generation != RendererGeneration || PluginApi is not { } api) return;
@@ -633,6 +638,21 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
                 frame.PostWebMessageAsJson(reply);
         };
     }
+
+    // The callback is queued first; both frame identity and the supplied session/surface gate
+    // are checked around the actual synchronous wire post, never only before enqueue.
+    internal static Func<string, Func<Func<bool>, bool>, CancellationToken, Task<bool>> CreatePluginFrameNotifier(
+        Func<Action, CancellationToken, Task> dispatch, Func<bool> current, Action<string> post)
+        => async (json, gate, token) =>
+        {
+            bool posted = false;
+            await dispatch(() =>
+            {
+                if (!token.IsCancellationRequested && current())
+                    posted = gate(() => { if (!current()) return false; post(json); return true; });
+            }, token).ConfigureAwait(false);
+            return posted;
+        };
 
     private void OnWebMessageReceived(
         object? sender,

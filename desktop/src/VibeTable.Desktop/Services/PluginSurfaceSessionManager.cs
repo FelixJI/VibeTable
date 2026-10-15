@@ -63,6 +63,7 @@ public sealed class PluginSurfaceSessionManager
         "--vt-plugin-space-unit",
     };
 
+    private readonly object _gate = new();
     private readonly ConcurrentDictionary<string, PluginSurfaceSession> _sessions =
         new(StringComparer.Ordinal);
 
@@ -134,9 +135,17 @@ public sealed class PluginSurfaceSessionManager
 
     public bool Close(string surfaceToken)
     {
-        if (string.IsNullOrWhiteSpace(surfaceToken) || !_sessions.TryRemove(surfaceToken, out _)) return false;
+        lock (_gate)
+            if (string.IsNullOrWhiteSpace(surfaceToken) || !_sessions.TryRemove(surfaceToken, out _)) return false;
         Closed?.Invoke(surfaceToken);
         return true;
+    }
+
+    // Synchronous post only. Close/Bind serialize here; callbacks run after Close releases this lock.
+    internal bool TryUseCurrent(PluginSurfaceSession expected, Func<bool> action)
+    {
+        lock (_gate)
+            return _sessions.TryGetValue(expected.SurfaceToken, out var current) && current == expected && action();
     }
 
     public bool IsActive(string surfaceToken)
@@ -172,15 +181,17 @@ public sealed class PluginSurfaceSessionManager
 
     internal void BindIdentity(string token, PluginProjectContext context, int revision, string apiVersion, string pluginVersion = "", string actionId = "", string risk = "", string entry = "", string presentation = "surface", string? installationId = null)
     {
-        if (_sessions.TryGetValue(token, out var session))
-            _sessions[token] = session with { Context = context, InstallationRevision = revision, InstallationId = installationId, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry, Presentation = presentation };
+        lock (_gate)
+            if (_sessions.TryGetValue(token, out var session))
+                _sessions[token] = session with { Context = context, InstallationRevision = revision, InstallationId = installationId, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry, Presentation = presentation };
     }
 
     internal void BindActiveCollection(string projectKey, string pluginId, string actionId, PluginRuntimeCommandContext context)
     {
-        foreach (var pair in _sessions)
-            if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId && pair.Value.ActionId == actionId)
-                _sessions[pair.Key] = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
+        lock (_gate)
+            foreach (var pair in _sessions)
+                if (pair.Value.ProjectKey == projectKey && pair.Value.PluginId == pluginId && pair.Value.ActionId == actionId)
+                    _sessions[pair.Key] = pair.Value with { ActiveCollection = context.Collection ?? "", InvocationContext = context };
     }
 
     private static void ValidateTheme(PluginSurfaceThemeSnapshot theme)

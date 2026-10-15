@@ -239,6 +239,33 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			operation = "query"
 		}
 		return executePluginData(ctx, app, source, workspace, pluginDataRequest{InstallationID: input.InstallationID, PackageHash: input.PackageHash, Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
+	case "data.authorizeSubscription":
+		var request struct {
+			Collection string `json:"collection"`
+		}
+		if decodePluginParams(input.Request, &request) != nil || request.Collection == "" || len(request.Collection) > 128 {
+			return nil, pluginDataError("plugin_capability_invalid")
+		}
+		// Identity, grants, and canonical table existence belong to one DB snapshot.
+		// This read-only transaction creates no subscription state or parallel authority.
+		err := app.RunInTransaction(func(tx core.App) error {
+			current, err := surfaceInstallation(ctx, tx, workspace, input)
+			if err != nil {
+				return err
+			}
+			if current.grant(request.Collection, input.ActiveCollection) == nil {
+				return pluginDataError("plugin_read_denied")
+			}
+			table, err := schemaexecution.Describe(ctx, tx, request.Collection)
+			if err != nil || table.Snapshot.TableID != request.Collection {
+				return pluginDataError("plugin_read_denied")
+			}
+			return ctx.Err()
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"collection": request.Collection}, nil
 	case "context.read":
 		if string(input.Request) != "{}" {
 			return nil, pluginDataError("plugin_capability_invalid")

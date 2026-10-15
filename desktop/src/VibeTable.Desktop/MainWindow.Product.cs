@@ -439,7 +439,8 @@ public partial class MainWindow : Window
                 ? _runtime.CaptureProductSidecarGeneration() : null,
             _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
             _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code),
-            projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent);
+            projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent,
+            observePluginData: (snapshot, topic, payload, gate) => _webBridge.PluginApi?.OfferInvalidation(snapshot, topic, payload, gate));
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
