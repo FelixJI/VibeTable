@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import path from "node:path";
 
-const output = fileURLToPath(new URL("../../../build/plugin-sdk/", import.meta.url));
+// Node runs test files in parallel; each compiler must own its emitted modules.
+const output = fileURLToPath(new URL(`../../../build/plugin-sdk/${process.pid}/`, import.meta.url));
 await mkdir(output, { recursive: true });
 await writeFile(path.join(output, "package.json"), '{"type":"module"}\n');
 execFileSync(process.execPath, [fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url)),

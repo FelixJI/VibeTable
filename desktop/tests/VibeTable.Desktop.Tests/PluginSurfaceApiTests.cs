@@ -248,6 +248,40 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task DeleteEscalatesConfirmationRiskAndBindsTheExactPlan()
+    {
+        const string delete = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"delete","primaryKey":"r1","expectedDigest":"sha256:existing"}]}""";
+        foreach (string decision in new[] { "approved", "rejected", "cancel" })
+        {
+            using var fixture = new Fixture(risk: "write") { Decision = decision };
+            string plan = (await fixture.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
+            Assert.AreEqual("plugin_capability_invalid", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\",\"approved\":true}}")));
+            Assert.AreEqual("plugin_api_unsupported", Code(await fixture.Call("interaction.resolve", "{\"decision\":\"approved\"}")));
+            var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+            var confirmation = fixture.LastInteraction!.PendingConfirmation!;
+            Assert.AreEqual("destructive", confirmation.Risk);
+            Assert.AreEqual(1, confirmation.Preview.AffectedCount);
+            Assert.AreEqual("orders", confirmation.Preview.Summary[0]["collection"].GetString());
+            Assert.AreEqual("delete", confirmation.Preview.SampleRows[0]["kind"].GetString());
+            Assert.AreEqual("r1", confirmation.Preview.SampleRows[0]["primaryKey"].GetString());
+            Assert.AreEqual("sha256:existing", confirmation.Preview.SampleRows[0]["expectedDigest"].GetString());
+            Assert.IsFalse(confirmation.Preview.SampleRows[0].ContainsKey("values"));
+            int commits = fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit");
+            Assert.AreEqual(decision == "approved" ? 1 : 0, commits);
+            if (decision == "approved")
+            {
+                Assert.AreEqual("succeeded", response.GetProperty("result").GetProperty("status").GetString());
+                var committed = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "mutation.commit");
+                Assert.AreEqual(delete, committed.GetProperty("request").GetRawText());
+            }
+            Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+        }
+        using var read = new Fixture(risk: "read");
+        Assert.AreEqual("plugin_write_denied", Code(await read.Call("mutation.preview", delete)));
+        Assert.AreEqual(0, read.Http.Calls.Count);
+    }
+
+    [TestMethod]
     public async Task RejectionAndCancelWriteNothingAndLostReceiptIsUnknownWithoutReplay()
     {
         foreach (string decision in new[] { "rejected", "cancel", "approved" })
@@ -284,6 +318,21 @@ public sealed class PluginSurfaceApiTests
         Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
         Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId,
             fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+    }
+
+    [TestMethod]
+    public async Task DeleteReceiptMustMatchBothOperationAndPrimaryKey()
+    {
+        const string delete = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"delete","primaryKey":"r1","expectedDigest":"sha256:existing"}]}""";
+        foreach (var (kind, id) in new[] { ("update", "r1"), ("delete", "other") })
+        {
+            using var fixture = new Fixture(risk: "write");
+            fixture.Http.CommitResultBody = JsonSerializer.Serialize(new
+            { contractVersion = "2.0", status = "applied", affectedRows = new[] { new { recordId = id, operation = kind } } });
+            string plan = (await fixture.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
+            Assert.AreEqual("plugin_commit_unknown", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+            Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        }
     }
 
     [TestMethod]
@@ -344,7 +393,7 @@ public sealed class PluginSurfaceApiTests
     [TestMethod]
     public async Task ExplicitAuthorityProofPreservesPermissionRejectionAndCommitCancellationIsUnknown()
     {
-        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale" })
+        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale", "mutation.relation.restricted" })
         {
             using var fixture = new Fixture();
             fixture.Http.CommitErrorBody = JsonSerializer.Serialize(new { code, commitOutcome = "not-committed" });
@@ -514,7 +563,8 @@ public sealed class PluginSurfaceApiTests
                 var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
                 LastInteraction = interaction;
                 if (OnConfirmation is { } onConfirmation) { onConfirmation(); return; }
-                Assert.AreEqual("new", interaction.PendingConfirmation!.Preview.SampleRows[0]["values"].GetProperty("name").GetString());
+                if (interaction.PendingConfirmation!.Preview.SampleRows[0].TryGetValue("values", out var values))
+                    Assert.AreEqual("new", values.GetProperty("name").GetString());
                 if (Decision == "retire")
                 {
                     _generationCurrent = false;
@@ -554,6 +604,7 @@ public sealed class PluginSurfaceApiTests
         internal bool Incomplete { get; set; }
         internal bool FailAuditStart { get; set; }
         internal string? CommitErrorBody { get; set; }
+        internal string? CommitResultBody { get; set; }
         internal Action? OnCommit { get; set; }
         internal bool CommitObservedCancellation { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -585,9 +636,10 @@ public sealed class PluginSurfaceApiTests
             {
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
-                "mutation.commit" => """{"contractVersion":"2.0","status":"applied","affectedRows":[{"recordId":"r1","operation":"update"}]}""",
+                "mutation.commit" => JsonSerializer.Serialize(new { contractVersion = "2.0", status = "applied", affectedRows = call.GetProperty("request").GetProperty("operations").EnumerateArray().Select(operation => new { recordId = "r1", operation = operation.GetProperty("kind").GetString() == "create" ? "insert" : operation.GetProperty("kind").GetString() }) }),
                 _ => "{}",
             };
+            if (method == "mutation.commit" && CommitResultBody is { } commitResult) result = commitResult;
             if (method == "mutation.commit" && Incomplete) result = """{"contractVersion":"2.0","status":"applied","affectedRows":[]}""";
             if (method == "mutation.commit" && ReplayCommit) result = result.Replace("applied", "replayed", StringComparison.Ordinal);
             return new(HttpStatusCode.OK) { Content = method == AfterReadMethod && AfterCommitRead is { } after

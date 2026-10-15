@@ -156,7 +156,7 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 func surfaceCommitRejection(code string) bool {
 	switch code {
 	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
-		"mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict":
+		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict":
 		return true
 	default:
 		return false
@@ -512,10 +512,10 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 		Collection     string `json:"collection"`
 		SchemaRevision string `json:"schemaRevision"`
 		Operations     []struct {
-			Kind           string         `json:"kind"`
-			PrimaryKey     *string        `json:"primaryKey,omitempty"`
-			ExpectedDigest *string        `json:"expectedDigest,omitempty"`
-			Values         map[string]any `json:"values"`
+			Kind           string          `json:"kind"`
+			PrimaryKey     *string         `json:"primaryKey,omitempty"`
+			ExpectedDigest *string         `json:"expectedDigest,omitempty"`
+			Values         json.RawMessage `json:"values,omitempty"`
 		} `json:"operations"`
 	}
 	if decodePluginParams(input.Request, &plan) != nil || plan.Contract != "vibetable.surface-mutation-plan.v1" || len(plan.Operations) < 1 || len(plan.Operations) > 1000 || plan.SchemaRevision == "" {
@@ -524,15 +524,27 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 	request := mutation.Request{ContractVersion: "2.0", RequestID: input.RequestID, IdempotencyKey: input.RequestID, TableID: plan.Collection, SchemaRevision: plan.SchemaRevision, Actor: mutation.Actor{Type: "plugin", ID: input.PluginID}}
 	for _, item := range plan.Operations {
 		kind := mutation.OperationInsert
-		if item.Kind == "update" {
-			kind = mutation.OperationUpdate
+		if item.Kind == "update" || item.Kind == "delete" {
+			if item.Kind == "delete" {
+				kind = mutation.OperationDelete
+				// Deletion carries no values; the row guard is the authoritative write contract.
+				if len(item.Values) != 0 {
+					return request, pluginDataError("plugin_capability_invalid")
+				}
+			} else {
+				kind = mutation.OperationUpdate
+			}
 			if item.PrimaryKey == nil || item.ExpectedDigest == nil {
 				return request, pluginDataError("plugin_guard_required")
 			}
 		} else if item.Kind != "create" || item.PrimaryKey != nil || item.ExpectedDigest != nil {
 			return request, pluginDataError("plugin_capability_invalid")
 		}
-		request.Operations = append(request.Operations, mutation.Operation{Kind: kind, RecordID: item.PrimaryKey, ExpectedDigest: item.ExpectedDigest, Values: item.Values})
+		var values map[string]any
+		if kind != mutation.OperationDelete && (decodePluginParams(item.Values, &values) != nil || values == nil) {
+			return request, pluginDataError("plugin_capability_invalid")
+		}
+		request.Operations = append(request.Operations, mutation.Operation{Kind: kind, RecordID: item.PrimaryKey, ExpectedDigest: item.ExpectedDigest, Values: values})
 	}
 	request.Authorize = func(ctx context.Context, tx core.App) error {
 		installed, err := surfaceInstallation(ctx, tx, workspace, input)
@@ -550,6 +562,8 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 			name := "create"
 			if operation.Kind == mutation.OperationUpdate {
 				name = "update"
+			} else if operation.Kind == mutation.OperationDelete {
+				name = "delete"
 			}
 			var grant *pluginReadGrant
 			for _, candidate := range installed.Manifest.Permissions.Data {
@@ -563,7 +577,7 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 				return pluginDataError("plugin_write_denied")
 			}
 			allowed := pluginAllowed(*grant, table.Snapshot)
-			if operation.Kind == mutation.OperationUpdate && allowed["id"] == "" {
+			if operation.Kind != mutation.OperationInsert && allowed["id"] == "" {
 				return pluginDataError("plugin_write_denied")
 			}
 			for key := range operation.Values {

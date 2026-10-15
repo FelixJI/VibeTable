@@ -103,3 +103,22 @@ test("SDK public root exports headless finish and addresses only the trusted par
     else delete globalThis.parent;
   }
 });
+
+test("surface delete serializes the exact guarded single-table plan without values or approval", async () => {
+  const transport = channel();
+  const client = sdk.createSurfaceClient("surface-delete", transport);
+  const plan = { contract: "vibetable.surface-mutation-plan.v1", collection: "orders", schemaRevision: "schema_1",
+    operations: [{ kind: "delete", primaryKey: "r1", expectedDigest: "opaque-query-guard" }] };
+  const preview = client.mutation.preview(plan);
+  const wire = transport.calls[0];
+  assert.equal(wire.method, "mutation.preview");
+  assert.deepEqual(JSON.parse(JSON.stringify(wire.params)), plan);
+  assert.equal("values" in wire.params.operations[0], false);
+  transport.reply(wire, { planId: "delete-plan", affectedCount: 1 });
+  assert.deepEqual(await preview, { planId: "delete-plan", affectedCount: 1 });
+  const submitted = client.mutation.submit("delete-plan");
+  assert.deepEqual(transport.calls[1].params, { planId: "delete-plan" });
+  transport.reply(transport.calls[1], { status: "succeeded", taskId: "delete-task" });
+  assert.deepEqual(await submitted, { status: "succeeded", taskId: "delete-task" });
+  client.dispose();
+});

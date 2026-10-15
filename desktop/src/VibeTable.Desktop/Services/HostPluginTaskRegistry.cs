@@ -206,11 +206,18 @@ internal sealed class HostPluginTaskRegistry
             double expires = Now() + 120;
             var pending = new HostPluginInteractionRecord(record.Binding, interactionId, expires) { NativeDecision = new(TaskCreationOptions.RunContinuationsAsynchronously), NativeOnlyApproval = record.NativeOnlyApproval };
             _interactions[record.Snapshot.RunId] = pending;
+            // Delete confirmation cannot inherit a lower risk from the declared action.
+            string confirmationRisk = record.Snapshot.Risk!;
+            foreach (var operation in plan.GetProperty("operations").EnumerateArray())
+            {
+                if (operation.TryGetProperty("kind", out var kind) && kind.GetString() == "delete")
+                { confirmationRisk = "destructive"; break; }
+            }
             var preview = new PluginRuntimeConfirmationPreview(
                 [new Dictionary<string, JsonElement> { ["collection"] = plan.GetProperty("collection").Clone() }],
                 plan.GetProperty("operations").EnumerateArray().Take(10)
                     .Select(operation => (IReadOnlyDictionary<string, JsonElement>)operation.EnumerateObject().ToDictionary(property => property.Name, property => property.Value.Clone())).ToArray(), count, []);
-            var confirmation = new PluginRuntimePendingConfirmation(interactionId, record.Snapshot.Risk!, "批准插件保存当前精确计划", preview, expires);
+            var confirmation = new PluginRuntimePendingConfirmation(interactionId, confirmationRisk, "批准插件保存当前精确计划", preview, expires);
             var interaction = new PluginRuntimeInteractionSnapshot(record.Snapshot.RunId, record.Snapshot.ProjectKey, record.Snapshot.PluginId, record.Snapshot.ActionId, "desktop-host", null, confirmation, false);
             record.Revision++;
             return (new(PluginContractVersions.Event, "plugin.interaction.requested", record.Snapshot.ProjectKey, record.Snapshot.RunId, record.Revision,

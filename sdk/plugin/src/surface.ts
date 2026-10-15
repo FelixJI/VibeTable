@@ -9,6 +9,9 @@ export interface SurfaceMutationPlan {
   readonly schemaRevision: string;
   readonly operations: readonly ({ readonly kind: "create"; readonly values: JsonObject } | {
     readonly kind: "update"; readonly primaryKey: string; readonly expectedDigest: string; readonly values: JsonObject;
+  } | {
+    /** Deletion requires the explicit `delete` data operation grant and always triggers Host destructive confirmation. */
+    readonly kind: "delete"; readonly primaryKey: string; readonly expectedDigest: string;
   })[];
 }
 export interface SurfaceMutationPreview { readonly planId: string; readonly affectedCount: number }

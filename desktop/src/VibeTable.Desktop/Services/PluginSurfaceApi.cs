@@ -353,10 +353,10 @@ internal sealed class PluginSurfaceApi : IDisposable
         foreach (var row in rows.EnumerateArray())
         {
             var operation = plan.GetProperty("operations")[index++];
-            string expected = operation.GetProperty("kind").GetString() == "create" ? "insert" : "update";
+            string expected = operation.GetProperty("kind").GetString() switch { "create" => "insert", "delete" => "delete", _ => "update" };
             if (!row.TryGetProperty("operation", out var kind) || kind.GetString() != expected
                 || !row.TryGetProperty("recordId", out var id) || id.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(id.GetString())
-                || expected == "update" && id.GetString() != operation.GetProperty("primaryKey").GetString()) throw Error("plugin_commit_unknown");
+                || expected != "insert" && id.GetString() != operation.GetProperty("primaryKey").GetString()) throw Error("plugin_commit_unknown");
         }
     }
     private static string ReadHandle(JsonElement parameters, string name)
@@ -364,7 +364,7 @@ internal sealed class PluginSurfaceApi : IDisposable
     private static PluginSurfacePolicyException Error(string code) => new(code, "插件请求未完成。");
     private static bool IsCommitRejection(string code) => code is
         "plugin_read_denied" or "plugin_write_denied" or "plugin_cursor_stale" or "plugin_api_unsupported" or "plugin_capability_invalid" or "plugin_guard_required" or "plugin_audit_invalid"
-        or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict";
+        or "mutation.relation.restricted" or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict";
     private sealed class SurfaceAuthorityException(string code, bool notCommitted) : Exception
     { internal string Code { get; } = code; internal bool NotCommitted { get; } = notCommitted; }
     private static string Reply(string? id, object? result) => JsonSerializer.Serialize(new { contract = Contract, requestId = id, result }, Json);

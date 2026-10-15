@@ -51,17 +51,23 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 `storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
 查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
 中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
-只有获准读取 `id` 时才返回 rowGuards，按 ID 更新也要求该授权。`context.read` 保留绑定的用户上下文；
+只有获准读取 `id` 时才返回 rowGuards，按 ID 更新或删除也要求该授权。`context.read` 保留绑定的用户上下文；
 选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
 隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
 
 写入计划使用 `vibetable.surface-mutation-plan.v1`，包含 `collection`、`schemaRevision` 和
-`create/update` operations；更新必须带查询的 `expectedDigest`。`mutation.preview` 返回不可转移的
+`create/update/delete` operations；更新、删除必须带 `primaryKey` 和查询返回的 opaque `expectedDigest`，
+删除不接受 `values`（包括 null），且必须显式声明 `permissions.data.operations` 的 `delete`。
+每次计划仅覆盖一表的 1–1000 个操作，整批原子提交；任一非法操作、row guard 冲突或 restrict 引用
+均零业务写入，不支持跨表原子事务。关系字段编辑沿用 canonical 校验并要求目标表的读取 grant。
+`mutation.preview` 返回不可转移的
 `planId`，`mutation.submit(planId, signal?)` 只请求宿主确认，不能传入 `approved`。
 Host 展示真实操作样本和数量、绑定精确计划并单次消费；surface 的 actionId 和风险固定为实际
 customView 对应的声明动作。同 entry 的不同动作持有独立 surface token 和调用上下文；
 Go 独立核对当前 manifest 的 action/entry 绑定。read 页面不能请求写计划，
-write/destructive 风险原样进入任务、确认和持久审计。`requires.selection` 的 one-or-more/exactly-one
+write/destructive 声明风险进入任务和持久审计；任何含 delete 的计划都升级为 destructive 原生确认，
+write 动作也不能降低删除确认风险，renderer 不能批准。旧 Worker 的 MutationPlan 仍只接受 create/update。
+`requires.selection` 的 one-or-more/exactly-one
 在 Host describe 时校验，不满足时不改变已绑定上下文。Interface 的动作按钮目前仅支持 Worker 动作，
 3.x 页面动作不进入其选择器，已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
 revision/status、权限、包修订。拒绝/提交前取消零写入，冲突返回权威错误；丢失或不完整回执为
