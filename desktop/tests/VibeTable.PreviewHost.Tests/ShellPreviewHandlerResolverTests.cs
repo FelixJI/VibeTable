@@ -20,6 +20,131 @@ public sealed class ShellPreviewHandlerResolverTests
         Guid.Parse("84F66100-FF7C-4FB4-B0C0-02CD7FB668FE");
 
     [TestMethod]
+    public void PreviewResourceDiagnosticsDeferredOutputExcludesSynchronousSinkWork()
+    {
+        long cpu = 0;
+        ulong writes = 0;
+        using var listener = new ResourceCostTraceListener(() => { cpu += 100; writes += 10; });
+        Trace.Listeners.Add(listener);
+        PreviewResourceSample Capture() => new(cpu, new PreviewIoCounters { WriteOperations = writes });
+        try
+        {
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerStreamInitializeStarted, Capture);
+            cpu += 7; writes += 3; // The measured synthetic initializer, without logging.
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerStreamInitializeReturned, Capture);
+        }
+        finally { Trace.Listeners.Remove(listener); }
+        string[] cpuEvents = listener.Events.Where(value => value.Contains(".cpuTicks.", StringComparison.Ordinal)).ToArray();
+        string[] ioEvents = listener.Events.Where(value => value.StartsWith("preview.host.ioOps.", StringComparison.Ordinal)).ToArray();
+        Assert.HasCount(2, cpuEvents);
+        Assert.AreEqual(7L, long.Parse(cpuEvents[1].Split(".cpuTicks.")[1]) - long.Parse(cpuEvents[0].Split(".cpuTicks.")[1]),
+            "Synchronous resource log writes must not become initializer CPU.");
+        Assert.HasCount(2, ioEvents);
+        Assert.AreEqual(3UL, ulong.Parse(ioEvents[1].Split(".write.")[1].Split('.')[0])
+            - ulong.Parse(ioEvents[0].Split(".write.")[1].Split('.')[0]));
+    }
+
+    private sealed class ResourceCostTraceListener(Action charge) : TraceListener
+    {
+        internal List<string> Events { get; } = [];
+        internal List<string> Lines { get; } = [];
+        public override void Write(string? message) { }
+        public override void WriteLine(string? message)
+        {
+            if (message is null || !DiagnosticLogLine.IsSafe(message)) return;
+            Events.Add(PreviewEventName(message));
+            Lines.Add(message);
+            charge();
+        }
+    }
+
+    [TestMethod]
+    public void PreviewResourceDiagnosticsPhaseFlushesStayOutsideCapturedIntervalAndKeepSampleTimes()
+    {
+        long cpu = 0;
+        ulong writes = 0;
+        var origin = new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var now = origin;
+        using var listener = new ResourceCostTraceListener(() => {
+            cpu += 100; writes += 10; now = now.AddSeconds(2);
+        });
+        Trace.Listeners.Add(listener);
+        PreviewResourceSample Capture() => new(cpu, new PreviewIoCounters { WriteOperations = writes });
+        try
+        {
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerStreamInitializeStarted, Capture,
+                () => PreviewHostEntry.TraceEvent("preview.host.phase.HandlerStreamInitializeStarted"), () => now);
+            CollectionAssert.AreEqual(new[] { "preview.host.phase.HandlerStreamInitializeStarted" }, listener.Events);
+            cpu += 7; writes += 3; now = now.AddSeconds(5);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerStreamInitializeReturned, Capture,
+                () => PreviewHostEntry.TraceEvent("preview.host.phase.HandlerStreamInitializeReturned"), () => now);
+        }
+        finally { Trace.Listeners.Remove(listener); }
+        Assert.AreEqual("preview.host.phase.HandlerStreamInitializeReturned", listener.Events[1]);
+        string[] cpuLines = listener.Lines.Where(line => PreviewEventName(line).Contains(".cpuTicks.", StringComparison.Ordinal)).ToArray();
+        Assert.HasCount(2, cpuLines);
+        using var begin = JsonDocument.Parse(cpuLines[0]);
+        using var end = JsonDocument.Parse(cpuLines[1]);
+        Assert.AreEqual(origin.AddSeconds(2), begin.RootElement.GetProperty("timestamp").GetDateTimeOffset());
+        Assert.AreEqual(origin.AddSeconds(7), end.RootElement.GetProperty("timestamp").GetDateTimeOffset());
+        StringAssert.EndsWith(PreviewEventName(cpuLines[0]), ".cpuTicks.100");
+        StringAssert.EndsWith(PreviewEventName(cpuLines[1]), ".cpuTicks.107");
+        Assert.IsTrue(now > origin.AddSeconds(7), "The synchronous sink must charge work after sampling.");
+    }
+
+    [TestMethod]
+    public void PreviewResourceDiagnosticsRejectStaleMismatchedOrInterruptedPairsAndCaptureFailureBeforeFlush()
+    {
+        int captures = 0;
+        int capturesAtFailurePhase = -1;
+        using var listener = new ResourceCostTraceListener(() => { });
+        Trace.Listeners.Add(listener);
+        PreviewResourceSample Capture() { captures++; return new(captures, null); }
+        try
+        {
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.ComActivationStarted, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerDoPreviewReturned, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.ComActivationReturned, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerStreamInitializeStarted, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.ManagedEntry, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerStreamInitializeReturned, Capture);
+            Assert.AreEqual(2, captures, "Unpaired terminals cannot invent endpoint counters.");
+            Assert.IsTrue(listener.Events.All(value => value.EndsWith(".unpaired", StringComparison.Ordinal)));
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerDoPreviewStarted, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.PreviewSessionFailed, Capture,
+                () => { capturesAtFailurePhase = captures; });
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.HandlerDoPreviewReturned, Capture);
+        }
+        finally { Trace.Listeners.Remove(listener); }
+        Assert.AreEqual(4, captures);
+        Assert.AreEqual(4, capturesAtFailurePhase, "Failure endpoint must precede its phase sink.");
+        Assert.IsTrue(listener.Events.Contains("preview.host.resources.HandlerDoPreviewStarted.cpuTicks.3"));
+        Assert.IsTrue(listener.Events.Contains("preview.host.resources.PreviewSessionFailed.cpuTicks.4"));
+        Assert.AreEqual("preview.host.resources.HandlerDoPreviewReturned.unpaired", listener.Events[^1]);
+    }
+
+    [TestMethod]
+    public void PreviewResourceDiagnosticsRepeatedStartDiscardsTheSingleOldSlot()
+    {
+        int captures = 0;
+        using var listener = new ResourceCostTraceListener(() => { });
+        Trace.Listeners.Add(listener);
+        PreviewResourceSample Capture() => new(++captures, null);
+        try
+        {
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.ComActivationStarted, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.ComActivationStarted, Capture);
+            PreviewHostResourceDiagnostics.Trace(PreviewHostStage.ComActivationReturned, Capture);
+        }
+        finally { Trace.Listeners.Remove(listener); }
+        Assert.AreEqual(3, captures);
+        Assert.AreEqual("preview.host.resources.ComActivationStarted.unpaired", listener.Events[0]);
+        Assert.IsFalse(listener.Events.Any(value => value.EndsWith(".cpuTicks.1", StringComparison.Ordinal)));
+        Assert.IsTrue(listener.Events.Contains("preview.host.resources.ComActivationStarted.cpuTicks.2"));
+        Assert.IsTrue(listener.Events.Contains("preview.host.resources.ComActivationReturned.cpuTicks.3"));
+    }
+
+    [TestMethod]
     public void PreviewResourceDiagnostics_InitializeEndpointsExposeCumulativeCpuWithoutContent()
     {
         using var listener = new PreviewTraceCaptureListener();
@@ -57,8 +182,8 @@ public sealed class ShellPreviewHandlerResolverTests
                 PreviewHostResourceDiagnostics.Trace(stage, () => { captures++; return new(long.MaxValue, io); });
         }
         finally { System.Globalization.CultureInfo.CurrentCulture = previousCulture; Trace.Listeners.Remove(listener); }
-        Assert.AreEqual(9, captures);
-        Assert.HasCount(27, listener.Lines);
+        Assert.AreEqual(8, captures);
+        Assert.HasCount(25, listener.Lines);
         Assert.IsTrue(listener.Lines.All(DiagnosticLogLine.IsSafe));
         foreach (string line in listener.Lines)
         {

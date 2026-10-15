@@ -49,22 +49,21 @@ public static class PreviewHostEntry
             if (handlerClsid is { } clsid)
                 eventName += $".handler.{clsid:N}.apartment.{Thread.CurrentThread.GetApartmentState()}";
             if (resultHr is { } hr) eventName += $".hr.0x{hr:X8}";
-            TraceEvent(eventName, exception);
+            PreviewHostResourceDiagnostics.Trace(stage, writePhase: () => TraceEvent(eventName, exception));
         }
         catch
         {
             // Diagnostics must not change preview startup or failure handling.
         }
-        PreviewHostResourceDiagnostics.Trace(stage);
     }
 
-    internal static void TraceEvent(string eventName, Exception? exception = null)
+    internal static void TraceEvent(string eventName, Exception? exception = null, DateTimeOffset? observedAt = null)
     {
         try
         {
             Trace.TraceInformation(JsonSerializer.Serialize(new
             {
-                timestamp = DateTimeOffset.UtcNow,
+                timestamp = observedAt ?? DateTimeOffset.UtcNow,
                 level = exception is null ? "info" : "error",
                 module = "document-preview",
                 @event = eventName,

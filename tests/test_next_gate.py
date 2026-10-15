@@ -1459,18 +1459,106 @@ def test_product_e2e_failure_evidence_rejects_a_symlinked_rotated_log(
     assert not (copied_runtime / f"{log_prefix}-20260103-030303333.log").exists()
 
 
+@pytest.mark.parametrize("report_status", ["passed", "failed"])
+def test_product_e2e_passing_s42_retains_only_bounded_preview_logs(
+    tmp_path: Path, report_status: str
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    scenario_id = "42-file-document-native-operations"
+    scenario = run_root / scenario_id
+    scenario.mkdir(parents=True)
+    for filename in (
+        "415-native-file-document.png",
+        "42-file-document-native-operations-trace.zip",
+    ):
+        (scenario / filename).write_text("required S42 evidence", encoding="utf-8")
+    scenarios = [{"scenario": scenario_id, "status": "passed"}]
+    scenarios.append({"scenario": "16-healthy-scenario", "status": "passed"})
+    if report_status == "failed":
+        scenarios.append({"scenario": "17-interface-lifecycle", "status": "failed"})
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps({"status": report_status, "scenarios": scenarios}), encoding="utf-8"
+    )
+    runtime = run_root / "_runtime" / "42" / "controls" / "preview-host"
+    logs = runtime / "desktop-logs"
+    logs.mkdir(parents=True)
+    retained = ("preview-1234.log", "preview-5678-20260817-010203040.log")
+    for filename in (*retained, "preview-0.log", "preview-1234-notes.log", "desktop.log"):
+        (logs / filename).write_text(filename, encoding="utf-8")
+    (logs / "preview-9999.log").mkdir()
+    (runtime / "vibetable-trace.log").write_text("not passing preview evidence", encoding="utf-8")
+    workspace_logs = (
+        runtime / "local-data" / "workspaces" / "workspace" / ".vibetable" / "temp" / "logs"
+    )
+    workspace_logs.mkdir(parents=True)
+    for filename in next_gate.PRODUCT_E2E_RUNTIME_LOGS:
+        (workspace_logs / filename).write_text("not passing preview evidence", encoding="utf-8")
+    for relative in ("42/host", "16/controls/preview-host"):
+        other = run_root / "_runtime" / relative / "desktop-logs"
+        other.mkdir(parents=True)
+        (other / "preview-3456.log").write_text("not S42 preview evidence", encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    copied = destination / "_runtime" / "42" / "controls" / "preview-host"
+    assert sorted(path.name for path in copied.iterdir()) == sorted(retained)
+    for filename in retained:
+        assert (copied / filename).read_text(encoding="utf-8") == filename
+    assert not (destination / "_runtime" / "42" / "host").exists()
+    assert not list(destination.rglob("preview-3456.log"))
+
+
+@pytest.mark.parametrize("linked_entry", ["desktop-logs", "preview-5678.log"])
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_product_e2e_passing_s42_rejects_linked_preview_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked_entry: str, link_kind: str
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    scenario_id = "42-file-document-native-operations"
+    scenario = run_root / scenario_id
+    scenario.mkdir(parents=True)
+    for filename in ("415-native-file-document.png", f"{scenario_id}-trace.zip"):
+        (scenario / filename).write_text("required S42 evidence", encoding="utf-8")
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "passed", "scenarios": [{"scenario": scenario_id, "status": "passed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime = run_root / "_runtime" / "42" / "controls" / "preview-host"
+    logs = runtime / "desktop-logs"
+    logs.mkdir(parents=True)
+    for filename in ("preview-1234.log", "preview-5678.log"):
+        (logs / filename).write_text("synthetic linked log", encoding="utf-8")
+    linked = logs if linked_entry == "desktop-logs" else logs / linked_entry
+    method = f"is_{link_kind}"
+    real_check = getattr(Path, method)
+    monkeypatch.setattr(Path, method, lambda path: path == linked or real_check(path))
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    copied = list(destination.rglob("preview-*.log"))
+    assert [path.name for path in copied] == ([] if linked == logs else ["preview-1234.log"])
+
+
+@pytest.mark.parametrize("status", ["failed", "passed"])
 @pytest.mark.parametrize("linked_directory", ["_runtime", "42", "controls", "preview-host"])
 def test_product_e2e_failure_evidence_rejects_linked_preview_host_ancestors(
-    tmp_path: Path, linked_directory: str
+    tmp_path: Path, linked_directory: str, status: str
 ) -> None:
     source_root = tmp_path / "source"
     run_root = source_root / "20260817T010203Z"
     failed_id = "42-file-document-native-operations"
-    (run_root / failed_id).mkdir(parents=True)
+    scenario = run_root / failed_id
+    scenario.mkdir(parents=True)
+    for filename in ("415-native-file-document.png", f"{failed_id}-trace.zip"):
+        (scenario / filename).write_text("required S42 evidence", encoding="utf-8")
     (run_root / "product-e2e-report.json").write_text(
-        json.dumps(
-            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
-        ),
+        json.dumps({"status": status, "scenarios": [{"scenario": failed_id, "status": status}]}),
         encoding="utf-8",
     )
     parts = ("_runtime", "42", "controls", "preview-host")

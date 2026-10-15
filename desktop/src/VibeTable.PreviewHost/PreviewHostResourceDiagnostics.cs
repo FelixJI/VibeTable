@@ -8,40 +8,107 @@ namespace VibeTable.PreviewHost;
 // PreviewSessionFailed) in the same preview-PID log; CPU ticks are 100 ns units.
 internal static class PreviewHostResourceDiagnostics
 {
-    internal static void Trace(PreviewHostStage stage, Func<PreviewResourceSample>? capture = null)
+    // Existing COM boundaries execute on the preview STA. One slot per caller
+    // thread prevents an unrelated thread from completing another call's pair.
+    [ThreadStatic] private static PendingObservation? _pending;
+
+    internal static void Trace(PreviewHostStage stage, Func<PreviewResourceSample>? capture = null,
+        Action? writePhase = null, Func<DateTimeOffset>? clock = null)
     {
-        try { TraceCore(stage, capture); }
-        catch { /* Diagnostics, including formatting/sinks, must not change COM behavior. */ }
+        bool phaseWritten = false;
+        void Phase()
+        {
+            phaseWritten = true;
+            try { writePhase?.Invoke(); }
+            catch { /* A sink failure must not change the COM operation. */ }
+        }
+        try { TraceCore(stage, capture, Phase, clock); }
+        catch
+        {
+            _pending = null;
+            if (!phaseWritten) Phase();
+        }
     }
 
-    private static void TraceCore(PreviewHostStage stage, Func<PreviewResourceSample>? capture)
+    private static void TraceCore(PreviewHostStage stage, Func<PreviewResourceSample>? capture,
+        Action writePhase, Func<DateTimeOffset>? clock)
     {
-        if (stage is not (PreviewHostStage.ComActivationStarted or PreviewHostStage.ComActivationReturned
-            or PreviewHostStage.HandlerStreamInitializeStarted or PreviewHostStage.HandlerStreamInitializeReturned
-            or PreviewHostStage.HandlerFileInitializeStarted or PreviewHostStage.HandlerFileInitializeReturned
-            or PreviewHostStage.HandlerDoPreviewStarted or PreviewHostStage.HandlerDoPreviewReturned
-            or PreviewHostStage.PreviewSessionFailed)) return;
-
-        PreviewResourceSample? sample = null;
-        try { sample = (capture ?? Capture)(); }
-        catch { /* Counter access must not change the COM operation. */ }
-        if (sample is not { CpuTicks: >= 0 } value)
+        bool started = stage is PreviewHostStage.ComActivationStarted
+            or PreviewHostStage.HandlerStreamInitializeStarted or PreviewHostStage.HandlerFileInitializeStarted
+            or PreviewHostStage.HandlerDoPreviewStarted;
+        bool terminal = stage is PreviewHostStage.ComActivationReturned
+            or PreviewHostStage.HandlerStreamInitializeReturned or PreviewHostStage.HandlerFileInitializeReturned
+            or PreviewHostStage.HandlerDoPreviewReturned or PreviewHostStage.PreviewSessionFailed;
+        if (started)
         {
-            PreviewHostEntry.TraceEvent($"preview.host.resources.{stage}.unavailable");
+            DiscardPending();
+            writePhase();
+            // Nothing is emitted after this capture until the matching end is captured.
+            _pending = new(stage, Observe(capture, clock));
+            return;
+        }
+        PendingObservation? pending = _pending;
+        _pending = null;
+        if (terminal && pending is { } begin && Matches(begin.Stage, stage))
+        {
+            Observation end = Observe(capture, clock); // Before phase or resource flushes.
+            writePhase();
+            Write(begin.Stage, begin.Observation);
+            Write(stage, end);
+            return;
+        }
+        // Unexpected phases invalidate the open interval rather than including
+        // their synchronous writes in a later apparent COM measurement.
+        if (pending is { } orphan) Unpaired(orphan.Stage, orphan.Observation.At);
+        writePhase();
+        if (terminal) Unpaired(stage, DateTimeOffset.UtcNow);
+    }
+
+    private static bool Matches(PreviewHostStage start, PreviewHostStage end)
+        => end == PreviewHostStage.PreviewSessionFailed || (start, end) is
+            (PreviewHostStage.ComActivationStarted, PreviewHostStage.ComActivationReturned) or
+            (PreviewHostStage.HandlerStreamInitializeStarted, PreviewHostStage.HandlerStreamInitializeReturned) or
+            (PreviewHostStage.HandlerFileInitializeStarted, PreviewHostStage.HandlerFileInitializeReturned) or
+            (PreviewHostStage.HandlerDoPreviewStarted, PreviewHostStage.HandlerDoPreviewReturned);
+
+    private static Observation Observe(Func<PreviewResourceSample>? capture, Func<DateTimeOffset>? clock)
+    {
+        try { return new((clock ?? (() => DateTimeOffset.UtcNow))(), (capture ?? Capture)()); }
+        catch { return new(DateTimeOffset.UtcNow, null); }
+    }
+
+    private static void DiscardPending()
+    {
+        PendingObservation? pending = _pending;
+        _pending = null;
+        if (pending is { } orphan) Unpaired(orphan.Stage, orphan.Observation.At);
+    }
+
+    private static void Unpaired(PreviewHostStage stage, DateTimeOffset at)
+        => PreviewHostEntry.TraceEvent($"preview.host.resources.{stage}.unpaired", observedAt: at);
+
+    private static void Write(PreviewHostStage stage, Observation observation)
+    {
+        if (observation.Sample is not { CpuTicks: >= 0 } value)
+        {
+            PreviewHostEntry.TraceEvent($"preview.host.resources.{stage}.unavailable", observedAt: observation.At);
             return;
         }
         PreviewHostEntry.TraceEvent(FormattableString.Invariant(
-            $"preview.host.resources.{stage}.cpuTicks.{value.CpuTicks}"));
+            $"preview.host.resources.{stage}.cpuTicks.{value.CpuTicks}"), observedAt: observation.At);
         if (value.Io is not { } io)
         {
-            PreviewHostEntry.TraceEvent($"preview.host.io.{stage}.unavailable");
+            PreviewHostEntry.TraceEvent($"preview.host.io.{stage}.unavailable", observedAt: observation.At);
             return;
         }
         PreviewHostEntry.TraceEvent(FormattableString.Invariant(
-            $"preview.host.ioOps.{stage}.read.{io.ReadOperations}.write.{io.WriteOperations}.other.{io.OtherOperations}"));
+            $"preview.host.ioOps.{stage}.read.{io.ReadOperations}.write.{io.WriteOperations}.other.{io.OtherOperations}"), observedAt: observation.At);
         PreviewHostEntry.TraceEvent(FormattableString.Invariant(
-            $"preview.host.ioBytes.{stage}.read.{io.ReadBytes}.write.{io.WriteBytes}.other.{io.OtherBytes}"));
+            $"preview.host.ioBytes.{stage}.read.{io.ReadBytes}.write.{io.WriteBytes}.other.{io.OtherBytes}"), observedAt: observation.At);
     }
+
+    private readonly record struct Observation(DateTimeOffset At, PreviewResourceSample? Sample);
+    private readonly record struct PendingObservation(PreviewHostStage Stage, Observation Observation);
 
     internal static PreviewResourceSample Capture()
     {
