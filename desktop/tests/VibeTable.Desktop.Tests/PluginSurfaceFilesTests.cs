@@ -146,7 +146,7 @@ public sealed class PluginSurfaceFilesTests
             Surfaces.TryGet(surface.SurfaceToken, out var bound); Surface = bound!;
             _generation = new ProductSidecarGenerationSnapshot(this, 1, new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "synthetic"), new ProductSidecarIdentity("11111111-1111-4111-8111-111111111111", 7, 1, "claim"), [], action => action());
             Broker = new HostSessionFileBroker(() => { Interlocked.Increment(ref Leases); return new WorkspaceRequestEpochLease(new WorkspaceWireScope { Scope = "workspace", WorkspaceId = Guid.Parse("11111111-1111-4111-8111-111111111111"), SessionEpoch = 7, OperationId = Guid.NewGuid(), Sequence = 1 }, CancellationToken.None, () => Interlocked.Decrement(ref Leases)); }, action => { action(); if (File.ReadAllText(Target) == "new") { var after = AfterNativeCommit; AfterNativeCommit = null; after?.Invoke(); } });
-            Api = new(Surfaces, _tasks, () => _generation, this, Http, () => Broker, this, pick => Task.FromResult(pick()), () => new(Broker, StartIo, _ => _status, (_, _) => { IoCancels++; return Task.FromResult(_status); }, (_, _) => Task.CompletedTask));
+            Api = new(Surfaces, _tasks, () => _generation, this, Http, files: () => Broker, fileHost: this, pickFile: pick => Task.FromResult(pick()), dataIo: () => new(Broker, StartIo, _ => _status, (_, _) => { IoCancels++; return Task.FromResult(_status); }, (_, _) => Task.CompletedTask));
         }
         private async Task<JsonElement> StartIo(string kind, JsonElement parameters, CancellationToken token)
         {
