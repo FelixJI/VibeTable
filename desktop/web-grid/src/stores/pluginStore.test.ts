@@ -326,4 +326,26 @@ describe("pluginStore", () => {
     expect(store.taskForAction(installed.pluginId, "open")?.taskId).toBe("new-task");
   });
 
+  it.each(["local:default", "local:other"])("keeps closed native receipts independent of installation replacement and clears them on %s session reset", (nextProject) => {
+    const store = usePluginStore(); store.setProjectContext("local:default", "r1");
+    const installed = plugin(2); store.applyPlugin(installed);
+    const late: PluginTaskSnapshot = { taskId: "late-native", runId: "late-run", projectKey: installed.projectKey,
+      pluginId: installed.pluginId, actionId: "old-action", pluginVersion: installed.version,
+      installationId: "retired-record", installationRevision: 1, surfaceToken: "retired-token",
+      collection: null, targetCount: 1, risk: "write", state: "aborted", cancelRequested: false,
+      result: null, error: { contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "check original receipt",
+        recoverability: "none", pluginId: null, actionId: null, runId: null, details: {}, causeId: null } };
+    store.applyTask(late);
+    store.applyTask({ ...late, taskId: "foreign-scope", projectKey: "local:foreign" });
+    store.applyTask({ ...late, taskId: "no-source", surfaceToken: null });
+    store.applyTask({ ...late, taskId: "no-installation", installationId: null });
+    expect(store.nativeTaskReceipts.map(task => task.taskId)).toEqual(["late-native"]);
+    expect(store.taskForId(late.taskId)).toBeNull();
+    expect(store.tasksForAction(installed.pluginId, late.actionId, "new-token")).toEqual([]);
+    store.applyTask({ ...late, state: "succeeded", error: null }, 5);
+    expect(store.nativeTaskReceipts[0]?.error?.code).toBe("plugin_commit_unknown");
+    store.setProjectContext(nextProject, "new-session");
+    expect(store.nativeTaskReceipts).toEqual([]);
+  });
+
 });

@@ -17,7 +17,7 @@ type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 
 type PluginStorePort = Pick<PluginStore,
   | "plugins" | "projectKey" | "currentUser" | "hostVersion"
-  | "describedAction" | "activeContext" | "taskForAction" | "tasksForAction">;
+  | "describedAction" | "activeContext" | "taskForAction" | "tasksForAction" | "nativeTaskReceipts">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
 type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp" | "activePluginApp">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
@@ -63,7 +63,8 @@ export type WorkspacePluginIntent =
   | { readonly type: "columnMenu.select"; readonly key: string }
   | { readonly type: "action.start"; readonly payload: Readonly<Record<string, unknown>> }
   | { readonly type: "interaction.resolve"; readonly taskId: string; readonly decision: "approved" | "rejected" }
-  | { readonly type: "task.cancel"; readonly taskId: string };
+  | { readonly type: "task.cancel"; readonly taskId: string }
+  | { readonly type: "receipt.cancel"; readonly taskId: string };
 
 export interface WorkspacePluginController {
   readonly applicationTasks: ComputedRef<PluginTaskViewSnapshot[]>;
@@ -331,8 +332,12 @@ export function createWorkspacePluginController(
         }
         return;
       }
+      case "receipt.cancel":
       case "task.cancel": {
-        const task = controlledTask(intent.taskId);
+        const task = intent.type === "receipt.cancel"
+          ? dependencies.plugins.nativeTaskReceipts.find(task => task.taskId === intent.taskId
+            && (task.state === "queued" || task.state === "running"))
+          : controlledTask(intent.taskId);
         if (!task) return;
         try {
           await dependencies.service.cancelTask(task.taskId);

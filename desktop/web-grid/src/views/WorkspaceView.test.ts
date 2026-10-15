@@ -810,8 +810,9 @@ describe("WorkspaceView", () => {
         actionId, surfaceToken: `${actionId}-token`, projectKey: plugin.projectKey, collection: "orders",
         targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null,
       });
+      let catalog = plugin;
       const record = makeRecordingBridge(message => {
-        if (message.type === "plugin.catalog.list") queueMicrotask(() => record.emit({ ...message, payload: [plugin] }));
+        if (message.type === "plugin.catalog.list") queueMicrotask(() => record.emit({ ...message, payload: [catalog] }));
         if (message.type === "plugin.action.describe") queueMicrotask(() => record.emit({ ...message, payload: { available: true, reasons: [] } }));
         if (message.type === "plugin.task.cancel") {
           const taskId = (message.payload as { taskId: string }).taskId;
@@ -829,7 +830,7 @@ describe("WorkspaceView", () => {
         plugins.beginAction({ pluginId: plugin.pluginId, actionId, title: actionId, risk: "write", inputSchema: {}, presentation,
           surface: { src: "https://native.plugins.vibetable.local/ui/index.html", surfaceToken: `${actionId}-token`, title: actionId } }, context);
       }
-      return { wrapper, plugins, plugin, record, task, openPanel };
+      return { wrapper, plugins, plugin, record, task, openPanel, setCatalog: (snapshot: PluginSnapshot) => { catalog = snapshot; plugins.applyPlugin(snapshot); } };
     }
 
     it("opens an application through real navigation and returns or retires to the platform", async () => {
@@ -848,6 +849,51 @@ describe("WorkspaceView", () => {
       plugins.applyPlugin({ ...plugin, status: "disabled", revision: 3 }); await flushPromises();
       expect(useUiStore().activePluginApp).toBeNull(); expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
       expect(document.body.textContent).toContain("插件入口已失效或被移除，已返回平台");
+    });
+
+    it.each([
+      { outcome: "succeeded", lateFirst: false }, { outcome: "unknown", lateFirst: false },
+      { outcome: "succeeded", lateFirst: true }, { outcome: "unknown", lateFirst: true },
+    ])("keeps closed application receipts outside a reopened surface: $outcome late=$lateFirst", async ({ outcome, lateFirst }) => {
+      const { wrapper, plugins, plugin, record, task, setCatalog } = await prepare();
+      const open = async () => { await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises(); };
+      await open();
+      const old = task("application", "old-write");
+      if (!lateFirst) { plugins.applyTask(old); await flushPromises(); }
+      await wrapper.get('[data-testid="plugin-app-return"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      if (!lateFirst) {
+        const receipt = wrapper.get('[data-testid="closed-plugin-task-receipts"]');
+        expect(receipt.text()).toContain(`${plugin.pluginId} / application`);
+        expect(receipt.get('[data-task-id="old-write"] b').attributes("data-state")).toBe("running");
+        await receipt.get('[data-task-id="old-write"] button').trigger("click"); await flushPromises();
+        expect(record.posted.filter(item => item.type === "plugin.task.cancel").map(item => item.payload)).toEqual([{ taskId: "old-write" }]);
+      }
+      setCatalog({ ...plugin, revision: 3, manifest: { ...plugin.manifest,
+        actions: plugin.manifest.actions.map(action => action.actionId === "application" ? { ...action, surfaceToken: "new-application-token" } : action) } });
+      await open();
+      const active = wrapper.get('[data-testid="plugin-app-viewport"]');
+      expect(active.find('[data-task-id="old-write"]').exists()).toBe(false);
+      const completed: PluginTaskSnapshot = outcome === "succeeded"
+        ? { ...old, state: "succeeded", result: { contract: "vibetable.plugin-result.v1", status: "success", summary: "原写入已经成功", metrics: [], table: null, refresh: null, artifacts: [], warnings: [] } }
+        : { ...old, state: "aborted", error: { contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "原写入需核对",
+          recoverability: "none", pluginId: plugin.pluginId, actionId: "application", runId: old.runId, details: {}, causeId: null } };
+      plugins.applyTask(completed, 10); await flushPromises();
+      const receipts = wrapper.get('[data-testid="closed-plugin-task-receipts"]');
+      expect(receipts.text()).toContain(`${plugin.pluginId} / application`);
+      expect(receipts.text()).toContain(outcome === "succeeded" ? "原写入已经成功" : "写入结果未知，请核对实际数据；请勿重复执行");
+      expect(receipts.find('.confirmation-actions').exists()).toBe(false);
+      expect(active.find('[data-task-id="old-write"]').exists()).toBe(false);
+      plugins.applyTask({ ...old, taskId: "new-write", runId: "new-run", surfaceToken: "new-application-token", installationRevision: 3 });
+      await flushPromises();
+      expect(active.get('[data-task-id="new-write"] b').attributes("data-state")).toBe("running");
+      expect(receipts.find('[data-task-id="new-write"]').exists()).toBe(false);
+      plugins.applyTask({ ...old, state: "running" }, 11); await flushPromises();
+      expect(receipts.get('[data-task-id="old-write"] b').attributes("data-state")).toBe(outcome === "succeeded" ? "succeeded" : "aborted");
+      expect(record.posted.filter(item => item.type === "plugin.surface.event" && (item.payload as { event: string }).event === "close")).toHaveLength(1);
+      expect(record.posted.some(item => item.type === "plugin.action.start")).toBe(false);
+      plugins.setProjectContext(plugin.projectKey, "reopened-session"); await flushPromises();
+      expect(wrapper.find('[data-testid="closed-plugin-task-receipts"]').exists()).toBe(false);
     });
 
     it("retires an application when the actual workspace center opens and does not remount its dead token on active navigation", async () => {
@@ -899,7 +945,8 @@ describe("WorkspaceView", () => {
       expect(wrapper.getComponent(PluginHeadlessRunner).vm).not.toBe(first);
       expect(wrapper.get('[data-testid="plugin-headless-runner"] iframe').attributes("name")).toBe("headless-reopened");
       expect(wrapper.find('[data-testid="plugin-headless-cancel"]').exists()).toBe(true);
-      expect(wrapper.find('[data-task-id="old-receipt"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="plugin-headless-runner"] [data-task-id="old-receipt"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="closed-plugin-task-receipts"]').text()).toContain("old receipt needs checking");
       expect(plugins.taskForId("old-receipt")?.error?.code).toBe("plugin_commit_unknown");
     });
 

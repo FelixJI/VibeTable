@@ -49,6 +49,11 @@ export const usePluginStore = defineStore("plugins", () => {
   const activeTask = computed(() =>
     activeTaskId.value ? taskById.value[activeTaskId.value] ?? null : null,
   );
+  // Receipt history is a projection of Host snapshots, not authorization for
+  // another frame. The existing workspace/session reset owns its lifetime.
+  const nativeTaskReceipts = computed(() => Object.values(taskById.value).filter(task =>
+    task.projectKey === projectKey.value && Boolean(task.surfaceToken)
+    && Boolean(task.installationId) && (task.installationRevision ?? 0) > 0));
   const pendingConfirmation = computed<WebPluginConfirmationPreview | null>(() =>
     activeTask.value?.confirmation ?? null,
   );
@@ -332,6 +337,7 @@ export const usePluginStore = defineStore("plugins", () => {
     beginCatalogRead,
     isCurrentCatalogRead,
     refreshCatalog,
+    nativeTaskReceipts,
     taskForId,
     taskForAction,
     tasksForAction,

@@ -343,4 +343,28 @@ describe("workspacePluginController", () => {
     bridge.stop(); setHostBridgeForTesting(null);
   });
 
+  it("cancels a closed native receipt by its original task id without permitting approval or a foreign task", async () => {
+    const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
+    const pending: PluginTaskSnapshot = { taskId: "closed", runId: "closed-run", projectKey: "local:default",
+      pluginId: plugin.pluginId, actionId: "normalize", pluginVersion: plugin.version, installationId: "retired-record",
+      installationRevision: 1, surfaceToken: "closed-token", collection: null, targetCount: 1,
+      risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    const view = plugins.applyTask(pending);
+    plugins.applyTask({ ...pending, taskId: "foreign-scope", projectKey: "local:other" });
+    const cancelTask = vi.fn(async () => view); const resolveInteraction = vi.fn();
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui: useUiStore(), plugins,
+      service: { describeAction: vi.fn(), startAction: vi.fn(), cancelTask, resolveInteraction }, selectedRows: () => [],
+      openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: vi.fn(),
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
+    await controller.dispatch({ type: "task.cancel", taskId: pending.taskId });
+    await controller.dispatch({ type: "interaction.resolve", taskId: pending.taskId, decision: "approved" });
+    await controller.dispatch({ type: "receipt.cancel", taskId: "foreign-scope" });
+    expect(cancelTask).not.toHaveBeenCalled(); expect(resolveInteraction).not.toHaveBeenCalled();
+    await controller.dispatch({ type: "receipt.cancel", taskId: pending.taskId });
+    expect(cancelTask).toHaveBeenCalledExactlyOnceWith("closed");
+    plugins.applyTask({ ...pending, state: "succeeded" }, 2);
+    await controller.dispatch({ type: "receipt.cancel", taskId: pending.taskId });
+    expect(cancelTask).toHaveBeenCalledTimes(1);
+  });
+
 });

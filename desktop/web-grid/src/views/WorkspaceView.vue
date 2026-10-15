@@ -61,6 +61,7 @@ import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import PluginHeadlessRunner from "@/components/plugins/PluginHeadlessRunner.vue";
 import PluginAppViewport from "@/components/plugins/PluginAppViewport.vue";
+import PluginTaskList from "@/components/plugins/PluginTaskList.vue";
 import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
 import WorkspaceSwitcher from "@/components/workspace/WorkspaceSwitcher.vue";
 import ConflictCenterView from "@/views/ConflictCenterView.vue";
@@ -911,6 +912,16 @@ const pluginActionTask = pluginController.actionTask;
 const pluginActionTasks = pluginController.actionTasks;
 const pluginAppNav = createPluginAppNavigation(plugins, ui);
 const activePluginAppEntry = pluginAppNav.activeEntry;
+const closedPluginTaskReceipts = computed(() => {
+  const visibleTokens = new Set<string>();
+  if (!showWorkspaceCenterScreen.value && activePluginAppEntry.value)
+    visibleTokens.add(activePluginAppEntry.value.surfaceToken);
+  const panel = plugins.describedAction;
+  if (plugins.actionOpen && panel?.surface
+    && (panel.presentation === "custom" || panel.presentation === "headless"))
+    visibleTokens.add(panel.surface.surfaceToken);
+  return plugins.nativeTaskReceipts.filter(task => !visibleTokens.has(task.surfaceToken ?? ""));
+});
 const activePluginAppKey = computed(() =>
   ui.activePluginApp ? `${ui.activePluginApp.pluginId}/${ui.activePluginApp.actionId}` : null);
 const platformViewsHidden = computed(() =>
@@ -1715,6 +1726,15 @@ useKeyboard({
           @manage="ui.closePluginApp(); ui.navigate('plugins')"
         />
       </div>
+      <section v-if="closedPluginTaskReceipts.length" data-testid="closed-plugin-task-receipts"
+        class="closed-plugin-task-receipts" aria-label="已关闭插件页面的任务回执">
+        <div class="receipt-heading"><strong>已关闭插件页面的任务回执</strong><span>关闭页面不代表写入已取消，请核对结果，勿重复执行。</span></div>
+        <article v-for="task in closedPluginTaskReceipts" :key="task.taskId">
+          <div class="receipt-source">{{ task.pluginId }} / {{ task.actionId }}</div>
+          <PluginTaskList :tasks="[task]" variant="app"
+            @cancel="pluginController.dispatch({ type: 'receipt.cancel', taskId: $event })" />
+        </article>
+      </section>
     </section>
     <ContentRecordPanel
       :show="contentPanelOpen"
@@ -2050,6 +2070,11 @@ useKeyboard({
   overflow: hidden;
   background: var(--vt-bg);
 }
+.closed-plugin-task-receipts { flex: 0 1 auto; min-height: 0; max-height: min(320px, 35vh); overflow: auto; border-top: 1px solid var(--vt-border); background: var(--vt-bg); }
+.receipt-heading { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 12px; }
+.receipt-heading span, .receipt-source { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.receipt-source { padding: 4px 12px; }
+.closed-plugin-task-receipts :deep(.task-list) { max-height: none; }
 .plugin-action-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }
 .plugin-action-overlay--headless { place-items: center; }
 .plugin-action-overlay > :deep(*) { height: 100%; }
