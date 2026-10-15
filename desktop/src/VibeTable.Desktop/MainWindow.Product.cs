@@ -395,7 +395,8 @@ public partial class MainWindow : Window
             });
         var dailyQuotes = new DailyQuoteHostClient();
         _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
-            () => _runtime.CaptureProductSidecarGeneration(), _webBridge);
+            () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
+            subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true);
         _webBridge.PluginInteractionRequested += OnPluginInteractionRequested;
         _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);

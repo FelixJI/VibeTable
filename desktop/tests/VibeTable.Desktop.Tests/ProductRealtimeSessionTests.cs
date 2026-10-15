@@ -365,7 +365,7 @@ public sealed class ProductRealtimeSessionTests
         using var owned = client = new SubscriptionClient(fixture);
         string id = await client.Subscribe();
         fixture.Http.StreamReplies.Enqueue(DataStream("visible", "hidden", "visible"));
-        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        fixture.StartSubscriptionStream();
         await fixture.NextConnection();
         (await fixture.NextPost())();
         (await client.NextFrame())();
@@ -401,7 +401,7 @@ public sealed class ProductRealtimeSessionTests
         using var owned = client = new SubscriptionClient(fixture);
         string id = await client.Subscribe();
         fixture.Http.StreamReplies.Enqueue(DataStream("visible"));
-        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        fixture.StartSubscriptionStream();
         await fixture.NextConnection();
         (await fixture.NextPost())();
         Action late = await client.NextFrame();
@@ -441,7 +441,7 @@ public sealed class ProductRealtimeSessionTests
         using var owned = client = new SubscriptionClient(fixture);
         await client.Subscribe();
         fixture.Http.StreamReplies.Enqueue(DataStream(Enumerable.Repeat("visible", 50).ToArray()));
-        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        fixture.StartSubscriptionStream();
         await fixture.NextConnection();
         (await fixture.NextPost())();
         Action held = await client.NextFrame();
@@ -487,7 +487,7 @@ public sealed class ProductRealtimeSessionTests
             client.Http.TransportFailure = true;
             fixture.Http.StreamReplies.Enqueue(DataStream("visible"));
         }
-        fixture.Delivery.SetReady(RendererReadyPhase.Business);
+        fixture.StartSubscriptionStream();
         await fixture.NextConnection();
         if (stoppedStream) await fixture.NextFailure();
         (await fixture.NextPost())();
@@ -498,6 +498,121 @@ public sealed class ProductRealtimeSessionTests
         Assert.AreEqual("plugin_subscription_failed", client.Notices[0].GetProperty("code").GetString());
         Assert.DoesNotContain("private", client.Notices[0].GetRawText());
         Assert.AreEqual(0, client.Api.SubscriptionCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StoppedStreamRejectsFirstAndInflightSubscriptions(bool inflight)
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        using var owned = client = new SubscriptionClient(fixture);
+        fixture.Http.StreamReplies.Enqueue(new(HttpStatusCode.OK)
+        { Content = new StringContent("id: rt:1\nevent: unsupported\ndata: {}\n\n", Encoding.UTF8, "text/event-stream") });
+        Task<JsonElement>? pending = null;
+        if (inflight)
+        {
+            client.Http.AuthorizationHold = NewSignal();
+            pending = client.Call("data.subscribe", new { collection = "visible" });
+            await client.Http.AuthorizationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        fixture.StartSubscriptionStream();
+        await fixture.NextConnection();
+        await fixture.NextFailure();
+        // Fatal is already known before the renderer notification is pumped.
+        client.Http.AuthorizationHold?.TrySetResult();
+        var rejected = await (pending ?? client.Call("data.subscribe", new { collection = "visible" }));
+        Assert.AreEqual("plugin_subscription_failed", rejected.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+        (await fixture.NextPost())();
+        // A late ordinary event does not revive the stopped producer.
+        client.Api.OfferInvalidation(fixture.Snapshot!, "data.changed",
+            JsonSerializer.SerializeToElement(new { tableId = "visible" }), action => action());
+        rejected = await client.Call("data.subscribe", new { collection = "visible" });
+        Assert.AreEqual("plugin_subscription_failed", rejected.GetProperty("error").GetProperty("code").GetString());
+        // A genuinely new renderer binding may start its own stream and re-admit.
+        fixture.HoldStreamWithoutRecovery();
+        fixture.Delivery.Retire();
+        fixture.StartSubscriptionStream();
+        await fixture.NextConnection();
+        Assert.IsFalse((await client.Call("data.subscribe", new { collection = "visible" })).TryGetProperty("error", out _));
+    }
+
+    [TestMethod]
+    public async Task ClosedCallbackCannotResubscribeToStoppedStream()
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        using var owned = client = new SubscriptionClient(fixture);
+        await client.Subscribe();
+        Task<JsonElement>? resubscribe = null;
+        client.OnNotice = _ => resubscribe = client.Call("data.subscribe", new { collection = "visible" });
+        fixture.Http.StreamReplies.Enqueue(new(HttpStatusCode.OK)
+        { Content = new StringContent("id: rt:1\nevent: unsupported\ndata: {}\n\n", Encoding.UTF8, "text/event-stream") });
+        fixture.StartSubscriptionStream();
+        await fixture.NextConnection();
+        await fixture.NextFailure();
+        (await fixture.NextPost())();
+        (await client.NextFrame())();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsNotNull(resubscribe);
+        Assert.AreEqual("plugin_subscription_failed", (await resubscribe).GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(0, client.Api.SubscriptionCount);
+    }
+
+    [TestMethod]
+    public async Task GenerationAdmissionNeverRecapturesOwningSupervisor()
+    {
+        SubscriptionClient? client = null;
+        await using var fixture = await Fixture.OpenAsync(observePluginData: (snapshot, topic, payload, gate) =>
+            client!.Api.OfferInvalidation(snapshot, topic, payload, gate));
+        // Use the production admission implementation; detect the forbidden callback at
+        // the lock boundary instead of constructing an uninterruptible deadlock.
+        var type = typeof(PocketBaseAdminContext).Assembly.GetType("VibeTable.Infrastructure.PocketBase.PocketBaseGenerationContext")!;
+        var context = Activator.CreateInstance(type,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null,
+            new object[] { 1L, fixture.Snapshot!.Context }, null)!;
+        var gate = type.GetMethod("TryUseCurrent", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .CreateDelegate<Func<Func<bool>, bool>>(context);
+        object admission = type.GetField("_admissionGate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(context)!;
+        var prior = fixture.Snapshot;
+        fixture.Snapshot = new(prior.RuntimeAuthority, prior.SidecarGenerationId, prior.Context, prior.Identity, prior.Registrations.ToArray(), gate);
+        fixture.Authority.SetCurrent(fixture.Snapshot);
+        int forbiddenCaptures = 0;
+        using var owned = client = new SubscriptionClient(fixture, capture: () =>
+        {
+            if (Monitor.IsEntered(admission))
+            {
+                Interlocked.Increment(ref forbiddenCaptures);
+                throw new InvalidOperationException("Supervisor capture under generation admission.");
+            }
+            return fixture.Snapshot;
+        });
+        var result = await client.Call("data.subscribe", new { collection = "visible" });
+        Assert.AreEqual(0, forbiddenCaptures);
+        Assert.IsFalse(result.TryGetProperty("error", out _));
+        fixture.Http.StreamReplies.Enqueue(DataStream("visible"));
+        fixture.StartSubscriptionStream();
+        await fixture.NextConnection();
+        (await fixture.NextPost())();
+        (await client.NextFrame())();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(0, forbiddenCaptures);
+        Assert.HasCount(1, client.Notices);
+        // Retirement still seals both new admissions and queued actual posts.
+        client.Api.OfferInvalidation(fixture.Snapshot!, "data.changed",
+            JsonSerializer.SerializeToElement(new { tableId = "visible" }),
+            action => fixture.Authority.TryUseCurrent(fixture.Snapshot!, action));
+        Action queued = await client.NextFrame();
+        type.GetMethod("Retire", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(context, null);
+        queued();
+        await client.Api.WaitForSubscriptionDeliveryAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.HasCount(1, client.Notices);
+        Assert.AreEqual(0, forbiddenCaptures);
+        Assert.IsTrue((await client.Call("data.subscribe", new { collection = "visible" })).TryGetProperty("error", out _));
     }
 
     [TestMethod]
@@ -576,13 +691,19 @@ public sealed class ProductRealtimeSessionTests
         internal PluginSurfaceApi Api { get; }
         internal bool FrameCurrent = true;
         internal string? LastSubscribeRequest;
-        internal SubscriptionClient(Fixture fixture)
+        internal Action<JsonElement>? OnNotice;
+        internal SubscriptionClient(Fixture fixture, Func<ProductSidecarGenerationSnapshot?>? capture = null)
         {
             Context = PluginProjectContext.FromSession(fixture.Sessions.Current)!;
             _authority.Transition(Context);
             var tasks = new HostPluginTaskRegistry(_authority);
             tasks.SetWorkspaceContext(Context);
-            Api = new(Surfaces, tasks, () => fixture.Snapshot, this, Http);
+            // Establish the real ready binding, holding only the synthetic HTTP stream
+            // until the test supplies its response. Admission always uses the real owner.
+            fixture.Http.StreamStart = NewSignal();
+            fixture.Delivery.SetReady(RendererReadyPhase.Business);
+            Api = new(Surfaces, tasks, capture ?? (() => fixture.Snapshot), this, Http,
+                subscriptionSource: fixture.Owner.TryUseSubscriptionSource);
             Surface = OpenSurface();
         }
         internal PluginSurfaceSession OpenSurface()
@@ -596,7 +717,12 @@ public sealed class ProductRealtimeSessionTests
                 var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 await _frames.Writer.WriteAsync(() => { action(); completion.TrySetResult(); }, token);
                 await completion.Task.WaitAsync(token);
-            }, () => FrameCurrent, json => Notices.Add(JsonDocument.Parse(json).RootElement.Clone())));
+            }, () => FrameCurrent, json =>
+            {
+                var notice = JsonDocument.Parse(json).RootElement.Clone();
+                Notices.Add(notice);
+                OnNotice?.Invoke(notice);
+            }));
             return surface!;
         }
         internal async Task<JsonElement> Call(string method, object parameters, PluginSurfaceSession? surface = null)
@@ -621,6 +747,8 @@ public sealed class ProductRealtimeSessionTests
     private sealed class SubscriptionPeer : HttpMessageHandler
     {
         internal int Authorizations;
+        internal TaskCompletionSource? AuthorizationHold;
+        internal readonly TaskCompletionSource AuthorizationStarted = NewSignal();
         internal bool Denied;
         internal bool TransportFailure;
         internal TaskCompletionSource? DescribeHold;
@@ -638,6 +766,8 @@ public sealed class ProductRealtimeSessionTests
             Assert.AreEqual("data.authorizeSubscription", call.GetProperty("method").GetString());
             Assert.AreEqual("installation", call.GetProperty("installationId").GetString());
             Interlocked.Increment(ref Authorizations);
+            AuthorizationStarted.TrySetResult();
+            if (AuthorizationHold is { } authorizationHold) await authorizationHold.Task.WaitAsync(token);
             if (TransportFailure) throw new HttpRequestException("private transport detail must not reach a plugin");
             return new(Denied ? HttpStatusCode.Conflict : HttpStatusCode.OK)
             { Content = new StringContent(Denied ? "{\"code\":\"plugin_read_denied\"}" : "{\"collection\":\"visible\"}") };
@@ -717,6 +847,12 @@ public sealed class ProductRealtimeSessionTests
             return fixture;
         }
 
+        internal void StartSubscriptionStream()
+        {
+            Delivery.SetReady(RendererReadyPhase.Business);
+            Http.StreamStart!.TrySetResult();
+        }
+
         internal void HoldStreamWithoutRecovery()
         {
             var content = new StreamContent(new TestSseStream([], blockAtEnd: true));
@@ -742,6 +878,7 @@ public sealed class ProductRealtimeSessionTests
 
     private sealed class HttpPeer(ProductSidecarGenerationSnapshot snapshot) : HttpMessageHandler
     {
+        internal TaskCompletionSource? StreamStart;
         internal Channel<string?> Connections { get; } = Channel.CreateUnbounded<string?>();
         internal int CatalogReads { get; private set; }
         internal bool CatalogFailure { get; set; }
@@ -752,6 +889,7 @@ public sealed class ProductRealtimeSessionTests
         {
             if (request.RequestUri!.AbsolutePath.EndsWith("/events", StringComparison.Ordinal))
             {
+                if (StreamStart is { } start) await start.Task.WaitAsync(token);
                 await Connections.Writer.WriteAsync(request.Headers.TryGetValues("Last-Event-ID", out var values)
                     ? values.Single() : null, token);
                 if (StreamReplies.TryDequeue(out HttpResponseMessage? reply)) return reply;

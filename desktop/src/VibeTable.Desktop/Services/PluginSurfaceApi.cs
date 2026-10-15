@@ -18,6 +18,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private readonly PluginSurfaceSessionManager _surfaces;
     private readonly HostPluginTaskRegistry _tasks;
     private readonly Func<ProductSidecarGenerationSnapshot?> _generation;
+    private readonly Func<ProductSidecarGenerationSnapshot, Func<bool>, bool>? _subscriptionSource;
     private readonly IWebReplySink _reply;
     private readonly HttpClient _http;
     private readonly ConcurrentDictionary<string, SurfaceState> _states = new(StringComparer.Ordinal);
@@ -27,9 +28,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     internal PluginSurfaceApi(PluginSurfaceSessionManager surfaces, HostPluginTaskRegistry tasks,
         Func<ProductSidecarGenerationSnapshot?> generation,
         IWebReplySink reply,
-        HttpMessageHandler? handler = null)
+        HttpMessageHandler? handler = null,
+        Func<ProductSidecarGenerationSnapshot, Func<bool>, bool>? subscriptionSource = null)
     {
         _surfaces = surfaces; _tasks = tasks; _generation = generation; _reply = reply;
+        _subscriptionSource = subscriptionSource;
         _surfaces.Closed += RetireState;
         _http = new HttpClient(handler ?? new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
     }

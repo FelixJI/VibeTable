@@ -87,6 +87,8 @@ sequence 是当前订阅的本地通知顺序，不是数据 revision；先完�
 恢复连接会使当前获准表失效以便重查。权限变化/流终止/授权检查失败会结束订阅，回调
 `{type:"closed", code}`（如 plugin_read_denied、plugin_cursor_stale、plugin_subscription_failed）；
 frame 投递失败则退役该 surface，不自动重建或重试订阅。重新订阅应由仍有效的当前页面发起。
+当前 SSE 已终止时，新的订阅会以 `plugin_subscription_failed` 拒绝；须关闭并重新打开工作区，
+或等待真实的新 renderer/generation 绑定建立实时流后再申请，普通迟到事件不会重新开启准入。
 最后的 frame post 在实际 UI 回调内核对 renderer、SSE session/generation、当前 surface 与订阅存活；
 关闭、切换工作区、禁用/升级、退订后的迟到通知不能投递，SDK 丢弃重复/乱序通知并阻止已结束 handle 复活。
 

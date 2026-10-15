@@ -33,7 +33,9 @@ internal sealed partial class PluginSurfaceApi
         await AuthorizeSubscriptionAsync(surface, collection, token);
         token.ThrowIfCancellationRequested();
         string id = Guid.NewGuid().ToString("N");
-        bool admitted = snapshot.TryUseCurrent(() => _generation()?.Matches(snapshot) == true && _surfaces.TryUseCurrent(surface, () =>
+        // The realtime owner enters authority/generation admission before session/surface gates.
+        // Never recapture the supervisor from inside a generation admission callback.
+        bool admitted = _subscriptionSource?.Invoke(snapshot, () => _surfaces.TryUseCurrent(surface, () =>
         {
             lock (_subscriptionGate)
             {
@@ -45,8 +47,8 @@ internal sealed partial class PluginSurfaceApi
                 _subscriptions.Add(id, new(id, collection, requestId, surface, state.FrameNotifier));
                 return true;
             }
-        }));
-        if (!admitted) throw Error("plugin_session_stale");
+        })) == true;
+        if (!admitted) throw Error("plugin_subscription_failed");
         return new { subscriptionId = id };
     }
 
@@ -154,8 +156,7 @@ internal sealed partial class PluginSurfaceApi
                         lock (_subscriptionGate)
                         {
                             if (subscription.Token.IsCancellationRequested
-                                || !_subscriptions.TryGetValue(subscription.Id, out var current) || !ReferenceEquals(current, subscription)
-                                || _generation()?.Matches(pending.Snapshot) != true) return false;
+                                || !_subscriptions.TryGetValue(subscription.Id, out var current) || !ReferenceEquals(current, subscription)) return false;
                             return post();
                         }
                     }));
