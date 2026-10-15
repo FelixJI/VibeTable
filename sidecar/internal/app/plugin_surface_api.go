@@ -160,7 +160,8 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 func surfaceCommitRejection(code string) bool {
 	switch code {
 	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
-		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict":
+		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict",
+		"mutation.record.not_found":
 		return true
 	default:
 		return false

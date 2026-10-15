@@ -492,7 +492,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private static PluginSurfacePolicyException Error(string code) => new(code, "插件请求未完成。");
     private static bool IsCommitRejection(string code) => code is
         "plugin_read_denied" or "plugin_write_denied" or "plugin_cursor_stale" or "plugin_api_unsupported" or "plugin_capability_invalid" or "plugin_guard_required" or "plugin_audit_invalid"
-        or "mutation.relation.restricted" or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict";
+        or "mutation.relation.restricted" or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict" or "mutation.record.not_found";
     private sealed class SurfaceAuthorityException(string code, bool notCommitted) : Exception
     { internal string Code { get; } = code; internal bool NotCommitted { get; } = notCommitted; }
     private static string ReadBlockReply(string? id, object? result)

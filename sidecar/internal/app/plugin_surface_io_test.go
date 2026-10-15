@@ -18,12 +18,16 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
-func surfaceIOInstallation(t *testing.T, app core.App, workspace, table string, fields []string) (pluginSurfaceAPIRequest, *pluginstore.Service) {
+func surfaceIOInstallation(t *testing.T, app core.App, workspace, table string, fields []string, operations ...string) (pluginSurfaceAPIRequest, *pluginstore.Service) {
 	t.Helper()
 	ctx := context.Background()
 	store := pluginstore.New(app, workspace)
 	pluginID, hash := "com.example.files", strings.Repeat("a", 64)
-	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"files": []string{"pickRead", "pickWrite"}, "data": []any{map[string]any{"collection": table, "operations": []string{"read", "query", "create", "update"}, "fields": fields}}}, "actions": []any{map[string]any{"actionId": "save", "risk": "write", "mode": "local", "invocation": "manual"}}, "ui": map[string]any{"customViews": []any{map[string]any{"viewId": "save", "actionId": "save", "entry": "ui/index.html"}}}}
+	grants := operations
+	if len(grants) == 0 {
+		grants = []string{"read", "query", "create", "update"}
+	}
+	manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"files": []string{"pickRead", "pickWrite"}, "data": []any{map[string]any{"collection": table, "operations": grants, "fields": fields}}}, "actions": []any{map[string]any{"actionId": "save", "risk": "write", "mode": "local", "invocation": "manual"}}, "ui": map[string]any{"customViews": []any{map[string]any{"viewId": "save", "actionId": "save", "entry": "ui/index.html"}}}}
 	if _, err := store.SaveInstallation(ctx, installationSnapshot(t, store.ProjectKey(), pluginID, hash, manifest, 1, "enabled"), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +251,79 @@ func TestPluginSurfaceUpsertPreviewFollowsActualMatchesWithInsertRequiredChecks(
 	}
 	if !found {
 		t.Fatalf("new insert row missed its required-field diagnostic: %+v", normalized.Rows[1].Diagnostics)
+	}
+}
+
+func TestPluginSurfaceRecordNotFoundAfterConfirmationIsADefiniteRejection(t *testing.T) {
+	// The P2 race is a delete plan whose target disappears after native
+	// confirmation; the update variant keeps the original coverage.
+	for _, kind := range []string{"update", "delete"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			f := newWorkspaceMutationReplayFixture(t)
+			workspace := "11111111-1111-4111-8111-111111111111"
+			table, err := schemaexecution.Describe(ctx, f.pb, f.request.TableID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := f.definition.Snapshot.Fields[0].Identity.FieldID
+			source, err := queryschema.New(f.pb.DataDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
+			tracedID := "traceddelete001"
+			seed := mutation.Request{ContractVersion: "2.0", RequestID: "not-found-seed", IdempotencyKey: "not-found-seed", TableID: table.Snapshot.TableID, SchemaRevision: table.Snapshot.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "test"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, RecordID: &tracedID, Values: map[string]any{name: "before"}}}}
+			if _, err = kernel.Apply(ctx, seed); err != nil {
+				t.Fatal(err)
+			}
+			page, err := query.NewPort(f.pb, source).QueryPage(ctx, table.Snapshot.TableID, query.TableQuery{Limit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest, _ := page.Rows[0][productrow.DigestField].(string)
+			input, _ := surfaceIOInstallation(t, f.pb, workspace, table.Snapshot.TableID, []string{"id", name}, "read", "query", "create", "update", "delete")
+			call := func(method string, request any) (any, error) {
+				input.Method = method
+				input.Request, _ = json.Marshal(request)
+				return executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, f.runtime.CoordinateBusinessWrite)
+			}
+			operation := map[string]any{"kind": kind, "primaryKey": tracedID, "expectedDigest": digest}
+			if kind == "update" {
+				operation["values"] = map[string]any{name: "after"}
+			}
+			mutationPlan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": table.Snapshot.TableID, "schemaRevision": table.Snapshot.SchemaRevision, "operations": []any{operation}}
+			if _, err = call("mutation.preview", mutationPlan); err != nil {
+				t.Fatal(err)
+			}
+			input.RequestID = "not-found-race"
+			if _, err = call("audit.start", map[string]any{"taskId": "task-not-found-race", "plan": mutationPlan}); err != nil {
+				t.Fatal(err)
+			}
+			// The row is deleted elsewhere between native confirmation and commit.
+			record, err := f.pb.FindRecordById(f.definition.PhysicalName, tracedID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = f.pb.Delete(record); err != nil {
+				t.Fatal(err)
+			}
+			result, err := call("mutation.commit", mutationPlan)
+			if surfaceErrorCode(t, err) != "mutation.record.not_found" {
+				t.Fatalf("raced %s returned %v", kind, err)
+			}
+			if outcome := surfaceCommitOutcome(ctx, f.pb, workspace, input, result, surfaceErrorCode(t, err)); outcome != "not-committed" {
+				t.Fatalf("record-not-found must stay a definite not-committed rejection: %s", outcome)
+			}
+		})
+	}
+	// Codes outside the definite set keep the true unknown boundary.
+	ctx := context.Background()
+	f := newWorkspaceMutationReplayFixture(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	input := pluginSurfaceAPIRequest{ProjectKey: workspace, PluginID: "plugin", InstallationID: "install", InstallationRevision: 1, SessionEpoch: 7, SurfaceToken: "surface"}
+	if outcome := surfaceCommitOutcome(ctx, f.pb, workspace, input, nil, "mutation.storage.failed"); outcome != "unknown" {
+		t.Fatalf("unknown boundary weakened: %s", outcome)
 	}
 }
 

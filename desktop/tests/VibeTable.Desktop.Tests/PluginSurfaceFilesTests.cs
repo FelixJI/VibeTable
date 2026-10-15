@@ -239,6 +239,26 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
+    public async Task DeletedRecordAfterConfirmationSurfacesExactRejectionNotUnknown()
+    {
+        await using var f = new Fixture();
+        async Task<string> CreatePlan() => (await f.Call("mutation.preview", JsonSerializer.Serialize(new
+        { collection = "orders", operations = new object[] { new { kind = "create", values = new { name = "new" } } } })))
+            .GetProperty("result").GetProperty("planId").GetString()!;
+        string raced = await CreatePlan();
+        f.Http.FailNextCommitStatus = 409;
+        f.Http.FailNextCommitBody = "{\"code\":\"mutation.record.not_found\",\"commitOutcome\":\"not-committed\"}";
+        var rejected = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId = raced }));
+        Assert.AreEqual("mutation.record.not_found", rejected.GetProperty("error").GetProperty("code").GetString(), rejected.GetRawText());
+        // A failure without a definite not-committed proof keeps the true unknown boundary.
+        string unknown = await CreatePlan();
+        f.Http.FailNextCommitStatus = 500;
+        f.Http.FailNextCommitBody = "{\"code\":\"mutation.internal.failed\"}";
+        var unverifiable = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId = unknown }));
+        Assert.AreEqual("plugin_commit_unknown", unverifiable.GetProperty("error").GetProperty("code").GetString(), unverifiable.GetRawText());
+    }
+
+    [TestMethod]
     [DataRow(1024 * 1024, 0)]
     [DataRow(800 * 1024, 251)]
     [DataRow(1024 * 1024, 251)]
@@ -492,6 +512,8 @@ public sealed class PluginSurfaceFilesTests
         internal List<JsonElement> Calls { get; } = [];
         internal Action? AfterAuthorize;
         internal bool FailNextFreeze;
+        internal int FailNextCommitStatus;
+        internal string? FailNextCommitBody;
         internal byte[]? AttachmentReadContent;
         internal List<byte[]> AttachmentStageWires { get; } = [];
         internal List<string?> AttachmentStageMediaTypes { get; } = [];
@@ -502,6 +524,8 @@ public sealed class PluginSurfaceFilesTests
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
             if (method == "import.freeze" && FailNextFreeze) { FailNextFreeze = false; return new(HttpStatusCode.Conflict) { Content = new StringContent("{\"code\":\"import_plan_invalid\"}") }; }
+            if (method == "mutation.commit" && FailNextCommitBody is { } commitBody)
+            { int status = FailNextCommitStatus; FailNextCommitStatus = 0; FailNextCommitBody = null; return new((HttpStatusCode)status) { Content = new StringContent(commitBody) }; }
             if (method == "attachment.read" && AttachmentReadContent is { } content)
             {
                 long offset = call.GetProperty("request").GetProperty("offset").GetInt64();
