@@ -2346,6 +2346,11 @@ public sealed class PluginRequestDispatcherTests
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (requestId is null)
+            {
+                PostNotification(type, payload);
+                return;
+            }
             ResponseType = type;
             RequestId = requestId;
             Payload = payload;

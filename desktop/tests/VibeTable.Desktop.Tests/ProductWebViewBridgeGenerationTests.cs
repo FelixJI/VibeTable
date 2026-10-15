@@ -1,7 +1,9 @@
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Wpf;
+using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Desktop.ViewModels;
 
@@ -94,6 +96,88 @@ public sealed class ProductWebViewBridgeGenerationTests
             _window = null;
             _control = null;
             _bridge = null;
+        }
+    }
+
+    private sealed class UnusedPackagePicker : IPluginPackageSourcePicker
+    {
+        public Task<string?> PickAsync(PluginPackagePickKind kind, CancellationToken token)
+            => throw new InvalidOperationException("History replay must not pick a package.");
+    }
+
+    [TestMethod]
+    [DataRow("current")]
+    [DataRow("closed")]
+    [DataRow("new-epoch")]
+    public async Task RecoveredReceiptKeepsItsSessionGateUntilTheActualBridgeQueuePump(string transition)
+    {
+        var (manager, filter, root) = await PluginRequestDispatcherTests.OpenRetirementSessionAsync();
+        try
+        {
+            using var harness = new StaBridge();
+            var original = PluginProjectContext.FromSession(manager.Current)!;
+            PluginProjectContext? current = original;
+            Guid workspaceId = manager.Current.WorkspaceId!.Value;
+            var surfaces = new PluginSurfaceSessionManager();
+            using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            var pending = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int gateCalls = 0;
+            using var dispatcher = new PluginRequestDispatcher(harness.Bridge, surfaces, new UnusedPackagePicker(), resources,
+                filePicker: null, githubSource: null, projectContext: () => current,
+                sharedRpc: (_, _, _) => pending.Task,
+                sharedReadEmitGate: captured =>
+                {
+                    var gate = PluginRequestDispatcher.CaptureSharedReadEmitGate(manager, filter, captured);
+                    return post => { gateCalls++; return gate(post); };
+                });
+            dispatcher.SetProjectContext(original); dispatcher.SetWorkspaceContext(original);
+            var binding = dispatcher.Tasks.CaptureNative()!;
+            dispatcher.Tasks.NativeTask(binding, new PluginRuntimeTaskSnapshot("recovered", "recovered-run", "com.acme.original", "1", "save",
+                original.ProjectKey, null, 1, PluginRisk.Write, "running", false, null, null, null,
+                InstallationId: "original-installation", InstallationRevision: 2, SurfaceToken: "retired-surface"));
+            dispatcher.Tasks.FinishNative("recovered", "succeeded");
+            using var payload = JsonDocument.Parse(JsonSerializer.Serialize(new { projectKey = original.ProjectKey }));
+            Task reading = dispatcher.DispatchAsync(new RoutedWebRequest("plugin.catalog.list", "new-renderer-catalog", payload.RootElement.Clone(), ""));
+            try
+            {
+                Assert.AreEqual(1, gateCalls, "history was admitted before entering the real bridge UI queue");
+                Assert.HasCount(1, harness.Queued);
+                long rendererGeneration = harness.Bridge.RendererGeneration;
+                if (transition != "current")
+                {
+                    await manager.CloseAsync("retire-queued-history"); current = null;
+                    if (transition == "new-epoch")
+                    {
+                        await manager.OpenAsync(workspaceId, WorkspaceOpenMode.Writable);
+                        current = PluginProjectContext.FromSession(manager.Current)!;
+                        Assert.AreEqual(original.ProjectKey, current.ProjectKey);
+                        Assert.IsGreaterThan(original.SessionGeneration, current.SessionGeneration);
+                        dispatcher.SetWorkspaceContext(current);
+                    }
+                }
+                Assert.AreEqual(rendererGeneration, harness.Bridge.RendererGeneration, "this exercises session retirement within one renderer");
+                harness.PumpQueued();
+                Assert.AreEqual(2, gateCalls, "the captured session gate must execute again at the actual bridge emission moment");
+                if (transition == "current")
+                {
+                    // No CoreWebView2 is started in this synthetic test. Reaching
+                    // commit proves the unchanged session admits the actual post;
+                    // the real dispatcher receipt payload is covered separately.
+                    Assert.HasCount(1, harness.Commits);
+                }
+                else Assert.IsEmpty(harness.Commits, "a retired session must not even reach the wire-post callback");
+            }
+            finally
+            {
+                pending.TrySetResult(JsonSerializer.SerializeToElement(Array.Empty<PluginRuntimeSnapshot>()));
+                await reading;
+                harness.PumpQueued();
+            }
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            Directory.Delete(root, recursive: true);
         }
     }
 

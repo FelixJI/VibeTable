@@ -215,7 +215,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     {
                         if (context != _projectContext()) return false;
                         foreach (var receipt in _taskRegistry.ProjectHistory(context))
-                            _reply.PostNotification("plugin.task.changed", receipt);
+                            _reply.TryPostResponse("plugin.task.changed", requestId: null, receipt, emitGate);
                         return true;
                     }
                     // The renderer establishes its workspace store before this
