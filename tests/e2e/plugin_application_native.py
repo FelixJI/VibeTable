@@ -405,7 +405,15 @@ def handle_plugin_native_request(
             "contrast": contrast,
         }
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        result = {"requestId": request.get("requestId"), "status": "failed", "error": str(error)}
+        result = {
+            "requestId": request.get("requestId"),
+            "status": "failed",
+            "error": str(error),
+            "action": request.get("action"),
+            "stage": request.get("stage"),
+        }
+        if native is not None and getattr(native, "foreground_observation", None) is not None:
+            result["foreground"] = native.foreground_observation
         if isinstance(error, ContrastRestorationError):
             result["contrast"] = error.diagnostic
         return result

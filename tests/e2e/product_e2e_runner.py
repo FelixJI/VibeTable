@@ -1562,6 +1562,14 @@ class _DocumentNativeWindows:
             raise ValueError("native document foreground HWND owner changed")
         before = int(self.user32.GetForegroundWindow() or 0)
         observation = {"beforeHwnd": before, "hostHwnd": root, "hostPid": host_pid}
+
+        def owner_or_none(hwnd: int) -> int | None:
+            try:
+                return self.owner(hwnd) if hwnd else None
+            except OSError:
+                return None
+
+        observation["beforePid"] = owner_or_none(before)
         self.foreground_observation = observation
         if before != root:
             observation["activationAccepted"] = bool(self.user32.SetForegroundWindow(root))
@@ -1576,6 +1584,8 @@ class _DocumentNativeWindows:
             if not observation["activationSynchronized"]:
                 raise OSError("packaged Host foreground activation did not synchronize")
         observation["afterHwnd"] = int(self.user32.GetForegroundWindow() or 0)
+        observation["afterPid"] = owner_or_none(observation["afterHwnd"])
+        observation["hostOwnerPid"] = owner_or_none(root)
         if observation["afterHwnd"] != root or self.owner(root) != host_pid:
             raise OSError("packaged Host cannot become the foreground input owner")
 

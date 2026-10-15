@@ -5045,6 +5045,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_application_security.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
@@ -6336,13 +6337,17 @@ def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed
         SetForegroundWindow=activate,
         SendMessageTimeoutW=synchronize,
     )
-    native.owner = lambda _hwnd: 200 if mode == "owner" else 100
+    native.owner = lambda _hwnd: 200 if mode == "owner" or _hwnd == 20 else 100
     if mode in {"already", "async"}:
         native.foreground(10, 100)
         assert native.foreground_observation["afterHwnd"] == 10
     else:
         with pytest.raises((OSError, ValueError)):
             native.foreground(10, 100)
+    if mode == "changed":
+        assert native.foreground_observation["beforePid"] == 200
+        assert native.foreground_observation["afterPid"] == 200
+        assert native.foreground_observation["hostOwnerPid"] == 100
     assert calls == (
         []
         if mode in {"already", "owner"}

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { assertNativePrintSnapshot, cancelNativePrintPreview, nativePrintPreviewPages,
+import { assertNativePrintSnapshot, assertNoNativePrintPreview, cancelNativePrintPreview,
   readNativePrintPreviewInPage, waitForNativePrintPreview } from "./plugin_print_preview.mjs";
 
 /** Uses real browser preview targets; observes/cancels only, never selects or submits a printer. */
@@ -82,14 +82,14 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
   let preview;
   let failure;
   try {
-    if (nativePrintPreviewPages(page).length) throw new Error("an earlier native print preview is still open");
+    await assertNoNativePrintPreview(page);
     for (let cycle = 1; cycle <= 2; cycle++) {
       const opened = await frame.evaluate(() => call("output.print"));
       recorder.check(`native print cycle ${cycle} returns an opened-only receipt`, JSON.stringify(opened) === '{"opened":true}', { opened });
       preview = await waitForNativePrintPreview(page, runtime.evidenceDir);
       const snapshot = await preview.evaluate(readNativePrintPreviewInPage);
       assertNativePrintSnapshot(snapshot);
-      evidence.snapshots.push({ stage: `opened-${cycle}`, at: Date.now(), ...snapshot });
+      evidence.snapshots.push({ stage: `opened-${cycle}`, at: Date.now(), target: preview.targetObservation ?? { transport: "owned-playwright-page", url: preview.url() }, ...snapshot });
       recorder.check(`actual native preview ${cycle} contains first and last report row across multiple pages and no parent secrets`, true,
         { pageCount: snapshot.pageCount, viewerUrl: snapshot.viewerUrl });
       await preview.screenshot({ path: path.join(runtime.evidenceDir,
@@ -120,6 +120,7 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
         && !document.querySelector("[data-vt-plugin-print-path]"), { cycle, closeAfter }, { timeout: 15000 });
       recorder.check(`real native preview close ${cycle} emits afterprint and releases the isolated parent range`, true);
       evidence.snapshots.push({ stage: `closed-${cycle}`, at: Date.now() });
+      await preview.dispose?.();
       preview = null;
     }
     evidence.status = "passed";
@@ -132,6 +133,8 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
       try { await cancelNativePrintPreview(preview); }
       catch (error) { evidence.cleanupError = error.message; failure ??= error; }
     }
+    try { await preview?.dispose?.(); }
+    catch (error) { evidence.detachError = error.message; failure ??= error; }
     evidence.events = await page.evaluate(() => window.__applicationPrintTrace);
     await fs.writeFile(path.join(runtime.evidenceDir, "48-plugin-print-preview.json"), JSON.stringify(evidence, null, 2));
     await page.evaluate(() => document.querySelector("#native-print-private-portal")?.remove());

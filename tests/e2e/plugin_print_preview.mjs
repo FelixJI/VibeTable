@@ -1,3 +1,4 @@
+import { attachNativePreview, selectOwnedPreviewTarget } from "./plugin_print_preview_target.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -62,31 +63,58 @@ export function assertNativePrintSnapshot(snapshot, originalText) {
 }
 
 export function nativePrintPreviewPages(page) {
-  return page.context().browser().contexts().flatMap(context => context.pages())
+  return page.context().pages()
     .filter(candidate => !candidate.isClosed() && isNativePrintPreviewUrl(candidate.url()));
+}
+
+async function owningContext(page) {
+  const own = await page.context().newCDPSession(page);
+  try {
+    const { targetInfo } = await own.send("Target.getTargetInfo");
+    if (!targetInfo.browserContextId) throw new Error("owned product browser context unavailable");
+    return targetInfo.browserContextId;
+  } finally { await own.detach(); }
+}
+
+export async function assertNoNativePrintPreview(page) {
+  const session = await page.context().browser().newBrowserCDPSession();
+  try {
+    const contextId = await owningContext(page);
+    const { targetInfos } = await session.send("Target.getTargets");
+    if (selectOwnedPreviewTarget(targetInfos, contextId)) throw new Error("an earlier native print preview is still open");
+  } finally { await session.detach(); }
 }
 
 export async function waitForNativePrintPreview(page, evidenceDir) {
   const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    const candidates = nativePrintPreviewPages(page);
-    if (candidates.length > 1) throw new Error("ambiguous native print preview targets");
-    if (candidates.length === 1) return candidates[0];
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
   const browser = page.context().browser();
-  const diagnostics = { pages: browser.contexts().flatMap(context => context.pages()).map(candidate => ({ url: candidate.url(), closed: candidate.isClosed() })) };
+  const diagnostics = { pages: [] };
   let session;
   try {
     session = await browser.newBrowserCDPSession();
-    diagnostics.targets = (await session.send("Target.getTargets")).targetInfos;
+    const contextId = await owningContext(page);
+    do {
+      const candidates = nativePrintPreviewPages(page);
+      if (candidates.length > 1) throw new Error("ambiguous native print preview targets");
+      if (candidates.length === 1) return candidates[0];
+      diagnostics.pages = browser.contexts().flatMap(context => context.pages()).map(candidate => ({ url: candidate.url(), closed: candidate.isClosed() }));
+      diagnostics.targets = (await session.send("Target.getTargets")).targetInfos;
+      const target = selectOwnedPreviewTarget(diagnostics.targets, contextId);
+      if (target) {
+        const preview = await attachNativePreview(session, target);
+        session = null; // The actual-target adapter now owns and releases this session.
+        return preview;
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
   } catch (error) { diagnostics.targetObservationError = error.message; }
   finally {
     try { await session?.detach(); }
     catch (error) { diagnostics.detachError = error.message; }
   }
   await fs.writeFile(path.join(evidenceDir, "48-plugin-print-preview-unobservable.json"), JSON.stringify(diagnostics, null, 2));
-  throw new Error("native_print_preview_unobservable: actual browser preview target is not exposed; no simulated fallback");
+  throw new Error("native_print_preview_unobservable: actual browser preview target could not be attached; no simulated fallback");
 }
 
 export async function cancelNativePrintPreview(preview) {

@@ -66,7 +66,7 @@ test("preview reader bounds native page count and selected text", async () => {
 test("native preview discovery excludes app and forged internal URLs", () => {
   const pages = ["https://app.vibetable.local/", "https://print/", "chrome://print/other", "edge://print/"]
     .map(url => ({ url: () => url, isClosed: () => false }));
-  const page = { context: () => ({ browser: () => ({ contexts: () => [{ pages: () => pages }] }) }) };
+  const page = { context: () => ({ pages: () => pages }) };
   assert.deepEqual(nativePrintPreviewPages(page), [pages[3]]);
 });
 test("native cancel clicks only the single browser Cancel control and observes target closure", async () => {
@@ -89,7 +89,7 @@ test("an unobservable real preview saves target diagnostics and fails without a 
     return { async send(method) { calls.push(method); return { targetInfos: [{ type: "page", url: pages[0].url() }] }; },
       async detach() { calls.push("detach"); } };
   } };
-  const page = { context: () => ({ browser: () => browser }) };
+  const page = { context: () => ({ pages: () => pages, browser: () => browser, newCDPSession: async () => ({ send: async () => ({ targetInfo: { browserContextId: "owned" } }), detach: async () => {} }) }) };
   try {
     Date.now = () => tick++ * 30001;
     fs.writeFile = async (target, contents) => { calls.push({ target, diagnostic: JSON.parse(contents) }); };

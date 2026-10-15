@@ -453,3 +453,53 @@ def test_failed_on_scheme_observation_still_restores_but_cannot_exempt_mismatch(
     assert diagnostic["status"] == "failed"
     assert diagnostic["observed"] == {"flags": 126, "scheme": "Black"}
     assert native._contrast_original == original
+
+
+def test_native_foreground_failure_retains_current_owner_facts_without_retry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    attempts = []
+    observation = {
+        "beforeHwnd": 10,
+        "beforePid": 21,
+        "hostHwnd": 14,
+        "hostPid": 12,
+        "activationAccepted": True,
+        "activationSynchronized": True,
+        "afterHwnd": 16,
+        "afterPid": 22,
+        "hostOwnerPid": 12,
+    }
+
+    def foreground(*args):
+        attempts.append(args)
+        raise OSError("packaged Host cannot become the foreground input owner")
+
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            windows=lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}],
+            foreground=foreground,
+            foreground_observation=observation,
+            close=lambda: None,
+        ),
+    )
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "restored-owner",
+            "action": "observe",
+            "buttonId": "plugin-manage",
+            "stage": "contrast-restored",
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    assert result["status"] == "failed"
+    assert result["foreground"] == observation
+    assert result["stage"] == "contrast-restored"
+    assert attempts == [(14, 12)]
