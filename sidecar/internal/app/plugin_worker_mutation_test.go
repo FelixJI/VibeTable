@@ -138,6 +138,7 @@ func TestWorkerMutationHTTPIsSessionClosedAndEpochBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bindWorkspaceV2WriteBoundary(&core.ServeEvent{Router: r})
 	bindVibetableSessionAuth(r, secret)
 	calls := 0
 	registerPluginWorkerMutationRoutes(r, f.pb, mutation.New(f.pb, mutation.MetadataSchemaSource{}), workerTestWorkspace, 7, func(ctx context.Context, kind, id string, fn func(context.Context) error) error {
@@ -148,10 +149,14 @@ func TestWorkerMutationHTTPIsSessionClosedAndEpochBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"no-secret", "wrong-epoch", "unknown-field", "valid"} {
+	before := f.state(t)
+	for _, mode := range []string{"no-secret", "wrong-epoch", "unknown-field", "wrong-installation", "valid"} {
 		envelope := input
 		if mode == "wrong-epoch" {
 			envelope.SessionEpoch = 6
+		}
+		if mode == "wrong-installation" {
+			envelope.InstallationID = "retired-installation"
 		}
 		raw, _ := json.Marshal(envelope)
 		if mode == "unknown-field" {
@@ -171,11 +176,17 @@ func TestWorkerMutationHTTPIsSessionClosedAndEpochBound(t *testing.T) {
 		if mode == "valid" {
 			expected = http.StatusOK
 		}
+		if mode == "wrong-installation" {
+			expected = http.StatusConflict
+		}
+		if mode != "valid" && !reflect.DeepEqual(before, f.state(t)) {
+			t.Fatal("denied HTTP admission changed business state")
+		}
 		if response.Code != expected {
 			t.Fatalf("%s: %d %s", mode, response.Code, response.Body.String())
 		}
 	}
-	if calls != 1 {
+	if calls != 2 {
 		t.Fatalf("invalid admission reached authority %d times", calls)
 	}
 }

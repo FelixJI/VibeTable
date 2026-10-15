@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -105,6 +106,41 @@ public sealed class PluginRequestDispatcher : IDisposable
         _sharedReadEmitGate = sharedReadEmitGate;
         _installLeases = new HostInstallPlanLeaseRegistry(_authority);
         _taskRegistry = new HostPluginTaskRegistry(_authority);
+    }
+
+    internal Task SealLegacyConfirmationsForRendererRecovery()
+    {
+        var rejections = _taskRegistry.SealLegacyConfirmationsForRendererRecovery();
+        foreach (var rejection in rejections) PublishLegacyRejection(rejection);
+        return Task.WhenAll(rejections.Select(RejectLegacyConfirmationAsync));
+    }
+
+    private void PublishLegacyRejection(HostPluginLegacyRejection rejection)
+    {
+        var context = rejection.Binding.Context;
+        var emitGate = GateSharedReadTerminal("plugin.interaction.resolve", context);
+        if (_projectContext() == context)
+            _reply.TryPostResponse("plugin.task.changed", requestId: null, rejection.Settlement.Envelope, emitGate);
+        _ = ObserveRevokeRunAsync(rejection.Binding.Gateway, rejection.Request.RunId);
+    }
+
+    private async Task RejectLegacyConfirmationAsync(HostPluginLegacyRejection rejection)
+    {
+        // Only wake the old executor. The Host receipt is already terminal;
+        // missing/late transport replies cannot keep it running or change it.
+        if (!_authority.TryAcquire(rejection.Binding.Authority, out var lease)) return;
+        using (lease)
+        {
+            try
+            {
+                if (!_authority.TryStart(lease!, token => rejection.Binding.Gateway!.ResolveInteractionAsync(rejection.Request, token), out var response)) return;
+                await response!.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                SafeDiagnosticTrace($"Legacy confirmation recovery rejection failed; error={ex.GetType().Name}");
+            }
+        }
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
@@ -214,6 +250,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     bool PublishTaskHistory()
                     {
                         if (context != _projectContext()) return false;
+                        _taskRegistry.ResumeLegacyConfirmations(context);
                         foreach (var receipt in _taskRegistry.ProjectHistory(context))
                             _reply.TryPostResponse("plugin.task.changed", requestId: null, receipt, emitGate);
                         return true;
@@ -1327,11 +1364,17 @@ public sealed class PluginRequestDispatcher : IDisposable
         IPluginRpcGateway gateway,
         PluginEventEnvelope envelope)
     {
-        if (!_taskRegistry.RecordInteraction(gateway, envelope))
+        if (!_taskRegistry.RecordInteraction(gateway, envelope, out var rejection))
         {
             SafeDiagnosticTrace(
                 "Plugin interaction was rejected; " +
                 $"runId={envelope.EntityId}");
+            return;
+        }
+        if (rejection is not null)
+        {
+            PublishLegacyRejection(rejection);
+            _ = RejectLegacyConfirmationAsync(rejection);
             return;
         }
         _reply.PostNotification("plugin.interaction.requested", envelope);

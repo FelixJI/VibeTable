@@ -105,6 +105,7 @@ class _ResolvedWorker:
     revision: int = 1
     plugin_api: str = "1.x"
     installation_id: str | None = None
+    package_hash: str = ""
 
 
 class NodePluginWorkerAdapter:
@@ -448,7 +449,13 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError(
                 "plugin read permission is unavailable", code="plugin_read_denied"
             )
-        if installation.revision != resolved.revision:
+        if (
+            not resolved.installation_id
+            or not resolved.package_hash
+            or installation.installation_id != resolved.installation_id
+            or installation.package_hash != resolved.package_hash
+            or installation.revision != resolved.revision
+        ):
             raise PluginWorkerError("plugin read authorization changed", code="plugin_cursor_stale")
         # One execution owns these handles. No cursor or authorization survives a run.
         handles = execution.setdefault("_pluginQueryCursors", {})
@@ -458,6 +465,8 @@ class NodePluginWorkerAdapter:
                 "query": query_request,
                 "projectKey": resolved.project_key,
                 "pluginId": resolved.plugin_id,
+                "installationId": resolved.installation_id,
+                "packageHash": resolved.package_hash,
                 "installationRevision": resolved.revision,
                 "runId": execution.get("runId"),
                 "sessionEpoch": self._session_epoch,
@@ -478,6 +487,8 @@ class NodePluginWorkerAdapter:
             "projectKey": resolved.project_key,
             "pluginId": resolved.plugin_id,
             "sessionEpoch": self._session_epoch,
+            "installationId": resolved.installation_id,
+            "packageHash": resolved.package_hash,
             "installationRevision": resolved.revision,
             "activeCollection": context.get("collection") or "",
             "request": query_request,
@@ -748,6 +759,7 @@ class NodePluginWorkerAdapter:
             source=source,
             revision=installation.revision,
             installation_id=installation.installation_id,
+            package_hash=installation.package_hash,
             plugin_api=str(installation.manifest.compatibility.get("pluginApi", "")),
         )
 

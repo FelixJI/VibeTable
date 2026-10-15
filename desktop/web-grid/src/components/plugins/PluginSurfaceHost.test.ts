@@ -85,6 +85,25 @@ describe("PluginSurfaceHost", () => {
     });
   });
 
+  it("retires only the old token on replacement and preserves the active application on hash navigation", async () => {
+    const post = vi.fn();
+    setHostBridgeForTesting(createHostBridge({ webview: {
+      postMessage: post, addEventListener: () => undefined, removeEventListener: () => undefined,
+    } }));
+    const wrapper = mount(PluginSurfaceHost, { props: { src, surfaceToken: "old-token", title: "A", theme } });
+    await wrapper.setProps({ surfaceToken: "new-token", title: "B" });
+    expect(post.mock.calls.map(([message]) => message.payload)).toEqual([
+      { contract: "vibetable.plugin-surface.v1", surfaceToken: "old-token", event: "close", payload: {} },
+    ]);
+    expect(wrapper.emitted("close")).toBeUndefined();
+    const frame = wrapper.get("iframe").element;
+    await wrapper.setProps({ src: `${src}#detail` });
+    expect(wrapper.get("iframe").element).toBe(frame);
+    expect(post).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    expect(post.mock.calls.map(([message]) => message.payload.surfaceToken)).toEqual(["old-token", "new-token"]);
+  });
+
   it("posts cloneable envelopes for reactive theme and task inputs", async () => {
     // Reproduces the real S47 DataCloneError: the store hands Vue reactive
     // proxies to the host, and postMessage structured-clones its argument.

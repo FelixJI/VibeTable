@@ -47,10 +47,8 @@ type pluginSurfaceAPIRequest struct {
 
 type pluginSurfaceInstallation struct {
 	pluginInstallation
-	InstallationID string `json:"installationId"`
-	PackageHash    string `json:"packageHash"`
-	Version        string `json:"version"`
-	ActionRisk     string `json:"-"`
+	Version    string `json:"version"`
+	ActionRisk string `json:"-"`
 }
 
 func surfaceInstallation(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (pluginSurfaceInstallation, error) {
@@ -240,7 +238,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		if input.Method == "data.query" {
 			operation = "query"
 		}
-		return executePluginData(ctx, app, source, workspace, pluginDataRequest{Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
+		return executePluginData(ctx, app, source, workspace, pluginDataRequest{InstallationID: input.InstallationID, PackageHash: input.PackageHash, Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
 	case "context.read":
 		if string(input.Request) != "{}" {
 			return nil, pluginDataError("plugin_capability_invalid")

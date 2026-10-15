@@ -2043,6 +2043,154 @@ public sealed class PluginRequestDispatcherTests
     }
 
     [TestMethod]
+    public async Task RendererRecoveryRejectsLegacyPendingAndLateConfirmationsUntilCurrentScopeCatalog()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null),
+            resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "before-recovery", StartActionPayload));
+        var before = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(before.RunId);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls, "the vanished renderer's pending legacy confirmation must be rejected");
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "old-approve",
+            $$"""{"runId":"{{before.RunId}}","interactionId":"interaction-1","decision":"approved"}"""));
+        Assert.AreEqual("expired", Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload).Status);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "during-recovery", StartActionPayload));
+        var during = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(during.RunId);
+        Assert.AreEqual(2, gateway.ResolveInteractionCalls, "confirmations arriving during recovery must also be rejected");
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "foreign-catalog", """{"projectKey":"foreign"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "after-foreign", StartActionPayload));
+        gateway.RaiseInteractionRequested(AssertIsTaskSnapshot(reply.Payload).RunId);
+        Assert.AreEqual(3, gateway.ResolveInteractionCalls);
+        // Scope admission precedes backend availability: a backend read failure
+        // still reopens confirmation delivery for the current renderer.
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "ready-catalog", """{"projectKey":"project-1"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "after-recovery", StartActionPayload));
+        var after = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(after.RunId);
+        Assert.AreEqual(3, gateway.ResolveInteractionCalls);
+        Assert.AreEqual("plugin.interaction.requested", reply.NotificationType);
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "new-approve",
+            $$"""{"runId":"{{after.RunId}}","interactionId":"interaction-1","decision":"approved"}"""));
+        Assert.AreEqual("approved", Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload).Decision);
+        Assert.AreEqual(4, gateway.ResolveInteractionCalls);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.AreEqual(4, gateway.ResolveInteractionCalls, "an approved plan is not a pending decision lost with the renderer");
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(after.TaskId, out var approved));
+        Assert.AreEqual(after.State, approved.State);
+    }
+
+    [TestMethod]
+    public async Task RendererRecoveryRejectFailureSettlesOnlyThatLegacyTaskAndKeepsNativeAndTerminalReceipts()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway { FailInteractionResolve = true };
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway); dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "success", StartActionPayload));
+        var success = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseTaskChanged(TaskState(success, "succeeded"), 2);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "pending", StartActionPayload));
+        var pending = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(pending.RunId);
+        var nativeBinding = dispatcher.Tasks.CaptureNative()!;
+        var native = pending with { TaskId = "native-pending", RunId = "native-run", SurfaceToken = "native-surface" };
+        dispatcher.Tasks.NativeTask(nativeBinding, native, nativeOnlyApproval: true);
+        var unknown = native with { TaskId = "existing-unknown", RunId = "existing-unknown-run" };
+        dispatcher.Tasks.NativeTask(nativeBinding, unknown, nativeOnlyApproval: true);
+        dispatcher.Tasks.FinishNative(unknown.TaskId, "aborted", error: new PluginRuntimeSafeError(
+            "vibetable.plugin-error.v1", "plugin_commit_unknown", "请核对已提交写入", "none", unknown.PluginId, unknown.ActionId, unknown.RunId, new Dictionary<string, JsonElement>(), null));
+        var confirmation = dispatcher.Tasks.NativeConfirmation(native.TaskId, JsonSerializer.SerializeToElement(new { collection = "orders", operations = Array.Empty<object>() }), 1);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(pending.TaskId, out var aborted));
+        Assert.AreEqual("failed", aborted.State);
+        Assert.AreEqual("plugin_mutation_rejected", aborted.Error!.Code);
+        Assert.AreEqual("renderer-recovery", aborted.Error.Details!["reason"].GetString());
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(success.TaskId, out var succeeded));
+        Assert.AreEqual("succeeded", succeeded.State);
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(unknown.TaskId, out var stillUnknown));
+        Assert.AreEqual("aborted", stillUnknown.State);
+        Assert.AreEqual("plugin_commit_unknown", stillUnknown.Error!.Code);
+        Assert.IsFalse(confirmation.Decision.IsCompleted, "native confirmation is not a lost legacy web confirmation");
+        gateway.RaiseTaskChanged(TaskState(pending, "succeeded"), 20);
+        await dispatcher.DispatchAsync(Request("plugin.task.cancel", "late-cancel", $$"""{"taskId":"{{pending.TaskId}}"}"""));
+        Assert.AreEqual("failed", AssertIsTaskSnapshot(reply.Payload).State);
+        dispatcher.Tasks.BeginInteractionResolve(new(native.RunId,
+            confirmation.Envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.PendingConfirmation!.InteractionId, "rejected"), out _, fromNativeHost: true);
+        Assert.IsFalse(await confirmation.Decision);
+    }
+
+    [TestMethod]
+    public async Task LegacyConfirmationReadinessCannotCrossTheSameWorkspaceEpoch()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        PluginProjectContext current = ReadyContext();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources, projectContext: () => current);
+        dispatcher.SetGateway(gateway); dispatcher.SetWorkspaceContext(current);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        var old = current;
+        current = current with { SessionGeneration = current.SessionGeneration + 1 };
+        dispatcher.SetProjectContext(current); dispatcher.SetWorkspaceContext(current);
+        dispatcher.Tasks.ResumeLegacyConfirmations(old);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "new-epoch-before-ready", StartActionPayload));
+        gateway.RaiseInteractionRequested(AssertIsTaskSnapshot(reply.Payload).RunId);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls, "old epoch cannot reopen the confirmation channel");
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "new-epoch-ready", """{"projectKey":"project-1"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "new-epoch-after-ready", StartActionPayload));
+        gateway.RaiseInteractionRequested(AssertIsTaskSnapshot(reply.Payload).RunId);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+        Assert.AreEqual("plugin.interaction.requested", reply.NotificationType);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LateLegacyRecoveryRejectionReplyCannotPublishIntoANewWorkspaceEpoch(bool fail)
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pending = new TaskCompletionSource<PluginRuntimeInteractionResolveResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { InteractionResolveHandler = _ => pending.Task };
+        PluginProjectContext current = ReadyContext();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources, projectContext: () => current);
+        dispatcher.SetGateway(gateway); dispatcher.SetWorkspaceContext(current);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "pending-old-epoch", StartActionPayload));
+        var old = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(old.RunId);
+        Task rejecting = dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.IsFalse(rejecting.IsCompleted, "the synthetic wakeup intentionally has no response");
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(old.TaskId, out var settled));
+        Assert.AreEqual("failed", settled.State, "Host settles without awaiting the executor or a timer");
+        Assert.AreEqual("plugin_mutation_rejected", settled.Error!.Code);
+        gateway.RaiseTaskChanged(TaskState(old, "succeeded"), 50);
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(old.TaskId, out var sticky));
+        Assert.AreEqual("failed", sticky.State);
+        current = current with { SessionGeneration = current.SessionGeneration + 1 };
+        dispatcher.SetProjectContext(current); dispatcher.SetWorkspaceContext(current);
+        int before = reply.NotificationCount;
+        if (fail) pending.SetException(new IOException("old epoch rejection transport failed"));
+        else pending.SetResult(new("resolved", "approved"));
+        await rejecting;
+        Assert.AreEqual(before, reply.NotificationCount, "a late recovery rejection cannot emit foreign history into the new epoch");
+        Assert.IsFalse(dispatcher.Tasks.TryGetTask(old.TaskId, out _));
+    }
+
+    [TestMethod]
     public async Task HostConfirmationUsesExactIdentityAndSingleDecision()
     {
         var reply = new RecordingReplySink();
@@ -2335,11 +2483,13 @@ public sealed class PluginRequestDispatcherTests
         public string? RequestId { get; private set; }
         public object? Payload { get; private set; }
         public string? FailureCode { get; private set; }
+        public int NotificationCount { get; private set; }
         public string? NotificationType { get; private set; }
         public object? NotificationPayload { get; private set; }
 
         public void PostNotification(string type, object? payload)
         {
+            NotificationCount++;
             NotificationType = type;
             NotificationPayload = payload;
         }
@@ -2448,6 +2598,8 @@ public sealed class PluginRequestDispatcherTests
         public PluginRuntimeTaskSnapshot LastStarted { get; private set; } = Task;
         public int CancelTaskCalls { get; private set; }
         public int ResolveInteractionCalls { get; private set; }
+        public bool FailInteractionResolve { get; init; }
+        public Func<PluginResolveInteractionParams, Task<PluginRuntimeInteractionResolveResult>>? InteractionResolveHandler { get; init; }
         public Exception? CommitFailure { get; init; }
         public TaskCompletionSource<(string RequestId, string? SelectedPath)> FileResolution { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2641,7 +2793,9 @@ public sealed class PluginRequestDispatcherTests
         public Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(PluginResolveInteractionParams request, CancellationToken token)
         {
             ResolveInteractionCalls += 1;
-            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", "rejected"));
+            if (InteractionResolveHandler is not null) return InteractionResolveHandler(request);
+            if (FailInteractionResolve) throw new IOException("synthetic legacy confirmation transport failure");
+            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", request.Decision));
         }
         public void Dispose() { }
     }

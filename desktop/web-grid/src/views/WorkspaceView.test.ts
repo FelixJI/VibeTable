@@ -851,6 +851,34 @@ describe("WorkspaceView", () => {
       expect(document.body.textContent).toContain("插件入口已失效或被移除，已返回平台");
     });
 
+    it("retires A on direct application B navigation and same-action token replacement without clearing B or old receipts", async () => {
+      const { wrapper, plugins, plugin, record, task, setCatalog } = await prepare();
+      const application = plugin.manifest.actions[0]!;
+      const catalog: PluginSnapshot = { ...plugin, revision: 3, manifest: { ...plugin.manifest,
+        actions: [...plugin.manifest.actions, { ...application, actionId: "second", surfaceToken: "second-token" }].map(action => ({ ...action, surfaceSrc: `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/index.html` })) } };
+      setCatalog(catalog); await flushPromises();
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      plugins.applyTask({ ...task("application", "old-write"), installationRevision: 3 });
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/second"]').trigger("click"); await flushPromises();
+      const closes = () => record.posted.filter(item => item.type === "plugin.surface.event"
+        && (item.payload as { event: string }).event === "close").map(item => (item.payload as { surfaceToken: string }).surfaceToken);
+      expect(closes()).toEqual(["application-token"]);
+      expect(useUiStore().activePluginApp?.actionId).toBe("second");
+      expect(wrapper.get('[data-testid="closed-plugin-task-receipts"]').find('[data-task-id="old-write"]').exists()).toBe(true);
+      setCatalog({ ...catalog, revision: 4, manifest: { ...catalog.manifest,
+        actions: catalog.manifest.actions.map(action => action.actionId === "second" ? { ...action, surfaceToken: "second-reopened" } : action) } });
+      await flushPromises();
+      expect(closes()).toEqual(["application-token", "second-token"]);
+      expect(useUiStore().activePluginApp?.actionId).toBe("second");
+      expect(wrapper.get('[data-testid="plugin-app-viewport"] iframe').attributes("name")).toBe("second-reopened");
+      plugins.applyTask({ ...task("application", "old-write"), installationRevision: 3, state: "aborted",
+        error: { contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "请核对原写入", recoverability: "none", pluginId: plugin.pluginId, actionId: "application", runId: "old-write-run", details: {}, causeId: null } }, 5);
+      await flushPromises();
+      expect(wrapper.get('[data-testid="closed-plugin-task-receipts"]').text()).toContain("请勿重复执行");
+      wrapper.unmount();
+      expect(closes()).toEqual(["application-token", "second-token", "second-reopened"]);
+    });
+
     it.each([
       { outcome: "succeeded", lateFirst: false }, { outcome: "unknown", lateFirst: false },
       { outcome: "succeeded", lateFirst: true }, { outcome: "unknown", lateFirst: true },

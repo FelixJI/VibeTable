@@ -26,6 +26,9 @@ internal enum HostPluginTaskCancelOutcome
     Active,
 }
 
+internal sealed record HostPluginLegacyRejection(
+    HostPluginTaskBinding Binding, PluginResolveInteractionParams Request, HostPluginTaskSettlement Settlement);
+
 internal sealed record HostPluginTaskSettlement(
     PluginEventEnvelope Envelope,
     PluginRuntimeTaskSnapshot Snapshot);
@@ -61,6 +64,7 @@ internal sealed class HostPluginTaskRegistry
     private PluginProjectContext? _context;
     private PluginProjectContext? _workspaceContext;
     private long _gatewayGeneration;
+    private bool _rendererAcceptsLegacyConfirmations = true;
 
     public HostPluginTaskRegistry(ProductAuthorityEpoch authority)
     {
@@ -407,9 +411,57 @@ internal sealed class HostPluginTaskRegistry
         }
     }
 
-    /// <summary>Accepts only a current run's complete pending confirmation.</summary>
-    public bool RecordInteraction(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
+    /// <summary>Consumes legacy confirmations lost with the renderer, never native decisions.</summary>
+    internal IReadOnlyList<HostPluginLegacyRejection> SealLegacyConfirmationsForRendererRecovery()
     {
+        lock (_gate)
+        {
+            _rendererAcceptsLegacyConfirmations = false;
+            return _interactions.Where(pair => pair.Value.Decision is null).ToArray()
+                .Select(pair => RejectLegacyLocked(pair.Key, pair.Value))
+                .OfType<HostPluginLegacyRejection>().ToArray();
+        }
+    }
+
+    internal void ResumeLegacyConfirmations(PluginProjectContext context)
+    {
+        lock (_gate)
+        {
+            if (_workspaceContext?.ProjectKey == context.ProjectKey
+                && _workspaceContext.SessionGeneration == context.SessionGeneration)
+                _rendererAcceptsLegacyConfirmations = true;
+        }
+    }
+
+    private HostPluginLegacyRejection? RejectLegacyLocked(string runId, HostPluginInteractionRecord pending)
+    {
+        if (pending.Binding.Gateway is null || pending.NativeOnlyApproval
+            || pending.Decision is not null
+            || !_tasksByRun.TryGetValue(runId, out var record)
+            || !ReferenceEquals(record.Binding, pending.Binding)
+            || !IsCurrentLocked(record.Binding) || !IsVisibleInCurrentContextLocked(record)
+            || IsTerminalLocked(record) || record.Snapshot.CancelRequested) return null;
+        pending.Decision = "rejected";
+        record.Snapshot = record.Snapshot with
+        {
+            State = "failed",
+            Error = new PluginRuntimeSafeError("vibetable.plugin-error.v1", "plugin_mutation_rejected",
+                "界面恢复已拒绝本次待批准计划；此前插件操作的副作用请另行核对。", "none",
+                record.Snapshot.PluginId, record.Snapshot.ActionId, runId,
+                new Dictionary<string, JsonElement> { ["reason"] = JsonSerializer.SerializeToElement("renderer-recovery") }, null),
+        };
+        record.Revision++;
+        CancelLifetimeLocked(record);
+        ClearPendingLocked(runId);
+        return new(record.Binding, new(runId, pending.InteractionId, "rejected"),
+            new(ProjectLocked(record, "plugin.task.changed"), record.Snapshot));
+    }
+
+    /// <summary>Accepts only a current run's complete pending confirmation.</summary>
+    internal bool RecordInteraction(IPluginRpcGateway gateway, PluginEventEnvelope envelope,
+        out HostPluginLegacyRejection? rejection)
+    {
+        rejection = null;
         ArgumentNullException.ThrowIfNull(gateway);
         ArgumentNullException.ThrowIfNull(envelope);
         PluginRuntimeInteractionSnapshot? snapshot;
@@ -439,8 +491,10 @@ internal sealed class HostPluginTaskRegistry
             if (_interactions.TryGetValue(snapshot.RunId, out HostPluginInteractionRecord? existing)
                 && (existing.Decision is null
                     || existing.InteractionId == pending.InteractionId)) return false;
-            _interactions[snapshot.RunId] = new HostPluginInteractionRecord(
-                record.Binding, pending.InteractionId, pending.ExpiresAt);
+            var interaction = new HostPluginInteractionRecord(record.Binding, pending.InteractionId, pending.ExpiresAt);
+            _interactions[snapshot.RunId] = interaction;
+            if (!_rendererAcceptsLegacyConfirmations)
+                rejection = RejectLegacyLocked(snapshot.RunId, interaction);
             return true;
         }
     }

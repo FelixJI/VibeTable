@@ -1639,7 +1639,12 @@ async def test_v2_go_corpus_cursor_ownership_and_live_authorization() -> None:
             encoding="utf-8"
         )
     )
-    installation = SimpleNamespace(status="enabled", revision=1)
+    installation = SimpleNamespace(
+        status="enabled",
+        revision=1,
+        installation_id="read-installation",
+        package_hash="sha256:read-package",
+    )
 
     class Store:
         async def get_installation(self, _project: str, _plugin: str) -> Any:
@@ -1647,6 +1652,8 @@ async def test_v2_go_corpus_cursor_ownership_and_live_authorization() -> None:
 
     class Client:
         async def plugin_data(self, request: dict[str, Any]) -> dict[str, Any]:
+            assert request.get("installationId") == installation.installation_id
+            assert request.get("packageHash") == installation.package_hash
             index = int(str(request.get("cursor", "page-1")).split("-")[-1]) - 1
             page = dict(corpus["pages"][index])
             page["nextCursor"] = f"page-{index + 2}" if index < 2 else None
@@ -1656,7 +1663,16 @@ async def test_v2_go_corpus_cursor_ownership_and_live_authorization() -> None:
     adapter = _make_adapter(
         store=Store(), client=Client(), expected_project_key="project-a", session_epoch=7
     )
-    resolved = _ResolvedWorker("project-a", "com.example.safe-worker", {}, "", 1, "2.x")
+    resolved = _ResolvedWorker(
+        "project-a",
+        "com.example.safe-worker",
+        {},
+        "",
+        1,
+        "2.x",
+        installation_id="read-installation",
+        package_hash="sha256:read-package",
+    )
     context = {"collection": "articles"}
     execution: dict[str, Any] = {"runId": "v2-corpus"}
     first = await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
@@ -1682,6 +1698,13 @@ async def test_v2_go_corpus_cursor_ownership_and_live_authorization() -> None:
             resolved, context, execution, "data.query", {**corpus["request"], "cursor": handle}
         )
     assert reused.value.code == "plugin_cursor_invalid"
+    for field in ("installation_id", "package_hash"):
+        original = getattr(installation, field)
+        setattr(installation, field, "replacement-with-same-revision")
+        with pytest.raises(PluginWorkerError) as replacement:
+            await adapter._data_v2(resolved, context, execution, "data.query", corpus["request"])
+        assert replacement.value.code == "plugin_cursor_stale"
+        setattr(installation, field, original)
     installation.revision = 2
     with pytest.raises(PluginWorkerError) as stale:
         await adapter._data_v2(

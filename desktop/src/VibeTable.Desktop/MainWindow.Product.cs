@@ -1021,6 +1021,7 @@ public partial class MainWindow : Window
             // 1. Seal inbound host routing and retire realtime delivery so no
             // late emission reaches the new page.
             _webBridge.SealForRendererRecovery();
+            _ = _pluginDispatcher.SealLegacyConfirmationsForRendererRecovery();
             // 2. Close every plugin surface token synchronously (covers tokens
             // that never issued a request), then drain in-flight writes.
             _pluginResources.CloseAllSurfaces();

@@ -74,7 +74,7 @@ function onMessage(event: MessageEvent): void {
   }
 }
 
-function close(payload: Readonly<Record<string, unknown>> = {}): void {
+function close(payload: Readonly<Record<string, unknown>> = {}, notifyParent = true): void {
   if (!activeToken.value) return;
   const token = activeToken.value;
   activeToken.value = "";
@@ -87,12 +87,16 @@ function close(payload: Readonly<Record<string, unknown>> = {}): void {
   if (typeof payload.status === "string" && payload.status) {
     emit("finish", payload.status, typeof payload.summary === "string" ? payload.summary : "");
   }
-  emit("close");
+  if (notifyParent) emit("close");
 }
 
 watch(() => props.theme, sendTheme, { deep: true });
 watch(currentTasks, sendTask, { deep: true });
-watch(() => props.surfaceToken, (token) => { activeToken.value = token; });
+watch(() => props.surfaceToken, (token) => {
+  // Retire the former authorization without closing its replacement's view.
+  close({}, false);
+  activeToken.value = token;
+});
 onMounted(() => window.addEventListener("message", onMessage));
 onBeforeUnmount(() => {
   window.removeEventListener("message", onMessage);
