@@ -100,10 +100,24 @@ class PocketBasePluginStore:
         )
         return PluginSnapshot.model_validate(_object(result, "plugin installation"))
 
-    async def delete_installation(self, project_key: str, plugin_id: str) -> bool:
+    async def delete_installation(
+        self,
+        project_key: str,
+        plugin_id: str,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        cleanup_private_settings: bool,
+    ) -> bool:
         result = await self._call(
             "delete_installation",
-            {"projectKey": project_key, "pluginId": plugin_id},
+            {
+                "projectKey": project_key,
+                "pluginId": plugin_id,
+                "installationId": installation_id,
+                "expectedRevision": expected_revision,
+                "cleanupPrivateSettings": cleanup_private_settings,
+            },
         )
         return _boolean(result, "installation deletion")
 

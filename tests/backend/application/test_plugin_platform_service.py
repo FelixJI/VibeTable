@@ -286,10 +286,25 @@ async def test_install_and_uninstall_use_package_lifecycle_tasks() -> None:
     retained_location = f"memory://{package_hash}"
     revisions = await store.list_package_revisions("local:default", "com.example.reader")
     revision = revisions[0]
+    current = await registry.get("local:default", "com.example.reader")
+    assert current is not None
+    assert current.installation_id
+    with pytest.raises(PluginRegistryError, match="installation changed"):
+        await service.uninstall(
+            project_key=current.project_key,
+            plugin_id=current.plugin_id,
+            installation_id=current.installation_id,
+            expected_revision=current.revision + 1,
+            cleanup_private_settings=True,
+        )
+    assert packages.discard_calls == []
+    assert await store.list_package_revisions(current.project_key, current.plugin_id) == revisions
     await service.uninstall(
         project_key="local:default",
         plugin_id="com.example.reader",
         cleanup_private_settings=True,
+        installation_id=(await registry.get("local:default", "com.example.reader")).installation_id,
+        expected_revision=(await registry.get("local:default", "com.example.reader")).revision,
     )
 
     assert packages.inspect_calls == [source_location, source_location]
@@ -526,6 +541,8 @@ async def test_install_commit_does_not_emit_a_second_catalog_event(
         project_key="local:default",
         plugin_id="com.example.reader",
         cleanup_private_settings=True,
+        installation_id=(await registry.get("local:default", "com.example.reader")).installation_id,
+        expected_revision=(await registry.get("local:default", "com.example.reader")).revision,
     )
 
     assert enabled.status == "enabled"

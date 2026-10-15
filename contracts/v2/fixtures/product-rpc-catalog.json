@@ -18634,6 +18634,8 @@
         "params": {
           "projectKey": "local:default",
           "pluginId": "sample-plugin",
+          "installationId": "00000000-0000-4000-8000-000000000001",
+          "expectedRevision": 1,
           "cleanupPrivateSettings": false
         }
       },

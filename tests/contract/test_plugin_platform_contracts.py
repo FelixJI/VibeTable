@@ -53,3 +53,13 @@ def test_native_task_surface_source_roundtrips_and_worker_source_remains_optiona
     assert PluginTaskSnapshot.model_validate(fixture).surface_token is None
     native = PluginTaskSnapshot.model_validate({**fixture, "surfaceToken": "host-created-token"})
     assert native.model_dump(mode="json", by_alias=True)["surfaceToken"] == "host-created-token"
+
+
+def test_uninstall_transport_fixture_validates_at_the_real_python_boundary() -> None:
+    from backend.contracts.plugin_rpc import UninstallPluginParams
+
+    fixture = Path(__file__).resolve().parents[2] / "contracts/v2/fixtures/product-rpc-catalog.json"
+    catalog = json.loads(fixture.read_text(encoding="utf-8"))
+    case = next(item for item in catalog["rpcCases"] if item["method"] == "plugin.uninstall")
+    params = UninstallPluginParams.model_validate(case["request"]["params"])
+    assert params.model_dump(mode="json", by_alias=True) == case["request"]["params"]

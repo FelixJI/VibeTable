@@ -121,11 +121,26 @@ async def test_installation_guard_and_delete_operations_are_exact() -> None:
             _snapshot(revision=2, status="disabled"),
             expected_revision=0,
         )
-    updated = _snapshot(revision=2, status="disabled")
+    updated = _snapshot(revision=2, status="disabled").model_copy(
+        update={"installation_id": "record-summary"}
+    )
     assert await store.save_installation(updated, expected_revision=1) == updated
 
-    assert await store.delete_installation("local:default", "com.example.summary")
-    assert not await store.delete_installation("local:default", "com.example.summary")
+    assert await store.delete_installation(
+        "local:default",
+        "com.example.summary",
+        installation_id="record-summary",
+        expected_revision=2,
+        cleanup_private_settings=False,
+    )
+    with pytest.raises(PluginStoreConflictError):
+        await store.delete_installation(
+            "local:default",
+            "com.example.summary",
+            installation_id="record-summary",
+            expected_revision=2,
+            cleanup_private_settings=False,
+        )
     assert await store.list_installations("local:default") == []
 
 

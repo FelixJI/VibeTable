@@ -43,7 +43,7 @@ export interface PluginService {
   list(): Promise<readonly PluginSnapshot[]>;
   listAudit(pluginId: string): Promise<readonly PluginAuditEvent[]>;
   listPendingCleanup(): Promise<readonly PluginAuditEvent[]>;
-  retryCleanup(pluginId: string): Promise<PluginUninstallResult>;
+  retryCleanup(event: PluginAuditEvent): Promise<PluginUninstallResult>;
   inspectInstall(sourceLocation: string): Promise<PluginInstallPlan>;
   inspectGitHubInstall(repository: string): Promise<PluginInstallPlan>;
   commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot>;
@@ -421,11 +421,15 @@ export function usePluginService(): PluginService {
       { projectKey: store.projectKey },
       { errorPolicy: "background" },
     ),
-    retryCleanup: (pluginId) => call("plugin.lifecycle.uninstall", {
-      projectKey: store.projectKey,
-      pluginId,
-      cleanupPrivateSettings: false,
-    }),
+    retryCleanup: async (event) => {
+      const installationId = event.details.installationId;
+      const expectedRevision = event.details.expectedRevision;
+      if (typeof installationId !== "string" || !installationId || typeof expectedRevision !== "number"
+        || !Number.isInteger(expectedRevision) || expectedRevision < 1)
+        throw new Error("清理证据缺少原安装身份，不能重试卸载");
+      return call("plugin.lifecycle.uninstall", { projectKey: event.projectKey, pluginId: event.pluginId,
+        installationId, expectedRevision, cleanupPrivateSettings: false });
+    },
     inspectInstall,
     inspectGitHubInstall,
     commitInstall,
@@ -441,9 +445,11 @@ export function usePluginService(): PluginService {
       pluginId: plugin.pluginId,
     }),
     uninstall: async (plugin, cleanupPrivateSettings) => {
+      const installationId = plugin.installationId;
+      if (!installationId) throw new Error("安装身份缺失，不能卸载");
       return mutateCatalog(() => call<"plugin.lifecycle.uninstall", PluginUninstallResult>(
         "plugin.lifecycle.uninstall",
-        { projectKey: plugin.projectKey, pluginId: plugin.pluginId, cleanupPrivateSettings },
+        { projectKey: plugin.projectKey, pluginId: plugin.pluginId, installationId, expectedRevision: plugin.revision, cleanupPrivateSettings },
       ), result => { if (result.uninstalled) store.removePlugin(plugin.pluginId); });
     },
     describeAction,

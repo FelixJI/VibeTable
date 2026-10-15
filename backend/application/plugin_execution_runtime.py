@@ -82,6 +82,7 @@ class _ExecutionHandle:
     __slots__ = (
         "cancel",
         "cancel_timer",
+        "installation_id",
         "plugin_id",
         "project_key",
         "run_id",
@@ -97,6 +98,7 @@ class _ExecutionHandle:
         run_id: str,
         plugin_id: str,
         project_key: str,
+        installation_id: str | None,
         task: asyncio.Task[None],
         cancel: CancellationToken,
     ) -> None:
@@ -104,6 +106,7 @@ class _ExecutionHandle:
         self.run_id = run_id
         self.plugin_id = plugin_id
         self.project_key = project_key
+        self.installation_id = installation_id
         self.task = task
         self.cancel = cancel
         self.cancel_timer: asyncio.TimerHandle | None = None
@@ -212,6 +215,7 @@ class PluginExecutionRuntime:
             run_id=run_id,
             plugin_id=plugin_id,
             project_key=context.project_key,
+            installation_id=installation.installation_id,
             task=task,
             cancel=cancel,
         )
@@ -412,15 +416,19 @@ class PluginExecutionRuntime:
             handle.task.cancel()
         return True
 
-    async def cancel_plugin_tasks(self, project_key: str, plugin_id: str) -> int:
+    async def cancel_plugin_tasks(
+        self, project_key: str, plugin_id: str, *, installation_id: str
+    ) -> int:
         targets = [
             handle
             for handle in self._executions.values()
-            if handle.project_key == project_key and handle.plugin_id == plugin_id
+            if handle.project_key == project_key
+            and handle.plugin_id == plugin_id
+            and handle.installation_id == installation_id
         ]
         for handle in targets:
             await self.request_cancel(handle.task_id)
-        # Uninstall must not remove settings/packages while cooperative cleanup uses them.
+        # Drain only the deleted installation; a concurrently reinstalled plugin is untouched.
         await asyncio.gather(*(handle.task for handle in targets))
         return len(targets)
 

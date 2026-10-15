@@ -41,7 +41,7 @@ describe("plugin bridge whitelist", () => {
     });
     bridge.notify("plugin.lifecycle.rollback", { projectKey: "local:default", pluginId: "com.acme.clean" });
     bridge.notify("plugin.lifecycle.uninstall", {
-      projectKey: "local:default", pluginId: "com.acme.clean", cleanupPrivateSettings: false,
+      projectKey: "local:default", pluginId: "com.acme.clean", installationId: "record-clean", expectedRevision: 1, cleanupPrivateSettings: false,
     });
     bridge.notify("plugin.action.describe", {
       projectKey: "local:default", pluginId: "com.acme.clean", actionId: "normalize", context,
@@ -79,8 +79,12 @@ describe("plugin bridge whitelist", () => {
       "plugin.surface.event",
     ]);
     expect(JSON.stringify(postMessage.mock.calls)).not.toContain("rpc.invoke");
+    expect(postMessage.mock.calls.find(([message]) => message.type === "plugin.lifecycle.uninstall")?.[0].payload).toEqual({
+      projectKey: "local:default", pluginId: "com.acme.clean", installationId: "record-clean", expectedRevision: 1, cleanupPrivateSettings: false,
+    });
+    expect(JSON.stringify(postMessage.mock.calls.filter(([message]) => message.type !== "plugin.lifecycle.uninstall"))).not.toContain("expectedRevision");
     expect(JSON.stringify(postMessage.mock.calls)).not.toMatch(
-      /sourceToken|planToken|expectedRevision|cleanupSettings|"decision":"approve"|"decision":"reject"/,
+      /sourceToken|planToken|cleanupSettings|"decision":"approve"|"decision":"reject"/,
     );
   });
 });

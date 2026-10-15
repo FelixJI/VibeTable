@@ -362,8 +362,14 @@ Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capab
 
 `application` 页面只对每个请求/任务设置预算，没有 15 秒或 64 次的整页总限制。
 `headless` 的两分钟执行预算从真实 WebView2 frame 创建开始，目录预分配 token 不启动计时。
-完成、取消、禁用/卸载或 renderer 退役撤销该执行上下文；未报告终态或 renderer 卡死时，
+模块主动完成、用户停止、禁用/卸载或 renderer 退役撤销该执行上下文；单个宿主任务完成不会结束整个模块。
+同一 surface 可并发多个请求，宿主逐 taskId 展示、确认和取消；模块结束后所有已知任务回执仍可见，
+某个任务成功不会覆盖另一个任务的 `plugin_commit_unknown`，模块完成也不代表所有写入已结算。未报告终态或 renderer 卡死时，
 独立 WPF timer 撤权并重建当前 renderer，返回平台且不自动重放动作。该恢复保留 PocketBase 工作区。
+
+卸载确认固定原安装的 `installationId` 与 `expectedRevision`，由 PocketBase 在同一事务中比较后删除安装、
+包引用和用户明确选择的私有设置。升级、重载或卸载重装导致身份变化时拒绝原请求，保留新安装及其设置；
+缺少原身份的旧调用或清理重试不会回退为无条件删除。
 原生确认窗口默认将焦点放在拒绝按钮，Escape/关闭拒绝当前计划；过期与退役关闭确认窗口。
 
 应用验收的系统高对比切换只在显式 `GITHUB_ACTIONS=true` 且 `CI=true` 的受控 Windows runner 中进行，

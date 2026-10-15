@@ -618,7 +618,26 @@ async def test_uninstall_cancellation_waits_for_worker_cleanup() -> None:
     registry = FakeRegistry(_snapshot())
     runtime = PluginExecutionRuntime(registry=registry, worker_adapter=CancellableWorker({}))
     await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
-    assert await runtime.cancel_plugin_tasks("local:default", "com.example.summary") == 1
+    assert (
+        await runtime.cancel_plugin_tasks(
+            "local:default",
+            "com.example.summary",
+            installation_id="retired-record",
+        )
+        == 0
+    )
+    assert not cleaned.is_set()
+    assert registry.snapshot is not None
+    # The successful uninstall may target a later revision of the same PB record.
+    registry.snapshot = registry.snapshot.model_copy(update={"revision": 2})
+    assert (
+        await runtime.cancel_plugin_tasks(
+            "local:default",
+            "com.example.summary",
+            installation_id="record-summary",
+        )
+        == 1
+    )
     assert cleaned.is_set()
     assert len(registry.audit) == 1
     assert registry.audit[0].outcome == "cancelled"

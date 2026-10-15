@@ -9,6 +9,7 @@ import { createPluginCommandContext, usePluginService } from "./pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
 
 const snapshot: PluginSnapshot = {
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -408,7 +409,9 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
     const stale = service.listAudit(snapshot.pluginId);
     store.setProjectContext("project:b", "r2");
-    const current = service.retryCleanup(snapshot.pluginId);
+    const current = service.retryCleanup({ actionId: null, runId: null, actor: "user", risk: null, targetCollection: null, targetCount: null, errorCode: null, eventId: "cleanup", projectKey: store.projectKey, pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.version, packageHash: snapshot.packageHash, eventType: "uninstall", outcome: "failed",
+      startedAt: "", finishedAt: null, durationMs: null, details: { installationId: snapshot.installationId, expectedRevision: snapshot.revision } });
 
     listener?.({
       data: {
@@ -483,7 +486,9 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
     const stale = service.listAudit(snapshot.pluginId);
     store.setProjectContext("local:default", "r2");
-    const current = service.retryCleanup(snapshot.pluginId);
+    const current = service.retryCleanup({ actionId: null, runId: null, actor: "user", risk: null, targetCollection: null, targetCount: null, errorCode: null, eventId: "cleanup", projectKey: store.projectKey, pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.version, packageHash: snapshot.packageHash, eventType: "uninstall", outcome: "failed",
+      startedAt: "", finishedAt: null, durationMs: null, details: { installationId: snapshot.installationId, expectedRevision: snapshot.revision } });
     expect(store.busy).toBe(true);
 
     listener?.({
@@ -887,7 +892,7 @@ describe("pluginService canonical wire", () => {
         projectKey: "local:default", pluginId: "com.acme.clean", actionId: "normalize", context,
       } },
       { type: "plugin.lifecycle.uninstall", payload: {
-        projectKey: "local:default", pluginId: "com.acme.clean", cleanupPrivateSettings: true,
+        projectKey: "local:default", pluginId: "com.acme.clean", installationId: "record-clean", expectedRevision: 1, cleanupPrivateSettings: true,
       } },
       { type: "plugin.catalog.list", payload: { projectKey: "local:default" } },
     ]);
@@ -1263,6 +1268,18 @@ describe("pluginService canonical wire", () => {
     harness.reply(harness.posted[0]!, current); await enable;
     harness.reply(harness.posted[1]!, [previous]); await olderRead; await flushPromises();
     expect(store.plugins[0]?.revision).toBe(2);
+  });
+
+  it("refuses cleanup without the original receipt identity before sending any uninstall", async () => {
+    const postMessage = vi.fn();
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage, addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const event = { eventId: "old-cleanup", projectKey: "local:default", pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.version, packageHash: snapshot.packageHash, eventType: "uninstall", outcome: "failed",
+      actionId: null, runId: null, actor: "user", risk: null, targetCollection: null, targetCount: null,
+      startedAt: "", finishedAt: null, durationMs: null, errorCode: null, details: {} };
+    await expect(usePluginService().retryCleanup(event)).rejects.toThrow("原安装身份");
+    await expect(usePluginService().uninstall({ ...snapshot, installationId: null }, true)).rejects.toThrow("安装身份缺失");
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
 });

@@ -183,7 +183,13 @@ async def test_identity_and_item_key_operations_use_frozen_fields() -> None:
     client = FakePluginStoreClient([True, 2, False])
     store = PocketBasePluginStore(client=client, package_cache=Path("cache"))
 
-    deleted = await store.delete_installation("local:default", "com.example.summary")
+    deleted = await store.delete_installation(
+        "local:default",
+        "com.example.summary",
+        installation_id="record-summary",
+        expected_revision=2,
+        cleanup_private_settings=True,
+    )
     removed = await store.delete_package_revisions("local:default", "com.example.summary")
     referenced = await store.is_package_path_referenced("cache/abc.vtplugin")
 
@@ -191,7 +197,13 @@ async def test_identity_and_item_key_operations_use_frozen_fields() -> None:
     assert client.calls == [
         (
             "delete_installation",
-            {"projectKey": "local:default", "pluginId": "com.example.summary"},
+            {
+                "projectKey": "local:default",
+                "pluginId": "com.example.summary",
+                "installationId": "record-summary",
+                "expectedRevision": 2,
+                "cleanupPrivateSettings": True,
+            },
         ),
         (
             "delete_package_revisions",

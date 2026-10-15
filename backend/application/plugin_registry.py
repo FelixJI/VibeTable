@@ -27,7 +27,15 @@ class PluginStore(Protocol):
 
     async def list_installations(self, project_key: str) -> list[PluginSnapshot]: ...
 
-    async def delete_installation(self, project_key: str, plugin_id: str) -> bool: ...
+    async def delete_installation(
+        self,
+        project_key: str,
+        plugin_id: str,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        cleanup_private_settings: bool,
+    ) -> bool: ...
 
     async def delete_private_settings(self, project_key: str, plugin_id: str) -> int: ...
 
@@ -217,11 +225,25 @@ class PluginRegistry:
         plugin_id: str,
         *,
         cleanup_private_settings: bool,
+        installation_id: str,
+        expected_revision: int,
     ) -> UninstallResult:
         current = await self._required(project_key, plugin_id)
-        await self._store.delete_installation(project_key, plugin_id)
-        if cleanup_private_settings:
-            await self._store.delete_private_settings(project_key, plugin_id)
+        if (
+            not installation_id
+            or current.installation_id != installation_id
+            or current.revision != expected_revision
+        ):
+            raise PluginRegistryError(
+                "plugin installation changed", code="plugin_revision_conflict"
+            )
+        await self._store.delete_installation(
+            project_key,
+            plugin_id,
+            installation_id=installation_id,
+            expected_revision=expected_revision,
+            cleanup_private_settings=cleanup_private_settings,
+        )
         await self._audit(current, "uninstall", "succeeded")
         return UninstallResult(
             uninstalled=True,

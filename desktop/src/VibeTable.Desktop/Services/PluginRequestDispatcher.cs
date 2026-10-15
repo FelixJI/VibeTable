@@ -729,21 +729,17 @@ public sealed class PluginRequestDispatcher : IDisposable
         PluginUninstallParams request,
         CancellationToken token)
     {
-        string? installationId;
-        bool registered;
-        lock (_catalogProjectionGate)
-        {
-            ++_catalogProjectionGeneration;
-            registered = _resourceHost.TryGetInstallationIdentity(request.ProjectKey, request.PluginId, out installationId);
-        }
+        if (string.IsNullOrWhiteSpace(request.InstallationId) || request.ExpectedRevision < 1)
+            throw new PluginDispatchException("BAD_PAYLOAD", "Installation identity and revision are required.");
+        AdvanceCatalogProjection();
         bool catalogCompleted = false;
         try
         {
             var result = await _gateway!.UninstallAsync(request, token).ConfigureAwait(false);
             lock (_catalogProjectionGate)
             {
-                if (result.Uninstalled && registered
-                    && _resourceHost.UnregisterInstalledIfCurrent(request.ProjectKey, request.PluginId, installationId))
+                if (result.Uninstalled
+                    && _resourceHost.UnregisterInstalledIfCurrent(request.ProjectKey, request.PluginId, request.InstallationId))
                 {
                     _nativePlugins.TryRemove((request.ProjectKey, request.PluginId), out _);
                 }

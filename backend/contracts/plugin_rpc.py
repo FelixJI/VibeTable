@@ -87,6 +87,8 @@ class RollbackPluginParams(PluginIdentityParams):
 
 
 class UninstallPluginParams(PluginIdentityParams):
+    installation_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=1)
     cleanup_private_settings: bool = False
 
 

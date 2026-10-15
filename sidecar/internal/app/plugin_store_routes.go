@@ -18,15 +18,17 @@ const pluginStorePath = "/api/vibetable/v1/plugins/store"
 // This private session-authenticated seam names operations, never collections,
 // SQL or source paths. Workspace binding is checked before any read or write.
 type pluginStoreRequest struct {
-	Operation        string          `json:"operation"`
-	ProjectKey       string          `json:"projectKey"`
-	PluginID         string          `json:"pluginId"`
-	ItemKey          string          `json:"itemKey"`
-	Payload          json.RawMessage `json:"payload"`
-	ExpectedRevision *int64          `json:"expectedRevision"`
-	LocalPath        string          `json:"localPath"`
-	Plan             json.RawMessage `json:"plan"`
-	PackageRevision  json.RawMessage `json:"packageRevision"`
+	InstallationID         string          `json:"installationId"`
+	CleanupPrivateSettings bool            `json:"cleanupPrivateSettings"`
+	Operation              string          `json:"operation"`
+	ProjectKey             string          `json:"projectKey"`
+	PluginID               string          `json:"pluginId"`
+	ItemKey                string          `json:"itemKey"`
+	Payload                json.RawMessage `json:"payload"`
+	ExpectedRevision       *int64          `json:"expectedRevision"`
+	LocalPath              string          `json:"localPath"`
+	Plan                   json.RawMessage `json:"plan"`
+	PackageRevision        json.RawMessage `json:"packageRevision"`
 }
 
 func registerPluginStoreRoutes(r *router.Router[*core.RequestEvent], service *pluginstore.Service, gates ...businessWriteGate) {
@@ -108,7 +110,9 @@ func pluginStoreFields(operation string) (map[string]bool, bool) {
 		keys, write = []string{"projectKey", "pluginId", "payload", "expectedRevision"}, true
 	case "save_package_revision", "record_audit":
 		keys, write = []string{"projectKey", "pluginId", "payload"}, true
-	case "delete_installation", "delete_package_revisions", "delete_private_settings":
+	case "delete_installation":
+		keys, write = []string{"projectKey", "pluginId", "installationId", "expectedRevision", "cleanupPrivateSettings"}, true
+	case "delete_package_revisions", "delete_private_settings":
 		keys, write = []string{"projectKey", "pluginId"}, true
 	case "delete_package_revision":
 		keys, write = []string{"projectKey", "pluginId", "itemKey"}, true
@@ -133,7 +137,10 @@ func callPluginStore(ctx context.Context, service *pluginstore.Service, body plu
 	case "save_installation":
 		return service.SaveInstallation(ctx, body.Payload, body.ExpectedRevision)
 	case "delete_installation":
-		return service.DeleteInstallation(ctx, body.ProjectKey, body.PluginID)
+		if body.ExpectedRevision == nil {
+			return nil, errors.New("installation revision required")
+		}
+		return service.DeleteInstallation(ctx, body.ProjectKey, body.PluginID, body.InstallationID, *body.ExpectedRevision, body.CleanupPrivateSettings)
 	case "list_package_revisions":
 		return service.ListPackageRevisions(ctx, body.ProjectKey, body.PluginID)
 	case "save_package_revision":

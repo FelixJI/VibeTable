@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from backend.application.plugin_registry import (
     PluginRegistryError,
     build_installation_snapshot,
@@ -63,8 +65,28 @@ class InMemoryPluginStore:
             key=lambda snapshot: snapshot.plugin_id,
         )
 
-    async def delete_installation(self, project_key: str, plugin_id: str) -> bool:
-        return self._installations.pop((project_key, plugin_id), None) is not None
+    async def delete_installation(
+        self,
+        project_key: str,
+        plugin_id: str,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        cleanup_private_settings: bool,
+    ) -> bool:
+        current = self._installations.get((project_key, plugin_id))
+        if (
+            not installation_id
+            or current is None
+            or current.installation_id != installation_id
+            or current.revision != expected_revision
+        ):
+            raise PluginStoreConflictError("plugin installation changed")
+        del self._installations[(project_key, plugin_id)]
+        await self.delete_package_revisions(project_key, plugin_id)
+        if cleanup_private_settings:
+            await self.delete_private_settings(project_key, plugin_id)
+        return True
 
     async def save_package_revision(
         self,
@@ -159,7 +181,10 @@ class InMemoryPluginStore:
                 "plugin is already installed",
                 code="plugin_already_installed",
             )
-        snapshot = build_installation_snapshot(plan)
+        # The fake mirrors the existing PB record Id, not a production identity authority.
+        snapshot = build_installation_snapshot(plan).model_copy(
+            update={"installation_id": str(uuid.uuid4())}
+        )
         revision_key = (
             package_revision.project_key,
             package_revision.plugin_id,

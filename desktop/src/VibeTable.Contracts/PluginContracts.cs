@@ -98,6 +98,8 @@ public sealed record PluginRollbackParams(string ProjectKey, string PluginId);
 public sealed record PluginUninstallParams(
     string ProjectKey,
     string PluginId,
+    string InstallationId,
+    int ExpectedRevision,
     bool CleanupPrivateSettings = false);
 public sealed record PluginRuntimeCommandContext(
     string Contract,

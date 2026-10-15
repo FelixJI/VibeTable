@@ -2295,6 +2295,8 @@ export interface WebPayloadMap {
   "plugin.lifecycle.uninstall": {
     readonly projectKey: string;
     readonly pluginId: string;
+    readonly installationId: string;
+    readonly expectedRevision: number;
     readonly cleanupPrivateSettings: boolean;
   };
   "plugin.action.describe": {

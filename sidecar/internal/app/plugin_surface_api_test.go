@@ -924,7 +924,7 @@ func TestSurfaceInstallationBindsPresentationEntry(t *testing.T) {
 	}
 	old := base
 	old.ActionID, old.Entry = "open", "ui/index.html"
-	if _, err := store.DeleteInstallation(ctx, store.ProjectKey(), pluginID); err != nil {
+	if _, err := store.DeleteInstallation(ctx, store.ProjectKey(), pluginID, base.InstallationID, base.InstallationRevision, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {

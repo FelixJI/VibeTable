@@ -298,8 +298,9 @@ class PluginPlatformService:
         project_key: str,
         plugin_id: str,
         cleanup_private_settings: bool,
+        installation_id: str,
+        expected_revision: int,
     ) -> UninstallResult:
-        await self._runtime.cancel_plugin_tasks(project_key, plugin_id)
         retained_paths = [
             revision.local_path
             for revision in await self._store.list_package_revisions(project_key, plugin_id)
@@ -308,8 +309,14 @@ class PluginPlatformService:
             project_key,
             plugin_id,
             cleanup_private_settings=cleanup_private_settings,
+            installation_id=installation_id,
+            expected_revision=expected_revision,
         )
-        await self._store.delete_package_revisions(project_key, plugin_id)
+        await self._runtime.cancel_plugin_tasks(
+            project_key,
+            plugin_id,
+            installation_id=installation_id,
+        )
         for retained_path in retained_paths:
             await self._delete_package_if_unreferenced(retained_path)
         return result

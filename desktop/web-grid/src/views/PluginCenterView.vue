@@ -23,7 +23,7 @@ const table = useTableStore();
 const systemTimeZone = useSystemTimeZone();
 const plannedUpgradePluginId = ref<string | null>(null);
 const cleanupPrivateSettings = ref(false);
-const uninstallTarget = ref<{ pluginId: string; revision: number; projectKey: string } | null>(null);
+const uninstallTarget = ref<{ pluginId: string; installationId: string | null | undefined; revision: number; projectKey: string } | null>(null);
 const uninstalling = computed(() => uninstallTarget.value !== null);
 const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
@@ -37,7 +37,7 @@ function cancelUninstall(): void {
 function beginUninstall(): void {
   cancelUninstall();
   if (plugin.value) uninstallTarget.value = { pluginId: plugin.value.pluginId,
-    revision: plugin.value.revision, projectKey: plugin.value.projectKey };
+    installationId: plugin.value.installationId, revision: plugin.value.revision, projectKey: plugin.value.projectKey };
 }
 async function confirmUninstall(): Promise<void> {
   const target = uninstallTarget.value;
@@ -45,10 +45,10 @@ async function confirmUninstall(): Promise<void> {
   const cleanup = cleanupPrivateSettings.value;
   cancelUninstall();
   if (!target || !current || current.pluginId !== target.pluginId
-    || current.revision !== target.revision || current.projectKey !== target.projectKey) return;
+    || current.installationId !== target.installationId || current.revision !== target.revision || current.projectKey !== target.projectKey) return;
   await safely(() => service.uninstall(current, cleanup));
 }
-watch(() => [plugin.value?.pluginId, plugin.value?.revision, store.projectKey], cancelUninstall, { flush: "sync" });
+watch(() => [plugin.value?.pluginId, plugin.value?.installationId, plugin.value?.revision, store.projectKey], cancelUninstall, { flush: "sync" });
 const theme = computed(() => projectPluginTheme({
   effectiveTheme: ui.effectiveTheme,
   locale: ui.locale,
@@ -186,9 +186,9 @@ async function selectPlugin(pluginId: string): Promise<void> {
   store.selectPlugin(pluginId);
   auditEvents.value = await service.listAudit(pluginId);
 }
-async function retryCleanup(pluginId: string): Promise<void> {
+async function retryCleanup(event: PluginAuditEvent): Promise<void> {
   await safely(async () => {
-    await service.retryCleanup(pluginId);
+    await service.retryCleanup(event);
     pendingCleanup.value = await service.listPendingCleanup();
   });
 }
@@ -245,7 +245,7 @@ onBeforeUnmount(() => service.dispose());
 
     <section v-if="pendingCleanup.length" class="cleanup-queue" aria-label="待清理托管资源">
       <strong>可重试的插件资源清理</strong>
-      <div v-for="event in pendingCleanup" :key="event.pluginId"><code>{{ event.pluginId }}</code><span>{{ String(event.details.cleanupError ?? '本地插件资源暂时不可用') }}</span><button type="button" @click="retryCleanup(event.pluginId)">立即重试</button></div>
+      <div v-for="event in pendingCleanup" :key="event.pluginId"><code>{{ event.pluginId }}</code><span>{{ String(event.details.cleanupError ?? '本地插件资源暂时不可用') }}</span><button type="button" @click="retryCleanup(event)">立即重试</button></div>
     </section>
 
     <section v-if="store.installPlan" class="install-plan" data-testid="plugin-install-plan">

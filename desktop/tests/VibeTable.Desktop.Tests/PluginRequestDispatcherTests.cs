@@ -12,6 +12,7 @@ public sealed class PluginRequestDispatcherTests
 
     [TestMethod]
     [DataRow("uninstall-notification")]
+    [DataRow("uninstall-conflict")]
     [DataRow("empty-authority")]
     [DataRow("same-package-replacement")]
     public async Task InstallationRetirementClosesUnmountedSurfaceAndReinstallationGetsNewToken(string transition)
@@ -48,13 +49,21 @@ public sealed class PluginRequestDispatcherTests
             await dispatcher.DispatchAsync(Request("plugin.catalog.list", "old-catalog", """{"projectKey":"project-1"}"""));
             string oldToken = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken!;
             var closed = new List<string>(); surfaces.Closed += closed.Add;
-            if (transition == "uninstall-notification")
+            if (transition is "uninstall-notification" or "uninstall-conflict")
             {
                 Task uninstall = dispatcher.DispatchAsync(Request("plugin.lifecycle.uninstall", "uninstall",
-                    """{"projectKey":"project-1","pluginId":"com.acme.clean","cleanupPrivateSettings":false}"""));
+                    """{"projectKey":"project-1","pluginId":"com.acme.clean","installationId":"old-record","expectedRevision":4,"cleanupPrivateSettings":false}"""));
                 dispatcher.ProjectCatalogEvent(JsonSerializer.SerializeToElement(new PluginEventEnvelope(PluginContractVersions.Event,
                     "plugin.catalog.changed", old.ProjectKey, old.PluginId, old.Revision,
                     JsonSerializer.SerializeToElement(old, new JsonSerializerOptions(JsonSerializerDefaults.Web)))));
+                if (transition == "uninstall-conflict")
+                {
+                    pendingUninstall.SetException(new InvalidOperationException("installation changed"));
+                    await uninstall;
+                    Assert.IsTrue(surfaces.IsActive(oldToken), "A rejected uninstall retired the live surface.");
+                    Assert.IsNotNull(reply.FailureCode);
+                    return;
+                }
                 pendingUninstall.SetResult(new PluginRuntimeUninstallResult(true, true)); await uninstall;
                 Assert.IsFalse(surfaces.IsActive(oldToken), "A notification suppressed successful uninstall retirement.");
             }
@@ -121,7 +130,7 @@ public sealed class PluginRequestDispatcherTests
                 initialCatalog = false;
             }
             Task late = dispatcher.DispatchAsync(Request(lateUninstall ? "plugin.lifecycle.uninstall" : "plugin.catalog.list", "old",
-                """{"projectKey":"project-1","pluginId":"com.acme.clean","projectRevision":"1","cleanupPrivateSettings":false}"""));
+                """{"projectKey":"project-1","pluginId":"com.acme.clean","projectRevision":"1","installationId":"retired-record","expectedRevision":4,"cleanupPrivateSettings":false}"""));
             await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-replacement",
                 """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
             string planId = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload).PlanId;
@@ -166,7 +175,7 @@ public sealed class PluginRequestDispatcherTests
         var plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
         await Route("plugin.lifecycle.upgrade", "upgrade", new { projectKey = "project-1", pluginId = "com.acme.clean", planId = plan.PlanId, projectRevision = "1" });
         Assert.AreEqual(plan.PlanId, gateway.UpgradeRequest!.Plan.PlanId);
-        await Route("plugin.lifecycle.uninstall", "uninstall", new { projectKey = "project-1", pluginId = "com.acme.clean", cleanupPrivateSettings = false });
+        await Route("plugin.lifecycle.uninstall", "uninstall", new { projectKey = "project-1", pluginId = "com.acme.clean", installationId = "record-clean", expectedRevision = 1, cleanupPrivateSettings = false });
         Assert.AreEqual("com.acme.clean", gateway.UninstallRequest!.PluginId);
         Assert.IsFalse(gateway.UninstallRequest.CleanupPrivateSettings);
         var blocked = router.Route("""{"type":"plugin.lifecycle.rollback","requestId":"rollback","payload":{}}""");

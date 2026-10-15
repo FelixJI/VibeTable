@@ -10,6 +10,7 @@ import { useUiStore } from "@/stores/uiStore";
 import PluginCenterView from "./PluginCenterView.vue";
 
 const blockedPlugin: PluginSnapshot = {
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -422,7 +423,7 @@ describe("PluginCenterView", () => {
     expect(posted[0]).toMatchObject({
       type: "plugin.lifecycle.uninstall",
       payload: { projectKey: "local:default", pluginId: blockedPlugin.pluginId,
-        cleanupPrivateSettings: cleanup },
+        installationId: blockedPlugin.installationId, expectedRevision: blockedPlugin.revision, cleanupPrivateSettings: cleanup },
     });
     expect(usePluginStore().plugins).toHaveLength(0);
   });
@@ -739,6 +740,22 @@ describe("PluginCenterView", () => {
     expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize" });
     expect(usePluginStore().actionOpen).toBe(false);
     expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
+  });
+
+  it("cancels an uninstall confirmation when the same revision belongs to a reinstallation", async () => {
+    const posted: unknown[] = [];
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage: message => posted.push(message),
+      addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    usePluginStore().replaceCatalog("local:default", [{ ...blockedPlugin, installationId: "reinstalled-record" }]);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
+    expect(posted).toEqual([]);
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
+    wrapper.unmount();
   });
 
 });

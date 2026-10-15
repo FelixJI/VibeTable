@@ -480,12 +480,42 @@ func (service *Service) SaveInstallation(
 }
 
 func (service *Service) DeleteInstallation(
-	ctx context.Context,
-	projectKey string,
-	pluginID string,
+	ctx context.Context, projectKey string, pluginID string,
+	installationID string, expectedRevision int64, cleanupPrivateSettings bool,
 ) (bool, error) {
-	count, err := service.deleteWhere(ctx, KindInstallation, projectKey, pluginID, "")
-	return count > 0, err
+	if installationID == "" || expectedRevision < 1 {
+		return false, requestError("plugin.request_invalid", "installation identity and revision are required", nil)
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return false, err
+	}
+	err := service.transact(ctx, func(txApp core.App) error {
+		current, err := findInstallation(txApp, projectKey, pluginID)
+		if err != nil {
+			return err
+		}
+		if current == nil || jsonText(current.Payload, "installationId") != installationID || jsonInt(current.Payload, "revision") != expectedRevision {
+			return revisionConflict(KindInstallation, expectedRevision, "installation changed")
+		}
+		// All plugin-owned records that uninstall removes share this CAS transaction.
+		// A concurrent reinstall cannot lose its private settings or package references.
+		records, err := txApp.FindRecordsByFilter(recordsCollection,
+			"project_key={:project} && plugin_id={:plugin}", "", 0, 0,
+			dbx.Params{"project": projectKey, "plugin": pluginID})
+		if err != nil {
+			return storageError()
+		}
+		for _, stored := range records {
+			kind := stored.GetString("kind")
+			if kind == KindInstallation || kind == KindRevision || (cleanupPrivateSettings && kind == KindSetting) {
+				if err := txApp.Delete(stored); err != nil {
+					return storageError()
+				}
+			}
+		}
+		return nil
+	})
+	return err == nil, err
 }
 
 func (service *Service) SavePackageRevision(

@@ -181,7 +181,7 @@ func TestInstallationUsesExistingRecordIdentityAcrossReinstall(t *testing.T) {
 	if _, err := service.SaveInstallation(ctx, forged, &actual); err == nil {
 		t.Fatal("caller rewrote record identity")
 	}
-	if _, err := service.DeleteInstallation(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId")); err != nil {
+	if _, err := service.DeleteInstallation(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"), id, actual, false); err != nil {
 		t.Fatal(err)
 	}
 	second, err := service.CommitInstall(ctx, plan, revision)
@@ -190,5 +190,71 @@ func TestInstallationUsesExistingRecordIdentityAcrossReinstall(t *testing.T) {
 	}
 	if jsonText(second, "installationId") == "" || jsonText(second, "installationId") == id {
 		t.Fatal("same-version same-package reinstall reused the old record identity")
+	}
+}
+
+func TestUninstallCASRejectsUpgradeAndReinstallWithoutCleanup(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin := jsonText(first, "projectKey"), jsonText(first, "pluginId")
+	id := jsonText(first, "installationId")
+	setting := []byte(`{"projectKey":"` + project + `","pluginId":"` + plugin + `","settingKey":"secret","value":"retained","revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := service.SetEnabled(ctx, project, plugin, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRetained := func(wantID string) {
+		t.Helper()
+		got, err := service.GetInstallation(ctx, project, plugin)
+		if err != nil || jsonText(got, "installationId") != wantID {
+			t.Fatal("installation was removed", err)
+		}
+		settings, err := service.GetPrivateSetting(ctx, project, plugin, "secret")
+		if err != nil || settings == nil {
+			t.Fatal("private settings were removed", err)
+		}
+		revisions, err := service.ListPackageRevisions(ctx, project, plugin)
+		if err != nil || len(revisions) != 1 {
+			t.Fatal("package references were removed", err)
+		}
+	}
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err == nil {
+		t.Fatal("stale revision deleted upgraded installation")
+	}
+	assertRetained(id)
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, jsonInt(enabled, "revision"), false); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err == nil {
+		t.Fatal("ABA deleted reinstallation")
+	}
+	assertRetained(jsonText(second, "installationId"))
+	if _, err := service.DeleteInstallation(ctx, project, plugin, "", 1, true); err == nil {
+		t.Fatal("identity-free delete admitted")
+	}
+	assertRetained(jsonText(second, "installationId"))
+	if _, err := service.DeleteInstallation(ctx, project, plugin, jsonText(second, "installationId"), 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := service.GetInstallation(ctx, project, plugin); got != nil {
+		t.Fatal("matching CAS did not delete")
+	}
+	if got, _ := service.GetPrivateSetting(ctx, project, plugin, "secret"); got != nil {
+		t.Fatal("cleanup did not remove settings")
+	}
+	if got, _ := service.ListPackageRevisions(ctx, project, plugin); len(got) != 0 {
+		t.Fatal("cleanup retained package references")
 	}
 }
