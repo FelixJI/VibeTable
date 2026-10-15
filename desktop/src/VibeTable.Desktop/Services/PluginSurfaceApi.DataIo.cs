@@ -260,21 +260,34 @@ internal sealed partial class PluginSurfaceApi
         if (source is null) return;
         try
         {
-            using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             if (outcome != "unknown")
             {
-                await source.File.Broker.HandleAsync("settleImport", JsonSerializer.SerializeToElement(new
-                { reservationId = source.Reservation, outcome = outcome == "succeeded" ? "consumed" : "released" }), budget.Token);
-                await CallAsync(surface, "import.settle", JsonSerializer.SerializeToElement(new
+                // The host reservation and the captured-generation Go claim settle
+                // independently, each with its own bounded budget: a broker that
+                // consumes its whole budget must not hand the Go settlement an
+                // already-cancelled token. Worst case is now the sum of both
+                // budgets (10s) instead of one shared 5s; revoke is unchanged.
+                try
                 {
-                    contract = "vibetable.import-plans.v1",
-                    token = source.Token,
-                    attempt = source.Attempt,
-                    outcome = outcome == "succeeded" ? "committed" : "rejected"
-                }), budget.Token, auditGeneration: source.Generation);
+                    using var reservationBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await source.File.Broker.HandleAsync("settleImport", JsonSerializer.SerializeToElement(new
+                    { reservationId = source.Reservation, outcome = outcome == "succeeded" ? "consumed" : "released" }), reservationBudget.Token);
+                }
+                catch (Exception reservationError) { System.Diagnostics.Trace.TraceWarning($"Plugin import reservation settlement unavailable: {reservationError}"); }
+                try
+                {
+                    using var claimBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await CallAsync(surface, "import.settle", JsonSerializer.SerializeToElement(new
+                    {
+                        contract = "vibetable.import-plans.v1",
+                        token = source.Token,
+                        attempt = source.Attempt,
+                        outcome = outcome == "succeeded" ? "committed" : "rejected"
+                    }), claimBudget.Token, auditGeneration: source.Generation);
+                }
+                catch (Exception claimError) { System.Diagnostics.Trace.TraceWarning($"Plugin import settlement unavailable: {claimError}"); }
             }
         }
-        catch (Exception error) { System.Diagnostics.Trace.TraceWarning($"Plugin import settlement unavailable: {error}"); }
         finally { await RevokeSurfaceFileAsync(source.File); }
     }
     private static JsonObject SurfacePrincipal(PluginSurfaceSession surface) => new()

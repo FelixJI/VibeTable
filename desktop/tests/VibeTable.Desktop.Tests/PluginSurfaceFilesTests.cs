@@ -239,6 +239,26 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
+    public async Task RetiredBrokerStillSettlesCapturedGenerationGoImportClaim()
+    {
+        await using var f = new Fixture();
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        // The host broker retires (workspace switch) after the preview handed off its plan.
+        f.Broker.Retire();
+        var submitted = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("succeeded", submitted.GetProperty("result").GetProperty("status").GetString(), submitted.GetRawText());
+        // The Go claim still settles through its captured generation even though the
+        // host reservation settlement failed; verified success stays sticky.
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+            && call.GetProperty("request").GetProperty("token").GetString() == "internal-go-token"
+            && call.GetProperty("request").GetProperty("outcome").GetString() == "committed"),
+            "broker retirement must not skip the Go import settlement");
+    }
+
+    [TestMethod]
     public async Task DeletedRecordAfterConfirmationSurfacesExactRejectionNotUnknown()
     {
         await using var f = new Fixture();
@@ -256,6 +276,61 @@ public sealed class PluginSurfaceFilesTests
         f.Http.FailNextCommitBody = "{\"code\":\"mutation.internal.failed\"}";
         var unverifiable = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId = unknown }));
         Assert.AreEqual("plugin_commit_unknown", unverifiable.GetProperty("error").GetProperty("code").GetString(), unverifiable.GetRawText());
+    }
+
+    [TestMethod]
+    public async Task BrokerSettleBudgetExhaustionStillLeavesGoClaimFreshBudget()
+    {
+        await using var f = new Fixture();
+        // One real broker whose final native commit blocks while holding its gate; the
+        // gate is released by the semantic signal of the Go settlement attempt (or a
+        // bounded watchdog), never by a fixed timer window.
+        var gateReleased = new ManualResetEventSlim(false);
+        var settleAttempted = new ManualResetEventSlim(false);
+        f.Http.OnSettleAttempt = () => { settleAttempted.Set(); gateReleased.Set(); };
+        f.ReplaceBroker(new HostSessionFileBroker(
+            () => new WorkspaceRequestEpochLease(new WorkspaceWireScope
+            { Scope = "workspace", WorkspaceId = Guid.Parse("11111111-1111-4111-8111-111111111111"), SessionEpoch = 7, OperationId = Guid.NewGuid(), Sequence = 1 }, CancellationToken.None, () => { }),
+            action =>
+            {
+                action();
+                if (File.ReadAllText(f.Target) == "new") gateReleased.Wait(TimeSpan.FromSeconds(30));
+            }));
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        string grantId = f.IoGrant!; string runId = f.IoRun!;
+        string write = (await f.Call("file.pickWrite", "{\"suggestedName\":\"out.txt\",\"mediaType\":\"text/plain\"}")).GetProperty("result").GetProperty("grantId").GetString()!;
+        // The write runs on its own thread: its synchronous native commit may block
+        // inside commitCurrent, which must never stall the driving test thread.
+        var saving = Task.Run(() => f.Call("file.write", JsonSerializer.Serialize(new { grantId = write, offset = 0, base64 = "bmV3", finish = true })));
+        bool held = false;
+        for (int i = 0; i < 500 && !held; i++)
+        {
+            try { held = File.ReadAllText(f.Target) == "new"; } catch (IOException) { }
+            if (!held) await Task.Delay(10);
+        }
+        Assert.IsTrue(held, "native commit must hold the broker gate");
+        try
+        {
+            var submitted = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+            Assert.AreEqual("succeeded", submitted.GetProperty("result").GetProperty("status").GetString(), submitted.GetRawText());
+            // The reservation settlement consumed its whole budget on the held gate; the
+            // Go claim must still settle with a fresh, live budget. Success stays sticky.
+            Assert.IsTrue(settleAttempted.Wait(TimeSpan.FromSeconds(15)), "the Go settlement attempt never happened");
+            Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+                && call.GetProperty("request").GetProperty("token").GetString() == "internal-go-token"
+                && call.GetProperty("request").GetProperty("outcome").GetString() == "committed"),
+                "budget exhaustion at the broker must not cancel the Go settlement");
+            await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+                JsonSerializer.SerializeToElement(new { grantId, runId }), CancellationToken.None));
+        }
+        finally
+        {
+            gateReleased.Set();
+            await saving;
+        }
     }
 
     [TestMethod]
@@ -436,7 +511,8 @@ public sealed class PluginSurfaceFilesTests
         internal string Target => Path.Combine(Root, "out.txt");
         internal PluginSurfaceSessionManager Surfaces { get; } = new();
         internal PluginSurfaceSession Surface { get; }
-        internal HostSessionFileBroker Broker { get; }
+        internal HostSessionFileBroker Broker { get; private set; }
+        internal void ReplaceBroker(HostSessionFileBroker broker) => Broker = broker;
         internal PluginSurfaceApi Api { get; }
         internal HostPluginTaskRegistry Tasks => _tasks;
         internal ProductAuthorityEpoch Authority => _authority;
@@ -511,6 +587,7 @@ public sealed class PluginSurfaceFilesTests
     {
         internal List<JsonElement> Calls { get; } = [];
         internal Action? AfterAuthorize;
+        internal Action? OnSettleAttempt;
         internal bool FailNextFreeze;
         internal int FailNextCommitStatus;
         internal string? FailNextCommitBody;
@@ -520,6 +597,17 @@ public sealed class PluginSurfaceFilesTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             byte[] bodyBytes = await request.Content!.ReadAsByteArrayAsync(token);
+            // A settle request that arrives with an already-cancelled token never
+            // performs its wire round trip; only a live-budget settle is recorded.
+            // The attempt itself is observable regardless of the token state.
+            using (var peek = JsonDocument.Parse(bodyBytes))
+            {
+                if (peek.RootElement.TryGetProperty("method", out var requested) && requested.GetString() == "import.settle")
+                {
+                    OnSettleAttempt?.Invoke();
+                    token.ThrowIfCancellationRequested();
+                }
+            }
             var call = JsonDocument.Parse(bodyBytes).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
