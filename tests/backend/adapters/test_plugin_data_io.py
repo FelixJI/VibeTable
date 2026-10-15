@@ -194,3 +194,80 @@ def test_plugin_workbook_expansion_is_bounded_before_openpyxl_parses():
     with pytest.raises(ImportFlowError) as error:
         SourceFile(stream, "source.xlsx", maximum_expanded_bytes=128).read_header_and_rows()
     assert error.value.code == "import_source_expansion_limit"
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+@pytest.mark.parametrize(
+    ("logical_type", "fresh"),
+    [
+        ("json", True),
+        ("json", False),
+        ("formula", True),
+        ("formula", False),
+        ("lookup", True),
+        ("lookup", False),
+    ],
+)
+async def test_scoped_export_distinguishes_schema_computed_fields_from_json_values(
+    tmp_path, fmt, logical_type, fresh
+):
+    import json
+
+    from backend.adapters.pocketbase.plugin_data_io import export_plugin_data
+    from backend.application.export_service import ExportError
+
+    value = {
+        "state": "ready" if logical_type != "json" else "draft",
+        "value": "payload",
+        "fresh": fresh,
+    }
+
+    class ShapeClient(ScopedClient):
+        async def plugin_surface(self, principal, method, request, **kwargs):
+            if method == "data.ioProfile":
+                profile = await super().plugin_surface(principal, method, request, **kwargs)
+                profile["field_schemas"] = {
+                    "title": {"dataType": logical_type, "displayName": "title"}
+                }
+                return profile
+            page = await super().plugin_surface(principal, method, request, **kwargs)
+            page["items"] = [{"title": value}]
+            page["totalRows"] = page["filteredRows"] = 1
+            return page
+
+    peer = LocalFilePeer()
+    path = tmp_path / f"shape.{fmt}"
+    grant = peer.grants.issue(purpose="export_target", direction="write", path=str(path))
+    peer.runs[grant.grant_id] = "host-run"
+
+    async def progress(*_args):
+        pass
+
+    operation = export_plugin_data(
+        ShapeClient(),
+        peer.files,
+        {"grantId": grant.grant_id, "collection": "orders", "format": fmt, "pluginScope": scope()},
+        progress,
+        lambda: False,
+    )
+    if logical_type != "json" and not fresh:
+        with pytest.raises(ExportError) as error:
+            await operation
+        assert error.value.code == "export_computed_cell_not_ready"
+        assert not path.exists()
+        return
+    result = await operation
+    assert result.rows_written == 1
+    if fmt == "csv":
+        rows = list(csv.reader(io.StringIO(path.read_text(encoding="utf-8-sig"))))
+    else:
+        book = load_workbook(path, read_only=True)
+        try:
+            rows = [list(row) for row in book.active.iter_rows(values_only=True)]
+        finally:
+            book.close()
+    cell = rows[1][0]
+    if logical_type == "json":
+        assert json.loads(cell) == value
+    else:
+        assert cell == "payload"

@@ -89,9 +89,16 @@ class ScopedImportPreview(PocketBaseBulkMutationClient):
 
 
 class ScopedExportQuery:
-    def __init__(self, client: PocketBaseClient, scope: PluginIoScope) -> None:
+    def __init__(
+        self, client: PocketBaseClient, scope: PluginIoScope, profile: CollectionProfile
+    ) -> None:
         self._client = client
         self._scope = scope
+        self._computed_fields = {
+            field
+            for field, schema in profile.field_schemas.items()
+            if schema.get("dataType") in {"formula", "lookup"}
+        }
         self._offset = 0
         self._cursor: str | None = None
         self._dependencies: JsonObject | None = None
@@ -146,8 +153,13 @@ class ScopedExportQuery:
             row: dict[str, JsonValue] = {}
             for field in self._scope.fields:
                 value = raw.get(field)
-                if isinstance(value, dict) and set(value) == {"state", "value", "fresh"}:
-                    if value["fresh"] is not True:
+                if field in self._computed_fields:
+                    if (
+                        not isinstance(value, dict)
+                        or set(value) != {"state", "value", "fresh"}
+                        or value["fresh"] is not True
+                        or value["state"] != "ready"
+                    ):
                         raise ExportError(
                             "computed value is stale", code="export_computed_cell_not_ready"
                         )
@@ -269,7 +281,7 @@ async def export_plugin_data(
         )
     )
     return await ExportService(
-        query_port=ScopedExportQuery(client, scope),
+        query_port=ScopedExportQuery(client, scope, profile),
         profiles={params.collection: profile},
         files=files.bound_run(scope.run_id),
         output_columns=scope.fields,

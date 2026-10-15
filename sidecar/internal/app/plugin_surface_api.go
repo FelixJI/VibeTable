@@ -24,6 +24,9 @@ import (
 
 const pluginSurfaceAPIPath = "/api/vibetable/v3/plugins/surface"
 
+// Host-only base64 stage envelope; all other methods retain the ordinary 1 MiB limit.
+const pluginSurfaceAttachmentStageRequestBytes = 2 * maxMutationRequestBytes
+
 var pluginSurfaceStorageKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // This seam is session-authenticated Host-only; no Product RPC registration exists.
@@ -112,9 +115,9 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 
 func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, epoch uint64, gate businessWriteGate, ioPorts ...*pluginSurfaceIO) {
 	r.POST(pluginSurfaceAPIPath, func(event *core.RequestEvent) error {
-		raw, err := io.ReadAll(io.LimitReader(event.Request.Body, maxMutationRequestBytes+1))
+		raw, err := io.ReadAll(io.LimitReader(event.Request.Body, pluginSurfaceAttachmentStageRequestBytes+1))
 		var input pluginSurfaceAPIRequest
-		if err != nil || len(raw) > maxMutationRequestBytes || decodePluginParams(raw, &input) != nil || input.SessionEpoch != epoch || epoch == 0 || input.RequestID == "" {
+		if err != nil || len(raw) > pluginSurfaceAttachmentStageRequestBytes || decodePluginParams(raw, &input) != nil || (len(raw) > maxMutationRequestBytes && input.Method != "attachment.stage") || input.SessionEpoch != epoch || epoch == 0 || input.RequestID == "" {
 			return event.JSON(http.StatusBadRequest, map[string]any{"code": "plugin_capability_invalid"})
 		}
 		budget := 15 * time.Second

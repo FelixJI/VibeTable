@@ -13,6 +13,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
 {
     internal const string Contract = "vibetable.plugin-api.v1";
     private const int MaxBytes = 1024 * 1024;
+    // Host-only attachment.stage base64 envelope; ordinary frame/HTTP requests stay at MaxBytes.
+    internal const int AttachmentStageRequestBytes = 2 * MaxBytes;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
     private readonly PluginSurfaceSessionManager _surfaces;
@@ -398,7 +400,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             payload["invocationContext"] = JsonSerializer.SerializeToNode(new
             { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json);
         byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString());
-        if (bytes.Length > (method == "attachment.stage" ? 2 * MaxBytes : MaxBytes)) throw Error("plugin_message_too_large");
+        if (bytes.Length > (method == "attachment.stage" ? AttachmentStageRequestBytes : MaxBytes)) throw Error("plugin_message_too_large");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(generation.Context.Origin, "/api/vibetable/v3/plugins/surface"));
         request.Headers.Add(generation.Context.SessionHeaderName, generation.Context.SessionSecret);
         request.Content = new ByteArrayContent(bytes);

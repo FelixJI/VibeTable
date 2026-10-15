@@ -55,6 +55,30 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
+    public async Task AttachmentStagePreservesOneMiBFileWithinItsHostOnlyEncodedBudget()
+    {
+        await using var f = new Fixture();
+        byte[] bytes = new byte[1024 * 1024];
+        File.WriteAllBytes(f.Source, bytes);
+        const string parameters = "{\"collection\":\"orders\",\"recordId\":\"r1\",\"fieldId\":\"files\",\"expectedDigest\":\"guard\",\"removeAttachmentIds\":[],\"addFile\":true}";
+        var preview = await f.Call("attachments.previewChange", parameters);
+        Assert.IsTrue(preview.TryGetProperty("result", out _), preview.GetRawText());
+        var stage = f.Http.Calls.Single(call => call.GetProperty("method").GetString() == "attachment.stage");
+        Assert.AreEqual(bytes.Length, Convert.FromBase64String(stage.GetProperty("request").GetProperty("base64").GetString()!).Length);
+        int wireBytes = Encoding.UTF8.GetByteCount(stage.GetRawText());
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "contracts", "plugin-surface-api.v1.json"))) directory = directory.Parent;
+        Assert.IsNotNull(directory);
+        using var contract = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory.FullName, "contracts", "plugin-surface-api.v1.json")));
+        int encodedLimit = contract.RootElement.GetProperty("limits").GetProperty("attachmentStageRequestBytes").GetInt32();
+        Assert.AreEqual(PluginSurfaceApi.AttachmentStageRequestBytes, encodedLimit);
+        Assert.IsTrue(wireBytes > 1024 * 1024 && wireBytes <= encodedLimit);
+        File.WriteAllBytes(f.Source, new byte[1024 * 1024 + 1]);
+        Assert.IsTrue((await f.Call("attachments.previewChange", parameters)).TryGetProperty("error", out _));
+        Assert.AreEqual(1, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "attachment.stage"));
+    }
+
+    [TestMethod]
     public async Task AttachmentsReplaceInternalNamesAndTicketsWithSurfaceHandles()
     {
         await using var f = new Fixture();

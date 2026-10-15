@@ -491,6 +491,11 @@ Go 临时计划仍受固定 TTL 与容量限制。常用拒绝码还有 `plugin_
 新增 DataIO principal 只存在于 Host-only 任务组合和现有鉴权 surface HTTP 端口；没有新增
 Product RPC 或旧 Worker 能力。API 1.x/2.x 的 grant、任务与读取行为继续使用原契约。
 
+内部 Host-only `attachment.stage` 的完整 JSON/base64 编码请求上限为 2 MiB，解码后的附件仍限 1 MiB；
+普通 frame 与其它 surface HTTP 请求保持 1 MiB。此编码预算不授予插件更大普通消息能力。
+导出仅按 Go 授权 profile 的 `dataType=formula/lookup` 解包计算结果，且要求 ready/fresh；
+普通 JSON 字段即使恰含 state/value/fresh 三键，也完整序列化原值。
+
 ### 无 Worker 页面的 UI 公共服务
 
 `createSurfaceClient(token)` 同时使用当前 frame 的原生数据通道和可信父页

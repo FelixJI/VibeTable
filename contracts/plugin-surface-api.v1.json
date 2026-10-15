@@ -56,7 +56,8 @@
     "pluginWorkbookExpandedBytes": 134217728,
     "pluginWorkbookEntries": 4096,
     "pluginImportPlansTotal": 128,
-    "ownedDataIoCancelAcknowledgements": 8
+    "ownedDataIoCancelAcknowledgements": 8,
+    "attachmentStageRequestBytes": 2097152
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "notifications": [
@@ -121,7 +122,8 @@
   "attachments": {
     "handles": "surface-owned opaque references; no raw staged handles, stored names or download tickets",
     "write": "Host-native file selection, staged principal/record/field/file binding, canonical setAttachments and native confirmation",
-    "read": "current Go installation and field grant checked for each bounded block"
+    "read": "current Go installation and field grant checked for each bounded block",
+    "stageTransport": "Host-only attachment.stage JSON envelope <=2 MiB including base64; decoded file <=1 MiB; all other surface HTTP requests <=1 MiB"
   },
   "ui": {
     "transport": "trusted parent; existing vibetable.plugin-surface.v1 action service=ui; never a Product RPC",
