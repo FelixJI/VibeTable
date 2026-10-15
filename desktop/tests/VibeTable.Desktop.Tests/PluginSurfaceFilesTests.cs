@@ -115,6 +115,130 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
+    public async Task NativeTaskLimitPreStartSubmitFailureSettlesRemovedPlanResources()
+    {
+        await using var f = new Fixture();
+        var binding = f.Tasks.CaptureNative();
+        Assert.IsNotNull(binding);
+        for (int i = 0; i < 64; i++)
+            Assert.IsTrue(f.Tasks.AdmitTask(binding, new PluginRuntimeTaskSnapshot(
+                $"block-task-{i}", $"block-run-{i}", "com.example.files", "1.0.0", "save", f.Surface.ProjectKey,
+                "orders", 1, "write", "running", false, null, null, null)));
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        string grantId = f.IoGrant!; string runId = f.IoRun!;
+        var rejected = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("plugin_concurrency_limit", rejected.GetProperty("error").GetProperty("code").GetString(), rejected.GetRawText());
+        // The removed plan's import source is settled: reservation released, Go plan rejected, file grant revoked.
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+            && call.GetProperty("request").GetProperty("token").GetString() == "internal-go-token"
+            && call.GetProperty("request").GetProperty("outcome").GetString() == "rejected"),
+            "pre-start submit failure must settle the import plan");
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "audit.start"), "no business run may start");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+            JsonSerializer.SerializeToElement(new { grantId, runId }), CancellationToken.None));
+        Assert.AreEqual("plugin_plan_stale", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId })))
+            .GetProperty("error").GetProperty("code").GetString());
+        // The surface file slot is reusable: a fresh import still hands off a plan.
+        string retry = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.IsNotNull((await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId = retry })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString());
+    }
+
+    [TestMethod]
+    public async Task SessionSwitchPreStartSubmitFailureSettlesRemovedPlanResources()
+    {
+        await using var f = new Fixture();
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        f.Authority.Transition(null);
+        var stale = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("plugin_session_stale", stale.GetProperty("error").GetProperty("code").GetString(), stale.GetRawText());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+            && call.GetProperty("request").GetProperty("token").GetString() == "internal-go-token"
+            && call.GetProperty("request").GetProperty("outcome").GetString() == "rejected"),
+            "session switch after plan removal must settle the import plan");
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "audit.start"), "no business run may start");
+        Assert.AreEqual("plugin_plan_stale", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId })))
+            .GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public async Task OneShotTaskNotificationFailureConvergesNativeTaskAndSettlesPlan()
+    {
+        await using var f = new Fixture(); f.FailNextTaskNotification = true;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        var reply = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("plugin_capability_invalid", reply.GetProperty("error").GetProperty("code").GetString(), reply.GetRawText());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+            && call.GetProperty("request").GetProperty("token").GetString() == "internal-go-token"
+            && call.GetProperty("request").GetProperty("outcome").GetString() == "rejected"),
+            "notification failure after registration must still settle the import plan");
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "audit.start"), "no business run may start");
+        // The admitted task converged to a terminal state; it cannot hold an active global task slot.
+        Assert.IsNotNull(f.LastTaskId);
+        Assert.IsTrue(f.Tasks.TryGetTask(f.LastTaskId!, out var snapshot));
+        Assert.AreEqual("failed", snapshot.State);
+        Assert.AreEqual("plugin_plan_stale", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId })))
+            .GetProperty("error").GetProperty("code").GetString());
+        // The freed slot keeps ordinary submits working; no business replay of the failed plan.
+        string plain = (await f.Call("mutation.preview", JsonSerializer.Serialize(new
+        { collection = "orders", operations = new object[] { new { kind = "create", values = new { name = "new" } } } })))
+            .GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId = plain })))
+            .GetProperty("result").GetProperty("status").GetString());
+    }
+
+    [TestMethod]
+    public async Task PersistentTaskNotificationFailureStillSettlesPlanAndConvergesTask()
+    {
+        await using var f = new Fixture(); f.FailTaskNotifications = true;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        var reply = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("plugin_capability_invalid", reply.GetProperty("error").GetProperty("code").GetString(), reply.GetRawText());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+            && call.GetProperty("request").GetProperty("token").GetString() == "internal-go-token"
+            && call.GetProperty("request").GetProperty("outcome").GetString() == "rejected"),
+            "persistent notification failure must not mask plan cleanup");
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "audit.start"), "no business run may start");
+        // FinishNative converged the task before its own (failing) terminal notification.
+        Assert.IsNotNull(f.LastTaskId);
+        Assert.IsTrue(f.Tasks.TryGetTask(f.LastTaskId!, out var snapshot));
+        Assert.AreEqual("failed", snapshot.State);
+    }
+
+    [TestMethod]
+    public async Task SessionSwitchPreStartSubmitFailureDropsStagedAttachments()
+    {
+        await using var f = new Fixture();
+        const string parameters = "{\"collection\":\"orders\",\"recordId\":\"r1\",\"fieldId\":\"files\",\"expectedDigest\":\"guard\",\"removeAttachmentIds\":[],\"addFile\":true}";
+        var preview = await f.Call("attachments.previewChange", parameters);
+        Assert.IsTrue(preview.TryGetProperty("result", out _), preview.GetRawText());
+        string planId = preview.GetProperty("result").GetProperty("planId").GetString()!;
+        string handle = f.Http.Calls.Single(call => call.GetProperty("method").GetString() == "attachment.stage")
+            .GetProperty("request").GetProperty("handle").GetString()!;
+        f.Authority.Transition(null);
+        var stale = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("plugin_session_stale", stale.GetProperty("error").GetProperty("code").GetString(), stale.GetRawText());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "attachment.drop"
+            && call.GetProperty("request").GetProperty("handles")[0].GetString() == handle),
+            "pre-start submit failure must drop staged attachments");
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "audit.start"), "no business run may start");
+        Assert.AreEqual("plugin_plan_stale", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId })))
+            .GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [TestMethod]
     [DataRow(1024 * 1024, 0)]
     [DataRow(800 * 1024, 251)]
     [DataRow(1024 * 1024, 251)]
@@ -294,6 +418,8 @@ public sealed class PluginSurfaceFilesTests
         internal PluginSurfaceSession Surface { get; }
         internal HostSessionFileBroker Broker { get; }
         internal PluginSurfaceApi Api { get; }
+        internal HostPluginTaskRegistry Tasks => _tasks;
+        internal ProductAuthorityEpoch Authority => _authority;
         internal Peer Http { get; } = new();
         internal bool CancelPick;
         internal Action? AfterPick;
@@ -303,6 +429,9 @@ public sealed class PluginSurfaceFilesTests
         internal bool NativeConfirmation;
         internal bool IoRunning;
         internal int IoCancels;
+        internal bool FailTaskNotifications;
+        internal bool FailNextTaskNotification;
+        internal string? LastTaskId;
         private int IoStarts;
         internal string? IoGrant;
         internal string? IoRun;
@@ -344,6 +473,11 @@ public sealed class PluginSurfaceFilesTests
         public Task PreviewAttachmentAsync(string fullPath) => throw new NotSupportedException();
         public void PostNotification(string type, object? payload)
         {
+            if (type == "plugin.task.changed" && payload is PluginEventEnvelope taskEnvelope)
+            {
+                LastTaskId = taskEnvelope.EntityId;
+                if (FailTaskNotifications || FailNextTaskNotification) { FailNextTaskNotification = false; throw new InvalidOperationException("notification sink failed"); }
+            }
             if (type != "plugin.interaction.requested" || payload is not PluginEventEnvelope envelope) return;
             var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
             NativeConfirmation = _tasks.RequiresNativeConfirmation(interaction.RunId);

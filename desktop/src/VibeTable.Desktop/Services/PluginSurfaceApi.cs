@@ -231,16 +231,52 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "mutation.submit":
                     {
                         string handle = ReadHandle(request.Params, "planId");
-                        if (!state.Plans.TryRemove(handle, out var plan) || plan.Expires < DateTimeOffset.UtcNow) throw Error("plugin_plan_stale");
-                        var binding = _tasks.CaptureNative() ?? throw Error("plugin_session_stale");
-                        if (binding.Context != surface.Context) throw Error("plugin_session_stale");
+                        if (!state.Plans.TryRemove(handle, out var plan) || plan.Expires < DateTimeOffset.UtcNow)
+                        {
+                            // The admission sweep can miss a plan expiring during this request;
+                            // once removed here nothing else owns its import source or stages.
+                            ReleaseImportSource(plan?.Source);
+                            if (plan?.Attachments is not null) TrackCleanup(DropAttachmentStagesAsync(surface, plan.Attachments));
+                            throw Error("plugin_plan_stale");
+                        }
                         string taskId = $"plugin-task-{Guid.NewGuid():N}";
                         string runId = $"plugin-run-{Guid.NewGuid():N}";
-                        var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
-                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
-                        var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
-                        var task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless" || plan.Source is not null || plan.Attachments is not null);
-                        _reply.PostNotification("plugin.task.changed", task.Envelope);
+                        HostPluginTaskBinding binding;
+                        (CancellationToken Token, PluginEventEnvelope Envelope) task;
+                        ProductSidecarGenerationSnapshot auditGeneration;
+                        bool registered = false;
+                        try
+                        {
+                            binding = _tasks.CaptureNative() ?? throw Error("plugin_session_stale");
+                            if (binding.Context != surface.Context) throw Error("plugin_session_stale");
+                            var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
+                                plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
+                            auditGeneration = _generation() ?? throw Error("plugin_session_stale");
+                            task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless" || plan.Source is not null || plan.Attachments is not null);
+                            registered = true;
+                            _reply.PostNotification("plugin.task.changed", task.Envelope);
+                        }
+                        catch (Exception error)
+                        {
+                            // The plan is already removed from the surface and no business run
+                            // started; without the execution finally below nothing else would
+                            // release its reserved import source or staged attachments.
+                            await SettleImportSourceAsync(surface, plan.Source, "failed");
+                            await DropAttachmentStagesAsync(surface, plan.Attachments);
+                            if (registered)
+                            {
+                                // FinishNative converges the admitted task to a terminal state
+                                // before its envelope is posted; a failing terminal notification
+                                // must not mask the original error or the cleanup above.
+                                try
+                                {
+                                    Finish(taskId, "failed", error: SafeError(error is PluginSurfacePolicyException policy ? policy.Code
+                                        : error is SurfaceAuthorityException authority ? authority.Code : "plugin_request_failed"));
+                                }
+                                catch (Exception notifyError) { System.Diagnostics.Trace.TraceWarning($"Plugin task terminal notification failed: {notifyError}"); }
+                            }
+                            throw;
+                        }
                         using var operation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, task.Token);
                         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                         _writes[runId] = new(binding.Context, completion);
