@@ -218,10 +218,11 @@ func run(ctx context.Context, config qualificationConfig) error {
 	stopSample := watchFirstScreen(maximumFirstScreen)
 	result, queryErr := engine.Query(ctx, request)
 	firstScreen := time.Since(started)
-	stack := stopSample()
+	sample := stopSample()
 	if firstScreen > maximumFirstScreen {
-		fmt.Fprintf(os.Stderr, "first-screen diagnostic: elapsed=%s budget=%s stackBytes=%d\n%s\n",
-			firstScreen, maximumFirstScreen, len(stack), stack)
+		fmt.Fprintf(os.Stderr, "first-screen diagnostic: elapsed=%s budget=%s sampled=%t triggerLag=%s stackDuration=%s stackBytes=%d\n%s\n",
+			firstScreen, maximumFirstScreen, sample.Sampled, sample.TriggerLag,
+			sample.StackDuration, len(sample.Stack), sample.Stack)
 	}
 	if queryErr != nil || len(result.Hits) != 1 {
 		return fmt.Errorf("first screen result invalid: hits=%d err=%w", len(result.Hits), queryErr)
