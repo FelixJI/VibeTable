@@ -2,6 +2,48 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { installApplication, openApplication, nativePluginInput } from "./plugin_applications.mjs";
 
+// Location-less CSP messages must match this attack's exact URL and captured
+// directive; each fetch produces one Connecting message and one Fetch message.
+export function selectExpectedPluginSecurityConsoleEntries(entries, probes, start) {
+  if (!Number.isInteger(start) || start < 0 || start > entries.length) {
+    throw new Error("invalid plugin security diagnostics start");
+  }
+  const claimed = [];
+  const used = new Set();
+  const attack = probes?.attack;
+  const violated = (directive, blocked) => probes?.violations?.some(
+    item => item.directive === directive && item.blocked === blocked);
+  for (const entry of entries.slice(start)) {
+    const text = entry.text.trim();
+    let key;
+    if (entry.type === "error") {
+      for (const url of attack?.fetchTargets ?? []) {
+        if (!violated("connect-src", url)) continue;
+        if (text === `Connecting to '${url}' violates the following Content Security Policy directive: "connect-src 'none'". The action has been blocked.`) key = `connect:${url}`;
+        if (text === `Fetch API cannot load ${url}. Refused to connect because it violates the document's Content Security Policy.`) key = `fetch:${url}`;
+      }
+      if (attack?.scriptTarget && violated("script-src-elem", attack.scriptTarget)
+        && text === `Loading the script '${attack.scriptTarget}' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.`) key = "script";
+      if (violated("script-src-elem", "inline")
+        && text.startsWith("Executing inline script violates the following Content Security Policy directive 'script-src 'self''.")
+        && text.endsWith("is required to enable inline execution. The action has been blocked.")) key = "inline";
+      if (attack?.traversalUrl && entry.location?.url === attack.traversalUrl
+        && text === "Failed to load resource: the server responded with a status of 403 (Forbidden)") key = "traversal";
+      const navigation = /^Unsafe attempt to initiate navigation for frame with URL '([^']+)' from frame with URL '([^']+)'\. The frame attempting navigation of the top-level window is sandboxed, but the flag of 'allow-top-navigation' or 'allow-top-navigation-by-user-activation' is not set\.$/.exec(text);
+      if (navigation && navigation[1].startsWith("https://app.vibetable.local/")
+        && navigation[2] === attack?.selfDocumentUrl) key = "top-navigation";
+    }
+    if (entry.type === "warning" && attack?.selfDocumentUrl
+      && entry.location?.url === attack.selfDocumentUrl
+      && text === "Download is disallowed. The frame initiating or instantiating the download is sandboxed, but the flag ‘allow-downloads’ is not set. See https://www.chromestatus.com/feature/5706745674465280 for more details.") key = "download";
+    if (key && !used.has(key)) {
+      used.add(key);
+      claimed.push(entry);
+    }
+  }
+  return claimed;
+}
+
 export function installContrastRestoreProjectionCaptureInPage() {
   const webview = window.chrome.webview;
   window.__vibetableE2EBridgeCapture?.release?.();
@@ -47,6 +89,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const originalToken = await frame.evaluate(() => window.name);
   const catalog = await helpers.rawBridgeRequest(page, "plugin.catalog.list", { projectKey: opened.payload.projectKey });
   const other = catalog.payload.find(item => item.pluginId === "com.vibetable.e2e.application-b").manifest.actions[0].surfaceSrc;
+  const diagnosticStart = runtime.beginPluginSecurityDiagnostics();
   const probes = await frame.evaluate(async otherSrc => {
     const violations = [];
     document.addEventListener("securitypolicyviolation", event => violations.push({ directive: event.effectiveDirective, blocked: event.blockedURI }));
@@ -60,8 +103,10 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
       element.onerror = () => { element.remove(); resolve("blocked"); };
       element.src = uri; document.body.appendChild(element);
     });
-    const crossScript = await load("script", otherSrc.replace("index.html", "app.js"));
-    const traversal = await load("script", location.origin + "/%252e%252e/ui/app.js");
+    const scriptTarget = otherSrc.replace("index.html", "app.js");
+    const traversalUrl = location.origin + "/%252e%252e/ui/app.js";
+    const crossScript = await load("script", scriptTarget);
+    const traversal = await load("script", traversalUrl);
     const inline = document.createElement("script"); inline.textContent = "window.__inlineForged = true"; document.body.appendChild(inline); inline.remove();
     let top, objects;
     try { parent.location.href = "https://blocked.invalid/482-navigation"; top = "accepted"; } catch { top = "blocked"; }
@@ -71,7 +116,11 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
     parent.postMessage({ contract: "vibetable.plugin-surface.v1", surfaceToken: "forged-token", event: "close", payload: {} }, "https://app.vibetable.local");
     const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(new Blob(["forbidden download"])); anchor.download = "forbidden.txt"; document.body.appendChild(anchor); anchor.click(); anchor.remove();
     await new Promise(resolve => setTimeout(resolve, 300));
-    return { network, crossScript, traversal, inline: window.__inlineForged === true, top, objects, fake, violations };
+    return { network, crossScript, traversal, inline: window.__inlineForged === true, top, objects, fake, violations,
+      attack: {
+        fetchTargets: ["https://blocked.invalid/482-probe", otherSrc, location.origin + "/ui/app.js"],
+        scriptTarget, traversalUrl, selfDocumentUrl: location.href.split("#")[0],
+      } };
   }, other);
   recorder.check("real WebView CSP rejects all direct fetch, cross-plugin script and inline execution",
     probes.network.every(item => item.accepted === false) && probes.crossScript === "blocked" && probes.inline === false
@@ -82,7 +131,7 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   recorder.check("forged parent surface message does not close the application",
     await page.getByTestId("plugin-app-viewport").isVisible()
       && (await frame.evaluate(() => call("context.read"))).collection === table.tableId);
-  await runtime.acknowledgePluginSecurityDiagnostics(recorder, probes);
+  await runtime.acknowledgePluginSecurityDiagnostics(recorder, probes, diagnosticStart);
   await nativePluginInput(runtime, "observe", "plugin-manage", "contrast").then(result =>
     recorder.check("native chrome remains visible over the real security test package", result.status === "completed", { result }));
   for (const mode of ["dark", "light"]) {

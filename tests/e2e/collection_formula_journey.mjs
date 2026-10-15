@@ -1,6 +1,18 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+export async function openCollectionLookupEditor(page, openDrawer, helpers) {
+  // Lookup starts loading after schema.getTable returns; an initially enabled
+  // entry can become disabled between Playwright's actionability check and click.
+  await helpers.beginBridgeMessageCapture(page, ["schema.describe", "operation.failed"]);
+  await openDrawer();
+  const catalog = await helpers.waitForCapturedBridgeMessage(page, 30_000);
+  if (catalog.type !== "schema.describe" || catalog.payload?.error) {
+    throw new Error(`collection lookup catalog failed: ${JSON.stringify(catalog)}`);
+  }
+  await page.getByTestId("lookup-editor-entry").click();
+}
+
 // Scenario 37 (#395): the cel-v2 collection formula journey through the real
 // product UI. TABLE({表}) 与 CurrentValue.{字段} 通过公式工作台的来源表/来源
 // 字段选择器插入并绑定稳定 ID，四条正式表达式（同合同且已发货 SUMIF、COUNTIF、
@@ -158,10 +170,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     await page.getByTestId("toolbar-field-manager").click();
     await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
     await page.getByTestId("field-display-name").locator("input").fill(displayName);
-    const typeSelect = page.getByTestId("field-logical-type");
-    await typeSelect.locator(".n-base-selection").click();
-    await typeSelect.locator("input").fill(typeLabel);
-    await page.locator(".n-base-select-option:visible").getByText(typeLabel, { exact: true }).first().click();
+    await selectVisibleNOption(page, "field-logical-type", typeLabel);
   };
   const waitForFormulaValid = async () => {
     await page.getByTestId("formula-field-editor").getByRole("alert")
@@ -294,8 +303,8 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
   );
 
   // ---- 同条件 Lookup 完整集合对照（条件筛选 + SUM，真实编辑器） ----
-  await openNewComputedFieldDrawer("\u5bf9\u7167\u53d1\u8d27\u603b\u989d", "\u67e5\u627e\u5f15\u7528");
-  await page.getByTestId("lookup-editor-entry").click();
+  await openCollectionLookupEditor(page, () =>
+    openNewComputedFieldDrawer("\u5bf9\u7167\u53d1\u8d27\u603b\u989d", "\u67e5\u627e\u5f15\u7528"), helpers);
   await selectVisibleNOption(page, "lookup-mode", "\u6761\u4ef6\u7b5b\u9009\uff08\u6309\u6761\u4ef6\u67e5\u8be2\u6765\u6e90\u8868\uff09");
   await selectVisibleNOption(page, "lookup-condition-source-table", SHIP_TABLE);
   await selectVisibleNOption(page, "lookup-target-field", "\u91d1\u989d");

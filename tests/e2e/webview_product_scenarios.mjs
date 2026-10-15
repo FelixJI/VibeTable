@@ -5,7 +5,7 @@ import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
 import { runPluginApplications, runHeadlessBudget } from "./plugin_applications.mjs";
-import { runApplicationSecurity } from "./plugin_application_security.mjs";
+import { runApplicationSecurity, selectExpectedPluginSecurityConsoleEntries } from "./plugin_application_security.mjs";
 import { runPluginSurfaceApi } from "./plugin_surface_api.mjs";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -13029,17 +13029,19 @@ async function main() {
           }
           throw new Error("fresh product renderer did not arrive within recovery budget");
         },
-        async acknowledgePluginSecurityDiagnostics(checks, probes) {
+        beginPluginSecurityDiagnostics() {
+          if (args.scenario !== "49-plugin-application-security") throw new Error("plugin security diagnostics scope not authorized");
+          return consoleEntries.length;
+        },
+        async acknowledgePluginSecurityDiagnostics(checks, probes, start) {
           if (args.scenario !== "49-plugin-application-security" || !probes.violations.length) throw new Error("security diagnostics require actual plugin CSP violations");
-          const expected = consoleEntries.filter(entry => (/content security policy|sandboxed|unsafe attempt|blocked|refused/i.test(entry.text)
-            || (entry.location?.url?.includes("%252e") && /Failed to load resource.*403/i.test(entry.text)))
-            && (entry.location?.url?.includes(".plugins.vibetable.local") || entry.text.includes("482-probe") || entry.text.includes("482-navigation")));
+          const expected = selectExpectedPluginSecurityConsoleEntries(consoleEntries, probes, start);
           result.expectedPluginSecurityDiagnostics = expected;
           for (const entry of expected) consoleEntries.splice(consoleEntries.indexOf(entry), 1);
           const attempts = network.filter(entry => entry.url === "https://blocked.invalid/482-probe");
           if (attempts.length) {
             checks.check("explicit external probe was rejected by connect-src before HTTP", probes.network.some(entry => entry.uri === "https://blocked.invalid/482-probe" && !entry.accepted)
-              && probes.violations.some(entry => entry.directive === "connect-src" && entry.blocked === "https://blocked.invalid"));
+              && probes.violations.some(entry => entry.directive === "connect-src" && entry.blocked === "https://blocked.invalid/482-probe"));
             result.expectedBlockedExternalProbe = attempts;
             for (const entry of attempts) network.splice(network.indexOf(entry), 1);
           }
