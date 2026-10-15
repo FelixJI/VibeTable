@@ -40,6 +40,8 @@ export interface SurfaceCapabilities {
     /** Requests one Host confirmation and commit. The plugin never supplies an approval. */
     submit(planId: string, signal?: AbortSignal): Promise<SurfaceMutationOutcome>;
   };
+  /** Current visible application only. No print completion/cancellation receipt exists. */
+  readonly output: { print(signal?: AbortSignal): Promise<{ readonly opened: true }> };
   dispose(): void;
 }
 
@@ -161,6 +163,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe },
     storage: { get: key => call("storage.get", { key }), set: (key, value) => call("storage.set", { key, value }), delete: key => call("storage.delete", { key }) },
     mutation: { preview: plan => call("mutation.preview", plan), submit: (planId, signal) => call("mutation.submit", { planId }, signal) },
+    output: { print: signal => call("output.print", {}, signal) },
     dispose: () => {
       if (closed) return;
       closed = true;

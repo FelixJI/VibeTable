@@ -30,6 +30,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     internal static readonly TimeSpan HeadlessExecutionBudget = TimeSpan.FromMinutes(2);
     private long _rendererGeneration;
     private CoreWebView2? _currentCore;
+    private readonly Dictionary<string, (CoreWebView2Frame Frame, long Generation)> _pluginFrames = new(StringComparer.Ordinal);
     private readonly WebMessageRouter _router;
     private readonly PluginWebViewResourceHost _pluginResources;
     private readonly TestModeReadinessWriter? _readiness;
@@ -103,6 +104,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
     {
         _webView = webView;
         _currentCore = null;
+        _pluginFrames.Clear();
         Interlocked.Increment(ref _rendererGeneration);
     }
 
@@ -118,6 +120,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         Realtime.Retire();
         Interlocked.Increment(ref _rendererGeneration);
         _currentCore = null;
+        _pluginFrames.Clear();
         lock (_loadGate)
         {
             _loadTask = null;
@@ -564,6 +567,44 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         }
     }
 
+    internal async Task<bool> PreparePluginPrintAsync(PluginSurfaceSession surface, string preparationId, CancellationToken token)
+    {
+        CoreWebView2? core = _currentCore;
+        long generation = RendererGeneration;
+        if (core is null || !WebViewNavigationPolicy.IsAppNavigation(core.Source)
+            || !_pluginFrames.TryGetValue(surface.SurfaceToken, out var frame) || frame.Generation != generation) return false;
+        // Fixed layout-only probe in the actual frame, never caller HTML/selectors or cross-frame data.
+        string layout = await frame.Frame.ExecuteScriptAsync(
+            "({source:location.href,height:Math.ceil(Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight??0))})").WaitAsync(token);
+        int pixels = ReadPluginPrintHeight(surface.DocumentUri, layout);
+        if (generation != RendererGeneration || !ReferenceEquals(core, _currentCore)) return false;
+        string script = $"globalThis.__vibetablePluginPrint?.prepare({JsonSerializer.Serialize(surface.SurfaceToken)}, {JsonSerializer.Serialize(preparationId)}, {pixels}) === true";
+        string prepared = await core.ExecuteScriptAsync(script).WaitAsync(token);
+        return prepared == "true" && generation == RendererGeneration && ReferenceEquals(core, _currentCore);
+    }
+
+    internal static int ReadPluginPrintHeight(Uri expected, string layout)
+    {
+        using var document = JsonDocument.Parse(layout);
+        if (document.RootElement.ValueKind != JsonValueKind.Object
+            || !document.RootElement.TryGetProperty("source", out var source) || source.ValueKind != JsonValueKind.String
+            || !Uri.TryCreate(source.GetString(), UriKind.Absolute, out var current)
+            || current.GetLeftPart(UriPartial.Query) != expected.GetLeftPart(UriPartial.Query))
+            throw new PluginSurfacePolicyException("plugin_print_denied", "插件打印来源已失效。");
+        if (!document.RootElement.TryGetProperty("height", out var height) || height.ValueKind != JsonValueKind.Number
+            || !height.TryGetInt32(out int pixels)
+            || pixels < 1 || pixels > 100_000)
+            throw new PluginSurfacePolicyException("plugin_print_limit", "插件打印内容超出布局预算。");
+        return pixels;
+    }
+
+    internal async Task ReleasePluginPrintAsync(string preparationId)
+    {
+        if (_currentCore is not { } core) return;
+        try { await core.ExecuteScriptAsync($"globalThis.__vibetablePluginPrint?.release({JsonSerializer.Serialize(preparationId)})"); }
+        catch (Exception) { /* A retired renderer has no printable prepared path. */ }
+    }
+
     private void OnPluginFrameCreated(object? sender, CoreWebView2FrameCreatedEventArgs args)
     {
         if (!ReferenceEquals(sender, _currentCore)) return;
@@ -573,6 +614,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         string token = frame.Name;
         if (!_pluginResources.TryGetSurface(token, out var surface) || surface is null || surface.ApiVersion != "3.x") return;
         string source = surface.DocumentUri.AbsoluteUri;
+        _pluginFrames[token] = (frame, generation);
         bool active = true;
         DispatcherTimer? headlessDeadline = null;
         Action<string>? headlessRetired = null;
@@ -618,6 +660,7 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         };
         frame.Destroyed += (_, _) =>
         {
+            if (_pluginFrames.TryGetValue(token, out var tracked) && ReferenceEquals(tracked.Frame, frame)) _pluginFrames.Remove(token);
             headlessDeadline?.Stop();
             if (headlessRetired is not null) _pluginResources.SurfaceClosed -= headlessRetired;
             active = false;

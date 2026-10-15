@@ -195,6 +195,8 @@ internal sealed class DashboardNativeOutputController
         }
     }
 
+    internal void ShowPluginPrintDialog() => _host.ShowPrintDialog();
+
     private Task PrintAsync(RoutedWebRequest request)
     {
         if (request.Payload.ValueKind != JsonValueKind.Object

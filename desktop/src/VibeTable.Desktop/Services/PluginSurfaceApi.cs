@@ -21,6 +21,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private readonly Func<ProductSidecarGenerationSnapshot, Func<bool>, bool>? _subscriptionSource;
     private readonly IWebReplySink _reply;
     private readonly HttpClient _http;
+    private readonly Func<PluginSurfaceSession, string, CancellationToken, Task<bool>>? _preparePrint;
+    private readonly Action? _showPrint;
+    private readonly Func<string, Task>? _releasePrint;
     private readonly ConcurrentDictionary<string, SurfaceState> _states = new(StringComparer.Ordinal);
     private sealed record NativeWrite(PluginProjectContext Context, TaskCompletionSource Completion);
     private readonly ConcurrentDictionary<string, NativeWrite> _writes = new(StringComparer.Ordinal);
@@ -29,8 +32,12 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         Func<ProductSidecarGenerationSnapshot?> generation,
         IWebReplySink reply,
         HttpMessageHandler? handler = null,
-        Func<ProductSidecarGenerationSnapshot, Func<bool>, bool>? subscriptionSource = null)
+        Func<ProductSidecarGenerationSnapshot, Func<bool>, bool>? subscriptionSource = null,
+        Func<PluginSurfaceSession, string, CancellationToken, Task<bool>>? preparePrint = null,
+        Action? showPrint = null,
+        Func<string, Task>? releasePrint = null)
     {
+        _preparePrint = preparePrint; _showPrint = showPrint; _releasePrint = releasePrint;
         _surfaces = surfaces; _tasks = tasks; _generation = generation; _reply = reply;
         _subscriptionSource = subscriptionSource;
         _surfaces.Closed += RetireState;
@@ -42,6 +49,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         string? requestId = null;
         bool committing = false;
         bool committed = false;
+        bool printOpened = false;
         SurfaceState? state = null;
         ApiRequest? request = null;
         bool admitted = false;
@@ -91,6 +99,39 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             object? result;
             switch (request.Method)
             {
+                case "output.print":
+                    {
+                        if (request.Params.ValueKind != JsonValueKind.Object || request.Params.EnumerateObject().Any())
+                            throw Error("plugin_capability_invalid");
+                        if (surface.Presentation != "application") throw Error("plugin_print_denied");
+                        if (_preparePrint is null || _showPrint is null || _releasePrint is null) throw Error("plugin_api_unsupported");
+                        var generation = _generation() ?? throw Error("plugin_session_stale");
+                        string preparationId = Guid.NewGuid().ToString("N");
+                        bool printInvoked = false;
+                        try
+                        {
+                            if (!await _preparePrint(surface, preparationId, deadline.Token)) throw Error("plugin_print_denied");
+                            // Preparation is asynchronous; recheck Go installation authority after it, before native output.
+                            await CallAsync(surface, "context.read", JsonSerializer.SerializeToElement(new { }), deadline.Token);
+                            deadline.Token.ThrowIfCancellationRequested();
+                            if (!generation.TryUseCurrent(() => _surfaces.TryUseCurrent(surface, () =>
+                            {
+                                deadline.Token.ThrowIfCancellationRequested();
+                                printInvoked = true;
+                                try { _showPrint(); }
+                                catch (Exception) { throw Error("plugin_print_failed"); }
+                                printOpened = true;
+                                return true;
+                            }))) throw Error("plugin_session_stale");
+                        }
+                        finally
+                        {
+                            // A throwing native call has unknown dialog state; keep its isolated print range.
+                            if (!printInvoked) await _releasePrint(preparationId);
+                        }
+                        result = new { opened = true };
+                        break;
+                    }
                 case "context.read":
                     {
                         JsonElement approved = await CallAsync(surface, request.Method, request.Params, deadline.Token);
@@ -223,7 +264,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                     }
                 default: throw Error("plugin_api_unsupported");
             }
-            if (!committed) CurrentSurface(frameToken, source);
+            if (!committed && !printOpened) CurrentSurface(frameToken, source);
             string response = Reply(requestId, result);
             if (Encoding.UTF8.GetByteCount(response) > MaxBytes) throw Error("plugin_message_too_large");
             return response;

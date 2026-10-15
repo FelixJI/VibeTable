@@ -1422,6 +1422,8 @@ def persist_product_e2e_evidence(
                     "48-native-application.png",
                     "48-native-approved.png",
                     "48-native-rejected.png",
+                    "48-plugin-print-scope.png",
+                    "48-plugin-print-dialog-opened.png",
                     "48-plugin-applications-trace.zip",
                 ),
             },

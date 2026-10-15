@@ -13,6 +13,7 @@
     "storage.delete",
     "mutation.preview",
     "mutation.submit",
+    "output.print",
     "request.cancel"
   ],
   "limits": {
@@ -27,7 +28,8 @@
     "privateStorageValueBytes": 65536,
     "subscriptionsPerSurface": 8,
     "subscriptionsTotal": 64,
-    "subscriptionCollectionBytes": 128
+    "subscriptionCollectionBytes": 128,
+    "printHeightCssPixels": 100000
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "notifications": [

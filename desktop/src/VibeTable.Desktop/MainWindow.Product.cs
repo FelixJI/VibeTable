@@ -394,9 +394,6 @@ public partial class MainWindow : Window
                         "state", "plugin-packages") : null;
             });
         var dailyQuotes = new DailyQuoteHostClient();
-        _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
-            () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
-            subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true);
         _webBridge.PluginInteractionRequested += OnPluginInteractionRequested;
         _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);
@@ -474,6 +471,12 @@ public partial class MainWindow : Window
             ResolveDashboardExportBroker,
             _dashboardDownloadGate,
             message => _readiness?.Trace(message));
+        _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
+            () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
+            subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
+            preparePrint: _webBridge.PreparePluginPrintAsync,
+            showPrint: _dashboardOutput.ShowPluginPrintDialog,
+            releasePrint: _webBridge.ReleasePluginPrintAsync);
         _applicationRequests = new ApplicationRequestController(
             _webBridge,
             new ApplicationRequestHost(

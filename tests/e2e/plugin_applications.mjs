@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { runApplicationPrint } from "./plugin_application_print.mjs";
 
 const A = "com.vibetable.e2e.application-a";
 const B = "com.vibetable.e2e.application-b";
@@ -326,6 +327,8 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
   await page.getByTestId(APP(A)).waitFor({ state: "hidden" });
   const rows = await rawBridgeRequest(page, "query.page", { tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
   recorder.check("uninstall retains business table and committed records", rows.payload.rows.length === 1 && Object.values(rows.payload.rows[0]).includes("native-approved"), { rows });
+  frame = await openApplication(page, B);
+  await runApplicationPrint(page, frame, recorder, runtime, () => openApplication(page, B));
   return { workspaceId: state.workspaceId, uninstalled: A };
 }
 

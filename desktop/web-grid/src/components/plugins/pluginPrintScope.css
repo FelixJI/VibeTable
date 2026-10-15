@@ -1,0 +1,25 @@
+/* Only the trusted parent marks this path. Body portals and every sibling are excluded. */
+@media print {
+  html[data-vt-plugin-print] body *:not([data-vt-plugin-print-path]) {
+    display: none !important;
+  }
+  html[data-vt-plugin-print],
+  html[data-vt-plugin-print] [data-vt-plugin-print-path] {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    transform: none !important;
+    contain: none !important;
+  }
+  html[data-vt-plugin-print] iframe[data-vt-plugin-print-path] {
+    height: var(--vt-plugin-print-height) !important;
+  }
+}

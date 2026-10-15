@@ -60,6 +60,8 @@ import PluginCenterView from "@/views/PluginCenterView.vue";
 import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import PluginHeadlessRunner from "@/components/plugins/PluginHeadlessRunner.vue";
+import { installPluginPrintScope } from "@/components/plugins/pluginPrintScope";
+import "@/components/plugins/pluginPrintScope.css";
 import PluginAppViewport from "@/components/plugins/PluginAppViewport.vue";
 import PluginTaskList from "@/components/plugins/PluginTaskList.vue";
 import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
@@ -1410,6 +1412,13 @@ useKeyboard({
   onUndo: () => void mutationService.performUndo(),
   onRedo: () => void mutationService.performRedo(),
 });
+const pluginPrintScope = installPluginPrintScope(() =>
+  !showWorkspaceCenterScreen.value && !isForegroundOverlayOpen()
+    && !workspaceSession.isTransitioning ? activePluginAppEntry.value : null);
+watch(() => [activePluginAppEntry.value?.surfaceToken, showWorkspaceCenterScreen.value,
+  isForegroundOverlayOpen(), workspaceSession.sessionEpoch, workspaceSession.isTransitioning],
+() => pluginPrintScope.clear(), { flush: "sync" });
+onBeforeUnmount(() => pluginPrintScope.dispose());
 </script>
 
 <template>

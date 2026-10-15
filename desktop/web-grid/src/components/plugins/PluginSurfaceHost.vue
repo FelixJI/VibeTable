@@ -121,6 +121,7 @@ onBeforeUnmount(() => {
       ref="frame"
       :src="src"
       :name="surfaceToken"
+      :data-plugin-print-surface="variant === 'app' ? surfaceToken : undefined"
       :title="title"
       :class="variant === 'headless' ? 'surface-frame--hidden' : null"
       sandbox="allow-scripts allow-same-origin"

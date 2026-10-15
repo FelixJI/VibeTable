@@ -2063,6 +2063,8 @@ def _prepare_complete_product_reports(
                     "48-native-application.png",
                     "48-native-approved.png",
                     "48-native-rejected.png",
+                    "48-plugin-print-scope.png",
+                    "48-plugin-print-dialog-opened.png",
                     "48-plugin-applications-trace.zip",
                 ),
             }.items():

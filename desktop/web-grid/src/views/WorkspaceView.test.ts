@@ -833,6 +833,30 @@ describe("WorkspaceView", () => {
       return { wrapper, plugins, plugin, record, task, openPanel, setCatalog: (snapshot: PluginSnapshot) => { catalog = snapshot; plugins.applyPlugin(snapshot); } };
     }
 
+    it("retires the trusted print path synchronously for a platform overlay or application navigation", async () => {
+      const { wrapper, plugin, setCatalog } = await prepare();
+      const src = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/ui/index.html`;
+      setCatalog({ ...plugin, manifest: { ...plugin.manifest,
+        actions: plugin.manifest.actions.map(action => ({ ...action, surfaceSrc: src })) } });
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click");
+      await flushPromises();
+      const frame = wrapper.get('[data-testid="plugin-app-viewport"] iframe').element;
+      vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({ width: 800, height: 600 } as DOMRect);
+      const scope = window.__vibetablePluginPrint!;
+      expect(scope.prepare("application-token", "overlay-print", 2400)).toBe(true);
+      useUiStore().openShortcuts();
+      expect(document.querySelector("[data-vt-plugin-print-path]")).toBeNull();
+      expect(document.documentElement.hasAttribute("data-vt-plugin-print")).toBe(true);
+      scope.release("overlay-print");
+      useUiStore().shortcutsOpen = false;
+      expect(scope.prepare("application-token", "navigation-print", 2400)).toBe(true);
+      useUiStore().closePluginApp();
+      expect(document.querySelector("[data-vt-plugin-print-path]")).toBeNull();
+      window.dispatchEvent(new Event("beforeprint"));
+      expect(document.querySelector("[data-vt-plugin-print-path]")).toBeNull();
+      window.dispatchEvent(new Event("afterprint"));
+    });
+
     it("opens an application through real navigation and returns or retires to the platform", async () => {
       const { wrapper, plugins, plugin, record } = await prepare();
       const open = async () => { await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises(); };

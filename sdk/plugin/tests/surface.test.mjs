@@ -309,3 +309,15 @@ test("failed release sends retain ownership for explicit retry while keeping cal
   assert.equal(transport.calls.length, count);
   client.dispose();
 });
+
+test("print sends no content or target and only returns opened", async () => {
+  const transport = channel();
+  const client = sdk.createSurfaceClient("surface-a", transport);
+  const printing = client.output.print();
+  const wire = transport.calls[0];
+  assert.equal(wire.method, "output.print");
+  assert.deepEqual(wire.params, {});
+  transport.reply(wire, { opened: true });
+  assert.deepEqual(await printing, { opened: true });
+  client.dispose();
+});

@@ -48,12 +48,23 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 ```
 
 公开合同是 `contracts/plugin-surface-api.v1.json`。方法闭集为 `context.read`、`data.describe/query`、
-`data.subscribe/unsubscribe`、`storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
+`data.subscribe/unsubscribe`、`storage.get/set/delete`、`mutation.preview/submit`、`output.print` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
 查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
 中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
 只有获准读取 `id` 时才返回 rowGuards，按 ID 更新或删除也要求该授权。`context.read` 保留绑定的用户上下文；
 选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
 隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
+
+`api.output.print(signal?)` 仅允许当前可见、激活的 `application` 页面请求原生打印预览；
+不另授读权限，输出是该页面已经获准读取并自行渲染的内容。Host 向 Go 重核当前安装、包、动作和
+工作区身份，可信父页只保留该 iframe 的打印路径；平台表格、导航、任务与确认页脚、消息、
+lookup/附件/字段/历史/记录抽屉及其它 portal 均排除。panel、headless、后台或旧 surface 不可打印。
+参数固定为空对象，不能提交 HTML、URL、路径、选择器、目标打印机或使用 dashboard 的输出桥。
+准备期间切换、退役或取消会拒绝开窗；预览期间离开应用会清空父页打印路径，直至浏览器结束打印态。
+回执严格为 `{ opened: true }`，只表示宿主已调用原生预览；没有打印完成、成功或取消回执，
+也不自动重试、回滚或直接发送到默认打印机。并发预览准备拒绝为 `plugin_print_denied`；
+原生开窗异常为 `plugin_print_failed`，此时预览状态未知，保留隔离打印态直到浏览器结束打印或页面重载。Host 固定探测当前 frame 的布局高度（最多 100,000 CSS px），
+超限返回 `plugin_print_limit`，不静默截断；插件自己的打印 CSS 及虚拟列表需自行提供适合打印的内容。跨页布局和预览快照时点以受控 WebView2 产品 QA 为准。
 
 写入计划使用 `vibetable.surface-mutation-plan.v1`，包含 `collection`、`schemaRevision` 和
 `create/update/delete` operations；更新、删除必须带 `primaryKey` 和查询返回的 opaque `expectedDigest`，
