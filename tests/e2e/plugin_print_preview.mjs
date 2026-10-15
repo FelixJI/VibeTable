@@ -77,8 +77,12 @@ export async function readNativePrintPreviewInPage() {
     const paths = ui.layout === "edge154"
       ? ["/edge_pdf/edge_pdf/index_print.html", "/edge_pdf/edge_pdf/index_print_minimal.html"]
       : ["/pdf/index_print.html"];
+    // The owned Edge154 viewer uses a 32-character uppercase preview ID; Chromium's existing numeric form remains unchanged.
+    const previewSource = ui.layout === "edge154"
+      ? /^\?chrome-untrusted:\/\/print\/(?:\d+|[0-9A-F]{32})\/-?\d+\/print\.pdf$/
+      : /^\?chrome-untrusted:\/\/print\/\d+\/-?\d+\/print\.pdf$/;
     if (source.protocol !== new URL(location.href).protocol || source.host !== "print" || !paths.includes(source.pathname)
-      || !/^\?chrome-untrusted:\/\/print\/\d+\/-?\d+\/print\.pdf$/.test(source.search) || source.hash)
+      || !previewSource.test(source.search) || source.hash)
       throw new Error("native preview PDF viewer source changed");
     const viewerOrigin = source.protocol + "//" + source.host;
     const text = await new Promise((resolve, reject) => {

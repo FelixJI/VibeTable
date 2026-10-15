@@ -239,3 +239,42 @@ test("both native readers execute as the serialized fixed CDP function without i
     } finally { f.restore(); }
   }
 });
+
+// Captured from the owned Edge154 preview in CI38795706486, before any PDF text read.
+test("Edge accepts the actual 32-character preview ID for both verified PDF viewers", async () => {
+  for (const viewerPath of ["index_print.html", "index_print_minimal.html"]) {
+    const viewerSource = `edge://print/edge_pdf/edge_pdf/${viewerPath}?chrome-untrusted://print/376E9117F67146998E9F115B72B4DD8D/0/print.pdf`;
+    const f = installPreview({ layout: "edge", url: "edge://print/", viewerSource });
+    try {
+      const snapshot = await readNativePrintPreviewInPage();
+      assert.equal(snapshot.viewerUrl, viewerSource);
+      assertNativePrintSnapshot(snapshot);
+      assert.deepEqual(f.messages, ["selectAll", "getSelectedText"]);
+      assert.equal(f.listeners.size, 0);
+    } finally { f.restore(); }
+  }
+});
+
+test("Edge preview ID compatibility keeps source boundaries closed and Chromium unchanged", async () => {
+  const prefix = "edge://print/edge_pdf/edge_pdf/index_print.html?chrome-untrusted://print/";
+  for (const suffix of [
+    "376E9117F67146998E9F115B72B4DD8/0/print.pdf",
+    "376E9117F67146998E9F115B72B4DD8DD/0/print.pdf",
+    "376E9117F67146998E9F115B72B4DD8G/0/print.pdf",
+    "376E9117F67146998E9F115B72B4DD8D/other/print.pdf",
+    "376E9117F67146998E9F115B72B4DD8D/0/print.pdf?other",
+    "376E9117F67146998E9F115B72B4DD8D/0/print.pdf#other",
+  ]) {
+    const f = installPreview({ layout: "edge", url: "edge://print/", viewerSource: prefix + suffix });
+    try {
+      await assert.rejects(readNativePrintPreviewInPage(), /native preview PDF viewer source changed/);
+      assert.deepEqual(f.messages, []);
+      assert.equal(f.listeners.size, 0);
+    } finally { f.restore(); }
+  }
+  const f = installPreview({ viewerSource: "chrome://print/pdf/index_print.html?chrome-untrusted://print/376E9117F67146998E9F115B72B4DD8D/0/print.pdf" });
+  try {
+    await assert.rejects(readNativePrintPreviewInPage(), /native preview PDF viewer source changed/);
+    assert.deepEqual(f.messages, []);
+  } finally { f.restore(); }
+});
