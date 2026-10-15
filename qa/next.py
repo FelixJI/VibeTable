@@ -1638,6 +1638,7 @@ def persist_product_e2e_evidence(
                         for filename in (
                             "48-plugin-print-preview.json",
                             "48-plugin-print-preview-unobservable.json",
+                            "48-plugin-print-preview-failed.png",
                             "48-plugin-print-dialog-opened.png",
                             "48-plugin-print-preview-second.png",
                             "48-plugin-print-preview-navigation.png",

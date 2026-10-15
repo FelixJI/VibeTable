@@ -3460,7 +3460,11 @@ def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(t
     phase = "48-plugin-applications/seed/20261015T000001Z"
     for name in (*next_gate.PRODUCT_E2E_EVIDENCE_FILES, "48-plugin-applications-result.json"):
         expected.append(f"{phase}/{name}")
-    for filename in ("48-plugin-print-preview.json", "48-plugin-print-preview-unobservable.json"):
+    for filename in (
+        "48-plugin-print-preview.json",
+        "48-plugin-print-preview-unobservable.json",
+        "48-plugin-print-preview-failed.png",
+    ):
         expected.append(f"{phase}/{filename}")
     expected.append("48-plugin-applications/persistent/host/vibetable-trace.log")
     for name in (
