@@ -2184,6 +2184,29 @@ def _run_node_runner_guarded(
                     stdout, stderr = node_process.communicate(timeout=10)
                     raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
                 _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
+        file_dialog_path = scenario_dir / "plugin-file-dialog-request.json"
+        file_dialog_request = _read_json(file_dialog_path)
+        if file_dialog_request is not None:
+            file_dialog_path.unlink()
+            if (
+                "--scenario" not in command
+                or command[command.index("--scenario") + 1] != "52-plugin-capability-services"
+            ):
+                file_result = {
+                    "requestId": file_dialog_request.get("requestId"),
+                    "status": "failed",
+                    "error": "picker scenario not authorized",
+                }
+            else:
+                from tests.e2e.plugin_file_dialog import handle_file_dialog
+
+                file_result = handle_file_dialog(
+                    file_dialog_request,
+                    host_scope=host_scope,
+                    controls=controls,
+                    evidence=scenario_dir,
+                )
+            _write_json_atomic(scenario_dir / "plugin-file-dialog-result.json", file_result)
         plugin_native_path = scenario_dir / "plugin-native-request.json"
         plugin_native_request = _read_json(plugin_native_path)
         if plugin_native_request is not None:
@@ -2196,6 +2219,7 @@ def _run_node_runner_guarded(
                     "49-plugin-application-security",
                     "50-plugin-headless-budget",
                     "51-plugin-application-commit-unknown",
+                    "52-plugin-capability-services",
                 }:
                     native_result = {
                         "requestId": native_id,
@@ -2587,6 +2611,10 @@ def run_scenario(
         from tests.e2e.plugin_application_packages import prepare_application_packages
 
         prepare_application_packages(controls_dir)
+    if scenario.id == "52-plugin-capability-services":
+        from tests.e2e.plugin_capability_packages import prepare_capability_packages
+
+        prepare_capability_packages(controls_dir)
     if scenario.id == "47-plugin-surface-api":
         source = ROOT / "examples/plugins/surface-data-editor"
         plugin_cli = ROOT / "scripts/vibetable_plugin.py"
@@ -2711,6 +2739,7 @@ def run_scenario(
         "49-plugin-application-security",
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
+        "52-plugin-capability-services",
     }:
         environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
@@ -3186,6 +3215,7 @@ def run_product_acceptance(
             "49-plugin-application-security",
             "50-plugin-headless-budget",
             "51-plugin-application-commit-unknown",
+            "52-plugin-capability-services",
         }
         for scenario in scenarios
     ):
@@ -3212,6 +3242,7 @@ def run_product_acceptance(
                 "49-plugin-application-security",
                 "50-plugin-headless-budget",
                 "51-plugin-application-commit-unknown",
+                "52-plugin-capability-services",
             }
             and native_observer_error is not None
         ):

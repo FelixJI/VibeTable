@@ -336,6 +336,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "49-plugin-application-security",
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
+        "52-plugin-capability-services",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
@@ -2934,6 +2935,21 @@ SCENARIO_SCREENSHOTS = {
         "49-plugin-application-security-trace.zip",
     ),
     "50-plugin-headless-budget": ("48-native-recovered.png", "50-plugin-headless-budget-trace.zip"),
+    "52-plugin-capability-services": (
+        "52-capability-services.json",
+        "52-capability-services.png",
+        "52-ui-context.png",
+        "52-plugin-capability-services-trace.zip",
+        "52-picker-read-cancel.png",
+        "52-picker-read-select.png",
+        "52-picker-write-select.png",
+        "52-picker-import-select.png",
+        "52-picker-export-select.png",
+        "52-confirm-update-rejected.png",
+        "52-confirm-delete-approved.png",
+        "52-confirm-attachment-approved.png",
+        "52-confirm-import-approved.png",
+    ),
     "51-plugin-application-commit-unknown": (
         "48-native-cancelled.png",
         "48-native-recovered.png",
@@ -3467,3 +3483,17 @@ def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(t
         assert (retained / relative).read_text() == f"raw:{relative}"
     assert not (retained / phase / "workspace.db").exists()
     assert not (retained / "49-plugin-application-security/unrelated.json").exists()
+
+
+def test_capability_services_failure_retains_picker_proof_without_private_state(tmp_path):
+    scenario_id = "52-plugin-capability-services"
+    run = _scenario_screenshot_run(tmp_path, scenario_id, "failed")
+    for filename in ("plugin-file-dialog-result.json", "plugin-file-dialog-observation.json"):
+        (run / scenario_id / filename).write_text("raw-native-proof")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert (retained / scenario_id / "52-capability-services.json").exists()
+    for filename in ("plugin-file-dialog-result.json", "plugin-file-dialog-observation.json"):
+        assert (retained / scenario_id / filename).read_text() == "raw-native-proof"
+    assert not (retained / scenario_id / "workspace.db").exists()
+    assert not (retained / scenario_id / "unrelated.png").exists()

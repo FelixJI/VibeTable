@@ -201,7 +201,9 @@ def _change_system_contrast(action: str, evidence: Path) -> dict[str, object]:
     return {"status": "enabled", "original": original, "onObserved": current, "observed": current}
 
 
-def _send_input(native: Any, *, x: float | None = None, y: float | None = None) -> None:
+def _send_input(
+    native: Any, *, x: float | None = None, y: float | None = None, text: str | None = None
+) -> None:
     from ctypes import wintypes
 
     class Mouse(ctypes.Structure):
@@ -229,7 +231,20 @@ def _send_input(native: Any, *, x: float | None = None, y: float | None = None) 
     class Input(ctypes.Structure):
         _fields_ = [("kind", wintypes.DWORD), ("payload", Payload)]
 
-    if x is None or y is None:
+    if text is not None:
+        if not text or len(text) > 1024 or any(ord(char) < 32 for char in text):
+            raise ValueError("synthetic picker path is invalid")
+        events = [
+            Input(1, Payload(keyboard=Keyboard(vk, 0, flag, 0, 0)))
+            for vk, flag in ((0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2))
+        ]
+        encoded = text.encode("utf-16-le")
+        for index in range(0, len(encoded), 2):
+            unit = int.from_bytes(encoded[index : index + 2], "little")
+            events.extend(
+                Input(1, Payload(keyboard=Keyboard(0, unit, flag, 0, 0))) for flag in (4, 6)
+            )
+    elif x is None or y is None:
         events = [Input(1, Payload(keyboard=Keyboard(0x1B, 0, flag, 0, 0))) for flag in (0, 2)]
     else:
         left, top = native.user32.GetSystemMetrics(76), native.user32.GetSystemMetrics(77)

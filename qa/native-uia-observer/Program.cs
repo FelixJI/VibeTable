@@ -21,6 +21,7 @@ internal static class Program
         Console.Error.WriteLine($"UIA_STAGE observer begin elapsedMs=0 apartment={Thread.CurrentThread.GetApartmentState()} utc={DateTime.UtcNow:o}");
         try
         {
+            if (args.Length == 4 && args[0] == "--file-dialog") return ObserveFileDialog(args);
             if (args.Length is 2 or 3 && args[0] is "--buttons" or "--screenshot")
                 return ObservePluginChrome(args);
             if (args.Length != 1 || !long.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out long hwnd) || hwnd <= 0)
@@ -102,6 +103,79 @@ internal static class Program
             height = bounds.Height, dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons }));
         return 0;
     }
+
+    private static int ObserveFileDialog(string[] args)
+    {
+        if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true" || Environment.GetEnvironmentVariable("CI") != "true"
+            || !long.TryParse(args[1], out long value) || value <= 0 || !uint.TryParse(args[2], out uint pid)
+            || !Path.IsPathFullyQualified(args[3])) return Reject("UIA_FILE_DIALOG_SCOPE_INVALID");
+        SetProcessDpiAwarenessContext(new IntPtr(-4));
+        var hwnd = new IntPtr(value);
+        if (!OwnedFileDialog(hwnd, pid)) return Reject("UIA_FILE_DIALOG_OWNER_INVALID");
+        var root = AutomationElement.FromHandle(hwnd);
+        var controls = new List<object>();
+        var queue = new Queue<AutomationElement>(); queue.Enqueue(root);
+        int count = 0;
+        while (queue.TryDequeue(out var item))
+        {
+            if (++count > 512) return Reject("UIA_FILE_DIALOG_TREE_LIMIT");
+            if (item.Current.ProcessId != pid) return Reject("UIA_FILE_DIALOG_PROCESS_INVALID");
+            var child = TreeWalker.ControlViewWalker.GetFirstChild(item);
+            while (child is not null)
+            {
+                if (queue.Count + count >= 512) return Reject("UIA_FILE_DIALOG_TREE_LIMIT");
+                queue.Enqueue(child); child = TreeWalker.ControlViewWalker.GetNextSibling(child);
+            }
+            string id = item.Current.AutomationId;
+            string? role = item.Current.ControlType == ControlType.Edit && id is "1148" or "1001" ? "filename"
+                : item.Current.ControlType == ControlType.Button && id == "1" ? "accept"
+                : item.Current.ControlType == ControlType.Button && id == "2" ? "cancel" : null;
+            if (role is null) continue;
+            var b = item.Current.BoundingRectangle;
+            controls.Add(new { role, id, enabled = item.Current.IsEnabled, focused = item.Current.HasKeyboardFocus, pid = item.Current.ProcessId,
+                x = b.X, y = b.Y, width = b.Width, height = b.Height });
+        }
+        if (!OwnedFileDialog(hwnd, pid)) return Reject("UIA_FILE_DIALOG_OWNER_CHANGED");
+        var bounds = root.Current.BoundingRectangle;
+        int width = checked((int)bounds.Width), height = checked((int)bounds.Height);
+        if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return Reject("UIA_BOUNDS_INVALID");
+        IntPtr source = GetDC(IntPtr.Zero), destination = CreateCompatibleDC(source);
+        IntPtr bitmap = CreateCompatibleBitmap(source, width, height);
+        if (source == IntPtr.Zero || destination == IntPtr.Zero || bitmap == IntPtr.Zero) return Reject("UIA_CAPTURE_FAILED");
+        IntPtr prior = SelectObject(destination, bitmap);
+        try
+        {
+            if (!BitBlt(destination, 0, 0, width, height, source, (int)bounds.X, (int)bounds.Y, 0x00CC0020)) return Reject("UIA_CAPTURE_FAILED");
+            var image = Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero, System.Windows.Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
+            using var output = File.Create(args[3]); encoder.Save(output);
+        }
+        finally { SelectObject(destination, prior); DeleteObject(bitmap); DeleteDC(destination); ReleaseDC(IntPtr.Zero, source); }
+        Console.Out.Write(JsonSerializer.Serialize(new { hwnd = value, pid, title = root.Current.Name, controls }));
+        return 0;
+    }
+
+    private static bool OwnedFileDialog(IntPtr hwnd, uint pid)
+    {
+        GetWindowThreadProcessId(hwnd, out uint actual);
+        var name = new StringBuilder(128); GetClassName(hwnd, name, name.Capacity);
+        var title = new StringBuilder(256); GetWindowText(hwnd, title, title.Capacity);
+        if (actual != pid || name.ToString() != "#32770" || title.ToString() is not
+            ("Replace attachment" or "Add attachments" or "保存托管附件" or "Import table data" or "Export table data")) return false;
+        var owner = GetWindow(hwnd, 4);
+        for (int depth = 0; owner != IntPtr.Zero && depth < 8; depth++, owner = GetWindow(owner, 4))
+        {
+            GetWindowThreadProcessId(owner, out actual);
+            if (actual != pid) return false;
+            title.Clear(); GetWindowText(owner, title, title.Capacity);
+            if (title.ToString() == "VibeTable") return true;
+        }
+        return false;
+    }
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
 
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);

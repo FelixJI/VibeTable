@@ -1,3 +1,4 @@
+import { runCapabilityServices } from "./plugin_capability_services.mjs";
 import { runApplicationCommitUnknown } from "./plugin_application_commit_unknown.mjs";
 import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
 import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
@@ -12681,6 +12682,7 @@ const scenarios = {
   "51-plugin-application-commit-unknown": (page, recorder, _network, runtime) => runApplicationCommitUnknown(page, recorder, runtime, {
     waitForShell, createSimpleTable, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, selectTable,
   }),
+  "52-plugin-capability-services": (page, recorder, _network, runtime) => runCapabilityServices(page, recorder, runtime, { waitForShell, createSimpleTable, createV2Field, applyProductMutation, rawBridgeRequest }),
 
 };
 

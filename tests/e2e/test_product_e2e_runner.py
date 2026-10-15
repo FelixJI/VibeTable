@@ -5045,6 +5045,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_application_security.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("renderer_diagnostics_policy.test.mjs"),

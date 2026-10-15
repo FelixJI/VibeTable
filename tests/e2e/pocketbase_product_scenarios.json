@@ -326,5 +326,19 @@
       "plugin.mutation",
       "workspace.recovery"
     ]
-  }
+  },
+{
+  "id": "52-plugin-capability-services",
+  "title": "无 Worker 插件文件与完整能力服务",
+  "requirement": "独立file-io场景在合成工作区以真实SDK编译无Worker应用；Job-owned原生picker取消/选择和SendInput精确确认拒绝/批准，普通文件逐字节读写、附件阶段/确认/读取、导入preview任务与授权提交、显式字段CSV导出实际落盘；query/create/update/delete及合法自关系写入、非法批次零提交、范围内单调失效通知、任务成功和批准前取消零提交、context/通知/返回、退役旧token/跨surface文件handle拒绝。真实打印保持48、unknown保持51独立门禁；非受控CI不得打开本场景原生对话框。",
+  "capabilities": [
+    "plugin.surface-api",
+    "plugin.mutation",
+    "plugin.files",
+    "plugin.attachments",
+    "plugin.data-io",
+    "plugin.subscriptions",
+    "plugin.ui-services"
+  ]
+}
 ]

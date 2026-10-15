@@ -1366,6 +1366,21 @@ def persist_product_e2e_evidence(
                 "49-security-observations.json",
                 "49-plugin-application-security-trace.zip",
             ),
+            "52-plugin-capability-services": (
+                "52-capability-services.json",
+                "52-capability-services.png",
+                "52-ui-context.png",
+                "52-plugin-capability-services-trace.zip",
+                "52-picker-read-cancel.png",
+                "52-picker-read-select.png",
+                "52-picker-write-select.png",
+                "52-picker-import-select.png",
+                "52-picker-export-select.png",
+                "52-confirm-update-rejected.png",
+                "52-confirm-delete-approved.png",
+                "52-confirm-attachment-approved.png",
+                "52-confirm-import-approved.png",
+            ),
             "51-plugin-application-commit-unknown": (
                 "48-native-cancelled.png",
                 "48-native-recovered.png",
@@ -1494,6 +1509,26 @@ def persist_product_e2e_evidence(
 
         scenario_number = scenario_id.partition("-")[0]
         runtime_root = run_source / "_runtime" / scenario_number
+        if scenario_id == "52-plugin-capability-services":
+            for filename in (
+                "52-capability-services.json",
+                "52-capability-services.png",
+                "52-ui-context.png",
+                "52-picker-read-cancel.png",
+                "52-picker-read-select.png",
+                "52-picker-write-select.png",
+                "52-picker-import-select.png",
+                "52-picker-export-select.png",
+                "52-confirm-update-rejected.png",
+                "52-confirm-delete-approved.png",
+                "52-confirm-attachment-approved.png",
+                "52-confirm-import-approved.png",
+                "plugin-file-dialog-result.json",
+                "plugin-file-dialog-observation.json",
+                "plugin-native-result.json",
+                "plugin-native-observation.json",
+            ):
+                _copy_if_file(scenario_source / filename, scenario_destination / filename)
         if scenario_id == "49-plugin-application-security":
             for filename in (
                 "plugin-contrast-original.json",
