@@ -635,6 +635,11 @@ def test_native_html_preview_source_has_a_closed_action_and_literal_bytes_bounda
 def test_native_preview_requires_real_success_from_a_verified_owned_visible_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
     request, data, controls, source = _native_document_fixture(tmp_path)
     request["action"] = "preview-observe"
     pid = 42 if case == "root" else 43
@@ -730,6 +735,68 @@ def test_preview_observation_uses_its_existing_correlated_budget_without_an_earl
             assert clock[0] == 11
         else:
             assert 10 <= clock[0] < 10.1
+
+
+@pytest.mark.parametrize(
+    "outcome", ["visible", "hidden", "owner-changed", "helper-retired", "late"]
+)
+def test_preview_visibility_wait_preserves_identity_and_original_observation_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    request["action"] = "preview-observe"
+    clock = [0.0]
+    original_read = runner._read_json
+    evidence = {
+        "source": str(source.resolve()),
+        "outcome": "do-preview-returned",
+        "processId": 43,
+        "hwnd": 100,
+    }
+
+    def read(path: Path):
+        if path.name != "document-native-preview-result.json":
+            return original_read(path)
+        if outcome == "late":
+            clock[0] = 9.95
+        return evidence
+
+    monkeypatch.setattr(runner, "_read_json", read)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    native = SimpleNamespace(
+        owner=lambda _hwnd: 99 if outcome == "owner-changed" and clock[0] >= 0.05 else 43,
+        user32=SimpleNamespace(
+            IsWindowVisible=lambda _hwnd: (
+                outcome != "hidden" and clock[0] >= (10.05 if outcome == "late" else 0.1)
+            )
+        ),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: native)
+    scope = SimpleNamespace(
+        root=SimpleNamespace(pid=42),
+        snapshot=lambda: (
+            ProcessScopeSnapshot(())
+            if outcome == "helper-retired" and clock[0] >= 0.05
+            else ProcessScopeSnapshot((ProcessScopeMember(43, "VibeTable.Next.exe", True),))
+        ),
+    )
+    result = runner._handle_document_native_request(
+        request, host_scope=scope, local_data=data, controls=controls
+    )
+    if outcome == "visible":
+        assert result["status"] == "observed"
+        assert result["preview"] == evidence
+        assert 0.1 <= clock[0] < 0.2
+    else:
+        assert result["status"] == "unverified"
+        if outcome in {"hidden", "late"}:
+            assert 10 <= clock[0] < 10.1
+        else:
+            assert 0.05 <= clock[0] < 0.1
 
 
 @pytest.mark.parametrize("invalid", ["action", "fields", "identity", "bytes", "path"])

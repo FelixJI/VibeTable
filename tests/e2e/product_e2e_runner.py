@@ -1850,30 +1850,43 @@ def _handle_document_native_request(
             ):
                 raise OSError("real FileDocument COM DoPreview did not produce a success record")
             pid, hwnd = evidence["processId"], evidence["hwnd"]
-            members = host_scope.snapshot().members
-            if (
-                not any(
-                    member.pid == pid
-                    and member.identity_verified
-                    and member.executable_name.casefold() == "vibetable.next.exe"
-                    for member in members
-                )
-                or pid == host_scope.root.pid
-            ):
-                raise OSError("preview helper is not a verified child in the packaged Host Job")
-            if native.owner(hwnd) != pid or not native.user32.IsWindowVisible(hwnd):
-                raise OSError("real preview COM host HWND is missing or has another owner")
-            if time.monotonic() >= observation_deadline:
-                raise OSError(
-                    "real FileDocument COM DoPreview success arrived after the observation budget"
-                )
-            return {
-                "requestId": request["requestId"],
-                "status": "observed",
-                "action": action,
-                "preview": evidence,
-                "helperIdentityVerified": True,
-            }
+            # DoPreview returns inside HwndHost.BuildWindowCore, before the parent
+            # Show completes. Visibility is pending within the same observation budget.
+            while True:
+                members = host_scope.snapshot().members
+                if (
+                    not any(
+                        member.pid == pid
+                        and member.identity_verified
+                        and member.executable_name.casefold() == "vibetable.next.exe"
+                        for member in members
+                    )
+                    or pid == host_scope.root.pid
+                ):
+                    raise OSError("preview helper is not a verified child in the packaged Host Job")
+                owner = native.owner(hwnd)
+                visible = bool(native.user32.IsWindowVisible(hwnd))
+                window_observation = {
+                    "hwnd": hwnd,
+                    "expectedPid": pid,
+                    "ownerPid": owner,
+                    "visible": visible,
+                }
+                if owner != pid:
+                    raise OSError("real preview COM host HWND is missing or has another owner")
+                if time.monotonic() >= observation_deadline:
+                    raise OSError(
+                        "real preview COM host did not become visible within the observation budget"
+                    )
+                if visible:
+                    return {
+                        "requestId": request["requestId"],
+                        "status": "observed",
+                        "action": action,
+                        "preview": evidence,
+                        "helperIdentityVerified": True,
+                    }
+                time.sleep(0.025)
         baseline_path = controls / "document-native-open-baseline.json"
         if action == "open-baseline":
             baseline = {
