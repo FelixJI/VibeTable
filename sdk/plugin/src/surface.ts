@@ -260,6 +260,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     let started: { taskId: string } | null;
     try { started = await call<{ taskId: string } | null>(method, params); } finally { ioStarting--; }
     if (!started) return null;
+    if (closed) { release("data.io.cancel", { taskId: started.taskId }); throw new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."); }
     let running: Promise<T> | undefined;
     let cancelling: Promise<void> | undefined;
     let terminal: SurfaceIoStatus<T> | undefined;

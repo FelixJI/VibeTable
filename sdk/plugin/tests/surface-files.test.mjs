@@ -121,3 +121,18 @@ for (const kind of ["file", "attachment"]) {
     assert.deepEqual(await reading, content); client.dispose();
   });
 }
+
+for (const kind of ["import", "export"]) {
+  test(`DataIO ${kind} receipt followed by dispose cancels before registering the task`, async () => {
+    const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+    const starting = kind === "import" ? client.data.previewImport({ collection: "t", schemaRevision: "schema_1" })
+      : client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+    // Delivery resolves call(), but the awaiting startIo continuation is still queued.
+    wire.reply({ taskId: "late" }); client.dispose();
+    await assert.rejects(starting, error => error.code === "plugin_surface_closed");
+    assert.deepEqual(wire.calls.filter(call => call.method === "data.io.cancel").map(call => call.params), [{ taskId: "late" }]);
+    assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 0);
+    client.dispose();
+    assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
+  });
+}
