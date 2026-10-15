@@ -26,6 +26,7 @@ export const usePluginStore = defineStore("plugins", () => {
   const catalogRevision = ref(-1);
   const pluginById = ref<Record<string, PluginSnapshot>>({});
   const taskById = ref<Record<string, PluginTaskViewSnapshot>>({});
+  let taskObservationOrder = 0;
   const admittedTaskIds = new Set<string>();
   const taskRevisionById = ref<Record<string, number>>({});
   const interactionRevisionByRun = ref<Record<string, number>>({});
@@ -120,6 +121,7 @@ export const usePluginStore = defineStore("plugins", () => {
     catalogRefreshAgain = false;
     catalogRefreshReader = null;
     projectContextGeneration.value += 1;
+    taskObservationOrder = 0;
     if (projectKey.value !== key) {
       pluginById.value = {};
       taskById.value = {};
@@ -220,6 +222,7 @@ export const usePluginStore = defineStore("plugins", () => {
       installationId: current ? current.installationId : snapshot.installationId,
       surfaceToken: current ? current.surfaceToken : snapshot.surfaceToken,
       revision: Math.max(taskRevision, interactionRevision),
+      observationOrder: ++taskObservationOrder,
       progressPercent: snapshot.progress?.total
         ? Math.min(100, Math.round((snapshot.progress.current / snapshot.progress.total) * 100))
         : current?.progressPercent ?? null,

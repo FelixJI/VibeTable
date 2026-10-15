@@ -67,6 +67,8 @@ export function createSurfacePresentationClient(surfaceToken: string, supplied?:
         const oldest = [...tasks].find(([, task]) => terminal(task));
         if (oldest) tasks.delete(oldest[0]); else continue;
       }
+      // A late completion of an old active task is a recent receipt, not the oldest history.
+      tasks.delete(item.taskId);
       tasks.set(item.taskId, Object.freeze({ taskId: item.taskId, ...(typeof item.actionId === "string" ? { actionId: item.actionId } : {}),
         revision: item.revision as number, state: item.state as SurfaceTask["state"], cancelRequested: prior?.cancelRequested === true || item.cancelRequested === true, progress, result, error }));
     }

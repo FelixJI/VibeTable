@@ -1276,6 +1276,8 @@ export interface PluginInteractionResolveResult {
 /** Web-only projection. It never crosses HostBridge. */
 export interface PluginTaskViewSnapshot extends PluginTaskSnapshot {
   readonly revision: number;
+  /** Local presentation ordering of accepted task reports; never an authority revision or frame field. */
+  readonly observationOrder?: number;
   readonly progressPercent?: number | null;
   readonly progressMessage?: string | null;
   readonly confirmation?: WebPluginConfirmationPreview | null;

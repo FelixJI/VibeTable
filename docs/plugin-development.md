@@ -504,7 +504,8 @@ UI 消息不会转成 Worker action 或通用 Product RPC。`client.ui.capabilit
 - `tasks.list()` / `tasks.onChanged(listener)` 只提供当前 surface 创建的既有 Host 任务，含真实进度、
   成功摘要与安全错误；未知总量为 `null`。不暴露 input、原生批准预览、隐藏记录或其它插件任务。
   任务记录按 revision 去重并保持成功/失败/取消/aborted 终态粘滞，最多保留256条；
-  超限按旧终态回收。`aborted + plugin_commit_unknown` 表示结果未知，应核对实际数据，禁止自动重放。
+  超限保留活跃任务，并按本地受理顺序回收旧终态（不是按创建顺序裁掉刚结束的旧任务）。
+  每条出站 `taskChanged`/`tasksChanged` 都使用同一精简投影；旧事件名不再携带父页确认或原始结果DTO。`aborted + plugin_commit_unknown` 表示结果未知，应核对实际数据，禁止自动重放。
 - `tasks.cancel(taskId)` 仅请求取消当前 surface 拥有且可取消的任务。返回的 `cancelRequested` 只表示
   请求进入已有 Host 控制流程，仍须通过任务投影等待权威终态；不表示写入已取消或回滚。
   此通道没有任务创建、批准或插件自报进度接口。文件/导入导出等其它平台任务由对应受控能力返回，

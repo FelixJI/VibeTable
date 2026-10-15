@@ -117,7 +117,7 @@ describe("PluginSurfaceHost", () => {
     const reactiveTheme = reactive(theme);
     type MutableTaskSnapshot = { -readonly [K in keyof PluginTaskViewSnapshot]: PluginTaskViewSnapshot[K] };
     const reactiveTask = reactive<MutableTaskSnapshot>({
-      taskId: "task-1", runId: "run-1", pluginId: "com.example.view",
+      taskId: "task-1", runId: "run-1", surfaceToken: "surface-1", pluginId: "com.example.view",
       pluginVersion: "1.0.0", actionId: "write", projectKey: "local:default",
       collection: "orders", targetCount: 1, risk: "write", state: "running",
       cancelRequested: false, progress: null, result: null, error: null,

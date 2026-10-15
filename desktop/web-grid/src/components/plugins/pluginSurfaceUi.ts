@@ -5,13 +5,20 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 const exact = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every(key => key in value);
 const terminal = (task: PluginTaskViewSnapshot) => ["succeeded", "failed", "cancelled", "aborted"].includes(task.state);
 export function projectSurfaceTasks(tasks: readonly PluginTaskViewSnapshot[], token: string) {
-  return tasks.filter(task => task.surfaceToken === token).slice(-256).map(task => ({
-    taskId: task.taskId, actionId: task.actionId, revision: task.revision, state: task.state, cancelRequested: task.cancelRequested,
-    progress: task.progress ? { current: task.progress.current, total: task.progress.total > 0 ? task.progress.total : null,
-      message: task.progress.message.slice(0, 500), cancellable: task.progress.cancellable } : null,
-    result: task.result ? { summary: task.result.summary.slice(0, 1000) } : null,
-    error: task.error ? { code: task.error.code, message: task.error.message.slice(0, 1000), recoverability: task.error.recoverability } : null,
-  }));
+  // Reports have per-task revisions, not a shared clock. Use the existing store's
+  // accepted-report order so an old active task's new terminal remains recoverable.
+  return tasks.map((task, index) => ({ task, order: task.observationOrder ?? index }))
+    .filter(({ task }) => task.surfaceToken === token)
+    .sort((left, right) => Number(terminal(left.task)) - Number(terminal(right.task)) || right.order - left.order)
+    .slice(0, 256)
+    .sort((left, right) => left.order - right.order)
+    .map(({ task }) => ({
+      taskId: task.taskId, actionId: task.actionId, revision: task.revision, state: task.state, cancelRequested: task.cancelRequested,
+      progress: task.progress ? { current: task.progress.current, total: task.progress.total > 0 ? task.progress.total : null,
+        message: task.progress.message.slice(0, 500), cancellable: task.progress.cancellable } : null,
+      result: task.result ? { summary: task.result.summary.slice(0, 1000) } : null,
+      error: task.error ? { code: task.error.code, message: task.error.message.slice(0, 1000), recoverability: task.error.recoverability } : null,
+    }));
 }
 /** Trusted frame origin/source/token is checked by the caller before this closed presentation seam. */
 export function createPluginSurfaceUi(port: {

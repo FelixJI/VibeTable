@@ -54,8 +54,10 @@ function sendTheme(): void {
 }
 
 function sendTask(): void {
-  for (const task of currentTasks.value) postToSurface("taskChanged", task);
-  postToSurface("tasksChanged", projectSurfaceTasks(currentTasks.value, activeToken.value));
+  const safe = projectSurfaceTasks(currentTasks.value, activeToken.value);
+  // Preserve the legacy event name, never the privileged parent-only DTO.
+  for (const task of safe) postToSurface("taskChanged", task);
+  postToSurface("tasksChanged", safe);
 }
 
 function onMessage(event: MessageEvent): void {

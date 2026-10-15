@@ -82,3 +82,18 @@ test("UI public catalog matches SDK capability query and unavailable parent fail
   await assert.rejects(client.tasks.cancel("not-owned"), error => error.code === "plugin_api_unsupported");
   client.dispose();
 });
+
+
+test("recent completion of an old active task survives bounded SDK history eviction", async () => {
+  const parent = parentChannel(); const client = sdk.createSurfaceClient("s1", native(), parent);
+  let last = [];
+  client.tasks.onChanged(value => { last = value; });
+  const make = (taskId, state = "succeeded", revision = 1) => ({ taskId, state, revision, cancelRequested: false });
+  parent.emit("tasksChanged", [make("old-active", "running"), ...Array.from({ length: 255 }, (_, i) => make(`done-${i}`))]);
+  parent.emit("tasksChanged", [{ ...make("old-active", "aborted", 2), error: { code: "plugin_commit_unknown", message: "核对数据", recoverability: "none" } }]);
+  parent.emit("tasksChanged", [make("new-completion")]);
+  assert.equal(last.length, 256);
+  assert.equal(last.find(task => task.taskId === "old-active")?.error.code, "plugin_commit_unknown");
+  assert.equal(last.some(task => task.taskId === "done-0"), false);
+  client.dispose();
+});
