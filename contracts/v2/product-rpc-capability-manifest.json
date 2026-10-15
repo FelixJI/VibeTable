@@ -514,6 +514,14 @@
       "effect": "write"
     },
     {
+      "method": "plugin.setEnabledExecution",
+      "scope": "workspace",
+      "audience": "hostOnly",
+      "capabilityId": "plugin.lifecycle",
+      "owner": "pythonWorker",
+      "effect": "write"
+    },
+    {
       "method": "plugin.startAction",
       "scope": "workspace",
       "audience": "rendererPublic",

@@ -393,8 +393,6 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 composition,
                 call.args[2].id,
             )
-    # This host executor coordinates local Worker drain; it is not a product RPC.
-    result.pop("plugin.setEnabledExecution", None)
     from backend.contracts.presets_versions_dashboards import (
         DashboardWorkspaceParams,
         CreateVersionParams,
@@ -785,6 +783,7 @@ def _result_specs(fixtures: Path) -> dict[str, ResultSpec]:
         "plugin.resolveInteraction": _typed(InteractionResolveResult),
         "plugin.rollback": _typed(PluginSnapshot),
         "plugin.setEnabled": _typed(PluginSnapshot),
+        "plugin.setEnabledExecution": _typed(PluginSnapshot),
         "plugin.startAction": _typed(PluginTaskSnapshot),
         "plugin.uninstall": _typed(UninstallResult),
         "plugin.upgrade": _typed(PluginSnapshot),

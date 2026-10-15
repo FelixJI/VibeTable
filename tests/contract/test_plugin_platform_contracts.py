@@ -70,8 +70,9 @@ def test_lifecycle_execution_target_roundtrips_only_in_the_private_host_fixture(
         )
         == payload
     )
-    assert "plugin.setEnabledExecution" not in _registered_models()
-    assert "plugin.setEnabled" in _registered_models()
+    registered = _registered_models()
+    assert registered["plugin.setEnabledExecution"] is SetPluginEnabledExecutionParams
+    assert "plugin.setEnabled" in registered
 
 
 def test_uninstall_transport_fixture_validates_at_the_real_python_boundary() -> None:
