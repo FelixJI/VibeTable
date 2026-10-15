@@ -126,11 +126,13 @@ class ExportService:
         profiles: dict[str, CollectionProfile],
         files: HostFiles,
         lookup_provider: AuthoritativeLookupExportProvider | None = None,
+        output_columns: list[str] | None = None,
     ) -> None:
         self._query_port = query_port
         self._profiles = profiles
         self._files = files
         self._lookup_provider = lookup_provider
+        self._output_columns = output_columns
 
     async def export(
         self,
@@ -140,7 +142,11 @@ class ExportService:
         cancelled: Callable[[], bool] | None = None,
     ) -> ExportResult:
         profile = self._profile(params.collection)
-        output_columns = list(profile.fields)
+        output_columns = list(
+            self._output_columns if self._output_columns is not None else profile.fields
+        )
+        if not output_columns or not set(output_columns) <= set(profile.fields):
+            raise ExportError("export columns are not authorized", code="plugin_read_denied")
         if params.include_relations:
             for relation in profile.relations:
                 for display in relation.display_fields:

@@ -415,3 +415,78 @@ Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capab
 应用验收的系统高对比切换只在显式 `GITHUB_ACTIONS=true` 且 `CI=true` 的受控 Windows runner 中进行，
 QA 父进程先保存原 flags/方案、按闭集操作切换，并在正常结束、失败和 driver 异常退出的 `finally` 恢复；
 恢复失败使验收失败。本机不修改系统设置。内容 scale 与实际窗口 DPI 分别记录，不把内容缩放称为物理 DPI 变更。
+
+
+### Plugin API 3.x 原生文件、附件和数据 IO
+
+`createSurfaceClient(surfaceToken)` 的 `file` 接口复用 SDK 的 `ReadGrant` / `WriteGrant`。
+`permissions.files` 必须显式声明 `pickRead` / `pickWrite`。选择与覆盖提示由原生 Host 完成，
+取消返回 `null`。插件只收到 grantId、显示文件名与媒体类型，不收到路径。
+每个 surface 最多持有 8 个文件 grant（普通文件与 IO 来源/目标共享），生命周期 5 分钟；普通文件最多 1 MiB，按
+256 KiB 分块传输。`read()` / `write()` 一次消费，结束或 `dispose()` 释放。
+`mediaTypes` 是调用方的类型提示，授权仍以用户在原生文件选择器中的实际选择为准。
+
+```ts
+const source = await api.file.pickRead({ mediaTypes: ["text/plain"] });
+if (source) consume(await source.read());
+const target = await api.file.pickWrite({ suggestedName: "result.txt", mediaType: "text/plain" });
+if (target) await target.write(new TextEncoder().encode("result"));
+```
+
+附件通过 `attachments.list({ collection, recordId, fieldId })` 返回本 surface 的 opaque
+`attachmentId`、文件名、类型和大小，最多缓存 64 个引用；重复列表复用引用。
+`attachments.read(attachmentId)` 按块重查 Go 当前安装与字段授权，最多读取 1 MiB。
+引用不包含 storedName、内部 stage handle、download capability 或路径，也不支持 iframe 下载。
+关联/替换/移除先调用 `attachments.previewChange({ collection, recordId, fieldId, expectedDigest,
+addFile, removeAttachmentIds })`，其中 addFile 触发原生选择；取消返回 null。
+返回的 planId 交给 `mutation.submit`，由原生确认批准精确计划。Go 将 stage 绑定原安装、
+surface、记录、字段及 Host 文件 run，并在 canonical `setAttachments` 事务中重查授权、
+row guard、MIME/大小/数量策略。拒绝、过期和退役会丢弃未用 stage。
+
+导入/导出使用已有 `HostDataIoTaskRegistry`，SDK 只获得本 surface 的任务句柄。
+`task.status()` 读取进度/终态，`task.cancel()` 请求取消，`task.result(signal, onProgress)`
+等待结果并报告进度；没有列出、广播或取消其它 surface/平台任务的入口。
+普通请求与获准 IO 任务的取消回执各有 8 个槽，重复取消合并；SDK 对已知终态不再发送取消，
+Host 拒绝外来 taskId。
+导入源与导出目标由对应方法自行请求原生选择，不接受插件提供的路径或平台 grant。
+
+```ts
+const task = await api.data.previewImport({
+  collection, schemaRevision, mode: "create_only",
+  columnMapping: [{ sourceColumn: "名称", targetField: fieldId }],
+});
+if (task) {
+  const preview = await task.result(signal, showProgress);
+  if (preview.planId) await api.mutation.submit(preview.planId, signal);
+}
+const output = await api.data.export({ collection, fields: [fieldId],
+  query: { filters: [], sorts: [] }, format: "xlsx", suggestedName: "result.xlsx" });
+if (output) await output.result(signal, showProgress);
+```
+
+导入复用 Python `ImportService.preview` 和 Go import plan owner；Go 在事务中授权表、字段、
+操作及 canonical 关系目标。upsert 仅接受获准唯一键，并在确认前固定 create/update、目标 ID、
+规范化 values 与既有 row guard，提交时不重新匹配。最多单表 1000 行、768 KiB 导入计划；
+跨表写入不受支持。预览返回完整 summary 与最多 20 行/128 KiB 样本；有错误时 planId 为 null。
+预览不会按普通文件 EOF 规则消耗导入源。提交继续使用 `HostPluginTaskRegistry` 的原生精确确认。
+显式关系映射复用已有 resolver，但目标表及匹配字段必须获得当前授权。
+
+导出复用 `ExportService` 的 CSV/XLSX formatter，字段必须显式列举；隐藏 id 不自动加入，
+关系默认只输出原始 ID，不提供关系 display label 或附件 ZIP 导出。
+每一页以及原生最终保存前都复核当前安装/修订与表字段 grant，schema/data/clock 快照变化失败。
+插件数据 IO 新增独立的 32 MiB 来源/输出预算，区别于普通文件的 1 MiB；XLSX 来源另限
+128 MiB 展开内容及 4096 个 ZIP entry。格式化 spool 和最终 broker 均实施字节上限。
+每 surface 最多 8 个 IO 任务、8 个导入计划，Go 全局最多 128 个插件导入计划与 128 个 stage。
+这些是本插件入口的预算，不能推导为平台所有导出路径的既有保证。
+
+grant 绑定 surface token、installationId/revision/package、workspace epoch、Host run 和用途。
+关闭、禁用、安装替换、取消及 dispose 回收本 scope 的资源；旧 handle 不能转交新页面。
+Go 撤权与 OS 文件替换不是跨系统原子事务：Go 授权后，最终替换仍必须经过 broker 的同步
+workspace/generation/surface 门禁。已验证保存成功保持成功；缺少回执或输出任务异常保留
+`plugin_commit_unknown` / unknown，不自动重放。清理/取消有界等待，无法确认停止时保留未知，
+Go 临时计划仍受固定 TTL 与容量限制。常用拒绝码还有 `plugin_file_denied`、`plugin_file_limit`、
+`plugin_read_denied`、`plugin_write_denied`、`plugin_plan_limit`、`plugin_plan_stale`、
+`plugin_cursor_stale` 和 canonical mutation 冲突码。
+
+新增 DataIO principal 只存在于 Host-only 任务组合和现有鉴权 surface HTTP 端口；没有新增
+Product RPC 或旧 Worker 能力。API 1.x/2.x 的 grant、任务与读取行为继续使用原契约。

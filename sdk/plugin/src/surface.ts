@@ -1,5 +1,6 @@
 import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryPage, DataQueryRequest } from "./data.js";
 import type { CommandContext, JsonObject, JsonValue } from "./types.js";
+import type { ReadGrant, WriteGrant } from "./capabilities.js";
 import { PluginCapabilityError } from "./capabilities.js";
 
 export const SURFACE_API_CONTRACT = "vibetable.plugin-api.v1";
@@ -19,6 +20,27 @@ export interface SurfaceMutationOutcome { readonly status: "succeeded" | "reject
 export type SurfaceDataEvent = { readonly type: "invalidated"; readonly collection: string; readonly sequence: number }
   | { readonly type: "closed"; readonly code: string };
 export interface SurfaceSubscription { readonly subscriptionId: string }
+export interface SurfaceIoStatus<T> {
+  readonly taskId: string;
+  readonly state: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "aborted";
+  readonly progress: { readonly done: number; readonly total: number; readonly message: string };
+  readonly result?: T;
+  readonly outcome?: "unknown";
+}
+export interface SurfaceIoTask<T> {
+  readonly taskId: string;
+  status(): Promise<SurfaceIoStatus<T>>;
+  cancel(): Promise<void>;
+  result(signal?: AbortSignal, progress?: (value: SurfaceIoStatus<T>["progress"]) => void): Promise<T>;
+}
+export interface SurfaceImportPreview {
+  readonly planId: string | null;
+  readonly affectedCount: number;
+  readonly summary: { readonly totalRows: number; readonly validRows: number; readonly errorRows: number };
+  readonly rows: readonly { readonly sourceRow: number; readonly values: JsonObject; readonly diagnostics: readonly JsonObject[] }[];
+}
+export interface SurfaceAttachment { readonly attachmentId: string; readonly displayName: string; readonly mediaType: string; readonly sizeBytes: number }
+export interface SurfaceAttachmentTarget { readonly collection: string; readonly recordId: string; readonly fieldId: string }
 export interface SurfaceTransport {
   postMessage(message: unknown): void;
   addEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
@@ -33,6 +55,19 @@ export interface SurfaceCapabilities {
     /** Unknown handles are a no-op; repeated in-flight releases share the same acknowledgement.
      * Normal requests and owned-handle releases each have eight slots. Failed releases retain ownership for explicit retry/dispose. */
     unsubscribe(subscriptionId: string): Promise<void>;
+    previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only" | "upsert"; readonly upsertKey?: string;
+      readonly columnMapping?: readonly { readonly sourceColumn: string; readonly targetField: string; readonly relationId?: string; readonly matchField?: string }[] }): Promise<SurfaceIoTask<SurfaceImportPreview> | null>;
+    export(request: { readonly collection: string; readonly fields: readonly string[]; readonly query?: Omit<DataQueryRequest, "contract" | "collection" | "fields" | "cursor" | "pageSize">;
+      readonly format: "csv" | "xlsx"; readonly suggestedName: string }): Promise<SurfaceIoTask<{ readonly rowsWritten: number; readonly outputDisplayName: string }> | null>;
+  };
+  readonly file: {
+    pickRead(options?: { readonly mediaTypes?: readonly string[] }): Promise<ReadGrant | null>;
+    pickWrite(options: { readonly suggestedName: string; readonly mediaType: string }): Promise<WriteGrant | null>;
+  };
+  readonly attachments: {
+    list(target: SurfaceAttachmentTarget): Promise<readonly SurfaceAttachment[]>;
+    read(attachmentId: string): Promise<Uint8Array>;
+    previewChange(request: SurfaceAttachmentTarget & { readonly expectedDigest: string; readonly addFile?: boolean; readonly removeAttachmentIds?: readonly string[] }): Promise<SurfaceMutationPreview | null>;
   };
   readonly storage: { get(key: string): Promise<JsonValue>; set(key: string, value: JsonValue): Promise<void>; delete(key: string): Promise<void> };
   readonly mutation: {
@@ -51,6 +86,10 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const channel = transport ?? browser.chrome?.webview;
   if (!channel || !surfaceToken) throw new PluginCapabilityError("plugin_api_unsupported", "A plugin surface Host is required.");
   let closed = false;
+  const files = new Set<string>();
+  let pickingFiles = 0;
+  const ioTasks = new Map<string, SurfaceIoTask<unknown>>();
+  let ioStarting = 0;
   const subscriptions = new Map<string, { collection: string; listener: (event: SurfaceDataEvent) => void; sequence: number; cleanup: () => void; stopped: boolean; release?: Promise<void> }>();
   type Notice = { event?: string; subscriptionId?: string; collection?: string; sequence?: number; code?: string };
   // A Host notification may beat the subscribe reply; retain one per pending handle, at most eight.
@@ -102,22 +141,23 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   function call<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
     if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
     const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe").length;
-    if (method === "data.unsubscribe" ? releases >= 8 : pending.size - releases >= 8)
+    const ioCancels = [...pending.values()].filter(request => request.method === "data.io.cancel").length;
+    if (method === "data.unsubscribe" ? releases >= 8 : method === "data.io.cancel" ? ioCancels >= 8 : pending.size - releases - ioCancels >= 8)
       return Promise.reject(new PluginCapabilityError("plugin_concurrency_limit", "Too many requests."));
     if (signal?.aborted) return Promise.reject(new PluginCapabilityError("plugin_cancel_requested", "Request cancelled."));
     const requestId = crypto.randomUUID();
     return new Promise<T>((resolve, reject) => {
       const cancel = (): void => {
         try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId: crypto.randomUUID(), method: "request.cancel", params: { requestId } }); }
-        catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
+        catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError(method === "mutation.submit" || method === "file.write" ? "plugin_commit_unknown" : "plugin_transport_failed", "Cancellation transport failed; no automatic retry.")); }
       };
       const cleanup = (): void => signal?.removeEventListener("abort", cancel);
       const timer = setTimeout(() => {
         pending.delete(requestId);
         cleanup();
         cancel();
-        reject(new PluginCapabilityError(method === "mutation.submit" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
-      }, method === "mutation.submit" ? 125_000 : 20_000);
+        reject(new PluginCapabilityError(method === "mutation.submit" || method === "file.write" ? "plugin_commit_unknown" : "plugin_timeout", "Request deadline exceeded; no automatic retry."));
+      }, method === "mutation.submit" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "attachments.previewChange" ? 125_000 : 20_000);
       pending.set(requestId, { method, resolve: value => resolve(value as T), reject, timer, cleanup });
       signal?.addEventListener("abort", cancel, { once: true });
       try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); }
@@ -158,9 +198,120 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       return result;
     } finally { subscribing--; if (subscribing === 0) early.clear(); }
   }
+  async function pick(write: boolean, options: unknown): Promise<ReadGrant | WriteGrant | null> {
+    if (files.size + pickingFiles >= 8) throw new PluginCapabilityError("plugin_file_limit", "Too many file grants.");
+    pickingFiles++;
+    try {
+      const grant = await call<{ grantId: string; displayName: string; mediaType: string } | null>(write ? "file.pickWrite" : "file.pickRead", options);
+      if (!grant) return null;
+      if (closed) { release("file.release", { grantId: grant.grantId }); throw new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."); }
+      files.add(grant.grantId);
+      let used = false;
+      const begin = (): void => {
+        if (used || !files.has(grant.grantId)) throw new PluginCapabilityError("plugin_file_denied", "File grant is unavailable.");
+        used = true;
+      };
+      const finish = (): void => { files.delete(grant.grantId); release("file.release", { grantId: grant.grantId }); };
+      if (write) return { ...grant, write: async (content: Uint8Array): Promise<void> => {
+        begin();
+        try {
+          if (content.byteLength > 1024 * 1024) throw new PluginCapabilityError("plugin_file_limit", "File exceeds 1 MiB.");
+          let offset = 0;
+          do {
+            const bytes = content.subarray(offset, offset + 256 * 1024);
+            let binary = ""; for (const byte of bytes) binary += String.fromCharCode(byte);
+            const end = offset + bytes.length;
+            const receipt = await call<{ offset?: number; committed?: boolean; bytes?: number }>("file.write",
+              { grantId: grant.grantId, offset, base64: btoa(binary), finish: end === content.byteLength });
+            if (end === content.byteLength ? receipt.committed !== true || receipt.bytes !== end : receipt.offset !== end)
+              throw new PluginCapabilityError("plugin_commit_unknown", "File receipt is unknown; do not replay.");
+            offset = end;
+          } while (offset < content.byteLength);
+        } finally { finish(); }
+      } };
+      return { ...grant, read: async (): Promise<Uint8Array> => {
+        begin();
+        try {
+          const blocks: Uint8Array[] = []; let length = 0;
+          for (;;) {
+            const block = await call<{ base64: string; eof: boolean }>("file.read", { grantId: grant.grantId });
+            const binary = atob(block.base64);
+            if (binary.length > 256 * 1024 || length + binary.length > 1024 * 1024 || typeof block.eof !== "boolean" || binary.length === 0 && !block.eof)
+              throw new PluginCapabilityError("plugin_file_limit", "Invalid file block.");
+            const bytes = Uint8Array.from(binary, value => value.charCodeAt(0)); blocks.push(bytes); length += bytes.length;
+            if (block.eof) break;
+          }
+          const content = new Uint8Array(length); let offset = 0;
+          for (const block of blocks) { content.set(block, offset); offset += block.length; }
+          return content;
+        } finally { finish(); }
+      } };
+    } finally { pickingFiles--; }
+  }
+  async function startIo<T>(method: string, params: unknown): Promise<SurfaceIoTask<T> | null> {
+    if (ioTasks.size + ioStarting >= 8) throw new PluginCapabilityError("plugin_concurrency_limit", "Too many DataIO tasks.");
+    ioStarting++;
+    let started: { taskId: string } | null;
+    try { started = await call<{ taskId: string } | null>(method, params); } finally { ioStarting--; }
+    if (!started) return null;
+    let running: Promise<T> | undefined;
+    let cancelling: Promise<void> | undefined;
+    let terminal: SurfaceIoStatus<T> | undefined;
+    const task: SurfaceIoTask<T> = {
+      taskId: started.taskId,
+      status: async () => { if (terminal) return terminal;
+        const status = await call<SurfaceIoStatus<T>>("data.io.status", { taskId: started.taskId });
+        if (status.state !== "queued" && status.state !== "running") { terminal = status; ioTasks.delete(started.taskId); } return status; },
+      cancel: () => {
+        if (closed || !ioTasks.has(started.taskId)) return Promise.resolve();
+        return cancelling ??= call<void>("data.io.cancel", { taskId: started.taskId }).catch(error => { cancelling = undefined; throw error; });
+      },
+      result: (signal, progress) => running ??= (async (): Promise<T> => {
+        let cancelSent = false;
+        for (;;) {
+          if (signal?.aborted && !cancelSent) { cancelSent = true; await task.cancel(); }
+          let status: SurfaceIoStatus<T>;
+          try { status = await task.status(); }
+          catch (error) { if (method === "data.export.start" && closed) throw new PluginCapabilityError("plugin_commit_unknown", "Surface closed before output receipt; no automatic replay."); throw error; }
+          if (progress) { try { progress(status.progress); } catch { /* Progress callbacks do not own task execution. */ } }
+          if (status.state === "succeeded") {
+            ioTasks.delete(started.taskId);
+            return status.result as T;
+          }
+          if (status.state !== "queued" && status.state !== "running") {
+            ioTasks.delete(started.taskId);
+            throw new PluginCapabilityError(status.state === "aborted" || status.outcome === "unknown" ? "plugin_commit_unknown" : status.state === "cancelled" ? "plugin_cancel_requested" : "plugin_data_io_failed", "DataIO task did not complete; no automatic replay.");
+          }
+          await new Promise<void>(resolve => setTimeout(resolve, 100));
+        }
+      })(),
+    };
+    ioTasks.set(started.taskId, task);
+    return task;
+  }
+  async function readAttachment(attachmentId: string): Promise<Uint8Array> {
+    const blocks: Uint8Array[] = []; let length = 0;
+    for (;;) {
+      const block = await call<{ base64: string; eof: boolean }>("attachments.read", { attachmentId, offset: length });
+      const binary = atob(block.base64);
+      if (binary.length > 256 * 1024 || length + binary.length > 1024 * 1024 || typeof block.eof !== "boolean" || binary.length === 0 && !block.eof)
+        throw new PluginCapabilityError("plugin_file_limit", "Invalid attachment block.");
+      blocks.push(Uint8Array.from(binary, value => value.charCodeAt(0))); length += binary.length;
+      if (block.eof) break;
+    }
+    const output = new Uint8Array(length); let offset = 0;
+    for (const block of blocks) { output.set(block, offset); offset += block.length; }
+    return output;
+  }
   return {
     context: { read: () => call("context.read", {}) },
-    data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe },
+    data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe,
+      previewImport: request => startIo("data.import.start", { ...request, mode: request.mode ?? "create_only", upsertKey: request.upsertKey ?? null, columnMapping: request.columnMapping ?? [] }),
+      export: request => startIo("data.export.start", { ...request, query: request.query ?? {} }) },
+    file: { pickRead: options => pick(false, { mediaTypes: options?.mediaTypes ?? [] }) as Promise<ReadGrant | null>,
+      pickWrite: options => pick(true, options) as Promise<WriteGrant | null> },
+    attachments: { list: async target => (await call<{ items: SurfaceAttachment[] }>("attachments.list", target)).items,
+      read: readAttachment, previewChange: request => call("attachments.previewChange", { ...request, addFile: request.addFile ?? false, removeAttachmentIds: request.removeAttachmentIds ?? [] }) },
     storage: { get: key => call("storage.get", { key }), set: (key, value) => call("storage.set", { key, value }), delete: key => call("storage.delete", { key }) },
     mutation: { preview: plan => call("mutation.preview", plan), submit: (planId, signal) => call("mutation.submit", { planId }, signal) },
     output: { print: signal => call("output.print", {}, signal) },
@@ -171,13 +322,17 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
         subscription.cleanup(); release("data.unsubscribe", { subscriptionId });
       }
       subscriptions.clear(); early.clear();
+      for (const grantId of files) release("file.release", { grantId });
+      files.clear();
+      for (const taskId of ioTasks.keys()) release("data.io.cancel", { taskId });
+      ioTasks.clear();
       channel.removeEventListener("message", receive);
       // A sent submit may already be committing; dispose reports unknown and resends nothing.
       for (const [requestId, request] of pending) {
-        if (request.method === "data.subscribe") release("request.cancel", { requestId });
+        if (["data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
         clearTimeout(request.timer);
         request.cleanup();
-        request.reject(request.method === "mutation.submit"
+        request.reject((request.method === "mutation.submit" || request.method === "file.write")
           ? new PluginCapabilityError("plugin_commit_unknown", "Plugin surface closed before the commit receipt; outcome unknown; no automatic retry.")
           : new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
       }

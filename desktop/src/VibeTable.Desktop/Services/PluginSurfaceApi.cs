@@ -26,6 +26,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private readonly Func<string, Task>? _releasePrint;
     private readonly ConcurrentDictionary<string, SurfaceState> _states = new(StringComparer.Ordinal);
     private sealed record NativeWrite(PluginProjectContext Context, TaskCompletionSource Completion);
+    private readonly ConcurrentDictionary<string, Task> _cleanups = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, NativeWrite> _writes = new(StringComparer.Ordinal);
 
     internal PluginSurfaceApi(PluginSurfaceSessionManager surfaces, HostPluginTaskRegistry tasks,
@@ -35,9 +36,12 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         Func<ProductSidecarGenerationSnapshot, Func<bool>, bool>? subscriptionSource = null,
         Func<PluginSurfaceSession, string, CancellationToken, Task<bool>>? preparePrint = null,
         Action? showPrint = null,
-        Func<string, Task>? releasePrint = null)
+        Func<string, Task>? releasePrint = null,
+        Func<HostSessionFileBroker>? files = null, INativeProductFileHost? fileHost = null,
+        Func<Func<string?>, Task<string?>>? pickFile = null, Func<PluginDataIoPort>? dataIo = null)
     {
         _preparePrint = preparePrint; _showPrint = showPrint; _releasePrint = releasePrint;
+        _dataIo = dataIo; _files = files; _fileHost = fileHost; _pickFile = pickFile;
         _surfaces = surfaces; _tasks = tasks; _generation = generation; _reply = reply;
         _subscriptionSource = subscriptionSource;
         _surfaces.Closed += RetireState;
@@ -73,16 +77,27 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 || state.Identity.ActiveCollection != surface.ActiveCollection || state.Identity.ActionId != surface.ActionId
                 || state.Identity.Risk != surface.Risk || state.Identity.Entry != surface.Entry
                 || state.Identity.Presentation != surface.Presentation) throw Error("plugin_session_stale");
-            foreach (var expired in state.Plans.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Plans.TryRemove(expired.Key, out _);
+            foreach (var expired in state.Plans.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow))
+                if (state.Plans.TryRemove(expired.Key, out var oldPlan)) { ReleaseImportSource(oldPlan.Source); TrackCleanup(DropAttachmentStagesAsync(surface, oldPlan.Attachments)); }
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
-            deadline.CancelAfter(request.Method == "mutation.submit" ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
+            deadline.CancelAfter((request.Method == "mutation.submit" || request.Method is "file.pickRead" or "file.pickWrite" or "data.import.start" or "data.export.start" or "attachments.previewChange") ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(15));
             if (request.Method == "request.cancel")
             {
                 var target = ReadHandle(request.Params, "requestId");
                 CancelSubscriptionRequest(frameToken, target);
                 if (state.Pending.TryGetValue(target, out var active)) { state.Cancelled[target] = true; await active.CancelAsync(); }
                 return Reply(requestId, new { cancelRequested = true });
+            }
+            if (request.Method == "data.io.cancel")
+            {
+                await HandleDataIoAsync(surface, state, request.Method, request.Params, deadline.Token);
+                return Reply(requestId, new { cancelRequested = true });
+            }
+            if (request.Method == "file.release")
+            {
+                await HandleFileAsync(surface, state, request.Method, request.Params, deadline.Token);
+                return Reply(requestId, new { released = true });
             }
             // Like cancellation, releasing a handle must remain possible when normal requests fill the budget.
             if (request.Method == "data.unsubscribe")
@@ -149,6 +164,25 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "data.describe":
                     result = await CallAsync(surface, request.Method, request.Params, deadline.Token);
                     break;
+                case "attachments.list":
+                case "attachments.read":
+                case "attachments.previewChange":
+                    result = await HandleAttachmentAsync(surface, state, request.Method, request.Params, deadline.Token);
+                    break;
+                case "data.import.start":
+                case "data.export.start":
+                case "data.io.status":
+                case "data.io.cancel":
+                    result = await HandleDataIoAsync(surface, state, request.Method, request.Params, deadline.Token);
+                    break;
+                case "file.pickRead":
+                case "file.pickWrite":
+                case "file.read":
+                case "file.write":
+                case "file.release":
+                    result = await HandleFileAsync(surface, state, request.Method, request.Params, deadline.Token);
+                    if (result is JsonElement fileReceipt && fileReceipt.TryGetProperty("committed", out var fileCommitted) && fileCommitted.ValueKind == JsonValueKind.True) committed = true;
+                    break;
                 case "data.subscribe":
                     result = await SubscribeAsync(surface, state, requestId, request.Params, deadline.Token);
                     break;
@@ -178,10 +212,12 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 case "mutation.preview":
                     {
                         if (surface.Risk is not ("write" or "destructive")) throw Error("plugin_write_denied");
+                        if (request.Params.GetProperty("operations").EnumerateArray().Any(item => item.GetProperty("kind").GetString() == "setAttachments")) throw Error("plugin_capability_invalid");
                         JsonElement preview = await CallAsync(surface, request.Method, request.Params, deadline.Token);
                         if (state.Plans.Count >= 8) throw Error("plugin_plan_limit");
                         string handle = Guid.NewGuid().ToString("N");
-                        state.Plans[handle] = new(request.Params.Clone(), preview.GetProperty("affectedCount").GetInt32(), DateTimeOffset.UtcNow.AddMinutes(2));
+                        if (!_surfaces.TryUseCurrent(surface, () => !state.Lifetime.IsCancellationRequested && state.Plans.Count < 8
+                            && state.Plans.TryAdd(handle, new Plan(request.Params.Clone(), preview.GetProperty("affectedCount").GetInt32(), DateTimeOffset.UtcNow.AddMinutes(2))))) throw Error("plugin_plan_limit");
                         result = new { planId = handle, affectedCount = preview.GetProperty("affectedCount").GetInt32() };
                         break;
                     }
@@ -196,7 +232,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                         var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
                             plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
                         var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
-                        var task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless");
+                        var task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless" || plan.Source is not null || plan.Attachments is not null);
                         _reply.PostNotification("plugin.task.changed", task.Envelope);
                         using var operation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, task.Token);
                         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -206,6 +242,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                         string errorCode = "";
                         try
                         {
+                            if (plan.Source is { } importSource)
+                                await CallAsync(surface, "import.bind", JsonSerializer.SerializeToElement(new
+                                { contract = "vibetable.import-plans.v1", token = importSource.Token, attempt = importSource.Attempt, idempotencyPrefix = runId }), operation.Token);
                             await CallAsync(surface, "audit.start", JsonSerializer.SerializeToElement(new { taskId, plan = plan.Payload }, Json), operation.Token, commitId: runId);
                             started = true;
                             // A plugin can request confirmation, but cannot supply or resolve a decision.
@@ -257,6 +296,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                                     System.Diagnostics.Trace.TraceWarning($"Native plugin terminal audit unavailable for run {runId}; durable started event remains unknown.");
                                 }
                             }
+                            await SettleImportSourceAsync(surface, plan.Source, outcome);
+                            await DropAttachmentStagesAsync(surface, plan.Attachments);
                             _writes.TryRemove(runId, out _);
                             completion.TrySetResult();
                         }
@@ -344,31 +385,20 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         CancellationToken token, string? cursor = null, JsonElement? dependencies = null, string? commitId = null,
         ProductSidecarGenerationSnapshot? auditGeneration = null)
     {
-        bool terminalAudit = method == "audit.finish" && auditGeneration is not null;
+        bool terminalAudit = (method is "audit.finish" or "attachment.drop" or "import.drop" or "import.settle") && auditGeneration is not null;
         if (!terminalAudit) CurrentSurface(surface.SurfaceToken, surface.DocumentUri.AbsoluteUri);
         var generation = auditGeneration ?? _generation() ?? throw Error("plugin_session_stale");
-        var payload = new JsonObject
-        {
-            ["method"] = method,
-            ["projectKey"] = surface.ProjectKey,
-            ["pluginId"] = surface.PluginId,
-            ["actionId"] = surface.ActionId,
-            ["entry"] = surface.Entry,
-            ["packageHash"] = surface.Revision.PackageHash,
-            ["sessionEpoch"] = surface.Context!.SessionGeneration,
-            ["installationRevision"] = surface.InstallationRevision,
-            ["installationId"] = surface.InstallationId,
-            ["activeCollection"] = surface.ActiveCollection,
-            ["requestId"] = commitId ?? Guid.NewGuid().ToString("N"),
-            ["request"] = JsonNode.Parse(parameters.GetRawText()),
-        };
+        var payload = SurfacePrincipal(surface);
+        payload["method"] = method;
+        payload["requestId"] = commitId ?? Guid.NewGuid().ToString("N");
+        payload["request"] = JsonNode.Parse(parameters.GetRawText());
         if (cursor is not null) payload["cursor"] = cursor;
         if (dependencies is not null) payload["dependencies"] = JsonNode.Parse(dependencies.Value.GetRawText());
         if (method == "context.read" && surface.InvocationContext is { } invocation)
             payload["invocationContext"] = JsonSerializer.SerializeToNode(new
             { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json);
         byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString());
-        if (bytes.Length > MaxBytes) throw Error("plugin_message_too_large");
+        if (bytes.Length > (method == "attachment.stage" ? 2 * MaxBytes : MaxBytes)) throw Error("plugin_message_too_large");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(generation.Context.Origin, "/api/vibetable/v3/plugins/surface"));
         request.Headers.Add(generation.Context.SessionHeaderName, generation.Context.SessionSecret);
         request.Content = new ByteArrayContent(bytes);
@@ -407,7 +437,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         foreach (var row in rows.EnumerateArray())
         {
             var operation = plan.GetProperty("operations")[index++];
-            string expected = operation.GetProperty("kind").GetString() switch { "create" => "insert", "delete" => "delete", _ => "update" };
+            string expected = operation.GetProperty("kind").GetString() switch { "create" => "insert", "delete" => "delete", "setAttachments" => "setAttachments", _ => "update" };
             if (!row.TryGetProperty("operation", out var kind) || kind.GetString() != expected
                 || !row.TryGetProperty("recordId", out var id) || id.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(id.GetString())
                 || expected != "insert" && id.GetString() != operation.GetProperty("primaryKey").GetString()) throw Error("plugin_commit_unknown");
@@ -427,20 +457,33 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     private void RetireState(string token)
     {
         ReleaseSubscriptions(token);
+        ReleaseFiles(token);
+        ReleaseDataIo(token);
+        _attachmentRefs.TryRemove(token, out _);
         if (_states.TryRemove(token, out var state))
-        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); }
+        { state.Lifetime.Cancel(); state.Lifetime.Dispose(); foreach (var plan in state.Plans.Values) { ReleaseImportSource(plan.Source); TrackCleanup(DropAttachmentStagesAsync(state.Identity, plan.Attachments)); } state.Plans.Clear(); state.Cursors.Clear(); }
     }
-    public void Dispose() { _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _http.Dispose(); }
+    public void Dispose() { _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _ = DisposeHttpAsync(); }
+    private void TrackCleanup(Task cleanup)
+    {
+        if (cleanup.IsCompleted) return;
+        string id = Guid.NewGuid().ToString("N"); _cleanups[id] = cleanup;
+        _ = ObserveCleanupAsync(id, cleanup);
+    }
+    private async Task ObserveCleanupAsync(string id, Task cleanup)
+    { try { await cleanup.ConfigureAwait(false); } finally { _cleanups.TryRemove(id, out _); } }
+    private async Task DisposeHttpAsync()
+    { try { await DrainAsync().ConfigureAwait(false); } finally { _http.Dispose(); } }
     internal async Task DrainAsync(PluginProjectContext? nextContext = null)
     {
         foreach (var pair in _states) if (pair.Value.Identity.Context != nextContext) Retire(pair.Key);
-        try { await Task.WhenAll(_writes.Values.Where(value => value.Context != nextContext).Select(value => value.Completion.Task)).WaitAsync(TimeSpan.FromSeconds(6)); }
+        try { await Task.WhenAll(_writes.Values.Where(value => value.Context != nextContext).Select(value => value.Completion.Task).Concat(_cleanups.Values)).WaitAsync(TimeSpan.FromSeconds(6)); }
         catch (TimeoutException) { /* Unfinished durable started events remain unknown. */ }
     }
     internal bool HasWrites => !_writes.IsEmpty;
     private sealed record ApiRequest(string Contract, string SurfaceToken, string RequestId, string Method, JsonElement Params);
     private sealed record Cursor(JsonObject Query, string GoCursor, JsonElement Dependencies, DateTimeOffset Expires);
-    private sealed record Plan(JsonElement Payload, int Count, DateTimeOffset Expires);
+    private sealed record Plan(JsonElement Payload, int Count, DateTimeOffset Expires, ImportSource? Source = null, AttachmentStages? Attachments = null);
     private sealed class SurfaceState(PluginSurfaceSession identity)
     {
         internal Func<string, Func<Func<bool>, bool>, CancellationToken, Task<bool>>? FrameNotifier { get; set; }

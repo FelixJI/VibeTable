@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import csv
+import io
+
+import pytest
+from openpyxl import load_workbook
+
+from backend.adapters.pocketbase.client import PocketBaseClient
+from backend.adapters.pocketbase.data_io import ProductDataIoRuntime
+from backend.application.host_files import HostFiles
+from backend.application.task_runtime import HostExecutionRuntime
+from backend.application.task_service import TaskService
+from backend.contracts.task import StartTaskExecutionParams
+from tests.backend.host_files_fixture import LocalFilePeer
+
+
+class ScopedClient(PocketBaseClient):
+    def __init__(self):
+        self.calls = []
+        self.revoked = False
+
+    async def plugin_surface(self, principal, method, request, **kwargs):
+        self.calls.append((principal, method, request, kwargs))
+        if self.revoked:
+            raise PermissionError("installation revoked")
+        assert principal == {
+            "installationId": "host-owned",
+            "surfaceToken": "surface",
+            "installationRevision": 3,
+        }
+        if method == "data.ioProfile":
+            return {
+                "collection": "orders",
+                "schema_revision": "schema_1",
+                "fields": ["id", "title"],
+                "create_fields": ["title"],
+                "update_fields": ["title"],
+                "archive_field": None,
+                "date_updated_field": None,
+            }
+        if method == "import.preview":
+            return {"rows": [{"values": row, "diagnostics": []} for row in request["rows"]]}
+        if method == "import.mint":
+            assert request["rows"][0]["values"] == {"title": "synthetic"}
+            return {"token": "imp1.host-owned", "expiresAt": 9999999999}
+        assert method == "data.exportQuery"
+        assert request["fields"] == ["title"]
+        return {
+            "items": [{"title": f"row-{index}", "id": "must-not-export"} for index in range(100)],
+            "nextCursor": None,
+            "schemaRevision": "schema_1",
+            "dataRevision": 4,
+            "clockPeriod": "2026-10-15T09:00Z",
+            "filteredRows": 100,
+            "totalRows": 100,
+            "dependencies": {},
+            "complete": True,
+        }
+
+
+def scope():
+    return {
+        "principal": {
+            "installationId": "host-owned",
+            "surfaceToken": "surface",
+            "installationRevision": 3,
+        },
+        "runId": "host-run",
+        "fields": ["title"],
+        "query": {},
+    }
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+async def test_scoped_export_reuses_real_task_and_formatter_without_hidden_id(tmp_path, fmt):
+    peer = LocalFilePeer()
+    path = tmp_path / f"output.{fmt}"
+    grant = peer.grants.issue(purpose="export_target", direction="write", path=str(path))
+    # The fixture store returns a descriptor in the same shape as native grants.
+    grant_id = grant.grant_id
+    peer.runs[grant_id] = "host-run"
+    original = peer.call
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        return await original(action, params)
+
+    reports = []
+
+    async def sink(value):
+        reports.append(value)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    tasks = TaskService(runtime, HostFiles(call))
+    client = ScopedClient()
+    ProductDataIoRuntime(client=client, task_service=tasks).register_tasks()
+    await tasks.start_execution(
+        StartTaskExecutionParams(
+            task_id="owned-task",
+            kind="data.export",
+            params={
+                "grantId": grant_id,
+                "collection": "orders",
+                "format": fmt,
+                "pluginScope": scope(),
+            },
+        )
+    )
+    import asyncio
+
+    for _ in range(100):
+        if reports and reports[-1].state in {"succeeded", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+    assert reports[-1].state == "succeeded", reports[-1].error
+    assert reports[-1].result.rows_written == 100
+    assert sum(method == "data.exportQuery" for _, method, _, _ in client.calls) == 1
+    assert next(params for action, params in calls if action == "openWrite")["runId"] == "host-run"
+    if fmt == "csv":
+        rows = list(csv.reader(io.StringIO(path.read_text(encoding="utf-8-sig"))))
+    else:
+        book = load_workbook(path, read_only=True)
+        try:
+            rows = [list(row) for row in book.active.iter_rows(values_only=True)]
+        finally:
+            book.close()
+    assert rows[0] == ["title"]
+    assert len(rows) == 101
+    assert "must-not-export" not in str(rows)
+
+
+async def test_scoped_import_uses_preview_and_go_plan_owner_without_platform_apply(tmp_path):
+    from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
+
+    peer = LocalFilePeer()
+    source = tmp_path / "source.csv"
+    source.write_text("title\nsynthetic\n", encoding="utf-8")
+    grant = peer.grants.issue(purpose="import_source", direction="read", path=str(source))
+    peer.runs[grant.grant_id] = "host-run"
+    client = ScopedClient()
+
+    async def progress(*_args):
+        pass
+
+    plan = await preview_plugin_import(
+        client,
+        peer.files,
+        {
+            "grantId": grant.grant_id,
+            "collection": "orders",
+            "schemaRevision": "schema_1",
+            "pluginScope": scope(),
+        },
+        progress,
+        lambda: False,
+    )
+    assert plan.rows[0].values == {"title": "synthetic"}
+    assert [method for _, method, _, _ in client.calls] == [
+        "data.ioProfile",
+        "import.preview",
+        "import.mint",
+    ]
+
+
+async def test_bound_data_io_spool_rejects_oversize_before_commit_and_never_drops_run():
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "output.csv"}
+        assert action == "finishWrite"
+        assert params["commit"] is False
+        return {"committed": False, "bytes": 0}
+
+    with pytest.raises(RuntimeError, match="byte budget"):
+        async with HostFiles(call).bound_run("host-run", maximum_bytes=8).write("grant") as target:
+            target.stream.write(b"123456789")
+    assert calls[0][1] == {"grantId": "grant", "runId": "host-run"}
+    assert all(action != "write" for action, _ in calls)
+
+
+def test_plugin_workbook_expansion_is_bounded_before_openpyxl_parses():
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    from backend.application.import_service import ImportFlowError, SourceFile
+
+    stream = io.BytesIO()
+    with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("large-entry", b"x" * 1024)
+    stream.seek(0)
+    with pytest.raises(ImportFlowError) as error:
+        SourceFile(stream, "source.xlsx", maximum_expanded_bytes=128).read_header_and_rows()
+    assert error.value.code == "import_source_expansion_limit"

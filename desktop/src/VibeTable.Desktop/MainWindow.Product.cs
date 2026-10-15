@@ -476,7 +476,11 @@ public partial class MainWindow : Window
             subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
             preparePrint: _webBridge.PreparePluginPrintAsync,
             showPrint: _dashboardOutput.ShowPluginPrintDialog,
-            releasePrint: _webBridge.ReleasePluginPrintAsync);
+            releasePrint: _webBridge.ReleasePluginPrintAsync,
+            files: () => _productGateway?.EnableHostFiles() ?? throw new BackendUnavailableException("Plugin files are unavailable."),
+            fileHost: new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
+            pickFile: pick => Dispatcher.InvokeAsync(pick).Task,
+            dataIo: () => _productGateway?.CapturePluginDataIo() ?? throw new BackendUnavailableException("Plugin DataIO is unavailable."));
         _applicationRequests = new ApplicationRequestController(
             _webBridge,
             new ApplicationRequestHost(

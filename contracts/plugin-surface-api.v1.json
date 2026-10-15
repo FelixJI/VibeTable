@@ -9,6 +9,18 @@
     "data.subscribe",
     "data.unsubscribe",
     "storage.get",
+    "file.pickRead",
+    "file.pickWrite",
+    "file.read",
+    "file.write",
+    "file.release",
+    "data.import.start",
+    "data.export.start",
+    "data.io.status",
+    "data.io.cancel",
+    "attachments.list",
+    "attachments.read",
+    "attachments.previewChange",
     "storage.set",
     "storage.delete",
     "mutation.preview",
@@ -29,7 +41,22 @@
     "subscriptionsPerSurface": 8,
     "subscriptionsTotal": 64,
     "subscriptionCollectionBytes": 128,
-    "printHeightCssPixels": 100000
+    "printHeightCssPixels": 100000,
+    "fileBytes": 1048576,
+    "fileBlockBytes": 262144,
+    "fileGrantsPerSurface": 8,
+    "fileGrantSeconds": 300,
+    "pluginDataIoBytes": 33554432,
+    "dataIoTasksPerSurface": 8,
+    "attachmentHandlesPerSurface": 64,
+    "stagedPluginAttachments": 128,
+    "importPlanBytes": 786432,
+    "importSampleRows": 20,
+    "importSampleBytes": 131072,
+    "pluginWorkbookExpandedBytes": 134217728,
+    "pluginWorkbookEntries": 4096,
+    "pluginImportPlansTotal": 128,
+    "ownedDataIoCancelAcknowledgements": 8
   },
   "storageKeyPattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
   "notifications": [
@@ -58,5 +85,42 @@
       "plugin_cursor_stale",
       "plugin_subscription_failed"
     ]
+  },
+  "files": {
+    "permissions": [
+      "pickRead",
+      "pickWrite"
+    ],
+    "paths": "native Host only",
+    "ownership": "surface, installation id/revision/package, workspace epoch, Host run and purpose",
+    "errors": [
+      "plugin_file_denied",
+      "plugin_file_limit",
+      "plugin_commit_unknown"
+    ]
+  },
+  "dataIo": {
+    "tasks": "existing HostDataIoTaskRegistry only; scoped handles; status polling",
+    "import": "Python preview, Go plan owner; upsert frozen before native confirmation; canonical single-table mutation <=1000",
+    "export": "explicit fields and authorized query; CSV/XLSX ExportService; raw relation ids only",
+    "outputReceipt": "verified success is sticky; lost receipt is unknown and never replayed",
+    "files": "Host-chosen import/export purpose; same broker; 32 MiB new plugin policy distinct from ordinary 1 MiB",
+    "errors": [
+      "plugin_file_denied",
+      "plugin_read_denied",
+      "plugin_write_denied",
+      "plugin_cursor_stale",
+      "plugin_plan_limit",
+      "plugin_plan_stale",
+      "plugin_data_io_failed",
+      "plugin_commit_unknown",
+      "plugin_cancel_requested"
+    ],
+    "importPreview": "up to 20 sample rows / 128 KiB; summary covers the complete <=1000-row plan; invalid preview has null planId"
+  },
+  "attachments": {
+    "handles": "surface-owned opaque references; no raw staged handles, stored names or download tickets",
+    "write": "Host-native file selection, staged principal/record/field/file binding, canonical setAttachments and native confirmation",
+    "read": "current Go installation and field grant checked for each bounded block"
   }
 }

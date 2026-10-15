@@ -202,11 +202,13 @@ class SourceFile:
         *,
         check: Check = lambda: None,
         report: Report = lambda *_: None,
+        maximum_expanded_bytes: int | None = None,
     ) -> None:
         self._check = check
         self._report = report
         self._stream = cast(BinaryIO, CheckedStream(stream, check))
         self._display_name = display_name
+        self._maximum_expanded_bytes = maximum_expanded_bytes
 
     def read_header_and_rows(
         self,
@@ -249,6 +251,20 @@ class SourceFile:
         from openpyxl.styles.numbers import is_datetime
         from openpyxl.utils.datetime import CALENDAR_WINDOWS_1900
 
+        if self._maximum_expanded_bytes is not None:
+            from zipfile import ZipFile
+
+            with ZipFile(self._stream) as archive:
+                entries = archive.infolist()
+                if (
+                    len(entries) > 4096
+                    or sum(entry.file_size for entry in entries) > self._maximum_expanded_bytes
+                ):
+                    raise ImportFlowError(
+                        "workbook exceeds the plugin expansion budget",
+                        code="import_source_expansion_limit",
+                    )
+            self._stream.seek(0)
         wb = load_workbook(self._stream, read_only=True, data_only=True)
         try:
             ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.active
@@ -463,11 +479,13 @@ class ImportService:
         profiles: dict[str, CollectionProfile],
         files: HostFiles,
         relation_provider: RelationImportProvider | None = None,
+        maximum_source_expansion_bytes: int | None = None,
     ) -> None:
         self._bulk = bulk
         self._profiles = profiles
         self._files = files
         self._relation_provider = relation_provider
+        self._maximum_source_expansion_bytes = maximum_source_expansion_bytes
         # Serializes reuse of this service instance only; product operations use
         # separate instances. Cross-operation plan consumption and idempotency
         # binding belong to the Go import plan owner's staged/settled lifecycle.
@@ -495,7 +513,11 @@ class ImportService:
         ) as source:
             header, rows, source_hash = await run_file_work(
                 lambda check, report: SourceFile(
-                    source.stream, source.display_name, check=check, report=report
+                    source.stream,
+                    source.display_name,
+                    check=check,
+                    report=report,
+                    maximum_expanded_bytes=self._maximum_source_expansion_bytes,
                 ).read_header_and_rows(),
                 cancelled=cancelled,
                 progress=progress,

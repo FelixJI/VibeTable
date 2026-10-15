@@ -248,6 +248,16 @@ class ProductDataIoRuntime:
             async def progress(done: int, total: int, message: str) -> None:
                 await reporter.report(done=done, total=total, message=message)
 
+            if "pluginScope" in raw_params:
+                from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
+
+                return await preview_plugin_import(
+                    self._client,
+                    self._task_service.files,
+                    raw_params,
+                    progress,
+                    lambda: token.cancelled,
+                )
             return await self.preview_import(
                 PreviewImportParams.model_validate(raw_params),
                 progress=progress,
@@ -279,13 +289,21 @@ class ProductDataIoRuntime:
             token: CancellationToken,
             raw_params: JsonObject,
         ) -> ExportResult:
-            params = ExportParams.model_validate(raw_params)
-
             async def progress(done: int, total: int, message: str) -> None:
                 await reporter.report(done=done, total=total, message=message)
 
+            if "pluginScope" in raw_params:
+                from backend.adapters.pocketbase.plugin_data_io import export_plugin_data
+
+                return await export_plugin_data(
+                    self._client,
+                    self._task_service.files,
+                    raw_params,
+                    progress,
+                    lambda: token.cancelled,
+                )
             return await self.export(
-                params,
+                ExportParams.model_validate(raw_params),
                 progress=progress,
                 cancelled=lambda: token.cancelled,
             )

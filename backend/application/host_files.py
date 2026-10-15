@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Buffer, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
-from io import TextIOWrapper
+from io import RawIOBase, TextIOWrapper
 from tempfile import SpooledTemporaryFile
 from typing import BinaryIO, cast
 
@@ -41,8 +41,19 @@ def text_stream(stream: BinaryIO) -> Iterator[TextIOWrapper]:
 
 
 class HostFiles:
-    def __init__(self, call: HostFileCall) -> None:
+    def __init__(self, call: HostFileCall, maximum_bytes: int | None = None) -> None:
         self._call = call
+        self._maximum_bytes = maximum_bytes
+
+    def bound_run(self, run_id: str, maximum_bytes: int = 32 * 1024 * 1024) -> HostFiles:
+        """Host-selected plugin DataIO run; never convert it to a product grant."""
+
+        async def call(action: str, params: JsonObject) -> JsonObject:
+            if action in {"describe", "openRead", "openWrite"}:
+                params = {**params, "runId": run_id}
+            return await self._call(action, params)
+
+        return HostFiles(call, maximum_bytes)
 
     async def describe(self, grant_id: str) -> SessionPathGrant:
         return SessionPathGrant.model_validate(await self._call("describe", {"grantId": grant_id}))
@@ -74,6 +85,8 @@ class HostFiles:
                         raise RuntimeError("Invalid Host file block")
                     spool.write(content)
                     read_bytes += len(content)
+                    if self._maximum_bytes is not None and read_bytes > self._maximum_bytes:
+                        raise RuntimeError("Plugin DataIO source exceeds its byte budget")
                     if progress:
                         await progress(0, 0, f"读取来源文件：{read_bytes} 字节")
                     if block["eof"]:
@@ -96,7 +109,12 @@ class HostFiles:
         finishing = False
         with SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as spool:
             try:
-                yield FileBuffer(cast(BinaryIO, spool), _string(opened, "displayName"))
+                output = (
+                    _BoundedWriter(cast(BinaryIO, spool), self._maximum_bytes)
+                    if self._maximum_bytes is not None
+                    else spool
+                )
+                yield FileBuffer(cast(BinaryIO, output), _string(opened, "displayName"))
                 spool.seek(0)
                 offset = 0
                 while content := spool.read(BLOCK_BYTES):
@@ -181,3 +199,38 @@ def _string(reply: JsonObject, key: str) -> str:
     if not isinstance(value, str):
         raise RuntimeError(f"Invalid Host file {key} acknowledgement")
     return value
+
+
+class _BoundedWriter(RawIOBase):
+    """Bound formatter output before a spooled file can grow beyond the plugin budget."""
+
+    def __init__(self, stream: BinaryIO, maximum: int) -> None:
+        self._stream = stream
+        self._maximum = maximum
+
+    def writable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._stream.tell()
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._stream.seek(offset, whence)
+
+    def write(self, content: Buffer) -> int:
+        if self.tell() + memoryview(content).nbytes > self._maximum:
+            raise RuntimeError("Plugin DataIO output exceeds its byte budget")
+        return self._stream.write(content)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def flush(self) -> None:
+        if not self._stream.closed:
+            self._stream.flush()
