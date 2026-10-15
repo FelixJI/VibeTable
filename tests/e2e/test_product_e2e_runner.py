@@ -7324,3 +7324,117 @@ def test_plugin_contrast_cleanup_failure_preserves_original_node_error(
     assert cleanup["primaryError"] == (
         {"name": "RuntimeError", "message": "node failed before result"} if node_raises else primary
     )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "root",
+        "foreign",
+        "null",
+        "owner",
+        "denied",
+        "hung",
+        "sync-budget",
+        "request-budget",
+        "activation-budget",
+    ],
+)
+def test_native_foreground_null_observation_shares_budget_and_keeps_fail_closed(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [0.0]
+    current = [20]
+    calls: list[tuple[str, int]] = []
+    samples = [0]
+    owner = [100]
+
+    def foreground() -> int:
+        value = current[0]
+        if value == 0:
+            samples[0] += 1
+            if samples[0] > 1 and mode in {"root", "foreign"}:
+                current[0] = 10 if mode == "root" else 30
+                value = current[0]
+        return value
+
+    def activate(hwnd: int) -> bool:
+        calls.append(("activate", hwnd))
+        if mode == "activation-budget":
+            clock[0] = 1.5
+        return mode != "denied"
+
+    def synchronize(*args: object) -> bool:
+        assert isinstance(args[5], int)
+        calls.append(("synchronize", args[5]))
+        current[0] = 0
+        if mode == "owner":
+            owner[0] = 200
+        if mode in {"sync-budget", "activation-budget"}:
+            clock[0] = 1.9
+        return mode != "hung"
+
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    native.user32 = SimpleNamespace(
+        GetForegroundWindow=foreground,
+        SetForegroundWindow=activate,
+        SendMessageTimeoutW=synchronize,
+    )
+    native.owner = lambda hwnd: owner[0] if hwnd == 10 else 300
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    deadline = 0.03 if mode == "request-budget" else 15.0
+    if mode == "root":
+        native.foreground(10, 100, settle_deadline=deadline)
+        assert native.foreground_observation["afterHwnd"] == 10
+        assert native.foreground_observation["hostOwnerPid"] == 100
+    else:
+        with pytest.raises((OSError, ValueError)):
+            native.foreground(10, 100, settle_deadline=deadline)
+    assert [name for name, _ in calls].count("activate") == 1
+    if mode == "denied":
+        assert calls == [("activate", 10)]
+    else:
+        assert calls == [
+            ("activate", 10),
+            (
+                "synchronize",
+                30 if mode == "request-budget" else 500 if mode == "activation-budget" else 2000,
+            ),
+        ]
+    assert clock[0] <= min(deadline, 2.0)
+    if mode in {"null", "sync-budget", "request-budget", "activation-budget"}:
+        assert clock[0] == min(deadline, 2.0)
+        assert native.foreground_observation["afterHwnd"] == 0
+    if mode == "foreign":
+        assert clock[0] == 0.05
+        assert native.foreground_observation["afterHwnd"] == 30
+    if mode == "owner":
+        assert clock[0] == 0
+        assert native.foreground_observation["hostOwnerPid"] == 200
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_native_foreground_settling_requires_accepted_activation_and_live_budget(
+    expired: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    samples = iter([20 if expired else 10, 0, 10])
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    native.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: next(samples),
+        SetForegroundWindow=lambda hwnd: calls.append(hwnd) or True,
+    )
+    native.owner = lambda _hwnd: 100
+    monkeypatch.setattr(runner.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda _seconds: pytest.fail("no accepted activation")
+    )
+    with pytest.raises(
+        OSError,
+        match=r"packaged Host (foreground synchronization deadline expired|cannot become the foreground input owner)",
+    ):
+        native.foreground(10, 100, settle_deadline=10.0 if expired else 25.0)
+    assert calls == []

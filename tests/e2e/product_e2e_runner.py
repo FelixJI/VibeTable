@@ -1557,7 +1557,10 @@ class _DocumentNativeWindows:
         hwnd = self.user32.WindowFromPoint(wintypes.POINT(round(x), round(y)))
         return int(self.user32.GetAncestor(hwnd, 2) or 0)
 
-    def foreground(self, root: int, host_pid: int) -> None:
+    def foreground(self, root: int, host_pid: int, *, settle_deadline: float | None = None) -> None:
+        settle_until = (
+            min(settle_deadline, time.monotonic() + 2) if settle_deadline is not None else None
+        )
         if self.owner(root) != host_pid:
             raise ValueError("native document foreground HWND owner changed")
         before = int(self.user32.GetForegroundWindow() or 0)
@@ -1572,18 +1575,45 @@ class _DocumentNativeWindows:
         observation["beforePid"] = owner_or_none(before)
         self.foreground_observation = observation
         if before != root:
+            if settle_until is not None and time.monotonic() >= settle_until:
+                raise OSError("packaged Host foreground synchronization deadline expired")
             observation["activationAccepted"] = bool(self.user32.SetForegroundWindow(root))
             if not observation["activationAccepted"]:
                 raise OSError("packaged Host foreground activation was denied")
             # Cross-input-queue activation is asynchronous. WM_NULL synchronizes
             # one accepted activation; it does not retry or grant foreground rights.
+            timeout_ms = 2000
+            if settle_until is not None:
+                remaining = settle_until - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("packaged Host foreground synchronization deadline expired")
+                timeout_ms = max(1, min(2000, math.ceil(remaining * 1000)))
             result = ctypes.c_size_t()
             observation["activationSynchronized"] = bool(
-                self.user32.SendMessageTimeoutW(root, 0, 0, 0, 0x22, 2000, ctypes.byref(result))
+                self.user32.SendMessageTimeoutW(
+                    root, 0, 0, 0, 0x22, timeout_ms, ctypes.byref(result)
+                )
             )
             if not observation["activationSynchronized"]:
                 raise OSError("packaged Host foreground activation did not synchronize")
         observation["afterHwnd"] = int(self.user32.GetForegroundWindow() or 0)
+        if settle_until is not None and observation.get("activationSynchronized") is True:
+            # GetForegroundWindow can be NULL during deactivation. Observe only
+            # that transition within the original synchronization budget; never
+            # reactivate or accept a nonzero foreign window.
+            null_samples = 0
+            while observation["afterHwnd"] == 0:
+                null_samples += 1
+                if self.owner(root) != host_pid:
+                    break
+                remaining = settle_until - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
+                if time.monotonic() >= settle_until:
+                    break
+                observation["afterHwnd"] = int(self.user32.GetForegroundWindow() or 0)
+            observation["nullForegroundSamples"] = null_samples
         observation["afterPid"] = owner_or_none(observation["afterHwnd"])
         observation["hostOwnerPid"] = owner_or_none(root)
         if observation["afterHwnd"] != root or self.owner(root) != host_pid:

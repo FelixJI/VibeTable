@@ -474,7 +474,7 @@ def test_native_foreground_failure_retains_current_owner_facts_without_retry(tmp
         "hostOwnerPid": 12,
     }
 
-    def foreground(*args):
+    def foreground(*args, **_kwargs):
         attempts.append(args)
         raise OSError("packaged Host cannot become the foreground input owner")
 
@@ -503,3 +503,60 @@ def test_native_foreground_failure_retains_current_owner_facts_without_retry(tmp
     assert result["foreground"] == observation
     assert result["stage"] == "contrast-restored"
     assert attempts == [(14, 12)]
+
+
+@pytest.mark.parametrize("stage", ["contrast", "contrast-restored", "application"])
+def test_native_contrast_observe_waits_for_null_activation_without_reactivating(
+    tmp_path, monkeypatch, stage
+):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+    from tests.e2e import product_e2e_runner as runner
+
+    samples = iter([20, 0, 14])
+    calls = []
+    clock = [10.0]
+    window = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    window.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: next(samples, 14),
+        SetForegroundWindow=lambda hwnd: calls.append(("activate", hwnd)) or True,
+        SendMessageTimeoutW=lambda *args: calls.append(("synchronize", args[5])) or True,
+    )
+    window.owner = lambda hwnd: 12 if hwnd == 14 else 21
+    window.windows = lambda: [{"pid": 12, "hwnd": 14, "visible": True, "title": "VibeTable"}]
+    window.close = lambda: None
+    monkeypatch.setattr(runner, "_prepare_native_uia_observer", lambda: None)
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: window)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+
+    def observe(*args, **kwargs):
+        assert window.foreground_observation["afterHwnd"] == 14
+        assert window.foreground_observation["hostOwnerPid"] == 12
+        calls.append(("observe", kwargs["deadline"]))
+        return {"pid": 12, "hwnd": 14}, {"x": 0, "y": 0, "width": 10, "height": 10}
+
+    monkeypatch.setattr(native, "_observe_owned_chrome", observe)
+    result = native.handle_plugin_native_request(
+        {
+            "requestId": "null-transition",
+            "action": "observe",
+            "buttonId": "plugin-manage",
+            "stage": stage,
+        },
+        host_pid=12,
+        evidence=tmp_path,
+    )
+    if stage == "application":
+        assert result["status"] == "failed"
+        assert result["foreground"]["afterHwnd"] == 0
+        assert len(calls) == 2
+    else:
+        assert result["status"] == "completed", result
+        assert calls[-1] == ("observe", 25.0)
+        assert result["foreground"]["nullForegroundSamples"] == 1
+    assert [name for name, _ in calls].count("activate") == 1
+    assert calls[1] == ("synchronize", 2000)
