@@ -55,6 +55,66 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
+    public async Task PlanLimitedImportPreviewSettlesTerminalDropsItsGrantAndReclaimsItsTaskSlot()
+    {
+        await using var f = new Fixture();
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        var plans = new List<string>();
+        for (int i = 0; i < 8; i++)
+            plans.Add((await f.Call("mutation.preview", JsonSerializer.Serialize(new
+            { collection = "orders", operations = new object[] { new { kind = "create", values = new { name = "new" } } } })))
+                .GetProperty("result").GetProperty("planId").GetString()!);
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string grantId = f.IoGrant!; string runId = f.IoRun!;
+        var limited = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        Assert.AreEqual("failed", limited.GetProperty("result").GetProperty("state").GetString(), limited.GetRawText());
+        Assert.AreEqual("plugin_plan_limit", limited.GetProperty("result").GetProperty("error").GetProperty("code").GetString());
+        Assert.IsFalse(limited.GetRawText().Contains("internal-go-token", StringComparison.Ordinal));
+        // The capacity failure is a sticky terminal receipt, never a wedged retry loop.
+        Assert.AreEqual(limited.GetProperty("result").GetRawText(),
+            (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }))).GetProperty("result").GetRawText());
+        // The minted Go import plan is dropped now instead of lingering for its TTL.
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"
+            && call.GetProperty("request").GetProperty("grantId").GetString() == grantId), "plan-limit failure must drop its minted import plan");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+            JsonSerializer.SerializeToElement(new { grantId, runId }), CancellationToken.None));
+        for (int i = 0; i < 7; i++)
+        {
+            var extra = await f.Call("data.import.start", importStart);
+            Assert.IsTrue(extra.TryGetProperty("result", out _), $"extra start {i}: {extra.GetRawText()}");
+        }
+        // A real business submit still consumes a pending plan slot.
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId = plans[0] })))
+            .GetProperty("result").GetProperty("status").GetString());
+        // The terminal receipt released its task slot: the eighth start evicts it, and the freed plan slot hands off again.
+        string retry = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        var recovered = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId = retry }));
+        Assert.IsNotNull(recovered.GetProperty("result").GetProperty("result").GetProperty("planId").GetString(), recovered.GetRawText());
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(
+            new { planId = recovered.GetProperty("result").GetProperty("result").GetProperty("planId").GetString()! })))
+            .GetProperty("result").GetProperty("status").GetString());
+    }
+
+    [TestMethod]
+    public async Task FailedPlanHandoffAfterSuccessfulPreviewSettlesTerminalWithCleanup()
+    {
+        await using var f = new Fixture(); f.Http.FailNextFreeze = true;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string grantId = f.IoGrant!; string runId = f.IoRun!;
+        var failed = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        Assert.AreEqual("failed", failed.GetProperty("result").GetProperty("state").GetString(), failed.GetRawText());
+        Assert.AreEqual("plugin_data_io_failed", failed.GetProperty("result").GetProperty("error").GetProperty("code").GetString());
+        Assert.IsFalse(failed.GetRawText().Contains("import_plan_invalid", StringComparison.Ordinal));
+        Assert.AreEqual(failed.GetProperty("result").GetRawText(),
+            (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }))).GetProperty("result").GetRawText());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"
+            && call.GetProperty("request").GetProperty("grantId").GetString() == grantId), "failed handoff must drop its minted import plan");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+            JsonSerializer.SerializeToElement(new { grantId, runId }), CancellationToken.None));
+    }
+
+    [TestMethod]
     [DataRow(1024 * 1024, 0)]
     [DataRow(800 * 1024, 251)]
     [DataRow(1024 * 1024, 251)]
@@ -243,6 +303,7 @@ public sealed class PluginSurfaceFilesTests
         internal bool NativeConfirmation;
         internal bool IoRunning;
         internal int IoCancels;
+        private int IoStarts;
         internal string? IoGrant;
         internal string? IoRun;
         private readonly ProductAuthorityEpoch _authority = new();
@@ -269,7 +330,7 @@ public sealed class PluginSurfaceFilesTests
             string transferId = opened.GetProperty("transferId").GetString()!;
             for (; ; ) { var block = await Broker.HandleAsync("read", JsonSerializer.SerializeToElement(new { transferId, maxBytes = 262144 }), token); if (block.GetProperty("eof").GetBoolean()) break; }
             await Broker.HandleAsync("closeRead", JsonSerializer.SerializeToElement(new { transferId }), token);
-            _status = JsonSerializer.SerializeToElement(new { taskId = "owned-task", kind, state = IoRunning ? "running" : "succeeded", progress = new { done = 1, total = 1, message = "parsed" }, result = new { token = new { token = "internal-go-token" }, summary = new { totalRows = 1, validRows = 1, errorRows = 0 }, rows = Array.Empty<object>() }, error = (string?)null }); return _status;
+            _status = JsonSerializer.SerializeToElement(new { taskId = "owned-task-" + Interlocked.Increment(ref IoStarts), kind, state = IoRunning ? "running" : "succeeded", progress = new { done = 1, total = 1, message = "parsed" }, result = new { token = new { token = "internal-go-token" }, summary = new { totalRows = 1, validRows = 1, errorRows = 0 }, rows = Array.Empty<object>() }, error = (string?)null }); return _status;
         }
         internal async Task<JsonElement> Call(string method, string parameters)
             => JsonDocument.Parse(await CallRaw(method, parameters)).RootElement.Clone();
@@ -296,6 +357,7 @@ public sealed class PluginSurfaceFilesTests
     {
         internal List<JsonElement> Calls { get; } = [];
         internal Action? AfterAuthorize;
+        internal bool FailNextFreeze;
         internal byte[]? AttachmentReadContent;
         internal List<byte[]> AttachmentStageWires { get; } = [];
         internal List<string?> AttachmentStageMediaTypes { get; } = [];
@@ -305,6 +367,7 @@ public sealed class PluginSurfaceFilesTests
             var call = JsonDocument.Parse(bodyBytes).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
+            if (method == "import.freeze" && FailNextFreeze) { FailNextFreeze = false; return new(HttpStatusCode.Conflict) { Content = new StringContent("{\"code\":\"import_plan_invalid\"}") }; }
             if (method == "attachment.read" && AttachmentReadContent is { } content)
             {
                 long offset = call.GetProperty("request").GetProperty("offset").GetInt64();
@@ -316,6 +379,7 @@ public sealed class PluginSurfaceFilesTests
             string body = method switch
             {
                 "data.describe" => "{\"schemaRevision\":\"schema_1\"}",
+                "mutation.preview" => "{\"affectedCount\":1}",
                 "import.freeze" => "{\"attempt\":1,\"plan\":{\"contract\":\"vibetable.surface-mutation-plan.v1\",\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"operations\":[{\"kind\":\"create\",\"values\":{\"name\":\"new\"}}]}}",
                 "mutation.commit" => "{\"contractVersion\":\"2.0\",\"status\":\"applied\",\"affectedRows\":[{\"recordId\":\"r1\",\"operation\":\"insert\"}]}",
                 "attachment.list" => "{\"items\":[{\"storedName\":\"internal-stored-name\",\"displayName\":\"safe.txt\",\"mediaType\":\"text/plain\",\"sizeBytes\":3}]}",
