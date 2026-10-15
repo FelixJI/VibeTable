@@ -219,7 +219,7 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     await page.getByTestId("plugin-app-return").click();
     for (const [action, outcome] of [["headless-success", "succeeded"], ["headless-failed", "failed"]]) {
       await headless(page, A, action);
-      await page.locator(`[data-testid="plugin-headless-runner"] b[data-state="${outcome}"]`).waitFor({ timeout: 30000 });
+      await page.locator(`[data-testid="plugin-headless-runner"] header b[data-state="${outcome}"]`).waitFor({ timeout: 30000 });
       recorder.check(`${action} runs under real CSP and releases its hidden frame`,
         await page.locator('[data-testid="plugin-headless-runner"] iframe').count() === 0);
       await page.getByTestId("plugin-headless-close").click();
@@ -232,7 +232,8 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     const ownedHeadless = await rawBridgeRequest(page, "plugin.task.get", { taskId: headlessTaskId });
     recorder.check("real headless write task is bound to its current Host surface", ownedHeadless.payload.surfaceToken === headlessToken);
     await page.getByTestId("plugin-headless-cancel").click();
-    await page.locator('[data-testid="plugin-headless-runner"] b[data-state="cancelled"]').waitFor({ timeout: 30000 });
+    // The sticky host task list renders its own state marks; scope the runner status badge to its header.
+    await page.locator('[data-testid="plugin-headless-runner"] header b[data-state="cancelled"]').waitFor({ timeout: 30000 });
     const cancelledHeadless = await rawBridgeRequest(page, "plugin.task.get", { taskId: headlessTaskId });
     const afterHeadless = await rawBridgeRequest(page, "query.page", { tableId: state.tableId, query: { filters: [], sorts: [], offset: 0, limit: 10 } });
     recorder.check("headless cancel displays actual Host cancellation and reclaims its frame without a write", cancelledHeadless.payload.state === "cancelled"

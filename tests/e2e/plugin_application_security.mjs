@@ -2,6 +2,39 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { installApplication, openApplication, nativePluginInput } from "./plugin_applications.mjs";
 
+export function installContrastRestoreProjectionCaptureInPage() {
+  const webview = window.chrome.webview;
+  window.__vibetableE2EBridgeCapture?.release?.();
+  // Reuse the global capture sequence so consecutive installs stay
+  // distinguishable owners for the shared waiter contract.
+  const sequence = Number.isSafeInteger(window.__vibetableE2EBridgeCaptureSequence)
+    ? window.__vibetableE2EBridgeCaptureSequence + 1
+    : 1;
+  window.__vibetableE2EBridgeCaptureSequence = sequence;
+  const parse = value => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { return null; }
+  };
+  const capture = { id: `appearance/contrast-restore/${sequence}`, message: null, error: null };
+  function release() {
+    webview.removeEventListener("message", onMessage);
+  }
+  function onMessage(event) {
+    const message = parse(event.data);
+    // Windows keeps broadcasting appearance notifications while the high
+    // contrast transition settles and the Host re-projects those still-active
+    // states by design; correlate the restoration with its terminal
+    // high-contrast-off projection instead of the first intermediate one.
+    if (message?.type !== "appearance.changed" || message.payload?.highContrast !== false) return;
+    capture.message = message;
+    release();
+  }
+  capture.release = release;
+  window.__vibetableE2EBridgeCapture = capture;
+  webview.addEventListener("message", onMessage);
+  return capture.id;
+}
+
 export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const opened = await helpers.waitForShell(page, recorder, { requireDatabaseOpened: true });
   await page.getByTestId("nav-tables").click();
@@ -78,12 +111,12 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   const contrastPainted = await nativePluginInput(runtime, "observe", "plugin-manage", "contrast");
   recorder.check("WPF high-contrast screenshot follows the Host system projection", contrastPainted.status === "completed" && contrastPainted.observation.systemHighContrast === true, { contrastPainted });
   recorder.check("real WebView receives the operating system forced-color mode", await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
-  await helpers.beginBridgeMessageCapture(page, ["appearance.changed"]);
+  const restoredCaptureId = await page.evaluate(installContrastRestoreProjectionCaptureInPage);
   const restoredContrast = await nativePluginInput(runtime, "contrast-off", "plugin-manage", "contrast");
   recorder.check("controlled runner restores the recorded system contrast contract", restoredContrast.status === "completed"
     && restoredContrast.contrast.status === "restored"
     && restoredContrast.contrast.original.flags === restoredContrast.contrast.observed.flags, { restoredContrast });
-  const restoredProjection = await helpers.waitForCapturedBridgeMessage(page, 10000);
+  const restoredProjection = await helpers.waitForCapturedBridgeMessage(page, 10000, restoredCaptureId);
   recorder.check("actual Host projects high contrast off after restoration", restoredProjection.payload.highContrast === false, { restoredProjection });
   await page.waitForFunction(() => !matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
   recorder.check("plugin forced colors also leave high contrast", !await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
