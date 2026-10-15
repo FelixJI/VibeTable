@@ -176,6 +176,18 @@ public sealed class NativePluginConfirmationWindow : Window
         };
         badge.SetResourceReference(TextBlock.ForegroundProperty, "VtMutedTextBrush");
         panel.Children.Add(badge);
+        // Host-trusted PluginId/ActionId (not the plugin-authored title) tell the user which plugin is asking to write.
+        var identity = new TextBlock
+        {
+            Text = $"插件 {request.PluginId} · 动作 {request.ActionId}",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        };
+        AutomationProperties.SetAutomationId(identity, "plugin-confirm-identity");
+        AutomationProperties.SetName(identity, $"来源插件 {request.PluginId}，动作 {request.ActionId}");
+        panel.Children.Add(identity);
         panel.Children.Add(new TextBlock
         {
             Text = request.Title,

@@ -1,6 +1,9 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 
@@ -517,6 +520,89 @@ public sealed class PluginActionPresentationTests
         using JsonDocument noPending = JsonDocument.Parse("""{"projectKey":"p","snapshot":{"runId":"r"}}""");
         Assert.IsNull(NativeConfirmationRequest.TryParse(noPending.RootElement.Clone()));
         Assert.IsNull(NativeConfirmationRequest.TryParse("not-an-envelope"));
+    }
+
+    [STATestMethod]
+    public void NativeConfirmationWindowRendersTrustedPluginAndActionIdentity()
+    {
+        // Two application/headless plugins ask with the SAME plugin-authored
+        // title: without the trusted identity line the windows are
+        // indistinguishable, so the user could approve the wrong request.
+        // WPF requires an already-shown owner; the bare owner window below is
+        // not a product window.
+        var owner = new Window
+        {
+            ShowInTaskbar = false,
+            ShowActivated = false,
+            WindowStyle = WindowStyle.None,
+            Opacity = 0,
+        };
+        owner.Show();
+        NativePluginConfirmationWindow? first = null;
+        NativePluginConfirmationWindow? second = null;
+        try
+        {
+            first = CreateConfirmationWindow(owner, "com.example.first", "open-app", "i-1");
+            second = CreateConfirmationWindow(owner, "com.example.second", "run-job", "i-2");
+            Assert.IsNotNull(first);
+            Assert.IsNotNull(second);
+            TextBlock firstIdentity = LogicalDescendants<TextBlock>(first)
+                .Single(block => AutomationProperties.GetAutomationId(block) == "plugin-confirm-identity");
+            TextBlock secondIdentity = LogicalDescendants<TextBlock>(second)
+                .Single(block => AutomationProperties.GetAutomationId(block) == "plugin-confirm-identity");
+            Assert.AreEqual("来源插件 com.example.first，动作 open-app", AutomationProperties.GetName(firstIdentity));
+            Assert.AreEqual("来源插件 com.example.second，动作 run-job", AutomationProperties.GetName(secondIdentity));
+            Assert.IsTrue(firstIdentity.Text.Contains("com.example.first", StringComparison.Ordinal), firstIdentity.Text);
+            Assert.IsTrue(firstIdentity.Text.Contains("open-app", StringComparison.Ordinal), firstIdentity.Text);
+            Assert.IsTrue(secondIdentity.Text.Contains("com.example.second", StringComparison.Ordinal), secondIdentity.Text);
+            Assert.IsTrue(secondIdentity.Text.Contains("run-job", StringComparison.Ordinal), secondIdentity.Text);
+            Assert.IsFalse(secondIdentity.Text.Contains("com.example.first", StringComparison.Ordinal), secondIdentity.Text);
+
+            // The original risk badge, plugin title, count, sample and scrolling
+            // presentation stay intact around the new trusted identity line.
+            var blocks = LogicalDescendants<TextBlock>(first).ToArray();
+            Assert.IsTrue(blocks.Any(block => block.Text.Contains("WRITE", StringComparison.Ordinal)));
+            Assert.IsTrue(blocks.Any(block => block.Text.Contains("共 3 条", StringComparison.Ordinal)));
+            Assert.AreEqual("保存修改", blocks.Single(block => block.FontSize == 15).Text);
+            var sample = LogicalDescendants<TextBox>(first).Single();
+            Assert.IsTrue(sample.Text.Contains("cell-1", StringComparison.Ordinal));
+            Assert.AreEqual(ScrollBarVisibility.Auto, sample.VerticalScrollBarVisibility);
+            Assert.AreEqual(240d, sample.MaxHeight);
+        }
+        finally
+        {
+            // Closing each window stops its expiry timer and runs the reject
+            // path through the stubbed resolve, so no timer or pending
+            // interaction outlives this STA test.
+            first?.Close();
+            second?.Close();
+            owner.Close();
+        }
+    }
+
+    private static NativePluginConfirmationWindow? CreateConfirmationWindow(
+        Window owner, string pluginId, string actionId, string interactionId)
+    {
+        string payload = "{\"projectKey\":\"local:project-1\",\"snapshot\":{\"runId\":\"run-"
+            + interactionId + "\",\"pluginId\":\"" + pluginId + "\",\"actionId\":\"" + actionId
+            + "\",\"pendingConfirmation\":{\"interactionId\":\"" + interactionId
+            + "\",\"title\":\"保存修改\",\"risk\":\"write\",\"preview\":{\"affectedCount\":3,\"summary\":[{\"collection\":\"tbl_tasks\"}],\"sampleRows\":[{\"after\":\"cell-1\"}]}}}}";
+        using JsonDocument document = JsonDocument.Parse(payload);
+        return NativePluginConfirmationWindow.TryCreate(
+            owner,
+            document.RootElement.Clone(),
+            _ => Task.CompletedTask,
+            _ => true);
+    }
+
+    private static IEnumerable<T> LogicalDescendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        foreach (object child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is not DependencyObject node) continue;
+            if (node is T match) yield return match;
+            foreach (T descendant in LogicalDescendants<T>(node)) yield return descendant;
+        }
     }
 
     [TestMethod]
