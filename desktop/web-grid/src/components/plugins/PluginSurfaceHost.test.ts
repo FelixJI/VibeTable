@@ -179,7 +179,7 @@ describe("PluginSurfaceHost", () => {
     await wrapper.get('[data-testid="plugin-surface-confirm-approve"]').trigger("click");
 
     expect(wrapper.text()).toContain("HOST FINAL WRITE CONFIRMATION");
-    expect(wrapper.emitted("resolve")?.[0]).toEqual(["approved"]);
+    expect(wrapper.emitted("resolve")?.[0]).toEqual(["approved", "task-1"]);
   });
 
   it("keeps safe task errors visible in host chrome", () => {

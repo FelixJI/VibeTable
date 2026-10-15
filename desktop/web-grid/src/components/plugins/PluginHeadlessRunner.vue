@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import PluginTaskList from "./PluginTaskList.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot, WebPluginActionDescription } from "@/contracts";
 
@@ -9,40 +10,52 @@ const props = defineProps<{
   description: WebPluginActionDescription;
   theme: PluginSurfaceThemeSnapshot;
   task?: PluginTaskViewSnapshot | null;
+  tasks?: readonly PluginTaskViewSnapshot[];
 }>();
 const emit = defineEmits<{
   close: [];
   cancel: [taskId: string];
-  resolve: [decision: "approved" | "rejected"];
+  resolve: [decision: "approved" | "rejected", taskId: string];
 }>();
 const surface = computed(() => props.description.surface);
 const moduleOutcome = ref<{ status: HeadlessOutcomeStatus; summary: string }>({ status: "running", summary: "" });
 const stopped = ref(false);
 const cancelRequested = ref(false);
-const currentTask = computed(() => Boolean(surface.value?.surfaceToken) && props.task?.surfaceToken === surface.value?.surfaceToken
-  && props.task?.pluginId === props.description.pluginId && props.task?.actionId === props.description.actionId ? props.task : null);
-const hostTerminal = ref<{ taskId: string; status: HeadlessOutcomeStatus; summary: string } | null>(null);
-const outcome = computed(() => {
-  if (hostTerminal.value && (!currentTask.value || hostTerminal.value.taskId === currentTask.value.taskId)) return hostTerminal.value;
-  if (currentTask.value) return { status: "running" as const, summary: cancelRequested.value
-    ? "停止请求已发送，等待宿主核对结果；请勿重复执行。" : "宿主任务正在执行。" };
-  return moduleOutcome.value;
-});
-const frameMounted = computed(() => !stopped.value && surface.value !== null);
-let cancellationTaskId: string | null = null;
-watch(currentTask, task => {
-  if (!task) return;
-  if (["succeeded", "failed", "cancelled", "aborted"].includes(task.state)) {
-    if (hostTerminal.value?.taskId !== task.taskId) hostTerminal.value = { taskId: task.taskId,
-      status: task.state === "aborted" && task.error?.code === "plugin_commit_unknown" ? "unknown" : task.state as HeadlessOutcomeStatus,
-      summary: task.error?.code === "plugin_commit_unknown" ? "写入结果未知，请核对实际数据；请勿重复执行。"
-        : task.result?.summary || task.error?.message || "" };
-    retireSurface();
-  } else if (cancelRequested.value && cancellationTaskId !== task.taskId) {
-    cancellationTaskId = task.taskId;
-    emit("cancel", task.taskId);
+const receivedTasks = computed(() => (props.tasks ?? (props.task ? [props.task] : [])).filter(task =>
+  Boolean(surface.value?.surfaceToken) && task.surfaceToken === surface.value?.surfaceToken
+  && task.pluginId === props.description.pluginId && task.actionId === props.description.actionId));
+const knownTasks = ref<Record<string, PluginTaskViewSnapshot>>({});
+const currentTasks = computed(() => Object.values(knownTasks.value));
+const terminal = (task: PluginTaskViewSnapshot) => ["succeeded", "failed", "cancelled", "aborted"].includes(task.state);
+const cancellations = new Set<string>();
+function cancelTask(taskId: string): void {
+  const task = knownTasks.value[taskId];
+  if (!task || terminal(task) || cancellations.has(taskId)) return;
+  cancellations.add(taskId);
+  emit("cancel", taskId);
+}
+watch(receivedTasks, tasks => {
+  for (const task of tasks) {
+    // Terminal receipts remain sticky even while other tasks on this run settle.
+    if (!knownTasks.value[task.taskId] || !terminal(knownTasks.value[task.taskId]!))
+      knownTasks.value[task.taskId] = task;
+    if (cancelRequested.value) cancelTask(task.taskId);
   }
 }, { immediate: true, deep: true });
+const outcome = computed(() => {
+  const tasks = currentTasks.value;
+  if (!tasks.length) return moduleOutcome.value;
+  if (!stopped.value || tasks.some(task => !terminal(task))) return { status: "running" as const, summary: cancelRequested.value
+    ? "停止请求已发送，等待宿主核对结果；请勿重复执行。" : "宿主任务正在执行。" };
+  if (tasks.some(task => task.error?.code === "plugin_commit_unknown"))
+    return { status: "unknown" as const, summary: "写入结果未知，请核对实际数据；请勿重复执行。" };
+  const failed = tasks.find(task => task.state === "failed" || task.state === "aborted");
+  if (failed) return { status: failed.state as HeadlessOutcomeStatus, summary: failed.error?.message || "" };
+  if (tasks.some(task => task.state === "cancelled")) return { status: "cancelled" as const, summary: "" };
+  return { status: "succeeded" as const, summary: tasks.map(task => task.result?.summary).filter(Boolean).join("；") };
+});
+// A Host task terminal is not module completion: one frame may have many requests.
+const frameMounted = computed(() => !stopped.value && surface.value !== null);
 
 const statusLabel = computed(() => {
   switch (outcome.value.status) {
@@ -83,13 +96,10 @@ function onSurfaceClosed(): void {
 }
 
 function cancelRun(): void {
-  if (cancelRequested.value || hostTerminal.value) return;
+  if (cancelRequested.value) return;
   cancelRequested.value = true;
   moduleOutcome.value = { status: "unknown", summary: "本地执行已停止，写入结果仍待宿主核对；请勿重复执行。" };
-  if (currentTask.value) {
-    cancellationTaskId = currentTask.value.taskId;
-    emit("cancel", currentTask.value.taskId);
-  }
+  for (const task of currentTasks.value) cancelTask(task.taskId);
   retireSurface();
 }
 </script>
@@ -97,7 +107,7 @@ function cancelRun(): void {
 <template>
   <!--
     Visible Host status for a headless (no-UI) action. The restricted frame is
-    released on module exit, Host settlement or a local stop request. Host
+    released on module exit or a local stop request. Host
     task settlement remains visible after unmount; confirmations resolve
     through the native host window (application/headless are native-only).
   -->
@@ -111,6 +121,9 @@ function cancelRun(): void {
     </header>
     <p v-if="outcome.summary" class="headless-summary">{{ outcome.summary }}</p>
     <p v-else>插件正在后台受限环境中执行，不展示界面。</p>
+    <p v-if="currentTasks.length && stopped && moduleOutcome.status !== 'running'" data-testid="headless-module-result">
+      {{ cancelRequested ? '本地执行已停止；各任务结果以下方宿主记录为准。' : `本地执行已结束：${moduleOutcome.summary || moduleOutcome.status}` }}
+    </p>
     <div class="headless-actions">
       <button
         v-if="outcome.status === 'running'"
@@ -132,13 +145,16 @@ function cancelRun(): void {
       :surface-token="surface.surfaceToken"
       :title="description.title"
       :theme="theme"
-      :task="currentTask"
+      :tasks="currentTasks"
+      :show-tasks="false"
       variant="headless"
       @finish="(status, summary) => onFinish(status, summary)"
       @close="onSurfaceClosed"
-      @resolve="decision => emit('resolve', decision)"
+      @resolve="(decision, taskId) => emit('resolve', decision, taskId)"
       @cancel="cancelRun"
     />
+    <PluginTaskList :tasks="currentTasks" variant="headless"
+      @cancel="cancelTask" @resolve="(decision, taskId) => emit('resolve', decision, taskId)" />
     <p v-if="!surface" class="headless-error" role="alert">无界面动作没有可用的受限执行环境，请重新触发。</p>
   </section>
 </template>

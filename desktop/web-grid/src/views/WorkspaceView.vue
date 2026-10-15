@@ -906,8 +906,9 @@ const pluginController = createWorkspacePluginController({
   riskLabel: risk => t(`plugin.risk.${risk}`),
 });
 const pluginTheme = pluginController.theme;
-const pluginApplicationTask = pluginController.applicationTask;
+const pluginApplicationTasks = pluginController.applicationTasks;
 const pluginActionTask = pluginController.actionTask;
+const pluginActionTasks = pluginController.actionTasks;
 const pluginAppNav = createPluginAppNavigation(plugins, ui);
 const activePluginAppEntry = pluginAppNav.activeEntry;
 const activePluginAppKey = computed(() =>
@@ -1707,9 +1708,9 @@ useKeyboard({
           :surface-token="activePluginAppEntry.surfaceToken"
           :title="activePluginAppEntry.label"
           :theme="pluginTheme"
-          :task="pluginApplicationTask"
-          @resolve="pluginController.dispatch({ type: 'interaction.resolve', taskId: pluginApplicationTask?.taskId ?? '', decision: $event })"
-          @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: pluginApplicationTask?.taskId ?? '' })"
+          :tasks="pluginApplicationTasks"
+          @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+          @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
           @close="ui.closePluginApp"
           @manage="ui.closePluginApp(); ui.navigate('plugins')"
         />
@@ -2009,10 +2010,10 @@ useKeyboard({
         :surface-token="plugins.describedAction.surface.surfaceToken"
         :title="plugins.describedAction.surface.title"
         :theme="pluginTheme"
-        :task="pluginActionTask"
+        :tasks="pluginActionTasks"
         @action="pluginController.dispatch({ type: 'action.start', payload: $event })"
-        @resolve="pluginController.dispatch({ type: 'interaction.resolve', taskId: pluginActionTask?.taskId ?? '', decision: $event })"
-        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: pluginActionTask?.taskId ?? '' })"
+        @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
         @close="plugins.closeAction"
       />
       <PluginHeadlessRunner
@@ -2020,8 +2021,8 @@ useKeyboard({
         v-else-if="plugins.describedAction.presentation === 'headless'"
         :description="plugins.describedAction"
         :theme="pluginTheme"
-        :task="pluginActionTask"
-        @resolve="pluginController.dispatch({ type: 'interaction.resolve', taskId: pluginActionTask?.taskId ?? '', decision: $event })"
+        :tasks="pluginActionTasks"
+        @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
         @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
         @close="plugins.closeAction"
       />

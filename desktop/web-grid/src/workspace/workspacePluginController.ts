@@ -17,7 +17,7 @@ type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 
 type PluginStorePort = Pick<PluginStore,
   | "plugins" | "projectKey" | "currentUser" | "hostVersion"
-  | "describedAction" | "activeContext" | "taskForAction">;
+  | "describedAction" | "activeContext" | "taskForAction" | "tasksForAction">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
 type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp" | "activePluginApp">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
@@ -66,6 +66,8 @@ export type WorkspacePluginIntent =
   | { readonly type: "task.cancel"; readonly taskId: string };
 
 export interface WorkspacePluginController {
+  readonly applicationTasks: ComputedRef<PluginTaskViewSnapshot[]>;
+  readonly actionTasks: ComputedRef<PluginTaskViewSnapshot[]>;
   readonly applicationTask: ComputedRef<PluginTaskViewSnapshot | null>;
   readonly actionTask: ComputedRef<PluginTaskViewSnapshot | null>;
   readonly theme: ComputedRef<PluginSurfaceThemeSnapshot>;
@@ -104,25 +106,29 @@ function errorMessage(error: unknown): string {
 export function createWorkspacePluginController(
   dependencies: WorkspacePluginDependencies,
 ): WorkspacePluginController {
-  const applicationTask = computed(() => {
+  const applicationTasks = computed(() => {
     const active = dependencies.ui.activePluginApp;
-    if (!active) return null;
+    if (!active) return [];
     const action = dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.actions.find(action => action.actionId === active.actionId);
     if (action?.presentation === "application")
-      return action.surfaceToken ? dependencies.plugins.taskForAction(active.pluginId, active.actionId, action.surfaceToken) : null;
-    return dependencies.plugins.taskForAction(active.pluginId, active.actionId);
+      return action.surfaceToken ? dependencies.plugins.tasksForAction(active.pluginId, active.actionId, action.surfaceToken) : [];
+    return dependencies.plugins.tasksForAction(active.pluginId, active.actionId);
   });
-  const actionTask = computed(() => {
+  const actionTasks = computed(() => {
     const active = dependencies.plugins.describedAction;
-    if (!active) return null;
+    if (!active) return [];
     const nativeCustom = active.presentation === "custom"
       && dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.compatibility.pluginApi === "3.x";
     if (active.presentation === "headless" || active.presentation === "application" || nativeCustom)
-      return active.surface?.surfaceToken ? dependencies.plugins.taskForAction(active.pluginId, active.actionId, active.surface.surfaceToken) : null;
-    return dependencies.plugins.taskForAction(active.pluginId, active.actionId);
+      return active.surface?.surfaceToken ? dependencies.plugins.tasksForAction(active.pluginId, active.actionId, active.surface.surfaceToken) : [];
+    return dependencies.plugins.tasksForAction(active.pluginId, active.actionId);
   });
+  // Legacy Worker panels retain their single-task presentation; native surfaces
+  // expose every task and controls always carry the selected task's identity.
+  const applicationTask = computed(() => applicationTasks.value.at(-1) ?? null);
+  const actionTask = computed(() => actionTasks.value.at(-1) ?? null);
   function controlledTask(taskId: string): PluginTaskViewSnapshot | null {
-    return [actionTask.value, applicationTask.value].find(task => task?.taskId === taskId) ?? null;
+    return [...actionTasks.value, ...applicationTasks.value].find(task => task.taskId === taskId) ?? null;
   }
   const theme = computed(() => projectPluginTheme({
     effectiveTheme: dependencies.ui.effectiveTheme,
@@ -338,6 +344,8 @@ export function createWorkspacePluginController(
   }
 
   return {
+    applicationTasks,
+    actionTasks,
     applicationTask,
     actionTask,
     theme,

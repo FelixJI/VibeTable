@@ -166,8 +166,8 @@ describe("PluginHeadlessRunner", () => {
     wrapper.unmount();
   });
 
-  it.each(["success", "failure", "local-stop", "host-terminal"])("retires the frame exactly once for %s", async boundary => {
-    const { wrapper, hostPostMessage, dispatchFromFrame } = mountRunner(boundary === "host-terminal" ? runningTask : null);
+  it.each(["success", "failure", "local-stop"])("retires the frame exactly once for %s", async boundary => {
+    const { wrapper, hostPostMessage, dispatchFromFrame } = mountRunner();
     if (boundary === "success" || boundary === "failure") dispatchFromFrame({ status: boundary === "success" ? "succeeded" : "failed", summary: "done" });
     else if (boundary === "local-stop") await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
     else await wrapper.setProps({ task: { ...runningTask, state: "succeeded" } });
@@ -177,6 +177,73 @@ describe("PluginHeadlessRunner", () => {
     const closes = hostPostMessage.mock.calls.filter(([message]) => message.type === "plugin.surface.event" && message.payload.event === "close");
     expect(closes).toHaveLength(1);
     expect(closes[0][0].payload.surfaceToken).toBe("headless-token");
+  });
+
+  it("keeps concurrent Host tasks visible when the newer one finishes first", async () => {
+    const { wrapper, hostPostMessage } = mountRunner();
+    const older = { ...runningTask, taskId: "older" };
+    const newer = { ...runningTask, taskId: "newer", state: "succeeded" as const };
+    await wrapper.setProps({ tasks: [older, newer] });
+    expect(wrapper.find("iframe").exists()).toBe(true);
+    expect(wrapper.text()).toContain("older");
+    expect(wrapper.text()).toContain("newer");
+    await wrapper.get('[data-task-id="older"] button').trigger("click");
+    expect(wrapper.emitted("cancel")).toEqual([["older"]]);
+    expect(hostPostMessage.mock.calls.filter(([m]) => m.type === "plugin.surface.event")).toHaveLength(0);
+    wrapper.unmount();
+  });
+
+  it("keeps unknown and success receipts after module finish without replacing either outcome", async () => {
+    const { wrapper, dispatchFromFrame, hostPostMessage } = mountRunner();
+    const unknown = { ...runningTask, taskId: "uncertain", state: "aborted" as const,
+      error: { contract: "vibetable.plugin-error.v1" as const, code: "plugin_commit_unknown", message: "核对保存结果",
+        recoverability: "none" as const, pluginId: null, actionId: null, runId: null, details: {}, causeId: null } };
+    const success = { ...runningTask, taskId: "saved", state: "succeeded" as const };
+    await wrapper.setProps({ tasks: [unknown, success] });
+    expect(wrapper.find("iframe").exists()).toBe(true);
+    dispatchFromFrame({ status: "succeeded", summary: "module finished" }); await Promise.resolve();
+    expect(wrapper.find("iframe").exists()).toBe(false);
+    expect(wrapper.get('[data-task-id="uncertain"]').text()).toContain("写入结果未知");
+    expect(wrapper.get('[data-task-id="saved"]').text()).toContain("succeeded");
+    expect(wrapper.find('b[data-state="unknown"]').exists()).toBe(true);
+    await wrapper.setProps({ tasks: [success] });
+    expect(wrapper.find('[data-task-id="uncertain"]').exists()).toBe(true);
+    wrapper.unmount();
+    expect(hostPostMessage.mock.calls.filter(([m]) => m.type === "plugin.surface.event")).toHaveLength(1);
+  });
+
+  it("stops each pending task by its own id and leaves completed receipts untouched", async () => {
+    const { wrapper } = mountRunner();
+    await wrapper.setProps({ tasks: [{ ...runningTask, taskId: "first" }, { ...runningTask, taskId: "second" },
+      { ...runningTask, taskId: "finished", state: "succeeded" }] });
+    await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
+    expect(wrapper.emitted("cancel")).toEqual([["first"], ["second"]]);
+    expect(wrapper.find("iframe").exists()).toBe(false);
+    expect(wrapper.findAll("[data-task-id]")).toHaveLength(3);
+    expect(wrapper.text()).toContain("等待");
+    wrapper.unmount();
+  });
+
+  it("retains a module failure beside successful Host writes", async () => {
+    const { wrapper, dispatchFromFrame } = mountRunner();
+    await wrapper.setProps({ tasks: [{ ...runningTask, state: "succeeded" }] });
+    dispatchFromFrame({ status: "failed", summary: "模块后续计算失败" }); await Promise.resolve();
+    expect(wrapper.get('[data-testid="headless-module-result"]').text()).toContain("模块后续计算失败");
+    expect(wrapper.get('[data-task-id="native-current"]').text()).toContain("succeeded");
+    wrapper.unmount();
+  });
+
+  it("keeps the module running after its known tasks settle so it can submit another request", async () => {
+    const { wrapper } = mountRunner();
+    await wrapper.setProps({ tasks: [{ ...runningTask, state: "succeeded" }] });
+    expect(wrapper.find("iframe").exists()).toBe(true);
+    expect(wrapper.find('b[data-state="running"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="plugin-headless-cancel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="plugin-headless-close"]').exists()).toBe(false);
+    await wrapper.setProps({ tasks: [{ ...runningTask, state: "succeeded" }, { ...runningTask, taskId: "second-request" }] });
+    expect(wrapper.findAll("[data-task-id]")).toHaveLength(2);
+    expect(wrapper.find("iframe").exists()).toBe(true);
+    wrapper.unmount();
   });
 
 });

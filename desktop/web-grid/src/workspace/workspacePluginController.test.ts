@@ -202,16 +202,24 @@ describe("workspacePluginController", () => {
     const task: PluginTaskSnapshot = { taskId: "old", runId: "old-run", pluginId: app.pluginId, pluginVersion: app.version,
       installationId: app.installationId, installationRevision: app.revision, actionId: "normalize", surfaceToken: "old-surface",
       projectKey: app.projectKey, collection: null, targetCount: 1, risk: "write", state: "succeeded", cancelRequested: false, result: null, error: null };
+    const cancelTask = vi.fn();
+    const resolveInteraction = vi.fn();
     const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
-      service: { describeAction: vi.fn(), startAction: vi.fn(), cancelTask: vi.fn(), resolveInteraction: vi.fn() },
+      service: { describeAction: vi.fn(), startAction: vi.fn(), cancelTask, resolveInteraction },
       selectedRows: () => [], openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: vi.fn(),
       historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
     plugins.applyTask(task); expect(controller.applicationTask.value).toBeNull();
     plugins.applyTask({ ...task, taskId: "worker", runId: "worker-run", surfaceToken: null }); expect(controller.applicationTask.value).toBeNull();
     plugins.applyTask({ ...task, taskId: "current", runId: "current-run", surfaceToken: "current-surface", state: "running" });
     expect(controller.applicationTask.value?.taskId).toBe("current");
+    plugins.applyTask({ ...task, taskId: "newer", runId: "newer-run", surfaceToken: "current-surface", state: "succeeded" });
+    expect(controller.applicationTasks.value.map(task => task.taskId)).toEqual(["current", "newer"]);
+    await controller.dispatch({ type: "task.cancel", taskId: "current" });
+    await controller.dispatch({ type: "interaction.resolve", taskId: "current", decision: "rejected" });
+    expect(cancelTask).toHaveBeenCalledWith("current");
+    expect(resolveInteraction).toHaveBeenCalledWith(expect.objectContaining({ taskId: "current" }), "rejected");
     plugins.applyTask({ ...task, taskId: "current", runId: "current-run", surfaceToken: "forged", state: "running" });
-    expect(controller.applicationTask.value?.taskId).toBe("current");
+    expect(controller.applicationTasks.value.map(task => task.taskId)).toEqual(["current", "newer"]);
   });
 
   it.each(["3.x", "2.x"])("isolates native custom runs while preserving %s task admission", async (pluginApi) => {
@@ -251,6 +259,10 @@ describe("workspacePluginController", () => {
       expect(controller.actionTask.value?.taskId).toBe("current");
       await controller.dispatch({ type: "task.cancel", taskId: "current" });
       expect(cancelTask).toHaveBeenCalledWith("current");
+      plugins.applyTask({ ...task, taskId: "newer", runId: "newer-run", surfaceToken: "current-surface", state: "succeeded" });
+      expect(controller.actionTasks.value.map(task => task.taskId)).toEqual(["current", "newer"]);
+      await controller.dispatch({ type: "interaction.resolve", taskId: "current", decision: "rejected" });
+      expect(resolveInteraction).toHaveBeenCalledWith(expect.objectContaining({ taskId: "current" }), "rejected");
       plugins.beginAction({ ...description, surface: { ...description.surface, surfaceToken: "reopened-surface" } }, context);
       expect(controller.actionTask.value).toBeNull();
       plugins.beginAction({ ...description, surface: null }, context);

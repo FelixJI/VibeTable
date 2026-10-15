@@ -8,10 +8,11 @@ defineProps<{
   title: string;
   theme: PluginSurfaceThemeSnapshot;
   task?: PluginTaskViewSnapshot | null;
+  tasks?: readonly PluginTaskViewSnapshot[];
 }>();
 const emit = defineEmits<{
-  resolve: [decision: "approved" | "rejected"];
-  cancel: [];
+  resolve: [decision: "approved" | "rejected", taskId: string];
+  cancel: [taskId: string];
   close: [];
   manage: [];
 }>();
@@ -42,9 +43,10 @@ const emit = defineEmits<{
         :title="title"
         :theme="theme"
         :task="task"
+        :tasks="tasks"
         variant="app"
-        @resolve="decision => emit('resolve', decision)"
-        @cancel="() => emit('cancel')"
+        @resolve="(decision, taskId) => emit('resolve', decision, taskId)"
+        @cancel="taskId => emit('cancel', taskId)"
         @close="() => emit('close')"
       />
     </div>

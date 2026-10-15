@@ -64,9 +64,12 @@ export const usePluginStore = defineStore("plugins", () => {
     const task = taskById.value[taskId];
     return task && currentTask(task) ? task : null;
   }
+  function tasksForAction(pluginId: string, actionId: string, surfaceToken?: string): PluginTaskViewSnapshot[] {
+    return Object.values(taskById.value).filter(task => task.pluginId === pluginId
+      && task.actionId === actionId && (surfaceToken === undefined || task.surfaceToken === surfaceToken) && currentTask(task));
+  }
   function taskForAction(pluginId: string, actionId: string, surfaceToken?: string): PluginTaskViewSnapshot | null {
-    return Object.values(taskById.value).reverse().find(task => task.pluginId === pluginId
-      && task.actionId === actionId && (surfaceToken === undefined || task.surfaceToken === surfaceToken) && currentTask(task)) ?? null;
+    return tasksForAction(pluginId, actionId, surfaceToken).at(-1) ?? null;
   }
 
   function beginCatalogRead(): number { return ++catalogReadSequence; }
@@ -325,6 +328,7 @@ export const usePluginStore = defineStore("plugins", () => {
     refreshCatalog,
     taskForId,
     taskForAction,
+    tasksForAction,
     projectKey,
     projectRevision,
     projectContextReady,

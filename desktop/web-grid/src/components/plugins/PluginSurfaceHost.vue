@@ -1,28 +1,32 @@
 <script setup lang="ts">
+import PluginTaskList from "./PluginTaskList.vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { useHostBridge } from "@/services/bridgeContext";
 import { PLUGIN_SURFACE_CSP, isTrustedSurfaceMessage, validatePluginSurfaceUrl } from "./pluginSurfacePolicy";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   src: string;
   surfaceToken: string;
   title: string;
   theme: PluginSurfaceThemeSnapshot;
   task?: PluginTaskViewSnapshot | null;
+  tasks?: readonly PluginTaskViewSnapshot[];
+  showTasks?: boolean;
   variant?: "panel" | "app" | "headless";
-}>();
+}>(), { showTasks: true });
 const emit = defineEmits<{
   close: [];
   action: [payload: Readonly<Record<string, unknown>>];
-  resolve: [decision: "approved" | "rejected"];
-  cancel: [];
+  resolve: [decision: "approved" | "rejected", taskId: string];
+  cancel: [taskId: string];
   finish: [status: string, summary: string];
 }>();
 const bridge = useHostBridge();
 const frame = ref<HTMLIFrameElement | null>(null);
 const activeToken = ref(props.surfaceToken);
 const valid = computed(() => validatePluginSurfaceUrl(props.src));
+const currentTasks = computed(() => props.tasks ?? (props.task ? [props.task] : []));
 const origin = computed(() => valid.value ? new URL(props.src).origin : "");
 
 function postToSurface(event: "themeChanged" | "taskChanged", payload: unknown): void {
@@ -42,8 +46,7 @@ function sendTheme(): void {
 }
 
 function sendTask(): void {
-  if (!props.task) return;
-  postToSurface("taskChanged", props.task);
+  for (const task of currentTasks.value) postToSurface("taskChanged", task);
 }
 
 function onMessage(event: MessageEvent): void {
@@ -88,7 +91,7 @@ function close(payload: Readonly<Record<string, unknown>> = {}): void {
 }
 
 watch(() => props.theme, sendTheme, { deep: true });
-watch(() => props.task, sendTask, { deep: true });
+watch(currentTasks, sendTask, { deep: true });
 watch(() => props.surfaceToken, (token) => { activeToken.value = token; });
 onMounted(() => window.addEventListener("message", onMessage));
 onBeforeUnmount(() => {
@@ -122,31 +125,8 @@ onBeforeUnmount(() => {
       @load="() => { sendTheme(); sendTask(); }"
     />
     <div v-else class="surface-error" role="alert">插件页面地址未通过不可变 origin 校验。</div>
-    <footer v-if="task" class="host-runtime" aria-live="polite">
-      <div class="task-status">
-        <span><b :data-state="task.state"></b>{{ task.state }}</span>
-        <code>{{ task.taskId }}</code>
-        <button
-          v-if="task.state === 'queued' || task.state === 'running'"
-          type="button"
-          :disabled="task.cancelRequested || task.progress?.cancellable === false"
-          @click="emit('cancel')"
-        >{{ task.cancelRequested ? '已请求取消' : '请求取消' }}</button>
-      </div>
-      <section v-if="task.confirmation" class="host-confirmation" role="alertdialog" aria-modal="true">
-        <div><span>HOST FINAL {{ task.confirmation.risk.toUpperCase() }} CONFIRMATION</span><strong>{{ task.confirmation.title }}</strong><p>{{ task.confirmation.summary }}</p></div>
-        <p v-if="variant === 'app' || variant === 'headless'">请在宿主原生确认窗口中批准或拒绝。</p>
-        <div v-else class="confirmation-actions">
-          <button type="button" @click="emit('resolve', 'rejected')">拒绝</button>
-          <button data-testid="plugin-surface-confirm-approve" class="approve" type="button" @click="emit('resolve', 'approved')">由宿主确认并继续</button>
-        </div>
-      </section>
-      <section v-if="task.error" data-testid="plugin-surface-task-error" class="host-error" role="alert">
-        <div><span>SAFE ERROR / {{ task.error.code }}</span><strong>{{ task.error.message }}</strong></div>
-        <p>恢复方式：<code>{{ task.error.recoverability }}</code></p>
-      </section>
-      <section v-if="task.result" class="host-result"><strong>{{ task.result.summary }}</strong></section>
-    </footer>
+    <PluginTaskList v-if="showTasks !== false" :tasks="currentTasks" :variant="variant"
+      @cancel="taskId => emit('cancel', taskId)" @resolve="(decision, taskId) => emit('resolve', decision, taskId)" />
   </section>
 </template>
 
@@ -163,24 +143,5 @@ header button { width: 28px; height: 28px; color: var(--vt-fg-muted); border: 0;
 header button:hover { color: var(--vt-fg); background: var(--vt-bg-sunken); }
 iframe { flex: 1 1 auto; width: 100%; min-height: 320px; border: 0; background: var(--vt-bg); }
 .surface-error { display: grid; flex: 1 1 auto; place-items: center; color: var(--vt-color-danger); }
-.host-runtime { flex: 0 0 auto; border-top: 1px solid var(--vt-border); background: var(--vt-bg); }
-.task-status { display: flex; min-height: 36px; align-items: center; gap: 10px; padding: 0 12px; }
-.task-status span { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
-.task-status b { width: 7px; height: 7px; border-radius: 50%; background: var(--vt-color-warning); }
-.task-status b[data-state="succeeded"] { background: var(--vt-color-success); }
-.task-status b[data-state="failed"], .task-status b[data-state="aborted"] { background: var(--vt-color-danger); }
-.task-status code { margin-right: auto; color: var(--vt-fg-muted); font-size: 10px; }
-.task-status button, .confirmation-actions button { min-height: 28px; padding: 0 9px; border: 1px solid var(--vt-border); border-radius: 4px; background: var(--vt-bg); }
-.task-status button:disabled { opacity: .55; }
-.host-confirmation { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px; border-top: 1px solid color-mix(in srgb, var(--vt-color-danger) 35%, var(--vt-border)); border-left: 3px solid var(--vt-color-danger); background: color-mix(in srgb, var(--vt-color-danger) 6%, var(--vt-bg)); }
-.host-confirmation > div:first-child { display: grid; gap: 3px; }
-.host-confirmation span { color: var(--vt-color-danger); font: 650 9px ui-monospace, monospace; letter-spacing: .1em; }
-.host-confirmation p { margin: 0; color: var(--vt-fg-muted); }
-.confirmation-actions { display: flex; gap: 7px; }
-.confirmation-actions .approve { color: #fff; border-color: var(--vt-color-danger); background: var(--vt-color-danger); }
-.host-result { padding: 10px 12px; color: var(--vt-color-success); border-top: 1px solid var(--vt-border); }
-.host-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; color: var(--vt-color-danger); border-top: 1px solid var(--vt-border); border-left: 3px solid var(--vt-color-danger); }
-.host-error div { display: grid; gap: 3px; }
-.host-error span { font: 650 9px ui-monospace, monospace; letter-spacing: .1em; }
-.host-error p { margin: 0; color: var(--vt-fg); }
+
 </style>

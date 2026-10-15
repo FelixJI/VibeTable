@@ -1,3 +1,4 @@
+import PluginHeadlessRunner from "@/components/plugins/PluginHeadlessRunner.vue";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, getActivePinia, setActivePinia, type Pinia } from "pinia";
@@ -877,6 +878,29 @@ describe("WorkspaceView", () => {
         if (action === "manage") expect(ui.activeView).toBe("plugins");
         if (action === "stopped") expect(record.posted.filter(item => item.type === "plugin.catalog.list").length).toBeGreaterThan(reads);
       }
+    });
+
+
+    it("keys a reopened headless run by its surface token without reusing stopped state or old receipts", async () => {
+      const { wrapper, plugins, task, openPanel } = await prepare();
+      openPanel("headless");
+      const src = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/run.html`;
+      plugins.beginAction({ ...plugins.describedAction!, surface: { ...plugins.describedAction!.surface!, src } }, plugins.activeContext!);
+      plugins.applyTask({ ...task("headless", "old-receipt"), state: "aborted", error: {
+        contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "old receipt needs checking",
+        recoverability: "none", pluginId: null, actionId: null, runId: null, details: {}, causeId: null } });
+      await flushPromises();
+      const first = wrapper.getComponent(PluginHeadlessRunner).vm;
+      await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click"); await flushPromises();
+      expect(wrapper.find('[data-testid="plugin-headless-runner"] iframe').exists()).toBe(false);
+      expect(wrapper.text()).toContain("old receipt needs checking");
+      plugins.beginAction({ ...plugins.describedAction!, surface: { src, surfaceToken: "headless-reopened", title: "headless" } }, plugins.activeContext!);
+      await flushPromises();
+      expect(wrapper.getComponent(PluginHeadlessRunner).vm).not.toBe(first);
+      expect(wrapper.get('[data-testid="plugin-headless-runner"] iframe').attributes("name")).toBe("headless-reopened");
+      expect(wrapper.find('[data-testid="plugin-headless-cancel"]').exists()).toBe(true);
+      expect(wrapper.find('[data-task-id="old-receipt"]').exists()).toBe(false);
+      expect(plugins.taskForId("old-receipt")?.error?.code).toBe("plugin_commit_unknown");
     });
 
     it("application and custom footer controls use their associated task despite a foreign last event", async () => {
