@@ -49,6 +49,19 @@ public static class PreviewHostEntry
             if (handlerClsid is { } clsid)
                 eventName += $".handler.{clsid:N}.apartment.{Thread.CurrentThread.GetApartmentState()}";
             if (resultHr is { } hr) eventName += $".hr.0x{hr:X8}";
+            TraceEvent(eventName, exception);
+        }
+        catch
+        {
+            // Diagnostics must not change preview startup or failure handling.
+        }
+        PreviewHostResourceDiagnostics.Trace(stage);
+    }
+
+    internal static void TraceEvent(string eventName, Exception? exception = null)
+    {
+        try
+        {
             Trace.TraceInformation(JsonSerializer.Serialize(new
             {
                 timestamp = DateTimeOffset.UtcNow,
