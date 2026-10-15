@@ -55,11 +55,19 @@ E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
 UPGRADE_SMOKE = REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
 
 STAGES = REQUIRED_STAGES
+# Fixed single-letter evidence roots keep the deepest product scenario paths
+# below the legacy Windows MAX_PATH boundary; one letter per product E2E lane.
+PRODUCT_E2E_EVIDENCE_DIRS = {
+    "product-e2e": "p",
+    "product-e2e-data-io": "d",
+    "product-e2e-file-io": "f",
+}
 DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
 STAGE_TIMEOUT_SECONDS = {
     "fault-injection": 30 * 60,
     "product-e2e": 30 * 60,
     "product-e2e-data-io": 30 * 60,
+    "product-e2e-file-io": 30 * 60,
     "runtime-baseline": 10 * 60,
 }
 RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
@@ -437,7 +445,7 @@ def stage_command(
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
         return command, str(REPO_ROOT)
-    if stage in {"product-e2e", "product-e2e-data-io"}:
+    if stage in PRODUCT_E2E_EVIDENCE_DIRS:
         command = [
             sys.executable,
             "qa/product_acceptance.py",
@@ -446,7 +454,7 @@ def stage_command(
             # workspace and content-addressed package-cache descendants. Keep
             # this segment minimal so the deepest real Windows path remains
             # below the legacy MAX_PATH boundary.
-            str(_qa_temp_dir() / ("p" if stage == "product-e2e" else "d")),
+            str(_qa_temp_dir() / PRODUCT_E2E_EVIDENCE_DIRS[stage]),
         ]
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
@@ -1800,7 +1808,7 @@ def _main(argv: list[str] | None = None) -> int:
             code = code or 1
     if args.ci or args.lane:
         evidence_sources: list[tuple[Path, bool, tuple[str, ...] | None]] = []
-        for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
+        for stage, directory in PRODUCT_E2E_EVIDENCE_DIRS.items():
             product_e2e_result = next(
                 (result for result in results if result.stage == stage),
                 None,

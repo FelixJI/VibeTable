@@ -296,8 +296,10 @@ def test_product_e2e_deepest_plugin_cache_path_stays_below_windows_max_path() ->
 def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
     scenarios = next_gate.handoff_gate.load_dependencies()
     assert scenarios["requiredGateStages"].count("product-e2e-data-io") == 1
+    assert scenarios["requiredGateStages"].count("product-e2e-file-io") == 1
     commands = [
-        next_gate.stage_command(stage)[0] for stage in ("product-e2e", "product-e2e-data-io")
+        next_gate.stage_command(stage)[0]
+        for stage in ("product-e2e", "product-e2e-data-io", "product-e2e-file-io")
     ]
     selected = [
         [command[index + 1] for index, part in enumerate(command) if part == "--scenario"]
@@ -307,7 +309,9 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
 
     assert all(len(ids) == len(set(ids)) for ids in selected)
     assert set(selected[0]).isdisjoint(selected[1])
-    assert set(selected[0]) | set(selected[1]) == manifest_ids
+    assert set(selected[0]).isdisjoint(selected[2])
+    assert set(selected[1]).isdisjoint(selected[2])
+    assert set(selected[0]) | set(selected[1]) | set(selected[2]) == manifest_ids
     assert set(selected[1]) == {
         "02-all-field-schema",
         "05-formula-lifecycle",
@@ -319,6 +323,8 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "35-data-io-interoperability",
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
+    }
+    assert set(selected[2]) == {
         "39-file-workflow-combination",
         "40-file-history-capacity",
         "41-file-document-operations",
@@ -326,8 +332,15 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "43-file-revision-leaves",
         "44-file-restore-crash",
         "45-common-field-display",
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
     }
+    evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
+    assert [root.name for root in evidence_roots] == ["p", "d", "f"]
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
+    assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-file-io"] == 30 * 60
 
 
 def test_workbench_qualification_stage_freezes_representative_scale_and_report() -> None:
@@ -2023,7 +2036,11 @@ def _prepare_complete_product_reports(
     qa_temp = tmp_path / "qa-full"
     monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     selected: dict[str, list[str]] = {}
-    for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
+    for stage, directory in (
+        ("product-e2e", "p"),
+        ("product-e2e-data-io", "d"),
+        ("product-e2e-file-io", "f"),
+    ):
         selected[stage] = list(next_gate.product_e2e_partition(next_gate.load_scenarios(), stage))
         run_root = qa_temp / directory / "20260817T010203Z"
         run_root.mkdir(parents=True)
@@ -2088,6 +2105,9 @@ def _prepare_complete_product_reports(
         ("product-e2e-data-io", "missing"),
         ("product-e2e-data-io", "duplicate"),
         ("product-e2e-data-io", "extra"),
+        ("product-e2e-file-io", "missing"),
+        ("product-e2e-file-io", "duplicate"),
+        ("product-e2e-file-io", "extra"),
     ],
 )
 def test_full_ci_rejects_incomplete_actual_product_reports(
@@ -2104,7 +2124,7 @@ def test_full_ci_rejects_incomplete_actual_product_reports(
         ids.append(ids[-1])
     else:
         ids.append("36-extra")
-    directory = "p" if stage == "product-e2e" else "d"
+    directory = {"product-e2e": "p", "product-e2e-data-io": "d", "product-e2e-file-io": "f"}[stage]
     (
         next_gate.QA_RUN_TEMP_DIR / directory / "20260817T010203Z" / "product-e2e-report.json"
     ).write_text(
@@ -2315,6 +2335,7 @@ def _prepare_product_lane(
     source_directory = {
         "product-e2e": "p",
         "product-e2e-data-io": "d",
+        "product-e2e-file-io": "f",
         "fault-injection": "fault-injection",
     }[stage]
     (qa_temp / source_directory).mkdir(parents=True)
@@ -2357,6 +2378,7 @@ def _prepare_product_lane(
     [
         ("product-e2e", "resilience", "p"),
         ("product-e2e-data-io", "data-io", "d"),
+        ("product-e2e-file-io", "file-io", "f"),
         ("fault-injection", "resilience", "fault-injection"),
     ],
 )
@@ -2421,6 +2443,7 @@ def test_failed_product_lane_persists_product_diagnostics(
     [
         ("product-e2e", "resilience", "p"),
         ("product-e2e-data-io", "data-io", "d"),
+        ("product-e2e-file-io", "file-io", "f"),
     ],
 )
 def test_successful_product_lane_persists_report_before_qa_cleanup(
@@ -2844,9 +2867,9 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         "--evidence-root",
         str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
-    assert product_command.count("--scenario") == (
-        len(next_gate.load_scenarios()) - len(release_eligibility.DATA_IO_SCENARIO_IDS)
-    )
+    assert product_command.count("--scenario") == len(next_gate.load_scenarios()) - len(
+        release_eligibility.DATA_IO_SCENARIO_IDS
+    ) - len(release_eligibility.FILE_IO_SCENARIO_IDS)
     assert Path(product_cwd) == next_gate.REPO_ROOT
 
 

@@ -599,7 +599,10 @@ def _prepare_smoke_lane(lane: str) -> None:
         _run("npm", "ci", cwd=REPO_ROOT / "desktop" / "web-grid", env=node_env)
         for project in PLUGIN_BUILD_PROJECTS:
             _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
-    elif lane == "data-io":
+    elif lane in {"data-io", "file-io"}:
+        # Both product E2E lanes replay packaged scenarios without rebuilding
+        # example plugins; only the resilience scenarios 11/47 use the plugin
+        # CLI, so these lanes share the narrower bootstrap dependencies.
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
         _run(
             "npm",
@@ -618,10 +621,12 @@ def release_smoke_lane(lane: str, json_report: Path) -> None:
     _verify_release_metadata(artifacts, version, archive)
     _prepare_smoke_lane(lane)
     python = (
-        ("uv", "run", "python") if lane in {"core", "resilience", "data-io"} else (sys.executable,)
+        ("uv", "run", "python")
+        if lane in {"core", "resilience", "data-io", "file-io"}
+        else (sys.executable,)
     )
     smoke_env = {"VIBETABLE_TEST_WINDOWS_CREDENTIAL_MANAGER": "1"}
-    if lane in {"core", "resilience", "data-io"}:
+    if lane in {"core", "resilience", "data-io", "file-io"}:
         smoke_env = _node_environment(smoke_env)
     _run(
         *python,
@@ -695,7 +700,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lane",
-        choices=("core", "race-a", "race-b", "resilience", "data-io", "release"),
+        choices=("core", "race-a", "race-b", "resilience", "data-io", "file-io", "release"),
     )
     parser.add_argument("--json-report", type=Path)
     parser.add_argument("--reports-dir", type=Path)

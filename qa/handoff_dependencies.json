@@ -32,6 +32,7 @@
     "fault-injection",
     "product-e2e",
     "product-e2e-data-io",
+    "product-e2e-file-io",
     "runtime-baseline",
     "workbench-qualification",
     "smoke"

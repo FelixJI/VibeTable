@@ -45,6 +45,7 @@ REQUIRED_STAGES = (
     "fault-injection",
     "product-e2e",
     "product-e2e-data-io",
+    "product-e2e-file-io",
     "runtime-baseline",
     "workbench-qualification",
     "smoke",
@@ -78,11 +79,14 @@ LANE_STAGES = {
         "workbench-qualification",
     ),
     "data-io": ("product-e2e-data-io",),
+    "file-io": ("product-e2e-file-io",),
     "release": ("package",),
 }
-PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io")
+PARALLEL_LANES = ("core", *RACE_LANES, "resilience", "data-io", "file-io")
 REQUIRED_LANES = (*PARALLEL_LANES, "release")
-# Share long product journeys across both lanes to retain the unchanged 30-minute budgets.
+# Share long product journeys across the parallel product E2E lanes so every
+# stage keeps its unchanged 30-minute budget; resilience executes the rest.
+PRODUCT_E2E_STAGES = ("product-e2e", "product-e2e-data-io", "product-e2e-file-io")
 DATA_IO_SCENARIO_IDS = (
     "02-all-field-schema",
     "05-formula-lifecycle",
@@ -94,6 +98,8 @@ DATA_IO_SCENARIO_IDS = (
     "35-data-io-interoperability",
     "37-collection-formula-journey",
     "38-calculation-chain-journey",
+)
+FILE_IO_SCENARIO_IDS = (
     "39-file-workflow-combination",
     "40-file-history-capacity",
     "41-file-document-operations",
@@ -101,7 +107,19 @@ DATA_IO_SCENARIO_IDS = (
     "43-file-revision-leaves",
     "44-file-restore-crash",
     "45-common-field-display",
+    "48-plugin-applications",
+    "49-plugin-application-security",
+    "50-plugin-headless-budget",
+    "51-plugin-application-commit-unknown",
 )
+LANE_STAGE_SCENARIO_IDS = {
+    "product-e2e-data-io": DATA_IO_SCENARIO_IDS,
+    "product-e2e-file-io": FILE_IO_SCENARIO_IDS,
+}
+LANE_STAGE_SCENARIO_LABELS = {
+    "product-e2e-data-io": "data IO",
+    "product-e2e-file-io": "file IO",
+}
 
 
 class EligibilityError(RuntimeError):
@@ -111,22 +129,29 @@ class EligibilityError(RuntimeError):
 def product_e2e_partition(scenarios: Sequence[Scenario], stage: str) -> tuple[str, ...]:
     """Select an exact, disjoint partition of the current product manifest."""
 
-    if stage not in {"product-e2e", "product-e2e-data-io"}:
+    if stage not in PRODUCT_E2E_STAGES:
         raise ValueError(f"unknown product E2E stage: {stage}")
     manifest_ids = tuple(item.id for item in scenarios)
     if len(manifest_ids) != len(set(manifest_ids)):
         raise EligibilityError("product E2E manifest contains duplicate scenario ids")
-    missing = set(DATA_IO_SCENARIO_IDS) - set(manifest_ids)
-    if missing:
-        raise EligibilityError(
-            f"missing data IO scenario from product E2E manifest: {sorted(missing)}"
-        )
-    data_io_ids = set(DATA_IO_SCENARIO_IDS)
-    return tuple(
-        scenario_id
-        for scenario_id in manifest_ids
-        if (scenario_id in data_io_ids) == (stage == "product-e2e-data-io")
-    )
+    lane_ids: set[str] = set()
+    for lane_stage, scenario_ids in LANE_STAGE_SCENARIO_IDS.items():
+        label = LANE_STAGE_SCENARIO_LABELS[lane_stage]
+        missing = set(scenario_ids) - set(manifest_ids)
+        if missing:
+            raise EligibilityError(
+                f"missing {label} scenario from product E2E manifest: {sorted(missing)}"
+            )
+        overlap = lane_ids & set(scenario_ids)
+        if overlap:
+            raise EligibilityError(
+                f"{label} scenario overlaps another product E2E lane: {sorted(overlap)}"
+            )
+        lane_ids.update(scenario_ids)
+    if stage == "product-e2e":
+        return tuple(scenario_id for scenario_id in manifest_ids if scenario_id not in lane_ids)
+    stage_ids = set(LANE_STAGE_SCENARIO_IDS[stage])
+    return tuple(scenario_id for scenario_id in manifest_ids if scenario_id in stage_ids)
 
 
 def _reported_product_e2e_scenarios(command: object) -> tuple[str, ...]:
@@ -241,7 +266,7 @@ def aggregate_reports(
         raise EligibilityError(f"stage set mismatch: missing={missing}, unknown={unknown}")
 
     scenarios = load_scenarios()
-    for stage in ("product-e2e", "product-e2e-data-io"):
+    for stage in PRODUCT_E2E_STAGES:
         expected = product_e2e_partition(scenarios, stage)
         actual = _reported_product_e2e_scenarios(stage_results[stage][0][1].get("command"))
         if actual != expected:

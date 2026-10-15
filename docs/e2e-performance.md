@@ -4,7 +4,7 @@
 
 ## 当前 CI 分片
 
-`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S37–39 公式/计算链与文件组合、S40–44 文件容量与文档旅程及 S45 常用字段显示旅程；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。两 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复覆盖。
+`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程及 S48–S51 插件应用块；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
 
 分片调整依据为：
 

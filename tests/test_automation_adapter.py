@@ -1122,6 +1122,7 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
         "race-b",
         "resilience",
         "data-io",
+        "file-io",
         "release",
     ]
     resilience = next(lane for lane in shards["lanes"] if lane["name"] == "resilience")
@@ -1133,6 +1134,13 @@ def test_project_adapter_keeps_all_project_work_out_of_workflows() -> None:
     }
     data_io = next(lane for lane in shards["lanes"] if lane["name"] == "data-io")
     assert {name for name in ("uv", "node", "dotnet", "go") if data_io.get(name)} == {
+        "uv",
+        "node",
+        "dotnet",
+        "go",
+    }
+    file_io = next(lane for lane in shards["lanes"] if lane["name"] == "file-io")
+    assert {name for name in ("uv", "node", "dotnet", "go") if file_io.get(name)} == {
         "uv",
         "node",
         "dotnet",
@@ -1177,6 +1185,7 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
         ("race-b", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("data-io", ["uv-sync", "npm-ci"]),
+        ("file-io", ["uv-sync", "npm-ci"]),
         ("release", []),
     ],
 )
@@ -1220,8 +1229,8 @@ def test_resilience_prepare_restores_the_example_plugins_its_e2e_rebuilds(
 ) -> None:
     """The resilience product E2E rebuilds both example plugins through the
     plugin CLI (scenario 11-plugin-mutation), so the lane prepare must restore
-    each example's local esbuild; the data-io lane's scenarios never build
-    plugins and must stay narrower."""
+    each example's local esbuild; the data-io and file-io lanes' scenarios never
+    build plugins and must stay narrower."""
     observed: list[tuple[str, str]] = []
 
     def record_run(*command: str, **kwargs: object) -> None:
@@ -1250,6 +1259,14 @@ def test_resilience_prepare_restores_the_example_plugins_its_e2e_rebuilds(
 
     observed.clear()
     automation_project._prepare_smoke_lane("data-io")
+
+    assert observed == [
+        ("uv sync --frozen --group dev --group build", "."),
+        ("npm ci", "desktop/web-grid"),
+    ]
+
+    observed.clear()
+    automation_project._prepare_smoke_lane("file-io")
 
     assert observed == [
         ("uv sync --frozen --group dev --group build", "."),
