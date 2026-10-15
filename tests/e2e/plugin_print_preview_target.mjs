@@ -39,19 +39,26 @@ export async function attachNativePreview(session, target) {
     try { if (sessionId && !closed) await session.send("Target.detachFromTarget", { sessionId }); }
     finally { await session.detach(); }
   }
-  async function command(method, params = {}) {
+  async function command(method, params = {}, timeout = 25000) {
     if (disposed || closed) throw new Error("native preview target closed");
     const id = ++sequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`native preview CDP deadline: ${method}`)); }, 25000);
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`native preview CDP deadline: ${method}`)); }, timeout);
       pending.set(id, { resolve, reject, timer });
       session.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id, method, params }) }).catch(error => {
         const item = pending.get(id); if (!item) return; clearTimeout(item.timer); pending.delete(id); reject(error);
       });
     });
   }
-  async function current() {
-    const { targetInfo } = await session.send("Target.getTargetInfo", { targetId: target.targetId });
+  async function current(timeout) {
+    let timer;
+    const read = session.send("Target.getTargetInfo", { targetId: target.targetId });
+    let targetInfo;
+    try {
+      ({ targetInfo } = await (timeout === undefined ? read : Promise.race([read, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("native preview identity deadline")), timeout);
+      })])));
+    } finally { clearTimeout(timer); }
     if (targetInfo.targetId !== target.targetId || targetInfo.browserContextId !== target.browserContextId || !printUrl(targetInfo.url)) throw new Error("native preview target identity changed");
   }
   async function evaluate(fn) {
@@ -69,8 +76,10 @@ export async function attachNativePreview(session, target) {
     return {
       url: () => target.url, isClosed: () => closed, evaluate, dispose,
       targetObservation: { targetId: target.targetId, browserContextId: target.browserContextId, url: target.url, transport: "owned-cdp-target-session" },
-      async screenshot({ path }) {
-        await current(); const { data } = await command("Page.captureScreenshot", { format: "png" });
+      async screenshot({ path, timeout = 25000 }) {
+        const deadline = Date.now() + timeout;
+        await current(timeout);
+        const { data } = await command("Page.captureScreenshot", { format: "png" }, Math.max(1, deadline - Date.now()));
         await fs.writeFile(path, Buffer.from(data, "base64"));
       },
       locator(selector) {

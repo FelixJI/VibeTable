@@ -85,3 +85,30 @@ test("disposing observation clears close waiters and detaches without closing or
   assert.ok(f.calls.some(call => call.method === "Target.detachFromTarget"));
   assert.ok(!f.calls.some(call => call.method === "Target.closeTarget"));
 });
+
+
+test("failure screenshot command observes its own bounded capture deadline", async () => {
+  const f = fixture(), send = f.session.send, write = fs.writeFile;
+  f.session.send = async (method, params) => {
+    if (method === "Target.sendMessageToTarget" && JSON.parse(params.message).method === "Page.captureScreenshot")
+      await new Promise(resolve => setTimeout(resolve, 25));
+    return send(method, params);
+  };
+  const preview = await attachNativePreview(f.session, target);
+  fs.writeFile = async () => assert.fail("timed-out capture must not publish a screenshot");
+  try { await assert.rejects(preview.screenshot({ path: "unused", timeout: 5 }), /native preview CDP deadline: Page.captureScreenshot/); }
+  finally { fs.writeFile = write; await preview.dispose(); }
+});
+
+
+test("failure capture identity check shares the bounded screenshot budget", async () => {
+  const f = fixture(), preview = await attachNativePreview(f.session, target), send = f.session.send;
+  f.session.send = async (method, params) => {
+    if (method === "Target.getTargetInfo") await new Promise(resolve => setTimeout(resolve, 25));
+    return send(method, params);
+  };
+  try {
+    await assert.rejects(preview.screenshot({ path: "unused", timeout: 5 }), /native preview identity deadline/);
+    assert.ok(!f.calls.some(call => call.method === "Target.sendMessageToTarget" && JSON.parse(call.params.message).method === "Page.captureScreenshot"));
+  } finally { await preview.dispose(); }
+});

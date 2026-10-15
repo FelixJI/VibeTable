@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { assertNativePrintSnapshot, cancelNativePrintPreview, nativePrintPreviewPages, readNativePrintPreviewInPage, waitForNativePrintPreview } from "./plugin_print_preview.mjs";
+import { assertNativePrintSnapshot, cancelNativePrintPreview, nativePrintPreviewPages, readNativePrintPreviewInPage, waitForNativePrintPreview, observeNativePrintPreviewFailure } from "./plugin_print_preview.mjs";
 
 const report = "synthetic authorized print row 0\nsynthetic authorized print row 99";
 test("actual preview snapshot requires multiple pages, first/last row and excludes parent secrets", () => {
@@ -108,4 +108,58 @@ test("a failed PDF read transport removes the message listener without leaving a
     await assert.rejects(readNativePrintPreviewInPage(), /synthetic PDF viewer gone/);
     assert.equal(f.listeners.size, 0);
   } finally { f.restore(); }
+});
+
+
+test("unreadable actual WebUI preserves its failure and bounded timed structure diagnostics", async () => {
+  const f = installPreview(); const now = Date.now; let tick = 0;
+  document.body = { children: Array.from({ length: 200 }, (_, index) => ({ tagName: "EDGE-PRINT-ROOT", id: `actual-root-${index}`, className: "preview", children: [], get textContent() { throw new Error("diagnostic must not read document text"); } })) };
+  document.readyState = "complete";
+  try {
+    Date.now = () => tick++ * 15001;
+    await assert.rejects(readNativePrintPreviewInPage(), error => {
+      assert.match(error.message, /page limit or unreadable page count/);
+      const line = error.message.split("\n").find(line => line.startsWith("VIBETABLE_PRINT_READINESS "));
+      assert.ok(line, "real WebUI failure needs actual readiness evidence");
+      const evidence = JSON.parse(line.slice("VIBETABLE_PRINT_READINESS ".length));
+      assert.equal(evidence.observations.length, 2);
+      assert.equal(evidence.observations.at(-1).elements.length, 64);
+      assert.equal(evidence.observations.at(-1).readyState, "complete");
+      assert.ok(evidence.observations.at(-1).elements.some(node => node.tag === "EDGE-PRINT-ROOT"));
+      return true;
+    });
+  } finally { Date.now = now; f.restore(); }
+});
+
+
+test("actual failure screenshot is bounded and cannot overwrite the print error", async () => {
+  const original = new Error('unreadable preview\nVIBETABLE_PRINT_READINESS {"startedAt":12,"observations":[]}');
+  const calls = [];
+  const preview = { isClosed: () => false, screenshot: async options => { calls.push(options); } };
+  const captured = await observeNativePrintPreviewFailure(preview, original, "evidence");
+  assert.equal(captured.webUiReadiness.startedAt, 12);
+  assert.equal(captured.failureScreenshot, "48-plugin-print-preview-failed.png");
+  assert.equal(calls[0].timeout, 3000);
+  assert.match(calls[0].path, /48-plugin-print-preview-failed.png$/);
+  const failed = await observeNativePrintPreviewFailure({ ...preview, screenshot: async () => { throw new Error("target capture rejected"); } }, original, "evidence");
+  assert.equal(failed.failureScreenshotError, "target capture rejected");
+  assert.equal(original.message.split("\n")[0], "unreadable preview");
+  const closed = await observeNativePrintPreviewFailure({ ...preview, isClosed: () => true }, original, "evidence");
+  assert.equal(closed.failureScreenshot, undefined);
+  assert.equal(calls.length, 1);
+});
+
+
+test("a diagnostic DOM failure cannot mask the original reader failure", async () => {
+  const f = installPreview(), now = Date.now; let tick = 0;
+  Object.defineProperty(document, "body", { get() { throw new Error("DOM inspection unavailable"); } });
+  try {
+    Date.now = () => tick++ * 15001;
+    await assert.rejects(readNativePrintPreviewInPage(), error => {
+      assert.match(error.message, /^native preview page limit or unreadable page count/);
+      assert.match(error.cause.message, /^native preview page limit or unreadable page count/);
+      assert.match(error.message, /DOM inspection unavailable/);
+      return true;
+    });
+  } finally { Date.now = now; f.restore(); }
 });

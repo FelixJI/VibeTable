@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { assertNativePrintSnapshot, assertNoNativePrintPreview, cancelNativePrintPreview,
-  readNativePrintPreviewInPage, waitForNativePrintPreview } from "./plugin_print_preview.mjs";
+  readNativePrintPreviewInPage, waitForNativePrintPreview, observeNativePrintPreviewFailure } from "./plugin_print_preview.mjs";
 
 /** Uses real browser preview targets; observes/cancels only, never selects or submits a printer. */
 export async function runApplicationPrint(page, frame, recorder, runtime, reopen) {
@@ -87,6 +87,7 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
       const opened = await frame.evaluate(() => call("output.print"));
       recorder.check(`native print cycle ${cycle} returns an opened-only receipt`, JSON.stringify(opened) === '{"opened":true}', { opened });
       preview = await waitForNativePrintPreview(page, runtime.evidenceDir);
+      evidence.activeTarget = { at: Date.now(), ...(preview.targetObservation ?? { transport: "owned-playwright-page", url: preview.url() }) };
       const snapshot = await preview.evaluate(readNativePrintPreviewInPage);
       assertNativePrintSnapshot(snapshot);
       evidence.snapshots.push({ stage: `opened-${cycle}`, at: Date.now(), target: preview.targetObservation ?? { transport: "owned-playwright-page", url: preview.url() }, ...snapshot });
@@ -128,6 +129,7 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
     evidence.status = "failed";
     evidence.error = error.message;
     failure = error;
+    Object.assign(evidence, await observeNativePrintPreviewFailure(preview, error, runtime.evidenceDir));
   } finally {
     if (preview && !preview.isClosed()) {
       try { await cancelNativePrintPreview(preview); }
