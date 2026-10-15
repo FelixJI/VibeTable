@@ -50,7 +50,10 @@ const outcome = computed(() => {
   if (tasks.some(task => task.error?.code === "plugin_commit_unknown"))
     return { status: "unknown" as const, summary: "写入结果未知，请核对实际数据；请勿重复执行。" };
   const saved = tasks.filter(task => task.state === "succeeded");
-  if (saved.length && (saved.length !== tasks.length || moduleOutcome.value.status === "failed"))
+  if (!cancelRequested.value && moduleOutcome.value.status === "unknown")
+    return { status: "unknown" as const, summary: `${moduleOutcome.value.summary} 已确认的成功写入请见下方宿主记录；其余结果未知，请勿重复执行。` };
+  if (saved.length && (saved.length !== tasks.length
+    || (!cancelRequested.value && moduleOutcome.value.status !== "succeeded")))
     return { status: "partial" as const, summary: `部分写入已完成：${saved.map(task => task.result?.summary || task.taskId).join("；")}。其余结果请核对下方宿主记录；请勿重复执行。` };
   const failed = tasks.find(task => task.state === "failed" || task.state === "aborted");
   if (failed) return { status: failed.state as HeadlessOutcomeStatus, summary: failed.error?.message || "" };

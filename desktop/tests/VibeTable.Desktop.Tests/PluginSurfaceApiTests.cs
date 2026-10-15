@@ -11,6 +11,35 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceApiTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SameWorkspaceRendererDrainKeepsSuccessOrUnknownForHistoryProjection(bool incomplete)
+    {
+        using var fixture = new Fixture(); fixture.Http.Incomplete = incomplete;
+        Task? drain = null;
+        fixture.Http.AfterCommitRead = () =>
+        {
+            fixture.DropRendererNotifications = true;
+            fixture.Surfaces.CloseAll();
+            drain = fixture.Api.DrainAsync();
+        };
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+        Assert.IsNotNull(drain); await drain.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsTrue(fixture.DroppedRendererNotifications > 0);
+        Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
+        var history = fixture.Tasks.ProjectHistory(fixture.Context);
+        var task = history.Single().Snapshot.Deserialize<PluginRuntimeTaskSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.AreEqual(incomplete ? "aborted" : "succeeded", task.State);
+        if (incomplete) Assert.AreEqual("plugin_commit_unknown", task.Error!.Code);
+        Assert.AreEqual(fixture.Surface.SurfaceToken, task.SurfaceToken);
+        Assert.AreEqual("record-surface", task.InstallationId);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId,
+            fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+    }
+
+    [TestMethod]
     public async Task SamePackageInstallationReplacementRetiresApiPlansWithoutFrameAcknowledgement()
     {
         using var fixture = new Fixture();
@@ -433,6 +462,8 @@ public sealed class PluginSurfaceApiTests
         internal PluginRuntimeInteractionSnapshot? LastInteraction { get; private set; }
         internal Action? OnConfirmation { get; set; }
         internal int LateNotifications { get; private set; }
+        internal bool DropRendererNotifications { get; set; }
+        internal int DroppedRendererNotifications { get; private set; }
         private bool _retired;
         internal void RetireAfterReceipt()
         {
@@ -473,6 +504,7 @@ public sealed class PluginSurfaceApiTests
         { string reply = await Api.HandleAsync(Surface.SurfaceToken, source ?? Source, Wire(method, parameters, token, version)); return JsonDocument.Parse(reply).RootElement.Clone(); }
         public void PostNotification(string type, object? payload)
         {
+            if (DropRendererNotifications) { DroppedRendererNotifications++; return; }
             if (_retired) LateNotifications++;
             if (payload is not PluginEventEnvelope envelope) return;
             if (type == "plugin.task.changed") _taskId = envelope.EntityId;

@@ -11,6 +11,70 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    [DataRow("workspace")]
+    [DataRow("epoch")]
+    [DataRow("request")]
+    [DataRow("emission")]
+    public async Task RecoveredTaskHistoryCannotCrossWorkspaceEpochOrPublicationGate(string retired)
+    {
+        var reply = new RecordingReplySink(); var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources,
+            filePicker: null, githubSource: null, projectContext: ReadyContext,
+            sharedReadEmitGate: _ => publish => retired != "emission" && publish());
+        dispatcher.SetProjectContext(ReadyContext()); dispatcher.SetWorkspaceContext(ReadyContext());
+        var binding = dispatcher.Tasks.CaptureNative()!;
+        dispatcher.Tasks.NativeTask(binding, new PluginRuntimeTaskSnapshot("private-task", "private-run", "com.acme.old", "1", "save",
+            "project-1", null, 1, PluginRisk.Write, "running", false, null, null, null,
+            InstallationId: "old-installation", InstallationRevision: 1, SurfaceToken: "old-surface"));
+        dispatcher.Tasks.FinishNative("private-task", "succeeded");
+        if (retired == "workspace") dispatcher.SetWorkspaceContext(new("project-2", "2", 2));
+        if (retired == "epoch") dispatcher.SetWorkspaceContext(new("project-1", "2", 2));
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "recovered-catalog",
+            retired == "request" ? """{"projectKey":"project-2"}""" : """{"projectKey":"project-1"}"""));
+        Assert.IsNull(reply.NotificationPayload);
+    }
+
+    [TestMethod]
+    [DataRow("succeeded")]
+    [DataRow("aborted")]
+    public async Task CatalogReadReprojectsHostReceiptLostDuringRendererDrainWithoutBackend(string state)
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext);
+        dispatcher.SetProjectContext(ReadyContext());
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        var binding = dispatcher.Tasks.CaptureNative()!;
+        var task = new PluginRuntimeTaskSnapshot("drain-task", "drain-run", "com.acme.old", "1.0.0", "save",
+            "project-1", null, 1, PluginRisk.Write, "running", false, null, null, null,
+            InstallationId: "original-installation", InstallationRevision: 7, SurfaceToken: "retired-surface");
+        dispatcher.Tasks.NativeTask(binding, task, nativeOnlyApproval: true);
+        // The renderer generation is sealed while drain settles this task;
+        // its original notification cannot reach the newly bootstrapped page.
+        var error = state == "aborted" ? new PluginRuntimeSafeError("vibetable.plugin-error.v1", "plugin_commit_unknown",
+            "请核对数据；请勿重复执行", "none", task.PluginId, task.ActionId, task.RunId,
+            new Dictionary<string, JsonElement>(), null) : null;
+        dispatcher.Tasks.FinishNative(task.TaskId, state, error: error);
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "new-renderer-catalog",
+                """{"projectKey":"project-1"}"""));
+            var restored = Assert.IsInstanceOfType<PluginEventEnvelope>(reply.NotificationPayload);
+            var snapshot = restored.Snapshot.Deserialize<PluginRuntimeTaskSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            Assert.AreEqual("plugin.task.changed", reply.NotificationType);
+            Assert.AreEqual(state, snapshot.State);
+            Assert.AreEqual("original-installation", snapshot.InstallationId);
+            Assert.AreEqual(7, snapshot.InstallationRevision);
+            Assert.AreEqual("retired-surface", snapshot.SurfaceToken);
+            Assert.AreEqual(task.TaskId, snapshot.TaskId);
+            Assert.IsNull(dispatcher.Tasks.FinishNative(task.TaskId, "cancelled"));
+        }
+    }
+
+    [TestMethod]
     public async Task AuthorityBindsUpgradeTargetAndUpgradeLeaseCannotBeUsedAsInstall()
     {
         var reply = new RecordingReplySink();
@@ -2166,6 +2230,12 @@ public sealed class PluginRequestDispatcherTests
             if (index == 0) oldest = started;
             newest = started;
         }
+
+        var history = dispatcher.Tasks.ProjectHistory(ReadyContext());
+        Assert.AreEqual(256, history.Count);
+        Assert.IsFalse(history.Any(envelope => envelope.EntityId == oldest!.TaskId));
+        Assert.IsTrue(history.Any(envelope => envelope.EntityId == newest!.TaskId));
+        Assert.IsTrue(history.All(envelope => envelope.EventType == "plugin.task.changed"));
 
         // Replacing the client settles nothing (all terminal) but must keep
         // the recent terminal states queryable for the same workspace.

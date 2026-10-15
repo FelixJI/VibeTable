@@ -258,4 +258,20 @@ describe("PluginHeadlessRunner", () => {
     expect(wrapper.get('[data-task-id="other"]').text()).toContain(state);
     wrapper.unmount();
   });
+  it.each(["cancelled", "bare-close"])("does not summarize autonomous module %s as total success after a saved Host write", async moduleStatus => {
+    const { wrapper, dispatchFromFrame, hostPostMessage } = mountRunner();
+    const saved = { ...runningTask, state: "succeeded" as const, result: { contract: "vibetable.plugin-result.v1" as const,
+      status: "success" as const, summary: "原写入成功", metrics: [], table: null, artifacts: [], refresh: null, warnings: [] } };
+    await wrapper.setProps({ tasks: [saved] });
+    dispatchFromFrame(moduleStatus === "cancelled" ? { status: "cancelled", summary: "模块后续自行取消" } : {});
+    await Promise.resolve();
+    expect(wrapper.get("header b").attributes("data-state")).toBe(moduleStatus === "cancelled" ? "partial" : "unknown");
+    expect(wrapper.get('[data-task-id="native-current"]').text()).toContain("原写入成功");
+    expect(wrapper.text()).toContain("请勿重复执行");
+    expect(wrapper.find("iframe").exists()).toBe(false);
+    expect(wrapper.emitted("cancel")).toBeUndefined();
+    expect(hostPostMessage.mock.calls.filter(([m]) => m.type === "plugin.surface.event")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
 });

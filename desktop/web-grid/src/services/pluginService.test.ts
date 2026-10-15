@@ -1282,4 +1282,43 @@ describe("pluginService canonical wire", () => {
     expect(postMessage).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("receives scoped Host recovery receipts before a catalog failure=%s and keeps revisions sticky", async failCatalog => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const posted: string[] = [];
+    const task: PluginTaskSnapshot = { taskId: "restored-write", runId: "restored-run", projectKey: "local:default",
+      pluginId: snapshot.pluginId, actionId: "normalize", pluginVersion: snapshot.version,
+      installationId: "retired-installation", installationRevision: 1, surfaceToken: "retired-token",
+      collection: null, targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    const event = (value: PluginTaskSnapshot, revision: number) => listener?.({ data: { type: "plugin.task.changed", payload: {
+      contract: "vibetable.plugin-event.v1", eventType: "plugin.task.changed", projectKey: value.projectKey,
+      entityId: value.taskId, revision, snapshot: value } } });
+    const bridge = createHostBridge({ generateRequestId: () => "recovery-catalog",
+      webview: { postMessage(message) {
+        const request = message as { type: string; requestId: string }; posted.push(request.type);
+        queueMicrotask(() => {
+          event({ ...task, state: "succeeded" }, 2);
+          event(task, 1); // A captured history can arrive after a newer live terminal.
+          event({ ...task, taskId: "uncertain", runId: "uncertain-run", state: "aborted", error: {
+            contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "核对原始写入", recoverability: "none",
+            pluginId: task.pluginId, actionId: task.actionId, runId: "uncertain-run", details: {}, causeId: null } }, 3);
+          event({ ...task, taskId: "foreign", projectKey: "local:foreign", state: "succeeded" }, 2);
+          listener?.({ data: failCatalog ? { type: "operation.failed", requestId: request.requestId, payload: { code: "PLUGIN_NOT_READY", message: "catalog unavailable" } }
+            : { ...request, payload: [snapshot] } });
+        });
+      }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
+    bridge.start(); setHostBridgeForTesting(bridge);
+    const service = usePluginService(); service.init();
+    service.openProjectContext("local:default", "recovered-session");
+    if (failCatalog) await expect(service.list()).rejects.toThrow("catalog unavailable");
+    else await service.list();
+    const store = usePluginStore();
+    expect(store.nativeTaskReceipts.map(task => task.taskId)).toEqual(["restored-write", "uncertain"]);
+    expect(store.nativeTaskReceipts[0]?.state).toBe("succeeded");
+    expect(store.nativeTaskReceipts[1]?.error?.code).toBe("plugin_commit_unknown");
+    expect(store.tasksForAction(task.pluginId, task.actionId, "fresh-token")).toEqual([]);
+    expect(store.pendingConfirmation).toBeNull();
+    expect(posted).toEqual(["plugin.catalog.list"]);
+    service.dispose(); bridge.stop();
+  });
+
 });

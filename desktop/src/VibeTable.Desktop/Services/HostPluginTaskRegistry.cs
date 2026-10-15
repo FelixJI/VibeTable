@@ -360,6 +360,24 @@ internal sealed class HostPluginTaskRegistry
         }
     }
 
+    /// <summary>
+    /// Copies the existing bounded history for a renderer that has re-established
+    /// this workspace session. These are task receipts, never pending decisions
+    /// or authority to reopen the original surface.
+    /// </summary>
+    internal IReadOnlyList<PluginEventEnvelope> ProjectHistory(PluginProjectContext context)
+    {
+        lock (_gate)
+        {
+            if (_workspaceContext is null
+                || context.ProjectKey != _workspaceContext.ProjectKey
+                || context.SessionGeneration != _workspaceContext.SessionGeneration) return [];
+            return _tasks.Values.Where(IsVisibleInCurrentContextLocked)
+                .OrderBy(record => record.Order)
+                .Select(record => ProjectLocked(record, "plugin.task.changed")).ToArray();
+        }
+    }
+
     public HostPluginTaskCancelOutcome RequestCancel(
         string taskId,
         out PluginRuntimeTaskSnapshot snapshot,

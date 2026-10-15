@@ -207,6 +207,22 @@ public sealed class PluginRequestDispatcher : IDisposable
             {
                 PluginProjectContext? context = _projectContext();
                 if (context is null) throw new PluginDispatchException("PLUGIN_NOT_READY", "Plugin project context is unavailable.");
+                Func<Func<bool>, bool>? emitGate = GateSharedReadTerminal(request.Type, context);
+                if (sharedMethod == "plugin.listCatalog")
+                {
+                    if (Read<PluginCatalogListParams>(request.Payload).ProjectKey != context.ProjectKey) throw StaleTask();
+                    bool PublishTaskHistory()
+                    {
+                        if (context != _projectContext()) return false;
+                        foreach (var receipt in _taskRegistry.ProjectHistory(context))
+                            _reply.PostNotification("plugin.task.changed", receipt);
+                        return true;
+                    }
+                    // The renderer establishes its workspace store before this
+                    // bootstrap read. Replay before requiring either backend:
+                    // recovery receipts remain useful when catalog loading fails.
+                    if (!(emitGate?.Invoke(PublishTaskHistory) ?? PublishTaskHistory())) return;
+                }
                 Func<string, JsonElement, CancellationToken, Task<JsonElement>> sharedRpc = _sharedRpc
                     ?? throw new PluginDispatchException(
                         "PLUGIN_NOT_READY", "Plugin catalog is not available for the current project.");
@@ -218,7 +234,6 @@ public sealed class PluginRequestDispatcher : IDisposable
                 // transitions use the Host-only execution path below. Without a
                 // production gate (standalone construction) the sink's
                 // synchronous default commits exactly as before.
-                Func<Func<bool>, bool>? emitGate = GateSharedReadTerminal(request.Type, context);
                 long catalogGeneration = CaptureCatalogProjection();
                 JsonElement shared;
                 object projected = null!;
