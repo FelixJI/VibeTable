@@ -22,12 +22,15 @@ describe("AppToolbar", () => {
     try {
       const trigger = wrapper.get('[data-testid="toolbar-more"]');
       await trigger.trigger("click");
-      await vi.advanceTimersByTimeAsync(0);
+      // This interaction only needs synchronous timers, followed by a Vue render flush.
+      vi.advanceTimersByTime(0);
+      await wrapper.vm.$nextTick();
       const refreshOption = () => [...document.querySelectorAll<HTMLElement>(".n-dropdown-option-body")]
         .find(option => option.textContent?.includes("刷新"));
       expect(refreshOption()).toBeTruthy();
       await trigger.trigger("mouseleave");
-      await vi.advanceTimersByTimeAsync(500);
+      vi.advanceTimersByTime(500);
+      await wrapper.vm.$nextTick();
       expect(refreshOption()).toBeTruthy();
       refreshOption()!.click();
       await wrapper.vm.$nextTick();
