@@ -238,7 +238,7 @@ def test_unspecified_off_scheme_only_accepts_the_observed_enabled_default(tmp_pa
     assert native._contrast_original is None
 
 
-def test_highcontrast_get_copies_and_frees_only_system_allocated_pointer(monkeypatch):
+def test_highcontrast_get_reads_borrowed_system_pointer_without_freeing(monkeypatch):
     import ctypes
     from ctypes import wintypes
     from types import SimpleNamespace
@@ -248,6 +248,9 @@ def test_highcontrast_get_copies_and_frees_only_system_allocated_pointer(monkeyp
     class Value(ctypes.Structure):
         _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", ctypes.c_void_p)]
 
+    # GET borrows one stable system-owned pointer: repeated reads return the
+    # same value, and LocalFree on that borrowed address corrupts the heap
+    # (remote CI QA parent exit 0xC0000374). SET keeps caller-owned storage.
     buffer = ctypes.create_unicode_buffer("High Contrast Black")
     address = ctypes.addressof(buffer)
     freed = []
@@ -272,9 +275,49 @@ def test_highcontrast_get_copies_and_frees_only_system_allocated_pointer(monkeyp
         lambda name, **_kwargs: SimpleNamespace(SystemParametersInfoW=spi, LocalFree=free),
     )
     assert native._contrast_parameters() == {"flags": 127, "scheme": "High Contrast Black"}
-    assert freed == [address]
+    assert native._contrast_parameters() == {"flags": 127, "scheme": "High Contrast Black"}
+    assert freed == []
     native._contrast_parameters(126, "explicit scheme")
-    assert freed == [address]
+    assert freed == []
+
+
+def test_highcontrast_get_failure_does_not_free_partially_filled_pointer(monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    class Value(ctypes.Structure):
+        _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", ctypes.c_void_p)]
+
+    freed = []
+    # Keep the borrowed buffer alive for the whole call, like the stable
+    # system-owned GET pointer whose address only makes sense while borrowed.
+    buffer = ctypes.create_unicode_buffer("High Contrast Black")
+    address = ctypes.addressof(buffer)
+
+    def spi(action, size, pointer, update):
+        if action == 0x42:
+            # A failing GET can still leave the borrowed pointer filled, so
+            # any re-added free-on-error path must fail this regression too.
+            value = ctypes.cast(pointer, ctypes.POINTER(Value)).contents
+            value.flags = 127
+            value.scheme = address
+        return False
+
+    def free(pointer):
+        freed.append(pointer)
+        return None
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda name, **_kwargs: SimpleNamespace(SystemParametersInfoW=spi, LocalFree=free),
+    )
+    with pytest.raises(OSError, match="WinError"):
+        native._contrast_parameters()
+    assert freed == []
 
 
 @pytest.mark.parametrize(

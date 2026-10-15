@@ -76,8 +76,11 @@ def _contrast_parameters(flags: int | None = None, scheme: str = "") -> dict[str
     class HighContrast(ctypes.Structure):
         _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", ctypes.c_void_p)]
 
-    # Desktop HIGHCONTRASTW GET returns a system-owned allocation; SET uses
-    # caller-owned storage. Keep the raw address until GET has been copied.
+    # HIGHCONTRASTW GET fills a stable system-owned pointer: only copy it
+    # out, never free that borrowed address (the docs' free claim is wrong;
+    # freeing corrupts the heap). Official implementation, never freed:
+    # https://raw.githubusercontent.com/dotnet/winforms/main/src/System.Private.Windows.Core/src/Windows/Win32/PInvokeCore.SystemParametersInfo.cs
+    # SET keeps caller-owned Unicode storage, which also needs no free.
     buffer = ctypes.create_unicode_buffer(scheme) if flags is not None else None
     value = HighContrast(
         ctypes.sizeof(HighContrast),
@@ -87,25 +90,17 @@ def _contrast_parameters(flags: int | None = None, scheme: str = "") -> dict[str
     api = ctypes.WinDLL("user32", use_last_error=True).SystemParametersInfoW
     api.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
     api.restype = wintypes.BOOL
-    try:
-        if not api(
-            0x42 if flags is None else 0x43,
-            value.size,
-            ctypes.byref(value),
-            0 if flags is None else 2,
-        ):
-            raise ctypes.WinError(ctypes.get_last_error())
-        return {
-            "flags": int(value.flags),
-            "scheme": ctypes.wstring_at(value.scheme) if value.scheme else "",
-        }
-    finally:
-        if flags is None and value.scheme:
-            free = ctypes.WinDLL("kernel32", use_last_error=True).LocalFree
-            free.argtypes = [ctypes.c_void_p]
-            free.restype = ctypes.c_void_p
-            if free(value.scheme):
-                raise ctypes.WinError(ctypes.get_last_error())
+    if not api(
+        0x42 if flags is None else 0x43,
+        value.size,
+        ctypes.byref(value),
+        0 if flags is None else 2,
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return {
+        "flags": int(value.flags),
+        "scheme": ctypes.wstring_at(value.scheme) if value.scheme else "",
+    }
 
 
 class ContrastRestorationError(OSError):
