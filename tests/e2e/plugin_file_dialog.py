@@ -121,6 +121,7 @@ def handle_file_dialog(
                 check=True,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            job_owned()
             value = json.loads(result.stdout)
             if (
                 value["hwnd"] != hwnd
@@ -137,11 +138,29 @@ def handle_file_dialog(
 
         observation = observe()
 
+        def input_owned() -> None:
+            # UIA/evidence I/O can outlive the previous Job snapshot. No await
+            # or observer subprocess may separate this check from SendInput.
+            if (
+                native.owner(hwnd) != pid
+                or int(native.user32.GetForegroundWindow() or 0) != hwnd
+                or not any(
+                    item["hwnd"] == hwnd
+                    and item["pid"] == pid
+                    and item["visible"]
+                    and item["title"] == TITLES[request["kind"]]
+                    for item in native.windows()
+                )
+            ):
+                raise ValueError("picker input identity/foreground changed")
+            job_owned()
+
         def click(role: str) -> None:
             box = select_control(observe(), role, pid)
             x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
             if native._root_at(x, y) != hwnd:
                 raise ValueError("picker is obscured")
+            input_owned()
             _send_input(native, x=x, y=y)
 
         cleanup = click
@@ -153,6 +172,7 @@ def handle_file_dialog(
             while not select_control(observe(), "filename", pid)["focused"]:
                 if time.monotonic() >= focus_deadline:
                     raise ValueError("picker filename editor did not own keyboard focus")
+            input_owned()
             _send_input(native, text=str(target))
             click("accept")
         deadline = time.monotonic() + 5
