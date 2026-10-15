@@ -13,13 +13,15 @@ export function requireScopedInvalidations(events, collection) {
     throw new Error("subscription must only disclose scoped invalidation metadata");
   if (events.some((event, index) => index && event.sequence <= events[index - 1].sequence)) throw new Error("non-monotone invalidation");
 }
-export function requireSingleColumnExport(csv, expectedValues) {
+export function requireSingleColumnExport(csv, expectedHeader, expectedValues) {
   const rows = csv.replace(/^\uFEFF/, "").trimEnd().split(/\r?\n/).map(line => {
     if (/^"(?:[^"\r\n]|"")*"$/.test(line)) return line.slice(1, -1).replaceAll('""', '"');
     if (/[",\r\n]/.test(line)) throw new Error("unexpected CSV column or quoting");
     return line;
   });
-  if (rows.shift() !== "Text" || JSON.stringify(rows.sort()) !== JSON.stringify([...expectedValues].sort())) throw new Error("export bytes do not equal the explicit authorized projection");
+  // The SDK request and the Host-authorized projection use plugin field IDs, so the CSV
+  // header carries that stable identifier; mutable display names never become column identities.
+  if (rows.shift() !== expectedHeader || JSON.stringify(rows.sort()) !== JSON.stringify([...expectedValues].sort())) throw new Error("export bytes do not equal the explicit authorized projection");
 }
 async function picker(runtime, kind, action = "select") {
   const requestId = crypto.randomUUID();
@@ -106,8 +108,9 @@ export async function runCapabilityServices(page, recorder, runtime, helpers) {
     const exported = await nativeCall("export", "export");
     const csv = await fs.readFile(path.join(runtime.controlsDir, "52-export.csv"), "utf8");
     evidence.export = { csv, receipt: exported };
-    requireSingleColumnExport(csv, importedRows.map(row => String(row[table.field.physicalName] ?? "")));
-    recorder.check("export task success matches selected output contents", exported.status.state === "succeeded" && csv.includes("Text") && csv.includes("import-one") && csv.includes("import-two") && !csv.includes("VIBETABLE_483_FORBIDDEN_TABLE") && !csv.includes("Self relation") && !csv.includes("Attachments"), { exported, csv });
+    // The exported header is the authorized plugin field ID the fixture requested via data.export.
+    requireSingleColumnExport(csv, table.field.fieldId, importedRows.map(row => String(row[table.field.physicalName] ?? "")));
+    recorder.check("export task success matches selected output contents", exported.status.state === "succeeded" && csv.includes(table.field.fieldId) && csv.includes("import-one") && csv.includes("import-two") && !csv.includes("VIBETABLE_483_FORBIDDEN_TABLE") && !csv.includes("Self relation") && !csv.includes("Attachments"), { exported, csv });
     await run("prepare", "create"); await confirm("approved", "create-approved");
     recorder.check("SDK create has an authoritative row", (await authority()).some(row => row[table.field.physicalName] === "plugin-created"));
     const beforeDelete = await authority();

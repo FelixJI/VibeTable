@@ -34,6 +34,9 @@ class ScopedClient(PocketBaseClient):
                 "collection": "orders",
                 "schema_revision": "schema_1",
                 "fields": ["id", "title"],
+                # The scoped export header must stay the authorized plugin field ID; the
+                # display name carried by the profile never becomes a column identity.
+                "field_schemas": {"title": {"dataType": "text", "displayName": "订单标题"}},
                 "create_fields": ["title"],
                 "update_fields": ["title"],
                 "archive_field": None,

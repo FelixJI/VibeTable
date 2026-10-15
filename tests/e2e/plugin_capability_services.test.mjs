@@ -12,8 +12,9 @@ test("scoped invalidations reject wrong table, payload disclosure and listener d
 });
 
 test("export must contain exactly the explicitly authorized column and actual Go values", () => {
-  requireSingleColumnExport('\uFEFFText\r\n"import-one"\r\n"import-two"\r\n', ["import-one", "import-two"]);
-  for (const csv of ["Text,Secret\none,private\n", "Text\nimport-one\n", "Text\nimport-one\nimport-two\nprivate\n", "Other\nimport-one\nimport-two\n"]) assert.throws(() => requireSingleColumnExport(csv, ["import-one", "import-two"]));
+  const fieldId = "fld_capabilitytext0";
+  requireSingleColumnExport(`\uFEFF${fieldId}\r\n"import-one"\r\nimport-two\r\n`, fieldId, ["import-two", "import-one"]);
+  for (const csv of [`${fieldId},Secret\none,private\n`, `${fieldId}\nimport-one\n`, `${fieldId}\nimport-one\nimport-two\nprivate\n`, "Text\nimport-one\nimport-two\n", "f_capability_text\nimport-one\nimport-two\n", "fld_otherfield0000\nimport-one\nimport-two\n"]) assert.throws(() => requireSingleColumnExport(csv, fieldId, ["import-one", "import-two"]));
 });
 
 test("real transport accounting preserves messages and rejects a deliberately undisposed listener", () => {
