@@ -313,15 +313,20 @@ func TestPublicErrorWireMatchesFrozenOracle(t *testing.T) {
 func TestPrivateSettingCAS(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
+	installation, err := service.SaveInstallation(ctx, frozenInstallation(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := jsonText(installation, "installationId")
 	setting := []byte(`{"projectKey":"local:0f8f4a3b2c1d4e5f8091a2b3c4d5e6f7","pluginId":"com.example.reader","settingKey":"token","value":"a","revision":1}`)
-	if _, err := service.SavePrivateSetting(ctx, setting, nil); err != nil {
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err != nil {
 		t.Fatalf("create setting: %v", err)
 	}
-	if _, err := service.SavePrivateSetting(ctx, setting, nil); err == nil {
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err == nil {
 		t.Fatal("setting create must fail when the key exists")
 	}
 	updated := replaceJSON(t, setting, map[string]any{"value": "b", "revision": 2})
-	if _, err := service.SavePrivateSetting(ctx, updated, int64Ptr(1)); err != nil {
+	if _, err := service.SavePrivateSetting(ctx, updated, int64Ptr(1), id, 1); err != nil {
 		t.Fatalf("setting CAS update: %v", err)
 	}
 	loaded, err := service.GetPrivateSetting(ctx, service.ProjectKey(), "com.example.reader", "token")
@@ -832,4 +837,93 @@ func TestGetAuditUsesExactBoundedLookup(t *testing.T) {
 		t.Fatal("corrupt audit accepted")
 	}
 
+}
+
+func presentationTestManifest() map[string]any {
+	return map[string]any{
+		"$schema":       "vibetable.plugin-manifest.v2",
+		"pluginId":      "com.example.presentation",
+		"version":       "1.0.0",
+		"displayName":   map[string]any{"zh-CN": "示例"},
+		"description":   map[string]any{},
+		"compatibility": map[string]any{"pluginApi": "3.x"},
+		"permissions":   map[string]any{},
+		"ui":            map[string]any{"customViews": []any{}},
+		"actions": []any{map[string]any{
+			"actionId": "open", "mode": "local", "risk": "read", "invocation": "manual",
+		}},
+	}
+}
+
+func TestPresentationActionsValidateAndBindClosedSet(t *testing.T) {
+	build := func(presentation, entry string, extra map[string]any, views []any) map[string]any {
+		action := map[string]any{
+			"actionId": "open", "mode": "local", "risk": "read", "invocation": "manual",
+		}
+		for key, value := range extra {
+			action[key] = value
+		}
+		if presentation != "" {
+			action["presentation"] = presentation
+			action["entry"] = entry
+		}
+		return map[string]any{
+			"$schema":       "vibetable.plugin-manifest.v2",
+			"pluginId":      "com.example.presentation",
+			"version":       "1.0.0",
+			"displayName":   map[string]any{"zh-CN": "示例"},
+			"description":   map[string]any{},
+			"compatibility": map[string]any{"pluginApi": "3.x"},
+			"permissions":   map[string]any{},
+			"ui":            map[string]any{"customViews": views},
+			"actions":       []any{action},
+		}
+	}
+	check := func(name string, manifest map[string]any, wantValid bool) {
+		t.Helper()
+		err := validateManifest(manifest, manifest["pluginId"].(string), manifest["version"].(string))
+		if wantValid && err != nil {
+			t.Fatal(name, " rejected:", err)
+		}
+		if !wantValid && err == nil {
+			t.Fatal(name, " accepted")
+		}
+	}
+
+	// Old stacks required a custom view for every v2 action; the new shapes
+	// install with the entry declared on the action itself.
+	check("application", build("application", "ui/index.html", nil, nil), true)
+	check("headless", build("headless", "ui/app.js", nil, nil), true)
+	check("application-upper-html", build("application", "ui/ENTRY.HTML", nil, nil), true)
+	check("headless-module", build("headless", "ui/ENTRY.mjs", nil, nil), true)
+	check("headless-upper-module", build("headless", "ui/ENTRY.MJS", nil, nil), true)
+	check("application-js", build("application", "ui/app.js", nil, nil), false)
+	check("application-htm", build("application", "ui/index.htm", nil, nil), false)
+	check("headless-html", build("headless", "ui/index.html", nil, nil), false)
+	check("headless-no-suffix", build("headless", "ui/ENTRY", nil, nil), false)
+	check("reserved-application", build("application", "__vibetable_host__/headless.html", nil, nil), false)
+	check("reserved-application-nested", build("application", "__vibetable_host__/nested/entry.HTML", nil, nil), false)
+	check("reserved-headless", build("headless", "__vibetable_host__/headless.js", nil, nil), false)
+	check("reserved-headless-nested", build("headless", "__vibetable_host__/nested/entry.MJS", nil, nil), false)
+
+	view := []any{map[string]any{"viewId": "v", "actionId": "open", "entry": "ui/index.html"}}
+	check("surface-with-entry", build("surface", "ui/index.html", nil, view), false)
+	check("missing-entry", build("application", "", nil, nil), false)
+	check("unknown-presentation", build("widget", "ui/index.html", nil, nil), false)
+	check("legacy-schema-channel", build("headless", "ui/app.js", map[string]any{"inputSchema": "schemas/input.json"}, nil), false)
+	check("legacy-view-channel", build("application", "ui/index.html", nil, view), false)
+	// A surface action still needs its legacy view binding.
+	check("surface-without-view", build("surface", "", nil, nil), false)
+	check("surface-with-view", build("", "", nil, view), true)
+	for _, key := range []string{"entry", "html", "script", "style"} {
+		reservedView := map[string]any{"viewId": "v", "actionId": "open", "entry": "ui/index.html"}
+		reservedView[key] = "__vibetable_host__/nested/resource.html"
+		check("reserved-custom-"+key, build("", "", nil, []any{reservedView}), false)
+	}
+
+	// v1 manifests keep rejecting the new shapes entirely.
+	v1 := build("application", "ui/index.html", map[string]any{"workerEntry": "dist/worker.js"}, nil)
+	v1["$schema"] = "vibetable.plugin-manifest.v1"
+	v1["compatibility"] = map[string]any{"pluginApi": "1.x"}
+	check("v1-presentation", v1, false)
 }

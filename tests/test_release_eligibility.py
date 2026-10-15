@@ -51,7 +51,7 @@ def _write_lane_reports(root: Path) -> None:
                                 for part in ("--scenario", scenario_id)
                             ),
                         ]
-                        if stage in {"product-e2e", "product-e2e-data-io"}
+                        if stage in {"product-e2e", "product-e2e-data-io", "product-e2e-file-io"}
                         else ["test"]
                     ),
                     "returncode": 0,
@@ -116,17 +116,26 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
 
     standard = release_eligibility.product_e2e_partition(expanded, "product-e2e")
     data_io = release_eligibility.product_e2e_partition(expanded, "product-e2e-data-io")
+    file_io = release_eligibility.product_e2e_partition(expanded, "product-e2e-file-io")
 
     assert set(standard).isdisjoint(data_io)
-    assert set(standard) | set(data_io) == {item.id for item in expanded}
+    assert set(standard).isdisjoint(file_io)
+    assert set(data_io).isdisjoint(file_io)
+    assert set(standard) | set(data_io) | set(file_io) == {item.id for item in expanded}
     assert extra.id in standard
     assert set(data_io) == {
+        "02-all-field-schema",
+        "05-formula-lifecycle",
+        "06-relation-fanout",
         "23-directory-replica-recovery",
         "24-directory-replica-conflict",
+        "26-lookup-definition-read",
         "34-relation-lookup-data-io",
         "35-data-io-interoperability",
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
+    }
+    assert set(file_io) == {
         "39-file-workflow-combination",
         "40-file-history-capacity",
         "41-file-document-operations",
@@ -134,14 +143,47 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
         "43-file-revision-leaves",
         "44-file-restore-crash",
         "45-common-field-display",
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
     }
 
 
-def test_product_e2e_partition_rejects_a_missing_data_io_scenario() -> None:
-    scenarios = [item for item in load_scenarios() if item.id != "35-data-io-interoperability"]
+@pytest.mark.parametrize(
+    ("missing_id", "label"),
+    [
+        ("35-data-io-interoperability", "data IO"),
+        ("40-file-history-capacity", "file IO"),
+    ],
+)
+def test_product_e2e_partition_rejects_a_missing_declared_lane_scenario(
+    missing_id: str,
+    label: str,
+) -> None:
+    scenarios = [item for item in load_scenarios() if item.id != missing_id]
 
-    with pytest.raises(release_eligibility.EligibilityError, match="data IO scenario"):
+    with pytest.raises(release_eligibility.EligibilityError, match=f"missing {label} scenario"):
         release_eligibility.product_e2e_partition(scenarios, "product-e2e")
+
+
+def test_product_e2e_partition_rejects_overlapping_lane_scenarios(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        release_eligibility,
+        "LANE_STAGE_SCENARIO_IDS",
+        {
+            **release_eligibility.LANE_STAGE_SCENARIO_IDS,
+            "product-e2e-file-io": (
+                *release_eligibility.FILE_IO_SCENARIO_IDS,
+                "35-data-io-interoperability",
+            ),
+        },
+    )
+
+    with pytest.raises(release_eligibility.EligibilityError, match="overlaps"):
+        release_eligibility.product_e2e_partition(load_scenarios(), "product-e2e-file-io")
 
 
 def test_aggregate_rejects_missing_product_e2e_scenario_selection(
@@ -169,7 +211,7 @@ def test_aggregate_rejects_missing_data_io_lane(
     _write_lane_reports(tmp_path)
     (tmp_path / "data-io" / "report.json").unlink()
 
-    with pytest.raises(release_eligibility.EligibilityError, match="expected 6 lane reports"):
+    with pytest.raises(release_eligibility.EligibilityError, match="expected 7 lane reports"):
         release_eligibility.aggregate_reports(
             tmp_path,
             tmp_path / "VibeTable.Next",
@@ -315,7 +357,7 @@ def test_aggregate_reports_rejects_missing_or_duplicate_lanes(
     _write_lane_reports(tmp_path)
     (tmp_path / "race-b" / "report.json").unlink()
 
-    with pytest.raises(release_eligibility.EligibilityError, match="expected 6 lane reports"):
+    with pytest.raises(release_eligibility.EligibilityError, match="expected 7 lane reports"):
         release_eligibility.aggregate_reports(
             tmp_path,
             tmp_path / "VibeTable.Next",

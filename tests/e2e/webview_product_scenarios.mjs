@@ -1,8 +1,11 @@
+import { runApplicationCommitUnknown } from "./plugin_application_commit_unknown.mjs";
 import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
 import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
 import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
+import { runPluginApplications, runHeadlessBudget } from "./plugin_applications.mjs";
+import { runApplicationSecurity, selectExpectedPluginSecurityConsoleEntries } from "./plugin_application_security.mjs";
 import { runPluginSurfaceApi } from "./plugin_surface_api.mjs";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -4813,7 +4816,16 @@ async function scenario26(page, recorder, _network, runtime) {
     fullPage: true,
   });
 
-  const currentRow = (await readRows(currentTableId)).find((row) => row.id === "condrow00000001");
+  // Read the CAS digest only after the persisted Lookup fanout, not its live UI projection.
+  const persistedLookup = await waitForQueryPage(page, {
+    tableId: currentTableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
+  }, (payload) => {
+    const row = payload.rows?.find(item => item.id === "condrow00000001");
+    const value = row?.[lookupFieldKey];
+    return row?.[currentCode.physicalName] === "SKU-9"
+      && Array.isArray(value) && value.length === 1 && value[0] === "重值 甲";
+  });
+  const currentRow = persistedLookup.payload.rows.find(row => row.id === "condrow00000001");
   const currentShifted = await applyProductMutation(page, currentTableId, [{
     kind: "update", recordId: "condrow00000001",
     values: { [currentCode.physicalName]: "SKU-8" },
@@ -12602,7 +12614,7 @@ const scenarios = {
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
       applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
-      selectTable, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
+      selectTable, selectNValue, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
       chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
       beginBridgeMessageCapture, waitForCapturedBridgeMessage,
       beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
@@ -12655,7 +12667,21 @@ const scenarios = {
   "47-plugin-surface-api": (page, recorder, _network, runtime) => runPluginSurfaceApi(page, recorder, runtime, {
     waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage,
+  }),  "48-plugin-applications": (page, recorder, _network, runtime) => runPluginApplications(page, recorder, runtime, {
+    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
+    activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure,
+    beginBridgeMessageCapture, waitForCapturedBridgeMessage, listRetainedPluginPackages,
   }),
+  "49-plugin-application-security": (page, recorder, _network, runtime) => runApplicationSecurity(page, recorder, runtime, {
+    waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, selectTable,
+  }),
+  "50-plugin-headless-budget": (page, recorder, _network, runtime) => runHeadlessBudget(page, recorder, runtime, {
+    waitForShell, createSimpleTable, applyProductMutation, selectTable,
+  }),
+  "51-plugin-application-commit-unknown": (page, recorder, _network, runtime) => runApplicationCommitUnknown(page, recorder, runtime, {
+    waitForShell, createSimpleTable, rawBridgeRequest, beginBridgeMessageCapture, waitForCapturedBridgeMessage, selectTable,
+  }),
+
 };
 
 async function naturalSnapshot(page, recorder, previousIds) {
@@ -12901,7 +12927,7 @@ async function main() {
     browser = await chromium.connectOverCDP(
       args["cdp-url"],
       // S46 must exercise Host-owned downloads, without Playwright download overrides.
-      args.scenario === "46-dashboard-native-output" ? { noDefaults: true } : undefined,
+      ["46-dashboard-native-output", "49-plugin-application-security"].includes(args.scenario) ? { noDefaults: true } : undefined,
     );
     context = browser.contexts()[0];
     if (!context) throw new Error("WebView2 exposed no browser context over CDP");
@@ -12954,6 +12980,7 @@ async function main() {
             waitForCapturedBridgeMessage, captureRestoreCrashCheckpoint: runtime.captureRestoreCrashCheckpoint,
           });
         }
+        if (args.scenario === "48-plugin-applications") return scenarios[args.scenario](candidate, checks, network, runtime);
         return seedNaturalRetentionAging(candidate, checks);
       }
       : args["persistent-phase"] === "resume"
@@ -12972,6 +12999,11 @@ async function main() {
               activateRestartedWorkspace, rawWorkspaceV2Request, acknowledgeExpectedBridgeFailure,
             });
           }
+          if (args.scenario === "48-plugin-applications") return runPluginApplications(candidate, checks, runtime, {
+            waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
+            activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure,
+            beginBridgeMessageCapture, waitForCapturedBridgeMessage, listRetainedPluginPackages,
+          }, args.state);
           return resumeNaturalRetentionAging(candidate, checks, args.state);
         }
         : scenarios[args.scenario];
@@ -12983,6 +13015,37 @@ async function main() {
         dataRoot: path.resolve(args["data-root"]),
         replicaStage: args["replica-stage"],
         replicaState: args["replica-state"],
+        async refreshPluginProductPage() {
+          if (!["49-plugin-application-security", "50-plugin-headless-budget", "51-plugin-application-commit-unknown"].includes(args.scenario)) throw new Error("plugin renderer recovery scenario not authorized");
+          const until = Date.now() + 60000;
+          while (Date.now() < until) {
+            const candidates = browser.contexts().flatMap(entry => entry.pages()).filter(entry => !entry.isClosed() && entry.url().startsWith("https://app.vibetable.local/"));
+            const fresh = candidates.find(entry => entry !== page);
+            if (fresh) {
+              page = fresh; observePage(page); await installBridgeDiagnostics(page);
+              return page;
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          throw new Error("fresh product renderer did not arrive within recovery budget");
+        },
+        beginPluginSecurityDiagnostics() {
+          if (args.scenario !== "49-plugin-application-security") throw new Error("plugin security diagnostics scope not authorized");
+          return consoleEntries.length;
+        },
+        async acknowledgePluginSecurityDiagnostics(checks, probes, start) {
+          if (args.scenario !== "49-plugin-application-security" || !probes.violations.length) throw new Error("security diagnostics require actual plugin CSP violations");
+          const expected = selectExpectedPluginSecurityConsoleEntries(consoleEntries, probes, start);
+          result.expectedPluginSecurityDiagnostics = expected;
+          for (const entry of expected) consoleEntries.splice(consoleEntries.indexOf(entry), 1);
+          const attempts = network.filter(entry => entry.url === "https://blocked.invalid/482-probe");
+          if (attempts.length) {
+            checks.check("explicit external probe was rejected by connect-src before HTTP", probes.network.some(entry => entry.uri === "https://blocked.invalid/482-probe" && !entry.accepted)
+              && probes.violations.some(entry => entry.directive === "connect-src" && entry.blocked === "https://blocked.invalid/482-probe"));
+            result.expectedBlockedExternalProbe = attempts;
+            for (const entry of attempts) network.splice(network.indexOf(entry), 1);
+          }
+        },
         async captureRestoreCrashCheckpoint(candidate, checks, request) {
           if (args.scenario !== "44-file-restore-crash" || args["persistent-phase"] !== "seed") {
             throw new Error("Restore crash checkpoint is restricted to the 44 seed phase");

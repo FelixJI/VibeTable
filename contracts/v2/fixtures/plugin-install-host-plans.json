@@ -1,0 +1,212 @@
+[
+  {
+    "name": "legacy",
+    "params": {
+      "projectKey": "project-1",
+      "plan": {
+        "targetInstallationId": null,
+        "targetRevision": null,
+        "planId": "plan-legacy",
+        "projectKey": "project-1",
+        "projectRevision": "revision-1",
+        "sourceType": "package",
+        "sourceLocation": "package.vtplugin",
+        "packageHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "manifest": {
+          "$schema": "vibetable.plugin-manifest.v1",
+          "pluginId": "com.example.summary",
+          "version": "1.2.0",
+          "displayName": {
+            "zh-CN": "数据概览"
+          },
+          "description": {
+            "zh-CN": "只读概览插件"
+          },
+          "compatibility": {
+            "minHostVersion": "1.0.0",
+            "pluginApi": "1.x"
+          },
+          "permissions": {
+            "data": [],
+            "files": [],
+            "privateStorage": false,
+            "network": {
+              "domains": [],
+              "methods": []
+            }
+          },
+          "actions": [
+            {
+              "actionId": "show-summary",
+              "displayName": {
+                "zh-CN": "查看概览"
+              },
+              "description": {},
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "table.toolbar"
+              ],
+              "requires": {},
+              "workerEntry": "dist/workers/summary.js",
+              "formSchema": null,
+              "inputSchema": "schemas/input.json",
+              "outputSchema": "schemas/output.json"
+            }
+          ],
+          "ui": {
+            "customViews": []
+          }
+        },
+        "schemas": {}
+      },
+      "projectRevision": "revision-1"
+    }
+  },
+  {
+    "name": "native",
+    "params": {
+      "projectKey": "project-1",
+      "plan": {
+        "targetInstallationId": "installation-native",
+        "targetRevision": 7,
+        "planId": "plan-native",
+        "projectKey": "project-1",
+        "projectRevision": "revision-1",
+        "sourceType": "package",
+        "sourceLocation": "package.vtplugin",
+        "packageHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "manifest": {
+          "$schema": "vibetable.plugin-manifest.v2",
+          "pluginId": "com.vibetable.e2e.application-a",
+          "version": "1.0.0",
+          "displayName": {
+            "zh-CN": "同名任务应用"
+          },
+          "description": {
+            "zh-CN": "演示插件贡献完整业务应用：单入口内三页 hash 路由与无界面动作，同一受限 surface API。"
+          },
+          "compatibility": {
+            "minHostVersion": "0.5.3",
+            "pluginApi": "3.x"
+          },
+          "permissions": {
+            "data": [
+              {
+                "collection": "$active",
+                "operations": [
+                  "read",
+                  "query",
+                  "update"
+                ],
+                "fields": [
+                  "*"
+                ]
+              }
+            ],
+            "privateStorage": true,
+            "files": [],
+            "network": {
+              "domains": [],
+              "methods": []
+            }
+          },
+          "actions": [
+            {
+              "actionId": "open-app",
+              "displayName": {
+                "zh-CN": "同名应用"
+              },
+              "description": {
+                "zh-CN": "全业务视口应用：任务列表 / 详情 / 统计三个内部页面。"
+              },
+              "mode": "local",
+              "risk": "write",
+              "invocation": "manual",
+              "placements": [],
+              "requires": {},
+              "workerEntry": null,
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null,
+              "presentation": "application",
+              "entry": "ui/index.html"
+            },
+            {
+              "actionId": "headless-success",
+              "displayName": {
+                "zh-CN": "记住当前表（无界面动作）"
+              },
+              "description": {
+                "zh-CN": "headless 动作：读取当前上下文并写入插件私有存储，无界面执行。"
+              },
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "table.toolbar"
+              ],
+              "requires": {},
+              "workerEntry": null,
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null,
+              "presentation": "headless",
+              "entry": "ui/success.js"
+            },
+            {
+              "actionId": "headless-failed",
+              "displayName": {
+                "zh-CN": "无界面failed"
+              },
+              "description": {
+                "zh-CN": "headless 动作：读取当前上下文并写入插件私有存储，无界面执行。"
+              },
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "table.toolbar"
+              ],
+              "requires": {},
+              "workerEntry": null,
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null,
+              "presentation": "headless",
+              "entry": "ui/failed.js"
+            },
+            {
+              "actionId": "headless-wait",
+              "displayName": {
+                "zh-CN": "无界面wait"
+              },
+              "description": {
+                "zh-CN": "headless 动作：读取当前上下文并写入插件私有存储，无界面执行。"
+              },
+              "mode": "local",
+              "risk": "read",
+              "invocation": "manual",
+              "placements": [
+                "table.toolbar"
+              ],
+              "requires": {},
+              "workerEntry": null,
+              "formSchema": null,
+              "inputSchema": null,
+              "outputSchema": null,
+              "presentation": "headless",
+              "entry": "ui/wait.js"
+            }
+          ],
+          "ui": {
+            "customViews": []
+          }
+        },
+        "schemas": {}
+      },
+      "projectRevision": "revision-1"
+    }
+  }
+]

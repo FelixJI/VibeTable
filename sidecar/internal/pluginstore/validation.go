@@ -2,6 +2,7 @@ package pluginstore
 
 import (
 	"encoding/json"
+	"path"
 	"strings"
 )
 
@@ -45,6 +46,16 @@ func validateManifest(value any, pluginID, version string) error {
 			return invalidPayload()
 		}
 	}
+	ui := manifest["ui"].(map[string]any)
+	views, _ := ui["customViews"].([]any)
+	for _, value := range views {
+		view, _ := value.(map[string]any)
+		for _, key := range []string{"entry", "html", "script", "style"} {
+			if entry, ok := view[key].(string); ok && strings.HasPrefix(entry, "__vibetable_host__/") {
+				return invalidPayload()
+			}
+		}
+	}
 	actions, ok := manifest["actions"].([]any)
 	if !ok {
 		return invalidPayload()
@@ -61,13 +72,31 @@ func validateManifest(value any, pluginID, version string) error {
 				return invalidPayload()
 			}
 		}
-		if err := validateObject(action, "actionId displayName description mode risk invocation placements requires workerEntry formSchema inputSchema outputSchema", required); err != nil {
+		if err := validateObject(action, "actionId displayName description mode risk invocation placements requires workerEntry formSchema inputSchema outputSchema presentation entry", required); err != nil {
 			return err
 		}
 		if risk := action["risk"]; risk != "read" && risk != "write" && risk != "destructive" {
 			return invalidPayload()
 		}
 		if invocation := action["invocation"]; invocation != "manual" && invocation != "webhook" {
+			return invalidPayload()
+		}
+		presentation, hasPresentation := action["presentation"].(string)
+		if !hasPresentation {
+			presentation = "surface"
+		} else if presentation != "surface" && presentation != "application" && presentation != "headless" {
+			return invalidPayload()
+		}
+		entry, _ := action["entry"].(string)
+		if presentation == "surface" {
+			if action["entry"] != nil {
+				return invalidPayload()
+			}
+		} else if !native || entry == "" || strings.HasPrefix(entry, "__vibetable_host__/") {
+			return invalidPayload()
+		} else if suffix := strings.ToLower(path.Ext(entry)); (presentation == "application" && suffix != ".html") || (presentation == "headless" && suffix != ".js" && suffix != ".mjs") {
+			return invalidPayload()
+		} else if action["formSchema"] != nil || action["inputSchema"] != nil || action["outputSchema"] != nil {
 			return invalidPayload()
 		}
 		if native {
@@ -80,7 +109,10 @@ func validateManifest(value any, pluginID, version string) error {
 					found = true
 				}
 			}
-			if !found {
+			if found && presentation != "surface" {
+				return invalidPayload()
+			}
+			if !found && presentation == "surface" {
 				return invalidPayload()
 			}
 		}
@@ -89,8 +121,13 @@ func validateManifest(value any, pluginID, version string) error {
 }
 
 func validateSnapshotFields(object map[string]any) error {
-	if err := validateObject(object, "projectKey pluginId version packageHash sourceType sourceLocation developmentSourceLocation sourceChanged manifest schemas status disabledReason blockingReasons revision", "projectKey pluginId version packageHash sourceType sourceLocation status"); err != nil {
+	if err := validateObject(object, "projectKey pluginId version packageHash sourceType sourceLocation developmentSourceLocation sourceChanged manifest schemas status disabledReason blockingReasons revision installationId", "projectKey pluginId version packageHash sourceType sourceLocation status"); err != nil {
 		return err
+	}
+	if value := object["installationId"]; value != nil {
+		if text, ok := value.(string); !ok || text == "" {
+			return invalidPayload()
+		}
 	}
 	if source := object["sourceType"]; source != "package" && source != "local-folder" {
 		return invalidPayload()

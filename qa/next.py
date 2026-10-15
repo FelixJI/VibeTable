@@ -55,11 +55,19 @@ E2E_SMOKE = REPO_ROOT / "tests" / "e2e" / "test_next_readonly_smoke.py"
 UPGRADE_SMOKE = REPO_ROOT / "tests" / "integration" / "test_upgrade_activation_smoke.py"
 
 STAGES = REQUIRED_STAGES
+# Fixed single-letter evidence roots keep the deepest product scenario paths
+# below the legacy Windows MAX_PATH boundary; one letter per product E2E lane.
+PRODUCT_E2E_EVIDENCE_DIRS = {
+    "product-e2e": "p",
+    "product-e2e-data-io": "d",
+    "product-e2e-file-io": "f",
+}
 DEFAULT_STAGE_TIMEOUT_SECONDS = 15 * 60
 STAGE_TIMEOUT_SECONDS = {
     "fault-injection": 30 * 60,
     "product-e2e": 30 * 60,
     "product-e2e-data-io": 30 * 60,
+    "product-e2e-file-io": 30 * 60,
     "runtime-baseline": 10 * 60,
 }
 RACE_COMMAND_TIMEOUT_SECONDS = 7 * 60
@@ -437,7 +445,7 @@ def stage_command(
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
         return command, str(REPO_ROOT)
-    if stage in {"product-e2e", "product-e2e-data-io"}:
+    if stage in PRODUCT_E2E_EVIDENCE_DIRS:
         command = [
             sys.executable,
             "qa/product_acceptance.py",
@@ -446,7 +454,7 @@ def stage_command(
             # workspace and content-addressed package-cache descendants. Keep
             # this segment minimal so the deepest real Windows path remains
             # below the legacy MAX_PATH boundary.
-            str(_qa_temp_dir() / ("p" if stage == "product-e2e" else "d")),
+            str(_qa_temp_dir() / PRODUCT_E2E_EVIDENCE_DIRS[stage]),
         ]
         if package_root is not None:
             command.extend(["--package-root", str(package_root)])
@@ -1347,6 +1355,26 @@ def persist_product_e2e_evidence(
                 "46-dashboard-export-cancelled.png",
                 "46-dashboard-print-dialog-opened.png",
             ),
+            "49-plugin-application-security": (
+                "48-native-dark.png",
+                "48-native-scaled.png",
+                "48-native-contrast.png",
+                "48-native-contrast-restored.png",
+                "48-native-loop.png",
+                "48-native-recovered.png",
+                "48-native-crashed.png",
+                "49-security-observations.json",
+                "49-plugin-application-security-trace.zip",
+            ),
+            "51-plugin-application-commit-unknown": (
+                "48-native-cancelled.png",
+                "48-native-recovered.png",
+                "51-plugin-application-commit-unknown-trace.zip",
+            ),
+            "50-plugin-headless-budget": (
+                "48-native-recovered.png",
+                "50-plugin-headless-budget-trace.zip",
+            ),
             "47-plugin-surface-api": (
                 "47-surface-read.png",
                 "47-surface-confirm.png",
@@ -1388,6 +1416,15 @@ def persist_product_e2e_evidence(
                 if not copied and item["status"] == "passed":
                     raise ValueError(f"passing S42 report lacks native evidence: {filename}")
         phase_evidence = {
+            "48-plugin-applications": {
+                "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
+                "resume": (
+                    "48-native-application.png",
+                    "48-native-approved.png",
+                    "48-native-rejected.png",
+                    "48-plugin-applications-trace.zip",
+                ),
+            },
             "39-file-workflow-combination": {
                 "seed": (
                     "39-record-file-entry.png",
@@ -1453,6 +1490,15 @@ def persist_product_e2e_evidence(
 
         scenario_number = scenario_id.partition("-")[0]
         runtime_root = run_source / "_runtime" / scenario_number
+        if scenario_id == "49-plugin-application-security":
+            for filename in (
+                "plugin-contrast-original.json",
+                "plugin-contrast-restoration.json",
+                "plugin-contrast-cleanup.json",
+                "plugin-native-result.json",
+                "plugin-native-observation.json",
+            ):
+                _copy_if_file(scenario_source / filename, scenario_destination / filename)
         if scenario_id == "42-file-document-native-operations":
             for filename in (
                 "file-document-native-request.json",
@@ -1529,6 +1575,7 @@ def persist_product_e2e_evidence(
             "33-host-grid-presentation",
             "39-file-workflow-combination",
             "44-file-restore-crash",
+            "48-plugin-applications",
         }:
             for phase in ("seed", "resume"):
                 phase_root = scenario_source / phase
@@ -1761,7 +1808,7 @@ def _main(argv: list[str] | None = None) -> int:
             code = code or 1
     if args.ci or args.lane:
         evidence_sources: list[tuple[Path, bool, tuple[str, ...] | None]] = []
-        for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
+        for stage, directory in PRODUCT_E2E_EVIDENCE_DIRS.items():
             product_e2e_result = next(
                 (result for result in results if result.stage == stage),
                 None,

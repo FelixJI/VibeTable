@@ -18,11 +18,13 @@ public sealed record PluginSurfaceSession(
 {
     public PluginProjectContext? Context { get; init; }
     public int InstallationRevision { get; init; }
+    public string? InstallationId { get; init; }
     public string ApiVersion { get; init; } = "";
     public string PluginVersion { get; init; } = "";
     public string ActionId { get; init; } = "";
     public string Risk { get; init; } = "";
     public string Entry { get; init; } = "";
+    public string Presentation { get; init; } = "surface";
     public string ActiveCollection { get; init; } = "";
     public PluginRuntimeCommandContext? InvocationContext { get; init; }
 }
@@ -71,7 +73,8 @@ public sealed class PluginSurfaceSessionManager
         string projectKey,
         string pluginId,
         PluginPackageRevision revision,
-        string entryPath)
+        string entryPath,
+        Uri? documentUri = null)
     {
         ArgumentNullException.ThrowIfNull(revision);
         string normalized = PluginResourceHost.NormalizePackagePath(entryPath);
@@ -81,7 +84,7 @@ public sealed class PluginSurfaceSessionManager
             projectKey,
             pluginId,
             revision,
-            new Uri(revision.Origin, normalized),
+            documentUri ?? new Uri(revision.Origin, normalized),
             "allow-scripts allow-same-origin",
             PluginResourceHost.ContentSecurityPolicy);
         if (!_sessions.TryAdd(token, session))
@@ -90,6 +93,8 @@ public sealed class PluginSurfaceSessionManager
         }
         return session;
     }
+
+    internal event Action<string>? Closed;
 
     public bool TryAccept(PluginSurfaceEvent message, out PluginSurfaceSession? session)
     {
@@ -106,7 +111,7 @@ public sealed class PluginSurfaceSessionManager
         session = active;
         if (string.Equals(message.Event, PluginSurfaceEvents.Close, StringComparison.Ordinal))
         {
-            _sessions.TryRemove(message.SurfaceToken, out _);
+            Close(message.SurfaceToken);
         }
         return true;
     }
@@ -128,8 +133,11 @@ public sealed class PluginSurfaceSessionManager
     }
 
     public bool Close(string surfaceToken)
-        => !string.IsNullOrWhiteSpace(surfaceToken)
-            && _sessions.TryRemove(surfaceToken, out _);
+    {
+        if (string.IsNullOrWhiteSpace(surfaceToken) || !_sessions.TryRemove(surfaceToken, out _)) return false;
+        Closed?.Invoke(surfaceToken);
+        return true;
+    }
 
     public bool IsActive(string surfaceToken)
         => !string.IsNullOrWhiteSpace(surfaceToken)
@@ -149,7 +157,7 @@ public sealed class PluginSurfaceSessionManager
         {
             if (string.Equals(pair.Value.ProjectKey, projectKey, StringComparison.Ordinal)
                 && string.Equals(pair.Value.PluginId, pluginId, StringComparison.Ordinal)
-                && _sessions.TryRemove(pair.Key, out _))
+                && Close(pair.Key))
             {
                 removed++;
             }
@@ -157,12 +165,15 @@ public sealed class PluginSurfaceSessionManager
         return removed;
     }
 
-    public void CloseAll() => _sessions.Clear();
+    public void CloseAll()
+    {
+        foreach (string token in _sessions.Keys) Close(token);
+    }
 
-    internal void BindIdentity(string token, PluginProjectContext context, int revision, string apiVersion, string pluginVersion = "", string actionId = "", string risk = "", string entry = "")
+    internal void BindIdentity(string token, PluginProjectContext context, int revision, string apiVersion, string pluginVersion = "", string actionId = "", string risk = "", string entry = "", string presentation = "surface", string? installationId = null)
     {
         if (_sessions.TryGetValue(token, out var session))
-            _sessions[token] = session with { Context = context, InstallationRevision = revision, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry };
+            _sessions[token] = session with { Context = context, InstallationRevision = revision, InstallationId = installationId, ApiVersion = apiVersion, PluginVersion = pluginVersion, ActionId = actionId, Risk = risk, Entry = entry, Presentation = presentation };
     }
 
     internal void BindActiveCollection(string projectKey, string pluginId, string actionId, PluginRuntimeCommandContext context)

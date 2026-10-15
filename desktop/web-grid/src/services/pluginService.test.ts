@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { flushPromises } from "@vue/test-utils";
 import { createHostBridge } from "@/bridge/hostBridge";
 import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import type { PluginSnapshot, PluginTaskSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { createPluginCommandContext, usePluginService } from "./pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
+import { useUiStore } from "@/stores/uiStore";
 
 const snapshot: PluginSnapshot = {
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -407,7 +410,9 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
     const stale = service.listAudit(snapshot.pluginId);
     store.setProjectContext("project:b", "r2");
-    const current = service.retryCleanup(snapshot.pluginId);
+    const current = service.retryCleanup({ actionId: null, runId: null, actor: "user", risk: null, targetCollection: null, targetCount: null, errorCode: null, eventId: "cleanup", projectKey: store.projectKey, pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.version, packageHash: snapshot.packageHash, eventType: "uninstall", outcome: "failed",
+      startedAt: "", finishedAt: null, durationMs: null, details: { installationId: snapshot.installationId, expectedRevision: snapshot.revision } });
 
     listener?.({
       data: {
@@ -482,7 +487,9 @@ describe("pluginService canonical wire", () => {
     const service = usePluginService();
     const stale = service.listAudit(snapshot.pluginId);
     store.setProjectContext("local:default", "r2");
-    const current = service.retryCleanup(snapshot.pluginId);
+    const current = service.retryCleanup({ actionId: null, runId: null, actor: "user", risk: null, targetCollection: null, targetCount: null, errorCode: null, eventId: "cleanup", projectKey: store.projectKey, pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.version, packageHash: snapshot.packageHash, eventType: "uninstall", outcome: "failed",
+      startedAt: "", finishedAt: null, durationMs: null, details: { installationId: snapshot.installationId, expectedRevision: snapshot.revision } });
     expect(store.busy).toBe(true);
 
     listener?.({
@@ -842,6 +849,7 @@ describe("pluginService canonical wire", () => {
     };
     const responses: Record<string, unknown> = {
       "plugin.install.inspect": plan,
+      "plugin.catalog.list": [],
       "plugin.action.describe": { available: true, reasons: [] },
       "plugin.lifecycle.uninstall": {
         uninstalled: true, privateSettingsRetained: false, cleanupPending: false,
@@ -885,8 +893,9 @@ describe("pluginService canonical wire", () => {
         projectKey: "local:default", pluginId: "com.acme.clean", actionId: "normalize", context,
       } },
       { type: "plugin.lifecycle.uninstall", payload: {
-        projectKey: "local:default", pluginId: "com.acme.clean", cleanupPrivateSettings: true,
+        projectKey: "local:default", pluginId: "com.acme.clean", installationId: "record-clean", expectedRevision: 1, cleanupPrivateSettings: true,
       } },
+      { type: "plugin.catalog.list", payload: { projectKey: "local:default" } },
     ]);
   });
 
@@ -1097,4 +1106,287 @@ describe("pluginService canonical wire", () => {
     expect(usePluginStore().describedAction?.surface?.surfaceToken).toBe("token-second");
     service.dispose();
   });
+  function catalogHarness(current: readonly PluginSnapshot[]) {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const posted: Array<{ type: string; requestId: string; payload: unknown }> = [];
+    let automaticLists = false;
+    let authority = current;
+    const reply = (request: (typeof posted)[number], payload: unknown) => listener?.({ data: {
+      type: request.type, requestId: request.requestId, payload } });
+    const bridge = createHostBridge({ generateRequestId: () => `catalog-${++sequence}`,
+      webview: { postMessage(message) {
+        const request = message as (typeof posted)[number]; posted.push(request);
+        if (automaticLists && request.type === "plugin.catalog.list") queueMicrotask(() => reply(request, authority));
+      }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
+    bridge.start(); setHostBridgeForTesting(bridge);
+    return { posted, reply, fail(request: (typeof posted)[number], message: string, code = "PLUGIN_OPERATION_FAILED") { listener?.({ data: {
+      type: "operation.failed", requestId: request.requestId, payload: { code, message } } }); }, auto(value: readonly PluginSnapshot[]) { authority = value; automaticLists = true; },
+      event(value: PluginSnapshot) { listener?.({ data: { type: "plugin.catalog.changed", payload: {
+        contract: "vibetable.plugin-event.v1", eventType: "plugin.catalog.changed", projectKey: value.projectKey,
+        entityId: value.pluginId, revision: value.revision, snapshot: value } } }); } };
+  }
+
+  it.each([false, true])("orders default application Run across service instances and hides stale errors: failed=%s", async failed => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" },
+      actions: ["A", "B"].map(actionId => ({ ...snapshot.manifest.actions[0]!, actionId, presentation: "application",
+        surfaceSrc: "https://app.plugins.vibetable.local/index.html", surfaceToken: `token-${actionId}`, entry: "ui/index.html" })) } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]); harness.auto([app]);
+    const firstService = usePluginService(); const secondService = usePluginService();
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const first = firstService.describeAction(app.pluginId, "A", context); await flushPromises();
+    const firstDescribe = harness.posted.find(request => request.type === "plugin.action.describe")!;
+    const second = secondService.describeAction(app.pluginId, "B", context); await flushPromises();
+    const secondDescribe = harness.posted.filter(request => request.type === "plugin.action.describe")[1]!;
+    harness.reply(secondDescribe, { available: true, reasons: [] }); await second;
+    if (failed) harness.fail(firstDescribe, "old description failed"); else harness.reply(firstDescribe, { available: true, reasons: [] });
+    await first;
+    expect(useUiStore().activePluginApp?.actionId).toBe("B");
+    expect(store.describedAction?.actionId).toBe("B");
+    expect(store.lastError).toBeNull(); expect(store.busy).toBe(false);
+  });
+
+  it.each(["platform", "return", "dispose", "dispose-reinit", "epoch", "installation"] as const)("retires the actual Run description before UI projection after %s", async leave => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" },
+      actions: snapshot.manifest.actions.map(action => ({ ...action, presentation: "application", surfaceToken: "token", entry: "ui/index.html" })) } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]); harness.auto([app]);
+    const service = usePluginService();
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = service.describeAction(app.pluginId, "normalize", context); await flushPromises();
+    const description = harness.posted.find(request => request.type === "plugin.action.describe")!;
+    if (leave === "platform") useUiStore().navigate(useUiStore().activeView);
+    if (leave === "return") useUiStore().closePluginApp();
+    if (leave === "dispose") service.dispose();
+    if (leave === "dispose-reinit") { service.dispose(); service.init(); }
+    if (leave === "epoch") store.setProjectContext(app.projectKey, "r1");
+    if (leave === "installation") { store.removePlugin(app.pluginId); store.applyPlugin({ ...app, installationId: "new-record" }); }
+    harness.reply(description, { available: true, reasons: [] }); await opening;
+    expect(useUiStore().activePluginApp).toBeNull(); expect(store.describedAction).toBeNull();
+    expect(store.lastError).toBeNull(); expect(store.actionOpen).toBe(false);
+  });
+
+  it("reports the current Run failure and does not let an earlier response hide it", async () => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest,
+      actions: snapshot.manifest.actions.map(action => ({ ...action, presentation: "application", surfaceToken: "token", entry: "ui/index.html" })) } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]);
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const older = usePluginService().describeAction(app.pluginId, "normalize", context);
+    const current = usePluginService().describeAction(app.pluginId, "normalize", context);
+    const rejected = expect(current).rejects.toThrow("current description failed");
+    harness.fail(harness.posted[1]!, "current description failed"); await rejected;
+    harness.reply(harness.posted[0]!, { available: true, reasons: [] }); await older;
+    expect(store.lastError).toBe("current description failed"); expect(store.describedAction).toBeNull();
+    expect(useUiStore().activePluginApp).toBeNull();
+  });
+
+  it("does not report an obsolete application catalog failure after platform navigation", async () => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" } } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]);
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = usePluginService().describeAction(app.pluginId, "normalize", context);
+    useUiStore().navigate(useUiStore().activeView);
+    harness.fail(harness.posted[0]!, "old catalog failed"); await opening;
+    expect(store.lastError).toBeNull(); expect(store.describedAction).toBeNull();
+    expect(harness.posted).toHaveLength(1);
+  });
+
+  it.each([
+    [false, false, true], [true, false, true],
+    [false, true, true], [true, true, true],
+    [false, false, false], [true, true, false],
+  ])("refreshes when a retired notification read ends before the write (write=%s, cancelled=%s, refresh=%s)", async (writeSucceeds, readCancelled, refreshSucceeds) => {
+    const current = { ...snapshot, installationId: "a", status: "disabled" as const, revision: 2 };
+    const unrelated = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    const changed = { ...unrelated, revision: 2 };
+    const harness = catalogHarness([current, changed]);
+    const store = usePluginStore(); store.applyPlugin({ ...snapshot, installationId: "a" }); store.applyPlugin(unrelated);
+    const first = usePluginService(); const second = usePluginService(); second.init();
+    harness.event(current); await flushPromises();
+    const initialRead = harness.posted[0]!;
+    const write = first.setEnabled(unrelated, true);
+    const completion = writeSucceeds ? write : expect(write).rejects.toThrow("write failed");
+    if (readCancelled) harness.fail(initialRead, "catalog cancelled", "PLUGIN_REQUEST_CANCELLED");
+    else harness.reply(initialRead, [current, changed]);
+    await flushPromises();
+    expect(harness.posted).toHaveLength(2);
+    expect(store.lastError).toBeNull();
+    if (writeSucceeds) harness.reply(harness.posted[1]!, changed);
+    else harness.fail(harness.posted[1]!, "write failed");
+    await completion; await flushPromises();
+    const reads = harness.posted.filter(request => request.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    if (refreshSucceeds) harness.reply(reads[1]!, [current, changed]);
+    else harness.fail(reads[1]!, "refresh failed");
+    await flushPromises();
+    expect(store.plugins.find(plugin => plugin.pluginId === current.pluginId)?.status).toBe(refreshSucceeds ? "disabled" : "enabled");
+    expect(store.lastError).toBe(writeSucceeds ? refreshSucceeds ? null : "refresh failed" : "write failed");
+    expect(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
+    expect(harness.posted).toHaveLength(3);
+    second.dispose();
+  });
+
+  it.each([true, false])("does not refresh the retired workspace when the write settles (success=%s)", async (succeeds) => {
+    const current = { ...snapshot, installationId: "a", revision: 2 };
+    const harness = catalogHarness([current]);
+    const first = usePluginService(); const second = usePluginService(); second.init();
+    harness.event(current); await flushPromises();
+    const write = first.setEnabled(snapshot, true);
+    const completion = succeeds ? write : expect(write).rejects.toThrow("old write failed");
+    harness.reply(harness.posted[0]!, [current]); await flushPromises();
+    const store = usePluginStore(); store.setProjectContext("local:next", "r2"); store.fail(new Error("next error"));
+    if (succeeds) harness.reply(harness.posted[1]!, current);
+    else harness.fail(harness.posted[1]!, "old write failed");
+    await completion; await flushPromises();
+    expect(harness.posted).toHaveLength(2);
+    expect(store.plugins).toEqual([]);
+    expect(store.lastError).toBe("next error");
+    second.dispose();
+  });
+
+  it.each([[false, true], [false, false], [true, true], [true, false]])("preserves a consumed catalog notification when lifecycle settles first (write=%s, refresh=%s)", async (writeSucceeds, refreshSucceeds) => {
+    const current = { ...snapshot, installationId: "a", status: "disabled" as const, revision: 2 };
+    const unrelated = { ...snapshot, pluginId: "com.acme.other", installationId: "b" };
+    const harness = catalogHarness([current]);
+    const store = usePluginStore(); store.applyPlugin({ ...snapshot, installationId: "a" });
+    const first = usePluginService(); const second = usePluginService(); second.init();
+    const write = first.setEnabled(unrelated, true);
+    const completion = writeSucceeds ? write : expect(write).rejects.toThrow("write failed");
+    harness.event(current); await flushPromises();
+    const initialRead = harness.posted.find(request => request.type === "plugin.catalog.list")!;
+    if (writeSucceeds) harness.reply(harness.posted[0]!, { ...unrelated, revision: 2 });
+    else harness.fail(harness.posted[0]!, "write failed");
+    await completion;
+    harness.reply(initialRead, [current]); await flushPromises();
+    const reads = harness.posted.filter(request => request.type === "plugin.catalog.list");
+    expect(reads).toHaveLength(2);
+    if (refreshSucceeds) harness.reply(reads[1]!, [current]);
+    else harness.fail(reads[1]!, "refresh failed");
+    await flushPromises();
+    expect(store.plugins[0]?.status).toBe(refreshSucceeds ? "disabled" : "enabled");
+    expect(store.lastError).toBe(writeSucceeds ? refreshSucceeds ? null : "refresh failed" : "write failed");
+    expect(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled")).toHaveLength(1);
+    expect(harness.posted).toHaveLength(3);
+    second.dispose();
+  });
+
+  it("shares catalog read retirement across two service instances", async () => {
+    const old = { ...snapshot, installationId: "retired", revision: 4 };
+    const current = { ...snapshot, installationId: "current", revision: 2 };
+    const harness = catalogHarness([current]);
+    const first = usePluginService(); const second = usePluginService();
+    const oldRead = first.list(); const newRead = second.list();
+    harness.reply(harness.posted[1]!, [current]); await newRead;
+    harness.reply(harness.posted[0]!, [old]); await oldRead;
+    expect(usePluginStore().plugins[0]?.installationId).toBe("current");
+  });
+
+  it("treats old, unknown and new catalog notifications as bounded invalidations of the authority", async () => {
+    const old = { ...snapshot, installationId: "retired", revision: 4 };
+    const current = { ...snapshot, installationId: "current", revision: 2 };
+    const harness = catalogHarness([current]); harness.auto([current]);
+    const store = usePluginStore(); store.applyPlugin(old);
+    const task: PluginTaskSnapshot = { taskId: "old-task", runId: "old-run", pluginId: old.pluginId,
+      pluginVersion: old.version, installationId: old.installationId, installationRevision: 4,
+      actionId: "normalize", projectKey: old.projectKey, collection: "orders", targetCount: 1,
+      risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    store.applyTask(task); store.removePlugin(old.pluginId);
+    const service = usePluginService(); service.init(); await service.list(); harness.posted.length = 0;
+    for (const value of [old, { ...old, installationId: "never-seen", revision: 9 },
+      { ...current, revision: 1 }, current]) harness.event(value);
+    await flushPromises();
+    expect(store.plugins[0]?.installationId).toBe("current");
+    expect(store.taskForId(task.taskId)).toBeNull();
+    expect(harness.posted.filter(request => request.type === "plugin.catalog.list")).toHaveLength(1);
+    const replacement = { ...current, installationId: "replacement", revision: 1 };
+    harness.auto([replacement]); harness.event(replacement); await flushPromises();
+    expect(store.plugins[0]?.installationId).toBe("replacement");
+    harness.auto([]); harness.event(replacement); await flushPromises();
+    expect(store.plugins).toEqual([]);
+    service.dispose();
+  });
+
+  it("retires old lifecycle replies that follow a new installation through another service", async () => {
+    const old = { ...snapshot, installationId: "retired", revision: 4 };
+    const current = { ...snapshot, installationId: "current", revision: 2 };
+    const harness = catalogHarness([current]); harness.auto([current]);
+    const store = usePluginStore(); store.applyPlugin(old);
+    const first = usePluginService(); const second = usePluginService();
+    const oldEnable = first.setEnabled(old, true);
+    const uninstall = second.uninstall(old, false);
+    harness.reply(harness.posted[1]!, { uninstalled: true, privateSettingsRetained: true }); await uninstall;
+    const newEnable = second.setEnabled(current, true);
+    harness.reply(harness.posted.filter(request => request.type === "plugin.lifecycle.setEnabled").pop()!, current); await newEnable;
+    harness.reply(harness.posted[0]!, old); await oldEnable; await flushPromises();
+    expect(store.plugins[0]?.installationId).toBe("current");
+  });
+
+  it("invalidates reads begun during a lifecycle operation when that operation completes", async () => {
+    const previous = { ...snapshot, installationId: "same-record", revision: 1 };
+    const current = { ...previous, revision: 2 };
+    const harness = catalogHarness([current]);
+    const store = usePluginStore(); store.applyPlugin(previous);
+    const first = usePluginService(); const second = usePluginService();
+    const enable = first.setEnabled(previous, true);
+    const olderRead = second.list();
+    harness.auto([current]);
+    harness.reply(harness.posted[0]!, current); await enable;
+    harness.reply(harness.posted[1]!, [previous]); await olderRead; await flushPromises();
+    expect(store.plugins[0]?.revision).toBe(2);
+  });
+
+  it("refuses cleanup without the original receipt identity before sending any uninstall", async () => {
+    const postMessage = vi.fn();
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage, addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const event = { eventId: "old-cleanup", projectKey: "local:default", pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.version, packageHash: snapshot.packageHash, eventType: "uninstall", outcome: "failed",
+      actionId: null, runId: null, actor: "user", risk: null, targetCollection: null, targetCount: null,
+      startedAt: "", finishedAt: null, durationMs: null, errorCode: null, details: {} };
+    await expect(usePluginService().retryCleanup(event)).rejects.toThrow("原安装身份");
+    await expect(usePluginService().uninstall({ ...snapshot, installationId: null }, true)).rejects.toThrow("安装身份缺失");
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("receives scoped Host recovery receipts before a catalog failure=%s and keeps revisions sticky", async failCatalog => {
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const posted: string[] = [];
+    const task: PluginTaskSnapshot = { taskId: "restored-write", runId: "restored-run", projectKey: "local:default",
+      pluginId: snapshot.pluginId, actionId: "normalize", pluginVersion: snapshot.version,
+      installationId: "retired-installation", installationRevision: 1, surfaceToken: "retired-token",
+      collection: null, targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    const event = (value: PluginTaskSnapshot, revision: number) => listener?.({ data: { type: "plugin.task.changed", payload: {
+      contract: "vibetable.plugin-event.v1", eventType: "plugin.task.changed", projectKey: value.projectKey,
+      entityId: value.taskId, revision, snapshot: value } } });
+    const bridge = createHostBridge({ generateRequestId: () => "recovery-catalog",
+      webview: { postMessage(message) {
+        const request = message as { type: string; requestId: string }; posted.push(request.type);
+        queueMicrotask(() => {
+          event({ ...task, state: "succeeded" }, 2);
+          event(task, 1); // A captured history can arrive after a newer live terminal.
+          event({ ...task, taskId: "uncertain", runId: "uncertain-run", state: "aborted", error: {
+            contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "核对原始写入", recoverability: "none",
+            pluginId: task.pluginId, actionId: task.actionId, runId: "uncertain-run", details: {}, causeId: null } }, 3);
+          event({ ...task, taskId: "foreign", projectKey: "local:foreign", state: "succeeded" }, 2);
+          listener?.({ data: failCatalog ? { type: "operation.failed", requestId: request.requestId, payload: { code: "PLUGIN_NOT_READY", message: "catalog unavailable" } }
+            : { ...request, payload: [snapshot] } });
+        });
+      }, addEventListener: (_type, handler) => { listener = handler; }, removeEventListener: () => undefined } });
+    bridge.start(); setHostBridgeForTesting(bridge);
+    const service = usePluginService(); service.init();
+    service.openProjectContext("local:default", "recovered-session");
+    if (failCatalog) await expect(service.list()).rejects.toThrow("catalog unavailable");
+    else await service.list();
+    const store = usePluginStore();
+    expect(store.nativeTaskReceipts.map(task => task.taskId)).toEqual(["restored-write", "uncertain"]);
+    expect(store.nativeTaskReceipts[0]?.state).toBe("succeeded");
+    expect(store.nativeTaskReceipts[1]?.error?.code).toBe("plugin_commit_unknown");
+    expect(store.tasksForAction(task.pluginId, task.actionId, "fresh-token")).toEqual([]);
+    expect(store.pendingConfirmation).toBeNull();
+    expect(posted).toEqual(["plugin.catalog.list"]);
+    service.dispose(); bridge.stop();
+  });
+
 });

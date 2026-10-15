@@ -95,6 +95,9 @@ func TestPluginPrivateHTTPMatchesWorkerShapeAndPublicOwnerUsesDurableGate(t *tes
 		{"operation": "list_installations", "projectKey": service.ProjectKey(), "sourcePath": "C:/untrusted/plugins.db"},
 		{"operation": "save_installation", "projectKey": service.ProjectKey(), "pluginId": "other.plugin", "payload": snapshot, "expectedRevision": 1},
 		{"operation": "arbitrary_sql", "projectKey": service.ProjectKey()},
+		{"operation": "delete_installation", "projectKey": service.ProjectKey(), "pluginId": "com.example.reader"},
+		{"operation": "delete_installation", "projectKey": service.ProjectKey(), "pluginId": "com.example.reader", "installationId": "retired-record", "expectedRevision": 1, "cleanupPrivateSettings": true},
+		{"operation": "save_private_setting", "projectKey": service.ProjectKey(), "pluginId": "com.example.reader", "payload": map[string]any{"projectKey": service.ProjectKey(), "pluginId": "com.example.reader", "settingKey": "late", "value": "old", "revision": 1}, "expectedRevision": nil},
 	} {
 		if result := call(body); result.Code == http.StatusOK {
 			t.Fatalf("accepted malformed body: %#v", body)

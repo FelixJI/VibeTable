@@ -52,6 +52,7 @@ async def test_runtime_cancel_reaches_real_worker_before_termination(
             source_location=str(tmp_path / "plugin"),
             status="enabled",
             revision=1,
+            installation_id=store.installation.installation_id,
             manifest=PluginManifest.model_validate(
                 json.loads((tmp_path / "plugin/manifest.json").read_text(encoding="utf-8"))
             ),

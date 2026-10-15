@@ -38,6 +38,7 @@ from backend.contracts.plugin_rpc import (
     ResolvePluginFileParams,
     ResolvePluginInteractionParams,
     RollbackPluginParams,
+    SetPluginEnabledExecutionParams,
     StartPluginActionParams,
     UninstallPluginParams,
     UpgradePluginExecutionParams,
@@ -155,6 +156,9 @@ def _register_plugin_methods(
     dispatcher.register("plugin.upgrade", service.upgrade, UpgradePluginExecutionParams)
     dispatcher.register("plugin.rollback", service.rollback, RollbackPluginParams)
     dispatcher.register("plugin.uninstall", service.uninstall, UninstallPluginParams)
+    dispatcher.register(
+        "plugin.setEnabledExecution", service.set_enabled_execution, SetPluginEnabledExecutionParams
+    )
     dispatcher.register(
         "plugin.describeAction",
         service.describe_action,
@@ -289,6 +293,7 @@ async def _build_server() -> tuple[
             client=client,
             schema_revisions={},
             writable_fields={},
+            session_epoch=int(os.environ.get("VIBETABLE_WORKSPACE_SESSION_EPOCH", "0")),
         )
         runtime = PluginExecutionRuntime(
             registry=registry,

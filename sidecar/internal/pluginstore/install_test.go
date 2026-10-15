@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/pocketbase/dbx"
@@ -25,11 +26,182 @@ func frozenInstallRequest(t *testing.T) (json.RawMessage, json.RawMessage) {
 	return plan, loadFrozenOracleCase(t, "package-revision-persisted")
 }
 
+func TestUpgradeAndLatePrivateWriteAreBoundToOriginalInstallation(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin := jsonText(first, "projectKey"), jsonText(first, "pluginId")
+	id := jsonText(first, "installationId")
+	bound := replaceJSON(t, plan, map[string]any{"targetInstallationId": id, "targetRevision": 1})
+	setting := []byte(`{"projectKey":"` + project + `","pluginId":"` + plugin + `","settingKey":"late","value":"old","revision":1}`)
+	// A request already read an absent key; neither deletion nor ABA can admit its late set.
+	if err := service.ValidateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err == nil {
+		t.Fatal("late write resurrected deleted settings")
+	}
+	if _, err := service.CommitUpgrade(ctx, bound, revision); err == nil {
+		t.Fatal("upgrade turned into install")
+	}
+	second, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CommitUpgrade(ctx, bound, revision); err == nil {
+		t.Fatal("ABA upgrade changed new installation")
+	}
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err == nil {
+		t.Fatal("ABA late setting changed new installation")
+	}
+	if value, _ := service.GetPrivateSetting(ctx, project, plugin, "late"); value != nil {
+		t.Fatalf("unexpected setting %s", value)
+	}
+	authority, _ := service.GetInstallation(ctx, project, plugin)
+	sameJSON(t, authority, second)
+	newID := jsonText(second, "installationId")
+	nextPlan := replaceJSON(t, plan, map[string]any{"targetInstallationId": newID, "targetRevision": 1})
+	upgraded, err := service.CommitUpgrade(ctx, nextPlan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonInt(upgraded, "revision") != 2 || jsonText(upgraded, "installationId") != newID {
+		t.Fatalf("upgrade identity %s", upgraded)
+	}
+	if _, err := service.CommitUpgrade(ctx, nextPlan, revision); err == nil {
+		t.Fatal("stale plan applied twice")
+	}
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, newID, 1); err == nil {
+		t.Fatal("prior revision authorized a write")
+	}
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, newID, 2); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func sameJSON(t *testing.T, got, want json.RawMessage) {
 	t.Helper()
 	var actual, expected any
 	if json.Unmarshal(got, &actual) != nil || json.Unmarshal(want, &expected) != nil || !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("JSON mismatch\ngot %s\nwant %s", got, want)
+	}
+}
+
+func TestUpgradeTransactionFailurePreservesInstallationAndPackageLedger(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := service.ListPackageRevisions(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := replaceJSON(t, plan, map[string]any{"targetInstallationId": jsonText(first, "installationId"), "targetRevision": 1})
+	service.app.OnRecordCreate("vibetable_outbox").BindFunc(func(*core.RecordEvent) error { return errors.New("outbox unavailable") })
+	for _, commit := range []func(context.Context, json.RawMessage, json.RawMessage) (json.RawMessage, error){service.CommitUpgrade, service.CommitRollback} {
+		if _, err := commit(ctx, bound, revision); err == nil {
+			t.Fatal("ignored outbox failure")
+		}
+		after, err := service.GetInstallation(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sameJSON(t, after, first)
+		revisions, err := service.ListPackageRevisions(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"))
+		if err != nil || !reflect.DeepEqual(before, revisions) {
+			t.Fatalf("partial package ledger %s %v", revisions, err)
+		}
+	}
+}
+
+func TestAtomicUpgradeSwitchesCompletePackageAndRollbackPreservesIdentity(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, _ := decodePayload(plan)
+	manifest := decoded["manifest"].(map[string]any)
+	manifest["version"] = "2.0.0"
+	nextHash := "sha256:" + strings.Repeat("b", 64)
+	nextPlan := replaceJSON(t, plan, map[string]any{"targetInstallationId": jsonText(first, "installationId"), "targetRevision": 1,
+		"packageHash": nextHash, "manifest": manifest})
+	nextRevision := replaceJSON(t, revision, map[string]any{"packageHash": nextHash, "manifest": manifest, "version": "2.0.0", "localPath": "C:/cache/next.vtplugin"})
+	second, err := service.CommitUpgrade(ctx, nextPlan, nextRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonText(second, "version") != "2.0.0" || jsonText(second, "packageHash") != nextHash || jsonInt(second, "revision") != 2 {
+		t.Fatalf("partial upgraded snapshot %s", second)
+	}
+	rollbackPlan := replaceJSON(t, plan, map[string]any{"targetInstallationId": jsonText(first, "installationId"), "targetRevision": 2})
+	third, err := service.CommitRollback(ctx, rollbackPlan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonText(third, "packageHash") != jsonText(first, "packageHash") || jsonText(third, "version") != jsonText(first, "version") || jsonInt(third, "revision") != 3 || jsonText(third, "installationId") != jsonText(first, "installationId") {
+		t.Fatalf("rollback lost original identity or package %s", third)
+	}
+	revisions, err := service.ListPackageRevisions(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"))
+	if err != nil || len(revisions) != 2 {
+		t.Fatalf("revisions %s %v", revisions, err)
+	}
+	for _, item := range revisions {
+		if jsonText(item, "packageHash") == nextHash && jsonText(item, "state") != "rollback" {
+			t.Fatalf("rollback state %s", item)
+		}
+		if jsonText(item, "packageHash") == jsonText(first, "packageHash") && jsonText(item, "state") != "current" {
+			t.Fatalf("current state %s", item)
+		}
+	}
+}
+
+func TestDeleteInstallationAuditFailureRollsBackWholeUninstall(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	original, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin, id := jsonText(original, "projectKey"), jsonText(original, "pluginId"), jsonText(original, "installationId")
+	setting := []byte(`{"projectKey":"` + project + `","pluginId":"` + plugin + `","settingKey":"private","value":"keep","revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err != nil {
+		t.Fatal(err)
+	}
+	service.app.OnRecordCreate(recordsCollection).BindFunc(func(event *core.RecordEvent) error {
+		if event.Record.GetString("kind") == KindAudit {
+			return errors.New("synthetic uninstall audit failure")
+		}
+		return event.Next()
+	})
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err == nil {
+		t.Fatal("uninstall did not include its audit transaction")
+	}
+	after, err := service.GetInstallation(ctx, project, plugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameJSON(t, after, original)
+	settings, err := service.GetPrivateSetting(ctx, project, plugin, "private")
+	if err != nil || settings == nil {
+		t.Fatal("failed uninstall removed private settings", err)
+	}
+	revisions, err := service.ListPackageRevisions(ctx, project, plugin)
+	if err != nil || len(revisions) != 1 {
+		t.Fatal("failed uninstall removed package ledger", err)
 	}
 }
 
@@ -41,7 +213,13 @@ func TestCommitInstallMatchesFrozenOracleAndIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sameJSON(t, snapshot, frozenInstallation(t))
+	// The frozen legacy payload remains identical; the only extension is
+	// the existing authority record Id, independently checked below.
+	stored, err := findRecord(service.app, KindInstallation, jsonText(snapshot, "projectKey"), jsonText(snapshot, "pluginId"), "current")
+	if err != nil || stored == nil || jsonText(snapshot, "installationId") != stored.Id {
+		t.Fatal("missing PB identity projection")
+	}
+	sameJSON(t, snapshot, replaceJSON(t, frozenInstallation(t), map[string]any{"installationId": stored.Id}))
 	if service.ProjectKey() != "local:"+oracleWorkspaceID {
 		t.Fatal(service.ProjectKey())
 	}
@@ -139,5 +317,147 @@ func TestWholeDatabaseSnapshotRestoresFourKindsAndMigrationMarkerAtNewPath(t *te
 		if !reflect.DeepEqual(original, reopened) {
 			t.Fatalf("restored %s drift: %+v / %+v", kind, original, reopened)
 		}
+	}
+}
+
+func TestInstallationUsesExistingRecordIdentityAcrossReinstall(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := jsonText(first, "installationId")
+	if id == "" {
+		t.Fatal("missing authoritative PB record identity")
+	}
+	stored, err := findRecord(service.app, KindInstallation, jsonText(first, "projectKey"), jsonText(first, "pluginId"), "current")
+	if err != nil || stored == nil || id != stored.Id {
+		t.Fatal("identity differs from the existing PB record")
+	}
+	var persisted map[string]any
+	raw, _ := json.Marshal(stored.GetRaw("payload_json"))
+	if json.Unmarshal(raw, &persisted) != nil {
+		t.Fatal("invalid persisted installation")
+	}
+	if _, exists := persisted["installationId"]; exists {
+		t.Fatal("persisted a second installation identity")
+	}
+	enabled, err := service.SetEnabled(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"), true)
+	if err != nil || jsonText(enabled, "installationId") != id {
+		t.Fatal("state update changed installation identity")
+	}
+	actual := jsonInt(enabled, "revision")
+	forged := replaceJSON(t, enabled, map[string]any{"installationId": "forged", "revision": actual + 1})
+	if _, err := service.SaveInstallation(ctx, forged, &actual); err == nil {
+		t.Fatal("caller rewrote record identity")
+	}
+	if _, err := service.DeleteInstallation(ctx, jsonText(first, "projectKey"), jsonText(first, "pluginId"), id, actual, false); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonText(second, "installationId") == "" || jsonText(second, "installationId") == id {
+		t.Fatal("same-version same-package reinstall reused the old record identity")
+	}
+}
+
+func TestUninstallCASRejectsUpgradeAndReinstallWithoutCleanup(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	first, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin := jsonText(first, "projectKey"), jsonText(first, "pluginId")
+	id := jsonText(first, "installationId")
+	setting := []byte(`{"projectKey":"` + project + `","pluginId":"` + plugin + `","settingKey":"secret","value":"retained","revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, jsonInt(first, "revision")); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := service.SetEnabled(ctx, project, plugin, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRetained := func(wantID string) {
+		t.Helper()
+		got, err := service.GetInstallation(ctx, project, plugin)
+		if err != nil || jsonText(got, "installationId") != wantID {
+			t.Fatal("installation was removed", err)
+		}
+		settings, err := service.GetPrivateSetting(ctx, project, plugin, "secret")
+		if err != nil || settings == nil {
+			t.Fatal("private settings were removed", err)
+		}
+		revisions, err := service.ListPackageRevisions(ctx, project, plugin)
+		if err != nil || len(revisions) != 1 {
+			t.Fatal("package references were removed", err)
+		}
+	}
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err == nil {
+		t.Fatal("stale revision deleted upgraded installation")
+	}
+	assertRetained(id)
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, jsonInt(enabled, "revision"), false); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err == nil {
+		t.Fatal("ABA deleted reinstallation")
+	}
+	assertRetained(jsonText(second, "installationId"))
+	if _, err := service.DeleteInstallation(ctx, project, plugin, "", 1, true); err == nil {
+		t.Fatal("identity-free delete admitted")
+	}
+	assertRetained(jsonText(second, "installationId"))
+	if _, err := service.DeleteInstallation(ctx, project, plugin, jsonText(second, "installationId"), 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := service.GetInstallation(ctx, project, plugin); got != nil {
+		t.Fatal("matching CAS did not delete")
+	}
+	if got, _ := service.GetPrivateSetting(ctx, project, plugin, "secret"); got != nil {
+		t.Fatal("cleanup did not remove settings")
+	}
+	if got, _ := service.ListPackageRevisions(ctx, project, plugin); len(got) != 0 {
+		t.Fatal("cleanup retained package references")
+	}
+}
+
+func TestBoundSetEnabledRejectsRevisionAndInstallationABA(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	original, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin, id := jsonText(original, "projectKey"), jsonText(original, "pluginId"), jsonText(original, "installationId")
+	if _, err = service.SetEnabledForInstallation(ctx, project, plugin, false, id, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SetEnabledForInstallation(ctx, project, plugin, true, id, 1); err == nil {
+		t.Fatal("stale revision enabled installation")
+	}
+	if _, err = service.DeleteInstallation(ctx, project, plugin, id, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SetEnabledForInstallation(ctx, project, plugin, true, id, 1); err == nil {
+		t.Fatal("ABA enabled new installation")
+	}
+	current, err := service.GetInstallation(ctx, project, plugin)
+	if err != nil || !reflect.DeepEqual(current, replacement) {
+		t.Fatal("failed CAS changed replacement", err)
 	}
 }

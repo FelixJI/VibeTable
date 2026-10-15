@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -713,3 +714,13 @@ def test_build_never_falls_back_to_removed_repository_bundler(tmp_path: Path) ->
     error = json.loads(built.stdout)
     assert error["code"] == "bundler_missing"
     assert "plugin-local esbuild" in error["message"]
+
+
+def test_build_accepts_authored_headless_modules_without_typescript_source(tmp_path: Path) -> None:
+    source = Path(__file__).resolve().parents[1] / "fixtures/plugins/application-boundary"
+    plugin = tmp_path / "application"
+    shutil.copytree(source, plugin)
+    before = (plugin / "ui/success.js").read_text(encoding="utf-8")
+    result = _run_cli("build", str(plugin))
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (plugin / "ui/success.js").read_text(encoding="utf-8") == before

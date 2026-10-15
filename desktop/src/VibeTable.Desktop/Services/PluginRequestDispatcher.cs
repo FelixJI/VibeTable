@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -32,6 +33,9 @@ public sealed class PluginRequestDispatcher : IDisposable
     private readonly Func<string, string?>? _packageCacheRoot;
     private readonly Func<CancellationToken, Task>? _ensureGateway;
     private readonly object _gatewayGate = new();
+    // Orders local resource projection only; PocketBase remains the authority.
+    private readonly object _catalogProjectionGate = new();
+    private long _catalogProjectionGeneration;
     private readonly HostInstallPlanLeaseRegistry _installLeases;
     private readonly HostPluginTaskRegistry _taskRegistry;
     private readonly ProductAuthorityEpoch _authority;
@@ -102,6 +106,41 @@ public sealed class PluginRequestDispatcher : IDisposable
         _sharedReadEmitGate = sharedReadEmitGate;
         _installLeases = new HostInstallPlanLeaseRegistry(_authority);
         _taskRegistry = new HostPluginTaskRegistry(_authority);
+    }
+
+    internal Task SealLegacyConfirmationsForRendererRecovery()
+    {
+        var rejections = _taskRegistry.SealLegacyConfirmationsForRendererRecovery();
+        foreach (var rejection in rejections) PublishLegacyRejection(rejection);
+        return Task.WhenAll(rejections.Select(RejectLegacyConfirmationAsync));
+    }
+
+    private void PublishLegacyRejection(HostPluginLegacyRejection rejection)
+    {
+        var context = rejection.Binding.Context;
+        var emitGate = GateSharedReadTerminal("plugin.interaction.resolve", context);
+        if (_projectContext() == context)
+            _reply.TryPostResponse("plugin.task.changed", requestId: null, rejection.Settlement.Envelope, emitGate);
+        _ = ObserveRevokeRunAsync(rejection.Binding.Gateway, rejection.Request.RunId);
+    }
+
+    private async Task RejectLegacyConfirmationAsync(HostPluginLegacyRejection rejection)
+    {
+        // Only wake the old executor. The Host receipt is already terminal;
+        // missing/late transport replies cannot keep it running or change it.
+        if (!_authority.TryAcquire(rejection.Binding.Authority, out var lease)) return;
+        using (lease)
+        {
+            try
+            {
+                if (!_authority.TryStart(lease!, token => rejection.Binding.Gateway!.ResolveInteractionAsync(rejection.Request, token), out var response)) return;
+                await response!.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                SafeDiagnosticTrace($"Legacy confirmation recovery rejection failed; error={ex.GetType().Name}");
+            }
+        }
     }
 
     public event Action<PluginSurfaceEvent>? SurfaceEventReceived;
@@ -175,6 +214,7 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     internal void SetProjectContextAfterAuthorityTransition(PluginProjectContext? context)
     {
+        AdvanceCatalogProjection();
         ReleaseLeases(_installLeases.SetContextAfterAuthorityTransition(context));
         PostSettlements(_taskRegistry.SetContext(context));
     }
@@ -197,13 +237,29 @@ public sealed class PluginRequestDispatcher : IDisposable
                 "plugin.catalog.list" => "plugin.listCatalog",
                 "plugin.audit.list" => "plugin.listAudit",
                 "plugin.cleanup.listPending" => "plugin.listPendingCleanup",
-                "plugin.lifecycle.setEnabled" => "plugin.setEnabled",
                 _ => null,
             };
             if (sharedMethod is not null)
             {
                 PluginProjectContext? context = _projectContext();
                 if (context is null) throw new PluginDispatchException("PLUGIN_NOT_READY", "Plugin project context is unavailable.");
+                Func<Func<bool>, bool>? emitGate = GateSharedReadTerminal(request.Type, context);
+                if (sharedMethod == "plugin.listCatalog")
+                {
+                    if (Read<PluginCatalogListParams>(request.Payload).ProjectKey != context.ProjectKey) throw StaleTask();
+                    bool PublishTaskHistory()
+                    {
+                        if (context != _projectContext()) return false;
+                        _taskRegistry.ResumeLegacyConfirmations(context);
+                        foreach (var receipt in _taskRegistry.ProjectHistory(context))
+                            _reply.TryPostResponse("plugin.task.changed", requestId: null, receipt, emitGate);
+                        return true;
+                    }
+                    // The renderer establishes its workspace store before this
+                    // bootstrap read. Replay before requiring either backend:
+                    // recovery receipts remain useful when catalog loading fails.
+                    if (!(emitGate?.Invoke(PublishTaskHistory) ?? PublishTaskHistory())) return;
+                }
                 Func<string, JsonElement, CancellationToken, Task<JsonElement>> sharedRpc = _sharedRpc
                     ?? throw new PluginDispatchException(
                         "PLUGIN_NOT_READY", "Plugin catalog is not available for the current project.");
@@ -211,32 +267,51 @@ public sealed class PluginRequestDispatcher : IDisposable
                 // emission gate: the gate runs the actual reply commit under
                 // the session publication lock, so a scope retired by a close
                 // or epoch rotation can never emit a late terminal while the
-                // renderer has already settled the request locally. The
-                // setEnabled write keeps its stale-failure semantics and every
-                // non-shared path keeps its existing replies. Without a
+                // renderer has already settled the request locally. Enable
+                // transitions use the Host-only execution path below. Without a
                 // production gate (standalone construction) the sink's
                 // synchronous default commits exactly as before.
-                bool sharedRead = sharedMethod is not "plugin.setEnabled";
-                Func<Func<bool>, bool>? emitGate = sharedRead
-                    ? GateSharedReadTerminal(request.Type, context)
-                    : null;
+                long catalogGeneration = CaptureCatalogProjection();
                 JsonElement shared;
-                object projected;
+                object projected = null!;
                 try
                 {
                     shared = await sharedRpc(sharedMethod, request.Payload, token).ConfigureAwait(false);
                     // Ungated paths (standalone/public construction) keep the
                     // original stale reply for a rotated context; gated reads
                     // rely on the session emission gate instead.
-                    if (context != _projectContext() && (!sharedRead || emitGate is null)) throw StaleTask();
-                    projected = sharedMethod switch
+                    if (context != _projectContext() && emitGate is null) throw StaleTask();
+                    PluginProjectContext? projectionContext = _projectContext();
+                    PluginRuntimeSnapshot[]? snapshots = sharedMethod == "plugin.listCatalog"
+                        ? shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions) ?? throw new JsonException("Invalid plugin catalog.") : null;
+                    string? cacheRoot = _packageCacheRoot?.Invoke(context.ProjectKey);
+                    bool ProjectCurrentCatalog()
                     {
-                        "plugin.listCatalog" => (shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
-                            ?? throw new JsonException("Invalid plugin catalog.")).Select(ProjectSnapshot).ToArray(),
-                        "plugin.setEnabled" => ProjectSnapshot(shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions)
-                            ?? throw new JsonException("Invalid plugin snapshot.")),
-                        _ => shared,
-                    };
+                        lock (_catalogProjectionGate)
+                        {
+                            bool current = catalogGeneration == _catalogProjectionGeneration && context == projectionContext;
+                            if (snapshots is not null && !current)
+                                throw new PluginDispatchException("PLUGIN_REQUEST_CANCELLED", "Plugin catalog read was superseded.");
+                            if (snapshots is not null)
+                            {
+                                var retained = snapshots.Select(item => item.PluginId).ToHashSet(StringComparer.Ordinal);
+                                _resourceHost.RetireAbsentInstallations(context.ProjectKey, retained);
+                                foreach (var key in _nativePlugins.Keys.Where(key => key.Item1 == context.ProjectKey && !retained.Contains(key.Item2)))
+                                    _nativePlugins.TryRemove(key, out _);
+                            }
+                            projected = snapshots is not null
+                                ? snapshots.Select(item => ProjectSnapshot(item, projectionContext, cacheRoot)).ToArray()
+                                : shared;
+                            return true;
+                        }
+                    }
+                    // The publication gate precedes the projection lock. No
+                    // session/cache callback or network await runs in that lock.
+                    if (snapshots is not null && emitGate is not null)
+                    {
+                        if (!emitGate(ProjectCurrentCatalog)) return;
+                    }
+                    else ProjectCurrentCatalog();
                 }
                 catch (Exception ex) when (emitGate is not null)
                 {
@@ -246,12 +321,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     PostSharedReadFailure(request, ex, token, emitGate);
                     return;
                 }
-                if (sharedRead)
-                {
-                    _reply.TryPostResponse(request.Type, request.RequestId, projected, emitGate);
-                    return;
-                }
-                _reply.PostResponse(request.Type, request.RequestId, projected);
+                _reply.TryPostResponse(request.Type, request.RequestId, projected, emitGate);
                 return;
             }
             if (string.Equals(request.Type, "plugin.surface.event", StringComparison.Ordinal))
@@ -282,6 +352,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             if (request.Type is not ("plugin.install.inspect" or "plugin.install.github.inspect"
                 or "plugin.install.commit" or "plugin.lifecycle.upgrade"
+                or "plugin.lifecycle.setEnabled"
                 or "plugin.lifecycle.rollback" or "plugin.lifecycle.uninstall"
                 or "plugin.action.describe" or "plugin.action.start"))
                 throw new PluginDispatchException("UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'.");
@@ -294,6 +365,11 @@ public sealed class PluginRequestDispatcher : IDisposable
                     var action = actions!.Declared.FirstOrDefault(action => action.ActionId == describe.ActionId);
                     if (action is null) throw new PluginDispatchException("PLUGIN_ACTION_NOT_FOUND", "Plugin action is not declared.");
                     if (_projectContext()?.ProjectKey != describe.ProjectKey || describe.Context.ProjectKey != describe.ProjectKey) throw StaleTask();
+                    if (action.Invocation != "manual")
+                    {
+                        _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["manual_invocation_required"]));
+                        return;
+                    }
                     if (!actions.Available.Contains(describe.ActionId))
                     {
                         _reply.PostResponse(request.Type, request.RequestId, new PluginRuntimeActionAvailability(false, ["plugin_surface_unavailable"]));
@@ -352,12 +428,14 @@ public sealed class PluginRequestDispatcher : IDisposable
 
             object result = request.Type switch
             {
+                "plugin.lifecycle.setEnabled" => await SetEnabledExecutionAsync(
+                    gateway, Read<PluginSetEnabledParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.inspect" => await InspectInstallAsync(
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
                     Read<PluginGitHubInspectParams>(request.Payload), token).ConfigureAwait(false),
-                "plugin.lifecycle.rollback" => ProjectSnapshot(await gateway.RollbackAsync(
-                    Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false)),
+                "plugin.lifecycle.rollback" => await RollbackAsync(
+                    gateway, Read<PluginRollbackParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.lifecycle.uninstall" => await UninstallAsync(
                     Read<PluginUninstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.action.describe" => await gateway.DescribeActionAsync(
@@ -482,6 +560,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                 planId),
             token).ConfigureAwait(false);
         VerifyPlanEcho(plan, planId);
+        plan = await BindPlanTargetAsync(binding, plan, token).ConfigureAwait(false);
         AdmitInstallPlan(binding, plan, null);
         return plan with { SourceLocation = HostManagedSource };
     }
@@ -511,6 +590,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     planId),
                 token).ConfigureAwait(false);
             VerifyPlanEcho(plan, planId);
+            plan = await BindPlanTargetAsync(binding, plan, token).ConfigureAwait(false);
             DownloadedPluginPackage admittedPackage = download;
             download = null;
             AdmitInstallPlan(binding, plan, admittedPackage);
@@ -524,6 +604,22 @@ public sealed class PluginRequestDispatcher : IDisposable
 
     private static string NewInstallPlanId()
         => $"plugin-plan-{Guid.NewGuid():N}"[..24];
+
+    private async Task<PluginRuntimeInstallPlan> BindPlanTargetAsync(
+        HostInstallPlanBinding binding, PluginRuntimeInstallPlan plan, CancellationToken token)
+    {
+        // Production reads the Go authority directly; the renderer never supplies this binding.
+        // Standalone gateways may provide the same binding from their authority-backed inspection.
+        if (_sharedRpc is null) return plan;
+        JsonElement catalog = await _sharedRpc("plugin.listCatalog",
+            JsonSerializer.SerializeToElement(new PluginCatalogListParams(binding.Context.ProjectKey), JsonOptions), token)
+            .ConfigureAwait(false);
+        var current = (catalog.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions)
+            ?? throw new JsonException("Invalid plugin catalog."))
+            .SingleOrDefault(item => item.PluginId == plan.Manifest.PluginId);
+        if (current is not null && string.IsNullOrWhiteSpace(current.InstallationId)) throw StaleInstallPlan();
+        return plan with { TargetInstallationId = current?.InstallationId, TargetRevision = current?.Revision };
+    }
 
     private static void VerifyPlanEcho(PluginRuntimeInstallPlan plan, string planId)
     {
@@ -542,9 +638,13 @@ public sealed class PluginRequestDispatcher : IDisposable
     {
         await using HostInstallPlanOperation operation =
             BeginInstallPlanOperation(request.PlanId);
+        if (operation.Plan.Plan.TargetInstallationId is not null || operation.Plan.Plan.TargetRevision is not null)
+            throw StaleInstallPlan();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             token,
             operation.Authority.Token);
+        long catalogGeneration = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
         try
         {
             HostInstallPlanBinding binding = operation.Plan.Binding;
@@ -565,12 +665,18 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
                 .ConfigureAwait(false);
+            PluginProjectContext? projectionContext = _projectContext();
+            string? cacheRoot = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
             if (!_installLeases.TryFinishOperation(operation, () =>
             {
-                _reply.PostResponse(
-                    routed.Type,
-                    routed.RequestId,
-                    ProjectSnapshot(snapshot));
+                lock (_catalogProjectionGate)
+                {
+                    _reply.PostResponse(routed.Type, routed.RequestId,
+                        catalogGeneration == _catalogProjectionGeneration
+                            ? ProjectSnapshot(snapshot, projectionContext, cacheRoot) : SanitizeSnapshot(snapshot));
+                    ++_catalogProjectionGeneration;
+                    catalogCompleted = true;
+                }
             }))
             {
                 throw StaleInstallPlan();
@@ -580,6 +686,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             throw StaleInstallPlan();
         }
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
     }
 
     private async Task UpgradeAsync(
@@ -590,9 +697,13 @@ public sealed class PluginRequestDispatcher : IDisposable
         await using HostInstallPlanOperation operation = BeginInstallPlanOperation(
             request.PlanId,
             request.PluginId);
+        if (string.IsNullOrWhiteSpace(operation.Plan.Plan.TargetInstallationId)
+            || operation.Plan.Plan.TargetRevision is null or < 1) throw StaleInstallPlan();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             token,
             operation.Authority.Token);
+        long catalogGeneration = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
         try
         {
             HostInstallPlanBinding binding = operation.Plan.Binding;
@@ -612,12 +723,18 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             PluginRuntimeSnapshot snapshot = await pending.WaitAsync(linked.Token)
                 .ConfigureAwait(false);
+            PluginProjectContext? projectionContext = _projectContext();
+            string? cacheRoot = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
             if (!_installLeases.TryFinishOperation(operation, () =>
             {
-                _reply.PostResponse(
-                    routed.Type,
-                    routed.RequestId,
-                    ProjectSnapshot(snapshot));
+                lock (_catalogProjectionGate)
+                {
+                    _reply.PostResponse(routed.Type, routed.RequestId,
+                        catalogGeneration == _catalogProjectionGeneration
+                            ? ProjectSnapshot(snapshot, projectionContext, cacheRoot) : SanitizeSnapshot(snapshot));
+                    ++_catalogProjectionGeneration;
+                    catalogCompleted = true;
+                }
             }))
             {
                 throw StaleInstallPlan();
@@ -627,6 +744,7 @@ public sealed class PluginRequestDispatcher : IDisposable
         {
             throw StaleInstallPlan();
         }
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
     }
 
     private PluginInstallCancelResult CancelInstall(
@@ -640,16 +758,79 @@ public sealed class PluginRequestDispatcher : IDisposable
         return new PluginInstallCancelResult(owned);
     }
 
+    private async Task<PluginRuntimeSnapshot> RollbackAsync(
+        IPluginRpcGateway gateway, PluginRollbackParams request, CancellationToken token)
+    {
+        long generation = AdvanceCatalogProjection();
+        bool catalogCompleted = false;
+        try
+        {
+            var snapshot = await gateway.RollbackAsync(request, token).ConfigureAwait(false);
+            PluginProjectContext? context = _projectContext();
+            string? cacheRoot = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
+            lock (_catalogProjectionGate)
+            {
+                var projected = generation == _catalogProjectionGeneration
+                    ? ProjectSnapshot(snapshot, context, cacheRoot) : SanitizeSnapshot(snapshot);
+                ++_catalogProjectionGeneration;
+                catalogCompleted = true;
+                return projected;
+            }
+        }
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
+    }
+
+    private async Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(
+        IPluginRpcGateway gateway, PluginSetEnabledParams request, CancellationToken token)
+    {
+        PluginProjectContext? context = _projectContext();
+        if (context is null || context.ProjectKey != request.ProjectKey) throw StaleTask();
+        if (string.IsNullOrWhiteSpace(request.InstallationId) || request.ExpectedRevision < 1)
+            throw new PluginDispatchException("BAD_PAYLOAD", "Installation identity and revision are required.");
+        long generation = AdvanceCatalogProjection();
+        bool completed = false;
+        try
+        {
+            var snapshot = await gateway.SetEnabledExecutionAsync(new(request.ProjectKey, request.PluginId,
+                request.Enabled, request.InstallationId, request.ExpectedRevision), token).ConfigureAwait(false);
+            if (context != _projectContext() || !ReferenceEquals(gateway, CaptureGatewayOrNull())) throw StaleTask();
+            string? root = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
+            lock (_catalogProjectionGate)
+            {
+                var projected = generation == _catalogProjectionGeneration
+                    ? ProjectSnapshot(snapshot, context, root) : SanitizeSnapshot(snapshot);
+                ++_catalogProjectionGeneration;
+                completed = true;
+                return projected;
+            }
+        }
+        finally { if (!completed) AdvanceCatalogProjection(); }
+    }
+
     private async Task<PluginRuntimeUninstallResult> UninstallAsync(
         PluginUninstallParams request,
         CancellationToken token)
     {
-        var result = await _gateway!.UninstallAsync(request, token).ConfigureAwait(false);
-        if (result.Uninstalled)
+        if (string.IsNullOrWhiteSpace(request.InstallationId) || request.ExpectedRevision < 1)
+            throw new PluginDispatchException("BAD_PAYLOAD", "Installation identity and revision are required.");
+        AdvanceCatalogProjection();
+        bool catalogCompleted = false;
+        try
         {
-            _resourceHost.UnregisterInstalled(request.ProjectKey, request.PluginId);
+            var result = await _gateway!.UninstallAsync(request, token).ConfigureAwait(false);
+            lock (_catalogProjectionGate)
+            {
+                if (result.Uninstalled
+                    && _resourceHost.UnregisterInstalledIfCurrent(request.ProjectKey, request.PluginId, request.InstallationId))
+                {
+                    _nativePlugins.TryRemove((request.ProjectKey, request.PluginId), out _);
+                }
+                ++_catalogProjectionGeneration;
+                catalogCompleted = true;
+            }
+            return result;
         }
-        return result;
+        finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
     }
 
     /// <summary>
@@ -756,13 +937,20 @@ public sealed class PluginRequestDispatcher : IDisposable
     /// Resolves a confirmation only while its run is pending on the current
     /// generation. Late confirmations are answered as expired without ever
     /// reaching an executor, so they cannot revive a retired run.
+    /// #482: application/headless confirmations are NATIVE-ONLY — a resolve
+    /// arriving from the web bridge is rejected before the one-shot registry
+    /// decision is consumed; the native host window keeps the sole entry.
     /// </summary>
     private async Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(
         PluginResolveInteractionParams request,
-        CancellationToken token)
+        CancellationToken token,
+        bool fromNativeHost = false)
     {
         PluginRuntimeInteractionResolveResult decision =
-            _taskRegistry.BeginInteractionResolve(request, out IPluginRpcGateway? gateway);
+            _taskRegistry.BeginInteractionResolve(request, out IPluginRpcGateway? gateway, fromNativeHost);
+        if (decision.Status == "native-required")
+            throw new PluginDispatchException("PLUGIN_NATIVE_CONFIRMATION_REQUIRED",
+                "无界面/全视口插件动作的确认只能由宿主原生窗口批准。");
         if (gateway is null) return decision;
         // Python only wakes the execution future. Host has already consumed
         // the public decision; transport failure cannot turn it into a retry.
@@ -924,24 +1112,55 @@ public sealed class PluginRequestDispatcher : IDisposable
     private sealed record NativeActions(IReadOnlyList<PluginRuntimeAction> Declared, string[] Available);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string, string), NativeActions> _nativePlugins = new();
 
-    private PluginRuntimeSnapshot ProjectSnapshot(PluginRuntimeSnapshot snapshot)
+    /// <summary>
+    /// Native confirmation entry: the same one-shot registry decision the web
+    /// footer used for legacy surfaces — the host window is not a second
+    /// approval state, and it is the ONLY entry for application/headless.
+    /// </summary>
+    internal Task<PluginRuntimeInteractionResolveResult> ResolveInteractionForHostAsync(
+        PluginResolveInteractionParams request)
+        => ResolveInteractionAsync(request, CancellationToken.None, fromNativeHost: true);
+
+    private long CaptureCatalogProjection()
     {
-        string? localPackage = PluginRetainedPackage.PathFor(
-            _packageCacheRoot?.Invoke(snapshot.ProjectKey), snapshot.PackageHash);
-        bool registered = localPackage is not null && _resourceHost.TryRegisterInstalled(
+        lock (_catalogProjectionGate) return _catalogProjectionGeneration;
+    }
+
+    private long AdvanceCatalogProjection()
+    {
+        lock (_catalogProjectionGate) return ++_catalogProjectionGeneration;
+    }
+
+    private PluginRuntimeSnapshot ProjectSnapshot(
+        PluginRuntimeSnapshot snapshot, PluginProjectContext? context, string? cacheRoot)
+    {
+        string? localPackage = PluginRetainedPackage.PathFor(cacheRoot, snapshot.PackageHash);
+        bool registered = snapshot.Status == "enabled" && localPackage is not null && _resourceHost.TryRegisterInstalled(
             snapshot.ProjectKey,
             snapshot.PluginId,
             localPackage,
-            snapshot.PackageHash);
+            snapshot.PackageHash, snapshot.InstallationId, snapshot.Revision);
         if (!registered) _resourceHost.UnregisterInstalled(snapshot.ProjectKey, snapshot.PluginId);
-        PluginRuntimeManifest manifest = snapshot.Manifest with { Ui = ProjectCustomViews(snapshot, registered) };
+        PluginRuntimeManifest manifest = snapshot.Manifest with
+        {
+            Ui = ProjectCustomViews(snapshot, registered, context),
+            Actions = ProjectActionSurfaces(snapshot, registered, context),
+        };
         if (snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var api) && api.GetString() == "3.x" && snapshot.Status == "enabled")
         {
-            string[] available = manifest.Ui.TryGetProperty("customViews", out var views) && views.ValueKind == JsonValueKind.Array
-                ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
-                    && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
-                    .Select(view => view.GetProperty("actionId").GetString()!).ToArray() : [];
-            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(snapshot.Manifest.Actions, available);
+            List<string> availableActions =
+            [
+                .. (manifest.Ui.TryGetProperty("customViews", out var views) && views.ValueKind == JsonValueKind.Array
+                    ? views.EnumerateArray().Where(view => view.TryGetProperty("surfaceToken", out var token) && token.ValueKind == JsonValueKind.String
+                        && _surfaces.TryGet(token.GetString()!, out _) && view.TryGetProperty("actionId", out _))
+                        .Select(view => view.GetProperty("actionId").GetString()!) : []),
+                .. manifest.Actions
+                    .Where(action => (action.EffectivePresentation == "application" || action.EffectivePresentation == "headless")
+                        && action.SurfaceToken is not null
+                        && _surfaces.TryGet(action.SurfaceToken, out _))
+                    .Select(action => action.ActionId),
+            ];
+            _nativePlugins[(snapshot.ProjectKey, snapshot.PluginId)] = new(manifest.Actions, [.. availableActions]);
         }
         else _nativePlugins.TryRemove((snapshot.ProjectKey, snapshot.PluginId), out _);
         return snapshot with
@@ -951,7 +1170,60 @@ public sealed class PluginRequestDispatcher : IDisposable
         };
     }
 
-    private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot, bool registered)
+    /// <summary>
+    /// Derives host-owned surfaces for application/headless actions. The
+    /// declared entry stays on the action; src/token are projection-only
+    /// fields that never persist in the stored manifest.
+    /// </summary>
+    private IReadOnlyList<PluginRuntimeAction> ProjectActionSurfaces(PluginRuntimeSnapshot snapshot, bool registered, PluginProjectContext? context)
+    {
+        var projected = new List<PluginRuntimeAction>(snapshot.Manifest.Actions.Count);
+        foreach (PluginRuntimeAction action in snapshot.Manifest.Actions)
+        {
+            if (action.EffectivePresentation is not ("application" or "headless"))
+            {
+                projected.Add(action);
+                continue;
+            }
+            if (!registered || action.Invocation != "manual" || string.IsNullOrWhiteSpace(action.Entry)
+                || !PluginResourceHost.SupportsPresentationEntry(action.EffectivePresentation, action.Entry))
+            {
+                projected.Add(action with { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null });
+                continue;
+            }
+            var surface = _resourceHost.OpenSurface(
+                snapshot.ProjectKey,
+                snapshot.PluginId,
+                action.Entry,
+                action.ActionId,
+                action.EffectivePresentation);
+            if (context is not null)
+                _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
+                    snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, action.ActionId,
+                    action.Risk, action.Entry, action.EffectivePresentation, snapshot.InstallationId);
+            projected.Add(action with
+            {
+                SurfaceSrc = surface.DocumentUri.ToString(),
+                SurfaceToken = surface.SurfaceToken,
+                SurfaceTitle = LocalizeTitle(action.DisplayName, action.ActionId),
+            });
+        }
+        return projected;
+    }
+
+    private static string LocalizeTitle(IReadOnlyDictionary<string, string> displayName, string fallback)
+    {
+        foreach (string locale in new[] { "zh-CN", "en-US" })
+        {
+            if (displayName.TryGetValue(locale, out string? value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+        return displayName.Values.FirstOrDefault() ?? fallback;
+    }
+
+    private JsonElement ProjectCustomViews(PluginRuntimeSnapshot snapshot, bool registered, PluginProjectContext? context)
     {
         JsonObject? ui;
         try
@@ -975,7 +1247,9 @@ public sealed class PluginRequestDispatcher : IDisposable
             view.Remove("surfaceToken");
             if (!registered) continue;
             string? entry = ReadNodeString(view["entry"]);
-            if (string.IsNullOrWhiteSpace(entry))
+            if (string.IsNullOrWhiteSpace(entry)
+                || new[] { "entry", "html", "script", "style" }.Any(key =>
+                    ReadNodeString(view[key]) is string resource && PluginResourceHost.IsHostReservedPath(resource)))
             {
                 continue;
             }
@@ -1005,10 +1279,10 @@ public sealed class PluginRequestDispatcher : IDisposable
                 snapshot.ProjectKey,
                 snapshot.PluginId,
                 entry, actionId);
-            if (_projectContext() is { } context)
+            if (context is not null)
                 _surfaces.BindIdentity(surface.SurfaceToken, context, snapshot.Revision,
                     snapshot.Manifest.Compatibility.TryGetProperty("pluginApi", out var version) ? version.GetString() ?? "" : "", snapshot.Version, actionId,
-                    snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry);
+                    snapshot.Manifest.Actions.FirstOrDefault(action => action.ActionId == actionId)?.Risk ?? "", entry, installationId: snapshot.InstallationId);
             view["actionId"] = actionId;
             view["src"] = surface.DocumentUri.ToString();
             view["surfaceToken"] = surface.SurfaceToken;
@@ -1040,7 +1314,33 @@ public sealed class PluginRequestDispatcher : IDisposable
             || envelope.Revision != snapshot.Revision || envelope.Revision < 1
             || _projectContext()?.ProjectKey != envelope.ProjectKey)
             throw new JsonException("Plugin catalog event identity is invalid.");
-        return envelope with { Snapshot = JsonSerializer.SerializeToElement(ProjectSnapshot(snapshot), JsonOptions) };
+        AdvanceCatalogProjection();
+        snapshot = SanitizeSnapshot(snapshot);
+        return envelope with { Snapshot = JsonSerializer.SerializeToElement(snapshot, JsonOptions) };
+    }
+
+    private static PluginRuntimeSnapshot SanitizeSnapshot(PluginRuntimeSnapshot snapshot)
+    {
+        // Recoverable SSE carries history. It invalidates the renderer catalog;
+        // only an authority list/lifecycle result may bind or retire surfaces.
+        var ui = JsonNode.Parse(snapshot.Manifest.Ui.GetRawText())!.AsObject();
+        if (ui["customViews"] is JsonArray views)
+            foreach (JsonObject view in views.OfType<JsonObject>())
+            {
+                view.Remove("src");
+                view.Remove("surfaceToken");
+            }
+        snapshot = snapshot with
+        {
+            SourceLocation = HostManagedSource,
+            Manifest = snapshot.Manifest with
+            {
+                Ui = JsonSerializer.SerializeToElement(ui, JsonOptions),
+                Actions = snapshot.Manifest.Actions.Select(action => action with
+                    { SurfaceSrc = null, SurfaceToken = null, SurfaceTitle = null }).ToArray(),
+            },
+        };
+        return snapshot;
     }
 
     private void OnTaskChanged(IPluginRpcGateway gateway, PluginEventEnvelope envelope)
@@ -1064,11 +1364,17 @@ public sealed class PluginRequestDispatcher : IDisposable
         IPluginRpcGateway gateway,
         PluginEventEnvelope envelope)
     {
-        if (!_taskRegistry.RecordInteraction(gateway, envelope))
+        if (!_taskRegistry.RecordInteraction(gateway, envelope, out var rejection))
         {
             SafeDiagnosticTrace(
                 "Plugin interaction was rejected; " +
                 $"runId={envelope.EntityId}");
+            return;
+        }
+        if (rejection is not null)
+        {
+            PublishLegacyRejection(rejection);
+            _ = RejectLegacyConfirmationAsync(rejection);
             return;
         }
         _reply.PostNotification("plugin.interaction.requested", envelope);

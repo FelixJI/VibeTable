@@ -16,6 +16,7 @@ import type {
 } from "@/contracts";
 import { useHostBridge } from "./bridgeContext";
 import { BridgeRequestRetiredError } from "@/bridge/hostBridge";
+import { useUiStore } from "@/stores/uiStore";
 import { usePluginStore } from "@/stores/pluginStore";
 import {
   PluginInstallPlanLease,
@@ -42,7 +43,7 @@ export interface PluginService {
   list(): Promise<readonly PluginSnapshot[]>;
   listAudit(pluginId: string): Promise<readonly PluginAuditEvent[]>;
   listPendingCleanup(): Promise<readonly PluginAuditEvent[]>;
-  retryCleanup(pluginId: string): Promise<PluginUninstallResult>;
+  retryCleanup(event: PluginAuditEvent): Promise<PluginUninstallResult>;
   inspectInstall(sourceLocation: string): Promise<PluginInstallPlan>;
   inspectGitHubInstall(repository: string): Promise<PluginInstallPlan>;
   commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot>;
@@ -56,6 +57,7 @@ export interface PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel?: boolean,
+    isCurrentRequest?: () => boolean,
   ): Promise<PluginActionAvailability>;
   startAction(pluginId: string, actionId: string, input: Readonly<Record<string, unknown>>, context: PluginCommandContext): Promise<PluginTaskViewSnapshot>;
   resolveInteraction(task: PluginTaskViewSnapshot, decision: "approved" | "rejected"): Promise<PluginTaskViewSnapshot>;
@@ -93,6 +95,7 @@ export function usePluginService(): PluginService {
   const store = usePluginStore();
   const installPlanLease = installPlanLeaseFor(store);
   let initialized = false;
+  let lifecycleRevision = 0;
   let unsubscribe: Array<() => void> = [];
   const taskPollers = new Map<string, { cancelled: boolean }>();
 
@@ -104,7 +107,8 @@ export function usePluginService(): PluginService {
     } else if (envelope.eventType === "plugin.interaction.requested" && isInteractionSnapshot(snapshot)) {
       store.applyInteraction(snapshot, envelope.revision);
     } else if (envelope.eventType === "plugin.catalog.changed" && isPluginSnapshot(snapshot)) {
-      store.applyPlugin(snapshot, envelope.revision);
+      // SSE can replay an old installation; only a current authority read may replace it.
+      store.refreshCatalog(list);
     }
   }
 
@@ -122,6 +126,7 @@ export function usePluginService(): PluginService {
   }
 
   function dispose(): void {
+    lifecycleRevision++;
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
     for (const poller of taskPollers.values()) poller.cancelled = true;
@@ -134,11 +139,11 @@ export function usePluginService(): PluginService {
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly errorPolicy?: RequestErrorPolicy } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean } = {},
   ): Promise<T> {
     const context = ensureProjectReady();
     const isCurrentContext = () => store.projectKey === context.projectKey
-      && store.projectContextGeneration === context.generation;
+      && store.projectContextGeneration === context.generation && (options.isCurrent?.() ?? true);
     const errorPolicy = options.errorPolicy ?? "foreground";
     // Background refreshes must not toggle buttons or release a foreground operation.
     if (errorPolicy === "foreground") store.startBusy();
@@ -152,6 +157,10 @@ export function usePluginService(): PluginService {
       // local retirement of a draining workspace read is not a current user
       // failure either. Everything else keeps its original visibility.
       if (isCurrentContext() && !(error instanceof BridgeRequestRetiredError)) {
+        if (options.isErrorCurrent && !options.isErrorCurrent()) {
+          if (errorPolicy === "foreground") store.finishBusy();
+          throw error;
+        }
         if (errorPolicy === "foreground") {
           store.fail(error);
         } else {
@@ -162,17 +171,36 @@ export function usePluginService(): PluginService {
     }
   }
 
-  async function list(): Promise<readonly PluginSnapshot[]> {
+  async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
+    const sequence = store.beginCatalogRead();
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
-      { errorPolicy: "background" },
+      { errorPolicy: "background", isCurrent: () => store.isCurrentCatalogRead(sequence), isErrorCurrent },
     );
-    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation) return snapshots;
+    if (store.projectKey !== projectKey || store.projectContextGeneration !== generation
+      || !store.isCurrentCatalogRead(sequence)) return snapshots;
     store.replaceCatalog(projectKey, snapshots);
     return snapshots;
+  }
+
+  async function mutateCatalog<T>(request: () => Promise<T>, apply: (result: T) => void): Promise<T> {
+    const projectKey = store.projectKey;
+    const generation = store.projectContextGeneration;
+    const sequence = store.beginCatalogRead();
+    const currentContext = () => store.projectKey === projectKey && store.projectContextGeneration === generation;
+    try {
+      const result = await request();
+      if (currentContext() && store.isCurrentCatalogRead(sequence)) {
+        apply(result);
+      }
+      return result;
+    } finally {
+      // A consumed notification may have settled before this write; read authority in either order.
+      if (currentContext()) store.refreshCatalog(list);
+    }
   }
 
   async function inspectInstall(sourceLocation: string): Promise<PluginInstallPlan> {
@@ -250,12 +278,14 @@ export function usePluginService(): PluginService {
 
   async function commitInstall(plan: PluginInstallPlan): Promise<PluginSnapshot> {
     const consumed = consumeInstallPlan(plan);
-    const snapshot = await call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
+    if (consumed.targetInstallationId != null || consumed.targetRevision != null) {
+      await releaseInstallPlan(consumed.planId);
+      const error = new PluginInstallPlanStaleError(); store.fail(error); throw error;
+    }
+    return mutateCatalog(() => call<"plugin.install.commit", PluginSnapshot>("plugin.install.commit", {
       planId: consumed.planId,
       projectRevision: store.projectRevision,
-    });
-    store.applyPlugin(snapshot);
-    return snapshot;
+    }), snapshot => store.applyPlugin(snapshot));
   }
 
   async function releaseInstallPlan(planId: string): Promise<void> {
@@ -287,9 +317,7 @@ export function usePluginService(): PluginService {
     | "plugin.lifecycle.upgrade"
     | "plugin.lifecycle.rollback"
   >(type: K, payload: WebPayloadMap[K]): Promise<PluginSnapshot> {
-    const snapshot = await call<K, PluginSnapshot>(type, payload);
-    store.applyPlugin(snapshot);
-    return snapshot;
+    return mutateCatalog(() => call<K, PluginSnapshot>(type, payload), snapshot => store.applyPlugin(snapshot));
   }
 
   async function upgrade(
@@ -297,7 +325,10 @@ export function usePluginService(): PluginService {
     plan: PluginInstallPlan,
   ): Promise<PluginSnapshot> {
     const consumed = consumeInstallPlan(plan);
-    if (consumed.manifest.pluginId !== plugin.pluginId) {
+    const current = store.plugins.find(item => item.pluginId === plugin.pluginId);
+    if (consumed.manifest.pluginId !== plugin.pluginId || !consumed.targetInstallationId
+      || consumed.targetInstallationId !== plugin.installationId || consumed.targetRevision !== plugin.revision
+      || current?.installationId !== consumed.targetInstallationId || current.revision !== consumed.targetRevision) {
       await releaseInstallPlan(consumed.planId);
       const error = new PluginInstallPlanStaleError();
       store.fail(error);
@@ -369,19 +400,41 @@ export function usePluginService(): PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel = true,
+    isCurrentRequest?: () => boolean,
   ): Promise<PluginActionAvailability> {
-    if (store.plugins.find(item => item.pluginId === pluginId)?.manifest.compatibility.pluginApi === "3.x")
-      await list();
-    const availability = await call<"plugin.action.describe", PluginActionAvailability>(
-      "plugin.action.describe",
-      { projectKey: store.projectKey, pluginId, actionId, context },
-    );
-    if (!availability.available) throw new Error(availability.reasons.join("；") || "当前动作不可用");
-    const plugin = store.plugins.find((item) => item.pluginId === pluginId);
-    const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
-    if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
-    store.beginAction(projectAction(plugin, action, context.locale), context, openPanel);
-    return availability;
+    const ui = useUiStore();
+    const requestLifecycle = lifecycleRevision;
+    const navigation = openPanel ? ui.beginNavigation() : null;
+    const projectKey = store.projectKey;
+    const generation = store.projectContextGeneration;
+    const original = store.plugins.find(plugin => plugin.pluginId === pluginId);
+    const isCurrent = () => lifecycleRevision === requestLifecycle && store.projectKey === projectKey && store.projectContextGeneration === generation
+      && (navigation === null || ui.navigationRevision === navigation) && (isCurrentRequest?.() ?? true)
+      && (!original || store.plugins.some(plugin => plugin.pluginId === pluginId
+        && plugin.installationId === original.installationId && plugin.revision === original.revision));
+    const retired = { available: false, reasons: [] };
+    try {
+      if (original?.manifest.compatibility.pluginApi === "3.x") await list(isCurrent);
+      if (!isCurrent()) return retired;
+      const availability = await call<"plugin.action.describe", PluginActionAvailability>(
+        "plugin.action.describe", { projectKey: store.projectKey, pluginId, actionId, context },
+        { isErrorCurrent: isCurrent },
+      );
+      if (!isCurrent()) return retired;
+      if (!availability.available) throw new Error(availability.reasons.join("；") || "当前动作不可用");
+      const plugin = store.plugins.find((item) => item.pluginId === pluginId);
+      const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
+      if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
+      if (action.invocation !== "manual") throw new Error("该动作不支持手动启动");
+      const description = projectAction(plugin, action, context.locale);
+      const application = description.presentation === "application";
+      store.beginAction(description, context, openPanel && !application);
+      if (application && openPanel) ui.openPluginApp(pluginId, actionId);
+      return availability;
+    } catch (error) {
+      if (!isCurrent()) return retired;
+      throw error;
+    }
   }
 
   return {
@@ -400,11 +453,15 @@ export function usePluginService(): PluginService {
       { projectKey: store.projectKey },
       { errorPolicy: "background" },
     ),
-    retryCleanup: (pluginId) => call("plugin.lifecycle.uninstall", {
-      projectKey: store.projectKey,
-      pluginId,
-      cleanupPrivateSettings: false,
-    }),
+    retryCleanup: async (event) => {
+      const installationId = event.details.installationId;
+      const expectedRevision = event.details.expectedRevision;
+      if (typeof installationId !== "string" || !installationId || typeof expectedRevision !== "number"
+        || !Number.isInteger(expectedRevision) || expectedRevision < 1)
+        throw new Error("清理证据缺少原安装身份，不能重试卸载");
+      return call("plugin.lifecycle.uninstall", { projectKey: event.projectKey, pluginId: event.pluginId,
+        installationId, expectedRevision, cleanupPrivateSettings: false });
+    },
     inspectInstall,
     inspectGitHubInstall,
     commitInstall,
@@ -413,6 +470,8 @@ export function usePluginService(): PluginService {
       projectKey: plugin.projectKey,
       pluginId: plugin.pluginId,
       enabled,
+      installationId: plugin.installationId ?? "",
+      expectedRevision: plugin.revision,
     }),
     upgrade,
     rollback: (plugin) => applyPluginRequest("plugin.lifecycle.rollback", {
@@ -420,15 +479,19 @@ export function usePluginService(): PluginService {
       pluginId: plugin.pluginId,
     }),
     uninstall: async (plugin, cleanupPrivateSettings) => {
-      const result = await call<"plugin.lifecycle.uninstall", PluginUninstallResult>(
+      const installationId = plugin.installationId;
+      if (!installationId) throw new Error("安装身份缺失，不能卸载");
+      return mutateCatalog(() => call<"plugin.lifecycle.uninstall", PluginUninstallResult>(
         "plugin.lifecycle.uninstall",
-        { projectKey: plugin.projectKey, pluginId: plugin.pluginId, cleanupPrivateSettings },
-      );
-      if (result.uninstalled) store.removePlugin(plugin.pluginId);
-      return result;
+        { projectKey: plugin.projectKey, pluginId: plugin.pluginId, installationId, expectedRevision: plugin.revision, cleanupPrivateSettings },
+      ), result => { if (result.uninstalled) store.removePlugin(plugin.pluginId); });
     },
     describeAction,
     startAction: async (pluginId, actionId, input, context) => {
+      const action = store.plugins.find(plugin => plugin.pluginId === pluginId)
+        ?.manifest.actions.find(item => item.actionId === actionId);
+      if (action?.presentation === "application" || action?.presentation === "headless")
+        throw new Error("应用与无界面动作通过受限页面API执行，不启动Worker");
       const task = await call<"plugin.action.start", PluginTaskSnapshot>("plugin.action.start", {
         projectKey: store.projectKey,
         pluginId,
@@ -477,11 +540,33 @@ function projectAction(
 ): WebPluginActionDescription {
   const schema = action.inputSchema ? plugin.schemas[action.inputSchema] : undefined;
   const uiSchema = action.formSchema ? plugin.schemas[action.formSchema] : undefined;
+  const title = localize(action.displayName, locale, action.actionId);
+  if (action.presentation === "application" || action.presentation === "headless") {
+    // Application/headless surfaces are host-projected onto the action
+    // itself; the legacy ui.customViews channel is not consulted.
+    return {
+      pluginId: plugin.pluginId,
+      actionId: action.actionId,
+      title,
+      description: localize(action.description, locale, ""),
+      risk: action.risk,
+      inputSchema: { type: "object", properties: {} },
+      uiSchema: undefined,
+      presentation: action.presentation,
+      surface: action.surfaceSrc && action.surfaceToken
+        ? {
+          src: action.surfaceSrc,
+          surfaceToken: action.surfaceToken,
+          title: action.surfaceTitle ?? title,
+        }
+        : null,
+    };
+  }
   const customView = readCustomView(plugin.manifest.ui, action.actionId);
   return {
     pluginId: plugin.pluginId,
     actionId: action.actionId,
-    title: localize(action.displayName, locale, action.actionId),
+    title,
     description: localize(action.description, locale, ""),
     risk: action.risk,
     inputSchema: schema ?? { type: "object", properties: {} },

@@ -23,6 +23,8 @@ const pluginDataPath = "/api/vibetable/v2/plugins/data"
 const pluginDataContract = "vibetable.plugin-data.v2"
 
 type pluginDataRequest struct {
+	InstallationID       string                            `json:"installationId"`
+	PackageHash          string                            `json:"packageHash"`
 	Operation            string                            `json:"operation"`
 	ProjectKey           string                            `json:"projectKey"`
 	PluginID             string                            `json:"pluginId"`
@@ -51,9 +53,11 @@ type pluginComputedRevision struct {
 	Watermark  string `json:"watermark"`
 }
 type pluginInstallation struct {
-	Revision int64  `json:"revision"`
-	Status   string `json:"status"`
-	Manifest struct {
+	InstallationID string `json:"installationId"`
+	PackageHash    string `json:"packageHash"`
+	Revision       int64  `json:"revision"`
+	Status         string `json:"status"`
+	Manifest       struct {
 		Compatibility struct {
 			PluginAPI string `json:"pluginApi"`
 		} `json:"compatibility"`
@@ -126,7 +130,7 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 		if err != nil || len(raw) == 0 || json.Unmarshal(raw, &installed) != nil || installed.Status != "enabled" {
 			return pluginDataError("plugin_read_denied")
 		}
-		if installed.Revision != input.InstallationRevision {
+		if input.InstallationID == "" || input.PackageHash == "" || installed.InstallationID != input.InstallationID || strings.TrimPrefix(installed.PackageHash, "sha256:") != strings.TrimPrefix(input.PackageHash, "sha256:") || installed.Revision != input.InstallationRevision {
 			return pluginDataError("plugin_cursor_stale")
 		}
 		if installed.Manifest.Compatibility.PluginAPI != "2.x" {

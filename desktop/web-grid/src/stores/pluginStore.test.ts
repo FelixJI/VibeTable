@@ -4,6 +4,7 @@ import type { PluginInteractionSnapshot, PluginSnapshot, PluginTaskSnapshot } fr
 import { usePluginStore } from "./pluginStore";
 
 const plugin = (revision: number, status: PluginSnapshot["status"] = "enabled"): PluginSnapshot => ({
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -61,6 +62,7 @@ describe("pluginStore", () => {
 
   it("drops stale canonical plugin snapshots by revision", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     store.replaceCatalog("local:default", [plugin(8, "enabled")], 8);
     store.applyPlugin(plugin(9, "disabled"), 9);
     store.applyPlugin(plugin(8, "enabled"), 8);
@@ -71,6 +73,7 @@ describe("pluginStore", () => {
 
   it("keeps task truth after an action panel closes", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-1",
       runId: "run-1",
@@ -95,6 +98,7 @@ describe("pluginStore", () => {
 
   it("retains an embedded action description without opening the global panel", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const description = {
       pluginId: "com.acme.clean",
       actionId: "normalize",
@@ -123,6 +127,7 @@ describe("pluginStore", () => {
 
   it("replays an interaction notification that arrives before the task snapshot", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const interaction: PluginInteractionSnapshot = {
       runId: "run-early",
       projectKey: "local:default",
@@ -167,6 +172,7 @@ describe("pluginStore", () => {
 
   it("keeps task and interaction revisions independent and clears resolved confirmation", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-independent",
       runId: "run-independent",
@@ -212,6 +218,7 @@ describe("pluginStore", () => {
 
   it("keeps a terminal task closed when older interaction or task events arrive", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-sticky", runId: "run-sticky", pluginId: "com.acme.clean",
       pluginVersion: "1.2.0", actionId: "normalize", projectKey: "local:default",
@@ -243,6 +250,7 @@ describe("pluginStore", () => {
   });
   it("clears confirmation when a task reaches a terminal state", () => {
     const store = usePluginStore();
+    store.setProjectContext("local:default", "r1");
     const running: PluginTaskSnapshot = {
       taskId: "task-terminal", runId: "run-terminal", pluginId: "com.acme.clean",
       pluginVersion: "1.2.0", actionId: "normalize", projectKey: "local:default",
@@ -264,4 +272,80 @@ describe("pluginStore", () => {
 
     expect(store.pendingConfirmation).toBeNull();
   });
+  it("retires scoped task lookups on same-workspace session rotation and checks the installation", () => {
+    const store = usePluginStore(); store.setProjectContext("local:default", "r1");
+    const installed = plugin(1);
+    store.applyPlugin({ ...installed, manifest: { ...installed.manifest, actions: [{ actionId: "normalize",
+      displayName: {}, description: {}, mode: "local", risk: "write", invocation: "manual", placements: [],
+      requires: {}, workerEntry: "dist/worker.js", formSchema: null, inputSchema: null, outputSchema: null }] } });
+    const own: PluginTaskSnapshot = { taskId: "own", runId: "run", pluginId: installed.pluginId,
+      pluginVersion: installed.version, installationRevision: installed.revision, installationId: installed.installationId, actionId: "normalize", projectKey: "local:default", collection: "orders",
+      targetCount: 1, risk: "write", state: "running", cancelRequested: false, result: null, error: null };
+    store.applyTask(own);
+    store.applyTask({ ...own, taskId: "old-version", pluginVersion: "0.1.0" });
+    expect(store.taskForAction(installed.pluginId, "normalize")?.taskId).toBe("own");
+    expect(store.taskForId("old-version")).toBeNull();
+    store.applyPlugin({ ...store.plugins[0]!, revision: 2, packageHash: "sha256:replacement" });
+    expect(store.taskForId("own")?.state).toBe("running");
+    store.applyPlugin({ ...store.plugins[0]!, status: "disabled", revision: 3 });
+    store.applyTask({ ...own, state: "aborted", error: { contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "Check receipt", recoverability: "none", pluginId: own.pluginId, actionId: own.actionId, runId: own.runId, details: {}, causeId: null } }, 3);
+    expect(store.taskForId("own")?.error?.code).toBe("plugin_commit_unknown");
+    store.applyTask({ ...own, state: "succeeded" }, 4);
+    expect(store.taskForId("own")?.state).toBe("aborted");
+    store.applyPlugin({ ...store.plugins[0]!, status: "enabled", revision: 4 });
+    // The first report of an old task can arrive after a same-version replacement.
+    store.applyTask({ ...own, taskId: "late-first", runId: "late-first-run", installationRevision: 1 });
+    expect(store.taskForId("late-first")).toBeNull();
+    store.applyTask({ ...own, taskId: "unbound", runId: "unbound-run", installationRevision: null });
+    expect(store.taskForId("unbound")).toBeNull();
+    store.applyTask({ ...own, taskId: "fresh", runId: "fresh-run", installationRevision: 4 });
+    expect(store.taskForAction(installed.pluginId, "normalize")?.taskId).toBe("fresh");
+    store.setProjectContext("local:default", "r1");
+    expect(store.taskForId("fresh")).toBeNull();
+    expect(store.taskForAction(installed.pluginId, "normalize")).toBeNull();
+  });
+
+  it("does not attach known or first-seen old tasks to a same-version same-package reinstall", () => {
+    const store = usePluginStore(); store.setProjectContext("local:default", "r1");
+    const installed = { ...plugin(1), installationId: "old-record", manifest: { ...plugin(1).manifest,
+      actions: [{ actionId: "open", displayName: {}, description: {}, mode: "local" as const, risk: "write" as const,
+        invocation: "manual" as const, placements: [], requires: {}, workerEntry: "worker.js", formSchema: null, inputSchema: null, outputSchema: null }] } };
+    const task: PluginTaskSnapshot = { taskId: "old-known", runId: "old-run", pluginId: installed.pluginId,
+      pluginVersion: installed.version, installationId: "old-record", installationRevision: 1, actionId: "open",
+      projectKey: "local:default", collection: null, targetCount: 1, risk: "write", state: "succeeded",
+      cancelRequested: false, result: null, error: null };
+    store.applyPlugin(installed); store.applyTask(task);
+    store.removePlugin(installed.pluginId);
+    store.applyPlugin({ ...installed, installationId: "new-record" });
+    expect(store.taskForId(task.taskId)).toBeNull();
+    store.applyTask({ ...task, taskId: "old-first", runId: "old-first-run", state: "running" });
+    expect(store.taskForAction(installed.pluginId, "open")).toBeNull();
+    store.applyTask({ ...task, taskId: "unidentified", runId: "unidentified-run", installationId: null });
+    expect(store.taskForId("unidentified")).toBeNull();
+    store.applyTask({ ...task, taskId: "new-task", runId: "new-run", installationId: "new-record" });
+    expect(store.taskForAction(installed.pluginId, "open")?.taskId).toBe("new-task");
+  });
+
+  it.each(["local:default", "local:other"])("keeps closed native receipts independent of installation replacement and clears them on %s session reset", (nextProject) => {
+    const store = usePluginStore(); store.setProjectContext("local:default", "r1");
+    const installed = plugin(2); store.applyPlugin(installed);
+    const late: PluginTaskSnapshot = { taskId: "late-native", runId: "late-run", projectKey: installed.projectKey,
+      pluginId: installed.pluginId, actionId: "old-action", pluginVersion: installed.version,
+      installationId: "retired-record", installationRevision: 1, surfaceToken: "retired-token",
+      collection: null, targetCount: 1, risk: "write", state: "aborted", cancelRequested: false,
+      result: null, error: { contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "check original receipt",
+        recoverability: "none", pluginId: null, actionId: null, runId: null, details: {}, causeId: null } };
+    store.applyTask(late);
+    store.applyTask({ ...late, taskId: "foreign-scope", projectKey: "local:foreign" });
+    store.applyTask({ ...late, taskId: "no-source", surfaceToken: null });
+    store.applyTask({ ...late, taskId: "no-installation", installationId: null });
+    expect(store.nativeTaskReceipts.map(task => task.taskId)).toEqual(["late-native"]);
+    expect(store.taskForId(late.taskId)).toBeNull();
+    expect(store.tasksForAction(installed.pluginId, late.actionId, "new-token")).toEqual([]);
+    store.applyTask({ ...late, state: "succeeded", error: null }, 5);
+    expect(store.nativeTaskReceipts[0]?.error?.code).toBe("plugin_commit_unknown");
+    store.setProjectContext(nextProject, "new-session");
+    expect(store.nativeTaskReceipts).toEqual([]);
+  });
+
 });

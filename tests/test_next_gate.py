@@ -296,8 +296,10 @@ def test_product_e2e_deepest_plugin_cache_path_stays_below_windows_max_path() ->
 def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
     scenarios = next_gate.handoff_gate.load_dependencies()
     assert scenarios["requiredGateStages"].count("product-e2e-data-io") == 1
+    assert scenarios["requiredGateStages"].count("product-e2e-file-io") == 1
     commands = [
-        next_gate.stage_command(stage)[0] for stage in ("product-e2e", "product-e2e-data-io")
+        next_gate.stage_command(stage)[0]
+        for stage in ("product-e2e", "product-e2e-data-io", "product-e2e-file-io")
     ]
     selected = [
         [command[index + 1] for index, part in enumerate(command) if part == "--scenario"]
@@ -307,14 +309,22 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
 
     assert all(len(ids) == len(set(ids)) for ids in selected)
     assert set(selected[0]).isdisjoint(selected[1])
-    assert set(selected[0]) | set(selected[1]) == manifest_ids
+    assert set(selected[0]).isdisjoint(selected[2])
+    assert set(selected[1]).isdisjoint(selected[2])
+    assert set(selected[0]) | set(selected[1]) | set(selected[2]) == manifest_ids
     assert set(selected[1]) == {
+        "02-all-field-schema",
+        "05-formula-lifecycle",
+        "06-relation-fanout",
+        "26-lookup-definition-read",
         "23-directory-replica-recovery",
         "24-directory-replica-conflict",
         "34-relation-lookup-data-io",
         "35-data-io-interoperability",
         "37-collection-formula-journey",
         "38-calculation-chain-journey",
+    }
+    assert set(selected[2]) == {
         "39-file-workflow-combination",
         "40-file-history-capacity",
         "41-file-document-operations",
@@ -322,8 +332,15 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "43-file-revision-leaves",
         "44-file-restore-crash",
         "45-common-field-display",
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
     }
+    evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
+    assert [root.name for root in evidence_roots] == ["p", "d", "f"]
     assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-data-io"] == 30 * 60
+    assert next_gate.STAGE_TIMEOUT_SECONDS["product-e2e-file-io"] == 30 * 60
 
 
 def test_workbench_qualification_stage_freezes_representative_scale_and_report() -> None:
@@ -2019,7 +2036,11 @@ def _prepare_complete_product_reports(
     qa_temp = tmp_path / "qa-full"
     monkeypatch.setattr(next_gate, "QA_RUN_TEMP_DIR", qa_temp)
     selected: dict[str, list[str]] = {}
-    for stage, directory in (("product-e2e", "p"), ("product-e2e-data-io", "d")):
+    for stage, directory in (
+        ("product-e2e", "p"),
+        ("product-e2e-data-io", "d"),
+        ("product-e2e-file-io", "f"),
+    ):
         selected[stage] = list(next_gate.product_e2e_partition(next_gate.load_scenarios(), stage))
         run_root = qa_temp / directory / "20260817T010203Z"
         run_root.mkdir(parents=True)
@@ -2035,6 +2056,20 @@ def _prepare_complete_product_reports(
             ),
             encoding="utf-8",
         )
+        if "48-plugin-applications" in selected[stage]:
+            for phase, filenames in {
+                "seed": ("48-native-application.png", "48-plugin-applications-trace.zip"),
+                "resume": (
+                    "48-native-application.png",
+                    "48-native-approved.png",
+                    "48-native-rejected.png",
+                    "48-plugin-applications-trace.zip",
+                ),
+            }.items():
+                phase_root = run_root / "48-plugin-applications" / phase / "20260817T010204Z"
+                phase_root.mkdir(parents=True)
+                for filename in filenames:
+                    (phase_root / filename).write_bytes(b"synthetic unit-test image/trace payload")
         if "39-file-workflow-combination" in selected[stage]:
             for phase, filenames in S39_SCREENSHOTS.items():
                 phase_root = run_root / "39-file-workflow-combination" / phase / "20260817T010204Z"
@@ -2070,6 +2105,9 @@ def _prepare_complete_product_reports(
         ("product-e2e-data-io", "missing"),
         ("product-e2e-data-io", "duplicate"),
         ("product-e2e-data-io", "extra"),
+        ("product-e2e-file-io", "missing"),
+        ("product-e2e-file-io", "duplicate"),
+        ("product-e2e-file-io", "extra"),
     ],
 )
 def test_full_ci_rejects_incomplete_actual_product_reports(
@@ -2086,7 +2124,7 @@ def test_full_ci_rejects_incomplete_actual_product_reports(
         ids.append(ids[-1])
     else:
         ids.append("36-extra")
-    directory = "p" if stage == "product-e2e" else "d"
+    directory = {"product-e2e": "p", "product-e2e-data-io": "d", "product-e2e-file-io": "f"}[stage]
     (
         next_gate.QA_RUN_TEMP_DIR / directory / "20260817T010203Z" / "product-e2e-report.json"
     ).write_text(
@@ -2297,6 +2335,7 @@ def _prepare_product_lane(
     source_directory = {
         "product-e2e": "p",
         "product-e2e-data-io": "d",
+        "product-e2e-file-io": "f",
         "fault-injection": "fault-injection",
     }[stage]
     (qa_temp / source_directory).mkdir(parents=True)
@@ -2339,6 +2378,7 @@ def _prepare_product_lane(
     [
         ("product-e2e", "resilience", "p"),
         ("product-e2e-data-io", "data-io", "d"),
+        ("product-e2e-file-io", "file-io", "f"),
         ("fault-injection", "resilience", "fault-injection"),
     ],
 )
@@ -2403,6 +2443,7 @@ def test_failed_product_lane_persists_product_diagnostics(
     [
         ("product-e2e", "resilience", "p"),
         ("product-e2e-data-io", "data-io", "d"),
+        ("product-e2e-file-io", "file-io", "f"),
     ],
 )
 def test_successful_product_lane_persists_report_before_qa_cleanup(
@@ -2826,9 +2867,9 @@ def test_release_fault_gate_is_strict_and_precedes_real_product_e2e() -> None:
         "--evidence-root",
         str(next_gate.QA_RUN_TEMP_DIR / "p"),
     ]
-    assert product_command.count("--scenario") == (
-        len(next_gate.load_scenarios()) - len(release_eligibility.DATA_IO_SCENARIO_IDS)
-    )
+    assert product_command.count("--scenario") == len(next_gate.load_scenarios()) - len(
+        release_eligibility.DATA_IO_SCENARIO_IDS
+    ) - len(release_eligibility.FILE_IO_SCENARIO_IDS)
     assert Path(product_cwd) == next_gate.REPO_ROOT
 
 
@@ -2877,6 +2918,23 @@ def test_capacity_evidence_retains_measurements_and_producer_logs(
 
 
 SCENARIO_SCREENSHOTS = {
+    "49-plugin-application-security": (
+        "48-native-dark.png",
+        "48-native-scaled.png",
+        "48-native-contrast.png",
+        "48-native-contrast-restored.png",
+        "48-native-loop.png",
+        "48-native-recovered.png",
+        "48-native-crashed.png",
+        "49-security-observations.json",
+        "49-plugin-application-security-trace.zip",
+    ),
+    "50-plugin-headless-budget": ("48-native-recovered.png", "50-plugin-headless-budget-trace.zip"),
+    "51-plugin-application-commit-unknown": (
+        "48-native-cancelled.png",
+        "48-native-recovered.png",
+        "51-plugin-application-commit-unknown-trace.zip",
+    ),
     "02-all-field-schema": (
         "02-number-display-fixed.png",
         "02-number-display-currency.png",
@@ -3362,3 +3420,44 @@ def test_go_gate_uses_the_same_pinned_toolchain_as_package_build(
         executable.touch()
     monkeypatch.setattr(next_gate, "REPO_ROOT", tmp_path)
     assert next_gate._resolve("go") == str(pinned)
+
+
+def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(tmp_path):
+    run = tmp_path / "source" / "20261015T000000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "scenarios": [
+                    {"scenario": "48-plugin-applications", "status": "failed"},
+                    {"scenario": "49-plugin-application-security", "status": "failed"},
+                ],
+            }
+        )
+    )
+    expected = []
+    phase = "48-plugin-applications/seed/20261015T000001Z"
+    for name in (*next_gate.PRODUCT_E2E_EVIDENCE_FILES, "48-plugin-applications-result.json"):
+        expected.append(f"{phase}/{name}")
+    expected.append("48-plugin-applications/persistent/host/vibetable-trace.log")
+    for name in (
+        "plugin-contrast-original.json",
+        "plugin-contrast-restoration.json",
+        "plugin-contrast-cleanup.json",
+        "plugin-native-result.json",
+        "plugin-native-observation.json",
+    ):
+        expected.append(f"49-plugin-application-security/{name}")
+    for relative in expected:
+        target = run / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"raw:{relative}")
+    for relative in (f"{phase}/workspace.db", "49-plugin-application-security/unrelated.json"):
+        (run / relative).write_text("private")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    for relative in expected:
+        assert (retained / relative).read_text() == f"raw:{relative}"
+    assert not (retained / phase / "workspace.db").exists()
+    assert not (retained / "49-plugin-application-security/unrelated.json").exists()

@@ -124,7 +124,7 @@ func TestPluginDataRealAuthorityPaginationAndGrants(t *testing.T) {
 	if _, err = store.SaveInstallation(ctx, raw, nil); err != nil {
 		t.Fatal(err)
 	}
-	input := pluginDataRequest{ProjectKey: store.ProjectKey(), PluginID: snapshot["pluginId"].(string), InstallationRevision: 1, ActiveCollection: table.TableID}
+	input := pluginDataRequest{InstallationID: installationRecordID(t, store, snapshot["pluginId"].(string)), PackageHash: snapshot["packageHash"].(string), ProjectKey: store.ProjectKey(), PluginID: snapshot["pluginId"].(string), InstallationRevision: 1, ActiveCollection: table.TableID}
 	call := func(operation string, request any, cursor string, deps map[string]pluginComputedRevision) (map[string]any, error) {
 		input.Operation = operation
 		input.Request, _ = json.Marshal(request)
@@ -509,7 +509,7 @@ func TestPluginDataComputedFreshnessAndDependencyCursor(t *testing.T) {
 	size := 1
 	request := pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: root.TableID, Fields: []string{"id", formula.Identity.FieldID}, PageSize: &size}
 	payload, _ := json.Marshal(request)
-	input := pluginDataRequest{Operation: "query", ProjectKey: store.ProjectKey(), PluginID: snapshot["pluginId"].(string), InstallationRevision: 1, Request: payload}
+	input := pluginDataRequest{InstallationID: installationRecordID(t, store, snapshot["pluginId"].(string)), PackageHash: snapshot["packageHash"].(string), Operation: "query", ProjectKey: store.ProjectKey(), PluginID: snapshot["pluginId"].(string), InstallationRevision: 1, Request: payload}
 	page, err := executePluginData(ctx, pb, source, workspaceID, input)
 	if err != nil {
 		t.Fatal(err)

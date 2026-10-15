@@ -1053,6 +1053,16 @@ export interface PluginAction {
   readonly formSchema: string | null;
   readonly inputSchema: string | null;
   readonly outputSchema: string | null;
+  /** v2-only action presentation; absent means the legacy surface channel. */
+  readonly presentation?: "surface" | "application" | "headless";
+  /** Declared in-package entry for application (HTML) / headless (JS module). */
+  readonly entry?: string | null;
+  /** Host projection only: iframe src for application/headless actions. */
+  readonly surfaceSrc?: string | null;
+  /** Host projection only: live surface token for application/headless actions. */
+  readonly surfaceToken?: string | null;
+  /** Host projection only: localized entry title for application actions. */
+  readonly surfaceTitle?: string | null;
 }
 
 export interface PluginManifest {
@@ -1069,6 +1079,7 @@ export interface PluginManifest {
 
 /** Canonical Python PluginSnapshot; WPF forwards it unchanged. */
 export interface PluginSnapshot {
+  readonly installationId?: string | null;
   readonly projectKey: string;
   readonly pluginId: string;
   readonly version: string;
@@ -1085,6 +1096,8 @@ export interface PluginSnapshot {
 }
 
 export interface PluginInstallPlan {
+  readonly targetInstallationId?: string | null;
+  readonly targetRevision?: number | null;
   readonly planId: string;
   readonly projectKey: string;
   readonly projectRevision: string;
@@ -1149,7 +1162,7 @@ export interface WebPluginActionDescription {
   readonly risk: PluginRisk;
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly uiSchema?: Readonly<Record<string, unknown>>;
-  readonly presentation?: "standard" | "custom";
+  readonly presentation?: "standard" | "custom" | "application" | "headless";
   readonly surface?: {
     readonly src: string;
     readonly surfaceToken: string;
@@ -1189,6 +1202,11 @@ export interface PluginResult {
 
 /** Host-owned task snapshot — revision lives on PluginEventEnvelope, not the task. */
 export interface PluginTaskSnapshot {
+  /** Native Host surface at task creation; missing Worker source is never a current frame. */
+  readonly surfaceToken?: string | null;
+  readonly installationId?: string | null;
+  /** Installation revision captured by the task creator, never inferred from the catalog. */
+  readonly installationRevision?: number | null;
   readonly taskId: string;
   readonly runId: string;
   readonly pluginId: string;
@@ -1565,6 +1583,7 @@ export type HostMessageType =
   | "gridState.get"
   | "gridState.save"
   | "host.startupStateChanged"
+  | "host.pluginChrome"
   | "database.opened"
   | "database.openCancelled"
   | "plugin.projectContext.unavailable"
@@ -1905,6 +1924,7 @@ export interface HostPayloadMap {
   "gridState.get": GridStateResult;
   "gridState.save": GridStateResult;
   "host.startupStateChanged": StartupStatePayload;
+  "host.pluginChrome": HostPluginChromePayload;
   "database.opened": DatabaseOpenedPayload;
   "database.openCancelled": { readonly openId: string; readonly reason: string };
   "plugin.projectContext.unavailable": { readonly reason: string };
@@ -2266,6 +2286,8 @@ export interface WebPayloadMap {
     readonly projectKey: string;
     readonly pluginId: string;
     readonly enabled: boolean;
+    readonly installationId: string;
+    readonly expectedRevision: number;
   };
   "plugin.lifecycle.upgrade": {
     readonly projectKey: string;
@@ -2277,6 +2299,8 @@ export interface WebPayloadMap {
   "plugin.lifecycle.uninstall": {
     readonly projectKey: string;
     readonly pluginId: string;
+    readonly installationId: string;
+    readonly expectedRevision: number;
     readonly cleanupPrivateSettings: boolean;
   };
   "plugin.action.describe": {
@@ -2326,6 +2350,11 @@ export interface StartupStatePayload {
   readonly canRetry?: boolean;
   readonly canCancel?: boolean;
   readonly logs?: readonly StartupLogEntry[];
+}
+
+/** #482 native host chrome intent (stop plugins / return to platform / manage). */
+export interface HostPluginChromePayload {
+  readonly action: "stopped" | "returnPlatform" | "manage";
 }
 
 /** Payload produced by the web layer for `table.queryRequested`. */

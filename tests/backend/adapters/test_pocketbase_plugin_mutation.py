@@ -23,6 +23,11 @@ class FakeClient:
         self.requests: list[dict[str, Any]] = []
         self.definitions: list[dict[str, Any]] = []
         self.receipt_status = "applied"
+        self.envelopes: list[dict[str, Any]] = []
+
+    async def apply_plugin_mutation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        self.envelopes.append(dict(request))
+        return await self.apply_mutation(request["request"])
 
     async def apply_mutation(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.requests.append(dict(request))
@@ -35,6 +40,18 @@ class FakeClient:
     async def describe_table(self, table_id: str) -> dict[str, Any]:
         assert table_id == "orders"
         return self.definitions.pop(0)
+
+
+def _execution() -> dict[str, Any]:
+    return {
+        "projectKey": "project-1",
+        "pluginId": "com.example.worker",
+        "installationId": "record-worker",
+        "installationRevision": 7,
+        "packageHash": "sha256:package",
+        "actionId": "save",
+        "context": {"collection": "orders"},
+    }
 
 
 def _plan(*, collection: str = "orders", values: dict[str, Any] | None = None) -> MutationPlan:
@@ -62,9 +79,10 @@ async def test_plugin_plan_is_translated_to_mutation_kernel_contract() -> None:
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status", "note"}},
+        session_epoch=7,
     )
 
-    result = await adapter.apply(_plan())
+    result = await adapter.apply(_plan(), execution=_execution())
 
     assert result["contract"] == "vibetable.plugin-result.v1"
     assert result["status"] == "success"
@@ -76,6 +94,43 @@ async def test_plugin_plan_is_translated_to_mutation_kernel_contract() -> None:
     ]
     assert "url" not in repr(request).lower()
     assert "token" not in repr(request).lower()
+    assert client.envelopes[0] == {
+        **{
+            key: _execution()[key]
+            for key in (
+                "projectKey",
+                "pluginId",
+                "installationId",
+                "installationRevision",
+                "packageHash",
+                "actionId",
+            )
+        },
+        "sessionEpoch": 7,
+        "activeCollection": "orders",
+        "request": request,
+    }
+
+
+async def test_worker_mutation_refuses_missing_creation_identity_before_submission() -> None:
+    client = FakeClient()
+    adapter = PocketBasePluginMutationAdapter(
+        client=client,
+        schema_revisions={"orders": "schema-7"},
+        writable_fields={"orders": {"status"}},
+        session_epoch=7,
+    )
+    submitted = False
+
+    def on_submit() -> None:
+        nonlocal submitted
+        submitted = True
+
+    with pytest.raises(PluginExecutionError, match="execution identity"):
+        await adapter.apply(_plan(), on_submit=on_submit)
+    assert not submitted
+    assert client.envelopes == []
+    assert client.requests == []
 
 
 @pytest.mark.asyncio
@@ -85,10 +140,11 @@ async def test_plugin_plan_rejects_ungranted_collection_before_io() -> None:
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
 
     with pytest.raises(ValueError, match="collection"):
-        await adapter.apply(_plan(collection="secrets"))
+        await adapter.apply(_plan(collection="secrets"), execution=_execution())
 
     assert client.requests == []
 
@@ -100,6 +156,7 @@ async def test_submission_boundary_is_not_entered_for_empty_or_rejected_plans() 
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
     submitted = 0
 
@@ -111,11 +168,15 @@ async def test_submission_boundary_is_not_entered_for_empty_or_rejected_plans() 
     empty = MutationPlan.model_validate(
         {"collection": "orders", "operations": [], "preview": {"affectedCount": 0}}
     )
-    assert (await adapter.apply(empty, on_submit=on_submit))["metrics"][0]["value"] == 0
+    assert (await adapter.apply(empty, on_submit=on_submit, execution=_execution()))["metrics"][0][
+        "value"
+    ] == 0
     with pytest.raises(ValueError, match="field"):
-        await adapter.apply(_plan(values={"secret": "forbidden"}), on_submit=on_submit)
+        await adapter.apply(
+            _plan(values={"secret": "forbidden"}), on_submit=on_submit, execution=_execution()
+        )
     assert submitted == 0
-    await adapter.apply(_plan(), on_submit=on_submit)
+    await adapter.apply(_plan(), on_submit=on_submit, execution=_execution())
     assert submitted == 1
 
 
@@ -126,10 +187,11 @@ async def test_plugin_plan_rejects_ungranted_field_before_io() -> None:
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
 
     with pytest.raises(ValueError, match="field"):
-        await adapter.apply(_plan(values={"admin": True}))
+        await adapter.apply(_plan(values={"admin": True}), execution=_execution())
 
     assert client.requests == []
 
@@ -142,9 +204,10 @@ async def test_plugin_plan_accepts_idempotent_replay_receipt() -> None:
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
 
-    result = await adapter.apply(_plan())
+    result = await adapter.apply(_plan(), execution=_execution())
 
     assert result["status"] == "success"
     assert result["metrics"] == [{"label": "affectedRows", "value": 1}]
@@ -158,13 +221,11 @@ async def test_dynamic_plugin_grant_refreshes_schema_before_every_plan() -> None
         snapshot_v2("orders", [field_v2("status"), field_v2("note")], revision="schema-8"),
     ]
     adapter = PocketBasePluginMutationAdapter(
-        client=client,
-        schema_revisions={},
-        writable_fields={},
+        client=client, schema_revisions={}, writable_fields={}, session_epoch=7
     )
 
-    await adapter.apply(_plan(values={"f_status00": "done"}))
-    await adapter.apply(_plan(values={"f_note0000": "fresh schema"}))
+    await adapter.apply(_plan(values={"f_status00": "done"}), execution=_execution())
+    await adapter.apply(_plan(values={"f_note0000": "fresh schema"}), execution=_execution())
 
     assert [request["schemaRevision"] for request in client.requests] == [
         "schema-7",
@@ -179,10 +240,11 @@ async def test_explicit_digest_and_legacy_revision_reach_the_existing_go_guard()
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
     raw = _plan().model_dump(by_alias=True)
     raw["operations"][0].update(expectedDigest="sha256:" + "a" * 64, expectedDateUpdated="row_0001")
-    await adapter.apply(MutationPlan.model_validate(raw))
+    await adapter.apply(MutationPlan.model_validate(raw), execution=_execution())
     operation = client.requests[0]["operations"][0]
     assert operation["expectedDigest"] == "sha256:" + "a" * 64
     assert operation["expectedRevision"] == "row_0001"
@@ -207,7 +269,11 @@ async def test_plugin_submission_preserves_conflict_and_unknown_ack(outcome: str
                     payload={
                         "code": "mutation.digest_conflict",
                         "message": "row changed",
-                        "details": {"expected": "old", "actual": "new"},
+                        "details": {
+                            "expected": "old",
+                            "actual": "new",
+                            "commitOutcome": "not-committed",
+                        },
                     },
                 )
             if outcome == "pending":
@@ -225,11 +291,12 @@ async def test_plugin_submission_preserves_conflict_and_unknown_ack(outcome: str
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
     with pytest.raises(
-        PocketBaseProductError if outcome == "conflict" else PluginCommitUnknownError
+        PluginExecutionError if outcome == "conflict" else PluginCommitUnknownError
     ) as raised:
-        await adapter.apply(_plan())
+        await adapter.apply(_plan(), execution=_execution())
     assert raised.value.code == (
         "mutation.digest_conflict" if outcome == "conflict" else "plugin_commit_unknown"
     )
@@ -266,10 +333,11 @@ async def test_http_receipt_preserves_unknown_or_explicit_rejection_without_repl
         client=client,
         schema_revisions={"orders": "schema-7"},
         writable_fields={"orders": {"status"}},
+        session_epoch=7,
     )
     rejected = isinstance(receipt, dict) and receipt.get("status") == "rejected"
     with pytest.raises(PluginExecutionError if rejected else PluginCommitUnknownError) as raised:
-        await adapter.apply(_plan())
+        await adapter.apply(_plan(), execution=_execution())
     assert raised.value.code == (
         "plugin_mutation_rejected" if rejected else "plugin_commit_unknown"
     )
@@ -285,9 +353,37 @@ async def test_auto_number_plugin_override_is_readonly_before_submission() -> No
     client = FakeClient()
     client.definitions = [snapshot_v2("orders", [number], revision="schema-7")]
     adapter = PocketBasePluginMutationAdapter(
-        client=client, schema_revisions={}, writable_fields={}
+        client=client, schema_revisions={}, writable_fields={}, session_epoch=7
     )
     with pytest.raises(PluginExecutionError, match="不能覆盖") as raised:
-        await adapter.apply(_plan(values={number["identity"]["physicalName"]: "HT-999999"}))
+        await adapter.apply(
+            _plan(values={number["identity"]["physicalName"]: "HT-999999"}), execution=_execution()
+        )
     assert raised.value.code == "mutation.field.read_only"
     assert client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_typed_rejection_without_receipt_proof_stays_unknown() -> None:
+    class Client(FakeClient):
+        async def apply_plugin_mutation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+            self.envelopes.append(dict(request))
+            raise PocketBaseProductError(
+                status=409,
+                payload={
+                    "code": "mutation.digest_conflict",
+                    "message": "late conflict",
+                    "details": {},
+                },
+            )
+
+    client = Client()
+    adapter = PocketBasePluginMutationAdapter(
+        client=client,
+        schema_revisions={"orders": "schema-7"},
+        writable_fields={"orders": {"status"}},
+        session_epoch=7,
+    )
+    with pytest.raises(PluginCommitUnknownError):
+        await adapter.apply(_plan(), execution=_execution())
+    assert len(client.envelopes) == 1

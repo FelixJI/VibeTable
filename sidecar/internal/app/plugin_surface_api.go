@@ -28,6 +28,7 @@ var pluginSurfaceStorageKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,1
 
 // This seam is session-authenticated Host-only; no Product RPC registration exists.
 type pluginSurfaceAPIRequest struct {
+	InstallationID       string                            `json:"installationId"`
 	ActionID             string                            `json:"actionId"`
 	Entry                string                            `json:"entry"`
 	Method               string                            `json:"method"`
@@ -46,9 +47,8 @@ type pluginSurfaceAPIRequest struct {
 
 type pluginSurfaceInstallation struct {
 	pluginInstallation
-	PackageHash string `json:"packageHash"`
-	Version     string `json:"version"`
-	ActionRisk  string `json:"-"`
+	Version    string `json:"version"`
+	ActionRisk string `json:"-"`
 }
 
 func surfaceInstallation(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (pluginSurfaceInstallation, error) {
@@ -60,14 +60,16 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 	if installed.Manifest.Compatibility.PluginAPI != "3.x" {
 		return installed, pluginDataError("plugin_api_unsupported")
 	}
-	if input.InstallationRevision != installed.Revision {
+	if input.InstallationID == "" || input.InstallationID != installed.InstallationID || input.InstallationRevision != installed.Revision {
 		return installed, pluginDataError("plugin_cursor_stale")
 	}
 	var native struct {
 		Manifest struct {
 			Actions []struct {
-				ActionID string `json:"actionId"`
-				Risk     string `json:"risk"`
+				ActionID     string `json:"actionId"`
+				Risk         string `json:"risk"`
+				Presentation string `json:"presentation"`
+				Entry        string `json:"entry"`
 			} `json:"actions"`
 			UI struct {
 				CustomViews []struct {
@@ -87,7 +89,19 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 		}
 	}
 	for _, action := range native.Manifest.Actions {
-		if bound && action.ActionID == input.ActionID && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
+		if action.ActionID != input.ActionID {
+			continue
+		}
+		// application/headless actions bind through the presentation entry
+		// declared on the action itself instead of a legacy custom view.
+		if action.Presentation == "application" || action.Presentation == "headless" {
+			if action.Entry != "" && action.Entry == input.Entry {
+				bound = true
+			} else {
+				bound = false
+			}
+		}
+		if bound && pluginHas([]string{"read", "write", "destructive"}, action.Risk) {
 			installed.ActionRisk = action.Risk
 			return installed, nil
 		}
@@ -224,7 +238,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		if input.Method == "data.query" {
 			operation = "query"
 		}
-		return executePluginData(ctx, app, source, workspace, pluginDataRequest{Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
+		return executePluginData(ctx, app, source, workspace, pluginDataRequest{InstallationID: input.InstallationID, PackageHash: input.PackageHash, Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
 	case "context.read":
 		if string(input.Request) != "{}" {
 			return nil, pluginDataError("plugin_capability_invalid")
@@ -278,7 +292,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 					expected = &previous
 				}
 				payload, _ := json.Marshal(map[string]any{"projectKey": input.ProjectKey, "pluginId": input.PluginID, "settingKey": request.Key, "value": request.Value, "revision": setting.Revision + 1})
-				_, err = store.SavePrivateSetting(ctx, payload, expected)
+				_, err = store.SavePrivateSetting(ctx, payload, expected, input.InstallationID, input.InstallationRevision)
 				return err
 			})
 		}

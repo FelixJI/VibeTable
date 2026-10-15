@@ -16,15 +16,43 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Window.Resources>
-    <Grid Background="{DynamicResource VtWindowBackgroundBrush}">
-        <!-- The primary app renderer is never navigated away from or removed. -->
+    <Grid x:Name="RootGrid" Background="{DynamicResource VtWindowBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <!--
+            #482 native host chrome: an always-reachable row that no plugin DOM,
+            overlay or frozen renderer can shadow. 停止插件 seals every plugin
+            surface authorization; 返回平台/管理插件 steer the trusted shell;
+            恢复界面 runs the renderer-only recovery (single-flight in code).
+        -->
+        <Border Grid.Row="0" Padding="10,4" BorderBrush="{DynamicResource VtSurfaceBorderBrush}" BorderThickness="0,0,0,1"
+                Background="{DynamicResource VtSurfaceBackgroundBrush}">
+            <DockPanel LastChildFill="True">
+                <TextBlock DockPanel.Dock="Left" Text="VibeTable 宿主" FontSize="12" FontWeight="SemiBold"
+                           Foreground="{DynamicResource VtWindowTextBrush}" VerticalAlignment="Center"/>
+                <TextBlock DockPanel.Dock="Right" Text="{Binding StatusText}" FontSize="11"
+                           Foreground="{DynamicResource VtMutedTextBrush}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button AutomationProperties.AutomationId="plugin-stop" Content="停止插件" Margin="4,0" Padding="10,3" FontSize="12" Command="{Binding StopPluginsCommand}"/>
+                    <Button AutomationProperties.AutomationId="plugin-return" Content="返回平台" Margin="4,0" Padding="10,3" FontSize="12" Command="{Binding ReturnToPlatformCommand}"/>
+                    <Button AutomationProperties.AutomationId="plugin-manage" Content="管理插件" Margin="4,0" Padding="10,3" FontSize="12" Command="{Binding ManagePluginsCommand}"/>
+                    <Button AutomationProperties.AutomationId="plugin-recover" Content="恢复界面" Margin="4,0" Padding="10,3" FontSize="12" Command="{Binding RecoverRendererCommand}"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <!-- The primary app renderer is never navigated away from; recovery
+             rebuilds the whole control in this row (same env/UDF, new generation). -->
         <wv2:WebView2
             x:Name="AppWebView"
+            Grid.Row="1"
             AllowExternalDrop="True"
             Visibility="{Binding IsWebViewVisible, Converter={StaticResource BooleanToVisibilityConverter}}"/>
 
-        <!-- Host fallback exists only before the shell loads or after a renderer fault. -->
-        <Grid Panel.ZIndex="30" Background="{DynamicResource VtSurfaceBackgroundBrush}"
+        <!-- Host fallback exists only before the shell loads or after a renderer fault;
+             it never covers the native chrome row above. -->
+        <Grid Grid.Row="1" Panel.ZIndex="30" Background="{DynamicResource VtSurfaceBackgroundBrush}"
               Visibility="{Binding IsHostFallbackVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
             <StackPanel Width="440" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Border Width="44" Height="44" Background="#3370FF" CornerRadius="10" HorizontalAlignment="Center">

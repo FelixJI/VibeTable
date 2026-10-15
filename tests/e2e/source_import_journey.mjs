@@ -626,6 +626,25 @@ export function assertPreSubmissionTerminal(beforeHistory, afterHistory, expecte
   return problems;
 }
 
+// The title changes before target rows, layout and relation labels finish loading.
+export function awaitSourceImportTargetReady(page, target) {
+  return page.waitForFunction(expected => {
+    const pending = window.__vibetableE2EBridgeDiagnostics?.pending;
+    if (!pending) throw new Error("source target readiness requires bridge diagnostics");
+    const title = document.querySelector('[data-testid="toolbar-table-title"]')?.textContent ?? "";
+    const codes = [...document.querySelectorAll(".grid-wrapper .tabulator-row")].map(row =>
+      row.querySelector(`.tabulator-cell[tabulator-field="${expected.codeField}"]`)?.textContent?.trim());
+    const targetLoaded = title.includes(expected.name) && codes.length === expected.codes.length
+      && new Set(codes).size === expected.codes.length
+      && codes.every(code => expected.codes.includes(code));
+    const targetReadTypes = [
+      "table.queryRequested", "schema.describe", "lookup.list", "lookup.query", "gridState.get",
+    ];
+    return targetLoaded && Object.values(pending).every(request =>
+      !targetReadTypes.includes(request.requestType));
+  }, target, { timeout: 30_000 });
+}
+
 /**
  * The file-import journey has already reopened the workspace and may have
  * its management view open. Verify that session and its real history port.
@@ -813,6 +832,10 @@ export async function runSourceImportJourney(page, recorder, runtime, helpers) {
   await page.getByTestId("toolbar-table-title").waitFor({ state: "visible" });
   recorder.check("opening a committed target physically switches the grid to that table",
     (await page.getByTestId("toolbar-table-title").textContent()).includes(firstTarget.name), {});
+  await awaitSourceImportTargetReady(page, {
+    name: firstTarget.name, codes: firstTarget.codes,
+    codeField: tables.get(firstTarget.id).columns.get("code").name,
+  });
 
   // ---- Workspace close/reopen: journal, rows, relations persist ----
   const originalSession = await page.evaluate(

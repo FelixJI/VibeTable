@@ -30,6 +30,7 @@ internal sealed class PluginSurfaceApi : IDisposable
         HttpMessageHandler? handler = null)
     {
         _surfaces = surfaces; _tasks = tasks; _generation = generation; _reply = reply;
+        _surfaces.Closed += RetireState;
         _http = new HttpClient(handler ?? new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
@@ -43,7 +44,11 @@ internal sealed class PluginSurfaceApi : IDisposable
         bool admitted = false;
         try
         {
-            if (Encoding.UTF8.GetByteCount(raw) > MaxBytes) throw Error("plugin_message_too_large");
+            if (Encoding.UTF8.GetByteCount(raw) > MaxBytes)
+            {
+                requestId = ReadOversizeRequestId(raw);
+                throw Error("plugin_message_too_large");
+            }
             request = JsonSerializer.Deserialize<ApiRequest>(raw, Json) ?? throw Error("plugin_capability_invalid");
             requestId = request.RequestId;
             if (request.Contract != Contract) throw Error("plugin_api_unsupported");
@@ -51,9 +56,12 @@ internal sealed class PluginSurfaceApi : IDisposable
                 throw Error("plugin_source_denied");
             PluginSurfaceSession surface = CurrentSurface(frameToken, source);
             state = _states.GetOrAdd(frameToken, _ => new SurfaceState(surface));
+            if (!_surfaces.IsActive(frameToken)) { RetireState(frameToken); throw Error("plugin_source_denied"); }
             if (state.Identity.Context != surface.Context || state.Identity.InstallationRevision != surface.InstallationRevision
+                || state.Identity.InstallationId != surface.InstallationId
                 || state.Identity.ActiveCollection != surface.ActiveCollection || state.Identity.ActionId != surface.ActionId
-                || state.Identity.Risk != surface.Risk || state.Identity.Entry != surface.Entry) throw Error("plugin_session_stale");
+                || state.Identity.Risk != surface.Risk || state.Identity.Entry != surface.Entry
+                || state.Identity.Presentation != surface.Presentation) throw Error("plugin_session_stale");
             foreach (var expired in state.Plans.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Plans.TryRemove(expired.Key, out _);
             foreach (var expired in state.Cursors.Where(pair => pair.Value.Expires < DateTimeOffset.UtcNow)) state.Cursors.TryRemove(expired.Key, out _);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(state.Lifetime.Token);
@@ -132,9 +140,9 @@ internal sealed class PluginSurfaceApi : IDisposable
                         string taskId = $"plugin-task-{Guid.NewGuid():N}";
                         string runId = $"plugin-run-{Guid.NewGuid():N}";
                         var snapshot = new PluginRuntimeTaskSnapshot(taskId, runId, surface.PluginId, surface.PluginVersion, surface.ActionId, surface.ProjectKey,
-                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null);
+                            plan.Payload.GetProperty("collection").GetString(), plan.Count, surface.Risk, "running", false, null, null, null, surface.InstallationRevision, surface.InstallationId, surface.SurfaceToken);
                         var auditGeneration = _generation() ?? throw Error("plugin_session_stale");
-                        var task = _tasks.NativeTask(binding, snapshot);
+                        var task = _tasks.NativeTask(binding, snapshot, surface.Presentation is "application" or "headless");
                         _reply.PostNotification("plugin.task.changed", task.Envelope);
                         using var operation = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, task.Token);
                         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -222,15 +230,60 @@ internal sealed class PluginSurfaceApi : IDisposable
         finally { if (admitted && requestId is not null) { state?.Pending.TryRemove(requestId, out _); state?.Cancelled.TryRemove(requestId, out _); } }
     }
 
+    // Only correlates a rejected envelope. Never admits identity or reads params.
+    private static string? ReadOversizeRequestId(string raw)
+    {
+        Span<byte> header = stackalloc byte[4096];
+        int count = Encoding.UTF8.GetBytes(raw.AsSpan(0, Math.Min(raw.Length, 1024)), header);
+        var reader = new Utf8JsonReader(header[..count], isFinalBlock: false, state: default);
+        try
+        {
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject) return null;
+            int seen = 0;
+            string? id = null;
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1) return null;
+                if (reader.ValueTextEquals("params")) return seen == 15 ? id : null;
+                int field = reader.ValueTextEquals("contract") ? 1 : reader.ValueTextEquals("surfaceToken") ? 2
+                    : reader.ValueTextEquals("requestId") ? 4 : reader.ValueTextEquals("method") ? 8 : 0;
+                if (field == 0 || (seen & field) != 0 || !reader.Read() || reader.TokenType != JsonTokenType.String) return null;
+                seen |= field;
+                if (field == 4)
+                {
+                    id = reader.GetString();
+                    if (string.IsNullOrWhiteSpace(id) || id.Length > 128) return null;
+                }
+            }
+        }
+        catch (JsonException) { /* Malformed or incomplete bounded headers have no safe correlation. */ }
+        return null;
+    }
+
     private PluginSurfaceSession CurrentSurface(string token, string source)
     {
         if (!_surfaces.TryGet(token, out var surface) || surface is null || surface.ApiVersion != "3.x"
-            || surface.Context is null || surface.DocumentUri.AbsoluteUri != source) throw Error("plugin_source_denied");
+            || surface.Context is null || string.IsNullOrWhiteSpace(surface.InstallationId) || !IsSameDocumentSource(surface.DocumentUri, source)) throw Error("plugin_source_denied");
         var generation = _generation();
         if (generation is null || generation.Identity.SessionEpoch != surface.Context.SessionGeneration
             || $"local:{Guid.Parse(generation.Identity.WorkspaceId):N}" != surface.ProjectKey
             || !generation.TryUseCurrent(() => true)) throw Error("plugin_session_stale");
         return surface;
+    }
+
+    /// <summary>
+    /// A single-entry SPA may route internal pages through fragments; the
+    /// document identity is scheme/host/path/query, so only fragment-only
+    /// differences are accepted as the same document.
+    /// </summary>
+    private static bool IsSameDocumentSource(Uri document, string source)
+    {
+        if (string.Equals(document.AbsoluteUri, source, StringComparison.Ordinal)) return true;
+        return Uri.TryCreate(source, UriKind.Absolute, out var current)
+            && string.Equals(
+                document.GetLeftPart(UriPartial.Query),
+                current.GetLeftPart(UriPartial.Query),
+                StringComparison.Ordinal);
     }
 
     private async Task<JsonElement> CallAsync(PluginSurfaceSession surface, string method, JsonElement parameters,
@@ -250,6 +303,7 @@ internal sealed class PluginSurfaceApi : IDisposable
             ["packageHash"] = surface.Revision.PackageHash,
             ["sessionEpoch"] = surface.Context!.SessionGeneration,
             ["installationRevision"] = surface.InstallationRevision,
+            ["installationId"] = surface.InstallationId,
             ["activeCollection"] = surface.ActiveCollection,
             ["requestId"] = commitId ?? Guid.NewGuid().ToString("N"),
             ["request"] = JsonNode.Parse(parameters.GetRawText()),
@@ -315,8 +369,10 @@ internal sealed class PluginSurfaceApi : IDisposable
     { internal string Code { get; } = code; internal bool NotCommitted { get; } = notCommitted; }
     private static string Reply(string? id, object? result) => JsonSerializer.Serialize(new { contract = Contract, requestId = id, result }, Json);
     internal void Retire(string token)
-    { _surfaces.Close(token); if (_states.TryRemove(token, out var state)) { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); } }
-    public void Dispose() { foreach (string token in _states.Keys) Retire(token); _http.Dispose(); }
+    { _surfaces.Close(token); RetireState(token); }
+    private void RetireState(string token)
+    { if (_states.TryRemove(token, out var state)) { state.Lifetime.Cancel(); state.Lifetime.Dispose(); state.Plans.Clear(); state.Cursors.Clear(); } }
+    public void Dispose() { _surfaces.Closed -= RetireState; foreach (string token in _states.Keys) Retire(token); _http.Dispose(); }
     internal async Task DrainAsync(PluginProjectContext? nextContext = null)
     {
         foreach (var pair in _states) if (pair.Value.Identity.Context != nextContext) Retire(pair.Key);

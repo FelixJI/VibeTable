@@ -11,6 +11,98 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceApiTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SameWorkspaceRendererDrainKeepsSuccessOrUnknownForHistoryProjection(bool incomplete)
+    {
+        using var fixture = new Fixture(); fixture.Http.Incomplete = incomplete;
+        Task? drain = null;
+        fixture.Http.AfterCommitRead = () =>
+        {
+            fixture.DropRendererNotifications = true;
+            fixture.Surfaces.CloseAll();
+            drain = fixture.Api.DrainAsync();
+        };
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+        Assert.IsNotNull(drain); await drain.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsTrue(fixture.DroppedRendererNotifications > 0);
+        Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
+        var history = fixture.Tasks.ProjectHistory(fixture.Context);
+        var task = history.Single().Snapshot.Deserialize<PluginRuntimeTaskSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        Assert.AreEqual(incomplete ? "aborted" : "succeeded", task.State);
+        if (incomplete) Assert.AreEqual("plugin_commit_unknown", task.Error!.Code);
+        Assert.AreEqual(fixture.Surface.SurfaceToken, task.SurfaceToken);
+        Assert.AreEqual("record-surface", task.InstallationId);
+        Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId,
+            fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+    }
+
+    [TestMethod]
+    public async Task SamePackageInstallationReplacementRetiresApiPlansWithoutFrameAcknowledgement()
+    {
+        using var fixture = new Fixture();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), fixture.Surfaces);
+        var revision = fixture.Surface.Revision;
+        resources.RegisterInstalled(fixture.Surface.ProjectKey, fixture.Surface.PluginId, revision, fixture.Surface.InstallationId);
+        string planId = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        fixture.Http.AfterReadMethod = "context.read";
+        fixture.Http.AfterCommitRead = () => resources.RegisterInstalled(fixture.Surface.ProjectKey, fixture.Surface.PluginId, revision, "replacement-record");
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("context.read", "{}")));
+        Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
+        var replacement = resources.OpenSurface(fixture.Surface.ProjectKey, fixture.Surface.PluginId, "ui/index.html");
+        Assert.AreNotEqual(fixture.Surface.SurfaceToken, replacement.SurfaceToken);
+        fixture.Surfaces.BindIdentity(replacement.SurfaceToken, fixture.Context, 1, "3.x", "1.0.0", "save", "destructive", "ui/index.html", installationId: "replacement-record");
+        string response = await fixture.Api.HandleAsync(replacement.SurfaceToken, replacement.DocumentUri.AbsoluteUri,
+            fixture.Wire("mutation.submit", $"{{\"planId\":\"{planId}\"}}", replacement.SurfaceToken));
+        Assert.AreEqual("plugin_plan_stale", Code(response));
+        Assert.IsFalse(fixture.Http.Calls.Any(call => call.GetProperty("method").GetString() == "mutation.commit"));
+    }
+
+    [TestMethod]
+    [DataRow("confirmation")]
+    [DataRow("commit")]
+    [DataRow("receipt")]
+    public async Task SamePackageRevisionRetiresPlansConfirmationAndPreservesCommitOutcome(string boundary)
+    {
+        using var fixture = new Fixture();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), fixture.Surfaces);
+        var original = fixture.Surface;
+        resources.RegisterInstalled(original.ProjectKey, original.PluginId, original.Revision, original.InstallationId, 1);
+        await fixture.Call("context.read", "{}");
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        Action reload = () => resources.RegisterInstalled(original.ProjectKey, original.PluginId, original.Revision, original.InstallationId, 2);
+        if (boundary == "confirmation") fixture.OnConfirmation = reload;
+        else if (boundary == "commit") fixture.Http.OnCommit = reload;
+        else fixture.Http.AfterCommitRead = reload;
+        var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}").WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsFalse(fixture.Surfaces.IsActive(original.SurfaceToken));
+        Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId, fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var task));
+        Assert.AreEqual(boundary == "confirmation" ? "cancelled" : boundary == "commit" ? "aborted" : "succeeded", task.State);
+        if (boundary == "commit")
+        {
+            Assert.IsTrue(fixture.Http.CommitObservedCancellation);
+            Assert.AreEqual("plugin_commit_unknown", Code(response));
+            Assert.AreEqual("plugin_commit_unknown", task.Error!.Code);
+        }
+        if (boundary == "receipt") Assert.AreEqual("succeeded", response.GetProperty("result").GetProperty("status").GetString());
+        int commits = fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit");
+        Assert.AreEqual(boundary == "confirmation" ? 0 : 1, commits);
+        Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(fixture.TaskId, out _, out _));
+        fixture.Tasks.FinishNative(fixture.TaskId, "cancelled");
+        Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var sticky));
+        Assert.AreEqual(task.State, sticky.State);
+        var replacement = resources.OpenSurface(original.ProjectKey, original.PluginId, "ui/index.html");
+        Assert.AreNotEqual(original.SurfaceToken, replacement.SurfaceToken);
+        fixture.Surfaces.BindIdentity(replacement.SurfaceToken, fixture.Context, 2, "3.x", "1.0.0", "save", "destructive", "ui/index.html", installationId: original.InstallationId);
+        Assert.IsFalse(JsonDocument.Parse(await fixture.Api.HandleAsync(replacement.SurfaceToken, replacement.DocumentUri.AbsoluteUri, fixture.Wire("context.read", "{}", replacement.SurfaceToken))).RootElement.TryGetProperty("error", out _));
+        Assert.AreEqual("plugin_plan_stale", Code(await fixture.Api.HandleAsync(replacement.SurfaceToken, replacement.DocumentUri.AbsoluteUri, fixture.Wire("mutation.submit", $"{{\"planId\":\"{plan}\"}}", replacement.SurfaceToken))));
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("context.read", "{}")));
+    }
+
+    [TestMethod]
     public async Task ContextUsesBoundInvocationThroughAuthorityProjection()
     {
         using var fixture = new Fixture();
@@ -41,6 +133,50 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task OversizeEnvelopeRejectsWithOnlyItsBoundedRootRequestId()
+    {
+        using var fixture = new Fixture();
+        string raw = fixture.Wire("storage.set", "{\"key\":\"oversize\",\"value\":\"" + new string('x', 1024 * 1024 + 1) + "\"}");
+        string id = JsonDocument.Parse(raw).RootElement.GetProperty("requestId").GetString()!;
+        var reply = JsonDocument.Parse(await fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source, raw)).RootElement;
+        Assert.AreEqual("plugin_message_too_large", reply.GetProperty("error").GetProperty("code").GetString());
+        Assert.AreEqual(id, reply.GetProperty("requestId").GetString());
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
+    public async Task OversizeEnvelopeCannotBorrowAnUnsafeOrNestedRequestId()
+    {
+        using var fixture = new Fixture();
+        string prefix = "{\"contract\":\"vibetable.plugin-api.v1\",\"surfaceToken\":\"owned\",\"method\":\"storage.set\",";
+        foreach (string header in new[] {
+            prefix + "\"params\":{\"requestId\":\"nested\",\"value\":\"",
+            prefix + "\"requestId\":\"" + new string('i', 129) + "\",\"params\":\"",
+            prefix + "\"requestId\":4,\"params\":\"",
+            prefix + "\"requestId\":\"\",\"params\":\"",
+            prefix + "\"requestId\":\"first\",\"requestId\":\"duplicate\",\"params\":\"",
+            "{\"contract\":\"" + new string('h', 4096) + "\",\"requestId\":\"late\",\"params\":\"",
+            "{\"contract\": false garbage,\"requestId\":\"forged\",\"params\":\"",
+            "[" + prefix + "\"requestId\":\"not-root\",\"params\":\"" })
+        {
+            var reply = JsonDocument.Parse(await fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source,
+                header + new string('x', 1024 * 1024 + 1))).RootElement;
+            Assert.AreEqual("plugin_message_too_large", reply.GetProperty("error").GetProperty("code").GetString());
+            Assert.AreEqual(JsonValueKind.Null, reply.GetProperty("requestId").ValueKind);
+        }
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
+    public async Task MissingInstallationIdentityFailsBeforeAuthority()
+    {
+        using var fixture = new Fixture();
+        fixture.Surfaces.BindIdentity(fixture.Surface.SurfaceToken, fixture.Context, 1, "3.x");
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("getContext", "{}")));
+        Assert.AreEqual(0, fixture.Http.Calls.Count);
+    }
+
+    [TestMethod]
     public async Task LongLivedSurfaceHasPerRequestBudgetAndOpaqueSingleUseCursors()
     {
         using var fixture = new Fixture();
@@ -49,7 +185,7 @@ public sealed class PluginSurfaceApiTests
         string cursor = first.GetProperty("result").GetProperty("nextCursor").GetString()!;
         Assert.AreNotEqual("go-cursor", cursor);
         var peerSurface = fixture.Surfaces.Open(fixture.Context.ProjectKey, "com.example.other", PluginPackageRevision.Create("C:/plugins/other", new string('b', 64)), "ui/index.html");
-        fixture.Surfaces.BindIdentity(peerSurface.SurfaceToken, fixture.Context, 1, "3.x");
+        fixture.Surfaces.BindIdentity(peerSurface.SurfaceToken, fixture.Context, 1, "3.x", installationId: "record-surface");
         string peerReply = await fixture.Api.HandleAsync(peerSurface.SurfaceToken, peerSurface.DocumentUri.AbsoluteUri,
             fixture.Wire("data.query", $"{{\"collection\":\"orders\",\"cursor\":\"{cursor}\"}}", token: peerSurface.SurfaceToken));
         Assert.AreEqual("plugin_cursor_invalid", Code(peerReply));
@@ -59,7 +195,7 @@ public sealed class PluginSurfaceApiTests
         Assert.IsFalse(fetched.TryGetProperty("error", out _));
         Assert.AreEqual("go-cursor", fixture.Http.Calls[^1].GetProperty("cursor").GetString());
         Assert.AreEqual("plugin_cursor_invalid", Code(await fixture.Call("data.query", $"{{\"collection\":\"orders\",\"cursor\":\"{cursor}\"}}")));
-        fixture.Surfaces.BindIdentity(fixture.Surface.SurfaceToken, fixture.Context, 2, "3.x");
+        fixture.Surfaces.BindIdentity(fixture.Surface.SurfaceToken, fixture.Context, 2, "3.x", installationId: "record-surface");
         Assert.AreEqual("plugin_session_stale", Code(await fixture.Call("context.read", "{}")));
     }
 
@@ -99,10 +235,15 @@ public sealed class PluginSurfaceApiTests
         var submitted = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
         Assert.AreEqual("succeeded", submitted.GetProperty("result").GetProperty("status").GetString());
         string taskId = submitted.GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.IsTrue(fixture.Tasks.TryGetTask(taskId, out var sourceTask));
+        Assert.AreEqual(fixture.Surface.SurfaceToken, sourceTask.SurfaceToken);
+        Assert.AreEqual(fixture.Surface.SurfaceToken, JsonSerializer.SerializeToElement(sourceTask, new JsonSerializerOptions(JsonSerializerDefaults.Web)).GetProperty("surfaceToken").GetString());
         Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
         Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
         Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(taskId, out var snapshot, out _));
         Assert.AreEqual("succeeded", snapshot.State);
+        Assert.AreEqual(1, snapshot.InstallationRevision);
+        Assert.AreEqual("record-surface", snapshot.InstallationId);
         Assert.AreEqual("com.example.surface", fixture.Http.Calls[^1].GetProperty("pluginId").GetString());
     }
 
@@ -116,10 +257,33 @@ public sealed class PluginSurfaceApiTests
             string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
             var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
             int commits = fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit");
-            if (decision == "approved") { Assert.AreEqual("plugin_commit_unknown", Code(response)); Assert.AreEqual(1, commits); }
+            if (decision == "approved")
+            {
+                Assert.AreEqual("plugin_commit_unknown", Code(response)); Assert.AreEqual(1, commits);
+                Assert.AreEqual(HostPluginTaskCancelOutcome.Terminal, fixture.Tasks.RequestCancel(fixture.TaskId, out var terminal, out _));
+                Assert.AreEqual("aborted", terminal.State);
+                Assert.AreEqual("plugin_commit_unknown", terminal.Error!.Code);
+                Assert.IsNull(fixture.Tasks.FinishNative(fixture.TaskId, "succeeded"));
+                Assert.IsTrue(fixture.Tasks.TryGetTask(fixture.TaskId, out var sticky));
+                Assert.AreEqual("aborted", sticky.State);
+            }
             else { Assert.AreEqual(0, commits); if (decision == "rejected") Assert.AreEqual("rejected", response.GetProperty("result").GetProperty("status").GetString()); }
             Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
         }
+    }
+
+    [TestMethod]
+    public async Task InstallationRetirementCancelsPendingConfirmationWithoutFrameAcknowledgement()
+    {
+        using var fixture = new Fixture { Decision = "installation-retire" };
+        string plan = (await fixture.Call("mutation.preview", Plan)).GetProperty("result").GetProperty("planId").GetString()!;
+        JsonElement response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")
+            .WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        Assert.IsTrue(response.TryGetProperty("error", out _));
+        Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
+        Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId,
+            fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
     }
 
     [TestMethod]
@@ -296,7 +460,10 @@ public sealed class PluginSurfaceApiTests
         internal string Decision { get; init; } = "approved";
         internal int Confirmations { get; private set; }
         internal PluginRuntimeInteractionSnapshot? LastInteraction { get; private set; }
+        internal Action? OnConfirmation { get; set; }
         internal int LateNotifications { get; private set; }
+        internal bool DropRendererNotifications { get; set; }
+        internal int DroppedRendererNotifications { get; private set; }
         private bool _retired;
         internal void RetireAfterReceipt()
         {
@@ -322,7 +489,7 @@ public sealed class PluginSurfaceApiTests
             Tasks.SetWorkspaceContext(Context);
             var revision = PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64));
             Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html");
-            Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html");
+            Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html", installationId: "record-surface");
             Surfaces.TryGet(Surface.SurfaceToken, out var bound);
             Surface = bound!;
             _generation = new ProductSidecarGenerationSnapshot(this, 1,
@@ -337,6 +504,7 @@ public sealed class PluginSurfaceApiTests
         { string reply = await Api.HandleAsync(Surface.SurfaceToken, source ?? Source, Wire(method, parameters, token, version)); return JsonDocument.Parse(reply).RootElement.Clone(); }
         public void PostNotification(string type, object? payload)
         {
+            if (DropRendererNotifications) { DroppedRendererNotifications++; return; }
             if (_retired) LateNotifications++;
             if (payload is not PluginEventEnvelope envelope) return;
             if (type == "plugin.task.changed") _taskId = envelope.EntityId;
@@ -345,6 +513,7 @@ public sealed class PluginSurfaceApiTests
                 Confirmations++;
                 var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
                 LastInteraction = interaction;
+                if (OnConfirmation is { } onConfirmation) { onConfirmation(); return; }
                 Assert.AreEqual("new", interaction.PendingConfirmation!.Preview.SampleRows[0]["values"].GetProperty("name").GetString());
                 if (Decision == "retire")
                 {
@@ -353,6 +522,7 @@ public sealed class PluginSurfaceApiTests
                     Api.Retire(Surface.SurfaceToken);
                     Surfaces.Close(Surface.SurfaceToken);
                 }
+                else if (Decision == "installation-retire") Surfaces.CloseForInstallation(Surface.ProjectKey, Surface.PluginId);
                 else if (Decision == "cancel") Tasks.RequestCancel(_taskId!, out _, out _);
                 else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision), out _);
             }

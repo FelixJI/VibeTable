@@ -165,9 +165,7 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> RendererInternalOnlyRequestTypes =
         new(StringComparer.Ordinal)
         {
-            "plugin.lifecycle.upgrade",
             "plugin.lifecycle.rollback",
-            "plugin.lifecycle.uninstall",
         };
 
     /// <summary>
@@ -179,6 +177,9 @@ public sealed class WebMessageRouter
     private static readonly HashSet<string> HostNotificationWhitelist = new(StringComparer.Ordinal)
     {
         "host.startupStateChanged",
+        // #482 native host chrome → trusted web shell (stop plugins, return
+        // to platform, open plugin management) without plugin involvement.
+        "host.pluginChrome",
         // Host-appearance projection: initial snapshot after app.ready plus
         // system/preference change notifications.
         "appearance.changed",

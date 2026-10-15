@@ -91,6 +91,8 @@ class _PluginInstallationStore(Protocol):
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str,
+        installation_revision: int,
     ) -> PluginPrivateSetting: ...
 
 
@@ -102,6 +104,8 @@ class _ResolvedWorker:
     source: str
     revision: int = 1
     plugin_api: str = "1.x"
+    installation_id: str | None = None
+    package_hash: str = ""
 
 
 class NodePluginWorkerAdapter:
@@ -445,7 +449,13 @@ class NodePluginWorkerAdapter:
             raise PluginWorkerError(
                 "plugin read permission is unavailable", code="plugin_read_denied"
             )
-        if installation.revision != resolved.revision:
+        if (
+            not resolved.installation_id
+            or not resolved.package_hash
+            or installation.installation_id != resolved.installation_id
+            or installation.package_hash != resolved.package_hash
+            or installation.revision != resolved.revision
+        ):
             raise PluginWorkerError("plugin read authorization changed", code="plugin_cursor_stale")
         # One execution owns these handles. No cursor or authorization survives a run.
         handles = execution.setdefault("_pluginQueryCursors", {})
@@ -455,6 +465,8 @@ class NodePluginWorkerAdapter:
                 "query": query_request,
                 "projectKey": resolved.project_key,
                 "pluginId": resolved.plugin_id,
+                "installationId": resolved.installation_id,
+                "packageHash": resolved.package_hash,
                 "installationRevision": resolved.revision,
                 "runId": execution.get("runId"),
                 "sessionEpoch": self._session_epoch,
@@ -475,6 +487,8 @@ class NodePluginWorkerAdapter:
             "projectKey": resolved.project_key,
             "pluginId": resolved.plugin_id,
             "sessionEpoch": self._session_epoch,
+            "installationId": resolved.installation_id,
+            "packageHash": resolved.package_hash,
             "installationRevision": resolved.revision,
             "activeCollection": context.get("collection") or "",
             "request": query_request,
@@ -610,6 +624,8 @@ class NodePluginWorkerAdapter:
                 revision=revision,
             ),
             expected_revision=None if current is None else current.revision,
+            installation_id=resolved.installation_id or "",
+            installation_revision=resolved.revision,
         )
         return None
 
@@ -706,6 +722,12 @@ class NodePluginWorkerAdapter:
         installation = await self._store.get_installation(project_key, plugin_id)
         if installation is None:
             raise PluginWorkerError("plugin installation is unavailable")
+        if (
+            not execution.get("installationId")
+            or installation.installation_id != execution.get("installationId")
+            or installation.revision != execution.get("installationRevision")
+        ):
+            raise PluginWorkerError("plugin Worker installation identity is stale")
         if installation.version != plugin_version or installation.package_hash != package_hash:
             raise PluginWorkerError("plugin Worker package identity is stale")
         action = next(
@@ -736,6 +758,8 @@ class NodePluginWorkerAdapter:
             permissions=installation.manifest.permissions,
             source=source,
             revision=installation.revision,
+            installation_id=installation.installation_id,
+            package_hash=installation.package_hash,
             plugin_api=str(installation.manifest.compatibility.get("pluginApi", "")),
         )
 
@@ -909,7 +933,11 @@ class InMemoryBulkMutationAdapter:
     plans: list[MutationPlan] = field(default_factory=list)
 
     async def apply(
-        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+        self,
+        plan: MutationPlan,
+        *,
+        on_submit: Callable[[], None] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if on_submit is not None:
             on_submit()

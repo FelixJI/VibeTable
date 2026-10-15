@@ -22,13 +22,23 @@ import { useWorkspaceProtectionStore } from "@/stores/workspaceProtectionStore";
 import { t } from "@/i18n";
 import brandIconUrl from "@/assets/brand/vibetable.png";
 
+export interface PluginAppNavEntry {
+  readonly key: string;
+  readonly label: string;
+}
+
 const ui = useUiStore();
 const workspaceSession = useWorkspaceSessionStore();
 const protection = useWorkspaceProtectionStore();
+defineProps<{
+  pluginApps?: readonly PluginAppNavEntry[];
+  activePluginAppKey?: string | null;
+}>();
 const emit = defineEmits<{
   navigate: [view: AppView];
   openAdmin: [];
   openHelp: [];
+  openPluginApp: [key: string];
 }>();
 
 const primary = computed(() => [
@@ -56,6 +66,7 @@ function navigate(view: AppView) {
   <nav class="app-navigation" :aria-label="t('nav.application')">
     <img class="brand-mark" :src="brandIconUrl" alt="" aria-hidden="true" />
 
+    <div class="nav-scroll-region">
     <div class="nav-group nav-group--primary">
       <NTooltip v-for="item in primary" :key="item.view" placement="right" :delay="450">
         <template #trigger>
@@ -82,6 +93,26 @@ function navigate(view: AppView) {
       </NTooltip>
     </div>
 
+    <div v-if="pluginApps && pluginApps.length" class="nav-group nav-group--apps">
+      <NTooltip v-for="item in pluginApps" :key="item.key" placement="right" :delay="450">
+        <template #trigger>
+          <NButton
+            quaternary
+            class="nav-button nav-button--plugin-app"
+            :class="{ 'nav-button--active': activePluginAppKey === item.key }"
+            :aria-label="item.label"
+            :aria-current="activePluginAppKey === item.key ? 'page' : undefined"
+            :data-testid="`nav-plugin-app-${item.key}`"
+            @click="emit('openPluginApp', item.key)"
+          >
+            <template #icon><NIcon :size="17"><LayoutTemplate /></NIcon></template>
+          </NButton>
+        </template>
+        {{ item.label }} · {{ item.key }}
+      </NTooltip>
+    </div>
+
+    </div>
     <div class="nav-group nav-group--secondary">
       <NTooltip placement="right" :delay="450">
         <template #trigger>
@@ -157,13 +188,30 @@ function navigate(view: AppView) {
   gap: 4px;
   width: 100%;
 }
+.nav-scroll-region {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .nav-group--secondary {
-  margin-top: auto;
+  flex: 0 0 auto;
+  margin-top: 8px;
+}
+.nav-group--apps {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--vt-border);
+}
+.nav-button--plugin-app {
+  height: 32px;
 }
 .nav-button {
   position: relative;
   width: 40px;
   height: 36px;
+  flex-shrink: 0;
   color: var(--vt-fg-muted);
   border-radius: var(--vt-radius-md);
 }

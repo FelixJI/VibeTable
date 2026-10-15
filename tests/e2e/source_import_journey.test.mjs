@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
-  EXPECTED_SYNTHETIC_SOURCE, SOURCE_IMPORT_MODES, assertPreSubmissionTerminal,
+  EXPECTED_SYNTHETIC_SOURCE, SOURCE_IMPORT_MODES, assertPreSubmissionTerminal, awaitSourceImportTargetReady,
   buildCodeIndex, buildTableTargets, migrationJobIds, parseSourceImportState,
   relationValueIds, resolveFieldColumns, sourceImportRequestText,
   validateSyntheticExpectation, verifyAttachmentBinding, verifyMigrationReceipt,
@@ -777,5 +777,67 @@ test("the entry helper is exported and fail-closes without an active session", a
       /data.importHistory failed/);
   } finally {
     globalThis.window = previousWindow;
+  }
+});
+
+
+test("target readiness waits for its actual rows and every table-switch read before close", { timeout: 1_000 }, async () => {
+  const oldWindow = globalThis.window;
+  const oldDocument = globalThis.document;
+  const target = { name: "QA 来源迁移 A", codes: ["A-001", "A-002"], codeField: "f_code" };
+  const diagnostics = { pending: {} };
+  let title = "previous table";
+  let codes = ["old-001", "old-002"];
+  globalThis.window = { __vibetableE2EBridgeDiagnostics: diagnostics };
+  globalThis.document = {
+    querySelector(selector) { assert.equal(selector, '[data-testid="toolbar-table-title"]'); return { textContent: title }; },
+    querySelectorAll(selector) {
+      assert.equal(selector, ".grid-wrapper .tabulator-row");
+      return codes.map(code => ({ querySelector(cell) {
+        assert.equal(cell, '.tabulator-cell[tabulator-field="f_code"]');
+        return { textContent: code };
+      } }));
+    },
+  };
+  let evaluate;
+  let release;
+  let closed = false;
+  try {
+    const waiting = awaitSourceImportTargetReady({
+      waitForFunction(predicate, expected, options) {
+        assert.deepEqual(expected, target);
+        assert.equal(options.timeout, 30_000);
+        evaluate = () => predicate(expected);
+        return new Promise(resolve => { release = resolve; });
+      },
+    }, target).then(() => { closed = true; });
+    assert.equal(evaluate(), false, "an empty pending ledger alone cannot advance");
+    codes = [...target.codes];
+    assert.equal(evaluate(), false, "matching row values from another table cannot advance");
+    title = target.name;
+    codes = ["A-001", "A-001"];
+    assert.equal(evaluate(), false, "duplicate rows cannot stand in for the target fixture");
+    codes = [...target.codes].reverse();
+    for (const type of ["table.queryRequested", "schema.describe", "lookup.list", "lookup.query", "gridState.get"]) {
+      diagnostics.pending = { read: { requestType: type } };
+      assert.equal(evaluate(), false, type + " must settle before close");
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, false);
+    diagnostics.pending = { unrelated: { requestType: "plugin.catalog.list" } };
+    assert.equal(evaluate(), true, "unrelated consumers do not expand the target-read contract");
+    globalThis.window.__vibetableE2EBridgeDiagnostics = null;
+    assert.throws(evaluate, /requires bridge diagnostics/);
+    globalThis.window.__vibetableE2EBridgeDiagnostics = diagnostics;
+    release();
+    await waiting;
+    assert.equal(closed, true);
+    const timeout = new Error("target reads timed out");
+    await assert.rejects(awaitSourceImportTargetReady({
+      waitForFunction: async () => { throw timeout; },
+    }, target), error => error === timeout);
+  } finally {
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
   }
 });

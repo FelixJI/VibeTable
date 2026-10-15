@@ -29,7 +29,8 @@ public sealed class PluginWebViewResourceHost : IDisposable
     private readonly object _gate = new();
     private readonly PluginResourceHost _resources;
     private readonly PluginSurfaceSessionManager _surfaces;
-    private readonly Dictionary<(string ProjectKey, string PluginId), PluginPackageRevision>
+    private sealed record InstallationRegistration(PluginPackageRevision Revision, string? InstallationId, int InstallationRevision);
+    private readonly Dictionary<(string ProjectKey, string PluginId), InstallationRegistration>
         _installations = [];
     private readonly Dictionary<string, PluginPackageRevision> _origins =
         new(StringComparer.OrdinalIgnoreCase);
@@ -44,6 +45,12 @@ public sealed class PluginWebViewResourceHost : IDisposable
     {
         _resources = resources ?? throw new ArgumentNullException(nameof(resources));
         _surfaces = surfaces ?? throw new ArgumentNullException(nameof(surfaces));
+    }
+
+    internal event Action<string>? SurfaceClosed
+    {
+        add => _surfaces.Closed += value;
+        remove => _surfaces.Closed -= value;
     }
 
     public void Attach(CoreWebView2 core)
@@ -66,7 +73,9 @@ public sealed class PluginWebViewResourceHost : IDisposable
     public void RegisterInstalled(
         string projectKey,
         string pluginId,
-        PluginPackageRevision revision)
+        PluginPackageRevision revision,
+        string? installationId = null,
+        int installationRevision = 0)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (string.IsNullOrWhiteSpace(projectKey) || string.IsNullOrWhiteSpace(pluginId))
@@ -78,7 +87,9 @@ public sealed class PluginWebViewResourceHost : IDisposable
         lock (_gate)
         {
             revisionChanged = _installations.TryGetValue((projectKey, pluginId), out var existing)
-                && !string.Equals(existing.PackageHash, revision.PackageHash, StringComparison.Ordinal);
+                && (!string.Equals(existing.Revision.PackageHash, revision.PackageHash, StringComparison.Ordinal)
+                    || !string.Equals(existing.InstallationId, installationId, StringComparison.Ordinal)
+                    || existing.InstallationRevision != installationRevision);
             if (revisionChanged)
             {
                 foreach (var key in _surfaceTokens.Keys
@@ -89,7 +100,7 @@ public sealed class PluginWebViewResourceHost : IDisposable
                     _surfaceTokens.Remove(key);
                 }
             }
-            _installations[(projectKey, pluginId)] = revision;
+            _installations[(projectKey, pluginId)] = new(revision, installationId, installationRevision);
             RebuildOrigins();
         }
         if (revisionChanged)
@@ -102,7 +113,9 @@ public sealed class PluginWebViewResourceHost : IDisposable
         string projectKey,
         string pluginId,
         string packageSource,
-        string packageHash)
+        string packageHash,
+        string? installationId = null,
+        int installationRevision = 0)
     {
         if (!File.Exists(packageSource) && !Directory.Exists(packageSource))
         {
@@ -111,19 +124,47 @@ public sealed class PluginWebViewResourceHost : IDisposable
         RegisterInstalled(
             projectKey,
             pluginId,
-            PluginPackageRevision.Create(packageSource, packageHash));
+            PluginPackageRevision.Create(packageSource, packageHash),
+            installationId, installationRevision);
         return true;
     }
 
-    public bool UnregisterInstalled(string projectKey, string pluginId)
+    internal bool TryGetInstallationIdentity(string projectKey, string pluginId, out string? installationId)
     {
-        PluginPackageRevision? removed;
         lock (_gate)
         {
-            if (!_installations.Remove((projectKey, pluginId), out removed))
+            bool found = _installations.TryGetValue((projectKey, pluginId), out var current);
+            installationId = current?.InstallationId;
+            return found;
+        }
+    }
+
+    internal bool UnregisterInstalledIfCurrent(string projectKey, string pluginId, string? installationId)
+        => UnregisterInstalled(projectKey, pluginId, installationId, matchIdentity: true);
+
+    internal void RetireAbsentInstallations(string projectKey, IEnumerable<string> pluginIds)
+    {
+        var retained = new HashSet<string>(pluginIds, StringComparer.Ordinal);
+        string[] absent;
+        lock (_gate)
+            absent = _installations.Keys.Where(key => key.ProjectKey == projectKey && !retained.Contains(key.PluginId))
+                .Select(key => key.PluginId).ToArray();
+        foreach (string pluginId in absent) UnregisterInstalled(projectKey, pluginId);
+    }
+
+    public bool UnregisterInstalled(string projectKey, string pluginId)
+        => UnregisterInstalled(projectKey, pluginId, null, matchIdentity: false);
+
+    private bool UnregisterInstalled(string projectKey, string pluginId, string? installationId, bool matchIdentity)
+    {
+        lock (_gate)
+        {
+            if (!_installations.TryGetValue((projectKey, pluginId), out var current)
+                || matchIdentity && !string.Equals(current.InstallationId, installationId, StringComparison.Ordinal))
             {
                 return false;
             }
+            _installations.Remove((projectKey, pluginId));
             foreach (var key in _surfaceTokens.Keys
                 .Where(key => string.Equals(key.ProjectKey, projectKey, StringComparison.Ordinal)
                     && string.Equals(key.PluginId, pluginId, StringComparison.Ordinal))
@@ -141,25 +182,36 @@ public sealed class PluginWebViewResourceHost : IDisposable
         string projectKey,
         string pluginId,
         string entryPath,
-        string actionId = "")
+        string actionId = "",
+        string presentation = "surface")
     {
         PluginPackageRevision revision;
         string normalizedEntry = PluginResourceHost.NormalizePackagePath(entryPath);
+        if (PluginResourceHost.IsHostReservedPath(normalizedEntry)
+            || presentation is "application" or "headless"
+                && !PluginResourceHost.SupportsPresentationEntry(presentation, normalizedEntry))
+            throw new PluginSurfacePolicyException("PLUGIN_ENTRY_TYPE_INVALID", "Plugin entry is unavailable for its presentation.");
         lock (_gate)
         {
-            if (!_installations.TryGetValue((projectKey, pluginId), out revision!))
+            if (!_installations.TryGetValue((projectKey, pluginId), out var registered))
             {
                 throw new PluginSurfacePolicyException(
                     "PLUGIN_REVISION_NOT_REGISTERED",
                     "Plugin package revision is not registered with the host.");
             }
+            revision = registered.Revision;
             var key = (projectKey, pluginId, normalizedEntry, actionId);
             if (_surfaceTokens.TryGetValue(key, out string? existingToken)
                 && _surfaces.TryGet(existingToken, out var existing))
             {
                 return existing!;
             }
-            var opened = _surfaces.Open(projectKey, pluginId, revision, normalizedEntry);
+            // headless actions load a host-owned controlled document that
+            // imports the declared in-package JS entry on the plugin origin.
+            Uri? documentUri = presentation == "headless"
+                ? PluginResourceHost.BuildHeadlessDocumentUri(revision, normalizedEntry)
+                : null;
+            var opened = _surfaces.Open(projectKey, pluginId, revision, normalizedEntry, documentUri);
             _surfaceTokens[key] = opened.SurfaceToken;
             return opened;
         }
@@ -356,7 +408,7 @@ public sealed class PluginWebViewResourceHost : IDisposable
     private void RebuildOrigins()
     {
         _origins.Clear();
-        foreach (PluginPackageRevision revision in _installations.Values)
+        foreach (PluginPackageRevision revision in _installations.Values.Select(item => item.Revision))
         {
             _origins[revision.VirtualHostName] = revision;
         }

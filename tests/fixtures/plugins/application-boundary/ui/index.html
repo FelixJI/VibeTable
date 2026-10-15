@@ -1,0 +1,7 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>合成应用</title>
+<style>body{margin:0;font:16px system-ui;background:var(--vt-plugin-bg,#fff);color:var(--vt-plugin-text,#111)}nav,main{padding:20px}a,button{margin:8px}section[hidden]{display:none}input,textarea{color:inherit;background:var(--vt-plugin-surface,#eee)}@media(forced-colors:active){body{color:CanvasText;background:Canvas}}</style></head>
+<body><nav><a href="#list">列表</a><a href="#detail">详情</a><a href="#stats">统计</a></nav><main>
+<p id="status">等待宿主</p><section id="list"><h1>列表</h1><p id="rows"></p></section>
+<section id="detail" hidden><h1>详情</h1><textarea id="draft"></textarea><button id="save">保存</button><button id="cancel">取消提交</button></section>
+<section id="stats" hidden><h1>统计</h1><p>同一应用身份内的第三页</p></section><pre id="result"></pre>
+<button id="hang">合成故障：卡死</button></main><script src="app.js"></script></body></html>

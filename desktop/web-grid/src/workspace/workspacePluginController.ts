@@ -2,7 +2,7 @@ import { computed, ref, type ComputedRef, type Ref } from "vue";
 import type { DropdownOption } from "naive-ui";
 
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
-import type { PluginRisk, PluginSurfaceThemeSnapshot } from "@/contracts";
+import type { PluginRisk, PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot } from "@/contracts";
 import { createPluginCommandContext, type usePluginService } from "@/services/pluginService";
 import type { usePluginStore } from "@/stores/pluginStore";
 import type { useTableStore } from "@/stores/tableStore";
@@ -16,10 +16,10 @@ type UiStore = ReturnType<typeof useUiStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 
 type PluginStorePort = Pick<PluginStore,
-  | "plugins" | "projectKey" | "currentUser" | "hostVersion"
-  | "describedAction" | "activeContext" | "activeTask">;
+  | "plugins" | "projectKey" | "projectContextGeneration" | "currentUser" | "hostVersion"
+  | "describedAction" | "activeContext" | "taskForAction" | "tasksForAction" | "nativeTaskReceipts">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
-type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density">;
+type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp" | "activePluginApp" | "navigationRevision" | "beginNavigation">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type WorkspacePluginServicePort = Pick<PluginService,
   "describeAction" | "startAction" | "resolveInteraction" | "cancelTask">;
@@ -48,6 +48,7 @@ interface ToolbarAction {
 
 export type WorkspacePluginIntent =
   | { readonly type: "action.open"; readonly key: string }
+  | { readonly type: "app.open"; readonly key: string }
   | {
     readonly type: "rowMenu.open";
     readonly rowKey: string | number;
@@ -61,10 +62,15 @@ export type WorkspacePluginIntent =
   | { readonly type: "columnMenu.visible"; readonly show: boolean }
   | { readonly type: "columnMenu.select"; readonly key: string }
   | { readonly type: "action.start"; readonly payload: Readonly<Record<string, unknown>> }
-  | { readonly type: "interaction.resolve"; readonly decision: "approved" | "rejected" }
-  | { readonly type: "task.cancel" };
+  | { readonly type: "interaction.resolve"; readonly taskId: string; readonly decision: "approved" | "rejected" }
+  | { readonly type: "task.cancel"; readonly taskId: string }
+  | { readonly type: "receipt.cancel"; readonly taskId: string };
 
 export interface WorkspacePluginController {
+  readonly applicationTasks: ComputedRef<PluginTaskViewSnapshot[]>;
+  readonly actionTasks: ComputedRef<PluginTaskViewSnapshot[]>;
+  readonly applicationTask: ComputedRef<PluginTaskViewSnapshot | null>;
+  readonly actionTask: ComputedRef<PluginTaskViewSnapshot | null>;
   readonly theme: ComputedRef<PluginSurfaceThemeSnapshot>;
   readonly toolbarActions: ComputedRef<ToolbarAction[]>;
   readonly rowMenuOptions: ComputedRef<DropdownOption[]>;
@@ -72,6 +78,7 @@ export interface WorkspacePluginController {
   readonly rowMenu: Ref<ContextMenuState>;
   readonly columnMenu: Ref<ColumnMenuState>;
   dispatch(intent: WorkspacePluginIntent): Promise<void>;
+  dispose(): void;
 }
 
 export interface WorkspacePluginDependencies {
@@ -101,6 +108,31 @@ function errorMessage(error: unknown): string {
 export function createWorkspacePluginController(
   dependencies: WorkspacePluginDependencies,
 ): WorkspacePluginController {
+  let disposed = false;
+  const applicationTasks = computed(() => {
+    const active = dependencies.ui.activePluginApp;
+    if (!active) return [];
+    const action = dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.actions.find(action => action.actionId === active.actionId);
+    if (action?.presentation === "application")
+      return action.surfaceToken ? dependencies.plugins.tasksForAction(active.pluginId, active.actionId, action.surfaceToken) : [];
+    return dependencies.plugins.tasksForAction(active.pluginId, active.actionId);
+  });
+  const actionTasks = computed(() => {
+    const active = dependencies.plugins.describedAction;
+    if (!active) return [];
+    const nativeCustom = active.presentation === "custom"
+      && dependencies.plugins.plugins.find(plugin => plugin.pluginId === active.pluginId)?.manifest.compatibility.pluginApi === "3.x";
+    if (active.presentation === "headless" || active.presentation === "application" || nativeCustom)
+      return active.surface?.surfaceToken ? dependencies.plugins.tasksForAction(active.pluginId, active.actionId, active.surface.surfaceToken) : [];
+    return dependencies.plugins.tasksForAction(active.pluginId, active.actionId);
+  });
+  // Legacy Worker panels retain their single-task presentation; native surfaces
+  // expose every task and controls always carry the selected task's identity.
+  const applicationTask = computed(() => applicationTasks.value.at(-1) ?? null);
+  const actionTask = computed(() => actionTasks.value.at(-1) ?? null);
+  function controlledTask(taskId: string): PluginTaskViewSnapshot | null {
+    return [...actionTasks.value, ...applicationTasks.value].find(task => task.taskId === taskId) ?? null;
+  }
   const theme = computed(() => projectPluginTheme({
     effectiveTheme: dependencies.ui.effectiveTheme,
     locale: dependencies.ui.locale,
@@ -179,23 +211,65 @@ export function createWorkspacePluginController(
     });
   }
 
-  async function openAction(key: string, keys = selectedRowKeys()): Promise<void> {
+  async function openAction(key: string, keys = selectedRowKeys(), openPanel = true): Promise<void> {
     const registered = registeredActions.value.find(item => item.key === key);
     if (!registered) return;
+    if (registered.action.presentation === "application") {
+      await openPluginApp(key, keys);
+      return;
+    }
     try {
       await dependencies.service.describeAction(
         registered.plugin.pluginId,
         registered.action.actionId,
         commandContext(keys),
+        openPanel,
       );
     } catch (error) {
       dependencies.reportError(errorMessage(error));
     }
   }
 
+  async function openPluginApp(key: string, keys = selectedRowKeys()): Promise<void> {
+    if (disposed) return;
+    const navigation = dependencies.ui.beginNavigation();
+    const generation = dependencies.plugins.projectContextGeneration;
+    const projectKey = dependencies.plugins.projectKey;
+    const registered = registeredActions.value.find(item => item.key === key);
+    if (!registered) {
+      dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
+      return;
+    }
+    if (registered.action.presentation !== "application") {
+      dependencies.reportError("该入口不是插件应用");
+      return;
+    }
+    const isCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation
+      && dependencies.plugins.projectKey === projectKey && dependencies.plugins.projectContextGeneration === generation
+      && dependencies.plugins.plugins.some(plugin => plugin.pluginId === registered.plugin.pluginId
+        && plugin.installationId === registered.plugin.installationId && plugin.revision === registered.plugin.revision);
+    try {
+      // describeAction refreshes the catalog for 3.x plugins, revalidates the
+      // live surface and binds the command context without opening the
+      // action overlay; the viewport then mounts from the fresh projection.
+      const availability = await dependencies.service.describeAction(
+        registered.plugin.pluginId,
+        registered.action.actionId,
+        commandContext(keys),
+        false,
+        isCurrent,
+      );
+      if (!isCurrent() || !availability.available) return;
+      dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
+    } catch (error) {
+      if (isCurrent()) dependencies.reportError(errorMessage(error));
+    }
+  }
+
   async function dispatch(intent: WorkspacePluginIntent): Promise<void> {
     switch (intent.type) {
       case "action.open": await openAction(intent.key); return;
+      case "app.open": await openPluginApp(intent.key); return;
       case "rowMenu.open":
         rowMenu.value = { show: true, ...intent, field: intent.field ?? null };
         return;
@@ -261,28 +335,40 @@ export function createWorkspacePluginController(
         }
         return;
       }
-      case "interaction.resolve":
-        if (!dependencies.plugins.activeTask) return;
+      case "interaction.resolve": {
+        const task = controlledTask(intent.taskId);
+        if (!task) return;
         try {
           await dependencies.service.resolveInteraction(
-            dependencies.plugins.activeTask,
+            task,
             intent.decision,
           );
         } catch (error) {
           dependencies.reportError(errorMessage(error));
         }
         return;
-      case "task.cancel":
-        if (!dependencies.plugins.activeTask) return;
+      }
+      case "receipt.cancel":
+      case "task.cancel": {
+        const task = intent.type === "receipt.cancel"
+          ? dependencies.plugins.nativeTaskReceipts.find(task => task.taskId === intent.taskId
+            && (task.state === "queued" || task.state === "running"))
+          : controlledTask(intent.taskId);
+        if (!task) return;
         try {
-          await dependencies.service.cancelTask(dependencies.plugins.activeTask.taskId);
+          await dependencies.service.cancelTask(task.taskId);
         } catch (error) {
           dependencies.reportError(errorMessage(error));
         }
+      }
     }
   }
 
   return {
+    applicationTasks,
+    actionTasks,
+    applicationTask,
+    actionTask,
     theme,
     toolbarActions,
     rowMenuOptions,
@@ -290,5 +376,6 @@ export function createWorkspacePluginController(
     rowMenu,
     columnMenu,
     dispatch,
+    dispose: () => { disposed = true; },
   };
 }

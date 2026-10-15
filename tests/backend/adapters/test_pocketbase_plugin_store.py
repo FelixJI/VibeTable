@@ -183,7 +183,13 @@ async def test_identity_and_item_key_operations_use_frozen_fields() -> None:
     client = FakePluginStoreClient([True, 2, False])
     store = PocketBasePluginStore(client=client, package_cache=Path("cache"))
 
-    deleted = await store.delete_installation("local:default", "com.example.summary")
+    deleted = await store.delete_installation(
+        "local:default",
+        "com.example.summary",
+        installation_id="record-summary",
+        expected_revision=2,
+        cleanup_private_settings=True,
+    )
     removed = await store.delete_package_revisions("local:default", "com.example.summary")
     referenced = await store.is_package_path_referenced("cache/abc.vtplugin")
 
@@ -191,7 +197,13 @@ async def test_identity_and_item_key_operations_use_frozen_fields() -> None:
     assert client.calls == [
         (
             "delete_installation",
-            {"projectKey": "local:default", "pluginId": "com.example.summary"},
+            {
+                "projectKey": "local:default",
+                "pluginId": "com.example.summary",
+                "installationId": "record-summary",
+                "expectedRevision": 2,
+                "cleanupPrivateSettings": True,
+            },
         ),
         (
             "delete_package_revisions",
@@ -247,7 +259,9 @@ async def test_private_setting_round_trip_uses_item_key_and_revision_guard() -> 
         "com.example.summary",
         "columns",
     )
-    saved = await store.save_private_setting(_setting(), expected_revision=2)
+    saved = await store.save_private_setting(
+        _setting(), expected_revision=2, installation_id="record-summary", installation_revision=7
+    )
     removed = await store.delete_private_settings("local:default", "com.example.summary")
 
     assert saved == _setting()
@@ -268,6 +282,8 @@ async def test_private_setting_round_trip_uses_item_key_and_revision_guard() -> 
             "pluginId": "com.example.summary",
             "payload": payload,
             "expectedRevision": 2,
+            "installationId": "record-summary",
+            "installationRevision": 7,
         },
     )
 
@@ -330,6 +346,26 @@ async def test_revision_conflict_maps_to_frozen_conflict_error() -> None:
     assert str(error.value) == message
 
 
+@pytest.mark.parametrize("operation", ["commit_upgrade", "commit_rollback"])
+async def test_package_change_posts_immutable_target_to_the_atomic_store(operation: str) -> None:
+    client = FakePluginStoreClient([_snapshot_payload()])
+    store = PocketBasePluginStore(client=client, package_cache=Path("cache"))
+    plan = _plan().model_copy(
+        update={"target_installation_id": "original-record", "target_revision": 7}
+    )
+    commit = store.commit_upgrade if operation == "commit_upgrade" else store.commit_rollback
+    await commit(plan, package_revision=_package_revision())
+    assert client.calls == [
+        (
+            operation,
+            {
+                "plan": plan.model_dump(mode="json", by_alias=True),
+                "packageRevision": _package_revision().model_dump(mode="json", by_alias=True),
+            },
+        )
+    ]
+
+
 @pytest.mark.asyncio
 async def test_public_registry_errors_map_to_frozen_codes() -> None:
     cases = [
@@ -390,3 +426,29 @@ async def test_invalid_result_shapes_fail_closed() -> None:
 
     with pytest.raises(ValueError, match="invalid plugin installation"):
         await store.get_installation("local:default", "com.example.summary")
+
+
+@pytest.mark.asyncio
+async def test_set_enabled_is_one_bound_atomic_store_operation() -> None:
+    client = FakePluginStoreClient([_snapshot_payload(revision=3)])
+    store = PocketBasePluginStore(client=client, package_cache=Path("cache"))
+    result = await store.set_enabled(
+        "local:default",
+        "com.example.summary",
+        False,
+        installation_id="original-record",
+        expected_revision=2,
+    )
+    assert result.revision == 3
+    assert client.calls == [
+        (
+            "set_enabled",
+            {
+                "projectKey": "local:default",
+                "pluginId": "com.example.summary",
+                "enabled": False,
+                "installationId": "original-record",
+                "expectedRevision": 2,
+            },
+        )
+    ]

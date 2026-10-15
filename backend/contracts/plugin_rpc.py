@@ -66,6 +66,13 @@ class SetPluginEnabledParams(PluginIdentityParams):
     enabled: bool
 
 
+class SetPluginEnabledExecutionParams(SetPluginEnabledParams):
+    """Host-only lifecycle execution binding, never a renderer capability."""
+
+    installation_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=1)
+
+
 class UpgradePluginParams(PluginIdentityParams):
     """Public frozen renderer upgrade DTO: identity plus plan id and revision."""
 
@@ -87,6 +94,8 @@ class RollbackPluginParams(PluginIdentityParams):
 
 
 class UninstallPluginParams(PluginIdentityParams):
+    installation_id: str = Field(min_length=1)
+    expected_revision: int = Field(ge=1)
     cleanup_private_settings: bool = False
 
 

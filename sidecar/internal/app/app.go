@@ -397,9 +397,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			return fmt.Errorf("drain audit outbox before readiness: %w", err)
 		}
 		if options.WorkspaceV2 != nil {
+			options.Logger.Info("workspace.open.started")
 			workspaceRuntime, err = workspacev2.Open(
 				context.Background(),
 				workspacev2.Options{
+					Logger:                 options.Logger,
 					App:                    pb,
 					DataDir:                options.DataDir,
 					WorkspaceID:            options.WorkspaceV2.WorkspaceID,
@@ -420,9 +422,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				_ = rawListener.Close()
 				return fmt.Errorf("open workspace v2 runtime: %w", err)
 			}
+			options.Logger.Info("workspace.open.completed")
 			jobService.SetBusinessWriteGate(
 				workspaceRuntime.CoordinateIdempotentBusinessWrite,
 			)
+			options.Logger.Info("workspace.background_resume.started")
 			if err := completeRestoreBeforeResumingJobs(
 				workspaceRuntime,
 				options.OnWorkspaceV2Ready,
@@ -431,12 +435,14 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				_ = rawListener.Close()
 				return err
 			}
+			options.Logger.Info("workspace.background_resume.completed")
 			capabilities := workspaceRuntime.Capabilities()
 			plugins := pluginstore.New(pb, capabilities.WorkspaceID, func() {
 				if err := realtimeHub.PublishPending(); err != nil {
 					options.Logger.Error("plugin.catalog_notification_failed", "errorCode", "realtime.storage_failed")
 				}
 			})
+			options.Logger.Info("workspace.legacy_import.started")
 			complete, importErr := plugins.LegacyImportComplete()
 			if importErr == nil && !complete {
 				importErr = businessGate(context.Background(), "plugin.import", plugins.ImportMarkerKey(), func(ctx context.Context) error {
@@ -448,9 +454,11 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 				_ = rawListener.Close()
 				return fmt.Errorf("import legacy plugin state: %w", importErr)
 			}
+			options.Logger.Info("workspace.legacy_import.completed")
 			registerPluginStoreRoutes(event.Router, plugins, businessGate)
 			registerPluginDataRoutes(event.Router, pb, querySource, capabilities.WorkspaceID, capabilities.SessionEpoch)
 			registerPluginSurfaceAPIRoutes(event.Router, pb, querySource, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate)
+			registerPluginWorkerMutationRoutes(event.Router, pb, mutationKernel, capabilities.WorkspaceID, capabilities.SessionEpoch, businessGate)
 			schemaCatalog := schemaapi.New(pb)
 			dashboardService := metadata.NewDashboard(pb, queryPort)
 			contentMetadata := metadata.NewContentService(pb, querySource)
@@ -537,10 +545,13 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			registerProductRoutes(event.Router, productDispatcher)
 			registerWorkspaceV2Routes(event.Router, workspaceRuntime)
 		}
+		options.Logger.Info("workspace.field_migration.started")
 		if err := fieldMigration.ResumePending(jobService.Context()); err != nil {
 			_ = rawListener.Close()
 			return fmt.Errorf("resume field migrations: %w", err)
 		}
+		options.Logger.Info("workspace.field_migration.completed")
+		options.Logger.Info("workspace.attachment_cleanup.started")
 		if err := fieldresource.RunPendingAttachmentCleanup(
 			jobService.Context(), pb,
 		); err != nil {
@@ -548,6 +559,7 @@ func New(options Options) (*pocketbase.PocketBase, error) {
 			return fmt.Errorf("resume attachment cleanup: %w", err)
 		}
 
+		options.Logger.Info("workspace.attachment_cleanup.completed")
 		event.Router.POST(shutdownPath, func(request *core.RequestEvent) error {
 			if err := request.JSON(http.StatusAccepted, map[string]any{
 				"status": "stopping",

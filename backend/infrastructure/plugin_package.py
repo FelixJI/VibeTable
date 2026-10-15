@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 
 from backend._version import __version__
+from backend.contracts.plugin import plugin_entry_has_supported_type, plugin_entry_is_host_reserved
 from backend.infrastructure.plugin_schema import (
     PluginSchemaError,
     validate_plugin_schema_document,
@@ -451,6 +452,42 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             raise PluginPackageError(
                 "action_invalid", f"action {action_id} placements must contain strings"
             )
+        presentation = action.get("presentation", "surface")
+        if presentation not in {"surface", "application", "headless"}:
+            raise PluginPackageError(
+                "action_invalid",
+                f"action {action_id} has an invalid presentation",
+            )
+        entry = action.get("entry")
+        if presentation == "surface":
+            if entry is not None:
+                raise PluginPackageError(
+                    "action_invalid",
+                    f"surface action {action_id} must not declare an entry",
+                )
+        elif not native:
+            raise PluginPackageError(
+                "action_invalid",
+                f"action {action_id} presentation requires a v2 manifest",
+            )
+        elif not isinstance(entry, str) or not entry:
+            raise PluginPackageError(
+                "action_invalid",
+                f"{presentation} action {action_id} must declare an entry",
+            )
+        else:
+            if any(key in action for key in ("formSchema", "inputSchema", "outputSchema")):
+                raise PluginPackageError(
+                    "action_invalid",
+                    f"{presentation} action {action_id} forbids form/input/output schemas",
+                )
+            _require_canonical_reference(entry, f"actions.{action_id}.entry")
+            if not plugin_entry_has_supported_type(presentation, entry):
+                raise PluginPackageError(
+                    "action_invalid",
+                    "entry type must match application HTML or headless JavaScript MIME outside Host-reserved paths",
+                )
+            _validate_reference(contents, entry, schema=False)
         for key in _SCHEMA_REFERENCE_KEYS:
             if key in action:
                 _validate_reference(contents, action[key], schema=True)
@@ -477,6 +514,12 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
         raise PluginPackageError("ui_invalid", "ui.customViews must be an array")
     view_ids: set[str] = set()
     view_actions: set[str] = set()
+    entry_action_ids = {
+        action.get("actionId")
+        for action in raw_actions
+        if isinstance(action, dict)
+        and action.get("presentation", "surface") in {"application", "headless"}
+    }
     for raw_view in ui.get("customViews", []):
         view = _require_object(raw_view, "custom view")
         view_id = view.get("viewId")
@@ -489,6 +532,11 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
                 "ui_invalid", f"custom view {view_id!r} must reference a declared actionId"
             )
         view_actions.add(action_id)
+        if action_id in entry_action_ids:
+            raise PluginPackageError(
+                "ui_invalid",
+                f"custom view {view_id!r} cannot bind an application/headless action",
+            )
         if "src" in view or "surfaceToken" in view:
             raise PluginPackageError(
                 "ui_invalid", "custom view origin and surface token are assigned by the host"
@@ -501,10 +549,19 @@ def validate_plugin_manifest(entries: list[tuple[str, bytes]]) -> dict[str, Any]
             if key in view:
                 if isinstance(view[key], str):
                     _require_canonical_reference(view[key], f"ui.customViews.{view_id}.{key}")
+                    if plugin_entry_is_host_reserved(view[key]):
+                        raise PluginPackageError(
+                            "ui_invalid", "custom view entry/resources use a Host-reserved path"
+                        )
                 _validate_reference(contents, view[key], schema=False)
-    if native and action_ids - view_actions:
+    surface_action_ids = {
+        action.get("actionId")
+        for action in raw_actions
+        if isinstance(action, dict) and action.get("presentation", "surface") == "surface"
+    }
+    if native and surface_action_ids - view_actions:
         raise PluginPackageError(
-            "ui_invalid", "API 3.x actions require a declared custom view entry"
+            "ui_invalid", "API 3.x surface actions require a declared custom view entry"
         )
     return manifest
 

@@ -99,7 +99,7 @@ func TestPluginSurfaceHTTPAfterCommitFaultIsUnknown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
+			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: f.request.TableID, RequestID: "surface-after-commit"}
 			call := func(method string, params any, caller ...context.Context) *httptest.ResponseRecorder {
 				input.Method = method
 				input.Request, _ = json.Marshal(params)
@@ -221,6 +221,75 @@ func TestPluginSurfaceMissingCommitProofNeverEstablishesRollback(t *testing.T) {
 	}
 }
 
+func TestSurfaceMutationRechecksAuthorityInsideTransactionAfterLifecycleGate(t *testing.T) {
+	for _, transition := range []string{"disabled", "revision", "uninstall", "reinstall"} {
+		t.Run(transition, func(t *testing.T) {
+			ctx := context.Background()
+			f := newWorkspaceMutationReplayFixture(t)
+			workspace := "11111111-1111-4111-8111-111111111111"
+			store := pluginstore.New(f.pb, workspace)
+			pluginID, hash := "com.example.waiting-surface", strings.Repeat("a", 64)
+			manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"create"}, "fields": []string{"*"}}}}, "actions": []any{map[string]any{"actionId": "save", "risk": "write", "mode": "local", "invocation": "manual", "presentation": "application", "entry": "ui/index.html"}}}
+			manifest["ui"] = map[string]any{}
+			manifest["description"] = map[string]any{}
+			snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []string{}})
+			installed, err := store.SaveInstallation(ctx, snapshot, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := queryschema.New(f.pb.DataDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: f.request.TableID, RequestID: "waiting-mutation"}
+			plan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": f.request.TableID, "schemaRevision": f.request.SchemaRevision, "operations": []any{map[string]any{"kind": "create", "values": map[string]any{f.field: "must-not-commit"}}}}
+			input.Method = "audit.start"
+			input.Request, _ = json.Marshal(map[string]any{"taskId": "waiting-task", "plan": plan})
+			kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
+			if _, err := executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, f.runtime.CoordinateBusinessWrite); err != nil {
+				t.Fatal(err)
+			}
+			input.Method = "mutation.commit"
+			input.Request, _ = json.Marshal(plan)
+			gateEntered := false
+			before := f.state(t)
+			gate := func(ctx context.Context, kind, id string, fn func(context.Context) error) error {
+				gateEntered = true // Outer Host/manifest/plan/audit checks have already succeeded.
+				switch transition {
+				case "disabled":
+					_, err = store.SetEnabled(ctx, input.ProjectKey, pluginID, false)
+				case "revision":
+					var next map[string]any
+					_ = json.Unmarshal(installed, &next)
+					next["revision"] = 2
+					raw, _ := json.Marshal(next)
+					expected := int64(1)
+					_, err = store.SaveInstallation(ctx, raw, &expected)
+				default:
+					_, err = store.DeleteInstallation(ctx, input.ProjectKey, pluginID, input.InstallationID, 1, false)
+					if err == nil && transition == "reinstall" {
+						_, err = store.SaveInstallation(ctx, snapshot, nil)
+					}
+				}
+				if err != nil {
+					return err
+				}
+				before = f.state(t)
+				return f.runtime.CoordinateBusinessWrite(ctx, kind, id, fn)
+			}
+			if _, err := executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, gate); err == nil {
+				t.Fatal("retired installation committed after waiting for gate")
+			}
+			if !gateEntered {
+				t.Fatal("test never crossed the outer admission boundary")
+			}
+			if !reflect.DeepEqual(before, f.state(t)) {
+				t.Fatal("denied transaction changed rows or mutation receipts")
+			}
+		})
+	}
+}
+
 func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 	ctx := context.Background()
 	f := newWorkspaceMutationReplayFixture(t)
@@ -239,7 +308,7 @@ func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: f.request.TableID}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: f.request.TableID}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)
@@ -459,7 +528,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	kernel := mutation.New(pb, mutation.MetadataSchemaSource{})
-	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, ActiveCollection: table.TableID, RequestID: "surface-test-read"}
+	input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: table.TableID, RequestID: "surface-test-read"}
 	call := func(method string, params any) (any, error) {
 		input.Method = method
 		input.Request, _ = json.Marshal(params)
@@ -619,7 +688,13 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 			t.Fatal(err)
 		}
 		input.PluginID = "com.example.noid"
-		defer func() { input.PluginID = pluginID; input.Cursor = ""; input.Dependencies = nil }()
+		input.InstallationID = installationRecordID(t, store, input.PluginID)
+		defer func() {
+			input.PluginID = pluginID
+			input.InstallationID = installationRecordID(t, store, pluginID)
+			input.Cursor = ""
+			input.Dependencies = nil
+		}()
 		output, err := call("data.query", map[string]any{"contract": "vibetable.plugin-query.v2", "collection": table.TableID, "fields": []string{amount.Identity.FieldID}, "pageSize": 200})
 		if err != nil {
 			t.Fatal(err)
@@ -686,6 +761,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.PluginID = "com.example.other"
+	input.InstallationID = installationRecordID(t, store, input.PluginID)
 	input.PackageHash = strings.Repeat("b", 64)
 	if borrowed, err := call("storage.get", map[string]any{"key": "settings"}); err != nil || borrowed != nil {
 		t.Fatalf("private settings crossed installations %#v %v", borrowed, err)
@@ -695,6 +771,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal("borrowed package revision admitted")
 	}
 	input.PluginID = pluginID
+	input.InstallationID = installationRecordID(t, store, pluginID)
 	input.PackageHash = hash
 	if _, err = call("storage.delete", map[string]any{"key": "settings"}); err != nil {
 		t.Fatal(err)
@@ -834,11 +911,218 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		t.Fatal("foreign plugin accepted")
 	}
 	input.PluginID = pluginID
+	input.InstallationID = installationRecordID(t, store, pluginID)
 	input.ProjectKey = "local:11111111111141118111111111111111"
 	if _, err = call("audit.finish", map[string]any{"outcome": "unknown", "errorCode": "plugin_commit_unknown"}); err == nil {
 		t.Fatal("terminal audit crossed workspace")
 	}
 	if _, err = call("data.query", query); err == nil {
 		t.Fatal("foreign workspace accepted")
+	}
+}
+
+func TestSurfaceInstallationBindsPresentationEntry(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkspaceMutationReplayFixture(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	store := pluginstore.New(f.pb, workspace)
+	pluginID, hash := "com.example.presentation-binding", strings.Repeat("e", 64)
+	manifest := map[string]any{
+		"$schema":       "vibetable.plugin-manifest.v2",
+		"pluginId":      pluginID,
+		"version":       "1.0.0",
+		"displayName":   map[string]any{"zh-CN": "示例"},
+		"description":   map[string]any{},
+		"compatibility": map[string]any{"pluginApi": "3.x"},
+		"permissions":   map[string]any{"privateStorage": true},
+		"actions": []any{
+			map[string]any{"actionId": "open", "mode": "local", "risk": "read", "invocation": "manual", "presentation": "application", "entry": "ui/index.html"},
+			map[string]any{"actionId": "run", "mode": "local", "risk": "write", "invocation": "manual", "presentation": "headless", "entry": "ui/run.js"},
+		},
+		"ui": map[string]any{"customViews": []any{}},
+	}
+	snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}})
+	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
+		t.Fatal(err)
+	}
+	base := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID)}
+
+	for _, tc := range []struct {
+		name     string
+		actionID string
+		entry    string
+		wantRisk string
+		wantDeny bool
+	}{{
+		name:     "application-entry",
+		actionID: "open",
+		entry:    "ui/index.html",
+		wantRisk: "read",
+	}, {
+		name:     "headless-entry",
+		actionID: "run",
+		entry:    "ui/run.js",
+		wantRisk: "write",
+	}, {
+		name:     "application-wrong-entry",
+		actionID: "open",
+		entry:    "ui/other.html",
+		wantDeny: true,
+	}, {
+		name:     "headless-empty-entry",
+		actionID: "run",
+		entry:    "",
+		wantDeny: true,
+	}} {
+		input := base
+		input.ActionID = tc.actionID
+		input.Entry = tc.entry
+		installed, err := surfaceInstallation(ctx, f.pb, workspace, input)
+		if tc.wantDeny {
+			if err == nil {
+				t.Fatal(tc.name, " admitted")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(tc.name, err)
+		}
+		if installed.ActionRisk != tc.wantRisk {
+			t.Fatal(tc.name, " risk ", installed.ActionRisk)
+		}
+	}
+	old := base
+	old.ActionID, old.Entry = "open", "ui/index.html"
+	if _, err := store.DeleteInstallation(ctx, store.ProjectKey(), pluginID, base.InstallationID, base.InstallationRevision, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveInstallation(ctx, snapshot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := surfaceInstallation(ctx, f.pb, workspace, old); err == nil {
+		t.Fatal("reinstall accepted old native installation identity")
+	}
+	old.InstallationID = ""
+	if _, err := surfaceInstallation(ctx, f.pb, workspace, old); err == nil {
+		t.Fatal("missing native installation identity accepted")
+	}
+	old.InstallationID = installationRecordID(t, store, pluginID)
+	if _, err := surfaceInstallation(ctx, f.pb, workspace, old); err != nil {
+		t.Fatal("new installation identity rejected", err)
+	}
+
+}
+
+func installationRecordID(t *testing.T, store *pluginstore.Service, pluginID string) string {
+	t.Helper()
+	raw, err := store.GetInstallation(context.Background(), store.ProjectKey(), pluginID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		InstallationID string `json:"installationId"`
+	}
+	if err := json.Unmarshal(raw, &snapshot); err != nil || snapshot.InstallationID == "" {
+		t.Fatal("missing installation record identity", err)
+	}
+	return snapshot.InstallationID
+}
+
+// Pause after the outer surface check and before PB starts its authoritative read.
+type pluginDataTransactionHook struct {
+	core.App
+	before func()
+}
+
+func (h *pluginDataTransactionHook) RunInTransaction(fn func(core.App) error) error {
+	if h.before != nil {
+		before := h.before
+		h.before = nil
+		before()
+	}
+	return h.App.RunInTransaction(fn)
+}
+
+func TestSurfaceDataRechecksInstallationInsideReadTransaction(t *testing.T) {
+	for _, method := range []string{"data.describe", "data.query"} {
+		for _, change := range []string{"reinstall", "package", "disabled", "missing-id", "missing-package"} {
+			t.Run(method+"/"+change, func(t *testing.T) {
+				ctx := context.Background()
+				pb := schemaProductStore(t)
+				lifecycle, err := schemacore.NewTableLifecycle(pb)
+				if err != nil {
+					t.Fatal(err)
+				}
+				table, err := lifecycle.Create(ctx, v2.TableCreateIntent{DisplayName: "Read identity", OperationID: "read-identity-table", Actor: v2.Actor{ID: "local-user", Kind: "user"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				workspace := "11111111-1111-4111-8111-111111111111"
+				store := pluginstore.New(pb, workspace)
+				pluginID, hash := "com.example.read-identity", strings.Repeat("a", 64)
+				manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": table.TableID, "operations": []string{"read", "query"}, "fields": []string{"id"}}}}, "actions": []any{map[string]any{"actionId": "open", "risk": "read", "mode": "local", "invocation": "manual", "presentation": "application", "entry": "ui/index.html"}}, "ui": map[string]any{}}
+				snapshot := map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []any{}}
+				raw, _ := json.Marshal(snapshot)
+				if _, err = store.SaveInstallation(ctx, raw, nil); err != nil {
+					t.Fatal(err)
+				}
+				input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, InstallationID: installationRecordID(t, store, pluginID), InstallationRevision: 1, PackageHash: hash, ActionID: "open", Entry: "ui/index.html", Method: method, RequestID: "read-identity", SessionEpoch: 7, ActiveCollection: table.TableID}
+				if method == "data.describe" {
+					input.Request, _ = json.Marshal(pluginDescribeRequest{Accepts: []string{pluginDataContract}, Collection: table.TableID})
+				} else {
+					input.Request, _ = json.Marshal(pluginQueryRequest{Contract: "vibetable.plugin-query.v2", Collection: table.TableID, Fields: []string{"id"}})
+				}
+				source, _ := queryschema.New(pb.DataDir())
+				if _, err = executePluginSurfaceAPI(ctx, pb, source, nil, workspace, input, nil); err != nil {
+					t.Fatal("valid read:", err)
+				}
+				hooked := &pluginDataTransactionHook{App: pb, before: func() {
+					switch change {
+					case "reinstall":
+						if _, err := store.DeleteInstallation(ctx, input.ProjectKey, pluginID, input.InstallationID, 1, false); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := store.SaveInstallation(ctx, raw, nil); err != nil {
+							t.Fatal(err)
+						}
+					case "package", "disabled":
+						records, err := pb.FindRecordsByFilter("vibetable_plugin_records", "kind='installation' && plugin_id={:plugin}", "", 1, 0, map[string]any{"plugin": pluginID})
+						if err != nil || len(records) != 1 {
+							t.Fatalf("installation record: %v", err)
+						}
+						var payload map[string]any
+						encoded, _ := json.Marshal(records[0].GetRaw("payload_json"))
+						_ = json.Unmarshal(encoded, &payload)
+						if change == "disabled" {
+							payload["status"] = "disabled"
+						} else {
+							payload["packageHash"] = "sha256:" + strings.Repeat("b", 64)
+						}
+						records[0].Set("payload_json", payload)
+						if err := pb.Save(records[0]); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}}
+				if change == "missing-id" || change == "missing-package" {
+					// Exercise the lower read entry directly: missing identity cannot fall back to revision.
+					data := map[string]any{"operation": strings.TrimPrefix(method, "data."), "projectKey": input.ProjectKey, "pluginId": pluginID, "installationRevision": 1, "installationId": input.InstallationID, "packageHash": hash, "activeCollection": table.TableID, "request": input.Request}
+					if change == "missing-id" {
+						delete(data, "installationId")
+					} else {
+						delete(data, "packageHash")
+					}
+					encoded, _ := json.Marshal(data)
+					var read pluginDataRequest
+					_ = json.Unmarshal(encoded, &read)
+					_, err = executePluginData(ctx, pb, source, workspace, read)
+				} else {
+					_, err = executePluginSurfaceAPI(ctx, hooked, source, nil, workspace, input, nil)
+				}
+				if err == nil {
+					t.Fatal("stale or missing read identity admitted inside PB transaction")
+				}
+			})
+		}
 	}
 }

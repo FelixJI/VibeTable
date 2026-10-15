@@ -131,6 +131,10 @@ async def test_uninstall_retains_or_removes_private_settings_explicitly() -> Non
             "local:default",
             "com.example.summary",
             cleanup_private_settings=cleanup,
+            installation_id=(
+                await registry.get("local:default", "com.example.summary")
+            ).installation_id,
+            expected_revision=1,
         )
 
         assert result.uninstalled
@@ -225,3 +229,59 @@ def test_validate_install_plan_accepts_v2_surface_actions_without_worker_entries
             manifest=manifest,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_uninstall_rejects_same_revision_reinstallation_and_changed_revision() -> None:
+    store = InMemoryPluginStore()
+    registry = PluginRegistry(store=store)
+    await _install(store, _plan())
+    original = await registry.get("local:default", "com.example.summary")
+    assert original is not None
+    assert original.installation_id
+    setting = PluginPrivateSetting(
+        project_key=original.project_key,
+        plugin_id=original.plugin_id,
+        setting_key="private",
+        value="retain",
+        revision=1,
+    )
+    await store.save_private_setting(setting, expected_revision=None)
+    changed = await registry.set_enabled(original.project_key, original.plugin_id, True)
+    with pytest.raises(PluginRegistryError, match="installation changed"):
+        await registry.uninstall(
+            original.project_key,
+            original.plugin_id,
+            installation_id=original.installation_id,
+            expected_revision=original.revision,
+            cleanup_private_settings=True,
+        )
+    assert (
+        await store.get_private_setting(original.project_key, original.plugin_id, "private")
+        == setting
+    )
+    await registry.uninstall(
+        original.project_key,
+        original.plugin_id,
+        installation_id=original.installation_id,
+        expected_revision=changed.revision,
+        cleanup_private_settings=False,
+    )
+    await _install(store, _plan())
+    current = await registry.get(original.project_key, original.plugin_id)
+    assert current is not None
+    assert current.installation_id != original.installation_id
+    with pytest.raises(PluginRegistryError, match="installation changed"):
+        await registry.uninstall(
+            original.project_key,
+            original.plugin_id,
+            installation_id=original.installation_id,
+            expected_revision=original.revision,
+            cleanup_private_settings=True,
+        )
+    assert await registry.get(original.project_key, original.plugin_id) == current
+    assert (
+        await store.get_private_setting(original.project_key, original.plugin_id, "private")
+        == setting
+    )
+    assert len(await store.list_package_revisions(original.project_key, original.plugin_id)) == 1

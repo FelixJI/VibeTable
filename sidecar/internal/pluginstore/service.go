@@ -455,6 +455,14 @@ func (service *Service) SaveInstallation(
 		if saveErr := saveRecord(txApp, row, current != nil); saveErr != nil {
 			return saveErr
 		}
+		persisted, readErr := findInstallation(txApp, identity.projectKey, identity.pluginID)
+		if readErr != nil {
+			return readErr
+		}
+		if persisted == nil {
+			return storageError()
+		}
+		snapshot = persisted.Payload
 		event, eventErr := catalogChangedEvent(service.newID(), service.now(), snapshot)
 		if eventErr != nil {
 			return eventErr
@@ -472,12 +480,47 @@ func (service *Service) SaveInstallation(
 }
 
 func (service *Service) DeleteInstallation(
-	ctx context.Context,
-	projectKey string,
-	pluginID string,
+	ctx context.Context, projectKey string, pluginID string,
+	installationID string, expectedRevision int64, cleanupPrivateSettings bool,
 ) (bool, error) {
-	count, err := service.deleteWhere(ctx, KindInstallation, projectKey, pluginID, "")
-	return count > 0, err
+	if installationID == "" || expectedRevision < 1 {
+		return false, requestError("plugin.request_invalid", "installation identity and revision are required", nil)
+	}
+	if err := service.ValidateProject(projectKey); err != nil {
+		return false, err
+	}
+	err := service.transact(ctx, func(txApp core.App) error {
+		current, err := findInstallation(txApp, projectKey, pluginID)
+		if err != nil {
+			return err
+		}
+		if current == nil || jsonText(current.Payload, "installationId") != installationID || jsonInt(current.Payload, "revision") != expectedRevision {
+			return revisionConflict(KindInstallation, expectedRevision, "installation changed")
+		}
+		// All plugin-owned records that uninstall removes share this CAS transaction.
+		// A concurrent reinstall cannot lose its private settings or package references.
+		records, err := txApp.FindRecordsByFilter(recordsCollection,
+			"project_key={:project} && plugin_id={:plugin}", "", 0, 0,
+			dbx.Params{"project": projectKey, "plugin": pluginID})
+		if err != nil {
+			return storageError()
+		}
+		for _, stored := range records {
+			kind := stored.GetString("kind")
+			if kind == KindInstallation || kind == KindRevision || (cleanupPrivateSettings && kind == KindSetting) {
+				if err := txApp.Delete(stored); err != nil {
+					return storageError()
+				}
+			}
+		}
+		audit, err := lifecycleAudit(service.now(), current.Payload, "uninstall")
+		if err != nil {
+			return err
+		}
+		_, err = service.recordAuditTx(txApp, audit)
+		return err
+	})
+	return err == nil, err
 }
 
 func (service *Service) SavePackageRevision(
@@ -545,6 +588,8 @@ func (service *Service) SavePrivateSetting(
 	ctx context.Context,
 	setting json.RawMessage,
 	expectedRevision *int64,
+	installationID string,
+	installationRevision int64,
 ) (json.RawMessage, error) {
 	projectKey, pluginID, settingKey, err := validateSettingPayload(setting)
 	if err != nil {
@@ -555,6 +600,13 @@ func (service *Service) SavePrivateSetting(
 		return nil, err
 	}
 	err = service.transact(ctx, func(txApp core.App) error {
+		installation, err := findInstallation(txApp, projectKey, pluginID)
+		if err != nil {
+			return err
+		}
+		if installationID == "" || installationRevision < 1 || installation == nil || jsonText(installation.Payload, "installationId") != installationID || jsonInt(installation.Payload, "revision") != installationRevision {
+			return revisionConflict(KindInstallation, installationRevision, "installation changed")
+		}
 		stored, findErr := findRecord(
 			txApp, KindSetting, projectKey, pluginID, settingKey,
 		)
@@ -663,6 +715,17 @@ func (service *Service) SetEnabled(
 	pluginID string,
 	enabled bool,
 ) (json.RawMessage, error) {
+	return service.setEnabled(ctx, projectKey, pluginID, enabled, "", 0)
+}
+
+func (service *Service) SetEnabledForInstallation(ctx context.Context, projectKey, pluginID string, enabled bool, installationID string, expectedRevision int64) (json.RawMessage, error) {
+	if installationID == "" || expectedRevision < 1 {
+		return nil, invalidPayload()
+	}
+	return service.setEnabled(ctx, projectKey, pluginID, enabled, installationID, expectedRevision)
+}
+
+func (service *Service) setEnabled(ctx context.Context, projectKey, pluginID string, enabled bool, installationID string, expectedRevision int64) (json.RawMessage, error) {
 	if projectKey == "" || pluginID == "" {
 		return nil, requestError("plugin.request_invalid", "project and plugin identity is required", nil)
 	}
@@ -677,6 +740,9 @@ func (service *Service) SetEnabled(
 		}
 		if current == nil {
 			return notFound()
+		}
+		if installationID != "" && (jsonText(current.Payload, "installationId") != installationID || jsonInt(current.Payload, "revision") != expectedRevision) {
+			return revisionConflict(KindInstallation, expectedRevision, "installation changed")
 		}
 		blocking := jsonStrings(current.Payload, "blockingReasons")
 		if enabled && len(blocking) > 0 {
@@ -709,6 +775,14 @@ func (service *Service) SetEnabled(
 		}, true); saveErr != nil {
 			return saveErr
 		}
+		persisted, readErr := findInstallation(txApp, projectKey, pluginID)
+		if readErr != nil {
+			return readErr
+		}
+		if persisted == nil {
+			return storageError()
+		}
+		updated = persisted.Payload
 		audit, auditErr := lifecycleAudit(
 			service.now(), updated,
 			map[bool]string{true: "enable", false: "disable"}[enabled],
@@ -1027,6 +1101,12 @@ func recordFromStored(stored *core.Record) (record, error) {
 	if !json.Valid(raw) || len(raw) > maxPayloadBytes {
 		return record{}, storageError()
 	}
+	if stored.GetString("kind") == KindInstallation {
+		raw, err = updateSnapshot(raw, map[string]any{"installationId": stored.Id})
+		if err != nil {
+			return record{}, err
+		}
+	}
 	return record{
 		Kind:       stored.GetString("kind"),
 		ProjectKey: stored.GetString("project_key"),
@@ -1099,6 +1179,21 @@ func saveRecord(app core.App, row record, exists bool) error {
 	stored.Set("project_key", row.ProjectKey)
 	stored.Set("plugin_id", row.PluginID)
 	stored.Set("item_key", row.ItemKey)
+	if row.Kind == KindInstallation {
+		payload, err := decodePayload(row.Payload)
+		if err != nil {
+			return err
+		}
+		// The caller can echo an identity, but only PocketBase owns it.
+		if claimed := textValue(payload["installationId"]); claimed != "" && (!exists || claimed != stored.Id) {
+			return invalidPayload()
+		}
+		delete(payload, "installationId")
+		row.Payload, err = json.Marshal(payload)
+		if err != nil {
+			return storageError()
+		}
+	}
 	stored.Set("payload_json", pbtypes.JSONRaw(row.Payload))
 	stored.Set("seq", row.Seq)
 	if err := app.Save(stored); err != nil {

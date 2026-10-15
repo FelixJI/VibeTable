@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from backend.application.plugin_registry import (
     PluginRegistryError,
     build_installation_snapshot,
@@ -63,8 +65,59 @@ class InMemoryPluginStore:
             key=lambda snapshot: snapshot.plugin_id,
         )
 
-    async def delete_installation(self, project_key: str, plugin_id: str) -> bool:
-        return self._installations.pop((project_key, plugin_id), None) is not None
+    async def set_enabled(
+        self,
+        project_key: str,
+        plugin_id: str,
+        enabled: bool,
+        *,
+        installation_id: str,
+        expected_revision: int,
+    ) -> PluginSnapshot:
+        current = self._installations.get((project_key, plugin_id))
+        if (
+            current is None
+            or not installation_id
+            or current.installation_id != installation_id
+            or current.revision != expected_revision
+        ):
+            raise PluginStoreConflictError("plugin installation changed")
+        if enabled and current.blocking_reasons:
+            raise PluginRegistryError("plugin has blocking reasons", code="plugin_blocked")
+        updated = current.model_copy(
+            update={
+                "status": "enabled" if enabled else "disabled",
+                "disabled_reason": None if enabled else "disabled_by_user",
+                "revision": current.revision + 1,
+            }
+        )
+        self._installations[(project_key, plugin_id)] = updated
+        self._audit.append(lifecycle_audit_event(updated, "enable" if enabled else "disable"))
+        return updated
+
+    async def delete_installation(
+        self,
+        project_key: str,
+        plugin_id: str,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        cleanup_private_settings: bool,
+    ) -> bool:
+        current = self._installations.get((project_key, plugin_id))
+        if (
+            not installation_id
+            or current is None
+            or current.installation_id != installation_id
+            or current.revision != expected_revision
+        ):
+            raise PluginStoreConflictError("plugin installation changed")
+        del self._installations[(project_key, plugin_id)]
+        await self.delete_package_revisions(project_key, plugin_id)
+        if cleanup_private_settings:
+            await self.delete_private_settings(project_key, plugin_id)
+        self._audit.append(lifecycle_audit_event(current, "uninstall"))
+        return True
 
     async def save_package_revision(
         self,
@@ -108,7 +161,17 @@ class InMemoryPluginStore:
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str | None = None,
+        installation_revision: int | None = None,
     ) -> PluginPrivateSetting:
+        if installation_id is not None:
+            installation = self._installations.get((setting.project_key, setting.plugin_id))
+            if (
+                installation is None
+                or installation.installation_id != installation_id
+                or installation.revision != installation_revision
+            ):
+                raise PluginStoreConflictError("plugin installation changed")
         key = (setting.project_key, setting.plugin_id, setting.setting_key)
         current = self._settings.get(key)
         actual = None if current is None else current.revision
@@ -159,7 +222,10 @@ class InMemoryPluginStore:
                 "plugin is already installed",
                 code="plugin_already_installed",
             )
-        snapshot = build_installation_snapshot(plan)
+        # The fake mirrors the existing PB record Id, not a production identity authority.
+        snapshot = build_installation_snapshot(plan).model_copy(
+            update={"installation_id": str(uuid.uuid4())}
+        )
         revision_key = (
             package_revision.project_key,
             package_revision.plugin_id,
@@ -169,6 +235,55 @@ class InMemoryPluginStore:
         self._revisions[revision_key] = package_revision
         self._audit.append(lifecycle_audit_event(snapshot, "install"))
         return snapshot
+
+    async def commit_upgrade(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package(plan, package_revision, "upgrade")
+
+    async def commit_rollback(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package(plan, package_revision, "rollback")
+
+    async def _commit_package(
+        self, plan: InstallPlan, package_revision: PluginPackageRevision, event_type: str
+    ) -> PluginSnapshot:
+        key = (plan.project_key, plan.manifest.plugin_id)
+        current = self._installations.get(key)
+        if (
+            current is None
+            or not plan.target_installation_id
+            or current.installation_id != plan.target_installation_id
+            or current.revision != plan.target_revision
+        ):
+            raise PluginStoreConflictError("plugin installation changed")
+        updated = current.model_copy(
+            update={
+                "version": plan.manifest.version,
+                "package_hash": plan.package_hash,
+                "source_type": plan.source_type,
+                "source_location": plan.source_location,
+                "development_source_location": plan.source_location
+                if plan.source_type == "local-folder"
+                else None,
+                "manifest": plan.manifest,
+                "schemas": plan.schemas,
+                "source_changed": False,
+                "revision": current.revision + 1,
+            }
+        )
+        for revision_key, revision in list(self._revisions.items()):
+            if revision_key[:2] != key:
+                continue
+            if revision.state == "current":
+                self._revisions[revision_key] = revision.model_copy(update={"state": "rollback"})
+            else:
+                del self._revisions[revision_key]
+        self._revisions[(*key, package_revision.package_hash)] = package_revision
+        self._installations[key] = updated
+        self._audit.append(lifecycle_audit_event(updated, event_type))
+        return updated
 
 
 __all__ = [

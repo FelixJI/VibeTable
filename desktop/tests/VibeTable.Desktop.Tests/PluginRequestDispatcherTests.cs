@@ -11,6 +11,278 @@ public sealed class PluginRequestDispatcherTests
     private static PluginProjectContext ReadyContext() => new("project-1", "1", 1);
 
     [TestMethod]
+    [DataRow("workspace")]
+    [DataRow("epoch")]
+    [DataRow("request")]
+    [DataRow("emission")]
+    public async Task RecoveredTaskHistoryCannotCrossWorkspaceEpochOrPublicationGate(string retired)
+    {
+        var reply = new RecordingReplySink(); var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources,
+            filePicker: null, githubSource: null, projectContext: ReadyContext,
+            sharedReadEmitGate: _ => publish => retired != "emission" && publish());
+        dispatcher.SetProjectContext(ReadyContext()); dispatcher.SetWorkspaceContext(ReadyContext());
+        var binding = dispatcher.Tasks.CaptureNative()!;
+        dispatcher.Tasks.NativeTask(binding, new PluginRuntimeTaskSnapshot("private-task", "private-run", "com.acme.old", "1", "save",
+            "project-1", null, 1, PluginRisk.Write, "running", false, null, null, null,
+            InstallationId: "old-installation", InstallationRevision: 1, SurfaceToken: "old-surface"));
+        dispatcher.Tasks.FinishNative("private-task", "succeeded");
+        if (retired == "workspace") dispatcher.SetWorkspaceContext(new("project-2", "2", 2));
+        if (retired == "epoch") dispatcher.SetWorkspaceContext(new("project-1", "2", 2));
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "recovered-catalog",
+            retired == "request" ? """{"projectKey":"project-2"}""" : """{"projectKey":"project-1"}"""));
+        Assert.IsNull(reply.NotificationPayload);
+    }
+
+    [TestMethod]
+    [DataRow("succeeded")]
+    [DataRow("aborted")]
+    public async Task CatalogReadReprojectsHostReceiptLostDuringRendererDrainWithoutBackend(string state)
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext);
+        dispatcher.SetProjectContext(ReadyContext());
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        var binding = dispatcher.Tasks.CaptureNative()!;
+        var task = new PluginRuntimeTaskSnapshot("drain-task", "drain-run", "com.acme.old", "1.0.0", "save",
+            "project-1", null, 1, PluginRisk.Write, "running", false, null, null, null,
+            InstallationId: "original-installation", InstallationRevision: 7, SurfaceToken: "retired-surface");
+        dispatcher.Tasks.NativeTask(binding, task, nativeOnlyApproval: true);
+        // The renderer generation is sealed while drain settles this task;
+        // its original notification cannot reach the newly bootstrapped page.
+        var error = state == "aborted" ? new PluginRuntimeSafeError("vibetable.plugin-error.v1", "plugin_commit_unknown",
+            "请核对数据；请勿重复执行", "none", task.PluginId, task.ActionId, task.RunId,
+            new Dictionary<string, JsonElement>(), null) : null;
+        dispatcher.Tasks.FinishNative(task.TaskId, state, error: error);
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "new-renderer-catalog",
+                """{"projectKey":"project-1"}"""));
+            var restored = Assert.IsInstanceOfType<PluginEventEnvelope>(reply.NotificationPayload);
+            var snapshot = restored.Snapshot.Deserialize<PluginRuntimeTaskSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            Assert.AreEqual("plugin.task.changed", reply.NotificationType);
+            Assert.AreEqual(state, snapshot.State);
+            Assert.AreEqual("original-installation", snapshot.InstallationId);
+            Assert.AreEqual(7, snapshot.InstallationRevision);
+            Assert.AreEqual("retired-surface", snapshot.SurfaceToken);
+            Assert.AreEqual(task.TaskId, snapshot.TaskId);
+            Assert.IsNull(dispatcher.Tasks.FinishNative(task.TaskId, "cancelled"));
+        }
+    }
+
+    [TestMethod]
+    public async Task AuthorityBindsUpgradeTargetAndUpgradeLeaseCannotBeUsedAsInstall()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var gateway = new FakePluginGateway();
+        var authority = gateway.CatalogSnapshot with { InstallationId = "authority-record", Revision = 9 };
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
+            new PluginWebViewResourceHost(new PluginResourceHost(), surfaces), projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { authority })));
+        dispatcher.SetGateway(gateway);
+        await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-target",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+        var plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
+        Assert.AreEqual("authority-record", plan.TargetInstallationId);
+        Assert.AreEqual(9, plan.TargetRevision);
+        await dispatcher.DispatchAsync(Request("plugin.lifecycle.upgrade", "upgrade-target",
+            $$"""{"projectKey":"project-1","pluginId":"com.acme.clean","planId":"{{plan.PlanId}}","projectRevision":"1","targetInstallationId":"forged"}"""));
+        Assert.AreEqual("authority-record", gateway.UpgradeRequest!.Plan.TargetInstallationId);
+        Assert.AreEqual(9, gateway.UpgradeRequest.Plan.TargetRevision);
+        await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-target-again",
+            """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+        plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
+        await dispatcher.DispatchAsync(Request("plugin.install.commit", "install-target",
+            $$"""{"planId":"{{plan.PlanId}}","projectRevision":"1"}"""));
+        Assert.AreEqual("PLUGIN_INSTALL_PLAN_STALE", reply.FailureCode);
+        Assert.IsNull(gateway.CommitRequest);
+    }
+
+    [TestMethod]
+    [DataRow("uninstall-notification")]
+    [DataRow("uninstall-conflict")]
+    [DataRow("empty-authority")]
+    [DataRow("same-package-replacement")]
+    public async Task InstallationRetirementClosesUnmountedSurfaceAndReinstallationGetsNewToken(string transition)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-retire-install-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var action = new PluginRuntimeAction("open-app", new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Read, "manual", [],
+                JsonSerializer.SerializeToElement(new { }), null, null, null, null, "application", "ui/index.html");
+            var old = FakePluginGateway.DefaultSnapshot with
+            {
+                Revision = 4, InstallationId = "old-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x" }), Actions = [action],
+                },
+            };
+            var replacement = old with { Revision = 2, InstallationId = "new-record" };
+            using (var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, old.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create))
+                package.CreateEntry("ui/index.html");
+            var authority = new[] { old };
+            var pendingUninstall = new TaskCompletionSource<PluginRuntimeUninstallResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var gateway = new FakePluginGateway { CatalogSnapshot = old, PendingUninstall = pendingUninstall };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext,
+                sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(authority)), packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "old-catalog", """{"projectKey":"project-1"}"""));
+            string oldToken = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken!;
+            var closed = new List<string>(); surfaces.Closed += closed.Add;
+            if (transition is "uninstall-notification" or "uninstall-conflict")
+            {
+                Task uninstall = dispatcher.DispatchAsync(Request("plugin.lifecycle.uninstall", "uninstall",
+                    """{"projectKey":"project-1","pluginId":"com.acme.clean","installationId":"old-record","expectedRevision":4,"cleanupPrivateSettings":false}"""));
+                dispatcher.ProjectCatalogEvent(JsonSerializer.SerializeToElement(new PluginEventEnvelope(PluginContractVersions.Event,
+                    "plugin.catalog.changed", old.ProjectKey, old.PluginId, old.Revision,
+                    JsonSerializer.SerializeToElement(old, new JsonSerializerOptions(JsonSerializerDefaults.Web)))));
+                if (transition == "uninstall-conflict")
+                {
+                    pendingUninstall.SetException(new InvalidOperationException("installation changed"));
+                    await uninstall;
+                    Assert.IsTrue(surfaces.IsActive(oldToken), "A rejected uninstall retired the live surface.");
+                    Assert.IsNotNull(reply.FailureCode);
+                    return;
+                }
+                pendingUninstall.SetResult(new PluginRuntimeUninstallResult(true, true)); await uninstall;
+                Assert.IsFalse(surfaces.IsActive(oldToken), "A notification suppressed successful uninstall retirement.");
+            }
+            else
+            {
+                authority = transition == "empty-authority" ? [] : [replacement];
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", "changed-catalog", """{"projectKey":"project-1"}"""));
+                Assert.IsFalse(surfaces.IsActive(oldToken), "An absent or replaced installation kept its unmounted surface.");
+            }
+            Assert.AreEqual(1, closed.Count(token => token == oldToken));
+            authority = [replacement];
+            await dispatcher.DispatchAsync(Request("plugin.catalog.list", "replacement-catalog", """{"projectKey":"project-1"}"""));
+            string token = Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken!;
+            Assert.AreNotEqual(oldToken, token, "Same-package reinstall reused the retired API token.");
+            Assert.IsTrue(surfaces.TryGet(token, out var session)); Assert.IsNotNull(session);
+            Assert.AreEqual("new-record", session.InstallationId);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LateReadOrUninstallCannotRetireCommittedReplacement(bool lateUninstall)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"vibetable-reinstall-read-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(root);
+            var action = new PluginRuntimeAction("open-app", new Dictionary<string, string>(),
+                new Dictionary<string, string>(), "local", PluginRisk.Read, "manual", [],
+                JsonSerializer.SerializeToElement(new { }), null, null, null, null, "application", "ui/index.html");
+            var current = FakePluginGateway.DefaultSnapshot with
+            {
+                Revision = 2, InstallationId = "replacement-record",
+                Manifest = FakePluginGateway.DefaultSnapshot.Manifest with
+                {
+                    Schema = "vibetable.plugin-manifest.v2",
+                    Compatibility = JsonSerializer.SerializeToElement(new { pluginApi = "3.x" }), Actions = [action],
+                },
+            };
+            var old = current with { Revision = 4, InstallationId = "retired-record", PackageHash = "sha256:" + new string('b', 64) };
+            foreach (var snapshot in new[] { current, old })
+            {
+                using var package = System.IO.Compression.ZipFile.Open(PluginRetainedPackage.PathFor(root, snapshot.PackageHash)!, System.IO.Compression.ZipArchiveMode.Create);
+                package.CreateEntry("ui/index.html");
+            }
+            var pendingList = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pendingUninstall = new TaskCompletionSource<PluginRuntimeUninstallResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var gateway = new FakePluginGateway { CatalogSnapshot = current, PendingUninstall = lateUninstall ? pendingUninstall : null };
+            var reply = new RecordingReplySink();
+            var surfaces = new PluginSurfaceSessionManager();
+            var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+            bool initialCatalog = lateUninstall;
+            bool inspectionRead = false;
+            using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+                new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources,
+                projectContext: ReadyContext, sharedRpc: (_, _, _) => inspectionRead
+                    ? Task.FromResult(JsonSerializer.SerializeToElement(Array.Empty<PluginRuntimeSnapshot>()))
+                    : initialCatalog ? Task.FromResult(JsonSerializer.SerializeToElement(new[] { old })) : pendingList.Task, packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
+            if (lateUninstall)
+            {
+                await dispatcher.DispatchAsync(Request("plugin.catalog.list", "initial-old-installation", """{"projectKey":"project-1"}"""));
+                Assert.IsNotNull(Assert.IsInstanceOfType<PluginRuntimeSnapshot[]>(reply.Payload).Single().Manifest.Actions.Single().SurfaceToken);
+                initialCatalog = false;
+            }
+            Task late = dispatcher.DispatchAsync(Request(lateUninstall ? "plugin.lifecycle.uninstall" : "plugin.catalog.list", "old",
+                """{"projectKey":"project-1","pluginId":"com.acme.clean","projectRevision":"1","installationId":"retired-record","expectedRevision":4,"cleanupPrivateSettings":false}"""));
+            inspectionRead = true;
+            await dispatcher.DispatchAsync(Request("plugin.install.inspect", "inspect-replacement",
+                """{"projectKey":"project-1","projectRevision":"1","sourceLocation":"host-picker"}"""));
+            string planId = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload).PlanId;
+            await dispatcher.DispatchAsync(Request("plugin.install.commit", "commit-replacement",
+                $$"""{"planId":"{{planId}}","projectRevision":"1"}"""));
+            var installed = Assert.IsInstanceOfType<PluginRuntimeSnapshot>(reply.Payload);
+            string token = installed.Manifest.Actions.Single().SurfaceToken!;
+            Assert.IsTrue(surfaces.IsActive(token));
+            if (lateUninstall) pendingUninstall.SetResult(new PluginRuntimeUninstallResult(true, true));
+            else pendingList.SetResult(JsonSerializer.SerializeToElement(new[] { old }));
+            await late;
+            Assert.IsTrue(surfaces.TryGet(token, out var session), "An old reply retired the committed replacement.");
+            Assert.IsNotNull(session);
+            Assert.AreEqual("replacement-record", session.InstallationId);
+            if (!lateUninstall) Assert.AreEqual("PLUGIN_REQUEST_CANCELLED", reply.FailureCode);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task PublicLifecycleMessagesReachDispatcherWithApprovedPlanWhileRollbackStaysInternal()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
+            new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"), resources, projectContext: ReadyContext,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot })));
+        dispatcher.SetGateway(gateway);
+        Task routed = Task.CompletedTask;
+        int calls = 0;
+        var router = new WebMessageRouter(request => { calls++; routed = dispatcher.DispatchAsync(request); }) { IsReady = true };
+        async Task Route(string type, string id, object payload)
+        {
+            Assert.IsNull(router.Route(JsonSerializer.Serialize(new { type, requestId = id, payload })), type);
+            await routed;
+            Assert.IsNull(reply.FailureCode, type);
+            Assert.AreEqual(type, reply.ResponseType);
+            Assert.AreEqual(id, reply.RequestId);
+        }
+        await Route("plugin.install.inspect", "inspect", new { projectKey = "project-1", projectRevision = "1", sourceLocation = "host-picker" });
+        var plan = Assert.IsInstanceOfType<PluginRuntimeInstallPlan>(reply.Payload);
+        await Route("plugin.lifecycle.upgrade", "upgrade", new { projectKey = "project-1", pluginId = "com.acme.clean", planId = plan.PlanId, projectRevision = "1" });
+        Assert.AreEqual(plan.PlanId, gateway.UpgradeRequest!.Plan.PlanId);
+        await Route("plugin.lifecycle.uninstall", "uninstall", new { projectKey = "project-1", pluginId = "com.acme.clean", installationId = "record-clean", expectedRevision = 1, cleanupPrivateSettings = false });
+        Assert.AreEqual("com.acme.clean", gateway.UninstallRequest!.PluginId);
+        Assert.IsFalse(gateway.UninstallRequest.CleanupPrivateSettings);
+        var blocked = router.Route("""{"type":"plugin.lifecycle.rollback","requestId":"rollback","payload":{}}""");
+        Assert.AreEqual("CAPABILITY_NOT_PUBLIC", blocked!.Payload!.Code);
+        Assert.AreEqual(3, calls);
+    }
+
+
+    [TestMethod]
     public async Task NativeActionWithoutUsablePageIsUnavailableWithoutWorkerFallback()
     {
         var reply = new RecordingReplySink();
@@ -404,8 +676,9 @@ public sealed class PluginRequestDispatcherTests
         PluginProjectContext context = ReadyContext();
         var surfaces = new PluginSurfaceSessionManager();
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
-        var pending = new TaskCompletionSource<JsonElement>(
+        var pending = new TaskCompletionSource<PluginRuntimeSnapshot>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { PendingSetEnabled = pending };
         using var dispatcher = new PluginRequestDispatcher(
             reply,
             surfaces,
@@ -414,16 +687,17 @@ public sealed class PluginRequestDispatcherTests
             filePicker: null,
             githubSource: null,
             projectContext: () => context,
-            sharedRpc: (_, _, _) => pending.Task);
+            sharedRpc: (_, _, _) => throw new InvalidOperationException("Lifecycle execution bypassed the Worker gate."));
+        dispatcher.SetGateway(gateway);
         dispatcher.SetProjectContext(ReadyContext());
 
         Task writing = dispatcher.DispatchAsync(Request(
             "plugin.lifecycle.setEnabled",
             "set-enabled-stale",
-            """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+            """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true,"installationId":"record-clean","expectedRevision":1}"""));
         context = context with { SessionGeneration = 2 };
         dispatcher.SetProjectContext(context);
-        pending.SetResult(JsonSerializer.SerializeToElement(FakePluginGateway.DefaultSnapshot));
+        pending.SetResult(FakePluginGateway.DefaultSnapshot);
         await writing.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
@@ -863,7 +1137,8 @@ public sealed class PluginRequestDispatcherTests
             surfaces,
             new FakePluginPackageSourcePicker(@"C:\trusted\clean.vtplugin"),
             resources,
-            projectContext: () => context);
+            projectContext: () => context,
+            sharedRpc: (_, _, _) => Task.FromResult(JsonSerializer.SerializeToElement(new[] { gateway.CatalogSnapshot })));
         dispatcher.SetGateway(gateway);
         await dispatcher.DispatchAsync(Request(
             "plugin.install.inspect",
@@ -1644,6 +1919,7 @@ public sealed class PluginRequestDispatcherTests
         var surfaces = new PluginSurfaceSessionManager();
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
         using var gateway = new FakePluginGateway();
+        gateway.StartResult = gateway.LastStarted with { InstallationRevision = 7, InstallationId = "record-original", SurfaceToken = "executor-first-forged" };
         using var dispatcher = new PluginRequestDispatcher(
             reply,
             surfaces,
@@ -1658,12 +1934,19 @@ public sealed class PluginRequestDispatcherTests
         PluginRuntimeTaskSnapshot started = AssertIsTaskSnapshot(reply.Payload);
         StringAssert.StartsWith(started.TaskId, "plugin-task-");
         StringAssert.StartsWith(started.RunId, "plugin-run-");
-        gateway.RaiseTaskChanged(TaskState(started, "running"));
+        Assert.AreEqual(7, started.InstallationRevision);
+        Assert.IsNull(started.SurfaceToken);
+        gateway.RaiseTaskChanged(TaskState(started, "running") with { InstallationRevision = 8, InstallationId = "record-replaced", SurfaceToken = "executor-forged" });
+        var notification = Assert.IsInstanceOfType<PluginEventEnvelope>(reply.NotificationPayload);
+        Assert.AreEqual(7, notification.Snapshot.GetProperty("installationRevision").GetInt32());
         await dispatcher.DispatchAsync(Request(
             "plugin.task.get", "get-running",
             $$"""{"taskId":"{{started.TaskId}}"}"""));
         var running = AssertIsTaskSnapshot(reply.Payload);
         Assert.AreEqual("running", running.State);
+        Assert.AreEqual(7, running.InstallationRevision);
+        Assert.AreEqual("record-original", running.InstallationId);
+        Assert.IsNull(running.SurfaceToken, "Worker execution reports cannot acquire a native frame source.");
 
         await dispatcher.DispatchAsync(Request(
             "plugin.task.cancel", "cancel-1",
@@ -1757,6 +2040,154 @@ public sealed class PluginRequestDispatcherTests
         var result = Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload);
         Assert.AreEqual("expired", result.Status);
         Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+    }
+
+    [TestMethod]
+    public async Task RendererRecoveryRejectsLegacyPendingAndLateConfirmationsUntilCurrentScopeCatalog()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null),
+            resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway);
+        dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "before-recovery", StartActionPayload));
+        var before = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(before.RunId);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls, "the vanished renderer's pending legacy confirmation must be rejected");
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "old-approve",
+            $$"""{"runId":"{{before.RunId}}","interactionId":"interaction-1","decision":"approved"}"""));
+        Assert.AreEqual("expired", Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload).Status);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "during-recovery", StartActionPayload));
+        var during = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(during.RunId);
+        Assert.AreEqual(2, gateway.ResolveInteractionCalls, "confirmations arriving during recovery must also be rejected");
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "foreign-catalog", """{"projectKey":"foreign"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "after-foreign", StartActionPayload));
+        gateway.RaiseInteractionRequested(AssertIsTaskSnapshot(reply.Payload).RunId);
+        Assert.AreEqual(3, gateway.ResolveInteractionCalls);
+        // Scope admission precedes backend availability: a backend read failure
+        // still reopens confirmation delivery for the current renderer.
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "ready-catalog", """{"projectKey":"project-1"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "after-recovery", StartActionPayload));
+        var after = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(after.RunId);
+        Assert.AreEqual(3, gateway.ResolveInteractionCalls);
+        Assert.AreEqual("plugin.interaction.requested", reply.NotificationType);
+        await dispatcher.DispatchAsync(Request("plugin.interaction.resolve", "new-approve",
+            $$"""{"runId":"{{after.RunId}}","interactionId":"interaction-1","decision":"approved"}"""));
+        Assert.AreEqual("approved", Assert.IsInstanceOfType<PluginRuntimeInteractionResolveResult>(reply.Payload).Decision);
+        Assert.AreEqual(4, gateway.ResolveInteractionCalls);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.AreEqual(4, gateway.ResolveInteractionCalls, "an approved plan is not a pending decision lost with the renderer");
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(after.TaskId, out var approved));
+        Assert.AreEqual(after.State, approved.State);
+    }
+
+    [TestMethod]
+    public async Task RendererRecoveryRejectFailureSettlesOnlyThatLegacyTaskAndKeepsNativeAndTerminalReceipts()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway { FailInteractionResolve = true };
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources, projectContext: ReadyContext);
+        dispatcher.SetGateway(gateway); dispatcher.SetWorkspaceContext(ReadyContext());
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "success", StartActionPayload));
+        var success = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseTaskChanged(TaskState(success, "succeeded"), 2);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "pending", StartActionPayload));
+        var pending = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(pending.RunId);
+        var nativeBinding = dispatcher.Tasks.CaptureNative()!;
+        var native = pending with { TaskId = "native-pending", RunId = "native-run", SurfaceToken = "native-surface" };
+        dispatcher.Tasks.NativeTask(nativeBinding, native, nativeOnlyApproval: true);
+        var unknown = native with { TaskId = "existing-unknown", RunId = "existing-unknown-run" };
+        dispatcher.Tasks.NativeTask(nativeBinding, unknown, nativeOnlyApproval: true);
+        dispatcher.Tasks.FinishNative(unknown.TaskId, "aborted", error: new PluginRuntimeSafeError(
+            "vibetable.plugin-error.v1", "plugin_commit_unknown", "请核对已提交写入", "none", unknown.PluginId, unknown.ActionId, unknown.RunId, new Dictionary<string, JsonElement>(), null));
+        var confirmation = dispatcher.Tasks.NativeConfirmation(native.TaskId, JsonSerializer.SerializeToElement(new { collection = "orders", operations = Array.Empty<object>() }), 1);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(pending.TaskId, out var aborted));
+        Assert.AreEqual("failed", aborted.State);
+        Assert.AreEqual("plugin_mutation_rejected", aborted.Error!.Code);
+        Assert.AreEqual("renderer-recovery", aborted.Error.Details!["reason"].GetString());
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(success.TaskId, out var succeeded));
+        Assert.AreEqual("succeeded", succeeded.State);
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(unknown.TaskId, out var stillUnknown));
+        Assert.AreEqual("aborted", stillUnknown.State);
+        Assert.AreEqual("plugin_commit_unknown", stillUnknown.Error!.Code);
+        Assert.IsFalse(confirmation.Decision.IsCompleted, "native confirmation is not a lost legacy web confirmation");
+        gateway.RaiseTaskChanged(TaskState(pending, "succeeded"), 20);
+        await dispatcher.DispatchAsync(Request("plugin.task.cancel", "late-cancel", $$"""{"taskId":"{{pending.TaskId}}"}"""));
+        Assert.AreEqual("failed", AssertIsTaskSnapshot(reply.Payload).State);
+        dispatcher.Tasks.BeginInteractionResolve(new(native.RunId,
+            confirmation.Envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!.PendingConfirmation!.InteractionId, "rejected"), out _, fromNativeHost: true);
+        Assert.IsFalse(await confirmation.Decision);
+    }
+
+    [TestMethod]
+    public async Task LegacyConfirmationReadinessCannotCrossTheSameWorkspaceEpoch()
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        using var gateway = new FakePluginGateway();
+        PluginProjectContext current = ReadyContext();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources, projectContext: () => current);
+        dispatcher.SetGateway(gateway); dispatcher.SetWorkspaceContext(current);
+        await dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        var old = current;
+        current = current with { SessionGeneration = current.SessionGeneration + 1 };
+        dispatcher.SetProjectContext(current); dispatcher.SetWorkspaceContext(current);
+        dispatcher.Tasks.ResumeLegacyConfirmations(old);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "new-epoch-before-ready", StartActionPayload));
+        gateway.RaiseInteractionRequested(AssertIsTaskSnapshot(reply.Payload).RunId);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls, "old epoch cannot reopen the confirmation channel");
+        await dispatcher.DispatchAsync(Request("plugin.catalog.list", "new-epoch-ready", """{"projectKey":"project-1"}"""));
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "new-epoch-after-ready", StartActionPayload));
+        gateway.RaiseInteractionRequested(AssertIsTaskSnapshot(reply.Payload).RunId);
+        Assert.AreEqual(1, gateway.ResolveInteractionCalls);
+        Assert.AreEqual("plugin.interaction.requested", reply.NotificationType);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task LateLegacyRecoveryRejectionReplyCannotPublishIntoANewWorkspaceEpoch(bool fail)
+    {
+        var reply = new RecordingReplySink();
+        var surfaces = new PluginSurfaceSessionManager();
+        using var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
+        var pending = new TaskCompletionSource<PluginRuntimeInteractionResolveResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { InteractionResolveHandler = _ => pending.Task };
+        PluginProjectContext current = ReadyContext();
+        using var dispatcher = new PluginRequestDispatcher(reply, surfaces, new FakePluginPackageSourcePicker(null), resources, projectContext: () => current);
+        dispatcher.SetGateway(gateway); dispatcher.SetWorkspaceContext(current);
+        await dispatcher.DispatchAsync(Request("plugin.action.start", "pending-old-epoch", StartActionPayload));
+        var old = AssertIsTaskSnapshot(reply.Payload);
+        gateway.RaiseInteractionRequested(old.RunId);
+        Task rejecting = dispatcher.SealLegacyConfirmationsForRendererRecovery();
+        Assert.IsFalse(rejecting.IsCompleted, "the synthetic wakeup intentionally has no response");
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(old.TaskId, out var settled));
+        Assert.AreEqual("failed", settled.State, "Host settles without awaiting the executor or a timer");
+        Assert.AreEqual("plugin_mutation_rejected", settled.Error!.Code);
+        gateway.RaiseTaskChanged(TaskState(old, "succeeded"), 50);
+        Assert.IsTrue(dispatcher.Tasks.TryGetTask(old.TaskId, out var sticky));
+        Assert.AreEqual("failed", sticky.State);
+        current = current with { SessionGeneration = current.SessionGeneration + 1 };
+        dispatcher.SetProjectContext(current); dispatcher.SetWorkspaceContext(current);
+        int before = reply.NotificationCount;
+        if (fail) pending.SetException(new IOException("old epoch rejection transport failed"));
+        else pending.SetResult(new("resolved", "approved"));
+        await rejecting;
+        Assert.AreEqual(before, reply.NotificationCount, "a late recovery rejection cannot emit foreign history into the new epoch");
+        Assert.IsFalse(dispatcher.Tasks.TryGetTask(old.TaskId, out _));
     }
 
     [TestMethod]
@@ -1948,6 +2379,12 @@ public sealed class PluginRequestDispatcherTests
             newest = started;
         }
 
+        var history = dispatcher.Tasks.ProjectHistory(ReadyContext());
+        Assert.AreEqual(256, history.Count);
+        Assert.IsFalse(history.Any(envelope => envelope.EntityId == oldest!.TaskId));
+        Assert.IsTrue(history.Any(envelope => envelope.EntityId == newest!.TaskId));
+        Assert.IsTrue(history.All(envelope => envelope.EventType == "plugin.task.changed"));
+
         // Replacing the client settles nothing (all terminal) but must keep
         // the recent terminal states queryable for the same workspace.
         dispatcher.SetGateway(second);
@@ -2046,17 +2483,24 @@ public sealed class PluginRequestDispatcherTests
         public string? RequestId { get; private set; }
         public object? Payload { get; private set; }
         public string? FailureCode { get; private set; }
+        public int NotificationCount { get; private set; }
         public string? NotificationType { get; private set; }
         public object? NotificationPayload { get; private set; }
 
         public void PostNotification(string type, object? payload)
         {
+            NotificationCount++;
             NotificationType = type;
             NotificationPayload = payload;
         }
 
         public void PostResponse(string type, string? requestId, object? payload)
         {
+            if (requestId is null)
+            {
+                PostNotification(type, payload);
+                return;
+            }
             ResponseType = type;
             RequestId = requestId;
             Payload = payload;
@@ -2109,7 +2553,7 @@ public sealed class PluginRequestDispatcherTests
             => System.Threading.Tasks.Task.FromResult(selectedPath);
     }
 
-    private sealed class FakePluginGateway : IPluginRpcGateway
+    internal sealed class FakePluginGateway : IPluginRpcGateway
     {
         private static readonly PluginRuntimeManifest Manifest = new(
             "vibetable.plugin-manifest.v1", "com.acme.clean", "1.0.0",
@@ -2122,7 +2566,7 @@ public sealed class PluginRequestDispatcherTests
             "project-1", "com.acme.clean", "1.0.0", "sha256:" + new string('a', 64),
             "package", "package.vtplugin", Manifest,
             new Dictionary<string, IReadOnlyDictionary<string, JsonElement>>(),
-            "enabled", null, 1);
+            "enabled", null, 1, InstallationId: "record-clean");
         private static readonly PluginRuntimeTaskSnapshot Task = new(
             "task-1", "run-1", "com.acme.clean", "1.0.0", "clean", "project-1",
             null, 0, PluginRisk.Read, "queued", false, null, null, null);
@@ -2141,6 +2585,8 @@ public sealed class PluginRequestDispatcherTests
         public TaskCompletionSource CommitStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<PluginRuntimeSnapshot>? PendingCommit { get; set; }
+        public TaskCompletionSource<PluginRuntimeSnapshot>? PendingSetEnabled { get; set; }
+        public PluginSetEnabledExecutionParams? SetEnabledRequest { get; private set; }
         public CancellationToken CommitToken { get; private set; }
         public PluginUpgradeExecutionParams? UpgradeRequest { get; private set; }
         public TaskCompletionSource UpgradeStarted { get; } = new(
@@ -2152,6 +2598,8 @@ public sealed class PluginRequestDispatcherTests
         public PluginRuntimeTaskSnapshot LastStarted { get; private set; } = Task;
         public int CancelTaskCalls { get; private set; }
         public int ResolveInteractionCalls { get; private set; }
+        public bool FailInteractionResolve { get; init; }
+        public Func<PluginResolveInteractionParams, Task<PluginRuntimeInteractionResolveResult>>? InteractionResolveHandler { get; init; }
         public Exception? CommitFailure { get; init; }
         public TaskCompletionSource<(string RequestId, string? SelectedPath)> FileResolution { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2290,8 +2738,13 @@ public sealed class PluginRequestDispatcherTests
                 ? System.Threading.Tasks.Task.FromResult(CatalogSnapshot)
                 : System.Threading.Tasks.Task.FromException<PluginRuntimeSnapshot>(CommitFailure);
         }
-        public Task<PluginRuntimeSnapshot> SetEnabledAsync(PluginSetEnabledParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        public Func<PluginSetEnabledExecutionParams, CancellationToken, Task<PluginRuntimeSnapshot>>? SetEnabledHandler { get; set; }
+        public Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(PluginSetEnabledExecutionParams request, CancellationToken token)
+        {
+            SetEnabledRequest = request;
+            return SetEnabledHandler?.Invoke(request, token)
+                ?? PendingSetEnabled?.Task ?? System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        }
         public Task<PluginRuntimeSnapshot> UpgradeAsync(
             PluginUpgradeExecutionParams request,
             CancellationToken token)
@@ -2304,8 +2757,13 @@ public sealed class PluginRequestDispatcherTests
         }
         public Task<PluginRuntimeSnapshot> RollbackAsync(PluginRollbackParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        public PluginUninstallParams? UninstallRequest { get; private set; }
+        public TaskCompletionSource<PluginRuntimeUninstallResult>? PendingUninstall { get; set; }
         public Task<PluginRuntimeUninstallResult> UninstallAsync(PluginUninstallParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
+        {
+            UninstallRequest = request;
+            return PendingUninstall?.Task ?? System.Threading.Tasks.Task.FromResult(new PluginRuntimeUninstallResult(true, true));
+        }
         public Task<PluginRuntimeActionAvailability> DescribeActionAsync(PluginDescribeActionParams request, CancellationToken token)
             => System.Threading.Tasks.Task.FromResult(new PluginRuntimeActionAvailability(true, []));
         public Task<PluginRuntimeTaskSnapshot> StartActionAsync(PluginStartActionParams request, CancellationToken token)
@@ -2335,7 +2793,9 @@ public sealed class PluginRequestDispatcherTests
         public Task<PluginRuntimeInteractionResolveResult> ResolveInteractionAsync(PluginResolveInteractionParams request, CancellationToken token)
         {
             ResolveInteractionCalls += 1;
-            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", "rejected"));
+            if (InteractionResolveHandler is not null) return InteractionResolveHandler(request);
+            if (FailInteractionResolve) throw new IOException("synthetic legacy confirmation transport failure");
+            return System.Threading.Tasks.Task.FromResult(new PluginRuntimeInteractionResolveResult("resolved", request.Decision));
         }
         public void Dispose() { }
     }

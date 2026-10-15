@@ -88,3 +88,18 @@ test("parallel surface requests are bounded and dispose settles every outstandin
   client.dispose();
   assert.ok((await settled).every(result => result.status === "rejected" && result.reason.code === "plugin_surface_closed"));
 });
+
+
+test("SDK public root exports headless finish and addresses only the trusted parent", () => {
+  assert.equal(typeof sdk.finishHeadlessRun, "function");
+  const original = Object.getOwnPropertyDescriptor(globalThis, "parent");
+  const messages = [];
+  Object.defineProperty(globalThis, "parent", { configurable: true, value: { postMessage: (...args) => messages.push(args) } });
+  try {
+    sdk.finishHeadlessRun("owned-run", "succeeded", "complete");
+    assert.deepEqual(messages, [[{ contract: "vibetable.plugin-surface.v1", surfaceToken: "owned-run", event: "close", payload: { status: "succeeded", summary: "complete" } }, "https://app.vibetable.local"]]);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "parent", original);
+    else delete globalThis.parent;
+  }
+});

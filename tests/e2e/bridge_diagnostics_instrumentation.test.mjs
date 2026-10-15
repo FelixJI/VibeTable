@@ -768,7 +768,7 @@ test("records document operation failure notifications without retaining private
 });
 
 for (const method of [
-  "dashboard.listRequested", "settings.readWorkCalendar", "lookup.query",
+  "dashboard.listRequested", "settings.readWorkCalendar", "lookup.query", "gridState.get",
   "plugin.catalog.list", "plugin.audit.list", "plugin.cleanup.listPending",
 ]) {
 test(`retirement only settles ${method} with matching type and epoch`, () => {
@@ -841,7 +841,7 @@ function installRetirementHarness(method) {
 }
 
 for (const method of [
-  "dashboard.listRequested", "dashboard.manifestRequested", "lookup.query",
+  "dashboard.listRequested", "dashboard.manifestRequested", "lookup.query", "gridState.get",
   "plugin.catalog.list", "plugin.audit.list", "plugin.cleanup.listPending",
 ]) {
 test(`late BAD_WORKSPACE_SCOPE failure after ${method} retirement keeps code and request identity`, () => {
@@ -1004,5 +1004,112 @@ test("replica observations retain bounded public state without response contents
       syncState: "replicated", pendingSync: false,
     });
     assert.equal(JSON.stringify(observations).includes("private"), false);
+  } finally { delete globalThis.window; }
+});
+
+function installCatalogSupersessionHarness() {
+  const listeners = [];
+  const webview = { postMessage() {}, addEventListener(type, listener) { if (type === "message") listeners.push(listener); } };
+  globalThis.window = { chrome: { webview } };
+  installBridgeDiagnosticsInPage();
+  const scope = { scope: "workspace", workspaceId: "11111111-1111-4111-8111-111111111111", sessionEpoch: 7 };
+  const projectKey = "local:11111111111141118111111111111111";
+  return {
+    scope, projectKey,
+    post(requestId, overrides = {}) {
+      webview.postMessage({ type: "plugin.catalog.list", requestId, payload: { projectKey }, scope, ...overrides });
+    },
+    reply(requestId, overrides = {}) {
+      listeners[0]({ data: { type: "plugin.catalog.list", requestId, payload: [], ...overrides } });
+    },
+    supersede(requestId, overrides = {}) {
+      listeners[0]({ data: { type: "operation.failed", requestId,
+        payload: { code: "PLUGIN_REQUEST_CANCELLED", message: "Plugin catalog read was superseded." }, ...overrides } });
+    },
+  };
+}
+
+for (const authorityFirst of [false, true]) {
+  test(`catalog supersession settles only with a newer same-scope authority read (${authorityFirst})`, () => {
+    const probe = installCatalogSupersessionHarness();
+    try {
+      probe.post("old");
+      if (authorityFirst) { probe.post("new"); probe.reply("new"); }
+      probe.supersede("old");
+      if (!authorityFirst) probe.post("new");
+      let result = readBridgeDiagnosticsInPage();
+      assert.equal(result.failures.length, 1, "a prior authority reply cannot settle a later supersession");
+      if (authorityFirst) {
+        probe.post("newest"); probe.reply("newest"); result = readBridgeDiagnosticsInPage();
+      } else {
+        assert.equal(result.failures.length, 1, "unreconciled cancellation stays fatal");
+        assert.equal(result.failures[0].code, "PLUGIN_REQUEST_CANCELLED");
+        assert.equal(result.pending.length, 1, "authority read is still pending");
+        probe.reply("new");
+        result = readBridgeDiagnosticsInPage();
+      }
+      assert.equal(result.failures.length, 0);
+      assert.equal(result.pending.length, 0);
+      assert.equal(result.catalogReadSettlements.length, 1);
+      assert.equal(result.catalogReadSettlements[0].requestId, "old");
+      assert.equal(result.catalogReadSettlements[0].authorityRequestId, authorityFirst ? "newest" : "new");
+      assert.deepEqual(result.catalogReadSettlements[0].scope, { workspaceId: probe.scope.workspaceId, sessionEpoch: 7 });
+      assert.equal(result.catalogReadSettlements[0].outcome, "superseded-reconciled");
+      assert.equal(result.roundTrips.length, authorityFirst ? 3 : 2, "every request terminal remains in the ledger");
+    } finally { delete globalThis.window; }
+  });
+}
+
+test("a previously admitted authority read cannot settle a later supersession even if its reply arrives last", () => {
+  const probe = installCatalogSupersessionHarness();
+  try {
+    probe.post("old"); probe.post("before-change"); probe.supersede("old"); probe.reply("before-change");
+    assert.equal(readBridgeDiagnosticsInPage().failures.length, 1);
+    probe.post("after-change"); probe.reply("after-change");
+    assert.equal(readBridgeDiagnosticsInPage().failures.length, 0);
+  } finally { delete globalThis.window; }
+});
+
+test("catalog supersession cannot be settled by another workspace, epoch or project", () => {
+  const probe = installCatalogSupersessionHarness();
+  try {
+    probe.post("old"); probe.supersede("old");
+    for (const [requestId, overrides] of [
+      ["other-workspace", { scope: { ...probe.scope, workspaceId: "22222222-2222-4222-8222-222222222222" } }],
+      ["other-epoch", { scope: { ...probe.scope, sessionEpoch: 8 } }],
+      ["other-project", { payload: { projectKey: "local:other" } }],
+    ]) { probe.post(requestId, overrides); probe.reply(requestId); }
+    assert.equal(readBridgeDiagnosticsInPage().failures.length, 1);
+    probe.post("same-scope"); probe.reply("same-scope");
+    assert.equal(readBridgeDiagnosticsInPage().failures.length, 0);
+    assert.equal(readBridgeDiagnosticsInPage().catalogReadSettlements[0].authorityRequestId, "same-scope");
+  } finally { delete globalThis.window; }
+});
+
+test("other catalog failures, generic cancellation and unowned or duplicate terminals stay fatal", () => {
+  const probe = installCatalogSupersessionHarness();
+  try {
+    probe.post("rpc-error"); probe.supersede("rpc-error", { payload: { code: "PLUGIN_OPERATION_FAILED", message: "Plugin operation failed." } });
+    probe.post("generic-cancel"); probe.supersede("generic-cancel", { payload: { code: "PLUGIN_REQUEST_CANCELLED", message: "Plugin request was cancelled." } });
+    probe.post("other-method", { type: "plugin.audit.list" }); probe.supersede("other-method");
+    probe.supersede("never-admitted");
+    probe.post("duplicate"); probe.reply("duplicate"); probe.supersede("duplicate");
+    probe.post("unscoped", { scope: undefined }); probe.supersede("unscoped");
+    probe.post("authority"); probe.reply("authority");
+    const result = readBridgeDiagnosticsInPage();
+    assert.equal(result.failures.length, 6);
+    assert.equal(result.catalogReadSettlements.length, 0);
+    assert.equal(result.pending.length, 0);
+  } finally { delete globalThis.window; }
+});
+
+test("an authority failure or invalid catalog cannot reconcile a superseded read", () => {
+  const probe = installCatalogSupersessionHarness();
+  try {
+    probe.post("old"); probe.supersede("old");
+    probe.post("bad-authority"); probe.reply("bad-authority", { type: "operation.failed", payload: { code: "BAD_PAYLOAD", message: "bad catalog" } });
+    probe.post("invalid-catalog"); probe.reply("invalid-catalog", { payload: {} });
+    probe.post("foreign-catalog"); probe.reply("foreign-catalog", { payload: [{ projectKey: "local:foreign" }] });
+    assert.equal(readBridgeDiagnosticsInPage().failures.length, 2);
   } finally { delete globalThis.window; }
 });

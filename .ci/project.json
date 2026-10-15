@@ -169,6 +169,13 @@
         "go": true
       },
       {
+        "name": "file-io",
+        "uv": true,
+        "node": true,
+        "dotnet": true,
+        "go": true
+      },
+      {
         "name": "release"
       }
     ],

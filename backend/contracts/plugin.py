@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from backend._version import __version__
 
@@ -29,6 +30,24 @@ PluginRisk = Literal["read", "write", "destructive"]
 PluginMode = Literal["local"]
 PluginInvocation = Literal["manual", "webhook"]
 InteractionDecision = Literal["approved", "rejected"]
+# v2 (pluginApi 3.x) action presentation. "surface" keeps the legacy
+# ui.customViews binding and is the default; "application" (in-package HTML
+# full business viewport) and "headless" (in-package JS module) are new v2
+# shapes that declare their entry on the action itself.
+PluginPresentation = Literal["surface", "application", "headless"]
+
+
+def plugin_entry_is_host_reserved(entry: str) -> bool:
+    return entry.startswith("__vibetable_host__/")
+
+
+def plugin_entry_has_supported_type(presentation: str, entry: str) -> bool:
+    if plugin_entry_is_host_reserved(entry):
+        return False
+    suffix = PurePosixPath(entry).suffix.lower()
+    if presentation == "application":
+        return suffix == ".html"
+    return presentation == "headless" and suffix in {".js", ".mjs"}
 
 
 class PluginAction(PluginContract):
@@ -44,6 +63,32 @@ class PluginAction(PluginContract):
     form_schema: str | None = None
     input_schema: str | None = None
     output_schema: str | None = None
+    presentation: PluginPresentation = "surface"
+    entry: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_entry_type(self) -> PluginAction:
+        if (
+            self.presentation != "surface"
+            and self.entry is not None
+            and not plugin_entry_has_supported_type(self.presentation, self.entry)
+        ):
+            raise ValueError(
+                "entry type must match application HTML or headless JavaScript MIME outside Host-reserved paths"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_presentation_defaults(self, handler, _info):
+        # Old v1/v2 packages round-trip through install plans and stored
+        # snapshots; the new fields must not appear in serialized manifests
+        # unless a new-shape action actually declares them.
+        data = handler(self)
+        if data.get("presentation") == "surface":
+            data.pop("presentation", None)
+        if data.get("entry") is None:
+            data.pop("entry", None)
+        return data
 
 
 class PluginManifest(PluginContract):
@@ -66,9 +111,48 @@ class PluginManifest(PluginContract):
             raise ValueError("manifest/API version mismatch")
         if any((action.worker_entry is not None) == native for action in self.actions):
             raise ValueError("v1 requires workerEntry; v2 forbids workerEntry")
-        if native:
-            views = self.ui.get("customViews", [])
-            if not isinstance(views, list) or any(
+        views = self.ui.get("customViews", [])
+        if isinstance(views, list) and any(
+            isinstance(view, dict)
+            and isinstance(view.get(key), str)
+            and plugin_entry_is_host_reserved(view[key])
+            for view in views
+            for key in ("entry", "html", "script", "style")
+        ):
+            raise ValueError("custom view entry/resources must not use Host-reserved paths")
+        view_action_ids = (
+            {
+                view.get("actionId")
+                for view in views
+                if isinstance(view, dict) and isinstance(view.get("actionId"), str)
+            }
+            if isinstance(views, list)
+            else set()
+        )
+        for action in self.actions:
+            new_shape = action.presentation != "surface" or action.entry is not None
+            if new_shape and not native:
+                raise ValueError("presentation/entry are only available on v2 manifests")
+            legacy_schemas = (
+                action.form_schema is not None
+                or action.input_schema is not None
+                or action.output_schema is not None
+            )
+            if action.presentation == "surface":
+                if action.entry is not None:
+                    raise ValueError("surface actions must not declare an entry")
+                continue
+            # application/headless: the entry is declared on the action and is
+            # mutually exclusive with the legacy custom-view/form channels.
+            if action.entry is None:
+                raise ValueError("application/headless actions require an entry")
+            if legacy_schemas:
+                raise ValueError("application/headless actions forbid form/input/output schemas")
+            if action.action_id in view_action_ids:
+                raise ValueError("application/headless actions forbid a custom view declaration")
+        if native and (
+            not isinstance(views, list)
+            or any(
                 not any(
                     isinstance(view, dict)
                     and view.get("actionId") == action.action_id
@@ -77,12 +161,16 @@ class PluginManifest(PluginContract):
                     for view in views
                 )
                 for action in self.actions
-            ):
-                raise ValueError("v2 actions require a declared custom view entry")
+                if action.presentation == "surface"
+            )
+        ):
+            raise ValueError("v2 surface actions require a declared custom view entry")
         return self
 
 
 class InstallPlan(PluginContract):
+    target_installation_id: str | None = Field(default=None, min_length=1)
+    target_revision: int | None = Field(default=None, ge=1)
     plan_id: str = Field(min_length=1, max_length=128)
     project_key: str = Field(min_length=1, max_length=2048)
     project_revision: str = Field(min_length=1, max_length=128)
@@ -94,6 +182,7 @@ class InstallPlan(PluginContract):
 
 
 class PluginSnapshot(PluginContract):
+    installation_id: str | None = Field(default=None, min_length=1)
     project_key: str
     plugin_id: str
     version: str
@@ -263,6 +352,11 @@ class PluginCommitUnknownError(PluginExecutionError):
 
 
 class PluginTaskSnapshot(PluginContract):
+    # Native Host creation source; Worker tasks never infer a frame association.
+    surface_token: str | None = Field(default=None, min_length=1)
+    installation_id: str | None = Field(default=None, min_length=1)
+    # Optional for wire compatibility; absent identity is never controllable in the renderer.
+    installation_revision: int | None = Field(default=None, ge=1)
     task_id: str
     run_id: str
     plugin_id: str
@@ -343,6 +437,7 @@ __all__ = [
     "PluginMetric",
     "PluginMode",
     "PluginPackageRevision",
+    "PluginPresentation",
     "PluginPrivateSetting",
     "PluginProgress",
     "PluginResult",

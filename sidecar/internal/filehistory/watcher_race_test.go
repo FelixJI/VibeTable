@@ -80,6 +80,7 @@ func raceWatcher(
 		ingestor,
 		func() writecoordinator.Token { return fixture.token },
 		seam.record,
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -31,7 +31,7 @@ expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 
 ### 2.1 无 Worker 的隔离页面 API
 
 `manifest.v2` 必须声明 `compatibility.pluginApi: "3.x"`，动作不允许 `workerEntry`；通过
-`ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`；本版本不支持无页面动作。
+`ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`。
 CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
 编译到声明的 `script`，打包仍走既有完整性契约；`build` 在任何编译前先按包路径规则校验每个声明输出
 （绝对路径、`..` 穿越与 reparse point 逃逸直接拒绝，且输出必须是 Host 实际执行的 `.js`/`.mjs` 成员、
@@ -81,6 +81,35 @@ Host 在真实 frame 创建时捕获可信 iframe name/token，验证 WebMessage
 64 个游标句柄；普通请求 15 秒，Host 确认/提交请求 120 秒，句柄一次消费。长驻页面没有旧
 Worker 的 15 秒/64 次总寿命。完整示例和同包 `47-plugin-surface-api` 会在禁用旧 Node 执行器时
 完成 550 条查询和拒绝/取消/批准保存；测试环境开关仅设置在该合成 Host 子进程。
+
+### 2.2 应用与无界面动作形态（#482）
+
+在 v2 / pluginApi 3.x 的 action 闭集内新增 `presentation`（`surface` | `application` | `headless`，
+缺省 `surface`）与 `entry`：
+
+- `presentation: "application"`：插件贡献**完整业务视口应用**。`entry` 必填，指向包内 HTML
+  文档；同一个入口内部用 SPA hash 路由组织多个页面（Host 仅允许同文档 fragment 变化，路径/
+  查询/新导航仍被拒绝并退役 surface）。应用不声明 `ui.customViews`、`workerEntry` 或旧
+  `formSchema/inputSchema/outputSchema`（互斥，禁止静默忽略）。导航入口由当前工作区已安装、
+  已启用且 surface 可用的 catalog 派生，身份是 `pluginId + actionId`，不建 Interface 实体；
+  禁用/卸载/升级/缺包会移除入口，宿主导航与“返回平台/管理插件”始终可达。
+- `presentation: "headless"`：无界面动作。`entry` 必填，指向包内 JS 模块；由 Host 内置受控
+  文档（保留路径 `__vibetable_host__/headless.html`，包内同路径不可伪造）在同插件 origin 的
+  隐藏受限 frame 内加载，同一 surface API/确认/预算；模块完成/失败时向可信宿主页发送
+  close 事件（SDK `finishHeadlessRun`），宿主显示可见状态并释放 token/frame；用户可随时取消。
+- `presentation: "surface"`（缺省）：行为与旧版完全一致（`ui.customViews` 绑定，entry 不允许
+  出现在 action 上）。v1 清单拒绝新字段。
+
+旧栈（未升级的 Python/Go）安装 application/headless 包会明确失败；新栈保持旧 v1/v2 包语义与
+序列化字节不变（新字段为默认值时不写入清单）。完整示例见
+`examples/plugins/team-tasks-app`（application 三页 hash 路由 + headless 动作，同一包、同一 API）。
+
+```typescript
+import { createSurfaceClient, finishHeadlessRun } from "@vibetable/plugin-sdk";
+const api = createSurfaceClient(window.name);
+const context = await api.context.read();
+finishHeadlessRun(window.name, "succeeded", "已完成");
+```
 
 ```text
 manifest.json
@@ -327,3 +356,22 @@ Go 在同一读取事务中读取 pluginstore 的 installation/status/grants/rev
 v2 错误包括 `plugin_api_unsupported`（未协商/旧插件）、`plugin_read_denied`（授权不足/安装禁用）、`plugin_capability_invalid`（未知键/请求形态）、`plugin_query_limit`（页或ID上限）、`query.operator.unsupported`、`query.cursor.unsupported_sort`、`plugin_query_computed_unsupported`、`plugin_cursor_invalid`（句柄不存在/已消费/请求改变）、`plugin_cursor_stale`（安装或computed依赖修订改变）和 Go 的 `query.cursor_stale`（schema/data/clock变化）。执行取消、超时、总调用数和消息上限继续使用 v1 的 `plugin_cancel_requested` / `plugin_timeout` / `plugin_worker_failed`，不得把失败结果解释为成功全量。
 
 Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capabilities-v2.json`，SDK/offlineHost/BFF 均使用它。以合成库重建：在根目录设置 `VIBETABLE_PLUGIN_DATA_CAPTURE=../../../tests/contract/fixtures/plugin-capabilities-v2.json` 后，从 sidecar 执行 `go test ./internal/app -run '^TestPluginDataRealAuthorityPaginationAndGrants$' -count=1`；只归一化表/字段/记录/游标标识及schema修订，保留Go原值和元数据。真实跨进程本地合同设置 `VIBETABLE_PLUGIN_HOST_CONTRACT=1` 后运行 `go test ./internal/app -run '^TestPluginData' -count=1 -v`，需要仓库已同步Python依赖与Node；完整WPF安装执行由 `11-plugin-mutation` 产品场景覆盖。
+
+
+### 应用与无界面动作的运行预算
+
+`application` 页面只对每个请求/任务设置预算，没有 15 秒或 64 次的整页总限制。
+`headless` 的两分钟执行预算从真实 WebView2 frame 创建开始，目录预分配 token 不启动计时。
+模块主动完成、用户停止、禁用/卸载或 renderer 退役撤销该执行上下文；单个宿主任务完成不会结束整个模块。
+同一 surface 可并发多个请求，宿主逐 taskId 展示、确认和取消；模块结束后所有已知任务回执仍可见，
+某个任务成功不会覆盖另一个任务的 `plugin_commit_unknown`，模块完成也不代表所有写入已结算。未报告终态或 renderer 卡死时，
+独立 WPF timer 撤权并重建当前 renderer，返回平台且不自动重放动作。该恢复保留 PocketBase 工作区。
+
+卸载确认固定原安装的 `installationId` 与 `expectedRevision`，由 PocketBase 在同一事务中比较后删除安装、
+包引用和用户明确选择的私有设置。升级、重载或卸载重装导致身份变化时拒绝原请求，保留新安装及其设置；
+缺少原身份的旧调用或清理重试不会回退为无条件删除。
+原生确认窗口默认将焦点放在拒绝按钮，Escape/关闭拒绝当前计划；过期与退役关闭确认窗口。
+
+应用验收的系统高对比切换只在显式 `GITHUB_ACTIONS=true` 且 `CI=true` 的受控 Windows runner 中进行，
+QA 父进程先保存原 flags/方案、按闭集操作切换，并在正常结束、失败和 driver 异常退出的 `finally` 恢复；
+恢复失败使验收失败。本机不修改系统设置。内容 scale 与实际窗口 DPI 分别记录，不把内容缩放称为物理 DPI 变更。

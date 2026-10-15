@@ -116,6 +116,14 @@ CAPACITY_REQUIRED_IDENTITY_FIELDS = ("workspaceId", "sessionEpoch")
 # resume phase needs; the two scenarios deliberately require different seed
 # contracts instead of sharing a generic state shape.
 _PERSISTENT_RESTART_SEED_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "48-plugin-applications": (
+        "workspaceId",
+        "projectKey",
+        "tableId",
+        "pluginId",
+        "packageHash",
+        "sessionEpoch",
+    ),
     "33-host-grid-presentation": (
         "workspaceId",
         "tableId",
@@ -1803,6 +1811,9 @@ def _handle_document_native_request(
     # the observer's own UIA_STAGE clock (observer begin carries a UTC timestamp).
     started_at_utc: str | None = None
     started_at: float | None = None
+    # The existing Node nativeRequest owns a single 10s correlated observation.
+    # Missing preview evidence is pending, not a second operation or a new budget.
+    observation_deadline = time.monotonic() + 10
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
@@ -1823,7 +1834,15 @@ def _handle_document_native_request(
                 "foreground": native.foreground_observation,
             }
         if action == "preview-observe":
-            evidence = _read_json(controls / "document-native-preview-result.json")
+            while True:
+                evidence = _read_json(controls / "document-native-preview-result.json")
+                if evidence is not None:
+                    break
+                if time.monotonic() >= observation_deadline:
+                    raise OSError(
+                        "real FileDocument COM DoPreview produced no success record within the observation budget"
+                    )
+                time.sleep(0.025)
             if (
                 evidence is None
                 or evidence.get("outcome") != "do-preview-returned"
@@ -1831,26 +1850,43 @@ def _handle_document_native_request(
             ):
                 raise OSError("real FileDocument COM DoPreview did not produce a success record")
             pid, hwnd = evidence["processId"], evidence["hwnd"]
-            members = host_scope.snapshot().members
-            if (
-                not any(
-                    member.pid == pid
-                    and member.identity_verified
-                    and member.executable_name.casefold() == "vibetable.next.exe"
-                    for member in members
-                )
-                or pid == host_scope.root.pid
-            ):
-                raise OSError("preview helper is not a verified child in the packaged Host Job")
-            if native.owner(hwnd) != pid or not native.user32.IsWindowVisible(hwnd):
-                raise OSError("real preview COM host HWND is missing or has another owner")
-            return {
-                "requestId": request["requestId"],
-                "status": "observed",
-                "action": action,
-                "preview": evidence,
-                "helperIdentityVerified": True,
-            }
+            # DoPreview returns inside HwndHost.BuildWindowCore, before the parent
+            # Show completes. Visibility is pending within the same observation budget.
+            while True:
+                members = host_scope.snapshot().members
+                if (
+                    not any(
+                        member.pid == pid
+                        and member.identity_verified
+                        and member.executable_name.casefold() == "vibetable.next.exe"
+                        for member in members
+                    )
+                    or pid == host_scope.root.pid
+                ):
+                    raise OSError("preview helper is not a verified child in the packaged Host Job")
+                owner = native.owner(hwnd)
+                visible = bool(native.user32.IsWindowVisible(hwnd))
+                window_observation = {
+                    "hwnd": hwnd,
+                    "expectedPid": pid,
+                    "ownerPid": owner,
+                    "visible": visible,
+                }
+                if owner != pid:
+                    raise OSError("real preview COM host HWND is missing or has another owner")
+                if time.monotonic() >= observation_deadline:
+                    raise OSError(
+                        "real preview COM host did not become visible within the observation budget"
+                    )
+                if visible:
+                    return {
+                        "requestId": request["requestId"],
+                        "status": "observed",
+                        "action": action,
+                        "preview": evidence,
+                        "helperIdentityVerified": True,
+                    }
+                time.sleep(0.025)
         baseline_path = controls / "document-native-open-baseline.json"
         if action == "open-baseline":
             baseline = {
@@ -1975,6 +2011,56 @@ def _run_node_runner(
     process_network: dict[str, Any] | None = None,
     measure_diff_worker: bool = False,
 ) -> tuple[int, str, str]:
+    from tests.e2e.plugin_application_native import restore_system_contrast
+
+    primary_exception: Exception | None = None
+    try:
+        return _run_node_runner_guarded(
+            command,
+            scenario_dir=scenario_dir,
+            local_data=local_data,
+            host_scope=host_scope,
+            process_network=process_network,
+            measure_diff_worker=measure_diff_worker,
+        )
+    except Exception as error:
+        primary_exception = error
+        raise
+    finally:
+        try:
+            restored = restore_system_contrast(evidence=scenario_dir, cleanup=True)
+        except OSError as error:
+            diagnostic = dict(
+                getattr(error, "diagnostic", {"status": "failed", "error": str(error)})
+            )
+            if "--scenario" in command:
+                scenario_id = command[command.index("--scenario") + 1]
+                if scenario_id == "49-plugin-application-security":
+                    original_result = _read_json(scenario_dir / f"{scenario_id}-result.json")
+                    if original_result is not None and isinstance(
+                        original_result.get("error"), dict
+                    ):
+                        diagnostic["primaryError"] = original_result["error"]
+            if "primaryError" not in diagnostic and primary_exception is not None:
+                diagnostic["primaryError"] = {
+                    "name": type(primary_exception).__name__,
+                    "message": str(primary_exception),
+                }
+            _write_json_atomic(scenario_dir / "plugin-contrast-cleanup.json", diagnostic)
+            raise
+        if restored is not None:
+            _write_json_atomic(scenario_dir / "plugin-contrast-cleanup.json", restored)
+
+
+def _run_node_runner_guarded(
+    command: list[str],
+    *,
+    scenario_dir: Path,
+    local_data: Path,
+    host_scope: _HostObservationScope,
+    process_network: dict[str, Any] | None = None,
+    measure_diff_worker: bool = False,
+) -> tuple[int, str, str]:
     fault_request = scenario_dir / "fault-request.json"
     fault_result = scenario_dir / "fault-result.json"
     storage_request = scenario_dir / "storage-proof-request.json"
@@ -1993,6 +2079,7 @@ def _run_node_runner(
     invalid_fault_reported = False
     handled_storage_proof_ids: set[str] = set()
     handled_document_native_ids: set[str] = set()
+    handled_plugin_native_ids: set[str] = set()
     controls = (
         Path(command[command.index("--controls-dir") + 1]) if "--controls-dir" in command else None
     )
@@ -2097,6 +2184,31 @@ def _run_node_runner(
                     stdout, stderr = node_process.communicate(timeout=10)
                     raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
                 _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
+        plugin_native_path = scenario_dir / "plugin-native-request.json"
+        plugin_native_request = _read_json(plugin_native_path)
+        if plugin_native_request is not None:
+            native_id = plugin_native_request.get("requestId")
+            if isinstance(native_id, str) and native_id not in handled_plugin_native_ids:
+                plugin_native_path.unlink()
+                handled_plugin_native_ids.add(native_id)
+                if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
+                    "48-plugin-applications",
+                    "49-plugin-application-security",
+                    "50-plugin-headless-budget",
+                    "51-plugin-application-commit-unknown",
+                }:
+                    native_result = {
+                        "requestId": native_id,
+                        "status": "failed",
+                        "error": "native plugin scenario not authorized",
+                    }
+                else:
+                    from tests.e2e.plugin_application_native import handle_plugin_native_request
+
+                    native_result = handle_plugin_native_request(
+                        plugin_native_request, host_pid=host_scope.root.pid, evidence=scenario_dir
+                    )
+                _write_json_atomic(scenario_dir / "plugin-native-result.json", native_result)
         if process_network is not None and time.monotonic() >= next_network_sample:
             _record_process_network(host_scope, process_network)
             _write_json_atomic(
@@ -2466,6 +2578,15 @@ def run_scenario(
                 cwd=ROOT,
                 check=True,
             )
+    if scenario.id in {
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
+    }:
+        from tests.e2e.plugin_application_packages import prepare_application_packages
+
+        prepare_application_packages(controls_dir)
     if scenario.id == "47-plugin-surface-api":
         source = ROOT / "examples/plugins/surface-data-editor"
         plugin_cli = ROOT / "scripts/vibetable_plugin.py"
@@ -2584,7 +2705,13 @@ def run_scenario(
     host = (package_root / layout["launch"]["host"]).resolve()
     port = _reserve_port()
     environment = os.environ.copy()
-    if scenario.id == "47-plugin-surface-api":
+    if scenario.id in {
+        "47-plugin-surface-api",
+        "48-plugin-applications",
+        "49-plugin-application-security",
+        "50-plugin-headless-budget",
+        "51-plugin-application-commit-unknown",
+    }:
         environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
         f"--remote-debugging-port={port} --disable-gpu"
@@ -2598,6 +2725,9 @@ def run_scenario(
         environment["VIBETABLE_E2E_MIGRATION_FAULT_FILE"] = str(
             (controls_dir / "migration-fault.phase").resolve()
         )
+    if scenario.id == "51-plugin-application-commit-unknown":
+        (controls_dir / "mutation-barrier.arm").write_text("armed\n", encoding="utf-8")
+        environment["VIBETABLE_E2E_MUTATION_BARRIER_DIR"] = str(controls_dir)
     mutation_barrier = None
     if (
         scenario.id == "44-file-restore-crash"
@@ -2816,6 +2946,11 @@ def run_scenario(
                 code="E2E_INFRASTRUCTURE_FAILED",
                 message=str(exc),
             ) | {"evidenceDirectory": str(scenario_dir)}
+            contrast_cleanup = _read_json(scenario_dir / "plugin-contrast-cleanup.json")
+            if scenario.id == "49-plugin-application-security" and contrast_cleanup is not None:
+                result["pluginContrastCleanup"] = contrast_cleanup
+                if isinstance(contrast_cleanup.get("primaryError"), dict):
+                    result["primaryError"] = contrast_cleanup["primaryError"]
         exit_started = time.monotonic()
         restore_crash = _read_json(scenario_dir / "fault-result.json")
         intentional_restore_crash = (
@@ -3043,7 +3178,17 @@ def run_product_acceptance(
     # completed subset can never be mistaken for a passing run.
     write_aggregate(report_path, audit=audit, results=results)
     native_observer_error: str | None = None
-    if any(scenario.id == "42-file-document-native-operations" for scenario in scenarios):
+    if any(
+        scenario.id
+        in {
+            "42-file-document-native-operations",
+            "48-plugin-applications",
+            "49-plugin-application-security",
+            "50-plugin-headless-budget",
+            "51-plugin-application-commit-unknown",
+        }
+        for scenario in scenarios
+    ):
         try:
             _prepare_native_uia_observer()
         except (OSError, subprocess.SubprocessError) as exception:
@@ -3060,7 +3205,14 @@ def run_product_acceptance(
         print(f"[product-e2e] scenario {scenario.id} start", flush=True)
         scenario_started = time.monotonic()
         if (
-            scenario.id == "42-file-document-native-operations"
+            scenario.id
+            in {
+                "42-file-document-native-operations",
+                "48-plugin-applications",
+                "49-plugin-application-security",
+                "50-plugin-headless-budget",
+                "51-plugin-application-commit-unknown",
+            }
             and native_observer_error is not None
         ):
             result = _failure_result(

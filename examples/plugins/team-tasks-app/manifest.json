@@ -1,0 +1,39 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.team-tasks-app",
+  "version": "1.0.0",
+  "displayName": { "zh-CN": "任务台示例应用" },
+  "description": { "zh-CN": "演示插件贡献完整业务应用：单入口内三页 hash 路由与无界面动作，同一受限 surface API。" },
+  "compatibility": { "minHostVersion": "0.5.3", "pluginApi": "3.x" },
+  "permissions": {
+    "data": [{ "collection": "$active", "operations": ["read", "query"], "fields": ["*"] }],
+    "privateStorage": true,
+    "files": [],
+    "network": { "domains": [], "methods": [] }
+  },
+  "actions": [
+    {
+      "actionId": "open-task-desk",
+      "displayName": { "zh-CN": "打开任务台" },
+      "description": { "zh-CN": "全业务视口应用：任务列表 / 详情 / 统计三个内部页面。" },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": [],
+      "presentation": "application",
+      "entry": "ui/index.html"
+    },
+    {
+      "actionId": "remember-active-table",
+      "displayName": { "zh-CN": "记住当前表（无界面动作）" },
+      "description": { "zh-CN": "headless 动作：读取当前上下文并写入插件私有存储，无界面执行。" },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": ["table.toolbar"],
+      "presentation": "headless",
+      "entry": "ui/headless.js"
+    }
+  ],
+  "ui": { "customViews": [] }
+}

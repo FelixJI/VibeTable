@@ -1640,6 +1640,7 @@
       "names": [
         "plugin.commitInstall",
         "plugin.rollback",
+        "plugin.setEnabledExecution",
         "plugin.startAction",
         "plugin.uninstall",
         "plugin.upgrade"
@@ -1660,6 +1661,7 @@
         "write": [
           "plugin.commitInstall",
           "plugin.rollback",
+          "plugin.setEnabledExecution",
           "plugin.startAction",
           "plugin.uninstall",
           "plugin.upgrade"

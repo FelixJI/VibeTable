@@ -18,15 +18,19 @@ const pluginStorePath = "/api/vibetable/v1/plugins/store"
 // This private session-authenticated seam names operations, never collections,
 // SQL or source paths. Workspace binding is checked before any read or write.
 type pluginStoreRequest struct {
-	Operation        string          `json:"operation"`
-	ProjectKey       string          `json:"projectKey"`
-	PluginID         string          `json:"pluginId"`
-	ItemKey          string          `json:"itemKey"`
-	Payload          json.RawMessage `json:"payload"`
-	ExpectedRevision *int64          `json:"expectedRevision"`
-	LocalPath        string          `json:"localPath"`
-	Plan             json.RawMessage `json:"plan"`
-	PackageRevision  json.RawMessage `json:"packageRevision"`
+	Enabled                bool            `json:"enabled"`
+	InstallationRevision   int64           `json:"installationRevision"`
+	InstallationID         string          `json:"installationId"`
+	CleanupPrivateSettings bool            `json:"cleanupPrivateSettings"`
+	Operation              string          `json:"operation"`
+	ProjectKey             string          `json:"projectKey"`
+	PluginID               string          `json:"pluginId"`
+	ItemKey                string          `json:"itemKey"`
+	Payload                json.RawMessage `json:"payload"`
+	ExpectedRevision       *int64          `json:"expectedRevision"`
+	LocalPath              string          `json:"localPath"`
+	Plan                   json.RawMessage `json:"plan"`
+	PackageRevision        json.RawMessage `json:"packageRevision"`
 }
 
 func registerPluginStoreRoutes(r *router.Router[*core.RequestEvent], service *pluginstore.Service, gates ...businessWriteGate) {
@@ -104,15 +108,21 @@ func pluginStoreFields(operation string) (map[string]bool, bool) {
 		keys = []string{"projectKey", "pluginId", "itemKey"}
 	case "is_package_path_referenced":
 		keys = []string{"localPath"}
-	case "save_installation", "save_private_setting":
+	case "save_installation":
 		keys, write = []string{"projectKey", "pluginId", "payload", "expectedRevision"}, true
+	case "save_private_setting":
+		keys, write = []string{"projectKey", "pluginId", "payload", "expectedRevision", "installationId", "installationRevision"}, true
 	case "save_package_revision", "record_audit":
 		keys, write = []string{"projectKey", "pluginId", "payload"}, true
-	case "delete_installation", "delete_package_revisions", "delete_private_settings":
+	case "delete_installation":
+		keys, write = []string{"projectKey", "pluginId", "installationId", "expectedRevision", "cleanupPrivateSettings"}, true
+	case "set_enabled":
+		keys, write = []string{"projectKey", "pluginId", "installationId", "expectedRevision", "enabled"}, true
+	case "delete_package_revisions", "delete_private_settings":
 		keys, write = []string{"projectKey", "pluginId"}, true
 	case "delete_package_revision":
 		keys, write = []string{"projectKey", "pluginId", "itemKey"}, true
-	case "commit_install":
+	case "commit_install", "commit_upgrade", "commit_rollback":
 		keys, write = []string{"plan", "packageRevision"}, true
 	default:
 		return nil, false
@@ -133,7 +143,15 @@ func callPluginStore(ctx context.Context, service *pluginstore.Service, body plu
 	case "save_installation":
 		return service.SaveInstallation(ctx, body.Payload, body.ExpectedRevision)
 	case "delete_installation":
-		return service.DeleteInstallation(ctx, body.ProjectKey, body.PluginID)
+		if body.ExpectedRevision == nil {
+			return nil, errors.New("installation revision required")
+		}
+		return service.DeleteInstallation(ctx, body.ProjectKey, body.PluginID, body.InstallationID, *body.ExpectedRevision, body.CleanupPrivateSettings)
+	case "set_enabled":
+		if body.ExpectedRevision == nil {
+			return nil, errors.New("installation revision required")
+		}
+		return service.SetEnabledForInstallation(ctx, body.ProjectKey, body.PluginID, body.Enabled, body.InstallationID, *body.ExpectedRevision)
 	case "list_package_revisions":
 		return service.ListPackageRevisions(ctx, body.ProjectKey, body.PluginID)
 	case "save_package_revision":
@@ -147,7 +165,7 @@ func callPluginStore(ctx context.Context, service *pluginstore.Service, body plu
 	case "get_private_setting":
 		return service.GetPrivateSetting(ctx, body.ProjectKey, body.PluginID, body.ItemKey)
 	case "save_private_setting":
-		return service.SavePrivateSetting(ctx, body.Payload, body.ExpectedRevision)
+		return service.SavePrivateSetting(ctx, body.Payload, body.ExpectedRevision, body.InstallationID, body.InstallationRevision)
 	case "delete_private_settings":
 		return service.DeletePrivateSettings(ctx, body.ProjectKey, body.PluginID)
 	case "record_audit":
@@ -158,6 +176,10 @@ func callPluginStore(ctx context.Context, service *pluginstore.Service, body plu
 		return service.ListProjectAudit(ctx, body.ProjectKey)
 	case "commit_install":
 		return service.CommitInstall(ctx, body.Plan, body.PackageRevision)
+	case "commit_upgrade":
+		return service.CommitUpgrade(ctx, body.Plan, body.PackageRevision)
+	case "commit_rollback":
+		return service.CommitRollback(ctx, body.Plan, body.PackageRevision)
 	default:
 		return nil, errors.New("invalid plugin operation")
 	}

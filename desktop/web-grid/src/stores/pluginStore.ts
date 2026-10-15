@@ -16,11 +16,17 @@ export const usePluginStore = defineStore("plugins", () => {
   const projectRevision = ref("");
   const projectContextReady = ref(false);
   const projectContextGeneration = ref(0);
+  // Shared by every service instance; this orders UI reads, not authority data.
+  let catalogReadSequence = 0;
+  let catalogRefreshRunning = false;
+  let catalogRefreshAgain = false;
+  let catalogRefreshReader: (() => Promise<readonly PluginSnapshot[]>) | null = null;
   const currentUser = ref<Readonly<Record<string, unknown>>>({});
   const hostVersion = ref("unknown");
   const catalogRevision = ref(-1);
   const pluginById = ref<Record<string, PluginSnapshot>>({});
   const taskById = ref<Record<string, PluginTaskViewSnapshot>>({});
+  const admittedTaskIds = new Set<string>();
   const taskRevisionById = ref<Record<string, number>>({});
   const interactionRevisionByRun = ref<Record<string, number>>({});
   const pendingInteractionByRun = ref<Record<string, {
@@ -43,19 +49,81 @@ export const usePluginStore = defineStore("plugins", () => {
   const activeTask = computed(() =>
     activeTaskId.value ? taskById.value[activeTaskId.value] ?? null : null,
   );
+  // Receipt history is a projection of Host snapshots, not authorization for
+  // another frame. The existing workspace/session reset owns its lifetime.
+  const nativeTaskReceipts = computed(() => Object.values(taskById.value).filter(task =>
+    task.projectKey === projectKey.value && Boolean(task.surfaceToken)
+    && Boolean(task.installationId) && (task.installationRevision ?? 0) > 0));
   const pendingConfirmation = computed<WebPluginConfirmationPreview | null>(() =>
     activeTask.value?.confirmation ?? null,
   );
+
+  function currentTask(task: PluginTaskViewSnapshot): boolean {
+    const plugin = pluginById.value[task.pluginId];
+    if (task.projectKey !== projectKey.value) return false;
+    if (admittedTaskIds.has(task.taskId) && (!plugin || task.installationId === plugin.installationId)) return true;
+    return plugin?.status === "enabled"
+      && Boolean(task.installationId) && task.installationId === plugin.installationId
+      && task.installationRevision === plugin.revision
+      && task.pluginVersion === plugin.version
+      && plugin.manifest.actions.some(action => action.actionId === task.actionId);
+  }
+  function taskForId(taskId: string): PluginTaskViewSnapshot | null {
+    const task = taskById.value[taskId];
+    return task && currentTask(task) ? task : null;
+  }
+  function tasksForAction(pluginId: string, actionId: string, surfaceToken?: string): PluginTaskViewSnapshot[] {
+    return Object.values(taskById.value).filter(task => task.pluginId === pluginId
+      && task.actionId === actionId && (surfaceToken === undefined || task.surfaceToken === surfaceToken) && currentTask(task));
+  }
+  function taskForAction(pluginId: string, actionId: string, surfaceToken?: string): PluginTaskViewSnapshot | null {
+    return tasksForAction(pluginId, actionId, surfaceToken).at(-1) ?? null;
+  }
+
+  function beginCatalogRead(): number { return ++catalogReadSequence; }
+  function isCurrentCatalogRead(sequence: number): boolean { return sequence === catalogReadSequence; }
+  function invalidateCatalogReads(): void { catalogReadSequence++; }
+  function refreshCatalog(read: () => Promise<readonly PluginSnapshot[]>): void {
+    invalidateCatalogReads();
+    catalogRefreshReader = read;
+    catalogRefreshAgain = true;
+    if (catalogRefreshRunning) return;
+    catalogRefreshRunning = true;
+    void Promise.resolve().then(async () => {
+      try {
+        // One active read and one dirty bit coalesce a recovered event backlog.
+        while (catalogRefreshAgain && catalogRefreshReader) {
+          const reader = catalogRefreshReader;
+          catalogRefreshAgain = false;
+          const generation = projectContextGeneration.value;
+          const reading = reader();
+          const sequence = catalogReadSequence;
+          try { await reading; }
+          catch (error) {
+            if (generation === projectContextGeneration.value && isCurrentCatalogRead(sequence))
+              failIfNoError(error);
+          }
+        }
+      } finally {
+        catalogRefreshRunning = false;
+        catalogRefreshReader = null;
+      }
+    });
+  }
 
   function projectInstallPlan(plan: PluginInstallPlan | null): void {
     installPlan.value = plan;
   }
 
   function setProjectContext(key: string, revision: string): void {
+    invalidateCatalogReads();
+    catalogRefreshAgain = false;
+    catalogRefreshReader = null;
     projectContextGeneration.value += 1;
     if (projectKey.value !== key) {
       pluginById.value = {};
       taskById.value = {};
+      admittedTaskIds.clear();
       taskRevisionById.value = {};
       interactionRevisionByRun.value = {};
       pendingInteractionByRun.value = {};
@@ -68,6 +136,14 @@ export const usePluginStore = defineStore("plugins", () => {
       busy.value = false;
       lastError.value = null;
     } else {
+      // Tasks/confirmations belong to the previous workspace session even
+      // when its stable project key is unchanged.
+      taskById.value = {};
+      admittedTaskIds.clear();
+      taskRevisionById.value = {};
+      interactionRevisionByRun.value = {};
+      pendingInteractionByRun.value = {};
+      activeTaskId.value = null;
       // A same-key reopen rotates the generation: the previous generation's
       // busy/error state is settled synchronously here, and its late
       // terminals stay inert against the new generation in the service.
@@ -112,7 +188,8 @@ export const usePluginStore = defineStore("plugins", () => {
   function applyPlugin(snapshot: PluginSnapshot, eventRevision?: number): void {
     if (snapshot.projectKey !== projectKey.value) return;
     const current = pluginById.value[snapshot.pluginId];
-    if (current && snapshot.revision <= current.revision) return;
+    if (current && current.installationId === snapshot.installationId
+      && snapshot.revision <= current.revision) return;
     pluginById.value = { ...pluginById.value, [snapshot.pluginId]: snapshot };
     catalogRevision.value = Math.max(catalogRevision.value, eventRevision ?? snapshot.revision);
     selectedPluginId.value ??= snapshot.pluginId;
@@ -139,6 +216,9 @@ export const usePluginStore = defineStore("plugins", () => {
     const terminal = ["succeeded", "failed", "cancelled", "aborted"].includes(snapshot.state);
     const projected: PluginTaskViewSnapshot = {
       ...snapshot,
+      installationRevision: current ? current.installationRevision : snapshot.installationRevision,
+      installationId: current ? current.installationId : snapshot.installationId,
+      surfaceToken: current ? current.surfaceToken : snapshot.surfaceToken,
       revision: Math.max(taskRevision, interactionRevision),
       progressPercent: snapshot.progress?.total
         ? Math.min(100, Math.round((snapshot.progress.current / snapshot.progress.total) * 100))
@@ -146,6 +226,7 @@ export const usePluginStore = defineStore("plugins", () => {
       progressMessage: snapshot.progress?.message || current?.progressMessage || null,
       confirmation: terminal ? null : current?.confirmation ?? null,
     };
+    if (currentTask(projected)) admittedTaskIds.add(projected.taskId);
     taskById.value = { ...taskById.value, [snapshot.taskId]: projected };
     activeTaskId.value = snapshot.taskId;
     const pendingInteraction = pendingInteractionByRun.value[snapshot.runId];
@@ -171,6 +252,8 @@ export const usePluginStore = defineStore("plugins", () => {
       }
       return;
     }
+    if (snapshot.projectKey !== projectKey.value || snapshot.pluginId !== current.pluginId
+      || snapshot.actionId !== current.actionId) return;
     if (["succeeded", "failed", "cancelled", "aborted"].includes(current.state)) return;
     const currentInteractionRevision = interactionRevisionByRun.value[snapshot.runId] ?? 0;
     if (eventRevision <= currentInteractionRevision) return;
@@ -251,6 +334,13 @@ export const usePluginStore = defineStore("plugins", () => {
   }
 
   return {
+    beginCatalogRead,
+    isCurrentCatalogRead,
+    refreshCatalog,
+    nativeTaskReceipts,
+    taskForId,
+    taskForAction,
+    tasksForAction,
     projectKey,
     projectRevision,
     projectContextReady,

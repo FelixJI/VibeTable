@@ -30,6 +30,93 @@ namespace VibeTable.Desktop.Tests;
 [TestClass]
 public sealed class MainWindowViewModelTests
 {
+    [STATestMethod]
+    public void RecoveryFailureIsVisibleThroughTheShellDetailBinding()
+    {
+        var web = new FakeWebViewBridge(); var vm = new MainWindowViewModel(new FakeBackendLifecycle(), web);
+        vm.StartAsync().GetAwaiter().GetResult(); web.CompleteLoad();
+        var text = new System.Windows.Controls.TextBlock { DataContext = vm };
+        text.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(MainWindowViewModel.DetailMessage)));
+        vm.BeginRendererRecovery(); vm.FailRendererRecovery("界面恢复失败：连接已中断，请重试");
+        text.GetBindingExpression(System.Windows.Controls.TextBlock.TextProperty)!.UpdateTarget();
+        Assert.AreEqual("界面恢复失败：连接已中断，请重试", text.Text);
+    }
+
+    [TestMethod]
+    public async Task RendererFaultCanRecoverLoadingButManualStopCannotAndOldLoadCannotSettleRecovery()
+    {
+        var backend = new FakeBackendLifecycle(); var web = new FakeWebViewBridge();
+        var vm = new MainWindowViewModel(backend, web);
+        Assert.IsFalse(vm.TryBeginRendererRecovery(rendererFailure: true));
+        await vm.StartAsync(); Assert.IsFalse(vm.TryBeginRendererRecovery());
+        Assert.IsTrue(vm.TryBeginRendererRecovery(rendererFailure: true));
+        Assert.IsFalse(vm.StopPluginsCommand.CanExecute(null));
+        web.CompleteLoad(); Assert.AreEqual(StartupState.LoadingWeb, vm.State);
+        Assert.IsTrue(vm.IsRendererRecovering);
+        vm.FailRendererRecovery("界面恢复失败：请重试恢复");
+        Assert.AreEqual("界面恢复失败：请重试恢复", vm.DetailMessage);
+        Assert.IsTrue(vm.IsHostFallbackVisible); Assert.IsTrue(vm.RecoverRendererCommand.CanExecute(null));
+    }
+
+    [TestMethod]
+    public async Task FullRendererRetryDoesNotBypassBackendFailureOrDeclareReadyWithoutRecoveryAdmission()
+    {
+        var backend = new FakeBackendLifecycle(); var web = new FakeWebViewBridge();
+        int recoveries = 0;
+        var vm = new MainWindowViewModel(backend, web, recoverRenderer: _ => { recoveries++; return Task.CompletedTask; });
+        await vm.StartAsync(); web.CompleteLoad();
+        vm.BeginRendererRecovery(); vm.FailRendererRecovery("app.ready timeout");
+        backend.ShouldFail = true;
+        await vm.StartAsync();
+        Assert.AreEqual(StartupState.Faulted, vm.State); Assert.AreEqual(0, recoveries);
+        Assert.IsNotNull(vm.LastStartupError);
+        backend.ShouldFail = false;
+        await vm.StartAsync();
+        Assert.AreEqual(1, recoveries);
+        Assert.AreEqual(StartupState.Faulted, vm.State, "a no-op recovery cannot reuse completed navigation as readiness");
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+    }
+
+    [TestMethod]
+    public async Task FullRendererRetryCallbackFailureSettlesItsActiveRecovery()
+    {
+        var web = new FakeWebViewBridge(); MainWindowViewModel vm = null!;
+        vm = new MainWindowViewModel(new FakeBackendLifecycle(), web, recoverRenderer: _ =>
+        {
+            Assert.IsTrue(vm.TryBeginRendererRecovery(rendererFailure: true));
+            return Task.FromException(new TimeoutException("new business app.ready timeout"));
+        });
+        await vm.StartAsync(); web.CompleteLoad();
+        vm.BeginRendererRecovery(); vm.FailRendererRecovery("first timeout");
+        await vm.StartAsync();
+        Assert.AreEqual(StartupState.Faulted, vm.State);
+        Assert.IsFalse(vm.IsRendererRecovering);
+        Assert.AreEqual("new business app.ready timeout", vm.DetailMessage);
+        Assert.IsTrue(vm.IsHostFallbackVisible);
+    }
+
+    [TestMethod]
+    public async Task NativeStopCannotRaceInitialBackendOrWebLoad()
+    {
+        var backend = new FakeBackendLifecycle().BlockStart();
+        var web = new FakeWebViewBridge();
+        int stopped = 0;
+        var vm = new MainWindowViewModel(backend, web, stopPlugins: () => stopped++);
+        Assert.IsFalse(vm.StopPluginsCommand.CanExecute(null));
+        vm.StopPluginsCommand.Execute(null);
+        Assert.AreEqual(0, stopped);
+        var start = vm.StartAsync(); backend.ReleaseStart(); await start;
+        Assert.AreEqual(StartupState.LoadingWeb, vm.State);
+        Assert.IsFalse(vm.StopPluginsCommand.CanExecute(null));
+        Assert.IsFalse(vm.RecoverRendererCommand.CanExecute(null));
+        vm.StopPluginsCommand.Execute(null);
+        Assert.AreEqual(0, stopped);
+        web.CompleteLoad();
+        Assert.IsTrue(vm.StopPluginsCommand.CanExecute(null));
+        vm.StopPluginsCommand.Execute(null);
+        Assert.AreEqual(1, stopped);
+    }
+
     [TestMethod]
     public async Task Ctor_StartsInStartingBackend_AndTransitionsToReady_HappyPath()
     {
@@ -68,6 +155,8 @@ public sealed class MainWindowViewModelTests
         Assert.AreEqual("出现错误", vm.StatusText);
         Assert.IsFalse(vm.IsGridVisible);
         Assert.IsTrue(vm.IsRetryVisible);
+        Assert.IsFalse(vm.StopPluginsCommand.CanExecute(null));
+        Assert.IsFalse(vm.RecoverRendererCommand.CanExecute(null));
     }
 
     [TestMethod]
@@ -221,6 +310,57 @@ public sealed class MainWindowViewModelTests
         await vm.StartAsync();
         return vm;
     }
+    [TestMethod]
+    public void RendererRecoveryRoundTripFromReadyKeepsBackendRunning()
+    {
+        var backend = new FakeBackendLifecycle();
+        var bridge = new FakeWebViewBridge();
+        var viewModel = new MainWindowViewModel(backend, bridge);
+
+        viewModel.StartAsync().Wait(TimeSpan.FromSeconds(5));
+        bridge.CompleteLoad();
+        Assert.AreEqual(StartupState.Ready, viewModel.State);
+
+        // #482 renderer-only recovery: Ready -> LoadingWeb without a backend
+        // restart, then back to Ready after the real app.ready.
+        viewModel.BeginRendererRecovery();
+        Assert.AreEqual(StartupState.LoadingWeb, viewModel.State);
+        Assert.IsTrue(viewModel.IsRendererRecovering);
+        Assert.AreEqual(0, backend.StopCalls);
+
+        viewModel.CompleteRendererRecovery();
+        Assert.AreEqual(StartupState.Ready, viewModel.State);
+        Assert.IsFalse(viewModel.IsRendererRecovering);
+    }
+
+    [TestMethod]
+    public void RendererRecoveryFailureFallsBackToFaultedWithRetry()
+    {
+        var backend = new FakeBackendLifecycle();
+        var bridge = new FakeWebViewBridge();
+        var viewModel = new MainWindowViewModel(backend, bridge);
+        viewModel.StartAsync().Wait(TimeSpan.FromSeconds(5));
+        bridge.CompleteLoad();
+        viewModel.MoveToFaulted("renderer");
+
+        viewModel.BeginRendererRecovery();
+        Assert.AreEqual(StartupState.LoadingWeb, viewModel.State);
+
+        viewModel.FailRendererRecovery("timeout");
+        Assert.AreEqual(StartupState.Faulted, viewModel.State);
+        Assert.AreEqual("timeout", viewModel.DetailMessage);
+        // The full-restart retry stays available after a failed recovery.
+        Assert.IsTrue(MainWindowViewModel.IsLegalTransition(StartupState.Faulted, StartupState.StartingBackend));
+    }
+
+    [TestMethod]
+    public void RendererRecoveryTransitionsStayWithinTheRecoveryEdges()
+    {
+        Assert.IsTrue(MainWindowViewModel.IsLegalTransition(StartupState.Ready, StartupState.LoadingWeb));
+        Assert.IsTrue(MainWindowViewModel.IsLegalTransition(StartupState.Faulted, StartupState.LoadingWeb));
+        // StartingBackend is untouched by renderer recovery.
+        Assert.IsFalse(MainWindowViewModel.IsLegalTransition(StartupState.StartingBackend, StartupState.Ready));
+    }
 }
 
 /// <summary>
@@ -261,10 +401,12 @@ internal sealed class FakeBackendLifecycle : IBackendLifecycle
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        StopCalls++;
         return Task.CompletedTask;
     }
-}
 
+    public int StopCalls { get; private set; }
+}
 /// <summary>
 /// Fake <see cref="IWebViewBridge"/> for ViewModel tests. LoadAsync completes
 /// or fails only when the test signals it. The TCS does NOT use

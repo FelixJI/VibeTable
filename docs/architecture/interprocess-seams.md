@@ -26,6 +26,14 @@ Host-only 凭据不进入插件 JSON。MutationKernel 的可信 `Authorize` 回�
 仍可负责旧包安装管理，不能作为新业务执行 fallback。native confirmation 仍由可信 Host UI
 解析与批准，插件仅得到 opaque planId；回执未知不补发，真实成功不被迟到取消覆盖。
 
+#482 起 v2 action 可声明 `presentation: application/headless`（entry 在 action 上，与
+`ui.customViews`/旧表单 schema 互斥）。Host catalog 投影为这类动作在 action 级派生 src/token
+（仅投影字段，不落盘）；application 占据全业务视口（单 entry SPA hash 路由，仅同文档
+fragment 变化被允许，导航栏/返回平台/管理入口始终在插件 frame 之外），headless 由保留路径
+`__vibetable_host__/headless.html` 的 Host 内置受控文档加载包内 JS 模块（包内同路径不可伪造，
+CSP/独立 origin/初始 source 语义与页面 surface 一致）；Go surfaceInstallation 同时接受
+customViews 与 presentation-entry 两种绑定。旧栈安装新形态明确失败，旧 v1/v2 包语义与序列化不变。
+
 `JsonRpcProductDataGateway(HostProductRpcInvoker)` 保持 typed method 与严格 Schema v2 解析；
 invoker 按生成 policy/Workspace catalog 选择 Go、Host 或 Python owner。Go HTTP 握手独立持有
 workspace epoch lease 至实际请求完成，单 caller 取消仅结束自身等待。

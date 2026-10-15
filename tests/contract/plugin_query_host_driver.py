@@ -66,6 +66,8 @@ async def main() -> None:
         SOURCE,
         snapshot.revision,
         "2.x",
+        installation_id=snapshot.installation_id,
+        package_hash=snapshot.package_hash,
     )
     invocation = {"type": "invoke", "method": "run", "source": SOURCE, "payload": settings}
     context = {"collection": settings["collection"], "projectKey": settings["projectKey"]}

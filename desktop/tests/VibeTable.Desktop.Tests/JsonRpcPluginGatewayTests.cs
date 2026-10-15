@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
@@ -35,7 +36,7 @@ public sealed class JsonRpcPluginGatewayTests
         await gateway.UpgradeAsync(
             new("project-1", "com.acme.clean", UpgradePlan, "revision-2"), CancellationToken.None);
         await gateway.RollbackAsync(new("project-1", "com.acme.clean"), CancellationToken.None);
-        await gateway.UninstallAsync(new("project-1", "com.acme.clean"), CancellationToken.None);
+        await gateway.UninstallAsync(new("project-1", "com.acme.clean", "record-clean", 1), CancellationToken.None);
         await gateway.DescribeActionAsync(
             new("project-1", "com.acme.clean", "normalize", context), CancellationToken.None);
         await gateway.StartActionAsync(
@@ -65,6 +66,8 @@ public sealed class JsonRpcPluginGatewayTests
                 "plugin.cancelTask",
             },
             transport.Methods);
+        Assert.AreEqual("record-clean", transport.Requests[4].GetProperty("params").GetProperty("installationId").GetString());
+        Assert.AreEqual(1, transport.Requests[4].GetProperty("params").GetProperty("expectedRevision").GetInt32());
         // plugin.getTask is retired: the WPF host registry answers public
         // task queries. plugin.cancelInstall is retired on the wire: the host
         // owns cancel by taking and disposing the install-plan lease locally.
@@ -108,6 +111,63 @@ public sealed class JsonRpcPluginGatewayTests
         Assert.AreEqual("opaque",
             transport.Requests[8].GetProperty("params").GetProperty("grant").GetProperty("grantId").GetString());
         Assert.IsFalse(transport.SerializedRequests.Contains("trusted", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ActualInstallAndUpgradeWireMatchesPythonValidatedPlans()
+    {
+        DirectoryInfo? root = new(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-install-host-plans.json"))) root = root.Parent;
+        Assert.IsNotNull(root);
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-install-host-plans.json")));
+        foreach (var item in fixture.RootElement.EnumerateArray())
+        {
+            var expected = item.GetProperty("params");
+            var plan = expected.GetProperty("plan").Deserialize<PluginRuntimeInstallPlan>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            var transport = new AutoRespondTransport();
+            await using var client = new JsonRpcClient(transport);
+            using var gateway = new JsonRpcPluginGateway(client);
+            await gateway.CommitInstallAsync(new("project-1", plan, "revision-1"), CancellationToken.None);
+            Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected.GetRawText()), JsonNode.Parse(transport.Requests[0].GetProperty("params").GetRawText())), item.GetProperty("name").GetString());
+            await gateway.UpgradeAsync(new("project-1", plan.Manifest.PluginId, plan, "revision-1"), CancellationToken.None);
+            var upgrade = JsonNode.Parse(expected.GetRawText())!.AsObject();
+            upgrade["pluginId"] = plan.Manifest.PluginId;
+            Assert.IsTrue(JsonNode.DeepEquals(upgrade, JsonNode.Parse(transport.Requests[1].GetProperty("params").GetRawText())));
+        }
+    }
+
+    [TestMethod]
+    public async Task ActualUninstallWireMatchesPythonValidatedCatalogRequest()
+    {
+        DirectoryInfo? root = new(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "product-rpc-catalog.json"))) root = root.Parent;
+        Assert.IsNotNull(root);
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "product-rpc-catalog.json")));
+        var expected = fixture.RootElement.GetProperty("rpcCases").EnumerateArray()
+            .Single(item => item.GetProperty("method").GetString() == "plugin.uninstall").GetProperty("request").GetProperty("params");
+        var request = expected.Deserialize<PluginUninstallParams>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var transport = new AutoRespondTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcPluginGateway(client);
+        await gateway.UninstallAsync(request, CancellationToken.None);
+        Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected.GetRawText()), JsonNode.Parse(transport.Requests.Single().GetProperty("params").GetRawText())));
+    }
+
+    [TestMethod]
+    public async Task HostLifecycleExecutionSerializesCreationTargetWithoutPublicRpcRegistration()
+    {
+        DirectoryInfo? root = new(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-lifecycle-host-executions.json"))) root = root.Parent;
+        Assert.IsNotNull(root);
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-lifecycle-host-executions.json")));
+        var expected = fixture.RootElement;
+        var request = expected.Deserialize<PluginSetEnabledExecutionParams>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var transport = new AutoRespondTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcPluginGateway(client);
+        await gateway.SetEnabledExecutionAsync(request, CancellationToken.None);
+        Assert.AreEqual("plugin.setEnabledExecution", transport.Methods.Single());
+        Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected.GetRawText()), JsonNode.Parse(transport.Requests.Single().GetProperty("params").GetRawText())));
     }
 
     private static PluginRuntimeInstallPlan Plan(string planId) => new(

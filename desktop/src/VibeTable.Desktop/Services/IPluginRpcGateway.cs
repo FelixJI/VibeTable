@@ -24,6 +24,7 @@ public sealed record PluginUpgradeExecutionParams(
     string PluginId,
     PluginRuntimeInstallPlan Plan,
     string ProjectRevision);
+public sealed record PluginSetEnabledExecutionParams(string ProjectKey, string PluginId, bool Enabled, string InstallationId, int ExpectedRevision);
 
 /// <summary>
 /// Aggregate WPF boundary for complete plugin use cases. The interface is
@@ -31,6 +32,8 @@ public sealed record PluginUpgradeExecutionParams(
 /// </summary>
 public interface IPluginRpcGateway : IDisposable
 {
+    Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(PluginSetEnabledExecutionParams request, CancellationToken token)
+        => Task.FromException<PluginRuntimeSnapshot>(new NotSupportedException("Lifecycle execution is unavailable."));
     event Action<PluginEventEnvelope>? TaskChanged;
     event Action<PluginEventEnvelope>? InteractionRequested;
     event Action<PluginEventEnvelope>? FileRequested;

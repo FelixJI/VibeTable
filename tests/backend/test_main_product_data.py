@@ -142,6 +142,7 @@ async def test_product_rpc_registration_is_closed_and_provider_neutral(
         "plugin.upgrade",
         "plugin.rollback",
         "plugin.uninstall",
+        "plugin.setEnabledExecution",
         "plugin.describeAction",
         "plugin.startAction",
         "plugin.resolveInteraction",

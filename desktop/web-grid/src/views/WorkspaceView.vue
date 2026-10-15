@@ -59,6 +59,9 @@ import FileWorkspaceView from "@/views/FileWorkspaceView.vue";
 import PluginCenterView from "@/views/PluginCenterView.vue";
 import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
+import PluginHeadlessRunner from "@/components/plugins/PluginHeadlessRunner.vue";
+import PluginAppViewport from "@/components/plugins/PluginAppViewport.vue";
+import PluginTaskList from "@/components/plugins/PluginTaskList.vue";
 import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
 import WorkspaceSwitcher from "@/components/workspace/WorkspaceSwitcher.vue";
 import ConflictCenterView from "@/views/ConflictCenterView.vue";
@@ -126,6 +129,7 @@ import { createPresetViewController } from "@/workspace/presetViewController";
 import { createAlternativeViewInteractionController } from "@/workspace/alternativeViewInteractionController";
 import { createRelationEditorController } from "@/workspace/relationEditorController";
 import { createWorkspacePluginController } from "@/workspace/workspacePluginController";
+import { createPluginAppNavigation } from "@/workspace/pluginAppNavigation";
 import {
   createTabulatorInteractionAdapter,
   createWorkspaceTableInteractionController,
@@ -503,6 +507,7 @@ const workspaceNavigation = createWorkspaceNavigationController(
 function onNavigate(view: AppView): void {
   if (view === ui.activeView) {
     showWorkspaceCenter.value = false;
+    ui.navigate(view);
     return;
   }
   workspaceNavigation.attempt(() => {
@@ -579,6 +584,7 @@ const isForegroundOverlayOpen = (): boolean =>
 
 const canExecuteGridCommand = (): boolean =>
   ui.activeView === "tables" && activeViewKind.value === "table"
+  && !ui.activePluginApp
   // Without workspace-session v2 there is no session state to gate on; the
   // view check above is the legacy context.
   && (!workspaceSession.enabled
@@ -902,6 +908,52 @@ const pluginController = createWorkspacePluginController({
   riskLabel: risk => t(`plugin.risk.${risk}`),
 });
 const pluginTheme = pluginController.theme;
+const pluginApplicationTasks = pluginController.applicationTasks;
+const pluginActionTask = pluginController.actionTask;
+const pluginActionTasks = pluginController.actionTasks;
+const pluginAppNav = createPluginAppNavigation(plugins, ui);
+const activePluginAppEntry = pluginAppNav.activeEntry;
+const closedPluginTaskReceipts = computed(() => {
+  const visibleTokens = new Set<string>();
+  if (!showWorkspaceCenterScreen.value && activePluginAppEntry.value)
+    visibleTokens.add(activePluginAppEntry.value.surfaceToken);
+  const panel = plugins.describedAction;
+  if (plugins.actionOpen && panel?.surface
+    && (panel.presentation === "custom" || panel.presentation === "headless"))
+    visibleTokens.add(panel.surface.surfaceToken);
+  return plugins.nativeTaskReceipts.filter(task => !visibleTokens.has(task.surfaceToken ?? ""));
+});
+const activePluginAppKey = computed(() =>
+  ui.activePluginApp ? `${ui.activePluginApp.pluginId}/${ui.activePluginApp.actionId}` : null);
+const platformViewsHidden = computed(() =>
+  showWorkspaceCenterScreen.value || activePluginAppEntry.value !== null);
+watch(
+  () => [ui.activePluginApp, activePluginAppEntry.value] as const,
+  ([active, entry]) => {
+    // Catalog-driven retirement (disable/uninstall/upgrade/missing package):
+    // the entry disappears, so the viewport returns to the platform with a
+    // recoverable notice instead of keeping a dead authorization on screen.
+    if (active && !entry) {
+      message.warning("插件入口已失效或被移除，已返回平台");
+      ui.closePluginApp();
+    }
+  },
+);
+function onOpenPluginApp(key: string): void {
+  void pluginController.dispatch({ type: "app.open", key });
+}
+
+// #482 native host chrome: the always-reachable WPF row steers the trusted
+// shell without any plugin involvement. 停止插件 retires every surface token
+// host-side, so the web only has to leave plugin views and refresh entries.
+hostBridge.on("host.pluginChrome", payload => {
+  const action = payload.action;
+  if (action !== "stopped" && action !== "returnPlatform" && action !== "manage") return;
+  plugins.closeAction();
+  ui.closePluginApp();
+  if (action === "manage") ui.navigate("plugins");
+  if (action === "stopped") void pluginService.list().catch(() => undefined);
+});
 const toolbarPluginActions = pluginController.toolbarActions;
 const pluginContextMenu = pluginController.rowMenu;
 const columnContextMenu = pluginController.columnMenu;
@@ -1154,6 +1206,7 @@ onBeforeUnmount(() => {
   tableService.dispose();
   relationLookupService.dispose();
   revisionHistoryService.dispose();
+  pluginController.dispose();
   pluginService.dispose();
   dashboardService.dispose();
   surfaceService.dispose();
@@ -1362,9 +1415,12 @@ useKeyboard({
 <template>
   <div class="workspace">
     <AppNavigation
+      :plugin-apps="pluginAppNav.entries.value.map(entry => ({ key: entry.key, label: entry.label }))"
+      :active-plugin-app-key="activePluginAppKey"
       @navigate="onNavigate"
       @open-admin="onOpenAdmin"
       @open-help="ui.openShortcuts"
+      @open-plugin-app="onOpenPluginApp"
     />
     <section class="app-surface" :class="`density-${ui.density}`">
       <header class="app-header">
@@ -1372,7 +1428,7 @@ useKeyboard({
           <WorkspaceSwitcher
             v-if="workspaceSession.enabled"
             @switch="workspaceSessionUi.open"
-            @center="showWorkspaceCenter = true"
+            @center="ui.closePluginApp(); showWorkspaceCenter = true"
           />
           <span v-else>VibeTable</span>
           <i></i>
@@ -1405,12 +1461,12 @@ useKeyboard({
           @open="workspaceSessionUi.open($event.workspaceId)"
         />
         <HomeView
-          v-show="!showWorkspaceCenterScreen && ui.activeView === 'home'"
+          v-show="!platformViewsHidden && ui.activeView === 'home'"
           @open-table="onOpenTableFromHome"
           @new-table="onNewTable"
           @open-admin="onOpenAdmin"
         />
-        <div v-show="!showWorkspaceCenterScreen && ui.activeView === 'tables'" class="tables-view">
+        <div v-show="!platformViewsHidden && ui.activeView === 'tables'" class="tables-view">
           <AppSidebar
             @select="onSelect"
             @new-table="onNewTable"
@@ -1625,7 +1681,7 @@ useKeyboard({
           </main>
         </div>
         <ImportManagementView
-          v-if="!showWorkspaceCenterScreen && ui.activeView === 'imports'"
+          v-if="!platformViewsHidden && ui.activeView === 'imports'"
           v-bind="importManagementProps"
           @new-import="startManagedImport"
           @new-cloud-import="startCloudImport"
@@ -1636,30 +1692,51 @@ useKeyboard({
           @open-target="openImportTarget"
           @open-source-target="openSourceImportTarget"
         />
-        <DashboardWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'dashboard'" />
-        <InterfaceWorkspaceView v-if="!showWorkspaceCenterScreen && ui.activeView === 'interfaces'" />
+        <DashboardWorkspaceView v-if="!platformViewsHidden && ui.activeView === 'dashboard'" />
+        <InterfaceWorkspaceView v-if="!platformViewsHidden && ui.activeView === 'interfaces'" />
         <SettingsView
-          v-show="!showWorkspaceCenterScreen && ui.activeView === 'settings'"
+          v-show="!platformViewsHidden && ui.activeView === 'settings'"
           @reconnect="openDatabaseWithGuard"
           @open-help="ui.openShortcuts"
           @workspace-v2-action="workspaceSessionUi.execute"
         />
         <FileWorkspaceView
-          v-if="!showWorkspaceCenterScreen && ui.activeView === 'files'"
+          v-if="!platformViewsHidden && ui.activeView === 'files'"
           :requested-revision-id="workspaceSearchNavigation.requestedRevisionId.value"
           @intent="documentWorkspaceService.dispatch"
           @workspace-v2-action="workspaceSessionUi.execute"
         />
         <WorkspaceSearchView
-          v-if="!showWorkspaceCenterScreen && ui.activeView === 'search'"
+          v-if="!platformViewsHidden && ui.activeView === 'search'"
           @open="workspaceSearchNavigation.open"
         />
         <ConflictCenterView
-          v-if="!showWorkspaceCenterScreen && ui.activeView === 'conflicts' && workspaceSession.conflictEnabled"
+          v-if="!platformViewsHidden && ui.activeView === 'conflicts' && workspaceSession.conflictEnabled"
           @action="workspaceSessionUi.execute"
         />
-        <PluginCenterView v-if="!showWorkspaceCenterScreen && ui.activeView === 'plugins'" />
+        <PluginCenterView v-if="!platformViewsHidden && ui.activeView === 'plugins'" />
+        <PluginAppViewport
+          v-if="!showWorkspaceCenterScreen && activePluginAppEntry"
+          :src="activePluginAppEntry.src"
+          :surface-token="activePluginAppEntry.surfaceToken"
+          :title="activePluginAppEntry.label"
+          :theme="pluginTheme"
+          :tasks="pluginApplicationTasks"
+          @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+          @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
+          @close="ui.closePluginApp"
+          @manage="ui.closePluginApp(); ui.navigate('plugins')"
+        />
       </div>
+      <section v-if="closedPluginTaskReceipts.length" data-testid="closed-plugin-task-receipts"
+        class="closed-plugin-task-receipts" aria-label="已关闭插件页面的任务回执">
+        <div class="receipt-heading"><strong>已关闭插件页面的任务回执</strong><span>关闭页面不代表写入已取消，请核对结果，勿重复执行。</span></div>
+        <article v-for="task in closedPluginTaskReceipts" :key="task.taskId">
+          <div class="receipt-source">{{ task.pluginId }} / {{ task.actionId }}</div>
+          <PluginTaskList :tasks="[task]" variant="app"
+            @cancel="pluginController.dispatch({ type: 'receipt.cancel', taskId: $event })" />
+        </article>
+      </section>
     </section>
     <ContentRecordPanel
       :show="contentPanelOpen"
@@ -1944,26 +2021,40 @@ useKeyboard({
       @select="pluginController.dispatch({ type: 'rowMenu.select', key: $event })"
       @clickoutside="pluginController.dispatch({ type: 'rowMenu.visible', show: false })"
     />
-    <div v-if="plugins.actionOpen && plugins.describedAction" class="plugin-action-overlay">
+    <div
+      v-if="plugins.actionOpen && plugins.describedAction"
+      class="plugin-action-overlay"
+      :class="plugins.describedAction.presentation === 'headless' ? 'plugin-action-overlay--headless' : null"
+    >
       <PluginSurfaceHost
         v-if="plugins.describedAction.presentation === 'custom' && plugins.describedAction.surface"
         :src="plugins.describedAction.surface.src"
         :surface-token="plugins.describedAction.surface.surfaceToken"
         :title="plugins.describedAction.surface.title"
         :theme="pluginTheme"
-        :task="plugins.activeTask"
+        :tasks="pluginActionTasks"
         @action="pluginController.dispatch({ type: 'action.start', payload: $event })"
-        @resolve="pluginController.dispatch({ type: 'interaction.resolve', decision: $event })"
-        @cancel="pluginController.dispatch({ type: 'task.cancel' })"
+        @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
+        @close="plugins.closeAction"
+      />
+      <PluginHeadlessRunner
+        :key="plugins.describedAction.surface?.surfaceToken"
+        v-else-if="plugins.describedAction.presentation === 'headless'"
+        :description="plugins.describedAction"
+        :theme="pluginTheme"
+        :tasks="pluginActionTasks"
+        @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
+        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
         @close="plugins.closeAction"
       />
       <PluginActionPanel
         v-else
         :description="plugins.describedAction"
-        :task="plugins.activeTask"
+        :task="pluginActionTask"
         @start="pluginController.dispatch({ type: 'action.start', payload: $event })"
-        @resolve="pluginController.dispatch({ type: 'interaction.resolve', decision: $event })"
-        @cancel="pluginController.dispatch({ type: 'task.cancel' })"
+        @resolve="pluginController.dispatch({ type: 'interaction.resolve', taskId: pluginActionTask?.taskId ?? '', decision: $event })"
+        @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: pluginActionTask?.taskId ?? '' })"
         @close="plugins.closeAction"
       />
     </div>
@@ -1981,7 +2072,13 @@ useKeyboard({
   overflow: hidden;
   background: var(--vt-bg);
 }
+.closed-plugin-task-receipts { flex: 0 1 auto; min-height: 0; max-height: min(320px, 35vh); overflow: auto; border-top: 1px solid var(--vt-border); background: var(--vt-bg); }
+.receipt-heading { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 12px; }
+.receipt-heading span, .receipt-source { color: var(--vt-fg-muted); font-size: var(--vt-font-caption); }
+.receipt-source { padding: 4px 12px; }
+.closed-plugin-task-receipts :deep(.task-list) { max-height: none; }
 .plugin-action-overlay { position: fixed; z-index: 80; inset: 0; display: grid; place-items: stretch end; background: rgba(10, 15, 22, .38); backdrop-filter: blur(2px); }
+.plugin-action-overlay--headless { place-items: center; }
 .plugin-action-overlay > :deep(*) { height: 100%; }
 .plugin-action-overlay :deep(.surface-shell) { width: min(920px, calc(100% - 60px)); margin: 30px; }
 .lookup-sources-panel {

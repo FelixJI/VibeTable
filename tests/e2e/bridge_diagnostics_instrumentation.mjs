@@ -9,6 +9,7 @@ export function installBridgeDiagnosticsInPage() {
     roundTrips: [],
     recentCompleted: [],
     failures: [],
+    catalogReadSettlements: [],
     retiredRequests: [],
     // Redacted identity for retired requests so a late terminal still reports
     // which request failed; shares the retirement ledger bound so eviction
@@ -122,6 +123,7 @@ export function installBridgeDiagnosticsInPage() {
     "DOCUMENT_LIST_FAILED",
     "DOCUMENT_LIST_INVALID",
     "PRODUCT_DATA_FAILED",
+    "PLUGIN_REQUEST_CANCELLED",
     "realtime.stopped",
     "SCHEMA_LIFECYCLE_CANCELLED",
     "SCHEMA_LIFECYCLE_TIMEOUT",
@@ -142,6 +144,32 @@ export function installBridgeDiagnosticsInPage() {
     "workspace.session_stale",
   ]);
   const stableCode = (value) => diagnosticCodes.has(value) ? value : null;
+  const supersededCatalogReads = [];
+  const completedCatalogReads = [];
+  const validCatalogScope = request => request.requestType === "plugin.catalog.list"
+    && typeof request.catalogProjectKey === "string" && request.catalogProjectKey.length > 0
+    && typeof request.retirementScope?.workspaceId === "string" && request.retirementScope.workspaceId.length > 0
+    && Number.isSafeInteger(request.retirementScope.sessionEpoch) && request.retirementScope.sessionEpoch > 0;
+  const sameCatalogScope = (left, right) => validCatalogScope(left) && validCatalogScope(right)
+    && left.catalogProjectKey === right.catalogProjectKey
+    && left.retirementScope.workspaceId === right.retirementScope.workspaceId
+    && left.retirementScope.sessionEpoch === right.retirementScope.sessionEpoch;
+  const reconcileCatalogReads = () => {
+    for (let index = supersededCatalogReads.length - 1; index >= 0; index -= 1) {
+      const candidate = supersededCatalogReads[index];
+      const authority = completedCatalogReads.find(read => sameCatalogScope(candidate.request, read)
+        && read.startedMonotonicMs > candidate.failedMonotonicMs);
+      if (!authority) continue;
+      const failureIndex = diagnostics.failures.findIndex(failure => failure.cursor === candidate.failure.cursor);
+      if (failureIndex < 0) { supersededCatalogReads.splice(index, 1); continue; }
+      diagnostics.failures.splice(failureIndex, 1);
+      pushBounded(diagnostics.catalogReadSettlements, { ...candidate.failure,
+        outcome: "superseded-reconciled", authorityRequestId: authority.requestId,
+        scope: { ...candidate.request.retirementScope } });
+      supersededCatalogReads.splice(index, 1);
+    }
+  };
+
   // Bounded host-side failure classifier (for example the exception type behind
   // realtime.stopped) so failure artifacts stay diagnosable without accepting
   // arbitrary host strings into artifacts.
@@ -214,8 +242,11 @@ export function installBridgeDiagnosticsInPage() {
           ? message.payload.method
           : message.type,
         payloadShape,
+        ...(message.type === "plugin.catalog.list" && typeof message.payload?.projectKey === "string"
+          ? { catalogProjectKey: message.payload.projectKey } : {}),
         ...((message.type === "dashboard.listRequested" || message.type === "dashboard.manifestRequested"
-          || message.type === "settings.readWorkCalendar" || message.type === "lookup.query"
+          || message.type === "settings.readWorkCalendar" || message.type === "gridState.get"
+          || message.type === "lookup.query"
           || message.type === "plugin.catalog.list" || message.type === "plugin.audit.list"
           || message.type === "plugin.cleanup.listPending")
           && message.scope?.scope === "workspace" ? {
@@ -414,8 +445,18 @@ export function installBridgeDiagnosticsInPage() {
     pushBounded(diagnostics.recentCompleted, request);
     if (isFailure) {
       pushDiagnostic(diagnostics.failures, roundTrip);
+      // A superseded read is settled only by a newer authority reply in its exact scope.
+      if (validCatalogScope(request) && message.type === "operation.failed"
+        && message.payload?.code === "PLUGIN_REQUEST_CANCELLED"
+        && message.payload?.message === "Plugin catalog read was superseded.") {
+        pushBounded(supersededCatalogReads, { request, failure: diagnostics.failures[diagnostics.failures.length - 1], failedMonotonicMs: performance.now() });
+      }
+    } else if (validCatalogScope(request) && message.type === "plugin.catalog.list"
+      && Array.isArray(message.payload) && message.payload.every(item => item?.projectKey === request.catalogProjectKey)) {
+      pushBounded(completedCatalogReads, request);
     }
     delete diagnostics.pending[message.requestId];
+    reconcileCatalogReads();
   });
   window.__vibetableE2EBridgeDiagnostics = diagnostics;
 }
@@ -427,6 +468,7 @@ export function readBridgeDiagnosticsInPage() {
   return {
     installedAt: diagnostics.installedAt,
     diagnosticCursor: diagnostics.diagnosticCursor,
+    catalogReadSettlements: [...diagnostics.catalogReadSettlements],
     requests: diagnostics.requests.map((request) => ({
       requestId: request.requestId,
       requestType: request.requestType,

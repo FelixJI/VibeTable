@@ -66,6 +66,7 @@
     {"method":"plugin.resolveInteraction","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.host"},
     {"method":"plugin.rollback","scope":"workspace","audience":"rendererInternal","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.setEnabled","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
+    {"method":"plugin.setEnabledExecution","scope":"workspace","audience":"hostOnly","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.startAction","scope":"workspace","audience":"rendererPublic","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.uninstall","scope":"workspace","audience":"rendererInternal","capabilityId":"plugin.lifecycle"},
     {"method":"plugin.upgrade","scope":"workspace","audience":"rendererInternal","capabilityId":"plugin.lifecycle"},

@@ -338,13 +338,77 @@ public sealed class ShellPreviewHandlerResolverTests
         string[] events = listener.Lines.Select(line =>
         {
             using var document = JsonDocument.Parse(line);
-            return document.RootElement.GetProperty("event").GetString()!;
+            return document.RootElement.GetProperty("event").GetString()!.Split(".handler.")[0];
         }).ToArray();
         CollectionAssert.AreEqual(new[]
         {
             "preview.host.phase.ComActivationStarted",
             "preview.host.phase.PreviewSessionFailed",
         }, events);
+    }
+
+    [STATestMethod]
+    public void PreviewInitializationReportsSafeClsidApartmentAndActualInnerStageOrder()
+    {
+        var fixture = CreatePreviewEvidenceFixture();
+        using var listener = new PreviewTraceCaptureListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            foreach (bool useStream in new[] { false, true })
+            {
+                int lineOffset = listener.Lines.Count;
+                var file = new RecordingFileInitializer();
+                var stream = new RecordingStreamInitializer();
+                using var session = new ShellPreviewSession(fixture.Source, PreviewClsid);
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                typeof(ShellPreviewSession).GetField("_handlerObject", flags)!.SetValue(session, useStream ? stream : file);
+                typeof(ShellPreviewSession).GetMethod("InitializeHandler", flags)!.Invoke(session, null);
+                string[] phases = listener.Lines.Skip(lineOffset).Select(line =>
+                {
+                    Assert.IsTrue(DiagnosticLogLine.IsSafe(line));
+                    Assert.IsFalse(line.Contains(fixture.Source, StringComparison.Ordinal));
+                    using var document = JsonDocument.Parse(line);
+                    Assert.AreEqual(JsonValueKind.Null, document.RootElement.GetProperty("errorCode").ValueKind);
+                    string value = document.RootElement.GetProperty("event").GetString()!;
+                    StringAssert.Contains(value, $".handler.{PreviewClsid:N}.apartment.STA");
+                    return value.Split(".handler.")[0];
+                }).ToArray();
+                if (useStream)
+                {
+                    CollectionAssert.AreEqual(new[] {
+                        "preview.host.phase.HandlerStreamQueryStarted", "preview.host.phase.HandlerStreamQueryReturned",
+                        "preview.host.phase.HandlerStreamCreateStarted", "preview.host.phase.HandlerStreamCreateReturned",
+                        "preview.host.phase.HandlerStreamInitializeStarted", "preview.host.phase.HandlerStreamInitializeReturned",
+                    }, phases);
+                    Assert.AreEqual(1, stream.Calls);
+                    StringAssert.Contains(listener.Lines[lineOffset + 3], ".hr.0x00000000");
+                }
+                else
+                {
+                    CollectionAssert.AreEqual(new[] {
+                        "preview.host.phase.HandlerStreamQueryStarted", "preview.host.phase.HandlerStreamQueryReturned",
+                        "preview.host.phase.HandlerFileQueryStarted", "preview.host.phase.HandlerFileQueryReturned",
+                        "preview.host.phase.HandlerFileInitializeStarted", "preview.host.phase.HandlerFileInitializeReturned",
+                    }, phases);
+                    Assert.AreEqual(fixture.Source, file.Path);
+                }
+            }
+        }
+        finally { Trace.Listeners.Remove(listener); }
+    }
+
+    private sealed class RecordingFileInitializer : IInitializeWithFile
+    {
+        internal string? Path { get; private set; }
+        public void Initialize(string filePath, uint mode) { Assert.AreEqual(0U, mode); Path = filePath; }
+    }
+
+    private sealed class RecordingStreamInitializer : IInitializeWithStream
+    {
+        internal int Calls { get; private set; }
+        public void Initialize(System.Runtime.InteropServices.ComTypes.IStream stream, uint mode)
+        { Assert.IsNotNull(stream); Assert.AreEqual(0U, mode); Calls++; }
     }
 
     [TestMethod]

@@ -10,6 +10,7 @@ import { useUiStore } from "@/stores/uiStore";
 import PluginCenterView from "./PluginCenterView.vue";
 
 const blockedPlugin: PluginSnapshot = {
+  installationId: "record-clean",
   projectKey: "local:default",
   pluginId: "com.acme.clean",
   version: "1.2.0",
@@ -67,6 +68,29 @@ const auditEvent: PluginAuditEvent = {
   errorCode: null,
   details: {},
 };
+
+function replyingBridge(response: (type: string) => unknown) {
+  const posted: { type: string; requestId: string; payload: Record<string, unknown> }[] = [];
+  let listener: ((event: { data: unknown }) => void) | undefined;
+  let sequence = 0;
+  const bridge = createHostBridge({
+    generateRequestId: () => `review-${++sequence}`,
+    webview: {
+      postMessage: (message) => {
+        const request = message as (typeof posted)[number];
+        posted.push(request);
+        queueMicrotask(() => listener?.({ data: {
+          type: request.type, requestId: request.requestId, payload: response(request.type),
+        } }));
+      },
+      addEventListener: (_type, handler) => { listener = handler; },
+      removeEventListener: () => undefined,
+    },
+  });
+  bridge.start();
+  setHostBridgeForTesting(bridge);
+  return { posted };
+}
 
 describe("PluginCenterView", () => {
   beforeEach(() => {
@@ -154,7 +178,7 @@ describe("PluginCenterView", () => {
     }
   });
 
-  it("sends whole-plugin enable with canonical project identity and no presentation revision", async () => {
+  it("binds whole-plugin enable to the inspected installation identity and revision", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     const bridge = createHostBridge({
@@ -181,7 +205,7 @@ describe("PluginCenterView", () => {
       type: "plugin.lifecycle.setEnabled",
       payload: { projectKey: "local:default", pluginId: "com.acme.clean", enabled: true },
     });
-    expect(JSON.stringify(posted[0])).not.toContain("expectedRevision");
+    expect(posted[0]).toMatchObject({ payload: { installationId: blockedPlugin.installationId, expectedRevision: blockedPlugin.revision } });
   });
 
   it("blocks lifecycle and action commands while a plugin request is in flight", async () => {
@@ -267,29 +291,40 @@ describe("PluginCenterView", () => {
     expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
   });
 
-  it("keeps upgrade mutation internal while retaining the native inspection path", async () => {
+  it("shows the upgrade permission delta and commits only after approval", async () => {
     usePluginStore().setProjectContext("local:default", "r2");
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     let sequence = 0;
+    let authority: PluginSnapshot[] = [blockedPlugin];
     const bridge = createHostBridge({
       generateRequestId: () => `upgrade-${++sequence}`,
       webview: {
         postMessage: (message) => {
           posted.push(message);
           const request = message as { type: string; requestId: string };
-          const payload = request.type === "plugin.install.inspect"
-            ? {
-                planId: "plan-upgrade",
-                projectKey: "local:default",
-                projectRevision: "r2",
-                sourceType: "package",
-                sourceLocation: "host-managed",
-                packageHash: "sha256:new",
-                manifest: { ...blockedPlugin.manifest, version: "1.3.0" },
-                schemas: {},
-              }
-            : { ...blockedPlugin, version: "1.3.0", packageHash: "sha256:new", revision: 8 };
+          let payload: unknown;
+          if (request.type === "plugin.catalog.list") payload = authority;
+          else if (request.type === "plugin.install.cancel") payload = { cancelled: true };
+          else if (request.type === "plugin.lifecycle.upgrade") {
+            const upgraded: PluginSnapshot = { ...blockedPlugin, version: "1.3.0", packageHash: "sha256:new", revision: 8,
+              manifest: { ...blockedPlugin.manifest, version: "1.3.0",
+                permissions: { data: ["customers:read", "customers:write", "orders:read"] } } };
+            authority = [upgraded]; payload = upgraded;
+          } else if (request.type === "plugin.install.inspect") {
+            payload = {
+              planId: "plan-upgrade",
+              targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
+              projectKey: "local:default",
+              projectRevision: "r2",
+              sourceType: "package",
+              sourceLocation: "host-managed",
+              packageHash: "sha256:new",
+              manifest: { ...blockedPlugin.manifest, version: "1.3.0",
+                permissions: { data: ["customers:read", "customers:write", "orders:read"] } },
+              schemas: {},
+            };
+          } else throw new Error(`Unexpected request ${request.type}`);
           queueMicrotask(() => listener?.({ data: {
             type: request.type,
             requestId: request.requestId,
@@ -314,13 +349,84 @@ describe("PluginCenterView", () => {
     });
     expect(wrapper.get('[data-testid="plugin-install-plan"]').text()).toContain("1.3.0");
 
-    expect(wrapper.get('[data-testid="plugin-upgrade-internal-only"]').text()).toContain(
-      "升级提交暂未公开",
+    expect(wrapper.find('[data-testid="plugin-upgrade-internal-only"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="plugin-upgrade-permission-delta"]').text()).toContain(
+      "+ data:orders:read",
     );
-    expect(wrapper.find('[data-testid="plugin-install-commit"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="plugin-rollback"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="plugin-uninstall"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="plugin-uninstall"]').exists()).toBe(true);
     expect(posted).toHaveLength(1);
+    await wrapper.get('[data-testid="plugin-install-cancel"]').trigger("click");
+    await flushPromises();
+    expect(posted).toHaveLength(2);
+    expect(posted[1]).toMatchObject({ type: "plugin.install.cancel", payload: { planId: "plan-upgrade" } });
+    expect(usePluginStore().plugins[0]?.revision).toBe(7);
+
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click");
+    await flushPromises();
+    expect(posted).toHaveLength(3);
+    await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
+    await flushPromises();
+    expect(posted.filter(message => (message as { type: string }).type !== "plugin.catalog.list")).toHaveLength(4);
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.catalog.list")).toMatchObject([
+      { payload: { projectKey: "local:default" } },
+    ]);
+    expect(posted[3]).toMatchObject({
+      type: "plugin.lifecycle.upgrade",
+      payload: { projectKey: "local:default", pluginId: blockedPlugin.pluginId,
+        planId: "plan-upgrade", projectRevision: "r2" },
+    });
+    expect(usePluginStore().plugins[0]).toMatchObject({ revision: 8, version: "1.3.0",
+      manifest: { permissions: { data: ["customers:read", "customers:write", "orders:read"] } } });
+    expect(usePluginStore().installPlan).toBeNull();
+  });
+
+  it.each([false, true])("requires explicit uninstall confirmation and keeps private cleanup opt-in (%s)", async (cleanup) => {
+    const posted: unknown[] = [];
+    let authority: PluginSnapshot[] = [blockedPlugin];
+    let sequence = 0;
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    const bridge = createHostBridge({
+      generateRequestId: () => `uninstall-approved-${++sequence}`,
+      webview: {
+        postMessage: (message) => {
+          posted.push(message);
+          const request = message as { type: string; requestId: string };
+          if (request.type === "plugin.lifecycle.uninstall") authority = [];
+          else if (request.type !== "plugin.catalog.list") throw new Error(`Unexpected request ${request.type}`);
+          const payload = request.type === "plugin.catalog.list" ? authority
+            : { uninstalled: true, privateSettingsRetained: !cleanup, cleanupPending: false };
+          queueMicrotask(() => listener?.({ data: {
+            type: request.type, requestId: request.requestId,
+            payload,
+          } }));
+        },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    expect(wrapper.find('[data-testid="plugin-rollback"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect(posted).toHaveLength(0);
+    const privateCleanup = wrapper.get('[data-testid="plugin-uninstall-private-settings"]');
+    expect((privateCleanup.element as HTMLInputElement).checked).toBe(false);
+    if (cleanup) await privateCleanup.setValue(true);
+    await wrapper.get('[data-testid="plugin-uninstall-confirm"]').trigger("click");
+    await flushPromises();
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.lifecycle.uninstall")).toHaveLength(1);
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.catalog.list")).toMatchObject([
+      { payload: { projectKey: "local:default" } },
+    ]);
+    expect(posted).toHaveLength(2);
+    expect(posted[0]).toMatchObject({
+      type: "plugin.lifecycle.uninstall",
+      payload: { projectKey: "local:default", pluginId: blockedPlugin.pluginId,
+        installationId: blockedPlugin.installationId, expectedRevision: blockedPlugin.revision, cleanupPrivateSettings: cleanup },
+    });
+    expect(usePluginStore().plugins).toHaveLength(0);
   });
 
   it("enables a new plugin after the user approves its permissions and install", async () => {
@@ -346,17 +452,22 @@ describe("PluginCenterView", () => {
       manifest: newPlugin.manifest,
       schemas: {},
     };
+    let authority: PluginSnapshot[] = [blockedPlugin];
     const bridge = createHostBridge({
       generateRequestId: () => `install-${++sequence}`,
       webview: {
         postMessage: (message) => {
           posted.push(message);
           const request = message as { type: string; requestId: string };
-          const payload = request.type === "plugin.install.inspect"
-            ? plan
-            : request.type === "plugin.install.commit"
-              ? newPlugin
-              : { ...newPlugin, status: "enabled", disabledReason: null, revision: 2 };
+          let payload: unknown;
+          if (request.type === "plugin.install.inspect") payload = plan;
+          else if (request.type === "plugin.install.commit") {
+            authority = [...authority, newPlugin]; payload = newPlugin;
+          } else if (request.type === "plugin.lifecycle.setEnabled") {
+            const enabled: PluginSnapshot = { ...newPlugin, status: "enabled", disabledReason: null, revision: 2 };
+            authority = authority.map(item => item.pluginId === enabled.pluginId ? enabled : item); payload = enabled;
+          } else if (request.type === "plugin.catalog.list") payload = authority;
+          else throw new Error(`Unexpected request ${request.type}`);
           queueMicrotask(() => listener?.({ data: {
             type: request.type,
             requestId: request.requestId,
@@ -376,7 +487,7 @@ describe("PluginCenterView", () => {
     await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
     await flushPromises();
 
-    expect(posted).toMatchObject([
+    expect(posted.filter(message => (message as { type: string }).type !== "plugin.catalog.list")).toMatchObject([
       {
         type: "plugin.install.inspect",
         payload: { sourceLocation: "host-picker:folder" },
@@ -393,6 +504,9 @@ describe("PluginCenterView", () => {
           enabled: true,
         },
       },
+    ]);
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.catalog.list")).toMatchObject([
+      { payload: { projectKey: "local:default" } }, { payload: { projectKey: "local:default" } },
     ]);
     expect(
       usePluginStore().plugins.find((item) => item.pluginId === "com.acme.approved")?.status,
@@ -425,12 +539,14 @@ describe("PluginCenterView", () => {
       manifest: installed.manifest,
       schemas: {},
     };
+    let authority: PluginSnapshot[] = [blockedPlugin];
     const bridge = createHostBridge({
       generateRequestId: () => `enable-fails-${++sequence}`,
       webview: {
         postMessage: (message) => {
           posted.push(message);
           const request = message as { type: string; requestId: string };
+          if (request.type === "plugin.install.commit") authority = [...authority, installed];
           queueMicrotask(() => listener?.({ data: request.type === "plugin.install.inspect"
             ? {
                 type: request.type,
@@ -443,6 +559,8 @@ describe("PluginCenterView", () => {
                 requestId: request.requestId,
                 payload: installed,
               }
+            : request.type === "plugin.catalog.list"
+            ? { type: request.type, requestId: request.requestId, payload: authority }
             : {
                 type: "operation.failed",
                 requestId: request.requestId,
@@ -462,7 +580,7 @@ describe("PluginCenterView", () => {
     await flushPromises();
 
     expect(posted.filter((message) =>
-      (message as { type?: string }).type !== "plugin.install.inspect",
+      !["plugin.install.inspect", "plugin.catalog.list"].includes((message as { type: string }).type),
     )).toMatchObject([
       { type: "plugin.install.commit", payload: { planId: plan.planId } },
       {
@@ -470,6 +588,10 @@ describe("PluginCenterView", () => {
         payload: { pluginId: installed.pluginId, enabled: true },
       },
     ]);
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.catalog.list")).toMatchObject([
+      { payload: { projectKey: "local:default" } }, { payload: { projectKey: "local:default" } },
+    ]);
+    expect(usePluginStore().lastError).toBe("enable failed");
     expect(usePluginStore().installPlan).toBeNull();
     expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
     expect(
@@ -497,16 +619,19 @@ describe("PluginCenterView", () => {
       manifest: plan.manifest,
       revision: 1,
     };
+    let authority: PluginSnapshot[] = [blockedPlugin];
     const bridge = createHostBridge({
       generateRequestId: () => `blocked-install-${++sequence}`,
       webview: {
         postMessage: (message) => {
           posted.push(message);
           const request = message as { type: string; requestId: string };
+          if (request.type === "plugin.install.commit") authority = [...authority, installed];
           queueMicrotask(() => listener?.({ data: {
             type: request.type,
             requestId: request.requestId,
-            payload: request.type === "plugin.install.inspect" ? plan : installed,
+            payload: request.type === "plugin.install.inspect" ? plan
+              : request.type === "plugin.catalog.list" ? authority : installed,
           } }));
         },
         addEventListener: (_type, handler) => { listener = handler; },
@@ -522,8 +647,11 @@ describe("PluginCenterView", () => {
     await wrapper.get('[data-testid="plugin-install-commit"]').trigger("click");
     await flushPromises();
 
-    expect(posted).toHaveLength(2);
-    expect(posted).toMatchObject([
+    expect(posted.filter(message => (message as { type: string }).type !== "plugin.catalog.list")).toHaveLength(2);
+    expect(posted.filter(message => (message as { type: string }).type === "plugin.catalog.list")).toMatchObject([
+      { payload: { projectKey: "local:default" } },
+    ]);
+    expect(posted.filter(message => (message as { type: string }).type !== "plugin.catalog.list")).toMatchObject([
       { type: "plugin.install.inspect" },
       { type: "plugin.install.commit" },
     ]);
@@ -552,4 +680,123 @@ describe("PluginCenterView", () => {
     expect(wrapper.get('[data-testid="plugin-source-changed"]').text()).toContain("本地开发文件夹已变化");
     expect(wrapper.get('[data-testid="plugin-upgrade"]').text()).toContain("检查文件夹变更");
   });
+  it("retires an uninstall confirmation on selection/revision changes and resets cleanup on cancel", async () => {
+    const other = { ...blockedPlugin, pluginId: "com.acme.other", manifest: { ...blockedPlugin.manifest, pluginId: "com.acme.other" } };
+    usePluginStore().applyPlugin(other);
+    const { posted } = replyingBridge(() => []);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    await wrapper.findAll(".plugin-row")[1]!.trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.lifecycle.uninstall")).toHaveLength(0);
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    await wrapper.get('[data-testid="plugin-uninstall-cancel"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
+    usePluginStore().applyPlugin({ ...other, revision: other.revision + 1 });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.lifecycle.uninstall")).toHaveLength(0);
+  });
+
+  it.each(["removed", "reinstalled", "revision"])("retires an inspected upgrade when the original target is %s", async transition => {
+    const store = usePluginStore();
+    const { posted } = replyingBridge(type => type === "plugin.install.inspect" ? {
+      planId: "bound-upgrade", projectKey: blockedPlugin.projectKey, projectRevision: store.projectRevision,
+      targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
+      sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
+      manifest: blockedPlugin.manifest, schemas: {},
+    } : type === "plugin.install.cancel" ? { cancelled: true } : []);
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click"); await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(true);
+    if (transition === "removed") store.removePlugin(blockedPlugin.pluginId);
+    else store.replaceCatalog(blockedPlugin.projectKey, [{ ...blockedPlugin, installationId: transition === "reinstalled" ? "new-record" : blockedPlugin.installationId,
+      revision: transition === "reinstalled" ? blockedPlugin.revision : blockedPlugin.revision + 1 }]);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.install.cancel")).toHaveLength(1);
+    expect(posted.some(item => item.type === "plugin.lifecycle.upgrade" || item.type === "plugin.install.commit")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("retires a late inspected plan after the catalog already replaced its target", async () => {
+    const store = usePluginStore();
+    const { posted } = replyingBridge(type => {
+      if (type !== "plugin.install.inspect") return { cancelled: true };
+      store.replaceCatalog(blockedPlugin.projectKey, [{ ...blockedPlugin, installationId: "replacement-record" }]);
+      return { planId: "late-upgrade", projectKey: blockedPlugin.projectKey, projectRevision: store.projectRevision,
+        targetInstallationId: blockedPlugin.installationId, targetRevision: blockedPlugin.revision,
+        sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
+        manifest: blockedPlugin.manifest, schemas: {} };
+    });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click"); await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-install-plan"]').exists()).toBe(false);
+    expect(posted.filter(item => item.type === "plugin.install.cancel")).toHaveLength(1);
+    expect(posted.some(item => item.type === "plugin.lifecycle.upgrade" || item.type === "plugin.install.commit")).toBe(false);
+    wrapper.unmount();
+  });
+
+  it.each([false, true])("compares complete permission declarations with semantic ordering (%s)", async (equivalent) => {
+    const before = [{ collection: "A", operations: ["read", "query"], fields: ["title", "id"] },
+      { collection: "B", operations: ["write"], fields: ["*"] }];
+    const after = equivalent
+      ? [{ fields: ["*"], operations: ["write"], collection: "B" },
+        { fields: ["id", "title"], operations: ["query", "read"], collection: "A" }]
+      : [{ collection: "A", operations: ["write"], fields: ["*"] },
+        { collection: "B", operations: ["read", "query"], fields: ["title", "id"] }];
+    usePluginStore().applyPlugin({ ...blockedPlugin, revision: 8,
+      manifest: { ...blockedPlugin.manifest, permissions: { data: before } } });
+    replyingBridge(() => ({ planId: "permission-plan", projectKey: "local:default", projectRevision: "r2",
+      targetInstallationId: blockedPlugin.installationId, targetRevision: 8,
+      sourceType: "package", sourceLocation: "host-managed", packageHash: "sha256:next",
+      manifest: { ...blockedPlugin.manifest, version: "1.3.0", permissions: { data: after } }, schemas: {} }));
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-upgrade"]').trigger("click");
+    await flushPromises();
+    const delta = wrapper.find('[data-testid="plugin-upgrade-permission-delta"]');
+    expect(delta.exists()).toBe(!equivalent);
+    if (!equivalent) {
+      expect(delta.text()).toContain('"collection":"A"');
+      expect(delta.text()).toContain('"operations":["write"]');
+      expect(delta.findAll("li")).toHaveLength(4);
+    }
+  });
+
+  it("routes the plugin center Run button for an application to the full viewport", async () => {
+    const application: PluginSnapshot = { ...blockedPlugin, status: "enabled", blockingReasons: [],
+      manifest: { ...blockedPlugin.manifest, $schema: "vibetable.plugin-manifest.v2", compatibility: { pluginApi: "3.x" },
+        actions: blockedPlugin.manifest.actions.map(action => ({ ...action, workerEntry: null,
+          presentation: "application", entry: "ui/index.html", surfaceSrc: "https://app.plugins.vibetable.local/ui/index.html", surfaceToken: "owned" })) } };
+    usePluginStore().replaceCatalog("local:default", [application]);
+    const { posted } = replyingBridge(type => type === "plugin.catalog.list" ? [application] : { available: true, reasons: [] });
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get(".run-button").trigger("click");
+    await flushPromises();
+    expect(useUiStore().activePluginApp).toEqual({ pluginId: application.pluginId, actionId: "normalize" });
+    expect(usePluginStore().actionOpen).toBe(false);
+    expect(posted.some(item => item.type === "plugin.action.start")).toBe(false);
+  });
+
+  it("cancels an uninstall confirmation when the same revision belongs to a reinstallation", async () => {
+    const posted: unknown[] = [];
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage: message => posted.push(message),
+      addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    await wrapper.get('[data-testid="plugin-uninstall-private-settings"]').setValue(true);
+    usePluginStore().replaceCatalog("local:default", [{ ...blockedPlugin, installationId: "reinstalled-record" }]);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="plugin-uninstall-confirm"]').exists()).toBe(false);
+    expect(posted).toEqual([]);
+    await wrapper.get('[data-testid="plugin-uninstall"]').trigger("click");
+    expect((wrapper.get('[data-testid="plugin-uninstall-private-settings"]').element as HTMLInputElement).checked).toBe(false);
+    wrapper.unmount();
+  });
+
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NIcon } from "naive-ui";
 import { Box, GitBranch, PackageOpen, Play, Power, RotateCcw, ShieldAlert, Trash2, Upload } from "@lucide/vue";
 import type { PluginAuditEvent, PluginRisk, PluginSnapshot } from "@/contracts";
@@ -10,6 +10,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
+import { permissionDeclarations } from "@/services/pluginPermissionDeclarations";
 import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
 
@@ -22,12 +23,32 @@ const table = useTableStore();
 const systemTimeZone = useSystemTimeZone();
 const plannedUpgradePluginId = ref<string | null>(null);
 const cleanupPrivateSettings = ref(false);
-const uninstalling = ref(false);
+const uninstallTarget = ref<{ pluginId: string; installationId: string | null | undefined; revision: number; projectKey: string } | null>(null);
+const uninstalling = computed(() => uninstallTarget.value !== null);
 const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
 const githubRepository = ref("");
 
 const plugin = computed(() => store.selectedPlugin);
+function cancelUninstall(): void {
+  uninstallTarget.value = null;
+  cleanupPrivateSettings.value = false;
+}
+function beginUninstall(): void {
+  cancelUninstall();
+  if (plugin.value) uninstallTarget.value = { pluginId: plugin.value.pluginId,
+    installationId: plugin.value.installationId, revision: plugin.value.revision, projectKey: plugin.value.projectKey };
+}
+async function confirmUninstall(): Promise<void> {
+  const target = uninstallTarget.value;
+  const current = plugin.value;
+  const cleanup = cleanupPrivateSettings.value;
+  cancelUninstall();
+  if (!target || !current || current.pluginId !== target.pluginId
+    || current.installationId !== target.installationId || current.revision !== target.revision || current.projectKey !== target.projectKey) return;
+  await safely(() => service.uninstall(current, cleanup));
+}
+watch(() => [plugin.value?.pluginId, plugin.value?.installationId, plugin.value?.revision, store.projectKey], cancelUninstall, { flush: "sync" });
 const theme = computed(() => projectPluginTheme({
   effectiveTheme: ui.effectiveTheme,
   locale: ui.locale,
@@ -53,22 +74,29 @@ function formatAuditTimestamp(value: string): string {
     : date.toLocaleString(ui.locale, { timeZone: systemTimeZone.value });
 }
 function permissions(snapshot: PluginSnapshot): string[] {
-  return flatten(snapshot.manifest.permissions);
+  return permissionDeclarations(snapshot.manifest.permissions);
 }
+// #482 AC4: an upgrade plan shows the permission DELTA against the currently
+// installed snapshot, not just the new full declaration.
+const upgradePermissionDelta = computed<{ added: string[]; removed: string[] } | null>(() => {
+  const pluginId = plannedUpgradePluginId.value;
+  const plan = store.installPlan;
+  if (!pluginId || !plan) return null;
+  const existing = store.plugins.find(item => item.pluginId === pluginId);
+  if (!existing) return null;
+  const before = new Set(permissionDeclarations(existing.manifest.permissions));
+  const after = new Set(permissionDeclarations(plan.manifest.permissions));
+  return {
+    added: [...after].filter(item => !before.has(item)),
+    removed: [...before].filter(item => !after.has(item)),
+  };
+});
 function blockingReasons(snapshot: PluginSnapshot): readonly string[] {
   if (snapshot.blockingReasons?.length) return snapshot.blockingReasons;
   return snapshot.disabledReason ? [snapshot.disabledReason] : [];
 }
 function compatibility(value: Readonly<Record<string, unknown>>): string {
   return Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`).join(" · ") || "未声明";
-}
-function flatten(value: unknown, prefix = ""): string[] {
-  if (Array.isArray(value)) return value.flatMap((item) => flatten(item, prefix));
-  if (typeof value === "object" && value !== null) {
-    return Object.entries(value).flatMap(([key, item]) => flatten(item, prefix ? `${prefix}.${key}` : key));
-  }
-  if (value === false || value === null || value === undefined) return [];
-  return [prefix ? `${prefix}:${String(value)}` : String(value)];
 }
 function commandContext() {
   return createPluginCommandContext({
@@ -89,9 +117,7 @@ async function safely(task: () => Promise<unknown>): Promise<void> {
 async function inspectInstall(sourceToken: "host-picker:package" | "host-picker:folder"): Promise<void> {
   await safely(async () => {
     const plan = await service.inspectInstall(sourceToken);
-    plannedUpgradePluginId.value = store.plugins.find(
-      (item) => item.pluginId === plan.manifest.pluginId,
-    )?.pluginId ?? null;
+    plannedUpgradePluginId.value = plan.targetInstallationId ? plan.manifest.pluginId : null;
   });
 }
 async function inspectGitHubInstall(): Promise<void> {
@@ -99,20 +125,23 @@ async function inspectGitHubInstall(): Promise<void> {
   if (!repository) return;
   await safely(async () => {
     const plan = await service.inspectGitHubInstall(repository);
-    plannedUpgradePluginId.value = store.plugins.find(
-      (item) => item.pluginId === plan.manifest.pluginId,
-    )?.pluginId ?? null;
+    plannedUpgradePluginId.value = plan.targetInstallationId ? plan.manifest.pluginId : null;
   });
 }
 async function commitPlan(): Promise<void> {
   const plan = store.installPlan;
   if (!plan) return;
   await safely(async () => {
-    const existing = plannedUpgradePluginId.value
-      ? store.plugins.find((item) => item.pluginId === plannedUpgradePluginId.value)
+    const existing = plan.targetInstallationId
+      ? store.plugins.find((item) => item.pluginId === plan.manifest.pluginId)
       : null;
+    if (plan.targetInstallationId && (!existing || existing.installationId !== plan.targetInstallationId
+      || existing.revision !== plan.targetRevision)) {
+      await cancelPlan();
+      throw new Error("升级目标已改变，请重新检查安装计划");
+    }
     if (existing) {
-      if (!publicCapabilityPolicy.pluginLifecycleMutations) return;
+      if (!publicCapabilityPolicy.pluginUpgrade) return;
       await service.upgrade(existing, plan);
     }
     else {
@@ -144,13 +173,21 @@ async function inspectUpgrade(current: PluginSnapshot): Promise<void> {
       ? "host-picker:folder"
       : "host-picker:package";
     const plan = await service.inspectInstall(sourceToken);
-    if (plan.manifest.pluginId !== current.pluginId) {
+    if (plan.manifest.pluginId !== current.pluginId || !plan.targetInstallationId
+      || plan.targetInstallationId !== current.installationId || plan.targetRevision !== current.revision) {
       await service.cancelInstall(plan.planId);
       throw new Error("所选来源不是当前插件的新版本");
     }
     plannedUpgradePluginId.value = current.pluginId;
   });
 }
+watch(() => [store.plugins, store.installPlan], () => {
+  const plan = store.installPlan;
+  if (!plan?.targetInstallationId) return;
+  const current = store.plugins.find(item => item.pluginId === plan.manifest.pluginId);
+  if (!current || current.installationId !== plan.targetInstallationId || current.revision !== plan.targetRevision)
+    void cancelPlan();
+}, { deep: true });
 async function openAction(pluginId: string, actionId: string): Promise<void> {
   await safely(() => service.describeAction(pluginId, actionId, commandContext()));
 }
@@ -158,9 +195,9 @@ async function selectPlugin(pluginId: string): Promise<void> {
   store.selectPlugin(pluginId);
   auditEvents.value = await service.listAudit(pluginId);
 }
-async function retryCleanup(pluginId: string): Promise<void> {
+async function retryCleanup(event: PluginAuditEvent): Promise<void> {
   await safely(async () => {
-    await service.retryCleanup(pluginId);
+    await service.retryCleanup(event);
     pendingCleanup.value = await service.listPendingCleanup();
   });
 }
@@ -185,6 +222,7 @@ onBeforeUnmount(() => service.dispose());
         <p>安装、权限和运行状态均限定在当前项目。</p>
       </div>
       <div class="install-source">
+        <button type="button" class="quiet-button" data-testid="plugin-refresh" :disabled="store.busy" @click="safely(() => service.list())">刷新目录</button>
         <input
           v-model="githubRepository"
           aria-label="GitHub 插件仓库"
@@ -216,7 +254,7 @@ onBeforeUnmount(() => service.dispose());
 
     <section v-if="pendingCleanup.length" class="cleanup-queue" aria-label="待清理托管资源">
       <strong>可重试的插件资源清理</strong>
-      <div v-for="event in pendingCleanup" :key="event.pluginId"><code>{{ event.pluginId }}</code><span>{{ String(event.details.cleanupError ?? '本地插件资源暂时不可用') }}</span><button type="button" @click="retryCleanup(event.pluginId)">立即重试</button></div>
+      <div v-for="event in pendingCleanup" :key="event.pluginId"><code>{{ event.pluginId }}</code><span>{{ String(event.details.cleanupError ?? '本地插件资源暂时不可用') }}</span><button type="button" @click="retryCleanup(event)">立即重试</button></div>
     </section>
 
     <section v-if="store.installPlan" class="install-plan" data-testid="plugin-install-plan">
@@ -225,7 +263,15 @@ onBeforeUnmount(() => service.dispose());
         <strong>{{ localize(store.installPlan.manifest.displayName, store.installPlan.manifest.pluginId) }} <code>{{ store.installPlan.manifest.version }}</code></strong>
       </div>
       <div><small>PACKAGE HASH</small><code>{{ store.installPlan.packageHash }}</code></div>
-      <div><small>PERMISSIONS</small><p>{{ flatten(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
+      <div><small>PERMISSIONS</small><p>{{ permissionDeclarations(store.installPlan.manifest.permissions).join(' · ') || '无额外权限' }}</p></div>
+      <div v-if="upgradePermissionDelta">
+        <small>PERMISSION CHANGES</small>
+        <p v-if="!upgradePermissionDelta.added.length && !upgradePermissionDelta.removed.length">本次升级权限无变化。</p>
+        <ul v-else data-testid="plugin-upgrade-permission-delta">
+          <li v-for="item in upgradePermissionDelta.added" :key="`+${item}`">+ {{ item }}</li>
+          <li v-for="item in upgradePermissionDelta.removed" :key="`-${item}`">- {{ item }}</li>
+        </ul>
+      </div>
       <div><small>COMPATIBILITY</small><p>{{ compatibility(store.installPlan.manifest.compatibility) }}</p></div>
       <div><small>ACTIONS / RISK</small><p>{{ store.installPlan.manifest.actions.map((action) => `${localize(action.displayName, action.actionId)}:${riskLabel(action.risk)}`).join(' · ') || '无动作' }}</p></div>
       <div><small>LOCAL WORKERS</small><p>{{ store.installPlan.manifest.actions.map((action) => action.workerEntry).join(' · ') || '无本地动作' }}</p></div>
@@ -233,7 +279,7 @@ onBeforeUnmount(() => service.dispose());
       <div class="plan-actions">
         <button data-testid="plugin-install-cancel" type="button" class="quiet-button" @click="cancelPlan">取消</button>
         <span
-          v-if="plannedUpgradePluginId && !publicCapabilityPolicy.pluginLifecycleMutations"
+          v-if="plannedUpgradePluginId && !publicCapabilityPolicy.pluginUpgrade"
           data-testid="plugin-upgrade-internal-only"
         >升级提交暂未公开</span>
         <button
@@ -317,9 +363,9 @@ onBeforeUnmount(() => service.dispose());
 
         <footer class="lifecycle-actions">
           <button data-testid="plugin-upgrade" type="button" class="quiet-button" title="选择新版本并先检查变更计划" @click="inspectUpgrade(plugin)"><Upload :size="13" />{{ plugin.sourceType === 'local-folder' ? (plugin.sourceChanged ? '检查文件夹变更' : '检查并重新加载文件夹') : '检查离线升级' }}</button>
-          <button v-if="publicCapabilityPolicy.pluginLifecycleMutations" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
-          <button v-if="publicCapabilityPolicy.pluginLifecycleMutations && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="uninstalling = true"><Trash2 :size="13" />卸载</button>
-          <div v-else-if="publicCapabilityPolicy.pluginLifecycleMutations" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" @click="uninstalling = false">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="safely(() => service.uninstall(plugin!, cleanupPrivateSettings))">确认卸载</button></div>
+          <button v-if="publicCapabilityPolicy.pluginRollback" data-testid="plugin-rollback" type="button" class="quiet-button" @click="safely(() => service.rollback(plugin!))"><RotateCcw :size="13" />回滚上一版本</button>
+          <button v-if="publicCapabilityPolicy.pluginUninstall && !uninstalling" data-testid="plugin-uninstall" type="button" class="danger-text-button" @click="beginUninstall"><Trash2 :size="13" />卸载</button>
+          <div v-else-if="publicCapabilityPolicy.pluginUninstall" class="uninstall-confirm"><span>将清理插件本地资源。</span><label><input v-model="cleanupPrivateSettings" data-testid="plugin-uninstall-private-settings" type="checkbox" />清理私有设置</label><button type="button" data-testid="plugin-uninstall-cancel" @click="cancelUninstall">取消</button><button data-testid="plugin-uninstall-confirm" type="button" @click="confirmUninstall">确认卸载</button></div>
         </footer>
       </main>
 

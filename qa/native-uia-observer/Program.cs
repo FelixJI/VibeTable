@@ -1,7 +1,12 @@
+using System.IO;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
+using System.Runtime.InteropServices;
+using System.Windows.Interop;
+using System.Windows.Media.Imaging;
 using System.Windows.Automation;
 
 internal static class Program
@@ -16,6 +21,8 @@ internal static class Program
         Console.Error.WriteLine($"UIA_STAGE observer begin elapsedMs=0 apartment={Thread.CurrentThread.GetApartmentState()} utc={DateTime.UtcNow:o}");
         try
         {
+            if (args.Length is 2 or 3 && args[0] is "--buttons" or "--screenshot")
+                return ObservePluginChrome(args);
             if (args.Length != 1 || !long.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out long hwnd) || hwnd <= 0)
                 return Reject("UIA_ARGUMENT_INVALID");
             Console.OutputEncoding = new UTF8Encoding(false, true);
@@ -28,6 +35,85 @@ internal static class Program
             return 1;
         }
     }
+
+    // Read-only QA: actual native bounds/focus and an onscreen WPF screenshot.
+    // No UIA InvokePattern, product messages or mutation of product state.
+    private static int ObservePluginChrome(string[] args)
+    {
+        if (!long.TryParse(args[1], out long value) || value <= 0) return Reject("UIA_ARGUMENT_INVALID");
+        SetProcessDpiAwarenessContext(new IntPtr(-4));
+        Console.OutputEncoding = new UTF8Encoding(false, true);
+        var hwnd = new IntPtr(value);
+        var root = AutomationElement.FromHandle(hwnd);
+        var bounds = root.Current.BoundingRectangle;
+        var buttons = new List<object>();
+        var nativeElements = new Stack<AutomationElement>();
+        nativeElements.Push(root);
+        int visited = 0;
+        while (nativeElements.TryPop(out var element))
+        {
+            if (++visited > 512) return Reject("UIA_NATIVE_TREE_LIMIT");
+            // Never descend into Chrome accessibility: a frozen renderer must
+            // not block observation of the independent WPF security chrome.
+            if (element.Current.FrameworkId != "WPF") continue;
+            var child = TreeWalker.ControlViewWalker.GetFirstChild(element);
+            while (child is not null)
+            {
+                nativeElements.Push(child);
+                child = TreeWalker.ControlViewWalker.GetNextSibling(child);
+            }
+            if (element.Current.ControlType != ControlType.Button) continue;
+            string id = element.Current.AutomationId;
+            if (!id.StartsWith("plugin-", StringComparison.Ordinal)) continue;
+            var box = element.Current.BoundingRectangle;
+            buttons.Add(new { id, name = element.Current.Name, pid = element.Current.ProcessId,
+                enabled = element.Current.IsEnabled, focused = element.Current.HasKeyboardFocus,
+                x = box.X, y = box.Y, width = box.Width, height = box.Height });
+        }
+        if (args[0] == "--screenshot")
+        {
+            if (args.Length != 3 || !Path.IsPathFullyQualified(args[2])) return Reject("UIA_ARGUMENT_INVALID");
+            int width = checked((int)bounds.Width), height = checked((int)bounds.Height);
+            if (width <= 0 || height <= 0 || width > 8192 || height > 8192) return Reject("UIA_BOUNDS_INVALID");
+            IntPtr source = GetDC(IntPtr.Zero), destination = CreateCompatibleDC(source);
+            IntPtr bitmap = CreateCompatibleBitmap(source, width, height);
+            if (source == IntPtr.Zero || destination == IntPtr.Zero || bitmap == IntPtr.Zero)
+                return Reject("UIA_CAPTURE_FAILED");
+            IntPtr prior = SelectObject(destination, bitmap);
+            try
+            {
+                if (!BitBlt(destination, 0, 0, width, height, source, (int)bounds.X, (int)bounds.Y, 0x00CC0020))
+                    return Reject("UIA_CAPTURE_FAILED");
+                var image = Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero,
+                    System.Windows.Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(image));
+                using var output = File.Create(args[2]);
+                encoder.Save(output);
+            }
+            finally
+            {
+                SelectObject(destination, prior); DeleteObject(bitmap); DeleteDC(destination);
+                ReleaseDC(IntPtr.Zero, source);
+            }
+        }
+        Console.Out.Write(JsonSerializer.Serialize(new { hwnd = value, pid = root.Current.ProcessId,
+            title = root.Current.Name, x = bounds.X, y = bounds.Y, width = bounds.Width,
+            height = bounds.Height, dpi = GetDpiForWindow(hwnd), systemHighContrast = System.Windows.SystemParameters.HighContrast, buttons }));
+        return 0;
+    }
+
+    [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr dc);
+    [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
+    [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr dc, IntPtr value);
+    [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
+    [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
+    [DllImport("gdi32.dll")] private static extern bool BitBlt(IntPtr dest, int x, int y, int width,
+        int height, IntPtr source, int sx, int sy, int mode);
 
     private static int ReadDocument(IntPtr hwnd)
     {

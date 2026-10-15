@@ -12,7 +12,7 @@ export type {
   WriteGrant,
 } from "./capabilities.js";
 export { createCapabilityClient, mutationPlan, PluginCapabilityError } from "./capabilities.js";
-export { createSurfaceClient, SURFACE_API_CONTRACT } from "./surface.js";
+export { createSurfaceClient, finishHeadlessRun, SURFACE_API_CONTRACT } from "./surface.js";
 export type { SurfaceCapabilities, SurfaceMutationPlan, SurfaceMutationPreview, SurfaceMutationOutcome, SurfaceTransport } from "./surface.js";
 export { cancelled, failure, ok } from "./results.js";
 export { defineSchema } from "./schema.js";

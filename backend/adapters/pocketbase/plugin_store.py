@@ -100,10 +100,24 @@ class PocketBasePluginStore:
         )
         return PluginSnapshot.model_validate(_object(result, "plugin installation"))
 
-    async def delete_installation(self, project_key: str, plugin_id: str) -> bool:
+    async def delete_installation(
+        self,
+        project_key: str,
+        plugin_id: str,
+        *,
+        installation_id: str,
+        expected_revision: int,
+        cleanup_private_settings: bool,
+    ) -> bool:
         result = await self._call(
             "delete_installation",
-            {"projectKey": project_key, "pluginId": plugin_id},
+            {
+                "projectKey": project_key,
+                "pluginId": plugin_id,
+                "installationId": installation_id,
+                "expectedRevision": expected_revision,
+                "cleanupPrivateSettings": cleanup_private_settings,
+            },
         )
         return _boolean(result, "installation deletion")
 
@@ -177,6 +191,8 @@ class PocketBasePluginStore:
         setting: PluginPrivateSetting,
         *,
         expected_revision: int | None,
+        installation_id: str,
+        installation_revision: int,
     ) -> PluginPrivateSetting:
         result = await self._call(
             "save_private_setting",
@@ -185,6 +201,8 @@ class PocketBasePluginStore:
                 "pluginId": setting.plugin_id,
                 "payload": setting.model_dump(mode="json", by_alias=True),
                 "expectedRevision": expected_revision,
+                "installationId": installation_id,
+                "installationRevision": installation_revision,
             },
         )
         return PluginPrivateSetting.model_validate(_object(result, "plugin private setting"))
@@ -232,6 +250,49 @@ class PocketBasePluginStore:
     ) -> PluginSnapshot:
         result = await self._call(
             "commit_install",
+            {
+                "plan": plan.model_dump(mode="json", by_alias=True),
+                "packageRevision": package_revision.model_dump(mode="json", by_alias=True),
+            },
+        )
+        return PluginSnapshot.model_validate(_object(result, "plugin installation"))
+
+    async def commit_upgrade(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package("commit_upgrade", plan, package_revision)
+
+    async def commit_rollback(
+        self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        return await self._commit_package("commit_rollback", plan, package_revision)
+
+    async def set_enabled(
+        self,
+        project_key: str,
+        plugin_id: str,
+        enabled: bool,
+        *,
+        installation_id: str,
+        expected_revision: int,
+    ) -> PluginSnapshot:
+        result = await self._call(
+            "set_enabled",
+            {
+                "projectKey": project_key,
+                "pluginId": plugin_id,
+                "enabled": enabled,
+                "installationId": installation_id,
+                "expectedRevision": expected_revision,
+            },
+        )
+        return PluginSnapshot.model_validate(_object(result, "plugin installation"))
+
+    async def _commit_package(
+        self, operation: str, plan: InstallPlan, package_revision: PluginPackageRevision
+    ) -> PluginSnapshot:
+        result = await self._call(
+            operation,
             {
                 "plan": plan.model_dump(mode="json", by_alias=True),
                 "packageRevision": package_revision.model_dump(mode="json", by_alias=True),

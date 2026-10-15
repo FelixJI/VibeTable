@@ -181,6 +181,12 @@ class PocketBaseClient:
             await self._post("/api/vibetable/v2/plugins/data", request), "plugin data response"
         )
 
+    async def apply_plugin_mutation(self, request: Mapping[str, JsonValue]) -> JsonObject:
+        return _object(
+            await self._post("/api/vibetable/v2/plugins/worker/mutation", request),
+            "plugin mutation receipt",
+        )
+
     async def query_page(
         self,
         *,

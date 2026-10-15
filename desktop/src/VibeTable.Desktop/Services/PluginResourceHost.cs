@@ -97,6 +97,50 @@ public sealed class PluginResourceHost
         "base-uri 'none'; " +
         "form-action 'none'";
 
+    /// <summary>
+    /// Host-owned controlled document for headless actions. The path is
+    /// reserved: packages can never shadow it, so a user package cannot
+    /// forge trusted host HTML on the plugin origin.
+    /// </summary>
+    internal static bool SupportsPresentationEntry(string presentation, string entry)
+    {
+        if (IsHostReservedPath(entry)) return false;
+        string extension = Path.GetExtension(entry);
+        return presentation switch
+        {
+            "application" => string.Equals(extension, ".html", StringComparison.OrdinalIgnoreCase),
+            "headless" => string.Equals(extension, ".js", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(extension, ".mjs", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+    }
+
+    public const string HeadlessDocumentPath = "__vibetable_host__/headless.html";
+    private const string ReservedHostPrefix = "__vibetable_host__/";
+    internal static bool IsHostReservedPath(string entry)
+        => entry.StartsWith(ReservedHostPrefix, StringComparison.Ordinal);
+
+    private const string HeadlessBootstrapPath = "__vibetable_host__/headless.js";
+    private const string HeadlessDocumentHtml =
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\"><title>VibeTable headless runner</title></head>" +
+        "<body><script type=\"module\" src=\"/" + HeadlessBootstrapPath + "\"></script></body></html>";
+
+    // External module keeps script-src 'self' effective; no inline exception.
+    private const string HeadlessBootstrapScript =
+        "const parentOrigin = \"https://app.vibetable.local\";\n" +
+        "function finish(status, summary) {\n" +
+        "  try { window.parent.postMessage({ contract: \"vibetable.plugin-surface.v1\", surfaceToken: window.name, event: \"close\", payload: { status, summary } }, parentOrigin); } catch {}\n" +
+        "}\n" +
+        "const entry = new URLSearchParams(location.search).get(\"entry\") || \"\";\n" +
+        "if (!entry || entry.includes(\":\") || entry.startsWith(\"/\") || entry.includes(\"\\\\\")) { finish(\"failed\", \"headless entry is invalid\"); }\n" +
+        "else {\n" +
+        "  try { await import(new URL(entry, location.origin + \"/\").href); }\n" +
+        "  catch (error) { finish(\"failed\", \"headless entry failed to load\" + (error instanceof Error ? \": \" + error.message : \"\")); }\n" +
+        "}\n" ;
+
+    public static Uri BuildHeadlessDocumentUri(PluginPackageRevision revision, string normalizedEntry)
+        => new(revision.Origin, $"{HeadlessDocumentPath}?entry={Uri.EscapeDataString(normalizedEntry)}");
+
     private static readonly IReadOnlyDictionary<string, string> ContentTypes =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -122,6 +166,27 @@ public sealed class PluginResourceHost
     {
         ArgumentNullException.ThrowIfNull(revision);
         string normalized = NormalizePackagePath(requestedPath);
+        if (!IsRequestAllowed(revision, new Uri(revision.Origin, normalized), kind))
+        {
+            throw Policy("PLUGIN_RESOURCE_DENIED", "The requested resource kind is not allowed.");
+        }
+        if (string.Equals(normalized, HeadlessBootstrapPath, StringComparison.Ordinal))
+        {
+            return new PluginResourceResponse(
+                new MemoryStream(System.Text.Encoding.UTF8.GetBytes(HeadlessBootstrapScript)),
+                "text/javascript; charset=utf-8", CreateHeaders(cacheControl: "no-store"));
+        }
+        if (string.Equals(normalized, HeadlessDocumentPath, StringComparison.Ordinal))
+        {
+            return new PluginResourceResponse(
+                new MemoryStream(System.Text.Encoding.UTF8.GetBytes(HeadlessDocumentHtml)),
+                "text/html; charset=utf-8",
+                CreateHeaders(cacheControl: "no-store"));
+        }
+        if (normalized.StartsWith(ReservedHostPrefix, StringComparison.Ordinal))
+        {
+            throw Policy("PLUGIN_RESOURCE_NOT_FOUND", "Reserved host paths are not package resources.");
+        }
         var target = new Uri(revision.Origin, normalized);
         if (!IsRequestAllowed(revision, target, kind))
         {
@@ -312,10 +377,10 @@ public sealed class PluginResourceHost
             : "application/octet-stream";
     }
 
-    private static IReadOnlyDictionary<string, string> CreateHeaders()
+    private static IReadOnlyDictionary<string, string> CreateHeaders(string cacheControl = "public, max-age=31536000, immutable")
         => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Cache-Control"] = "public, max-age=31536000, immutable",
+            ["Cache-Control"] = cacheControl,
             ["X-Content-Type-Options"] = "nosniff",
             ["Content-Security-Policy"] = ContentSecurityPolicy,
         };

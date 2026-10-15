@@ -125,6 +125,7 @@ PRODUCT_RPC_METHODS_BY_CURRENT_OWNER = {
         "plugin.resolveFile",
         "plugin.resolveInteraction",
         "plugin.rollback",
+        "plugin.setEnabledExecution",
         "plugin.startAction",
         "plugin.uninstall",
         "plugin.upgrade",

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   calculationChainDisplayText, calculationChainUiFixture, calculationChainUiOracle,
-  waitForApplyBackfillFreshness,
+  drainCorrelatedQueryReloads, waitForApplyBackfillFreshness,
 } from "./calculation_chain_journey.mjs";
 
 test("S38 independent display oracle pins the default grouped DOM number text", () => {
@@ -92,5 +92,79 @@ test("stale schema, incomplete rows and unfinished computed values cannot advanc
       assert.equal(predicate(payload), false);
       throw failure;
     }, "tbl_main", chainQuery, appliedReceipt), error => error === failure);
+  }
+});
+
+// Minimal deterministic waitForFunction double: evaluates the in-page predicate
+// against the shimmed window, re-polling only while it stays falsy.
+const createDrainPage = () => {
+  const state = { evaluations: 0, options: null };
+  const page = {
+    waitForFunction(predicate, arg, options) {
+      state.options = options;
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const evaluate = () => {
+          state.evaluations += 1;
+          let satisfied = false;
+          try {
+            satisfied = predicate(arg);
+          } catch (error) {
+            settled = true;
+            reject(error);
+            return;
+          }
+          if (satisfied) {
+            settled = true;
+            resolve(true);
+          }
+        };
+        evaluate();
+        const timer = setInterval(() => {
+          if (settled) clearInterval(timer);
+          else evaluate();
+        }, 1);
+      });
+    },
+  };
+  return { page, state };
+};
+
+test("query-reload drain holds the next table switch until the correlated reload terminal", async () => {
+  const previousWindow = globalThis.window;
+  const holdProbe = new Promise(resolve => setTimeout(resolve, 20));
+  try {
+    // The DOM oracle can already be satisfied while the journey's refresh
+    // reload is still in flight: a correlated table.queryRequested stays
+    // pending, so the drain must hold; only its terminal releases the wait.
+    const pending = {
+      "r-468": { requestType: "table.queryRequested" },
+      "r-476": { requestType: "lookup.query" },
+    };
+    globalThis.window = { __vibetableE2EBridgeDiagnostics: { pending } };
+    const held = createDrainPage();
+    const draining = drainCorrelatedQueryReloads(held.page);
+    assert.equal(await Promise.race([draining.then(() => true), holdProbe.then(() => false)]), false);
+    delete pending["r-468"];
+    await draining;
+    assert.deepEqual(held.state.options, { timeout: 60_000 });
+
+    // Notify-path refreshes post no correlated request: unrelated pending work
+    // (or none) passes on the first evaluation, so the journey adds no delay.
+    for (const notifyPending of [{ "r-477": { requestType: "lookup.query" } }, {}]) {
+      globalThis.window = { __vibetableE2EBridgeDiagnostics: { pending: notifyPending } };
+      const immediate = createDrainPage();
+      await drainCorrelatedQueryReloads(immediate.page);
+      assert.equal(immediate.state.evaluations, 1);
+      assert.deepEqual(immediate.state.options, { timeout: 60_000 });
+    }
+
+    // A missing diagnostics ledger must fail closed, not masquerade as drained.
+    globalThis.window = {};
+    await assert.rejects(drainCorrelatedQueryReloads(createDrainPage().page), /diagnostics pending ledger/u);
+    globalThis.window = { __vibetableE2EBridgeDiagnostics: {} };
+    await assert.rejects(drainCorrelatedQueryReloads(createDrainPage().page), /diagnostics pending ledger/u);
+  } finally {
+    globalThis.window = previousWindow;
   }
 });

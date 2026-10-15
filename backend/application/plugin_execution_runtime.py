@@ -11,12 +11,15 @@ execution reports. It never owns or serves queryable lifecycle state.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from backend.application.plugin_registry import PluginRegistryError
 from backend.application.task_runtime import CancellationToken, ProgressReporter
 from backend.contracts.plugin import (
     ActionAvailability,
@@ -72,7 +75,11 @@ class ConfirmationPort(Protocol):
 
 class MutationPort(Protocol):
     async def apply(
-        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+        self,
+        plan: MutationPlan,
+        *,
+        on_submit: Callable[[], None] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -82,9 +89,11 @@ class _ExecutionHandle:
     __slots__ = (
         "cancel",
         "cancel_timer",
+        "installation_id",
         "plugin_id",
         "project_key",
         "run_id",
+        "settling",
         "task",
         "task_id",
         "worker_running",
@@ -97,6 +106,7 @@ class _ExecutionHandle:
         run_id: str,
         plugin_id: str,
         project_key: str,
+        installation_id: str | None,
         task: asyncio.Task[None],
         cancel: CancellationToken,
     ) -> None:
@@ -104,10 +114,12 @@ class _ExecutionHandle:
         self.run_id = run_id
         self.plugin_id = plugin_id
         self.project_key = project_key
+        self.installation_id = installation_id
         self.task = task
         self.cancel = cancel
         self.cancel_timer: asyncio.TimerHandle | None = None
         self.worker_running = True
+        self.settling = False
 
 
 class PluginExecutionRuntime:
@@ -126,6 +138,36 @@ class PluginExecutionRuntime:
         self._executions: dict[str, _ExecutionHandle] = {}
         self._notification_sink: PluginNotificationSink | None = None
         self._revision = 0
+        self._admission_gates: dict[tuple[str, str], asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def lifecycle(
+        self,
+        project_key: str,
+        plugin_id: str,
+        *,
+        installation_id: str,
+        expected_revision: int,
+    ) -> AsyncIterator[PluginSnapshot]:
+        async with self._admission_gates.setdefault((project_key, plugin_id), asyncio.Lock()):
+
+            async def current_target() -> PluginSnapshot:
+                current = await self._registry.get(project_key, plugin_id)
+                if (
+                    not installation_id
+                    or current is None
+                    or current.installation_id != installation_id
+                    or current.revision != expected_revision
+                ):
+                    raise PluginRegistryError(
+                        "plugin installation changed", code="plugin_revision_conflict"
+                    )
+                return current
+
+            await current_target()
+            # Finalizers never acquire this gate: drain can await them without deadlock.
+            await self.cancel_plugin_tasks(project_key, plugin_id, installation_id=installation_id)
+            yield await current_target()
 
     def set_notification_sink(self, sink: PluginNotificationSink) -> None:
         self._notification_sink = sink
@@ -163,6 +205,23 @@ class PluginExecutionRuntime:
         task_id: str,
         run_id: str,
     ) -> PluginTaskSnapshot:
+        async with self._admission_gates.setdefault(
+            (context.project_key, plugin_id), asyncio.Lock()
+        ):
+            return await self._start(
+                plugin_id, action_id, context, input_payload, task_id=task_id, run_id=run_id
+            )
+
+    async def _start(
+        self,
+        plugin_id: str,
+        action_id: str,
+        context: CommandContext,
+        input_payload: dict[str, Any],
+        *,
+        task_id: str,
+        run_id: str,
+    ) -> PluginTaskSnapshot:
         """Starts one execution for a task identity owned by the WPF host.
 
         The returned snapshot is the execution's initial report for the host
@@ -176,7 +235,7 @@ class PluginExecutionRuntime:
         if not availability.available:
             raise ValueError(",".join(availability.reasons))
         installation = await self._registry.get(context.project_key, plugin_id)
-        if installation is None:
+        if installation is None or installation.status != "enabled":
             raise ValueError("plugin_not_installed")
         action = _find_action(installation, action_id)
         if action is None:
@@ -186,6 +245,8 @@ class PluginExecutionRuntime:
             run_id=run_id,
             plugin_id=plugin_id,
             plugin_version=installation.version,
+            installation_revision=installation.revision,
+            installation_id=installation.installation_id,
             action_id=action_id,
             project_key=context.project_key,
             collection=context.collection,
@@ -210,11 +271,12 @@ class PluginExecutionRuntime:
             run_id=run_id,
             plugin_id=plugin_id,
             project_key=context.project_key,
+            installation_id=installation.installation_id,
             task=task,
             cancel=cancel,
         )
         self._executions[task_id] = handle
-        task.add_done_callback(lambda _task: self._executions.pop(task_id, None))
+        task.add_done_callback(lambda completed: self._complete_execution(task_id, completed))
         # Give the newly-created task one scheduler turn before returning the
         # RPC response. Without this explicit handoff, a fast sequence of
         # plugin.action.start / plugin.task.get requests can keep the task at
@@ -222,6 +284,13 @@ class PluginExecutionRuntime:
         # out even though a worker slot is available.
         await asyncio.sleep(0)
         return snapshot
+
+    def _complete_execution(self, task_id: str, task: asyncio.Task[None]) -> None:
+        # Keep a failed publication handle fail-closed for the next lifecycle
+        # drain; dropping it would turn an unreported receipt into no work.
+        if task.cancelled() or task.exception() is not None:
+            return
+        self._executions.pop(task_id, None)
 
     async def _run(
         self,
@@ -236,7 +305,6 @@ class PluginExecutionRuntime:
         started_at = datetime.now(UTC).replace(microsecond=0)
         started_monotonic = time.monotonic()
         running = initial.model_copy(update={"state": "running"})
-        await self._emit(running)
 
         async def report(status: TaskStatus) -> None:
             nonlocal running
@@ -258,6 +326,8 @@ class PluginExecutionRuntime:
             "runId": initial.run_id,
             "pluginId": initial.plugin_id,
             "pluginVersion": initial.plugin_version,
+            "installationId": initial.installation_id,
+            "installationRevision": initial.installation_revision,
             "packageHash": package_hash,
             "actionId": initial.action_id,
             "projectKey": context.project_key,
@@ -266,6 +336,7 @@ class PluginExecutionRuntime:
             "_hostCancel": cancel,
         }
         try:
+            await self._emit(running)
             if self._worker is None:
                 raise ValueError("plugin worker is unavailable")
             if action.worker_entry is None:
@@ -326,8 +397,10 @@ class PluginExecutionRuntime:
                     ),
                 }
             )
+        # A settled receipt must survive cancellation during audit/Host publication.
+        self._executions[initial.task_id].settling = True
         finished_at = datetime.now(UTC).replace(microsecond=0)
-        await self._registry.record_audit(
+        await self._record_terminal_audit(
             PluginAuditEvent(
                 event_id=str(uuid.uuid4()),
                 project_key=initial.project_key,
@@ -357,6 +430,16 @@ class PluginExecutionRuntime:
         )
         await self._emit(completed)
 
+    async def _record_terminal_audit(self, event: PluginAuditEvent) -> None:
+        try:
+            await self._registry.record_audit(event)
+        except Exception:
+            # A durable receipt remains a success/unknown receipt even if its
+            # secondary executor audit cannot be appended. Always report it.
+            logging.getLogger(__name__).warning(
+                "Plugin terminal audit could not be appended", exc_info=True
+            )
+
     async def _finalize_result(
         self,
         action: PluginAction,
@@ -366,6 +449,7 @@ class PluginExecutionRuntime:
     ) -> PluginResult:
         if action.risk == "read":
             return PluginResult.model_validate(raw)
+        await self._assert_current_execution(execution)
         if raw.get("contract") != "vibetable.mutation-plan.v1":
             raise ValueError("write plugin must return a mutation plan")
         plan = MutationPlan.model_validate(raw)
@@ -384,11 +468,28 @@ class PluginExecutionRuntime:
             )
         if getattr(execution.get("_hostCancel"), "cancelled", False):
             raise asyncio.CancelledError
+        await self._assert_current_execution(execution)
 
         def submitted() -> None:
             execution["_commitStarted"] = True
 
-        return PluginResult.model_validate(await self._mutation.apply(plan, on_submit=submitted))
+        return PluginResult.model_validate(
+            await self._mutation.apply(plan, on_submit=submitted, execution=execution)
+        )
+
+    async def _assert_current_execution(self, execution: dict[str, Any]) -> None:
+        current = await self._registry.get(execution["projectKey"], execution["pluginId"])
+        if (
+            current is None
+            or current.status != "enabled"
+            or not execution.get("installationId")
+            or current.installation_id != execution["installationId"]
+            or current.revision != execution["installationRevision"]
+            or current.package_hash != execution["packageHash"]
+        ):
+            raise PluginExecutionError(
+                "plugin installation changed", code="plugin_revision_conflict"
+            )
 
     async def request_cancel(self, task_id: str) -> bool:
         """Triggers the host-owned task's local cancel handle.
@@ -402,6 +503,8 @@ class PluginExecutionRuntime:
         if handle.cancel.cancelled:
             return True
         handle.cancel.cancel()
+        if handle.settling:
+            return True
         if handle.worker_running:
             # Allow one progress receipt and cooperative cleanup before killing Node.
             handle.cancel_timer = asyncio.get_running_loop().call_later(1.0, handle.task.cancel)
@@ -410,16 +513,33 @@ class PluginExecutionRuntime:
             handle.task.cancel()
         return True
 
-    async def cancel_plugin_tasks(self, project_key: str, plugin_id: str) -> int:
+    async def cancel_plugin_tasks(
+        self, project_key: str, plugin_id: str, *, installation_id: str
+    ) -> int:
         targets = [
             handle
             for handle in self._executions.values()
-            if handle.project_key == project_key and handle.plugin_id == plugin_id
+            if handle.project_key == project_key
+            and handle.plugin_id == plugin_id
+            and handle.installation_id == installation_id
         ]
         for handle in targets:
             await self.request_cancel(handle.task_id)
-        # Uninstall must not remove settings/packages while cooperative cleanup uses them.
-        await asyncio.gather(*(handle.task for handle in targets))
+        # Use the existing private RPC/HTTP budget without cancelling a pending
+        # commit or publication. A failed drain must not advance the lifecycle.
+        if targets:
+            done, pending = await asyncio.wait([handle.task for handle in targets], timeout=30.0)
+            if pending:
+                raise PluginExecutionError(
+                    "plugin execution drain timed out", code="plugin_drain_timeout"
+                )
+            for task in done:
+                if task.cancelled():
+                    raise PluginExecutionError(
+                        "plugin execution did not publish a terminal receipt",
+                        code="plugin_drain_failed",
+                    )
+                task.result()
         return len(targets)
 
     async def _emit(self, snapshot: PluginTaskSnapshot) -> None:

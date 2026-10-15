@@ -88,7 +88,9 @@ public sealed record PluginInstallCancelResult(bool Cancelled);
 public sealed record PluginSetEnabledParams(
     string ProjectKey,
     string PluginId,
-    bool Enabled);
+    bool Enabled,
+    string? InstallationId = null,
+    int ExpectedRevision = 0);
 public sealed record PluginUpgradeParams(
     string ProjectKey,
     string PluginId,
@@ -98,6 +100,8 @@ public sealed record PluginRollbackParams(string ProjectKey, string PluginId);
 public sealed record PluginUninstallParams(
     string ProjectKey,
     string PluginId,
+    string InstallationId,
+    int ExpectedRevision,
     bool CleanupPrivateSettings = false);
 public sealed record PluginRuntimeCommandContext(
     string Contract,
@@ -200,7 +204,10 @@ public sealed record PluginRuntimeTaskSnapshot(
     bool CancelRequested,
     PluginRuntimeProgress? Progress,
     PluginRuntimeResult? Result,
-    PluginRuntimeSafeError? Error);
+    PluginRuntimeSafeError? Error,
+    int? InstallationRevision = null,
+    string? InstallationId = null,
+    string? SurfaceToken = null);
 
 public sealed record PluginRuntimeSafeError(
     string Contract,
@@ -229,7 +236,17 @@ public sealed record PluginRuntimeAction(
     string? WorkerEntry,
     string? FormSchema,
     string? InputSchema,
-    string? OutputSchema);
+    string? OutputSchema,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Presentation = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Entry = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceSrc = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceToken = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SurfaceTitle = null)
+{
+    /// <summary>Normalized presentation; absent/empty maps to the legacy surface channel.</summary>
+    [JsonIgnore]
+    public string EffectivePresentation => string.IsNullOrWhiteSpace(Presentation) ? "surface" : Presentation;
+}
 
 public sealed record PluginRuntimeManifest(
     [property: JsonPropertyName("$schema")] string Schema,
@@ -250,7 +267,9 @@ public sealed record PluginRuntimeInstallPlan(
     string SourceLocation,
     string PackageHash,
     PluginRuntimeManifest Manifest,
-    IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas);
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, JsonElement>> Schemas,
+    string? TargetInstallationId = null,
+    int? TargetRevision = null);
 
 public sealed record PluginRuntimeSnapshot(
     string ProjectKey,
@@ -265,7 +284,8 @@ public sealed record PluginRuntimeSnapshot(
     string? DisabledReason,
     int Revision,
     IReadOnlyList<string>? BlockingReasons = null,
-    bool SourceChanged = false);
+    bool SourceChanged = false,
+    string? InstallationId = null);
 
 public sealed record PluginRuntimeUninstallResult(
     bool Uninstalled,

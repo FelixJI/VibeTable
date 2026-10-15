@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,6 +35,7 @@ import (
 )
 
 type Options struct {
+	Logger                   *slog.Logger
 	App                      core.App
 	DataDir                  string
 	WorkspaceID              string
@@ -362,6 +364,7 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 			return token
 		},
 		result.recordWatchEvent,
+		options.Logger,
 	)
 	if err != nil {
 		return nil, err

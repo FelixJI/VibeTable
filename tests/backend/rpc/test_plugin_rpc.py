@@ -27,6 +27,7 @@ def test_plugin_rpc_registration_is_closed_and_complete() -> None:
         "plugin.commitInstall",
         "plugin.upgrade",
         "plugin.rollback",
+        "plugin.setEnabledExecution",
         "plugin.uninstall",
         "plugin.describeAction",
         "plugin.startAction",
@@ -80,3 +81,23 @@ async def test_dispatcher_unpacks_keyword_only_plugin_use_case() -> None:
         "id": "request-1",
         "result": ["local:default"],
     }
+
+
+def test_uninstall_requires_the_confirmed_installation_identity_and_revision() -> None:
+    from pydantic import ValidationError
+
+    from backend.contracts.plugin_rpc import UninstallPluginParams
+
+    payload = {"projectKey": "local:default", "pluginId": "com.example.summary"}
+    for extra in (
+        {},
+        {"installationId": "", "expectedRevision": 1},
+        {"installationId": "record-original", "expectedRevision": 0},
+    ):
+        with pytest.raises(ValidationError):
+            UninstallPluginParams.model_validate({**payload, **extra})
+    value = UninstallPluginParams.model_validate(
+        {**payload, "installationId": "record-original", "expectedRevision": 4}
+    )
+    assert value.installation_id == "record-original"
+    assert value.expected_revision == 4
