@@ -74,7 +74,7 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
       const frame = document.querySelector('[data-testid="plugin-app-viewport"] iframe');
       window.__applicationPrintTrace.push({ name, at: Date.now(),
         mode: document.documentElement.hasAttribute("data-vt-plugin-print"),
-        height: frame?.style.getPropertyValue("--vt-plugin-print-height"),
+        height: frame?.style.getPropertyValue("--plugin-print-height"),
         paths: document.querySelectorAll("[data-vt-plugin-print-path]").length });
     });
   });

@@ -16,7 +16,7 @@ export function installPluginPrintScope(current: () => ActiveApplication | null)
     for (const element of document.querySelectorAll("[data-vt-plugin-print-path]"))
       element.removeAttribute("data-vt-plugin-print-path");
     for (const frame of document.querySelectorAll<HTMLElement>("[data-plugin-print-surface]"))
-      frame.style.removeProperty("--vt-plugin-print-height");
+      frame.style.removeProperty("--plugin-print-height");
     // Keep print mode fail-closed until preview closes: navigation must not expose platform DOM.
   };
   const release = (requestId: string): void => {
@@ -39,7 +39,7 @@ export function installPluginPrintScope(current: () => ActiveApplication | null)
     if (frame.name !== surfaceToken || frame.dataset.pluginPrintSurface !== surfaceToken
       || frame.getAttribute("src") !== app.src || bounds.width <= 0 || bounds.height <= 0) { clear(); return false; }
     clear();
-    frame.style.setProperty("--vt-plugin-print-height", `${height}px`);
+    frame.style.setProperty("--plugin-print-height", `${height}px`);
     for (let element: HTMLElement | null = frame; element; element = element.parentElement) {
       element.setAttribute("data-vt-plugin-print-path", "");
       if (element === document.body) return true;

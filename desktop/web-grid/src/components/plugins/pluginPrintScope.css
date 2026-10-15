@@ -20,6 +20,6 @@
     contain: none !important;
   }
   html[data-vt-plugin-print] iframe[data-vt-plugin-print-path] {
-    height: var(--vt-plugin-print-height) !important;
+    height: var(--plugin-print-height) !important;
   }
 }
