@@ -27,6 +27,8 @@ export interface SurfaceIoStatus<T> {
   readonly progress: { readonly done: number; readonly total: number; readonly message: string };
   readonly result?: T;
   readonly outcome?: "unknown";
+  /** Host-supplied stable terminal reason; never internal plan or grant details. */
+  readonly error?: { readonly code: string; readonly message: string };
 }
 export interface SurfaceIoTask<T> {
   readonly taskId: string;
@@ -284,7 +286,12 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
           }
           if (status.state !== "queued" && status.state !== "running") {
             ioTasks.delete(started.taskId);
-            throw new PluginCapabilityError(status.state === "aborted" || status.outcome === "unknown" ? "plugin_commit_unknown" : status.state === "cancelled" ? "plugin_cancel_requested" : "plugin_data_io_failed", "DataIO task did not complete; no automatic replay.");
+            // The Host's terminal receipt carries a stable error code (for example
+            // plugin_plan_limit); keep it and fall back only when it is absent.
+            const code = status.state === "aborted" || status.outcome === "unknown" ? "plugin_commit_unknown"
+              : status.state === "cancelled" ? "plugin_cancel_requested"
+              : status.error?.code || "plugin_data_io_failed";
+            throw new PluginCapabilityError(code, "DataIO task did not complete; no automatic replay.");
           }
           await new Promise<void>(resolve => setTimeout(resolve, 100));
         }

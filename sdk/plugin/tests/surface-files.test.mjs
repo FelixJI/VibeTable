@@ -57,6 +57,23 @@ test("DataIO uses owned task status and cancellation; preview yields only a muta
   client.dispose();
 });
 
+test("terminal DataIO statuses keep the Host's stable error code with a safe fallback", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const limited = client.data.previewImport({ collection: "t", schemaRevision: "schema_1" });
+  wire.reply({ taskId: "limited" }); const importing = await limited;
+  const settling = importing.result(); wire.reply({ taskId: "limited", state: "failed", progress: { done: 1, total: 1, message: "" }, error: { code: "plugin_plan_limit", message: "插件数据任务未完成，请核对任务。" } });
+  await assert.rejects(settling, error => error.code === "plugin_plan_limit");
+  const bare = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "bare" }); const exporting = await bare;
+  const withoutCode = exporting.result(); wire.reply({ taskId: "bare", state: "failed", progress: { done: 0, total: 0, message: "" } });
+  await assert.rejects(withoutCode, error => error.code === "plugin_data_io_failed");
+  const aborted = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out2.csv" });
+  wire.reply({ taskId: "aborted" }); const aborting = await aborted;
+  const unknown = aborting.result(); wire.reply({ taskId: "aborted", state: "aborted", progress: { done: 0, total: 0, message: "" }, error: { code: "plugin_plan_limit", message: "x" } });
+  await assert.rejects(unknown, error => error.code === "plugin_commit_unknown");
+  client.dispose();
+});
+
 test("attachment reading is bounded and preview never sends native paths or stage handles", async () => {
   const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
   const listing = client.attachments.list({ collection: "t", recordId: "r", fieldId: "f" });
