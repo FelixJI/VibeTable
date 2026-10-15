@@ -122,5 +122,37 @@
     "handles": "surface-owned opaque references; no raw staged handles, stored names or download tickets",
     "write": "Host-native file selection, staged principal/record/field/file binding, canonical setAttachments and native confirmation",
     "read": "current Go installation and field grant checked for each bounded block"
+  },
+  "ui": {
+    "transport": "trusted parent; existing vibetable.plugin-surface.v1 action service=ui; never a Product RPC",
+    "methods": [
+      "context.current",
+      "tasks.list",
+      "tasks.cancel",
+      "notification.show",
+      "navigation.back"
+    ],
+    "notifications": [
+      "themeChanged",
+      "tasksChanged",
+      "uiResponse"
+    ],
+    "unsupported": [
+      "navigation.table",
+      "navigation.record",
+      "navigation.url",
+      "task.create",
+      "task.approve"
+    ],
+    "limits": {
+      "pendingRequests": 8,
+      "requestSeconds": 20,
+      "notificationTextCharacters": 500,
+      "notificationsPerSurface": 8,
+      "visibleNotifications": 3,
+      "taskHistory": 256
+    },
+    "context": "presentation only; Go-authorized context.read remains the data authority",
+    "tasks": "only native tasks owned by the current surface; cancelRequested is not settlement; no confirmation fields"
   }
 }

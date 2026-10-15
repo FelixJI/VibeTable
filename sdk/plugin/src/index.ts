@@ -36,3 +36,6 @@ export type {
 } from "./types.js";
 
 export type { DataOperator, DataFilter, DataSort, DataField, DataTable, DataCatalog, DataDescription, DataDescribeRequest, DataQueryRequest, DataQueryPage, ComputedCell } from "./data.js";
+
+export { SURFACE_UI_METHODS, SURFACE_UI_UNSUPPORTED } from "./surface-ui.js";
+export type { SurfacePresentation, SurfaceTask, SurfaceParentTransport } from "./surface-ui.js";

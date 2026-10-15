@@ -1,3 +1,4 @@
+import { createSurfacePresentationClient, type SurfaceParentTransport, type SurfacePresentation, type SurfaceTask } from "./surface-ui.js";
 import type { DataCatalog, DataDescription, DataDescribeRequest, DataQueryPage, DataQueryRequest } from "./data.js";
 import type { CommandContext, JsonObject, JsonValue } from "./types.js";
 import type { ReadGrant, WriteGrant } from "./capabilities.js";
@@ -47,7 +48,9 @@ export interface SurfaceTransport {
   removeEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
 }
 export interface SurfaceCapabilities {
-  readonly context: { read(): Promise<CommandContext> };
+  readonly context: { read(): Promise<CommandContext>; current(): Promise<SurfacePresentation>; onChanged(listener: (value: SurfacePresentation) => void): () => void };
+  readonly tasks: { list(): Promise<readonly SurfaceTask[]>; onChanged(listener: (tasks: readonly SurfaceTask[]) => void): () => void; cancel(taskId: string): Promise<{ readonly cancelRequested: boolean }> };
+  readonly ui: ReturnType<typeof createSurfacePresentationClient>["ui"];
   readonly data: {
     describe(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
     query(request: DataQueryRequest): Promise<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }>;
@@ -81,10 +84,11 @@ export interface SurfaceCapabilities {
 }
 
 /** Runs only inside an isolated WebView2 iframe; never forwards through the parent Product bridge. */
-export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTransport): SurfaceCapabilities {
+export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTransport, parentTransport?: SurfaceParentTransport): SurfaceCapabilities {
   const browser = globalThis as typeof globalThis & { chrome?: { webview?: SurfaceTransport } };
   const channel = transport ?? browser.chrome?.webview;
   if (!channel || !surfaceToken) throw new PluginCapabilityError("plugin_api_unsupported", "A plugin surface Host is required.");
+  const presentation = createSurfacePresentationClient(surfaceToken, parentTransport);
   let closed = false;
   const files = new Set<string>();
   let pickingFiles = 0;
@@ -304,7 +308,18 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     return output;
   }
   return {
-    context: { read: () => call("context.read", {}) },
+    context: {
+      read: async () => {
+        const context = await call<CommandContext>("context.read", {});
+        // Trusted parent supplies presentation only; Go remains the data authority.
+        if (!presentation.available) return context;
+        const current = await presentation.current();
+        return { ...context, theme: current.mode, locale: current.locale, density: current.density };
+      },
+      current: presentation.current, onChanged: presentation.onChanged,
+    },
+    tasks: presentation.tasks,
+    ui: presentation.ui,
     data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe,
       previewImport: request => startIo("data.import.start", { ...request, mode: request.mode ?? "create_only", upsertKey: request.upsertKey ?? null, columnMapping: request.columnMapping ?? [] }),
       export: request => startIo("data.export.start", { ...request, query: request.query ?? {} }) },
@@ -318,6 +333,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     dispose: () => {
       if (closed) return;
       closed = true;
+      presentation.dispose();
       for (const [subscriptionId, subscription] of subscriptions) {
         subscription.cleanup(); release("data.unsubscribe", { subscriptionId });
       }

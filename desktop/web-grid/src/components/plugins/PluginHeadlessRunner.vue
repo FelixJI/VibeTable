@@ -9,6 +9,7 @@ type HeadlessOutcomeStatus = "running" | "succeeded" | "failed" | "cancelled" | 
 const props = defineProps<{
   description: WebPluginActionDescription;
   theme: PluginSurfaceThemeSnapshot;
+  navigateBack?: (surfaceToken: string) => boolean;
   task?: PluginTaskViewSnapshot | null;
   tasks?: readonly PluginTaskViewSnapshot[];
 }>();
@@ -152,13 +153,14 @@ function cancelRun(): void {
       :surface-token="surface.surfaceToken"
       :title="description.title"
       :theme="theme"
+        :navigate-back="navigateBack"
       :tasks="currentTasks"
       :show-tasks="false"
       variant="headless"
       @finish="(status, summary) => onFinish(status, summary)"
       @close="onSurfaceClosed"
       @resolve="(decision, taskId) => emit('resolve', decision, taskId)"
-      @cancel="cancelRun"
+      @cancel="cancelTask"
     />
     <PluginTaskList :tasks="currentTasks" variant="headless"
       @cancel="cancelTask" @resolve="(decision, taskId) => emit('resolve', decision, taskId)" />

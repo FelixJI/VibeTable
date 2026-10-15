@@ -159,6 +159,45 @@ describe("PluginSurfaceHost", () => {
       && (message as { payload?: { state?: string } }).payload?.state === "succeeded")).toBe(true);
   });
 
+  it("handles bounded attributed UI messages without starting a Worker action or accepting foreign tasks", async () => {
+    const host = vi.fn();
+    setHostBridgeForTesting(createHostBridge({ webview: { postMessage: host, addEventListener: () => undefined, removeEventListener: () => undefined } }));
+    const back = vi.fn(() => false);
+    const task = { taskId: "owned", surfaceToken: "surface-1", state: "running", revision: 1, cancelRequested: false } as PluginTaskViewSnapshot;
+    const wrapper = mount(PluginSurfaceHost, { props: { src, surfaceToken: "surface-1", title: "合成插件", theme,
+      tasks: [task, { ...task, taskId: "foreign", surfaceToken: "elsewhere" }], navigateBack: back } });
+    const iframe = wrapper.get("iframe").element;
+    const post = vi.fn();
+    Object.defineProperty(iframe, "contentWindow", { configurable: true, value: { postMessage: post } });
+    const send = (method: string, params: object = {}, overrides: object = {}) => window.dispatchEvent(new MessageEvent("message", {
+      origin: new URL(src).origin, source: iframe.contentWindow,
+      data: { contract: "vibetable.plugin-surface.v1", surfaceToken: "surface-1", event: "action",
+        payload: { service: "ui", requestId: method, method, params } }, ...overrides,
+    }));
+    send("notification.show", { message: "<b>合成消息</b>" });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.get('[aria-label="插件通知"]').text()).toContain("合成插件");
+    expect(wrapper.get('[aria-label="插件通知"]').text()).toContain("<b>合成消息</b>");
+    expect(wrapper.find('[aria-label="插件通知"] b').exists()).toBe(false);
+    send("tasks.list");
+    expect(post.mock.calls.at(-1)?.[0].payload.result.map((value: { taskId: string }) => value.taskId)).toEqual(["owned"]);
+    send("tasks.cancel", { taskId: "foreign" });
+    expect(post.mock.calls.at(-1)?.[0].payload.error.code).toBe("plugin_task_not_owned");
+    expect(wrapper.emitted("cancel")).toBeUndefined();
+    send("tasks.cancel", { taskId: "owned" });
+    expect(wrapper.emitted("cancel")).toEqual([["owned"]]);
+    send("navigation.back");
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls.at(-1)?.[0].payload.result).toEqual({ navigated: false });
+    send("navigation.record", { recordId: "hidden" });
+    expect(post.mock.calls.at(-1)?.[0].payload.error.code).toBe("plugin_api_unsupported");
+    send("notification.show", { message: "evil" }, { source: window });
+    expect(wrapper.text()).not.toContain("evil");
+    expect(wrapper.emitted("action")).toBeUndefined();
+    expect(host).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("does not navigate an iframe for an untrusted origin", () => {
     setHostBridgeForTesting(createHostBridge({ webview: {
       postMessage: () => undefined,

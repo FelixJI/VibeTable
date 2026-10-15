@@ -857,6 +857,41 @@ describe("WorkspaceView", () => {
       window.dispatchEvent(new Event("afterprint"));
     });
 
+    it("consumes SDK back through the real application, dirty guard and single surface retirement", async () => {
+      const { wrapper, plugin, record, setCatalog } = await prepare();
+      const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/ui/index.html`;
+      setCatalog({ ...plugin, revision: 3, manifest: { ...plugin.manifest,
+        actions: plugin.manifest.actions.map(action => ({ ...action, surfaceSrc: source })) } });
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      const frame = wrapper.get('[data-testid="plugin-app-viewport"] iframe').element as HTMLIFrameElement;
+      const post = vi.fn();
+      Object.defineProperty(frame, "contentWindow", { configurable: true, value: { postMessage: post } });
+      const send = (token = "application-token") => window.dispatchEvent(new MessageEvent("message", {
+        origin: new URL(source).origin, source: frame.contentWindow,
+        data: { contract: "vibetable.plugin-surface.v1", surfaceToken: token, event: "action",
+          payload: { service: "ui", requestId: "back-request", method: "navigation.back", params: {} } },
+      }));
+      const surfaces = useSurfaceStore(); surfaces.setDraftState("draft", true);
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      send(); await flushPromises();
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(useUiStore().activePluginApp?.actionId).toBe("application");
+      expect(post.mock.calls.at(-1)?.[0].payload.result).toEqual({ navigated: false });
+      expect(surfaces.dirty).toBe(true);
+      confirm.mockReturnValue(true);
+      send(); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(surfaces.dirty).toBe(false);
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      const closes = () => record.posted.filter(message => message.type === "plugin.surface.event"
+        && (message.payload as { event?: string }).event === "close");
+      expect(closes()).toHaveLength(1);
+      useUiStore().navigate("settings");
+      send(); await flushPromises(); // Detached old frame cannot override the new user's intent.
+      expect(useUiStore().activeView).toBe("settings");
+      expect(closes()).toHaveLength(1);
+    });
+
     it("opens an application through real navigation and returns or retires to the platform", async () => {
       const { wrapper, plugins, plugin, record } = await prepare();
       const open = async () => { await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises(); };

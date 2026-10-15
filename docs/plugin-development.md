@@ -490,3 +490,41 @@ Go 临时计划仍受固定 TTL 与容量限制。常用拒绝码还有 `plugin_
 
 新增 DataIO principal 只存在于 Host-only 任务组合和现有鉴权 surface HTTP 端口；没有新增
 Product RPC 或旧 Worker 能力。API 1.x/2.x 的 grant、任务与读取行为继续使用原契约。
+
+### 无 Worker 页面的 UI 公共服务
+
+`createSurfaceClient(token)` 同时使用当前 frame 的原生数据通道和可信父页
+`https://app.vibetable.local` 的展示通道。父页严格核对 origin、source 和当前 surfaceToken；
+UI 消息不会转成 Worker action 或通用 Product RPC。`client.ui.capabilities()` 返回当前闭集方法
+及明确不支持列表。
+
+- `context.read()` 先读取 Go 授权的项目、表、选择等数据上下文，再叠加父页此刻的 theme/locale/density。
+  `context.current()` 只读取当前展示快照（mode、locale、density、CSS variables），
+  `context.onChanged(listener)` 监听此展示快照并返回取消监听函数。这些展示值不是权限或身份。
+- `tasks.list()` / `tasks.onChanged(listener)` 只提供当前 surface 创建的既有 Host 任务，含真实进度、
+  成功摘要与安全错误；未知总量为 `null`。不暴露 input、原生批准预览、隐藏记录或其它插件任务。
+  任务记录按 revision 去重并保持成功/失败/取消/aborted 终态粘滞，最多保留256条；
+  超限按旧终态回收。`aborted + plugin_commit_unknown` 表示结果未知，应核对实际数据，禁止自动重放。
+- `tasks.cancel(taskId)` 仅请求取消当前 surface 拥有且可取消的任务。返回的 `cancelRequested` 只表示
+  请求进入已有 Host 控制流程，仍须通过任务投影等待权威终态；不表示写入已取消或回滚。
+  此通道没有任务创建、批准或插件自报进度接口。文件/导入导出等其它平台任务由对应受控能力返回，
+  本列表不会把任意 DataIO/Worker taskId 当作当前页面的任务。
+- `ui.notifications.show(text)` 在父页展示“插件 · 当前入口标题”归属的纯文本消息，不能插入HTML、
+  自定义来源、按钮或安全批准UI；每条最多500字符、每surface生命周期最多8条、可见最多3条。
+- `ui.navigation.back()` 请求返回平台，复用当前页面 token 核验和既有草稿离开守卫。
+  用户拒绝丢弃草稿时返回 `{navigated:false}`。关闭页面不表示在途写入已取消，回执仍由Host保存。
+  首版明确不支持表/记录/任意URL导航、任务创建和批准；这些不是空实现，也不会回退到内部RPC。
+
+展示通道另有最多8个在途请求、20秒响应截止；失败不会自动重试或重放。`dispose()` 释放监听和待回复，
+旧surface/工作区退役后消息不能进入新页面。
+
+```ts
+const client = createSurfaceClient(window.name);
+const stopTheme = client.context.onChanged(theme => renderTheme(theme));
+const stopTasks = client.tasks.onChanged(tasks => renderHostReceipts(tasks));
+const context = await client.context.read(); // 权威数据范围 + 当前展示偏好
+await client.ui.notifications.show("操作请求已发送，最终结果请见宿主任务记录。");
+// 用户操作时：await client.tasks.cancel(ownedTaskId);
+// 用户请求离开时：await client.ui.navigation.back();
+// 卸载时：stopTheme(); stopTasks(); client.dispose();
+```
