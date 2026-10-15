@@ -98,7 +98,13 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             }
             if (request.Method == "data.io.cancel")
             {
-                await HandleDataIoAsync(surface, state, request.Method, request.Params, deadline.Token);
+                // Cancel admission stays independent of state.Pending so a full normal
+                // budget can always be cancelled, yet it is still bounded: a client that
+                // bypasses the SDK cannot park unbounded 15s cancel-ack handlers per surface.
+                if (!state.Cancelling.TryAdd(requestId, true)) throw Error("plugin_request_duplicate");
+                if (state.Cancelling.Count > 8) { state.Cancelling.TryRemove(requestId, out _); throw Error("plugin_concurrency_limit"); }
+                try { await HandleDataIoAsync(surface, state, request.Method, request.Params, deadline.Token); }
+                finally { state.Cancelling.TryRemove(requestId, out _); }
                 return Reply(requestId, new { cancelRequested = true });
             }
             if (request.Method == "file.release")
@@ -558,6 +564,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         internal PluginSurfaceSession Identity { get; } = identity;
         internal CancellationTokenSource Lifetime { get; } = new();
         internal ConcurrentDictionary<string, CancellationTokenSource> Pending { get; } = new();
+        // In-flight data.io.cancel requestIds; bounded independently of Pending.
+        internal ConcurrentDictionary<string, bool> Cancelling { get; } = new();
         internal ConcurrentDictionary<string, bool> Cancelled { get; } = new();
         internal ConcurrentDictionary<string, bool> Seen { get; } = new();
         internal ConcurrentQueue<string> Order { get; } = new();

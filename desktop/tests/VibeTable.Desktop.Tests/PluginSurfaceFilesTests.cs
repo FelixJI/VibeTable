@@ -582,6 +582,110 @@ public sealed class PluginSurfaceFilesTests
         Assert.AreEqual(1, f.IoCancels);
     }
 
+    [TestMethod]
+    public async Task RawFrameIoCancelAdmissionIsBoundedIndependentAndReleasesSlots()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = hold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        string secondTaskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        // A client bypassing the SDK parks eight raw-frame cancels with distinct requestIds
+        // on the same task's CancelAck; each synchronous call is admitted before it parks.
+        var parked = Enumerable.Range(0, 8).Select(index =>
+            f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), $"raw-cancel-{index}")).ToArray();
+        // A duplicate in-flight requestId and a ninth distinct id (even for a different task)
+        // are both rejected fast and stably instead of parking another 15s handler.
+        var duplicate = await f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), "raw-cancel-0");
+        Assert.AreEqual("plugin_request_duplicate", duplicate.GetProperty("error").GetProperty("code").GetString(), duplicate.GetRawText());
+        var ninth = await f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId = secondTaskId }), "raw-cancel-8");
+        Assert.AreEqual("plugin_concurrency_limit", ninth.GetProperty("error").GetProperty("code").GetString(), ninth.GetRawText());
+        Assert.AreEqual(1, f.IoCancels, "same-task cancels must coalesce into one port cancellation");
+        // Ordinary pending admission is unaffected while eight cancel handlers are
+        // parked; the full-ordinary-budget converse is proven by FullOrdinaryPendingBudgetStillAdmitsCancels.
+        for (int i = 0; i < 8; i++)
+        {
+            var ordinary = await f.Call("storage.set", JsonSerializer.Serialize(new { key = $"k{i}", value = "v" }));
+            Assert.IsTrue(ordinary.TryGetProperty("result", out _), ordinary.GetRawText());
+        }
+        // Settling the ack returns every slot; all parked cancels complete with a receipt.
+        hold.SetResult();
+        foreach (var reply in await Task.WhenAll(parked))
+            Assert.AreEqual(true, reply.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), reply.GetRawText());
+        // The freed admission accepts a fresh cancel immediately (coalesced terminal ack).
+        var readmitted = await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
+        Assert.AreEqual(true, readmitted.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), readmitted.GetRawText());
+    }
+
+    [TestMethod]
+    public async Task FullOrdinaryPendingBudgetStillAdmitsCancels()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Http.HoldStorageSet = hold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        // Settle the task's CancelAck first so the cancel below cannot race port cleanup.
+        Assert.IsTrue((await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        // Park eight ordinary requests. HTTP delivery may start asynchronously, so judge the
+        // ordinary budget as full only on the peer's own entry signal, not on task creation.
+        var parked = Enumerable.Range(0, 8).Select(index =>
+            f.CallWithId("storage.set", JsonSerializer.Serialize(new { key = $"k{index}", value = "v" }), $"ordinary-{index}")).ToArray();
+        bool full = false;
+        for (int i = 0; i < 500 && !(full = f.Http.StorageSetHeld == 8); i++) await Task.Delay(10);
+        Assert.IsTrue(full, "eight ordinary requests must be genuinely in flight");
+        var overflow = await f.CallWithId("storage.set", JsonSerializer.Serialize(new { key = "overflow", value = "v" }), "ordinary-overflow");
+        Assert.AreEqual("plugin_concurrency_limit", overflow.GetProperty("error").GetProperty("code").GetString(), overflow.GetRawText());
+        // The completely full ordinary budget must not block cancellation.
+        var cancel = await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
+        Assert.IsTrue(cancel.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), cancel.GetRawText());
+        hold.SetResult();
+        foreach (var reply in await Task.WhenAll(parked))
+            Assert.IsTrue(reply.TryGetProperty("result", out _), reply.GetRawText());
+    }
+
+    [TestMethod]
+    public async Task FailedIoCancelHandlerReturnsItsAdmissionSlot()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = hold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        // An unknown task fails inside the handler after admission consumed a slot.
+        var foreign = await f.Call("data.io.cancel", "{\"taskId\":\"foreign-task\"}");
+        Assert.AreEqual("plugin_source_denied", foreign.GetProperty("error").GetProperty("code").GetString(), foreign.GetRawText());
+        // A slot leaked by that failure would leave room for at most seven of these eight;
+        // any rejection surfaces as an error reply instead of a cancelRequested receipt.
+        var parked = Enumerable.Range(0, 8).Select(index =>
+            f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), $"after-failure-{index}")).ToArray();
+        hold.SetResult();
+        foreach (var reply in await Task.WhenAll(parked))
+            Assert.IsTrue(reply.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), reply.GetRawText());
+    }
+
+    [TestMethod]
+    public async Task RetiredSurfacePromptlyUnwindsParkedCancels()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = hold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        var parked = Enumerable.Range(0, 8).Select(index =>
+            f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), $"retire-{index}")).ToArray();
+        Assert.AreEqual(1, f.IoCancels, "the eight parked cancels must have coalesced onto one port cancellation");
+        // Retirement fires the surface lifetime the cancel deadline is linked to, so the
+        // whole parked budget unwinds through its finally instead of waiting out 15s.
+        f.Surfaces.CloseAll();
+        var replies = await Task.WhenAll(parked).WaitAsync(TimeSpan.FromSeconds(5));
+        foreach (var reply in replies)
+            Assert.AreEqual("plugin_timeout", reply.GetProperty("error").GetProperty("code").GetString(), reply.GetRawText());
+        hold.SetResult();
+    }
+
     private sealed class Fixture : IAsyncDisposable, IWebReplySink, INativeProductFileHost
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vibetable-plugin-files-" + Guid.NewGuid().ToString("N"));
@@ -608,6 +712,7 @@ public sealed class PluginSurfaceFilesTests
         internal bool NativeConfirmation;
         internal bool IoRunning;
         internal int IoCancels;
+        internal TaskCompletionSource? IoCancelHold;
         internal bool FailTaskNotifications;
         internal bool FailNextTaskNotification;
         internal string? LastTaskId;
@@ -628,7 +733,13 @@ public sealed class PluginSurfaceFilesTests
             Surfaces.TryGet(surface.SurfaceToken, out var bound); Surface = bound!;
             _generation = new ProductSidecarGenerationSnapshot(this, 1, new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "synthetic"), new ProductSidecarIdentity("11111111-1111-4111-8111-111111111111", 7, 1, "claim"), [], action => action());
             Broker = new HostSessionFileBroker(() => { Interlocked.Increment(ref Leases); return new WorkspaceRequestEpochLease(new WorkspaceWireScope { Scope = "workspace", WorkspaceId = Guid.Parse("11111111-1111-4111-8111-111111111111"), SessionEpoch = 7, OperationId = Guid.NewGuid(), Sequence = 1 }, CancellationToken.None, () => Interlocked.Decrement(ref Leases)); }, action => { action(); if (File.ReadAllText(Target) == "new") { var after = AfterNativeCommit; AfterNativeCommit = null; after?.Invoke(); } });
-            Api = new(Surfaces, _tasks, () => _generation, this, Http, files: () => Broker, fileHost: this, pickFile: pick => Task.FromResult(pick()), dataIo: () => new(Broker, StartIo, _ => _status, (_, _) => { IoCancels++; return Task.FromResult(_status); }, (_, _) => Task.CompletedTask));
+            Api = new(Surfaces, _tasks, () => _generation, this, Http, files: () => Broker, fileHost: this, pickFile: pick => Task.FromResult(pick()), dataIo: () => new(Broker, StartIo, _ => _status, CancelPort, (_, _) => Task.CompletedTask));
+        }
+        private async Task<JsonElement> CancelPort(string id, CancellationToken token)
+        {
+            IoCancels++;
+            if (IoCancelHold is { } hold) await hold.Task.WaitAsync(token);
+            return _status;
         }
         private async Task<JsonElement> StartIo(string kind, JsonElement parameters, CancellationToken token)
         {
@@ -642,8 +753,12 @@ public sealed class PluginSurfaceFilesTests
         }
         internal async Task<JsonElement> Call(string method, string parameters)
             => JsonDocument.Parse(await CallRaw(method, parameters)).RootElement.Clone();
-        internal async Task<string> CallRaw(string method, string parameters)
-        { var raw = JsonSerializer.Serialize(new { contract = PluginSurfaceApi.Contract, surfaceToken = Surface.SurfaceToken, requestId = Guid.NewGuid().ToString("N"), method, @params = JsonDocument.Parse(parameters).RootElement }); return await Api.HandleAsync(Surface.SurfaceToken, Surface.DocumentUri.AbsoluteUri, raw); }
+        internal async Task<JsonElement> CallWithId(string method, string parameters, string requestId)
+            => JsonDocument.Parse(await CallRawWithId(method, parameters, requestId)).RootElement.Clone();
+        internal Task<string> CallRaw(string method, string parameters)
+            => CallRawWithId(method, parameters, Guid.NewGuid().ToString("N"));
+        internal async Task<string> CallRawWithId(string method, string parameters, string requestId)
+        { var raw = JsonSerializer.Serialize(new { contract = PluginSurfaceApi.Contract, surfaceToken = Surface.SurfaceToken, requestId, method, @params = JsonDocument.Parse(parameters).RootElement }); return await Api.HandleAsync(Surface.SurfaceToken, Surface.DocumentUri.AbsoluteUri, raw); }
         public string? SelectImportSource() { AfterPick?.Invoke(); return CancelPick ? null : Source; }
         public string? SelectExportTarget(string format, string defaultName) => SelectAttachmentTarget(defaultName);
         public NativeAttachmentSelection SelectAttachmentSources(bool replacement) { AfterPick?.Invoke(); return new(CancelPick ? [] : [Source], true); }
@@ -673,6 +788,9 @@ public sealed class PluginSurfaceFilesTests
         internal Action? OnSettleAttempt;
         internal bool FailNextFreeze;
         internal Action? OnFreeze;
+        internal TaskCompletionSource? HoldStorageSet;
+        private int _storageSetHeld;
+        internal int StorageSetHeld => _storageSetHeld;
         internal int FailNextCommitStatus;
         internal string? FailNextCommitBody;
         internal byte[]? AttachmentReadContent;
@@ -693,6 +811,7 @@ public sealed class PluginSurfaceFilesTests
                 }
             }
             var call = JsonDocument.Parse(bodyBytes).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
+            if (method == "storage.set" && HoldStorageSet is { } parked) { Interlocked.Increment(ref _storageSetHeld); await parked.Task.WaitAsync(token); }
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
             if (method == "import.freeze") { var freeze = OnFreeze; OnFreeze = null; freeze?.Invoke(); }
