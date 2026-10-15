@@ -23,7 +23,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
   const {
     waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
     applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
-    selectTable, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
+    selectTable, selectNValue, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
     chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
     beginBridgeMessageCapture, waitForCapturedBridgeMessage,
     beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
@@ -166,11 +166,11 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
     await closeFieldSettingsDrawer(page);
     return applied;
   };
-  const openNewComputedFieldDrawer = async (displayName, typeLabel) => {
+  const openNewComputedFieldDrawer = async (displayName, typeValue) => {
     await page.getByTestId("toolbar-field-manager").click();
     await page.getByTestId("field-display-name").waitFor({ timeout: 30_000 });
     await page.getByTestId("field-display-name").locator("input").fill(displayName);
-    await selectVisibleNOption(page, "field-logical-type", typeLabel);
+    await selectNValue(page, "field-logical-type", typeValue);
   };
   const waitForFormulaValid = async () => {
     await page.getByTestId("formula-field-editor").getByRole("alert")
@@ -179,7 +179,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
   const firstRow = oracle()[0];
   const ledgerQuery = { filters: [], sorts: [], offset: 0, limit: 100 };
   const createFormulaField = async ({ displayName, configureDraft, previewText, screenshot, oracleValue }) => {
-    await openNewComputedFieldDrawer(displayName, "\u516c\u5f0f");
+    await openNewComputedFieldDrawer(displayName, "formula");
     await page.getByTestId("formula-editor-entry").click();
     await configureDraft();
     await waitForFormulaValid();
@@ -304,7 +304,7 @@ export async function runCollectionFormulaJourney(page, recorder, runtime, helpe
 
   // ---- 同条件 Lookup 完整集合对照（条件筛选 + SUM，真实编辑器） ----
   await openCollectionLookupEditor(page, () =>
-    openNewComputedFieldDrawer("\u5bf9\u7167\u53d1\u8d27\u603b\u989d", "\u67e5\u627e\u5f15\u7528"), helpers);
+    openNewComputedFieldDrawer("\u5bf9\u7167\u53d1\u8d27\u603b\u989d", "lookup"), helpers);
   await selectVisibleNOption(page, "lookup-mode", "\u6761\u4ef6\u7b5b\u9009\uff08\u6309\u6761\u4ef6\u67e5\u8be2\u6765\u6e90\u8868\uff09");
   await selectVisibleNOption(page, "lookup-condition-source-table", SHIP_TABLE);
   await selectVisibleNOption(page, "lookup-target-field", "\u91d1\u989d");

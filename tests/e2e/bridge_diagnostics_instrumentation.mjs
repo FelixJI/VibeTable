@@ -245,7 +245,8 @@ export function installBridgeDiagnosticsInPage() {
         ...(message.type === "plugin.catalog.list" && typeof message.payload?.projectKey === "string"
           ? { catalogProjectKey: message.payload.projectKey } : {}),
         ...((message.type === "dashboard.listRequested" || message.type === "dashboard.manifestRequested"
-          || message.type === "settings.readWorkCalendar" || message.type === "lookup.query"
+          || message.type === "settings.readWorkCalendar" || message.type === "gridState.get"
+          || message.type === "lookup.query"
           || message.type === "plugin.catalog.list" || message.type === "plugin.audit.list"
           || message.type === "plugin.cleanup.listPending")
           && message.scope?.scope === "workspace" ? {

@@ -12614,7 +12614,7 @@ const scenarios = {
     page, recorder, runtime, {
       waitForShell, createSimpleTable, createV2Field, closeFieldSettingsDrawer,
       applyV2FieldChange, applyProductMutation, rawBridgeRequest, waitForQueryPage,
-      selectTable, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
+      selectTable, selectNValue, selectVisibleNOption, fillNInput, waitForVisibleRowCount,
       chooseToolbarMore, parseCsv, openFieldSettingsFromHeader,
       beginBridgeMessageCapture, waitForCapturedBridgeMessage,
       beginWritableWorkspaceBootstrapCapture, openWorkspaceCenterFromSwitcher,
