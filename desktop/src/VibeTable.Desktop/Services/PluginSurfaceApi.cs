@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -17,6 +18,10 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     internal const int AttachmentStageRequestBytes = 2 * MaxBytes;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
+    // This encoder is only for the Host-to-Go application/json stage body, never HTML or frame output.
+    // Keeping base64 '+' literal makes every allowed 1 MiB file fit the existing 2 MiB wire budget.
+    private static readonly JsonSerializerOptions AttachmentStageJson = new()
+    { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     private readonly PluginSurfaceSessionManager _surfaces;
     private readonly HostPluginTaskRegistry _tasks;
     private readonly Func<ProductSidecarGenerationSnapshot?> _generation;
@@ -399,7 +404,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         if (method == "context.read" && surface.InvocationContext is { } invocation)
             payload["invocationContext"] = JsonSerializer.SerializeToNode(new
             { invocation.SelectedKeys, invocation.QuerySnapshot, invocation.User }, Json);
-        byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString());
+        byte[] bytes = Encoding.UTF8.GetBytes(payload.ToJsonString(method == "attachment.stage" ? AttachmentStageJson : null));
         if (bytes.Length > (method == "attachment.stage" ? AttachmentStageRequestBytes : MaxBytes)) throw Error("plugin_message_too_large");
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(generation.Context.Origin, "/api/vibetable/v3/plugins/surface"));
         request.Headers.Add(generation.Context.SessionHeaderName, generation.Context.SessionSecret);

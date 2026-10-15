@@ -55,17 +55,29 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
-    public async Task AttachmentStagePreservesOneMiBFileWithinItsHostOnlyEncodedBudget()
+    [DataRow(1024 * 1024, 0)]
+    [DataRow(800 * 1024, 251)]
+    [DataRow(1024 * 1024, 251)]
+    [DataRow(800 * 1024, -1)]
+    [DataRow(1024 * 1024, -1)]
+    public async Task AttachmentStagePreservesBinaryFileWithinItsHostOnlyEncodedBudget(int byteCount, int pattern)
     {
         await using var f = new Fixture();
-        byte[] bytes = new byte[1024 * 1024];
+        byte[] bytes = new byte[byteCount];
+        for (int index = 0; index < bytes.Length; index++) bytes[index] = pattern < 0 ? (byte)(index % 256) : (byte)pattern;
         File.WriteAllBytes(f.Source, bytes);
         const string parameters = "{\"collection\":\"orders\",\"recordId\":\"r1\",\"fieldId\":\"files\",\"expectedDigest\":\"guard\",\"removeAttachmentIds\":[],\"addFile\":true}";
         var preview = await f.Call("attachments.previewChange", parameters);
         Assert.IsTrue(preview.TryGetProperty("result", out _), preview.GetRawText());
-        var stage = f.Http.Calls.Single(call => call.GetProperty("method").GetString() == "attachment.stage");
-        Assert.AreEqual(bytes.Length, Convert.FromBase64String(stage.GetProperty("request").GetProperty("base64").GetString()!).Length);
-        int wireBytes = Encoding.UTF8.GetByteCount(stage.GetRawText());
+        byte[] fullWire = f.Http.AttachmentStageWires.Single();
+        Assert.AreEqual("application/json", f.Http.AttachmentStageMediaTypes.Single());
+        using var sent = JsonDocument.Parse(fullWire);
+        string base64 = sent.RootElement.GetProperty("request").GetProperty("base64").GetString()!;
+        CollectionAssert.AreEqual(bytes, Convert.FromBase64String(base64));
+        if (pattern != 0) Assert.IsTrue(base64.Contains('+', StringComparison.Ordinal));
+        Assert.IsFalse(Encoding.UTF8.GetString(fullWire).Contains("\\u002B", StringComparison.Ordinal));
+        int wireBytes = fullWire.Length;
+        Console.WriteLine($"decodedBytes={bytes.Length}, pattern={pattern}, completeHttpBytes={wireBytes}");
         DirectoryInfo? directory = new(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "contracts", "plugin-surface-api.v1.json"))) directory = directory.Parent;
         Assert.IsNotNull(directory);
@@ -76,6 +88,18 @@ public sealed class PluginSurfaceFilesTests
         File.WriteAllBytes(f.Source, new byte[1024 * 1024 + 1]);
         Assert.IsTrue((await f.Call("attachments.previewChange", parameters)).TryGetProperty("error", out _));
         Assert.AreEqual(1, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "attachment.stage"));
+    }
+
+    [TestMethod]
+    public async Task OrdinarySurfaceHttpKeepsItsExistingJsonEncoder()
+    {
+        await using var f = new Fixture();
+        const string value = "+<>&";
+        var response = await f.Call("storage.set", JsonSerializer.Serialize(new { key = "ordinary", value }));
+        Assert.IsTrue(response.TryGetProperty("result", out _));
+        var call = f.Http.Calls.Single();
+        Assert.AreEqual(value, call.GetProperty("request").GetProperty("value").GetString());
+        Assert.IsTrue(call.GetRawText().Contains("\\u002B", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -205,9 +229,13 @@ public sealed class PluginSurfaceFilesTests
     {
         internal List<JsonElement> Calls { get; } = [];
         internal Action? AfterAuthorize;
+        internal List<byte[]> AttachmentStageWires { get; } = [];
+        internal List<string?> AttachmentStageMediaTypes { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
-            var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
+            byte[] bodyBytes = await request.Content!.ReadAsByteArrayAsync(token);
+            var call = JsonDocument.Parse(bodyBytes).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
+            if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
             string body = method switch
             {
