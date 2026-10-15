@@ -234,7 +234,10 @@ public sealed class HostSessionFileBrokerTests
         Assert.AreEqual(reserved, (await f.Call("reserveImport", new { grantId = grant, token = "plan" })).GetProperty("reservationId").GetString());
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("reserveImport", new { grantId = grant, token = "different" }));
         f.Clock.Now = f.Clock.Now.AddMinutes(6);
+        _ = await f.Issue(source, false); // Pruning must preserve an active reservation past admission expiry.
         await f.Call("settleImport", new { reservationId = reserved, outcome = "consumed" });
+        await f.Broker.RevokeAsync(grant);
+        _ = await f.Issue(source, false); // Revocation must not erase an unexpired consumed receipt.
         await f.Call("settleImport", new { reservationId = reserved, outcome = "consumed" });
         await Assert.ThrowsAsync<IOException>(() => f.Call("settleImport", new { reservationId = reserved, outcome = "released" }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("openRead", new { grantId = grant }));
@@ -251,6 +254,28 @@ public sealed class HostSessionFileBrokerTests
         await f.Broker.RevokeAsync(grant);
         await Assert.ThrowsAsync<IOException>(() => f.Call("settleImport", new { reservationId = reserved, outcome = "released" }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("openRead", new { grantId = grant }));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ExpiredRevokedImportReservationsDoNotExhaustTheBroker(bool revokeRun)
+    {
+        await using var f = new Fixture();
+        string source = Path.Combine(f.Root, "revoked-import.csv");
+        File.WriteAllText(source, "x\n1");
+        for (int i = 0; i < 129; i++)
+        {
+            string runId = "run-" + i;
+            string grant = (await f.Broker.IssueAsync(source, false, runId, CancellationToken.None,
+                purpose: "import")).GetProperty("grantId").GetString()!;
+            string reservation = (await f.Call("reservePluginImport", new { grantId = grant, runId, token = "plan-" + i }))
+                .GetProperty("reservationId").GetString()!;
+            if (revokeRun) await f.Broker.RevokeRunAsync(runId);
+            else await f.Broker.RevokeAsync(grant);
+            await Assert.ThrowsAsync<IOException>(() => f.Call("settleImport", new { reservationId = reservation, outcome = "released" }));
+            f.Clock.Now = f.Clock.Now.AddMinutes(6);
+        }
     }
 
     [TestMethod]

@@ -600,7 +600,9 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         double now = _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0;
         foreach (string id in _transfers.Where(pair => pair.Value.Closed && pair.Value.ReceiptExpiresAt <= now)
             .Select(pair => pair.Key).ToArray()) _transfers.Remove(id);
-        foreach (string id in _reservations.Where(pair => pair.Value.Outcome is not null && pair.Value.ReceiptExpiresAt <= now)
+        foreach (string id in _reservations.Where(pair =>
+            (pair.Value.Outcome is not null && pair.Value.ReceiptExpiresAt <= now)
+            || (pair.Value.Outcome is null && pair.Value.Grant.State == "revoked" && pair.Value.Grant.ExpiresAt <= now))
             .Select(pair => pair.Key).ToArray()) _reservations.Remove(id);
         foreach (string id in _downloads.Where(pair => !pair.Value.CleanupPending
             && pair.Value.ReceiptExpiresAt is not null && pair.Value.ReceiptExpiresAt <= now)
