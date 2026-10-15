@@ -137,6 +137,9 @@ export const useUiStore = defineStore("ui", () => {
   // the fixed platform enum stays untouched (AC1: no Interface entity, the
   // identity is pluginId + contributed action id).
   const activePluginApp = ref<ActivePluginApp | null>(null);
+  // Orders explicit navigation intents, including same-view and null-to-null departures.
+  const navigationRevision = ref(0);
+  function beginNavigation(): number { return ++navigationRevision.value; }
   const showDailyQuote = ref(readStorage(QUOTE_KEY) !== "false");
   const dailyQuoteSource = ref<DailyQuoteSource>(loadQuoteSource());
   const dailyQuoteStyle = ref<DailyQuoteStyle>(loadQuoteStyle(dailyQuoteSource.value));
@@ -192,13 +195,16 @@ export const useUiStore = defineStore("ui", () => {
     hostThemeSynced.value = true;
   }
   function navigate(view: AppView): void {
+    beginNavigation();
     activeView.value = view;
     activePluginApp.value = null;
   }
   function openPluginApp(pluginId: string, actionId: string): void {
+    beginNavigation();
     activePluginApp.value = { pluginId, actionId };
   }
   function closePluginApp(): void {
+    beginNavigation();
     activePluginApp.value = null;
   }
   function setStartupPage(page: StartupPage): void {
@@ -250,6 +256,7 @@ export const useUiStore = defineStore("ui", () => {
     setLocale(next);
   }
   function setWorkspaceNamespace(workspaceId: string | null): void {
+    beginNavigation();
     workspaceNamespace.value = workspaceId;
     recentTables.value = loadRecentTables(workspaceId);
     // A different workspace has a different plugin catalog; a stale app view
@@ -280,6 +287,8 @@ export const useUiStore = defineStore("ui", () => {
     workspaceStartupPolicy,
     activeView,
     activePluginApp,
+    navigationRevision,
+    beginNavigation,
     showDailyQuote,
     dailyQuoteSource,
     dailyQuoteStyle,

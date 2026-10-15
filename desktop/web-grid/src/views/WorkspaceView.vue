@@ -507,6 +507,7 @@ const workspaceNavigation = createWorkspaceNavigationController(
 function onNavigate(view: AppView): void {
   if (view === ui.activeView) {
     showWorkspaceCenter.value = false;
+    ui.navigate(view);
     return;
   }
   workspaceNavigation.attempt(() => {
@@ -1205,6 +1206,7 @@ onBeforeUnmount(() => {
   tableService.dispose();
   relationLookupService.dispose();
   revisionHistoryService.dispose();
+  pluginController.dispose();
   pluginService.dispose();
   dashboardService.dispose();
   surfaceService.dispose();
@@ -1426,7 +1428,7 @@ useKeyboard({
           <WorkspaceSwitcher
             v-if="workspaceSession.enabled"
             @switch="workspaceSessionUi.open"
-            @center="showWorkspaceCenter = true"
+            @center="ui.closePluginApp(); showWorkspaceCenter = true"
           />
           <span v-else>VibeTable</span>
           <i></i>

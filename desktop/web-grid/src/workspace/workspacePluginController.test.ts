@@ -55,6 +55,65 @@ const plugin: PluginSnapshot = {
 describe("workspacePluginController", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
+  function navigationHarness() {
+    const plugins = usePluginStore(); plugins.setProjectContext("local:default", "r1");
+    const app: PluginSnapshot = { ...plugin, manifest: { ...plugin.manifest, actions: ["A", "B"].map(actionId => ({
+      ...plugin.manifest.actions[0]!, actionId, presentation: "application", surfaceToken: `token-${actionId}`, entry: "ui/index.html",
+    })) } };
+    plugins.replaceCatalog("local:default", [app]);
+    const ui = useUiStore(); ui.navigate("tables");
+    type Availability = { available: boolean; reasons: string[] };
+    const replies: { resolve: (value: Availability) => void; reject: (error: Error) => void }[] = [];
+    const describeAction = vi.fn(() => new Promise<Availability>((resolve, reject) => { replies.push({ resolve, reject }); }));
+    const errors = vi.fn();
+    const controller = createWorkspacePluginController({ workspace: useWorkspaceStore(), table: useTableStore(), ui, plugins,
+      service: { describeAction, startAction: vi.fn(), cancelTask: vi.fn(), resolveInteraction: vi.fn() }, selectedRows: () => [],
+      openHistory: vi.fn(), openFieldCreate: vi.fn(), openFieldEdit: vi.fn(), reportError: errors,
+      historyCellLabel: () => "cell", historyRowLabel: () => "row", riskLabel: value => value });
+    return { controller, ui, plugins, replies, errors, app };
+  }
+
+  it.each([false, true])("keeps the latest application intent when older A settles after B: rejected=%s", async rejected => {
+    const { controller, ui, replies, errors } = navigationHarness();
+    const first = controller.dispatch({ type: "app.open", key: `${plugin.pluginId}/A` });
+    const second = controller.dispatch({ type: "app.open", key: `${plugin.pluginId}/B` });
+    replies[1]!.resolve({ available: true, reasons: [] }); await second;
+    expect(ui.activePluginApp?.actionId).toBe("B");
+    if (rejected) replies[0]!.reject(new Error("old failure")); else replies[0]!.resolve({ available: true, reasons: [] });
+    await first;
+    expect(ui.activePluginApp?.actionId).toBe("B");
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  it.each(["same-view", "other-view", "return", "workspace", "epoch", "installation", "dispose"] as const)("retires a pending application intent after %s", async leave => {
+    const { controller, ui, plugins, replies, errors, app } = navigationHarness();
+    const opening = controller.dispatch({ type: "app.open", key: `${plugin.pluginId}/A` });
+    if (leave === "same-view") ui.navigate("tables");
+    if (leave === "other-view") ui.navigate("settings");
+    if (leave === "return") ui.closePluginApp();
+    if (leave === "workspace") ui.setWorkspaceNamespace(null);
+    if (leave === "epoch") plugins.setProjectContext("local:default", "r1");
+    if (leave === "installation") { plugins.removePlugin(app.pluginId); plugins.applyPlugin({ ...app, installationId: "replacement" }); }
+    if (leave === "dispose") controller.dispose();
+    replies[0]!.resolve({ available: true, reasons: [] }); await opening;
+    expect(ui.activePluginApp).toBeNull(); expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("does not mount an application when the description owner retires without committing", async () => {
+    const { controller, replies, ui, errors } = navigationHarness();
+    const opening = controller.dispatch({ type: "app.open", key: `${plugin.pluginId}/A` });
+    replies[0]!.resolve({ available: false, reasons: [] }); await opening;
+    expect(ui.activePluginApp).toBeNull(); expect(errors).not.toHaveBeenCalled();
+  });
+
+  it("reports a current application opening failure", async () => {
+    const { controller, replies, errors, ui } = navigationHarness();
+    const opening = controller.dispatch({ type: "app.open", key: `${plugin.pluginId}/A` });
+    replies[0]!.reject(new Error("current failure")); await opening;
+    expect(errors).toHaveBeenCalledExactlyOnceWith("current failure");
+    expect(ui.activePluginApp).toBeNull();
+  });
+
   it("在模块内从当前 grid 选择构造插件命令上下文", async () => {
     const plugins = usePluginStore();
     plugins.replaceCatalog("local:default", [plugin], 1);

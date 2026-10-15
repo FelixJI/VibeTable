@@ -7,6 +7,7 @@ import type { PluginSnapshot, PluginTaskSnapshot } from "@/contracts";
 import { setHostBridgeForTesting } from "./bridgeContext";
 import { createPluginCommandContext, usePluginService } from "./pluginService";
 import { usePluginStore } from "@/stores/pluginStore";
+import { useUiStore } from "@/stores/uiStore";
 
 const snapshot: PluginSnapshot = {
   installationId: "record-clean",
@@ -1125,6 +1126,73 @@ describe("pluginService canonical wire", () => {
         contract: "vibetable.plugin-event.v1", eventType: "plugin.catalog.changed", projectKey: value.projectKey,
         entityId: value.pluginId, revision: value.revision, snapshot: value } } }); } };
   }
+
+  it.each([false, true])("orders default application Run across service instances and hides stale errors: failed=%s", async failed => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" },
+      actions: ["A", "B"].map(actionId => ({ ...snapshot.manifest.actions[0]!, actionId, presentation: "application",
+        surfaceSrc: "https://app.plugins.vibetable.local/index.html", surfaceToken: `token-${actionId}`, entry: "ui/index.html" })) } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]); harness.auto([app]);
+    const firstService = usePluginService(); const secondService = usePluginService();
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const first = firstService.describeAction(app.pluginId, "A", context); await flushPromises();
+    const firstDescribe = harness.posted.find(request => request.type === "plugin.action.describe")!;
+    const second = secondService.describeAction(app.pluginId, "B", context); await flushPromises();
+    const secondDescribe = harness.posted.filter(request => request.type === "plugin.action.describe")[1]!;
+    harness.reply(secondDescribe, { available: true, reasons: [] }); await second;
+    if (failed) harness.fail(firstDescribe, "old description failed"); else harness.reply(firstDescribe, { available: true, reasons: [] });
+    await first;
+    expect(useUiStore().activePluginApp?.actionId).toBe("B");
+    expect(store.describedAction?.actionId).toBe("B");
+    expect(store.lastError).toBeNull(); expect(store.busy).toBe(false);
+  });
+
+  it.each(["platform", "return", "dispose", "dispose-reinit", "epoch", "installation"] as const)("retires the actual Run description before UI projection after %s", async leave => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" },
+      actions: snapshot.manifest.actions.map(action => ({ ...action, presentation: "application", surfaceToken: "token", entry: "ui/index.html" })) } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]); harness.auto([app]);
+    const service = usePluginService();
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = service.describeAction(app.pluginId, "normalize", context); await flushPromises();
+    const description = harness.posted.find(request => request.type === "plugin.action.describe")!;
+    if (leave === "platform") useUiStore().navigate(useUiStore().activeView);
+    if (leave === "return") useUiStore().closePluginApp();
+    if (leave === "dispose") service.dispose();
+    if (leave === "dispose-reinit") { service.dispose(); service.init(); }
+    if (leave === "epoch") store.setProjectContext(app.projectKey, "r1");
+    if (leave === "installation") { store.removePlugin(app.pluginId); store.applyPlugin({ ...app, installationId: "new-record" }); }
+    harness.reply(description, { available: true, reasons: [] }); await opening;
+    expect(useUiStore().activePluginApp).toBeNull(); expect(store.describedAction).toBeNull();
+    expect(store.lastError).toBeNull(); expect(store.actionOpen).toBe(false);
+  });
+
+  it("reports the current Run failure and does not let an earlier response hide it", async () => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest,
+      actions: snapshot.manifest.actions.map(action => ({ ...action, presentation: "application", surfaceToken: "token", entry: "ui/index.html" })) } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]);
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const older = usePluginService().describeAction(app.pluginId, "normalize", context);
+    const current = usePluginService().describeAction(app.pluginId, "normalize", context);
+    const rejected = expect(current).rejects.toThrow("current description failed");
+    harness.fail(harness.posted[1]!, "current description failed"); await rejected;
+    harness.reply(harness.posted[0]!, { available: true, reasons: [] }); await older;
+    expect(store.lastError).toBe("current description failed"); expect(store.describedAction).toBeNull();
+    expect(useUiStore().activePluginApp).toBeNull();
+  });
+
+  it("does not report an obsolete application catalog failure after platform navigation", async () => {
+    const app: PluginSnapshot = { ...snapshot, manifest: { ...snapshot.manifest, compatibility: { pluginApi: "3.x" } } };
+    const store = usePluginStore(); store.applyPlugin(app);
+    const harness = catalogHarness([app]);
+    const context = createPluginCommandContext({ projectKey: app.projectKey, locale: "zh-CN", theme: "light", density: "compact" });
+    const opening = usePluginService().describeAction(app.pluginId, "normalize", context);
+    useUiStore().navigate(useUiStore().activeView);
+    harness.fail(harness.posted[0]!, "old catalog failed"); await opening;
+    expect(store.lastError).toBeNull(); expect(store.describedAction).toBeNull();
+    expect(harness.posted).toHaveLength(1);
+  });
 
   it.each([
     [false, false, true], [true, false, true],

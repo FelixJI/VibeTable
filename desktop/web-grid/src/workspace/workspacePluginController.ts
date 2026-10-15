@@ -16,10 +16,10 @@ type UiStore = ReturnType<typeof useUiStore>;
 type WorkspaceStore = ReturnType<typeof useWorkspaceStore>;
 
 type PluginStorePort = Pick<PluginStore,
-  | "plugins" | "projectKey" | "currentUser" | "hostVersion"
+  | "plugins" | "projectKey" | "projectContextGeneration" | "currentUser" | "hostVersion"
   | "describedAction" | "activeContext" | "taskForAction" | "tasksForAction" | "nativeTaskReceipts">;
 type PluginTablePort = Pick<TableStore, "pages" | "schema">;
-type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp" | "activePluginApp">;
+type PluginUiPort = Pick<UiStore, "effectiveTheme" | "locale" | "density" | "openPluginApp" | "activePluginApp" | "navigationRevision" | "beginNavigation">;
 type PluginWorkspacePort = Pick<WorkspaceStore, "currentTable">;
 export type WorkspacePluginServicePort = Pick<PluginService,
   "describeAction" | "startAction" | "resolveInteraction" | "cancelTask">;
@@ -78,6 +78,7 @@ export interface WorkspacePluginController {
   readonly rowMenu: Ref<ContextMenuState>;
   readonly columnMenu: Ref<ColumnMenuState>;
   dispatch(intent: WorkspacePluginIntent): Promise<void>;
+  dispose(): void;
 }
 
 export interface WorkspacePluginDependencies {
@@ -107,6 +108,7 @@ function errorMessage(error: unknown): string {
 export function createWorkspacePluginController(
   dependencies: WorkspacePluginDependencies,
 ): WorkspacePluginController {
+  let disposed = false;
   const applicationTasks = computed(() => {
     const active = dependencies.ui.activePluginApp;
     if (!active) return [];
@@ -212,6 +214,10 @@ export function createWorkspacePluginController(
   async function openAction(key: string, keys = selectedRowKeys(), openPanel = true): Promise<void> {
     const registered = registeredActions.value.find(item => item.key === key);
     if (!registered) return;
+    if (registered.action.presentation === "application") {
+      await openPluginApp(key, keys);
+      return;
+    }
     try {
       await dependencies.service.describeAction(
         registered.plugin.pluginId,
@@ -224,7 +230,11 @@ export function createWorkspacePluginController(
     }
   }
 
-  async function openPluginApp(key: string): Promise<void> {
+  async function openPluginApp(key: string, keys = selectedRowKeys()): Promise<void> {
+    if (disposed) return;
+    const navigation = dependencies.ui.beginNavigation();
+    const generation = dependencies.plugins.projectContextGeneration;
+    const projectKey = dependencies.plugins.projectKey;
     const registered = registeredActions.value.find(item => item.key === key);
     if (!registered) {
       dependencies.reportError("插件应用入口已不存在，请刷新插件目录");
@@ -234,19 +244,25 @@ export function createWorkspacePluginController(
       dependencies.reportError("该入口不是插件应用");
       return;
     }
+    const isCurrent = () => !disposed && dependencies.ui.navigationRevision === navigation
+      && dependencies.plugins.projectKey === projectKey && dependencies.plugins.projectContextGeneration === generation
+      && dependencies.plugins.plugins.some(plugin => plugin.pluginId === registered.plugin.pluginId
+        && plugin.installationId === registered.plugin.installationId && plugin.revision === registered.plugin.revision);
     try {
       // describeAction refreshes the catalog for 3.x plugins, revalidates the
       // live surface and binds the command context without opening the
       // action overlay; the viewport then mounts from the fresh projection.
-      await dependencies.service.describeAction(
+      const availability = await dependencies.service.describeAction(
         registered.plugin.pluginId,
         registered.action.actionId,
-        commandContext(selectedRowKeys()),
+        commandContext(keys),
         false,
+        isCurrent,
       );
+      if (!isCurrent() || !availability.available) return;
       dependencies.ui.openPluginApp(registered.plugin.pluginId, registered.action.actionId);
     } catch (error) {
-      dependencies.reportError(errorMessage(error));
+      if (isCurrent()) dependencies.reportError(errorMessage(error));
     }
   }
 
@@ -360,5 +376,6 @@ export function createWorkspacePluginController(
     rowMenu,
     columnMenu,
     dispatch,
+    dispose: () => { disposed = true; },
   };
 }

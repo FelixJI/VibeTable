@@ -851,6 +851,17 @@ describe("WorkspaceView", () => {
       expect(document.body.textContent).toContain("插件入口已失效或被移除，已返回平台");
     });
 
+    it("closes the application and its token when clicking the already selected platform view", async () => {
+      const { wrapper, record } = await prepare();
+      await wrapper.get('[data-testid="nav-plugin-app-com.acme.native/application"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activeView).toBe("tables");
+      await wrapper.get('[data-testid="nav-tables"]').trigger("click"); await flushPromises();
+      expect(useUiStore().activePluginApp).toBeNull();
+      expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
+      expect(record.posted.filter(item => item.type === "plugin.surface.event" && (item.payload as { event: string }).event === "close")
+        .map(item => (item.payload as { surfaceToken: string }).surfaceToken)).toEqual(["application-token"]);
+    });
+
     it("retires A on direct application B navigation and same-action token replacement without clearing B or old receipts", async () => {
       const { wrapper, plugins, plugin, record, task, setCatalog } = await prepare();
       const application = plugin.manifest.actions[0]!;

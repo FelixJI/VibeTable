@@ -57,6 +57,7 @@ export interface PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel?: boolean,
+    isCurrentRequest?: () => boolean,
   ): Promise<PluginActionAvailability>;
   startAction(pluginId: string, actionId: string, input: Readonly<Record<string, unknown>>, context: PluginCommandContext): Promise<PluginTaskViewSnapshot>;
   resolveInteraction(task: PluginTaskViewSnapshot, decision: "approved" | "rejected"): Promise<PluginTaskViewSnapshot>;
@@ -94,6 +95,7 @@ export function usePluginService(): PluginService {
   const store = usePluginStore();
   const installPlanLease = installPlanLeaseFor(store);
   let initialized = false;
+  let lifecycleRevision = 0;
   let unsubscribe: Array<() => void> = [];
   const taskPollers = new Map<string, { cancelled: boolean }>();
 
@@ -124,6 +126,7 @@ export function usePluginService(): PluginService {
   }
 
   function dispose(): void {
+    lifecycleRevision++;
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
     for (const poller of taskPollers.values()) poller.cancelled = true;
@@ -136,7 +139,7 @@ export function usePluginService(): PluginService {
   async function call<K extends WebMessageType, T>(
     type: K,
     payload: WebPayloadMap[K],
-    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean } = {},
+    options: { readonly errorPolicy?: RequestErrorPolicy; readonly isCurrent?: () => boolean; readonly isErrorCurrent?: () => boolean } = {},
   ): Promise<T> {
     const context = ensureProjectReady();
     const isCurrentContext = () => store.projectKey === context.projectKey
@@ -154,6 +157,10 @@ export function usePluginService(): PluginService {
       // local retirement of a draining workspace read is not a current user
       // failure either. Everything else keeps its original visibility.
       if (isCurrentContext() && !(error instanceof BridgeRequestRetiredError)) {
+        if (options.isErrorCurrent && !options.isErrorCurrent()) {
+          if (errorPolicy === "foreground") store.finishBusy();
+          throw error;
+        }
         if (errorPolicy === "foreground") {
           store.fail(error);
         } else {
@@ -164,14 +171,14 @@ export function usePluginService(): PluginService {
     }
   }
 
-  async function list(): Promise<readonly PluginSnapshot[]> {
+  async function list(isErrorCurrent?: () => boolean): Promise<readonly PluginSnapshot[]> {
     const projectKey = store.projectKey;
     const generation = store.projectContextGeneration;
     const sequence = store.beginCatalogRead();
     const snapshots = await call<"plugin.catalog.list", readonly PluginSnapshot[]>(
       "plugin.catalog.list",
       { projectKey },
-      { errorPolicy: "background", isCurrent: () => store.isCurrentCatalogRead(sequence) },
+      { errorPolicy: "background", isCurrent: () => store.isCurrentCatalogRead(sequence), isErrorCurrent },
     );
     if (store.projectKey !== projectKey || store.projectContextGeneration !== generation
       || !store.isCurrentCatalogRead(sequence)) return snapshots;
@@ -393,23 +400,41 @@ export function usePluginService(): PluginService {
     actionId: string,
     context: PluginCommandContext,
     openPanel = true,
+    isCurrentRequest?: () => boolean,
   ): Promise<PluginActionAvailability> {
-    if (store.plugins.find(item => item.pluginId === pluginId)?.manifest.compatibility.pluginApi === "3.x")
-      await list();
-    const availability = await call<"plugin.action.describe", PluginActionAvailability>(
-      "plugin.action.describe",
-      { projectKey: store.projectKey, pluginId, actionId, context },
-    );
-    if (!availability.available) throw new Error(availability.reasons.join("；") || "当前动作不可用");
-    const plugin = store.plugins.find((item) => item.pluginId === pluginId);
-    const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
-    if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
-    if (action.invocation !== "manual") throw new Error("该动作不支持手动启动");
-    const description = projectAction(plugin, action, context.locale);
-    const application = description.presentation === "application";
-    store.beginAction(description, context, openPanel && !application);
-    if (application && openPanel) useUiStore().openPluginApp(pluginId, actionId);
-    return availability;
+    const ui = useUiStore();
+    const requestLifecycle = lifecycleRevision;
+    const navigation = openPanel ? ui.beginNavigation() : null;
+    const projectKey = store.projectKey;
+    const generation = store.projectContextGeneration;
+    const original = store.plugins.find(plugin => plugin.pluginId === pluginId);
+    const isCurrent = () => lifecycleRevision === requestLifecycle && store.projectKey === projectKey && store.projectContextGeneration === generation
+      && (navigation === null || ui.navigationRevision === navigation) && (isCurrentRequest?.() ?? true)
+      && (!original || store.plugins.some(plugin => plugin.pluginId === pluginId
+        && plugin.installationId === original.installationId && plugin.revision === original.revision));
+    const retired = { available: false, reasons: [] };
+    try {
+      if (original?.manifest.compatibility.pluginApi === "3.x") await list(isCurrent);
+      if (!isCurrent()) return retired;
+      const availability = await call<"plugin.action.describe", PluginActionAvailability>(
+        "plugin.action.describe", { projectKey: store.projectKey, pluginId, actionId, context },
+        { isErrorCurrent: isCurrent },
+      );
+      if (!isCurrent()) return retired;
+      if (!availability.available) throw new Error(availability.reasons.join("；") || "当前动作不可用");
+      const plugin = store.plugins.find((item) => item.pluginId === pluginId);
+      const action = plugin?.manifest.actions.find((item) => item.actionId === actionId);
+      if (!plugin || !action) throw new Error("插件动作清单已变化，请刷新目录");
+      if (action.invocation !== "manual") throw new Error("该动作不支持手动启动");
+      const description = projectAction(plugin, action, context.locale);
+      const application = description.presentation === "application";
+      store.beginAction(description, context, openPanel && !application);
+      if (application && openPanel) ui.openPluginApp(pluginId, actionId);
+      return availability;
+    } catch (error) {
+      if (!isCurrent()) return retired;
+      throw error;
+    }
   }
 
   return {
