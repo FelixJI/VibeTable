@@ -5039,6 +5039,69 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
     assert "grid did not reach a stable expected state" in source
 
 
+# Existing theme hook/body/cleanup budgets; the separate watchdog cannot consume
+# the pure protocol group's unchanged 30s. Job cleanup adds at most 5s + 5s.
+_THEME_NODE_WATCHDOG_SECONDS = 30 + 10 + 10
+_NODE_JOB_CLEANUP_SECONDS = 5
+
+
+def _run_node_contract_files(test_files: Sequence[Path], evidence: Path, *, timeout: float) -> None:
+    command = [
+        str(ensure_node(runner.ROOT)),
+        "--test",
+        "--test-concurrency=1",
+        *(str(path) for path in test_files),
+    ]
+    evidence.mkdir(parents=True, exist_ok=True)
+    stdout_path, stderr_path = evidence / "stdout.log", evidence / "stderr.log"
+    failure: BaseException | None = None
+    cleanup_errors: list[str] = []
+    returncode = None
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        scope = runner._launch_host_process(
+            command, cwd=runner.ROOT, env=runner.os.environ.copy(), stdout=stdout, stderr=stderr
+        )
+        try:
+            try:
+                returncode = scope.root.wait(timeout=timeout)
+            except BaseException as error:
+                failure = error
+            terminate = failure is not None
+            if not terminate:
+                try:
+                    empty = scope.wait_empty(timeout=_NODE_JOB_CLEANUP_SECONDS)
+                    if not empty.success:
+                        cleanup_errors.append(f"Node Job not empty after root exit: {empty}")
+                        terminate = True
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(f"Node Job empty check failed: {error}")
+                    terminate = True
+            if terminate:
+                try:
+                    result = scope.terminate_all(timeout=_NODE_JOB_CLEANUP_SECONDS)
+                    if not result.success:
+                        cleanup_errors.append(f"Node Job termination failed: {result}")
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(f"Node Job termination failed: {error}")
+        finally:
+            try:
+                scope.close()
+            except (OSError, RuntimeError) as error:
+                cleanup_errors.append(f"Node Job close failed: {error}")
+    output = stdout_path.read_text(encoding="utf-8", errors="replace")
+    errors = stderr_path.read_text(encoding="utf-8", errors="replace")
+    diagnostics = (
+        f"Node contract stdout ({stdout_path}):\n{output or '<no captured output>'}",
+        f"Node contract stderr ({stderr_path}):\n{errors or '<no captured output>'}",
+    )
+    if failure is not None:
+        for note in (*diagnostics, *cleanup_errors):
+            failure.add_note(note)
+        raise failure
+    assert not cleanup_errors, "\n".join((*cleanup_errors, *diagnostics))
+    assert returncode == 0, "\n".join(diagnostics)
+
+
 def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime() -> None:
     test_files = [
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
@@ -5064,7 +5127,6 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("workspace_search_submit.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
-        runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("host_presentation_restart.test.mjs"),
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
@@ -5078,28 +5140,17 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
         runner.NODE_RUNNER.with_name("isolated_native_clipboard_guard.test.mjs"),
     ]
-    try:
-        completed = subprocess.run(
-            [
-                str(ensure_node(runner.ROOT)),
-                "--test",
-                "--test-concurrency=1",
-                *(str(path) for path in test_files),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as error:
-        for label, output in (("stdout", error.stdout), ("stderr", error.stderr)):
-            text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
-            error.add_note(f"Node contract {label}:\n{text or '<no captured output>'}")
-        raise
+    _run_node_contract_files(
+        test_files, runner.ROOT / "build/qa/node-contracts/protocol", timeout=30
+    )
 
-    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+def test_connected_theme_surface_contract_uses_its_independent_phase_budgets() -> None:
+    _run_node_contract_files(
+        [runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs")],
+        runner.ROOT / "build/qa/node-contracts/theme",
+        timeout=_THEME_NODE_WATCHDOG_SECONDS,
+    )
 
 
 @pytest.mark.parametrize(
@@ -5116,6 +5167,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
 )
 def test_node_contract_timeout_preserves_output_and_original_failure(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     stdout: bytes | str,
     stderr: bytes | str,
     expected_stdout: str,
@@ -5123,21 +5175,161 @@ def test_node_contract_timeout_preserves_output_and_original_failure(
 ) -> None:
     failure = subprocess.TimeoutExpired(["locked-node", "--test"], 30, output=stdout, stderr=stderr)
 
-    def timeout(*args: object, **kwargs: object) -> None:
-        assert kwargs["timeout"] == 30
+    def wait(*, timeout: float) -> None:
+        assert timeout == 30
         raise failure
 
+    def launch(command, **kwargs):
+        kwargs["stdout"].write(stdout if isinstance(stdout, bytes) else stdout.encode())
+        kwargs["stderr"].write(stderr if isinstance(stderr, bytes) else stderr.encode())
+        return SimpleNamespace(
+            root=SimpleNamespace(wait=wait),
+            terminate_all=lambda **_kwargs: runner.ScopeTerminationResult(True, (), ()),
+            close=lambda: None,
+        )
+
     monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
-    monkeypatch.setattr(subprocess, "run", timeout)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
 
     assert caught.value is failure
     rendered = str(caught.getrepr())
-    assert f"Node contract stdout:\n{expected_stdout}" in "\n".join(caught.value.__notes__)
-    assert f"Node contract stderr:\n{expected_stderr}" in "\n".join(caught.value.__notes__)
+    assert expected_stdout in "\n".join(caught.value.__notes__)
+    assert expected_stderr in "\n".join(caught.value.__notes__)
     assert expected_stdout in rendered
     assert expected_stderr in rendered
+
+
+def test_node_contract_aggregation_excludes_browser_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def run(command, **kwargs):
+        assert not any(Path(item).name == "theme_surface_probe.test.mjs" for item in command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def scoped(files, evidence, *, timeout):
+        calls.append((files, timeout))
+        if timeout == 30:
+            run([str(path) for path in files])
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_run_node_contract_files"]),
+        "_run_node_contract_files",
+        scoped,
+        raising=False,
+    )
+    test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
+    assert len(calls) == 1
+    assert calls[0][1] == 30
+    test_connected_theme_surface_contract_uses_its_independent_phase_budgets()
+    assert len(calls) == 2
+    assert calls[1][1] == 30 + 10 + 10
+    assert [path.name for path in calls[1][0]] == ["theme_surface_probe.test.mjs"]
+
+
+def test_node_contract_timeout_drains_owned_descendants_and_retains_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    failure = subprocess.TimeoutExpired(["locked-node"], 30)
+    state = {"child_alive": True, "closed": False}
+
+    def wait(*, timeout):
+        assert timeout == 30
+        raise failure
+
+    def terminate_all(*, timeout):
+        assert timeout == 5
+        state["child_alive"] = False
+        return runner.ScopeTerminationResult(True, (), ())
+
+    scope = SimpleNamespace(
+        root=SimpleNamespace(wait=wait),
+        terminate_all=terminate_all,
+        close=lambda: state.update(closed=True),
+    )
+
+    def launch(command, **kwargs):
+        kwargs["stdout"].write(b"partial Node output\xff")
+        kwargs["stderr"].write(b"pending Edge launch\xfe")
+        return scope
+
+    def old_run(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(subprocess, "run", old_run)
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
+    assert caught.value is failure
+    assert state == {"child_alive": False, "closed": True}
+    assert any("partial Node output\ufffd" in note for note in failure.__notes__)
+    assert any("pending Edge launch\ufffd" in note for note in failure.__notes__)
+
+
+@pytest.mark.parametrize(
+    "mode", ["normal", "orphan", "query-error", "terminate-error", "close-error"]
+)
+def test_node_contract_scope_cleanup_cannot_turn_a_failure_into_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    calls = []
+    timeout_failure = subprocess.TimeoutExpired(["locked-node"], 30)
+
+    def wait(*, timeout):
+        assert timeout == 30
+        if mode in {"terminate-error", "close-error"}:
+            raise timeout_failure
+        return 0
+
+    def empty(*, timeout):
+        assert timeout == 5
+        calls.append("empty")
+        if mode == "query-error":
+            raise OSError("cannot query owned Job")
+        return runner.ScopeWaitResult(() if mode == "normal" else (123,))
+
+    def terminate(*, timeout):
+        assert timeout == 5
+        calls.append("terminate")
+        if mode == "terminate-error":
+            return runner.ScopeTerminationResult(True, (123,), ("owned child still running",))
+        return runner.ScopeTerminationResult(True, (), ())
+
+    def close():
+        calls.append("close")
+        if mode == "close-error":
+            raise OSError("Job close denied")
+
+    scope = SimpleNamespace(
+        root=SimpleNamespace(wait=wait), wait_empty=empty, terminate_all=terminate, close=close
+    )
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *args, **kwargs: scope)
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    if mode == "normal":
+        _run_node_contract_files([], tmp_path, timeout=30)
+        assert calls == ["empty", "close"]
+    elif mode in {"orphan", "query-error"}:
+        with pytest.raises(AssertionError, match="Node Job"):
+            _run_node_contract_files([], tmp_path, timeout=30)
+        assert calls == ["empty", "terminate", "close"]
+    else:
+        with pytest.raises(subprocess.TimeoutExpired) as failure:
+            _run_node_contract_files([], tmp_path, timeout=30)
+        assert failure.value is timeout_failure
+        assert calls == ["terminate", "close"]
+        notes = "\n".join(failure.value.__notes__)
+        assert (
+            "owned child still running" in notes
+            if mode == "terminate-error"
+            else "Job close denied" in notes
+        )
 
 
 def test_realtime_scenario_recovers_a_packaged_backend_with_a_fresh_safe_session() -> None:
