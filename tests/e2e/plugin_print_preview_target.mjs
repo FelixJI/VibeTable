@@ -54,9 +54,9 @@ export async function attachNativePreview(session, target) {
     const { targetInfo } = await session.send("Target.getTargetInfo", { targetId: target.targetId });
     if (targetInfo.targetId !== target.targetId || targetInfo.browserContextId !== target.browserContextId || !printUrl(targetInfo.url)) throw new Error("native preview target identity changed");
   }
-  async function evaluate(fn, arg = null) {
+  async function evaluate(fn) {
     await current();
-    const response = await command("Runtime.evaluate", { expression: `(() => { if (!(${printUrl.toString()})(location.href)) throw new Error("native preview origin changed"); return (${fn.toString()})(${JSON.stringify(arg)}); })()`, returnByValue: true, awaitPromise: true });
+    const response = await command("Runtime.evaluate", { expression: `(() => { if (!(${printUrl.toString()})(location.href)) throw new Error("native preview origin changed"); return (${fn.toString()})(); })()`, returnByValue: true, awaitPromise: true });
     if (response.exceptionDetails) throw new Error(`native preview evaluation failed: ${response.exceptionDetails.exception?.description ?? response.exceptionDetails.text}`);
     return response.result?.value;
   }
