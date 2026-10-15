@@ -50,6 +50,19 @@ export function waitForApplyBackfillFreshness(page, waitForQueryPage, tableId, q
       && payload.rows.every(row => typeof row[field] === "number" && Number.isFinite(row[field])));
 }
 
+// Drain correlated query reloads first: a later table switch would supersede-cancel one.
+export function drainCorrelatedQueryReloads(page) {
+  return page.waitForFunction(
+    () => {
+      const pending = window.__vibetableE2EBridgeDiagnostics?.pending;
+      if (!pending) throw new Error("bridge query-reload drain requires the diagnostics pending ledger");
+      return Object.values(pending).every(request => request.requestType !== "table.queryRequested");
+    },
+    undefined,
+    { timeout: 60_000 },
+  );
+}
+
 // S38 / #396: UI qualification is deliberately separate from 10k/50k timing.
 // Fixture imports use the visible toolbar and native picker. Computed field
 // creation/editing, source edits, queries, provenance and exports are UI actions;
@@ -248,6 +261,7 @@ export async function runCalculationChainJourney(page, recorder, runtime, helper
     const displayValues = values.map(row => row.map(calculationChainDisplayText));
     await selectTable(page, name);
     await chooseToolbarMore(page, "refresh");
+    await drainCorrelatedQueryReloads(page);
     await waitForVisibleRowCount(page, 3);
     await page.waitForFunction(({ marker, fields, expected }) => {
       const rows = [...document.querySelectorAll(".grid-wrapper .tabulator-row")];
