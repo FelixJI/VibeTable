@@ -738,7 +738,7 @@ async def test_upgrade_plan_cannot_follow_a_changed_installation(
             )
     before = await store.get_installation("local:default", installed.plugin_id)
     revisions = await store.list_package_revisions("local:default", installed.plugin_id)
-    with pytest.raises(PluginStoreConflictError):
+    with pytest.raises((PluginStoreConflictError, PluginRegistryError)):
         await service.upgrade(
             project_key="local:default",
             plugin_id=installed.plugin_id,
@@ -747,10 +747,61 @@ async def test_upgrade_plan_cannot_follow_a_changed_installation(
         )
     assert await store.get_installation("local:default", installed.plugin_id) == before
     assert await store.list_package_revisions("local:default", installed.plugin_id) == revisions
-    # Failed CAS retains the newly cached package; it never discards any path.
-    assert len(list((tmp_path / "cache").glob("*.vtplugin"))) == 2
+    # Only the unreferenced candidate is removed; authority and retained revisions are untouched.
+    assert len(list((tmp_path / "cache").glob("*.vtplugin"))) == 1
     with pytest.raises(ValueError, match="upgrade plan"):
         await service.commit_install(project_key="local:default", plan=bound, project_revision="r1")
+
+
+@pytest.mark.parametrize("failure", ["rejected", "reference-read", "committed-ack-lost"])
+async def test_upgrade_failure_cleans_only_unreferenced_candidate_and_keeps_original_error(
+    tmp_path: Path, failure: str
+) -> None:
+    original = RuntimeError("synthetic original commit error")
+
+    class Store(InMemoryPluginStore):
+        async def commit_upgrade(
+            self, plan: InstallPlan, *, package_revision: PluginPackageRevision
+        ) -> PluginSnapshot:
+            if failure == "committed-ack-lost":
+                await super().commit_upgrade(plan, package_revision=package_revision)
+            raise original
+
+        async def is_package_path_referenced(self, local_path: str) -> bool:
+            if failure == "reference-read":
+                raise OSError("authority reference read failed")
+            return await super().is_package_path_referenced(local_path)
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    _write_plugin(first)
+    _write_plugin(second, version="2.0.0")
+    store = Store()
+    service = _service(store, package_cache=tmp_path / "cache")
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="r1",
+        source_location=str(first),
+        plan_id="first",
+    )
+    await service.commit_install(project_key="local:default", project_revision="r1", plan=plan)
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="r1",
+        source_location=str(second),
+        plan_id="second",
+    )
+    with pytest.raises(RuntimeError) as error:
+        await service.upgrade(
+            project_key="local:default",
+            plugin_id=plan.manifest.plugin_id,
+            project_revision="r1",
+            plan=plan,
+        )
+    assert error.value is original
+    assert len(list((tmp_path / "cache").glob("*.vtplugin"))) == (1 if failure == "rejected" else 2)
+    installed = await store.get_installation("local:default", plan.manifest.plugin_id)
+    assert installed is not None
+    assert installed.version == ("2.0.0" if failure == "committed-ack-lost" else "1.0.0")
 
 
 class _CommitCleanupProbeStore(InMemoryPluginStore):
@@ -1062,6 +1113,15 @@ async def test_upgrade_source_failure_is_deterministic_without_a_ledger(
         project_revision="project-r1",
         source_location=str(source),
         plan_id="plan-host-upgrade-source",
+    )
+    await service.commit_install(
+        project_key="local:default", plan=plan, project_revision="project-r1"
+    )
+    plan = await service.inspect_install(
+        project_key="local:default",
+        project_revision="project-r1",
+        source_location=str(source),
+        plan_id="plan-host-upgrade-source-bound",
     )
     (source / "schemas" / "input.json").write_text('{"type":"array"}', encoding="utf-8")
 

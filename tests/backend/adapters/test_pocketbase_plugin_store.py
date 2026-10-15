@@ -426,3 +426,29 @@ async def test_invalid_result_shapes_fail_closed() -> None:
 
     with pytest.raises(ValueError, match="invalid plugin installation"):
         await store.get_installation("local:default", "com.example.summary")
+
+
+@pytest.mark.asyncio
+async def test_set_enabled_is_one_bound_atomic_store_operation() -> None:
+    client = FakePluginStoreClient([_snapshot_payload(revision=3)])
+    store = PocketBasePluginStore(client=client, package_cache=Path("cache"))
+    result = await store.set_enabled(
+        "local:default",
+        "com.example.summary",
+        False,
+        installation_id="original-record",
+        expected_revision=2,
+    )
+    assert result.revision == 3
+    assert client.calls == [
+        (
+            "set_enabled",
+            {
+                "projectKey": "local:default",
+                "pluginId": "com.example.summary",
+                "enabled": False,
+                "installationId": "original-record",
+                "expectedRevision": 2,
+            },
+        )
+    ]

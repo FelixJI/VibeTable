@@ -2286,6 +2286,8 @@ export interface WebPayloadMap {
     readonly projectKey: string;
     readonly pluginId: string;
     readonly enabled: boolean;
+    readonly installationId: string;
+    readonly expectedRevision: number;
   };
   "plugin.lifecycle.upgrade": {
     readonly projectKey: string;

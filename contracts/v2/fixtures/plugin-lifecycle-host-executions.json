@@ -1,0 +1,7 @@
+{
+  "projectKey": "project-1",
+  "pluginId": "com.acme.clean",
+  "enabled": false,
+  "installationId": "record-clean",
+  "expectedRevision": 7
+}

@@ -6,13 +6,14 @@ import uuid
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
+from backend.adapters.pocketbase.client import PocketBaseProductError
 from backend.adapters.pocketbase.transport import PocketBaseTransportError
 from backend.contracts.data_profile import collection_profile_from_definition
 from backend.contracts.plugin import MutationPlan, PluginCommitUnknownError, PluginExecutionError
 
 
 class _MutationClient(Protocol):
-    async def apply_mutation(self, request: Mapping[str, Any]) -> dict[str, Any]: ...
+    async def apply_plugin_mutation(self, request: Mapping[str, Any]) -> dict[str, Any]: ...
     async def describe_table(self, table_id: str) -> dict[str, Any]: ...
 
 
@@ -25,8 +26,10 @@ class PocketBasePluginMutationAdapter:
         client: _MutationClient,
         schema_revisions: Mapping[str, str],
         writable_fields: Mapping[str, set[str] | frozenset[str]],
+        session_epoch: int = 0,
     ) -> None:
         self._client = client
+        self._session_epoch = session_epoch
         self._schema_revisions = dict(schema_revisions)
         self._writable_fields = {
             table_id: frozenset(fields) for table_id, fields in writable_fields.items()
@@ -34,7 +37,11 @@ class PocketBasePluginMutationAdapter:
         self._dynamic_schema = not schema_revisions and not writable_fields
 
     async def apply(
-        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+        self,
+        plan: MutationPlan,
+        *,
+        on_submit: Callable[[], None] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         schema_revision = self._schema_revisions.get(plan.collection)
         allowed = self._writable_fields.get(plan.collection)
@@ -89,26 +96,53 @@ class PocketBasePluginMutationAdapter:
             }
 
         request_id = plan.idempotency_key or f"plugin-{uuid.uuid4()}"
+        if (
+            execution is None
+            or self._session_epoch < 1
+            or not all(
+                isinstance(execution.get(key), str) and execution[key]
+                for key in ("projectKey", "pluginId", "installationId", "packageHash", "actionId")
+            )
+            or not isinstance(execution.get("installationRevision"), int)
+            or execution["installationRevision"] < 1
+        ):
+            raise PluginExecutionError(
+                "plugin execution identity is unavailable", code="plugin_revision_conflict"
+            )
         if on_submit is not None:
             on_submit()
         try:
-            receipt = await self._client.apply_mutation(
+            receipt = await self._client.apply_plugin_mutation(
                 {
-                    "contractVersion": "2.0",
-                    "requestId": request_id,
-                    "idempotencyKey": request_id,
-                    "tableId": plan.collection,
-                    "schemaRevision": schema_revision,
-                    "operations": operations,
-                    "actor": {
-                        "type": "plugin",
-                        "id": "local-plugin",
-                        "displayName": None,
+                    "projectKey": execution["projectKey"],
+                    "pluginId": execution["pluginId"],
+                    "installationId": execution["installationId"],
+                    "installationRevision": execution["installationRevision"],
+                    "packageHash": execution["packageHash"],
+                    "actionId": execution["actionId"],
+                    "sessionEpoch": self._session_epoch,
+                    "activeCollection": (execution.get("context") or {}).get("collection") or "",
+                    "request": {
+                        "contractVersion": "2.0",
+                        "requestId": request_id,
+                        "idempotencyKey": request_id,
+                        "tableId": plan.collection,
+                        "schemaRevision": schema_revision,
+                        "operations": operations,
+                        "actor": {
+                            "type": "plugin",
+                            "id": execution["pluginId"],
+                            "displayName": None,
+                        },
+                        "expectedRevision": None,
+                        "expectedDigest": None,
                     },
-                    "expectedRevision": None,
-                    "expectedDigest": None,
                 }
             )
+        except PocketBaseProductError as exc:
+            if exc.details.get("commitOutcome") == "not-committed":
+                raise PluginExecutionError(str(exc), code=exc.code) from exc
+            raise PluginCommitUnknownError() from exc
         except (PocketBaseTransportError, ValueError) as exc:
             raise PluginCommitUnknownError() from exc
         if receipt.get("status") == "rejected" and receipt.get("contractVersion") == "2.0":

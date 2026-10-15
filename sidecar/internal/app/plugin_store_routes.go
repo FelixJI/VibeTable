@@ -18,6 +18,7 @@ const pluginStorePath = "/api/vibetable/v1/plugins/store"
 // This private session-authenticated seam names operations, never collections,
 // SQL or source paths. Workspace binding is checked before any read or write.
 type pluginStoreRequest struct {
+	Enabled                bool            `json:"enabled"`
 	InstallationRevision   int64           `json:"installationRevision"`
 	InstallationID         string          `json:"installationId"`
 	CleanupPrivateSettings bool            `json:"cleanupPrivateSettings"`
@@ -115,6 +116,8 @@ func pluginStoreFields(operation string) (map[string]bool, bool) {
 		keys, write = []string{"projectKey", "pluginId", "payload"}, true
 	case "delete_installation":
 		keys, write = []string{"projectKey", "pluginId", "installationId", "expectedRevision", "cleanupPrivateSettings"}, true
+	case "set_enabled":
+		keys, write = []string{"projectKey", "pluginId", "installationId", "expectedRevision", "enabled"}, true
 	case "delete_package_revisions", "delete_private_settings":
 		keys, write = []string{"projectKey", "pluginId"}, true
 	case "delete_package_revision":
@@ -144,6 +147,11 @@ func callPluginStore(ctx context.Context, service *pluginstore.Service, body plu
 			return nil, errors.New("installation revision required")
 		}
 		return service.DeleteInstallation(ctx, body.ProjectKey, body.PluginID, body.InstallationID, *body.ExpectedRevision, body.CleanupPrivateSettings)
+	case "set_enabled":
+		if body.ExpectedRevision == nil {
+			return nil, errors.New("installation revision required")
+		}
+		return service.SetEnabledForInstallation(ctx, body.ProjectKey, body.PluginID, body.Enabled, body.InstallationID, *body.ExpectedRevision)
 	case "list_package_revisions":
 		return service.ListPackageRevisions(ctx, body.ProjectKey, body.PluginID)
 	case "save_package_revision":

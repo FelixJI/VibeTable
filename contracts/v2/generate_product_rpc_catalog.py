@@ -393,6 +393,8 @@ def _registered_models() -> dict[str, type[BaseModel]]:
                 composition,
                 call.args[2].id,
             )
+    # This host executor coordinates local Worker drain; it is not a product RPC.
+    result.pop("plugin.setEnabledExecution", None)
     from backend.contracts.presets_versions_dashboards import (
         DashboardWorkspaceParams,
         CreateVersionParams,
@@ -1140,6 +1142,30 @@ def main() -> None:
     catalog["eventCases"] = _event_cases(path.parent, topics)
     host_path = path.parent / "plugin-install-host-plans.json"
     host_rendered = _plugin_host_install_fixture()
+    from backend.contracts.plugin_rpc import SetPluginEnabledExecutionParams
+
+    lifecycle_path = path.parent / "plugin-lifecycle-host-executions.json"
+    lifecycle_rendered = (
+        json.dumps(
+            SetPluginEnabledExecutionParams(
+                project_key="project-1",
+                plugin_id="com.acme.clean",
+                enabled=False,
+                installation_id="record-clean",
+                expected_revision=7,
+            ).model_dump(mode="json", by_alias=True),
+            indent=2,
+        )
+        + "\n"
+    )
+    if args.check:
+        if (
+            not lifecycle_path.exists()
+            or lifecycle_path.read_text(encoding="utf-8") != lifecycle_rendered
+        ):
+            raise SystemExit(f"{lifecycle_path.relative_to(REPO_ROOT)} is stale")
+    else:
+        lifecycle_path.write_text(lifecycle_rendered, encoding="utf-8", newline="\n")
     if args.check:
         if not host_path.exists() or host_path.read_text(encoding="utf-8") != host_rendered:
             raise SystemExit(f"{host_path.relative_to(REPO_ROOT)} is stale")

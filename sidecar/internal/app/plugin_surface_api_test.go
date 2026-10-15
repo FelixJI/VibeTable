@@ -221,6 +221,75 @@ func TestPluginSurfaceMissingCommitProofNeverEstablishesRollback(t *testing.T) {
 	}
 }
 
+func TestSurfaceMutationRechecksAuthorityInsideTransactionAfterLifecycleGate(t *testing.T) {
+	for _, transition := range []string{"disabled", "revision", "uninstall", "reinstall"} {
+		t.Run(transition, func(t *testing.T) {
+			ctx := context.Background()
+			f := newWorkspaceMutationReplayFixture(t)
+			workspace := "11111111-1111-4111-8111-111111111111"
+			store := pluginstore.New(f.pb, workspace)
+			pluginID, hash := "com.example.waiting-surface", strings.Repeat("a", 64)
+			manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"data": []any{map[string]any{"collection": f.request.TableID, "operations": []string{"create"}, "fields": []string{"*"}}}}, "actions": []any{map[string]any{"actionId": "save", "risk": "write", "mode": "local", "invocation": "manual", "presentation": "application", "entry": "ui/index.html"}}}
+			manifest["ui"] = map[string]any{}
+			manifest["description"] = map[string]any{}
+			snapshot, _ := json.Marshal(map[string]any{"projectKey": store.ProjectKey(), "pluginId": pluginID, "version": "1.0.0", "packageHash": "sha256:" + hash, "sourceType": "package", "sourceLocation": "host-managed", "manifest": manifest, "schemas": map[string]any{}, "status": "enabled", "revision": 1, "sourceChanged": false, "blockingReasons": []string{}})
+			installed, err := store.SaveInstallation(ctx, snapshot, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := queryschema.New(f.pb.DataDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: f.request.TableID, RequestID: "waiting-mutation"}
+			plan := map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": f.request.TableID, "schemaRevision": f.request.SchemaRevision, "operations": []any{map[string]any{"kind": "create", "values": map[string]any{f.field: "must-not-commit"}}}}
+			input.Method = "audit.start"
+			input.Request, _ = json.Marshal(map[string]any{"taskId": "waiting-task", "plan": plan})
+			kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
+			if _, err := executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, f.runtime.CoordinateBusinessWrite); err != nil {
+				t.Fatal(err)
+			}
+			input.Method = "mutation.commit"
+			input.Request, _ = json.Marshal(plan)
+			gateEntered := false
+			before := f.state(t)
+			gate := func(ctx context.Context, kind, id string, fn func(context.Context) error) error {
+				gateEntered = true // Outer Host/manifest/plan/audit checks have already succeeded.
+				switch transition {
+				case "disabled":
+					_, err = store.SetEnabled(ctx, input.ProjectKey, pluginID, false)
+				case "revision":
+					var next map[string]any
+					_ = json.Unmarshal(installed, &next)
+					next["revision"] = 2
+					raw, _ := json.Marshal(next)
+					expected := int64(1)
+					_, err = store.SaveInstallation(ctx, raw, &expected)
+				default:
+					_, err = store.DeleteInstallation(ctx, input.ProjectKey, pluginID, input.InstallationID, 1, false)
+					if err == nil && transition == "reinstall" {
+						_, err = store.SaveInstallation(ctx, snapshot, nil)
+					}
+				}
+				if err != nil {
+					return err
+				}
+				before = f.state(t)
+				return f.runtime.CoordinateBusinessWrite(ctx, kind, id, fn)
+			}
+			if _, err := executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, gate); err == nil {
+				t.Fatal("retired installation committed after waiting for gate")
+			}
+			if !gateEntered {
+				t.Fatal("test never crossed the outer admission boundary")
+			}
+			if !reflect.DeepEqual(before, f.state(t)) {
+				t.Fatal("denied transaction changed rows or mutation receipts")
+			}
+		})
+	}
+}
+
 func TestPluginSurfaceWorkspaceWriterOwnsSingleReceipt(t *testing.T) {
 	ctx := context.Background()
 	f := newWorkspaceMutationReplayFixture(t)

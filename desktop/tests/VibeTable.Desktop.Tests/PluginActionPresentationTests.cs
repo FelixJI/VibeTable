@@ -103,22 +103,33 @@ public sealed class PluginActionPresentationTests
                 package.CreateEntry("ui/index.html"); package.CreateEntry("ui/run.js");
             }
             var pending = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var pendingWrite = new TaskCompletionSource<PluginRuntimeSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var gateway = new PluginRequestDispatcherTests.FakePluginGateway
+            {
+                SetEnabledHandler = (request, _) =>
+                {
+                    if (request.InstallationId == "retired-record") Assert.AreEqual(3, request.ExpectedRevision);
+                    else { Assert.AreEqual("replacement-record", request.InstallationId); Assert.AreEqual(1, request.ExpectedRevision); }
+                    return request.InstallationId == "retired-record" ? pendingWrite.Task : Task.FromResult(current);
+                },
+            };
             var reply = new PluginRequestDispatcherTestsAccessibleSink();
             var surfaces = new PluginSurfaceSessionManager();
             var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
-            int calls = 0;
             using var dispatcher = new PluginRequestDispatcher(reply, surfaces,
                 new FakePluginPackageSourcePickerForPresentation(null), resources, projectContext: ReadyContext,
-                sharedRpc: (_, _, _) => ++calls == 1 ? pending.Task : Task.FromResult(JsonSerializer.SerializeToElement(current)),
+                sharedRpc: (_, _, _) => pending.Task,
                 packageCacheRoot: _ => root);
+            dispatcher.SetGateway(gateway);
             var late = dispatcher.DispatchAsync(Request(lateWrite ? "plugin.lifecycle.setEnabled" : "plugin.catalog.list",
-                "old", """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+                "old", """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true,"installationId":"retired-record","expectedRevision":3}"""));
             await dispatcher.DispatchAsync(Request("plugin.lifecycle.setEnabled", "replacement",
-                """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+                """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true,"installationId":"replacement-record","expectedRevision":1}"""));
             var projected = Assert.IsInstanceOfType<PluginRuntimeSnapshot>(reply.Payload);
             string token = projected.Manifest.Actions.Single(action => action.ActionId == "open-app").SurfaceToken!;
             Assert.IsTrue(surfaces.TryGet(token, out _));
-            pending.SetResult(lateWrite ? JsonSerializer.SerializeToElement(old) : JsonSerializer.SerializeToElement(new[] { old }));
+            if (lateWrite) pendingWrite.SetResult(old);
+            else pending.SetResult(JsonSerializer.SerializeToElement(new[] { old }));
             await late;
             Assert.IsTrue(surfaces.TryGet(token, out var session), "Late authority reply retired the replacement surface.");
             Assert.IsNotNull(session);

@@ -513,7 +513,12 @@ func (service *Service) DeleteInstallation(
 				}
 			}
 		}
-		return nil
+		audit, err := lifecycleAudit(service.now(), current.Payload, "uninstall")
+		if err != nil {
+			return err
+		}
+		_, err = service.recordAuditTx(txApp, audit)
+		return err
 	})
 	return err == nil, err
 }
@@ -710,6 +715,17 @@ func (service *Service) SetEnabled(
 	pluginID string,
 	enabled bool,
 ) (json.RawMessage, error) {
+	return service.setEnabled(ctx, projectKey, pluginID, enabled, "", 0)
+}
+
+func (service *Service) SetEnabledForInstallation(ctx context.Context, projectKey, pluginID string, enabled bool, installationID string, expectedRevision int64) (json.RawMessage, error) {
+	if installationID == "" || expectedRevision < 1 {
+		return nil, invalidPayload()
+	}
+	return service.setEnabled(ctx, projectKey, pluginID, enabled, installationID, expectedRevision)
+}
+
+func (service *Service) setEnabled(ctx context.Context, projectKey, pluginID string, enabled bool, installationID string, expectedRevision int64) (json.RawMessage, error) {
 	if projectKey == "" || pluginID == "" {
 		return nil, requestError("plugin.request_invalid", "project and plugin identity is required", nil)
 	}
@@ -724,6 +740,9 @@ func (service *Service) SetEnabled(
 		}
 		if current == nil {
 			return notFound()
+		}
+		if installationID != "" && (jsonText(current.Payload, "installationId") != installationID || jsonInt(current.Payload, "revision") != expectedRevision) {
+			return revisionConflict(KindInstallation, expectedRevision, "installation changed")
 		}
 		blocking := jsonStrings(current.Payload, "blockingReasons")
 		if enabled && len(blocking) > 0 {

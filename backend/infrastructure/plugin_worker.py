@@ -921,7 +921,11 @@ class InMemoryBulkMutationAdapter:
     plans: list[MutationPlan] = field(default_factory=list)
 
     async def apply(
-        self, plan: MutationPlan, *, on_submit: Callable[[], None] | None = None
+        self,
+        plan: MutationPlan,
+        *,
+        on_submit: Callable[[], None] | None = None,
+        execution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if on_submit is not None:
             on_submit()

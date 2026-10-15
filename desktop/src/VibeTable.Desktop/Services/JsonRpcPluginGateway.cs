@@ -54,6 +54,9 @@ public sealed class JsonRpcPluginGateway : IPluginRpcGateway
         => InvokeAsync<PluginUpgradeExecutionParams, PluginRuntimeSnapshot>(
             "plugin.upgrade", request, token);
 
+    public Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(PluginSetEnabledExecutionParams request, CancellationToken token)
+        => InvokeAsync<PluginSetEnabledExecutionParams, PluginRuntimeSnapshot>("plugin.setEnabledExecution", request, token);
+
     public Task<PluginRuntimeSnapshot> RollbackAsync(
         PluginRollbackParams request, CancellationToken token)
         => InvokeAsync<PluginRollbackParams, PluginRuntimeSnapshot>(

@@ -612,8 +612,9 @@ public sealed class PluginRequestDispatcherTests
         PluginProjectContext context = ReadyContext();
         var surfaces = new PluginSurfaceSessionManager();
         var resources = new PluginWebViewResourceHost(new PluginResourceHost(), surfaces);
-        var pending = new TaskCompletionSource<JsonElement>(
+        var pending = new TaskCompletionSource<PluginRuntimeSnapshot>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        using var gateway = new FakePluginGateway { PendingSetEnabled = pending };
         using var dispatcher = new PluginRequestDispatcher(
             reply,
             surfaces,
@@ -622,16 +623,17 @@ public sealed class PluginRequestDispatcherTests
             filePicker: null,
             githubSource: null,
             projectContext: () => context,
-            sharedRpc: (_, _, _) => pending.Task);
+            sharedRpc: (_, _, _) => throw new InvalidOperationException("Lifecycle execution bypassed the Worker gate."));
+        dispatcher.SetGateway(gateway);
         dispatcher.SetProjectContext(ReadyContext());
 
         Task writing = dispatcher.DispatchAsync(Request(
             "plugin.lifecycle.setEnabled",
             "set-enabled-stale",
-            """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true}"""));
+            """{"projectKey":"project-1","pluginId":"com.acme.clean","enabled":true,"installationId":"record-clean","expectedRevision":1}"""));
         context = context with { SessionGeneration = 2 };
         dispatcher.SetProjectContext(context);
-        pending.SetResult(JsonSerializer.SerializeToElement(FakePluginGateway.DefaultSnapshot));
+        pending.SetResult(FakePluginGateway.DefaultSnapshot);
         await writing.WaitAsync(TimeSpan.FromSeconds(2));
 
         Assert.AreEqual("PLUGIN_TASK_STALE", reply.FailureCode);
@@ -2326,7 +2328,7 @@ public sealed class PluginRequestDispatcherTests
             => System.Threading.Tasks.Task.FromResult(selectedPath);
     }
 
-    private sealed class FakePluginGateway : IPluginRpcGateway
+    internal sealed class FakePluginGateway : IPluginRpcGateway
     {
         private static readonly PluginRuntimeManifest Manifest = new(
             "vibetable.plugin-manifest.v1", "com.acme.clean", "1.0.0",
@@ -2358,6 +2360,8 @@ public sealed class PluginRequestDispatcherTests
         public TaskCompletionSource CommitStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<PluginRuntimeSnapshot>? PendingCommit { get; set; }
+        public TaskCompletionSource<PluginRuntimeSnapshot>? PendingSetEnabled { get; set; }
+        public PluginSetEnabledExecutionParams? SetEnabledRequest { get; private set; }
         public CancellationToken CommitToken { get; private set; }
         public PluginUpgradeExecutionParams? UpgradeRequest { get; private set; }
         public TaskCompletionSource UpgradeStarted { get; } = new(
@@ -2507,8 +2511,13 @@ public sealed class PluginRequestDispatcherTests
                 ? System.Threading.Tasks.Task.FromResult(CatalogSnapshot)
                 : System.Threading.Tasks.Task.FromException<PluginRuntimeSnapshot>(CommitFailure);
         }
-        public Task<PluginRuntimeSnapshot> SetEnabledAsync(PluginSetEnabledParams request, CancellationToken token)
-            => System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        public Func<PluginSetEnabledExecutionParams, CancellationToken, Task<PluginRuntimeSnapshot>>? SetEnabledHandler { get; set; }
+        public Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(PluginSetEnabledExecutionParams request, CancellationToken token)
+        {
+            SetEnabledRequest = request;
+            return SetEnabledHandler?.Invoke(request, token)
+                ?? PendingSetEnabled?.Task ?? System.Threading.Tasks.Task.FromResult(CatalogSnapshot);
+        }
         public Task<PluginRuntimeSnapshot> UpgradeAsync(
             PluginUpgradeExecutionParams request,
             CancellationToken token)

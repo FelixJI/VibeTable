@@ -55,6 +55,25 @@ def test_native_task_surface_source_roundtrips_and_worker_source_remains_optiona
     assert native.model_dump(mode="json", by_alias=True)["surfaceToken"] == "host-created-token"
 
 
+def test_lifecycle_execution_target_roundtrips_only_in_the_private_host_fixture() -> None:
+    from backend.contracts.plugin_rpc import SetPluginEnabledExecutionParams
+    from contracts.v2.generate_product_rpc_catalog import _registered_models
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts/v2/fixtures/plugin-lifecycle-host-executions.json"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert (
+        SetPluginEnabledExecutionParams.model_validate(payload).model_dump(
+            mode="json", by_alias=True
+        )
+        == payload
+    )
+    assert "plugin.setEnabledExecution" not in _registered_models()
+    assert "plugin.setEnabled" in _registered_models()
+
+
 def test_uninstall_transport_fixture_validates_at_the_real_python_boundary() -> None:
     from backend.contracts.plugin_rpc import UninstallPluginParams
 

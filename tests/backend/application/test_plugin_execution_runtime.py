@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from backend.application.plugin_execution_runtime import PluginExecutionRuntime
+from backend.application.plugin_registry import PluginRegistryError
 from backend.contracts.plugin import (
     CommandContext,
     PluginAuditEvent,
@@ -122,6 +123,131 @@ class RecordingWorker:
         assert execution is not None
         self.executions.append(execution)
         return self.result
+
+
+async def test_lifecycle_gate_drains_before_revision_change_and_blocks_new_admission() -> None:
+    cancellation_seen, release_cleanup = asyncio.Event(), asyncio.Event()
+    registry = FakeRegistry(_snapshot(risk="write"))
+
+    class Worker:
+        available = True
+
+        async def run(self, *args: Any, execution: dict[str, Any] | None = None) -> dict[str, Any]:
+            assert execution is not None
+            while not execution["_hostCancel"].cancelled:
+                await asyncio.sleep(0)
+            cancellation_seen.set()
+            await release_cleanup.wait()
+            return {
+                "contract": "vibetable.mutation-plan.v1",
+                "collection": "articles",
+                "operations": [],
+                "preview": {"affectedCount": 0},
+            }
+
+    mutations = InMemoryBulkMutationAdapter(
+        result={"contract": "vibetable.plugin-result.v1", "status": "success", "summary": "saved"}
+    )
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=Worker(),
+        confirmation_adapter=InMemoryHostConfirmationAdapter(decisions=[True]),
+        mutation_adapter=mutations,
+    )
+    events: list[Any] = []
+
+    async def report(event: Any) -> None:
+        events.append(event)
+
+    runtime.set_notification_sink(report)
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+
+    async def disable() -> None:
+        async with runtime.lifecycle(
+            "local:default",
+            "com.example.summary",
+            installation_id="record-summary",
+            expected_revision=1,
+        ):
+            registry.snapshot = registry.snapshot.model_copy(
+                update={"status": "disabled", "revision": 2}
+            )
+
+    closing = asyncio.create_task(disable())
+    await asyncio.wait_for(cancellation_seen.wait(), 1)
+    starting = asyncio.create_task(
+        runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+    )
+    await asyncio.sleep(0)
+    assert not starting.done()
+    assert not closing.done()
+    release_cleanup.set()
+    await asyncio.wait_for(closing, 1)
+    with pytest.raises(ValueError, match="plugin_disabled"):
+        await starting
+    assert events[-1].snapshot["state"] == "cancelled"
+    assert mutations.plans == []
+
+
+@pytest.mark.parametrize("receipt", ["success", "unknown"])
+async def test_lifecycle_drain_preserves_submitted_write_receipt(receipt: str) -> None:
+    submitted = asyncio.Event()
+    registry = FakeRegistry(_snapshot(risk="write"))
+
+    class Mutation:
+        async def apply(
+            self,
+            plan: Any,
+            *,
+            on_submit: Callable[[], None] | None = None,
+            execution: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            assert on_submit is not None
+            on_submit()
+            submitted.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                if receipt == "unknown":
+                    raise
+                return {
+                    "contract": "vibetable.plugin-result.v1",
+                    "status": "success",
+                    "summary": "committed",
+                }
+            raise AssertionError("unreachable")
+
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=RecordingWorker(
+            {
+                "contract": "vibetable.mutation-plan.v1",
+                "collection": "articles",
+                "operations": [],
+                "preview": {"affectedCount": 0},
+            }
+        ),
+        confirmation_adapter=InMemoryHostConfirmationAdapter(decisions=[True]),
+        mutation_adapter=Mutation(),
+    )
+    events: list[Any] = []
+
+    async def report(event: Any) -> None:
+        events.append(event)
+
+    runtime.set_notification_sink(report)
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+    await asyncio.wait_for(submitted.wait(), 1)
+    async with runtime.lifecycle(
+        "local:default",
+        "com.example.summary",
+        installation_id="record-summary",
+        expected_revision=1,
+    ):
+        assert events[-1].snapshot["state"] == ("succeeded" if receipt == "success" else "aborted")
+        if receipt == "unknown":
+            assert events[-1].snapshot["error"]["code"] == "plugin_commit_unknown"
+        registry.snapshot = registry.snapshot.model_copy(update={"revision": 2})
 
 
 def _context(*, selected: list[str] | None = None) -> CommandContext:
@@ -479,7 +605,11 @@ async def test_cancel_at_submission_boundary_settles_without_replay(commit_start
 
     class WaitingMutation:
         async def apply(
-            self, plan: Any, *, on_submit: Callable[[], None] | None = None
+            self,
+            plan: Any,
+            *,
+            on_submit: Callable[[], None] | None = None,
+            execution: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             nonlocal calls
             calls += 1
@@ -641,3 +771,169 @@ async def test_uninstall_cancellation_waits_for_worker_cleanup() -> None:
     assert cleaned.is_set()
     assert len(registry.audit) == 1
     assert registry.audit[0].outcome == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["audit", "notification"])
+async def test_cancel_during_success_publication_preserves_receipt(stage: str) -> None:
+    blocked, release = asyncio.Event(), asyncio.Event()
+
+    class Registry(FakeRegistry):
+        async def record_audit(self, event: PluginAuditEvent) -> PluginAuditEvent:
+            if stage == "audit":
+                blocked.set()
+                await release.wait()
+            return await super().record_audit(event)
+
+    registry = Registry(_snapshot())
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=RecordingWorker(
+            {"contract": "vibetable.plugin-result.v1", "status": "success", "summary": "saved"}
+        ),
+    )
+    events: list[Any] = []
+
+    async def report(event: Any) -> None:
+        if stage == "notification" and event.snapshot["state"] == "succeeded":
+            blocked.set()
+            await release.wait()
+        events.append(event)
+
+    runtime.set_notification_sink(report)
+    ids = _ids()
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **ids)
+    await asyncio.wait_for(blocked.wait(), 1)
+    draining = asyncio.create_task(
+        runtime.cancel_plugin_tasks(
+            "local:default", "com.example.summary", installation_id="record-summary"
+        )
+    )
+    await asyncio.sleep(0)
+    assert not draining.done()
+    release.set()
+    assert await asyncio.wait_for(draining, 1) == 1
+    assert events[-1].snapshot["state"] == "succeeded"
+    assert events[-1].snapshot["result"]["summary"] == "saved"
+    assert registry.audit[-1].outcome == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_rechecks_original_target_after_waiting_for_admission() -> None:
+    registry = FakeRegistry(_snapshot())
+    runtime = PluginExecutionRuntime(registry=registry)
+    gate = runtime._admission_gates.setdefault(
+        ("local:default", "com.example.summary"), asyncio.Lock()
+    )
+    await gate.acquire()
+
+    async def change() -> None:
+        async with runtime.lifecycle(
+            "local:default",
+            "com.example.summary",
+            installation_id="record-summary",
+            expected_revision=1,
+        ):
+            raise AssertionError("ABA installation was accepted")
+
+    changing = asyncio.create_task(change())
+    await asyncio.sleep(0)
+    assert registry.snapshot is not None
+    registry.snapshot = registry.snapshot.model_copy(update={"installation_id": "replacement"})
+    gate.release()
+    with pytest.raises(PluginRegistryError, match="installation changed") as error:
+        await changing
+    assert error.value.code == "plugin_revision_conflict"
+
+
+@pytest.mark.asyncio
+async def test_drain_timeout_preserves_pending_receipt_and_rejects_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.contracts.plugin import PluginExecutionError
+
+    blocked, release = asyncio.Event(), asyncio.Event()
+    registry = FakeRegistry(_snapshot())
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=RecordingWorker(
+            {"contract": "vibetable.plugin-result.v1", "status": "success", "summary": "saved"}
+        ),
+    )
+    events: list[Any] = []
+
+    async def report(event: Any) -> None:
+        if event.snapshot["state"] == "succeeded":
+            blocked.set()
+            await release.wait()
+        events.append(event)
+
+    async def deadline(
+        tasks: list[asyncio.Task[None]], *, timeout: float
+    ) -> tuple[set[asyncio.Task[None]], set[asyncio.Task[None]]]:
+        assert timeout == 30.0
+        return set(), set(tasks)
+
+    runtime.set_notification_sink(report)
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+    await asyncio.wait_for(blocked.wait(), 1)
+    tasks = [handle.task for handle in runtime._executions.values()]
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncio, "wait", deadline)
+        with pytest.raises(PluginExecutionError) as error:
+            async with runtime.lifecycle(
+                "local:default",
+                "com.example.summary",
+                installation_id="record-summary",
+                expected_revision=1,
+            ):
+                raise AssertionError("failed drain advanced lifecycle")
+        assert error.value.code == "plugin_drain_timeout"
+    assert not tasks[0].done()
+    release.set()
+    await asyncio.gather(*tasks)
+    assert events[-1].snapshot["state"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_terminal_publication_failure_blocks_lifecycle_transition() -> None:
+    blocked, release = asyncio.Event(), asyncio.Event()
+    registry = FakeRegistry(_snapshot())
+    runtime = PluginExecutionRuntime(
+        registry=registry,
+        worker_adapter=RecordingWorker(
+            {"contract": "vibetable.plugin-result.v1", "status": "success", "summary": "saved"}
+        ),
+    )
+
+    async def report(event: Any) -> None:
+        if event.snapshot["state"] == "succeeded":
+            blocked.set()
+            await release.wait()
+            raise RuntimeError("synthetic Host publication failed")
+
+    runtime.set_notification_sink(report)
+    await runtime.start("com.example.summary", "summarize", _context(), {}, **_ids())
+    await asyncio.wait_for(blocked.wait(), 1)
+    draining = asyncio.create_task(
+        runtime.cancel_plugin_tasks(
+            "local:default", "com.example.summary", installation_id="record-summary"
+        )
+    )
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(RuntimeError, match="publication failed"):
+        await draining
+    assert registry.snapshot is not None
+    assert registry.snapshot.revision == 1
+    assert registry.audit[-1].outcome == "succeeded"
+    # A later lifecycle call must also reject the retained failed publication.
+    await asyncio.sleep(0)
+    with pytest.raises(RuntimeError, match="publication failed"):
+        async with runtime.lifecycle(
+            "local:default",
+            "com.example.summary",
+            installation_id="record-summary",
+            expected_revision=1,
+        ):
+            raise AssertionError("unreported receipt was forgotten")

@@ -445,6 +445,8 @@ export function usePluginService(): PluginService {
       projectKey: plugin.projectKey,
       pluginId: plugin.pluginId,
       enabled,
+      installationId: plugin.installationId ?? "",
+      expectedRevision: plugin.revision,
     }),
     upgrade,
     rollback: (plugin) => applyPluginRequest("plugin.lifecycle.rollback", {

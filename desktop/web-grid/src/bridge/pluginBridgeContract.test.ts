@@ -35,6 +35,8 @@ describe("plugin bridge whitelist", () => {
       projectKey: "local:default",
       pluginId: "com.acme.clean",
       enabled: false,
+      installationId: "record-clean",
+      expectedRevision: 1,
     });
     bridge.notify("plugin.lifecycle.upgrade", {
       projectKey: "local:default", pluginId: "com.acme.clean", planId: "upgrade-1", projectRevision: "r1",
@@ -82,7 +84,10 @@ describe("plugin bridge whitelist", () => {
     expect(postMessage.mock.calls.find(([message]) => message.type === "plugin.lifecycle.uninstall")?.[0].payload).toEqual({
       projectKey: "local:default", pluginId: "com.acme.clean", installationId: "record-clean", expectedRevision: 1, cleanupPrivateSettings: false,
     });
-    expect(JSON.stringify(postMessage.mock.calls.filter(([message]) => message.type !== "plugin.lifecycle.uninstall"))).not.toContain("expectedRevision");
+    expect(postMessage.mock.calls.find(([message]) => message.type === "plugin.lifecycle.setEnabled")?.[0].payload).toEqual({
+      projectKey: "local:default", pluginId: "com.acme.clean", enabled: false, installationId: "record-clean", expectedRevision: 1,
+    });
+    expect(JSON.stringify(postMessage.mock.calls.filter(([message]) => !["plugin.lifecycle.uninstall", "plugin.lifecycle.setEnabled"].includes(message.type)))).not.toContain("expectedRevision");
     expect(JSON.stringify(postMessage.mock.calls)).not.toMatch(
       /sourceToken|planToken|cleanupSettings|"decision":"approve"|"decision":"reject"/,
     );

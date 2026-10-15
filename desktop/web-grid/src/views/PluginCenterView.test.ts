@@ -178,7 +178,7 @@ describe("PluginCenterView", () => {
     }
   });
 
-  it("sends whole-plugin enable with canonical project identity and no presentation revision", async () => {
+  it("binds whole-plugin enable to the inspected installation identity and revision", async () => {
     const posted: unknown[] = [];
     let listener: ((event: { data: unknown }) => void) | undefined;
     const bridge = createHostBridge({
@@ -205,7 +205,7 @@ describe("PluginCenterView", () => {
       type: "plugin.lifecycle.setEnabled",
       payload: { projectKey: "local:default", pluginId: "com.acme.clean", enabled: true },
     });
-    expect(JSON.stringify(posted[0])).not.toContain("expectedRevision");
+    expect(posted[0]).toMatchObject({ payload: { installationId: blockedPlugin.installationId, expectedRevision: blockedPlugin.revision } });
   });
 
   it("blocks lifecycle and action commands while a plugin request is in flight", async () => {

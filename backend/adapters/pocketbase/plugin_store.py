@@ -267,6 +267,27 @@ class PocketBasePluginStore:
     ) -> PluginSnapshot:
         return await self._commit_package("commit_rollback", plan, package_revision)
 
+    async def set_enabled(
+        self,
+        project_key: str,
+        plugin_id: str,
+        enabled: bool,
+        *,
+        installation_id: str,
+        expected_revision: int,
+    ) -> PluginSnapshot:
+        result = await self._call(
+            "set_enabled",
+            {
+                "projectKey": project_key,
+                "pluginId": plugin_id,
+                "enabled": enabled,
+                "installationId": installation_id,
+                "expectedRevision": expected_revision,
+            },
+        )
+        return PluginSnapshot.model_validate(_object(result, "plugin installation"))
+
     async def _commit_package(
         self, operation: str, plan: InstallPlan, package_revision: PluginPackageRevision
     ) -> PluginSnapshot:

@@ -26,6 +26,7 @@ export const usePluginStore = defineStore("plugins", () => {
   const catalogRevision = ref(-1);
   const pluginById = ref<Record<string, PluginSnapshot>>({});
   const taskById = ref<Record<string, PluginTaskViewSnapshot>>({});
+  const admittedTaskIds = new Set<string>();
   const taskRevisionById = ref<Record<string, number>>({});
   const interactionRevisionByRun = ref<Record<string, number>>({});
   const pendingInteractionByRun = ref<Record<string, {
@@ -54,7 +55,9 @@ export const usePluginStore = defineStore("plugins", () => {
 
   function currentTask(task: PluginTaskViewSnapshot): boolean {
     const plugin = pluginById.value[task.pluginId];
-    return task.projectKey === projectKey.value && plugin?.status === "enabled"
+    if (task.projectKey !== projectKey.value) return false;
+    if (admittedTaskIds.has(task.taskId) && (!plugin || task.installationId === plugin.installationId)) return true;
+    return plugin?.status === "enabled"
       && Boolean(task.installationId) && task.installationId === plugin.installationId
       && task.installationRevision === plugin.revision
       && task.pluginVersion === plugin.version
@@ -115,6 +118,7 @@ export const usePluginStore = defineStore("plugins", () => {
     if (projectKey.value !== key) {
       pluginById.value = {};
       taskById.value = {};
+      admittedTaskIds.clear();
       taskRevisionById.value = {};
       interactionRevisionByRun.value = {};
       pendingInteractionByRun.value = {};
@@ -130,6 +134,7 @@ export const usePluginStore = defineStore("plugins", () => {
       // Tasks/confirmations belong to the previous workspace session even
       // when its stable project key is unchanged.
       taskById.value = {};
+      admittedTaskIds.clear();
       taskRevisionById.value = {};
       interactionRevisionByRun.value = {};
       pendingInteractionByRun.value = {};
@@ -216,6 +221,7 @@ export const usePluginStore = defineStore("plugins", () => {
       progressMessage: snapshot.progress?.message || current?.progressMessage || null,
       confirmation: terminal ? null : current?.confirmation ?? null,
     };
+    if (currentTask(projected)) admittedTaskIds.add(projected.taskId);
     taskById.value = { ...taskById.value, [snapshot.taskId]: projected };
     activeTaskId.value = snapshot.taskId;
     const pendingInteraction = pendingInteractionByRun.value[snapshot.runId];

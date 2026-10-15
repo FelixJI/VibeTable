@@ -88,7 +88,9 @@ public sealed record PluginInstallCancelResult(bool Cancelled);
 public sealed record PluginSetEnabledParams(
     string ProjectKey,
     string PluginId,
-    bool Enabled);
+    bool Enabled,
+    string? InstallationId = null,
+    int ExpectedRevision = 0);
 public sealed record PluginUpgradeParams(
     string ProjectKey,
     string PluginId,

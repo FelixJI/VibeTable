@@ -168,6 +168,43 @@ func TestAtomicUpgradeSwitchesCompletePackageAndRollbackPreservesIdentity(t *tes
 	}
 }
 
+func TestDeleteInstallationAuditFailureRollsBackWholeUninstall(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	original, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin, id := jsonText(original, "projectKey"), jsonText(original, "pluginId"), jsonText(original, "installationId")
+	setting := []byte(`{"projectKey":"` + project + `","pluginId":"` + plugin + `","settingKey":"private","value":"keep","revision":1}`)
+	if _, err := service.SavePrivateSetting(ctx, setting, nil, id, 1); err != nil {
+		t.Fatal(err)
+	}
+	service.app.OnRecordCreate(recordsCollection).BindFunc(func(event *core.RecordEvent) error {
+		if event.Record.GetString("kind") == KindAudit {
+			return errors.New("synthetic uninstall audit failure")
+		}
+		return event.Next()
+	})
+	if _, err := service.DeleteInstallation(ctx, project, plugin, id, 1, true); err == nil {
+		t.Fatal("uninstall did not include its audit transaction")
+	}
+	after, err := service.GetInstallation(ctx, project, plugin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameJSON(t, after, original)
+	settings, err := service.GetPrivateSetting(ctx, project, plugin, "private")
+	if err != nil || settings == nil {
+		t.Fatal("failed uninstall removed private settings", err)
+	}
+	revisions, err := service.ListPackageRevisions(ctx, project, plugin)
+	if err != nil || len(revisions) != 1 {
+		t.Fatal("failed uninstall removed package ledger", err)
+	}
+}
+
 func TestCommitInstallMatchesFrozenOracleAndIsAtomic(t *testing.T) {
 	service := newTestService(t)
 	service.workspaceID = "0f8f4a3b-2c1d-4e5f-8091-a2b3c4d5e6f7"
@@ -391,5 +428,36 @@ func TestUninstallCASRejectsUpgradeAndReinstallWithoutCleanup(t *testing.T) {
 	}
 	if got, _ := service.ListPackageRevisions(ctx, project, plugin); len(got) != 0 {
 		t.Fatal("cleanup retained package references")
+	}
+}
+
+func TestBoundSetEnabledRejectsRevisionAndInstallationABA(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	plan, revision := frozenInstallRequest(t)
+	original, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, plugin, id := jsonText(original, "projectKey"), jsonText(original, "pluginId"), jsonText(original, "installationId")
+	if _, err = service.SetEnabledForInstallation(ctx, project, plugin, false, id, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SetEnabledForInstallation(ctx, project, plugin, true, id, 1); err == nil {
+		t.Fatal("stale revision enabled installation")
+	}
+	if _, err = service.DeleteInstallation(ctx, project, plugin, id, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := service.CommitInstall(ctx, plan, revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.SetEnabledForInstallation(ctx, project, plugin, true, id, 1); err == nil {
+		t.Fatal("ABA enabled new installation")
+	}
+	current, err := service.GetInstallation(ctx, project, plugin)
+	if err != nil || !reflect.DeepEqual(current, replacement) {
+		t.Fatal("failed CAS changed replacement", err)
 	}
 }

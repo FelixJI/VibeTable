@@ -286,15 +286,19 @@ describe("pluginStore", () => {
     expect(store.taskForAction(installed.pluginId, "normalize")?.taskId).toBe("own");
     expect(store.taskForId("old-version")).toBeNull();
     store.applyPlugin({ ...store.plugins[0]!, revision: 2, packageHash: "sha256:replacement" });
-    expect(store.taskForId("own")).toBeNull();
-    store.applyTask({ ...own, state: "succeeded" }, 3);
-    expect(store.taskForId("own")).toBeNull();
+    expect(store.taskForId("own")?.state).toBe("running");
+    store.applyPlugin({ ...store.plugins[0]!, status: "disabled", revision: 3 });
+    store.applyTask({ ...own, state: "aborted", error: { contract: "vibetable.plugin-error.v1", code: "plugin_commit_unknown", message: "Check receipt", recoverability: "none", pluginId: own.pluginId, actionId: own.actionId, runId: own.runId, details: {}, causeId: null } }, 3);
+    expect(store.taskForId("own")?.error?.code).toBe("plugin_commit_unknown");
+    store.applyTask({ ...own, state: "succeeded" }, 4);
+    expect(store.taskForId("own")?.state).toBe("aborted");
+    store.applyPlugin({ ...store.plugins[0]!, status: "enabled", revision: 4 });
     // The first report of an old task can arrive after a same-version replacement.
     store.applyTask({ ...own, taskId: "late-first", runId: "late-first-run", installationRevision: 1 });
     expect(store.taskForId("late-first")).toBeNull();
     store.applyTask({ ...own, taskId: "unbound", runId: "unbound-run", installationRevision: null });
     expect(store.taskForId("unbound")).toBeNull();
-    store.applyTask({ ...own, taskId: "fresh", runId: "fresh-run", installationRevision: 2 });
+    store.applyTask({ ...own, taskId: "fresh", runId: "fresh-run", installationRevision: 4 });
     expect(store.taskForAction(installed.pluginId, "normalize")?.taskId).toBe("fresh");
     store.setProjectContext("local:default", "r1");
     expect(store.taskForId("fresh")).toBeNull();

@@ -65,6 +65,36 @@ class InMemoryPluginStore:
             key=lambda snapshot: snapshot.plugin_id,
         )
 
+    async def set_enabled(
+        self,
+        project_key: str,
+        plugin_id: str,
+        enabled: bool,
+        *,
+        installation_id: str,
+        expected_revision: int,
+    ) -> PluginSnapshot:
+        current = self._installations.get((project_key, plugin_id))
+        if (
+            current is None
+            or not installation_id
+            or current.installation_id != installation_id
+            or current.revision != expected_revision
+        ):
+            raise PluginStoreConflictError("plugin installation changed")
+        if enabled and current.blocking_reasons:
+            raise PluginRegistryError("plugin has blocking reasons", code="plugin_blocked")
+        updated = current.model_copy(
+            update={
+                "status": "enabled" if enabled else "disabled",
+                "disabled_reason": None if enabled else "disabled_by_user",
+                "revision": current.revision + 1,
+            }
+        )
+        self._installations[(project_key, plugin_id)] = updated
+        self._audit.append(lifecycle_audit_event(updated, "enable" if enabled else "disable"))
+        return updated
+
     async def delete_installation(
         self,
         project_key: str,
@@ -86,6 +116,7 @@ class InMemoryPluginStore:
         await self.delete_package_revisions(project_key, plugin_id)
         if cleanup_private_settings:
             await self.delete_private_settings(project_key, plugin_id)
+        self._audit.append(lifecycle_audit_event(current, "uninstall"))
         return True
 
     async def save_package_revision(

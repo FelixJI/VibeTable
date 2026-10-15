@@ -201,7 +201,6 @@ public sealed class PluginRequestDispatcher : IDisposable
                 "plugin.catalog.list" => "plugin.listCatalog",
                 "plugin.audit.list" => "plugin.listAudit",
                 "plugin.cleanup.listPending" => "plugin.listPendingCleanup",
-                "plugin.lifecycle.setEnabled" => "plugin.setEnabled",
                 _ => null,
             };
             if (sharedMethod is not null)
@@ -215,18 +214,12 @@ public sealed class PluginRequestDispatcher : IDisposable
                 // emission gate: the gate runs the actual reply commit under
                 // the session publication lock, so a scope retired by a close
                 // or epoch rotation can never emit a late terminal while the
-                // renderer has already settled the request locally. The
-                // setEnabled write keeps its stale-failure semantics and every
-                // non-shared path keeps its existing replies. Without a
+                // renderer has already settled the request locally. Enable
+                // transitions use the Host-only execution path below. Without a
                 // production gate (standalone construction) the sink's
                 // synchronous default commits exactly as before.
-                bool sharedRead = sharedMethod is not "plugin.setEnabled";
-                Func<Func<bool>, bool>? emitGate = sharedRead
-                    ? GateSharedReadTerminal(request.Type, context)
-                    : null;
-                bool catalogMutation = sharedMethod == "plugin.setEnabled";
-                long catalogGeneration = catalogMutation ? AdvanceCatalogProjection() : CaptureCatalogProjection();
-                bool catalogCompleted = false;
+                Func<Func<bool>, bool>? emitGate = GateSharedReadTerminal(request.Type, context);
+                long catalogGeneration = CaptureCatalogProjection();
                 JsonElement shared;
                 object projected = null!;
                 try
@@ -235,12 +228,10 @@ public sealed class PluginRequestDispatcher : IDisposable
                     // Ungated paths (standalone/public construction) keep the
                     // original stale reply for a rotated context; gated reads
                     // rely on the session emission gate instead.
-                    if (context != _projectContext() && (!sharedRead || emitGate is null)) throw StaleTask();
+                    if (context != _projectContext() && emitGate is null) throw StaleTask();
                     PluginProjectContext? projectionContext = _projectContext();
                     PluginRuntimeSnapshot[]? snapshots = sharedMethod == "plugin.listCatalog"
                         ? shared.Deserialize<PluginRuntimeSnapshot[]>(JsonOptions) ?? throw new JsonException("Invalid plugin catalog.") : null;
-                    PluginRuntimeSnapshot? snapshot = catalogMutation
-                        ? shared.Deserialize<PluginRuntimeSnapshot>(JsonOptions) ?? throw new JsonException("Invalid plugin snapshot.") : null;
                     string? cacheRoot = _packageCacheRoot?.Invoke(context.ProjectKey);
                     bool ProjectCurrentCatalog()
                     {
@@ -258,14 +249,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                             }
                             projected = snapshots is not null
                                 ? snapshots.Select(item => ProjectSnapshot(item, projectionContext, cacheRoot)).ToArray()
-                                : snapshot is not null
-                                    ? current ? ProjectSnapshot(snapshot, projectionContext, cacheRoot) : SanitizeSnapshot(snapshot)
-                                    : shared;
-                            if (catalogMutation)
-                            {
-                                ++_catalogProjectionGeneration;
-                                catalogCompleted = true;
-                            }
+                                : shared;
                             return true;
                         }
                     }
@@ -285,13 +269,7 @@ public sealed class PluginRequestDispatcher : IDisposable
                     PostSharedReadFailure(request, ex, token, emitGate);
                     return;
                 }
-                finally { if (catalogMutation && !catalogCompleted) AdvanceCatalogProjection(); }
-                if (sharedRead)
-                {
-                    _reply.TryPostResponse(request.Type, request.RequestId, projected, emitGate);
-                    return;
-                }
-                _reply.PostResponse(request.Type, request.RequestId, projected);
+                _reply.TryPostResponse(request.Type, request.RequestId, projected, emitGate);
                 return;
             }
             if (string.Equals(request.Type, "plugin.surface.event", StringComparison.Ordinal))
@@ -322,6 +300,7 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
             if (request.Type is not ("plugin.install.inspect" or "plugin.install.github.inspect"
                 or "plugin.install.commit" or "plugin.lifecycle.upgrade"
+                or "plugin.lifecycle.setEnabled"
                 or "plugin.lifecycle.rollback" or "plugin.lifecycle.uninstall"
                 or "plugin.action.describe" or "plugin.action.start"))
                 throw new PluginDispatchException("UNKNOWN_TYPE", $"Unhandled plugin request type '{request.Type}'.");
@@ -397,6 +376,8 @@ public sealed class PluginRequestDispatcher : IDisposable
 
             object result = request.Type switch
             {
+                "plugin.lifecycle.setEnabled" => await SetEnabledExecutionAsync(
+                    gateway, Read<PluginSetEnabledParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.inspect" => await InspectInstallAsync(
                     Read<PluginInspectInstallParams>(request.Payload), token).ConfigureAwait(false),
                 "plugin.install.github.inspect" => await InspectGitHubInstallAsync(
@@ -745,6 +726,33 @@ public sealed class PluginRequestDispatcher : IDisposable
             }
         }
         finally { if (!catalogCompleted) AdvanceCatalogProjection(); }
+    }
+
+    private async Task<PluginRuntimeSnapshot> SetEnabledExecutionAsync(
+        IPluginRpcGateway gateway, PluginSetEnabledParams request, CancellationToken token)
+    {
+        PluginProjectContext? context = _projectContext();
+        if (context is null || context.ProjectKey != request.ProjectKey) throw StaleTask();
+        if (string.IsNullOrWhiteSpace(request.InstallationId) || request.ExpectedRevision < 1)
+            throw new PluginDispatchException("BAD_PAYLOAD", "Installation identity and revision are required.");
+        long generation = AdvanceCatalogProjection();
+        bool completed = false;
+        try
+        {
+            var snapshot = await gateway.SetEnabledExecutionAsync(new(request.ProjectKey, request.PluginId,
+                request.Enabled, request.InstallationId, request.ExpectedRevision), token).ConfigureAwait(false);
+            if (context != _projectContext() || !ReferenceEquals(gateway, CaptureGatewayOrNull())) throw StaleTask();
+            string? root = _packageCacheRoot?.Invoke(snapshot.ProjectKey);
+            lock (_catalogProjectionGate)
+            {
+                var projected = generation == _catalogProjectionGeneration
+                    ? ProjectSnapshot(snapshot, context, root) : SanitizeSnapshot(snapshot);
+                ++_catalogProjectionGeneration;
+                completed = true;
+                return projected;
+            }
+        }
+        finally { if (!completed) AdvanceCatalogProjection(); }
     }
 
     private async Task<PluginRuntimeUninstallResult> UninstallAsync(

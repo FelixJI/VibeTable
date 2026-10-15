@@ -153,6 +153,23 @@ public sealed class JsonRpcPluginGatewayTests
         Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected.GetRawText()), JsonNode.Parse(transport.Requests.Single().GetProperty("params").GetRawText())));
     }
 
+    [TestMethod]
+    public async Task HostLifecycleExecutionSerializesCreationTargetWithoutPublicRpcRegistration()
+    {
+        DirectoryInfo? root = new(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-lifecycle-host-executions.json"))) root = root.Parent;
+        Assert.IsNotNull(root);
+        using var fixture = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName, "contracts", "v2", "fixtures", "plugin-lifecycle-host-executions.json")));
+        var expected = fixture.RootElement;
+        var request = expected.Deserialize<PluginSetEnabledExecutionParams>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        var transport = new AutoRespondTransport();
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new JsonRpcPluginGateway(client);
+        await gateway.SetEnabledExecutionAsync(request, CancellationToken.None);
+        Assert.AreEqual("plugin.setEnabledExecution", transport.Methods.Single());
+        Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected.GetRawText()), JsonNode.Parse(transport.Requests.Single().GetProperty("params").GetRawText())));
+    }
+
     private static PluginRuntimeInstallPlan Plan(string planId) => new(
         planId,
         "project-1",
