@@ -11,6 +11,66 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceFilesTests
 {
     [TestMethod]
+    public async Task ImportReservationIsReleasedWhenLastPlanSlotFillsDuringFreeze()
+    {
+        await using var f = new Fixture();
+        const string mutation = "{\"collection\":\"orders\",\"operations\":[{\"kind\":\"create\",\"values\":{\"name\":\"new\"}}]}";
+        for (int i = 0; i < 7; i++) await f.Call("mutation.preview", mutation);
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        // Freeze has passed the first plan-count check. The broker's authorization
+        // then admits the eighth plan before reserve returns to the handoff.
+        f.Http.OnFreeze = () => f.AfterAuthorize = () =>
+            Assert.IsTrue(f.Call("mutation.preview", mutation).GetAwaiter().GetResult().TryGetProperty("result", out _));
+        var failed = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        Assert.AreEqual("plugin_plan_limit", failed.GetProperty("result").GetProperty("error").GetProperty("code").GetString(), failed.GetRawText());
+        var reservations = (System.Collections.IDictionary)typeof(HostSessionFileBroker)
+            .GetField("_reservations", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(f.Broker)!;
+        Assert.AreEqual(1, reservations.Count, "the real broker must have reserved before the failed handoff");
+        string reservationId = reservations.Keys.Cast<string>().Single();
+        object reservation = reservations[reservationId]!;
+        Assert.AreEqual("released", reservation.GetType().GetProperty("Outcome", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(reservation));
+        // A released receipt is replayable, but cannot be changed to consumed.
+        // This checks broker state rather than a mocked settle call.
+        var released = await f.Broker.HandleAsync("settleImport", JsonSerializer.SerializeToElement(new { reservationId, outcome = "released" }), CancellationToken.None);
+        Assert.AreEqual("released", released.GetProperty("outcome").GetString());
+        await Assert.ThrowsAsync<IOException>(() => f.Broker.HandleAsync("settleImport",
+            JsonSerializer.SerializeToElement(new { reservationId, outcome = "consumed" }), CancellationToken.None));
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"
+            && call.GetProperty("request").GetProperty("outcome").GetString() == "rejected"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+            JsonSerializer.SerializeToElement(new { grantId = f.IoGrant, runId = f.IoRun }), CancellationToken.None));
+    }
+
+    [TestMethod]
+    [DataRow(128)]
+    [DataRow(129)]
+    [DataRow(180 * 1024)]
+    public async Task WritePickerBoundsMediaTypeBeforeNativeSelection(int length)
+    {
+        await using var f = new Fixture();
+        int selections = 0;
+        f.AfterPick = () => selections++;
+        string mediaType = new('<', length);
+        string parameters = "{\"suggestedName\":\"out.txt\",\"mediaType\":\"" + mediaType + "\"}";
+        string raw = "{\"contract\":\"" + PluginSurfaceApi.Contract + "\",\"surfaceToken\":\"" + f.Surface.SurfaceToken
+            + "\",\"requestId\":\"media-boundary\",\"method\":\"file.pickWrite\",\"params\":" + parameters + "}";
+        var result = JsonDocument.Parse(await f.Api.HandleAsync(f.Surface.SurfaceToken, f.Surface.DocumentUri.AbsoluteUri, raw)).RootElement.Clone();
+        if (length == 128)
+        {
+            Assert.AreEqual(mediaType, result.GetProperty("result").GetProperty("mediaType").GetString());
+            Assert.AreEqual(1, selections);
+            Assert.AreEqual(1, f.GrantCount);
+        }
+        else
+        {
+            Assert.AreEqual("plugin_capability_invalid", result.GetProperty("error").GetProperty("code").GetString(), result.GetRawText());
+            Assert.AreEqual(0, selections, "invalid metadata must not open the native picker");
+            Assert.AreEqual(0, f.GrantCount, "invalid metadata must not mint a grant");
+            Assert.AreEqual(0, f.Http.Calls.Count, "validation must precede file authorization");
+        }
+    }
+    [TestMethod]
     public async Task NativePickerFilesAreOpaqueOwnedBoundedAndRetiredBeforeFinalSave()
     {
         await using var f = new Fixture();
@@ -46,14 +106,32 @@ public sealed class PluginSurfaceFilesTests
         string planId = preview.GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
         Assert.IsFalse(preview.GetRawText().Contains("internal-go-token", StringComparison.Ordinal));
         Assert.IsFalse(preview.GetRawText().Contains("grant-", StringComparison.Ordinal));
+        Assert.IsNull(f.ReservationOutcomes.Single(), "a successful handoff must retain the reservation for submit");
         await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
         var result = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
         Assert.AreEqual("succeeded", result.GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual("consumed", f.ReservationOutcomes.Single());
         Assert.IsTrue(f.NativeConfirmation); Assert.IsTrue(f.Http.Calls.Any(value => value.GetProperty("method").GetString() == "import.bind"));
         await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
         Assert.AreEqual("succeeded", (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }))).GetProperty("result").GetProperty("state").GetString());
     }
 
+    [TestMethod]
+    public async Task UnknownImportCommitDoesNotReleaseTheHandedOffReservation()
+    {
+        await using var f = new Fixture();
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.IsNull(f.ReservationOutcomes.Single());
+        f.Http.FailNextCommitStatus = 500;
+        f.Http.FailNextCommitBody = "{\"code\":\"mutation.internal.failed\"}";
+        var unknown = await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }));
+        Assert.AreEqual("plugin_commit_unknown", unknown.GetProperty("error").GetProperty("code").GetString(), unknown.GetRawText());
+        Assert.IsNull(f.ReservationOutcomes.Single(), "an uncertain business commit must not release its reservation");
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.settle"));
+    }
     [TestMethod]
     public async Task PlanLimitedImportPreviewSettlesTerminalDropsItsGrantAndReclaimsItsTaskSlot()
     {
@@ -521,6 +599,11 @@ public sealed class PluginSurfaceFilesTests
         internal Action? AfterPick;
         internal Action? AfterAuthorize { set => Http.AfterAuthorize = value; }
         internal int Leases;
+        internal string?[] ReservationOutcomes => ((System.Collections.IDictionary)typeof(HostSessionFileBroker)
+            .GetField("_reservations", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(Broker)!).Values.Cast<object>()
+            .Select(value => (string?)value.GetType().GetProperty("Outcome", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(value)).ToArray();
+        internal int GrantCount => ((System.Collections.IDictionary)typeof(HostSessionFileBroker)
+            .GetField("_grants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(Broker)!).Count;
         internal Action? AfterNativeCommit;
         internal bool NativeConfirmation;
         internal bool IoRunning;
@@ -589,6 +672,7 @@ public sealed class PluginSurfaceFilesTests
         internal Action? AfterAuthorize;
         internal Action? OnSettleAttempt;
         internal bool FailNextFreeze;
+        internal Action? OnFreeze;
         internal int FailNextCommitStatus;
         internal string? FailNextCommitBody;
         internal byte[]? AttachmentReadContent;
@@ -611,6 +695,7 @@ public sealed class PluginSurfaceFilesTests
             var call = JsonDocument.Parse(bodyBytes).RootElement.Clone(); Calls.Add(call); string method = call.GetProperty("method").GetString()!;
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
+            if (method == "import.freeze") { var freeze = OnFreeze; OnFreeze = null; freeze?.Invoke(); }
             if (method == "import.freeze" && FailNextFreeze) { FailNextFreeze = false; return new(HttpStatusCode.Conflict) { Content = new StringContent("{\"code\":\"import_plan_invalid\"}") }; }
             if (method == "mutation.commit" && FailNextCommitBody is { } commitBody)
             { int status = FailNextCommitStatus; FailNextCommitStatus = 0; FailNextCommitBody = null; return new((HttpStatusCode)status) { Content = new StringContent(commitBody) }; }

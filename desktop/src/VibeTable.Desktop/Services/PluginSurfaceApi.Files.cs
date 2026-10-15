@@ -47,7 +47,8 @@ internal sealed partial class PluginSurfaceApi
             {
                 ExactFile(parameters, "suggestedName", "mediaType");
                 suggested = SafeFileName(parameters.GetProperty("suggestedName").GetString());
-                if (parameters.GetProperty("mediaType").ValueKind != JsonValueKind.String) throw Error("plugin_capability_invalid");
+                if (parameters.GetProperty("mediaType").ValueKind != JsonValueKind.String
+                    || parameters.GetProperty("mediaType").GetString()!.Length > 128) throw Error("plugin_capability_invalid");
             }
             else
             {

@@ -51,6 +51,7 @@ internal sealed partial class PluginSurfaceApi
                 string phase = status.GetProperty("state").GetString()!;
                 if (phase is not ("succeeded" or "failed" or "cancelled" or "aborted")) return SafeIoStatus(status);
                 bool transferred = false;
+                ImportSource? reservedSource = null;
                 try
                 {
                     if (phase == "succeeded" && task.Kind == "data.previewImport")
@@ -83,11 +84,13 @@ internal sealed partial class PluginSurfaceApi
                             if (state.Plans.Count >= 8) throw Error("plugin_plan_limit");
                             JsonElement frozen = await CallAsync(surface, "import.freeze", JsonSerializer.SerializeToElement(new
                             { token = importToken, grantId = task.File.GrantId, collection = task.Collection }), token);
+                            JsonElement plan = frozen.GetProperty("plan").Clone();
+                            long attempt = frozen.GetProperty("attempt").GetInt64();
                             var reservation = await task.File.Broker.HandleAsync("reservePluginImport", JsonSerializer.SerializeToElement(new
                             { grantId = task.File.GrantId, runId = task.File.RunId, token = importToken }), token);
-                            JsonElement plan = frozen.GetProperty("plan").Clone();
                             string planId = Guid.NewGuid().ToString("N");
-                            var source = new ImportSource(task.File, importToken, frozen.GetProperty("attempt").GetInt64(), reservation.GetProperty("reservationId").GetString()!, surface, task.Generation);
+                            // This request owns the reservation until the plan handoff succeeds.
+                            reservedSource = new ImportSource(task.File, importToken, attempt, reservation.GetProperty("reservationId").GetString()!, surface, task.Generation);
                             JsonElement receipt = JsonSerializer.SerializeToElement(new
                             {
                                 taskId = id,
@@ -97,7 +100,7 @@ internal sealed partial class PluginSurfaceApi
                                 result = new { planId, affectedCount = plan.GetProperty("operations").GetArrayLength(), summary = preview.GetProperty("summary"), rows = ImportSampleRows(preview) }
                             }, Json);
                             if (!_surfaces.TryUseCurrent(surface, () => !state.Lifetime.IsCancellationRequested && state.Plans.Count < 8
-                                && state.Plans.TryAdd(planId, new Plan(plan, plan.GetProperty("operations").GetArrayLength(), DateTimeOffset.UtcNow.AddMinutes(2), source))))
+                                && state.Plans.TryAdd(planId, new Plan(plan, plan.GetProperty("operations").GetArrayLength(), DateTimeOffset.UtcNow.AddMinutes(2), reservedSource))))
                                 throw Error("plugin_session_stale");
                             task.Terminal = receipt;
                             // Ownership of the file grant and import plan moved to the plan.
@@ -110,7 +113,8 @@ internal sealed partial class PluginSurfaceApi
                 { task.Terminal = FailedIoTerminal(task, status, error, state.Plans.Count); }
                 if (!transferred)
                 {
-                    await RevokeSurfaceFileAsync(task.File);
+                    if (reservedSource is not null) await SettleImportSourceAsync(surface, reservedSource, "rejected");
+                    else await RevokeSurfaceFileAsync(task.File);
                     if (task.Kind == "data.previewImport") await DropImportGrantAsync(surface, task.Generation, task.File.GrantId);
                 }
                 return task.Terminal.Value;
