@@ -289,7 +289,7 @@
   {
     "id": "48-plugin-applications",
     "title": "完整插件应用与同UUID冷重启生命周期",
-    "requirement": "真实WPF安装无Worker包，两同名插件独立scope和三hash页、长期70调用、headless完成失败取消与回收；第二冷Host同UUID新epoch核原生键鼠确认、权限增量升级、失败保快照、禁用撤权、缺包恢复及卸载业务记录保留；当前应用原生打印opened-only与body/portal白名单、离开后fail-closed。",
+    "requirement": "真实WPF安装无Worker包，两同名插件独立scope和三hash页、长期70调用、headless完成失败取消与回收；第二冷Host同UUID新epoch核原生键鼠确认、权限增量升级、失败保快照、禁用撤权、缺包恢复及卸载业务记录保留；当前应用原生打印opened-only与body/portal白名单；真实预览PDF首末行/多页、取消afterprint后再打印、原生预览期间导航快照不泄漏平台。",
     "capabilities": [
       "plugin.applications",
       "plugin.lifecycle",

@@ -1424,6 +1424,8 @@ def persist_product_e2e_evidence(
                     "48-native-rejected.png",
                     "48-plugin-print-scope.png",
                     "48-plugin-print-dialog-opened.png",
+                    "48-plugin-print-preview-second.png",
+                    "48-plugin-print-preview.json",
                     "48-plugin-applications-trace.zip",
                 ),
             },
@@ -1597,6 +1599,15 @@ def persist_product_e2e_evidence(
                         f"{scenario_id}.png",
                     ):
                         _copy_if_file(phase_run / filename, retained / filename)
+                    if scenario_id == "48-plugin-applications":
+                        for filename in (
+                            "48-plugin-print-preview.json",
+                            "48-plugin-print-preview-unobservable.json",
+                            "48-plugin-print-dialog-opened.png",
+                            "48-plugin-print-preview-second.png",
+                            "48-plugin-print-preview-navigation.png",
+                        ):
+                            _copy_if_file(phase_run / filename, retained / filename)
                     if scenario_id == "44-file-restore-crash":
                         for filename in (
                             "fault-request.json",

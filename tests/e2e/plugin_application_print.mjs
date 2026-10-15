@@ -1,6 +1,9 @@
 import path from "node:path";
+import fs from "node:fs/promises";
+import { assertNativePrintSnapshot, cancelNativePrintPreview, nativePrintPreviewPages,
+  readNativePrintPreviewInPage, waitForNativePrintPreview } from "./plugin_print_preview.mjs";
 
-/** Runs last: native ShowPrintUI has no completion/cancel receipt. No printer is selected. */
+/** Uses real browser preview targets; observes/cancels only, never selects or submits a printer. */
 export async function runApplicationPrint(page, frame, recorder, runtime, reopen) {
   const token = await frame.evaluate(() => window.name);
   const invalid = await frame.evaluate(async () => {
@@ -59,6 +62,13 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
     document.body.append(report);
   });
   await page.evaluate(() => {
+    const portal = document.createElement("div");
+    portal.id = "native-print-private-portal";
+    portal.textContent = "VIBETABLE_PRINT_PRIVATE_PORTAL VIBETABLE_PRINT_PRIVATE_PLATFORM";
+    document.body.append(portal);
+    const footer = document.createElement("aside");
+    footer.textContent = "VIBETABLE_PRINT_PRIVATE_FOOTER";
+    document.querySelector('[data-testid="plugin-app-viewport"] .surface-shell').append(footer);
     window.__applicationPrintTrace = [];
     for (const name of ["beforeprint", "afterprint"]) addEventListener(name, () => {
       const frame = document.querySelector('[data-testid="plugin-app-viewport"] iframe');
@@ -68,13 +78,63 @@ export async function runApplicationPrint(page, frame, recorder, runtime, reopen
         paths: document.querySelectorAll("[data-vt-plugin-print-path]").length });
     });
   });
-  const opened = await frame.evaluate(() => call("output.print"));
-  recorder.check("real isolated application opens native preview with an opened-only receipt",
-    JSON.stringify(opened) === '{"opened":true}', { opened });
-  await page.waitForFunction(() => window.__applicationPrintTrace.some(event => event.name === "beforeprint"), null, { timeout: 30000 });
-  const trace = await page.evaluate(() => window.__applicationPrintTrace);
-  const viewportHeight = await page.evaluate(() => innerHeight);
-  recorder.check("native preview beforeprint observes the isolated frame path and measured long layout",
-    trace.some(event => event.name === "beforeprint" && event.mode && event.paths > 0 && parseInt(event.height, 10) > viewportHeight), { trace });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "48-plugin-print-dialog-opened.png") });
+  const evidence = { status: "running", snapshots: [] };
+  let preview;
+  let failure;
+  try {
+    if (nativePrintPreviewPages(page).length) throw new Error("an earlier native print preview is still open");
+    for (let cycle = 1; cycle <= 2; cycle++) {
+      const opened = await frame.evaluate(() => call("output.print"));
+      recorder.check(`native print cycle ${cycle} returns an opened-only receipt`, JSON.stringify(opened) === '{"opened":true}', { opened });
+      preview = await waitForNativePrintPreview(page, runtime.evidenceDir);
+      const snapshot = await preview.evaluate(readNativePrintPreviewInPage);
+      assertNativePrintSnapshot(snapshot);
+      evidence.snapshots.push({ stage: `opened-${cycle}`, at: Date.now(), ...snapshot });
+      recorder.check(`actual native preview ${cycle} contains first and last report row across multiple pages and no parent secrets`, true,
+        { pageCount: snapshot.pageCount, viewerUrl: snapshot.viewerUrl });
+      await preview.screenshot({ path: path.join(runtime.evidenceDir,
+        cycle === 1 ? "48-plugin-print-dialog-opened.png" : "48-plugin-print-preview-second.png") });
+      let closeAfter = Date.now();
+      if (cycle === 2) {
+        // Trigger the real trusted navigation while the actual native preview is open, without emulating print media.
+        await page.evaluate(() => document.querySelector('[data-testid="plugin-app-return"]').click());
+        await page.waitForFunction(() => !document.querySelector('[data-testid="plugin-app-viewport"]')
+          && !document.querySelector("[data-vt-plugin-print-path]"), null, { timeout: 15000 });
+        if (!preview.isClosed()) {
+          const navigated = await preview.evaluate(readNativePrintPreviewInPage);
+          assertNativePrintSnapshot(navigated, snapshot.text);
+          evidence.snapshots.push({ stage: "navigation-during-native-preview", at: Date.now(), ...navigated });
+          await preview.screenshot({ path: path.join(runtime.evidenceDir, "48-plugin-print-preview-navigation.png") });
+          recorder.check("actual preview after application navigation retains its authorized snapshot or becomes empty, without parent content", true);
+          closeAfter = Date.now();
+        } else {
+          evidence.snapshots.push({ stage: "navigation-closed-native-preview", at: Date.now() });
+          recorder.check("actual application navigation closes the native preview", true);
+        }
+      }
+      if (!preview.isClosed()) await cancelNativePrintPreview(preview);
+      await page.waitForFunction(({ cycle, closeAfter }) =>
+        window.__applicationPrintTrace.filter(event => event.name === "afterprint").length >= cycle
+        && window.__applicationPrintTrace.some(event => event.name === "afterprint" && event.at >= closeAfter)
+        && !document.documentElement.hasAttribute("data-vt-plugin-print")
+        && !document.querySelector("[data-vt-plugin-print-path]"), { cycle, closeAfter }, { timeout: 15000 });
+      recorder.check(`real native preview close ${cycle} emits afterprint and releases the isolated parent range`, true);
+      evidence.snapshots.push({ stage: `closed-${cycle}`, at: Date.now() });
+      preview = null;
+    }
+    evidence.status = "passed";
+  } catch (error) {
+    evidence.status = "failed";
+    evidence.error = error.message;
+    failure = error;
+  } finally {
+    if (preview && !preview.isClosed()) {
+      try { await cancelNativePrintPreview(preview); }
+      catch (error) { evidence.cleanupError = error.message; failure ??= error; }
+    }
+    evidence.events = await page.evaluate(() => window.__applicationPrintTrace);
+    await fs.writeFile(path.join(runtime.evidenceDir, "48-plugin-print-preview.json"), JSON.stringify(evidence, null, 2));
+    await page.evaluate(() => document.querySelector("#native-print-private-portal")?.remove());
+  }
+  if (failure) throw failure;
 }

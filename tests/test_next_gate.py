@@ -2065,6 +2065,8 @@ def _prepare_complete_product_reports(
                     "48-native-rejected.png",
                     "48-plugin-print-scope.png",
                     "48-plugin-print-dialog-opened.png",
+                    "48-plugin-print-preview-second.png",
+                    "48-plugin-print-preview.json",
                     "48-plugin-applications-trace.zip",
                 ),
             }.items():
@@ -3442,6 +3444,8 @@ def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(t
     phase = "48-plugin-applications/seed/20261015T000001Z"
     for name in (*next_gate.PRODUCT_E2E_EVIDENCE_FILES, "48-plugin-applications-result.json"):
         expected.append(f"{phase}/{name}")
+    for filename in ("48-plugin-print-preview.json", "48-plugin-print-preview-unobservable.json"):
+        expected.append(f"{phase}/{filename}")
     expected.append("48-plugin-applications/persistent/host/vibetable-trace.log")
     for name in (
         "plugin-contrast-original.json",

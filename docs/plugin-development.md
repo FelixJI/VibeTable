@@ -65,6 +65,10 @@ lookup/附件/字段/历史/记录抽屉及其它 portal 均排除。panel、hea
 也不自动重试、回滚或直接发送到默认打印机。并发预览准备拒绝为 `plugin_print_denied`；
 原生开窗异常为 `plugin_print_failed`，此时预览状态未知，保留隔离打印态直到浏览器结束打印或页面重载。Host 固定探测当前 frame 的布局高度（最多 100,000 CSS px），
 超限返回 `plugin_print_limit`，不静默截断；插件自己的打印 CSS 及虚拟列表需自行提供适合打印的内容。跨页布局和预览快照时点以受控 WebView2 产品 QA 为准。
+受控 QA 48 必须观察真实 browser print preview 的 PDF 页数与首末行，原生取消后验证真实
+`afterprint` 清理并再次打印，再在真实预览打开期间导航，确认预览保持授权快照或为空。
+证据记录于 `48-plugin-print-preview.json` 与实际预览截图；运行时若不暴露可观测的预览目标，
+保存目标诊断并使场景失败，不能用 `emulateMedia` 或普通产品页截图替代。
 
 写入计划使用 `vibetable.surface-mutation-plan.v1`，包含 `collection`、`schemaRevision` 和
 `create/update/delete` operations；更新、删除必须带 `primaryKey` 和查询返回的 opaque `expectedDigest`，
