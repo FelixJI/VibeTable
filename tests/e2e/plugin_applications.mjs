@@ -5,6 +5,64 @@ const A = "com.vibetable.e2e.application-a";
 const B = "com.vibetable.e2e.application-b";
 const APP = id => `nav-plugin-app-${id}/open-app`;
 
+// Observe the one UI-approved lease; hiding the plan is not a Host terminal.
+export function installPluginUpgradeCaptureInPage(plan) {
+  const webview = window.chrome.webview;
+  window.__vibetableE2EBridgeCapture?.release?.();
+  const previous = webview.postMessage;
+  const capture = { id: `plugin-upgrade/${plan.planId}`, message: null, error: null, requestId: null };
+  window.__vibetableE2EBridgeCapture = capture;
+  const parse = value => {
+    if (typeof value !== "string") return value;
+    try { return JSON.parse(value); } catch { return null; }
+  };
+  function release() {
+    webview.removeEventListener("message", onMessage);
+    if (webview.postMessage === postMessage) webview.postMessage = previous;
+  }
+  function onMessage(event) {
+    const message = parse(event.data);
+    if (!capture.requestId || message?.requestId !== capture.requestId) return;
+    if (message.type === "operation.failed") {
+      capture.error = { method: "plugin.lifecycle.upgrade", code: message.payload?.code ?? "unknown",
+        message: message.payload?.message ?? "approved upgrade failed" };
+    } else if (message.type === "plugin.lifecycle.upgrade") capture.message = message;
+    else return;
+    release();
+  }
+  function postMessage(...args) {
+    const message = parse(args[0]);
+    const payload = message?.payload;
+    if (message?.type === "plugin.lifecycle.upgrade" && payload?.planId === plan.planId
+      && payload.projectKey === plan.projectKey && payload.pluginId === plan.manifest.pluginId
+      && payload.projectRevision === plan.projectRevision) {
+      if (typeof message.requestId !== "string" || !message.requestId || capture.requestId) {
+        capture.error = { method: "plugin.lifecycle.upgrade", code: "CAPTURE_UPGRADE_IDENTITY_INVALID",
+          message: "approved lease must have exactly one correlated request" };
+        release();
+      } else capture.requestId = message.requestId;
+    }
+    return Reflect.apply(previous, this, args);
+  }
+  capture.release = release;
+  webview.addEventListener("message", onMessage);
+  webview.postMessage = postMessage;
+  return capture.id;
+}
+
+export async function commitInspectedApplicationUpgrade(page, plan, helpers) {
+  const captureId = await page.evaluate(installPluginUpgradeCaptureInPage, plan);
+  await page.getByTestId("plugin-install-commit").click();
+  const terminal = await helpers.waitForCapturedBridgeMessage(page, 30000, captureId);
+  if (terminal.type !== "plugin.lifecycle.upgrade" || terminal.payload?.pluginId !== plan.manifest.pluginId
+    || terminal.payload?.projectKey !== plan.projectKey || terminal.payload?.packageHash !== plan.packageHash
+    || terminal.payload?.version !== plan.manifest.version)
+    throw new Error("approved upgrade terminal does not match its inspected complete package");
+  await page.getByTestId("plugin-install-plan").waitFor({ state: "hidden", timeout: 30000 });
+  return (await helpers.rawBridgeRequest(page, "plugin.catalog.list", { projectKey: plan.projectKey }))
+    .payload.find(item => item.pluginId === plan.manifest.pluginId);
+}
+
 export async function nativePluginInput(runtime, action, buttonId, stage) {
   const requestId = `native-plugin-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const target = path.join(runtime.evidenceDir, "plugin-native-request.json");
@@ -218,10 +276,12 @@ export async function runPluginApplications(page, recorder, runtime, helpers, st
     (await page.getByTestId("plugin-upgrade-permission-delta").innerText()).includes("create"));
   await page.getByTestId("plugin-install-cancel").click();
   const before = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload.find(item => item.pluginId === A);
+  await beginBridgeMessageCapture(page, ["plugin.install.inspect", "operation.failed"]);
   await page.getByTestId("plugin-upgrade").click();
-  await page.getByTestId("plugin-install-commit").click();
-  await page.getByTestId("plugin-install-plan").waitFor({ state: "hidden", timeout: 30000 });
-  const upgraded = (await rawBridgeRequest(page, "plugin.catalog.list", { projectKey: state.projectKey })).payload.find(item => item.pluginId === A);
+  const inspected = await waitForCapturedBridgeMessage(page, 30000);
+  if (inspected.type !== "plugin.install.inspect" || inspected.payload?.projectKey !== state.projectKey
+    || inspected.payload?.manifest?.pluginId !== A) throw new Error("upgrade inspection did not return the requested package");
+  const upgraded = await commitInspectedApplicationUpgrade(page, inspected.payload, helpers);
   recorder.check("approved upgrade replaces one complete installation snapshot", upgraded.version === "2.0.0" && upgraded.revision > before.revision, { before, upgraded });
   await fs.writeFile(path.join(runtime.controlsDir, "plugin-source.txt"), `${path.join(runtime.controlsDir, "app-incompatible.vtplugin")}\n`);
   await beginBridgeMessageCapture(page, ["operation.failed", "plugin.install.inspect"]);

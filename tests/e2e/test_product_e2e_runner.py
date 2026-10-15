@@ -669,6 +669,69 @@ def test_native_preview_requires_real_success_from_a_verified_owned_visible_help
         assert result["helperIdentityVerified"] is True
 
 
+@pytest.mark.parametrize("outcome", ["late-success", "failed", "missing", "too-late"])
+def test_preview_observation_uses_its_existing_correlated_budget_without_an_early_file_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    request, data, controls, source = _native_document_fixture(tmp_path)
+    request["action"] = "preview-observe"
+    clock = [0.0]
+    original_read = runner._read_json
+    evidence = {
+        "source": str(source.resolve()),
+        "outcome": "do-preview-returned",
+        "processId": 43,
+        "hwnd": 100,
+    }
+
+    def read(path: Path):
+        if path.name != "document-native-preview-result.json":
+            return original_read(path)
+        if outcome == "failed":
+            return {**evidence, "outcome": "failed"}
+        if outcome == "too-late":
+            clock[0] = 11
+            return evidence
+        return evidence if outcome == "late-success" and clock[0] >= 6 else None
+
+    monkeypatch.setattr(runner, "_read_json", read)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    native = SimpleNamespace(
+        owner=lambda _hwnd: 43,
+        user32=SimpleNamespace(IsWindowVisible=lambda _hwnd: True),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(runner, "_DocumentNativeWindows", lambda: native)
+
+    class PreviewScope:
+        root = _FakeRoot()
+
+        def snapshot(self) -> ProcessScopeSnapshot:
+            return ProcessScopeSnapshot((ProcessScopeMember(43, "VibeTable.Next.exe", True),))
+
+    scope = PreviewScope()
+    result = runner._handle_document_native_request(
+        request, host_scope=scope, local_data=data, controls=controls
+    )
+    assert result["requestId"] == request["requestId"]
+    if outcome == "late-success":
+        assert result["status"] == "observed"
+        assert 6 <= clock[0] < 10
+        assert result["preview"] == evidence
+        assert result["helperIdentityVerified"] is True
+    else:
+        assert result["status"] == "unverified"
+        if outcome == "failed":
+            assert clock[0] == 0
+        elif outcome == "too-late":
+            assert clock[0] == 11
+        else:
+            assert 10 <= clock[0] < 10.1
+
+
 @pytest.mark.parametrize("invalid", ["action", "fields", "identity", "bytes", "path"])
 def test_native_document_boundary_rejects_invalid_requests_before_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
@@ -6231,6 +6294,10 @@ def _owned_native_uia_window(command: list[str]):
     ) as process:
         native = None
         hwnd = None
+        primary_error: BaseException | None = None
+        print(
+            f"UIA_TARGET launch pid={process.pid} utc={runner.datetime.now(runner.UTC).isoformat()}"
+        )
         try:
             native = runner._DocumentNativeWindows()
             assert process.stdout is not None
@@ -6251,13 +6318,44 @@ def _owned_native_uia_window(command: list[str]):
             ]
             assert len(windows) == 1
             assert windows[0]["hwnd"] == hwnd
+            # Diagnostic WM_NULL only: zero extra wait, no readiness decision,
+            # focus change, retry or business operation before the cold observer.
+            pump_result = runner.ctypes.c_size_t()
+            pump_started = runner.time.monotonic()
+            pump_responded = native.user32.SendMessageTimeoutW(
+                hwnd, 0, 0, 0, 0x0002 | 0x0020, 0, runner.ctypes.byref(pump_result)
+            )
+            print(
+                f"UIA_TARGET pump responded={bool(pump_responded)} elapsedMs={(runner.time.monotonic() - pump_started) * 1000:.3f}"
+            )
             yield native, hwnd
+        except BaseException as exception:
+            primary_error = exception
+            if native is not None and hwnd is not None and process.poll() is None:
+                try:
+                    owned = native.owner(hwnd) == process.pid
+                    result = runner.ctypes.c_size_t()
+                    responsive = owned and bool(
+                        native.user32.SendMessageTimeoutW(
+                            hwnd, 0, 0, 0, 0x0002 | 0x0020, 0, runner.ctypes.byref(result)
+                        )
+                    )
+                    print(f"UIA_TARGET failure pump owned={owned} responded={responsive}")
+                except (OSError, ValueError) as diagnostic_error:
+                    print(f"UIA_TARGET failure pump unavailable={type(diagnostic_error).__name__}")
+            raise
         finally:
             try:
                 if native is not None and hwnd is not None and process.poll() is None:
                     assert native.owner(hwnd) == process.pid
                     assert native.close_new_document(hwnd, process.pid)
                     process.wait(timeout=5)
+            except BaseException as cleanup_error:
+                if primary_error is None:
+                    raise
+                primary_error.add_note(
+                    f"UIA_TARGET cleanup failed ({type(cleanup_error).__name__})"
+                )
             finally:
                 if native is not None:
                     native.close()
@@ -6265,7 +6363,89 @@ def _owned_native_uia_window(command: list[str]):
                     process.kill()
                 _, stderr = process.communicate(timeout=5)
                 print(f"UIA_TARGET exit={process.returncode}")
+                # Owned synthetic target stderr locates Add-Type/Shown/callback/pump.
+                # Preserve it on the original exception, including readiness timeout.
+                if stderr:
+                    print(f"UIA_TARGET stderr:\n{stderr[-4096:]}")
+                    if primary_error is not None:
+                        primary_error.add_note(f"UIA_TARGET stderr:\n{stderr[-4096:]}")
         assert process.returncode == 0, stderr
+
+
+@pytest.mark.parametrize("phase", ["readiness", "observer"])
+def test_native_uia_readiness_failure_keeps_target_stage_stderr_on_the_original_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], phase: str
+) -> None:
+    import concurrent.futures
+
+    class Target:
+        pid = 123
+        returncode: int | None = None
+        stdout = io.StringIO()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            assert timeout == 5
+            return "", "UIA_TARGET_STAGE assemblies begin utc=synthetic"
+
+    class Reader:
+        def __init__(self, *, max_workers: int) -> None:
+            assert max_workers == 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def submit(self, *_args: object) -> SimpleNamespace:
+            def result(*, timeout: float) -> str:
+                assert timeout == 30
+                if phase == "readiness":
+                    raise TimeoutError("target did not report ready")
+                return json.dumps({"hwnd": 10, "pid": 123, "apartment": "STA"})
+
+            return SimpleNamespace(result=result)
+
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *_args, **_kwargs: Target())
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", Reader)
+    monkeypatch.setattr(
+        runner,
+        "_DocumentNativeWindows",
+        lambda: SimpleNamespace(
+            close=lambda: None,
+            owner=lambda _hwnd: 123,
+            windows=lambda: [{"hwnd": 10, "pid": 123, "visible": True}],
+            user32=SimpleNamespace(SendMessageTimeoutW=lambda *_args: 1),
+            close_new_document=lambda *_args: False,
+        ),
+    )
+    with (
+        pytest.raises(TimeoutError) as failure,
+        _owned_native_uia_window(["owned-synthetic-fixture"]),
+    ):
+        raise TimeoutError("observer did not finish")
+    assert str(failure.value) == (
+        "target did not report ready" if phase == "readiness" else "observer did not finish"
+    )
+    assert any("UIA_TARGET_STAGE assemblies begin" in note for note in failure.value.__notes__)
+    output = capsys.readouterr().out
+    assert "UIA_TARGET_STAGE assemblies begin" in output
+    if phase == "observer":
+        assert str(failure.value) == "observer did not finish"
+        assert any("UIA_TARGET cleanup failed" in note for note in failure.value.__notes__)
+        assert "failure pump owned=True responded=True" in output
 
 
 def _native_edit_fixture_command(startup_delay_ms: int = 0, mode: str = "single") -> list[str]:
@@ -6273,7 +6453,9 @@ def _native_edit_fixture_command(startup_delay_ms: int = 0, mode: str = "single"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
+[Console]::Error.WriteLine(('UIA_TARGET_STAGE assemblies begin utc=' + [DateTime]::UtcNow.ToString('o')))
 Add-Type -AssemblyName System.Windows.Forms
+[Console]::Error.WriteLine(('UIA_TARGET_STAGE assemblies end utc=' + [DateTime]::UtcNow.ToString('o')))
 $form = [Windows.Forms.Form]::new()
 $edit = [Windows.Forms.TextBox]::new()
 $edit.Multiline = $true
@@ -6281,16 +6463,23 @@ $edit.ReadOnly = $true
 $edit.Text = "第一行 '引号' `"双引号`" 制表`t结尾`r`nsecond line"
 $form.Controls.Add($edit)
 EXTRA_CONTROLS
+[Console]::Error.WriteLine(('UIA_TARGET_STAGE controls ready utc=' + [DateTime]::UtcNow.ToString('o')))
 try {
+    [Console]::Error.WriteLine(('UIA_TARGET_STAGE show begin utc=' + [DateTime]::UtcNow.ToString('o')))
     $form.Show()
+    [Console]::Error.WriteLine(('UIA_TARGET_STAGE show end utc=' + [DateTime]::UtcNow.ToString('o')))
     $null = $form.BeginInvoke([Action]{
+        [Console]::Error.WriteLine(('UIA_TARGET_STAGE ready callback begin utc=' + [DateTime]::UtcNow.ToString('o')))
         [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{
             hwnd = $form.Handle.ToInt64(); pid = $PID;
             apartment = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
         }))
+        [Console]::Error.WriteLine(('UIA_TARGET_STAGE ready callback end utc=' + [DateTime]::UtcNow.ToString('o')))
     })
     [System.Threading.Thread]::Sleep(STARTUP_DELAY_MS)
+    [Console]::Error.WriteLine(('UIA_TARGET_STAGE pump begin utc=' + [DateTime]::UtcNow.ToString('o')))
     [Windows.Forms.Application]::Run($form)
+    [Console]::Error.WriteLine(('UIA_TARGET_STAGE pump end utc=' + [DateTime]::UtcNow.ToString('o')))
 } finally { $form.Close(); $form.Dispose() }
 """.replace("STARTUP_DELAY_MS", str(startup_delay_ms))
     extra = ""

@@ -1811,6 +1811,9 @@ def _handle_document_native_request(
     # the observer's own UIA_STAGE clock (observer begin carries a UTC timestamp).
     started_at_utc: str | None = None
     started_at: float | None = None
+    # The existing Node nativeRequest owns a single 10s correlated observation.
+    # Missing preview evidence is pending, not a second operation or a new budget.
+    observation_deadline = time.monotonic() + 10
     try:
         source = _document_native_source(request, local_data, controls)
         native = _DocumentNativeWindows()
@@ -1831,7 +1834,15 @@ def _handle_document_native_request(
                 "foreground": native.foreground_observation,
             }
         if action == "preview-observe":
-            evidence = _read_json(controls / "document-native-preview-result.json")
+            while True:
+                evidence = _read_json(controls / "document-native-preview-result.json")
+                if evidence is not None:
+                    break
+                if time.monotonic() >= observation_deadline:
+                    raise OSError(
+                        "real FileDocument COM DoPreview produced no success record within the observation budget"
+                    )
+                time.sleep(0.025)
             if (
                 evidence is None
                 or evidence.get("outcome") != "do-preview-returned"
@@ -1852,6 +1863,10 @@ def _handle_document_native_request(
                 raise OSError("preview helper is not a verified child in the packaged Host Job")
             if native.owner(hwnd) != pid or not native.user32.IsWindowVisible(hwnd):
                 raise OSError("real preview COM host HWND is missing or has another owner")
+            if time.monotonic() >= observation_deadline:
+                raise OSError(
+                    "real FileDocument COM DoPreview success arrived after the observation budget"
+                )
             return {
                 "requestId": request["requestId"],
                 "status": "observed",
