@@ -83,12 +83,15 @@ export async function attachNativePreview(session, target) {
         await fs.writeFile(path, Buffer.from(data, "base64"));
       },
       locator(selector) {
-        if (selector !== "print-preview-button-strip .cancel-button") throw new Error("native preview control outside closed set");
+        if (selector !== "print-preview-button-strip .cancel-button, app-shell print-preview side-bar footer-container fluent-button.cancel") throw new Error("native preview control outside closed set");
         const buttons = () => {
           const app = document.querySelector("print-preview-app");
           const strip = app?.shadowRoot?.querySelector("print-preview-sidebar")?.shadowRoot?.querySelector("print-preview-button-strip")
             ?? app?.shadowRoot?.querySelector("print-preview-button-strip");
-          return [...(strip?.shadowRoot?.querySelectorAll(".cancel-button") ?? [])];
+          const edge = document.querySelector("app-shell")?.shadowRoot?.querySelector("print-preview");
+          const footer = edge?.shadowRoot?.querySelector("side-bar")?.shadowRoot?.querySelector("footer-container");
+          return [...(strip?.shadowRoot?.querySelectorAll(".cancel-button") ?? []),
+            ...(footer?.shadowRoot?.querySelectorAll("fluent-button.cancel") ?? [])];
         };
         return {
           count: () => evaluate(new Function(`return (${buttons.toString()})().length;`)),

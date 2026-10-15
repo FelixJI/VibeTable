@@ -9,14 +9,27 @@ export async function readNativePrintPreviewInPage() {
   if (!/^(?:chrome|edge):\/\/print\/(?:[?#].*)?$/.test(location.href))
     throw new Error("native print preview origin required");
   const startedAt = Date.now(), observations = [];
-  function observe() {
-    const app = document.querySelector("print-preview-app"), root = app?.shadowRoot;
-    const area = root?.querySelector("print-preview-preview-area");
-    const info = root?.querySelector("print-preview-document-info");
-    const sidebar = root?.querySelector("print-preview-sidebar");
-    const strip = sidebar?.shadowRoot?.querySelector("print-preview-button-strip")
-      ?? root?.querySelector("print-preview-button-strip");
+  // Edge154 names/services are verified in the installed Microsoft WebView2
+  // print bundle and the owned CI target, rather than inferred from Chromium.
+  function readUi() {
+    const chromium = document.querySelector("print-preview-app");
+    const edge = document.querySelector("app-shell")?.shadowRoot?.querySelector("print-preview");
+    if (chromium?.shadowRoot && edge?.shadowRoot) throw new Error("ambiguous native print WebUI roots");
+    const layout = chromium?.shadowRoot ? "chromium" : edge?.shadowRoot ? "edge154" : "unknown";
+    const app = layout === "chromium" ? chromium : edge, root = app?.shadowRoot;
+    const area = root?.querySelector(layout === "edge154" ? "preview-area" : "print-preview-preview-area");
+    const info = layout === "edge154" ? area?.documentInfoService : root?.querySelector("print-preview-document-info");
+    const state = layout === "edge154" ? area?.printPreviewState : null;
+    const pageCount = layout === "edge154" ? info?.pageCount : info?.documentSettings?.pageCount;
+    const ready = layout === "edge154" ? state?.pluginLoaded === true && state?.documentReady === true : area?.previewLoaded?.() === true;
+    const sidebar = root?.querySelector(layout === "edge154" ? "side-bar" : "print-preview-sidebar");
+    const strip = layout === "edge154" ? sidebar?.shadowRoot?.querySelector("footer-container")
+      : sidebar?.shadowRoot?.querySelector("print-preview-button-strip") ?? root?.querySelector("print-preview-button-strip");
     const viewer = area?.shadowRoot?.querySelector("#pdf-viewer");
+    return { layout, app, root, area, info, state, pageCount, ready, strip, viewer };
+  }
+  function observe() {
+    const { layout, app, root, area, info, state, pageCount, ready, strip, viewer } = readUi();
     const elements = [], queue = [{ node: document.body, depth: 0 }];
     while (queue.length && elements.length < 64) {
       const { node, depth } = queue.shift();
@@ -36,34 +49,38 @@ export async function readNativePrintPreviewInPage() {
     const at = Date.now();
     observations.push({ at, elapsedMs: at - startedAt, href: String(location.href).slice(0, 512),
       readyState: document.readyState ?? null, userAgent: typeof navigator === "undefined" ? null : String(navigator.userAgent).slice(0, 512),
+      layout, ready, pluginLoaded: typeof state?.pluginLoaded === "boolean" ? state.pluginLoaded : null,
+      documentReady: typeof state?.documentReady === "boolean" ? state.documentReady : null,
+      pluginLoadedType: typeof state?.pluginLoaded, documentReadyType: typeof state?.documentReady,
       app: Boolean(app), appShadow: Boolean(root), area: Boolean(area), info: Boolean(info),
-      pageCount: typeof info?.documentSettings?.pageCount === "number" ? info.documentSettings.pageCount : null,
+      pageCount: typeof pageCount === "number" ? pageCount : null,
       previewLoadedApi: typeof area?.previewLoaded, previewState: String(area?.previewState ?? "").slice(0, 96),
       previewError: String(area?.error ?? "").slice(0, 96), viewer: Boolean(viewer),
-      viewerUrl: String(viewer?.src ?? "").slice(0, 512), cancelCount: strip?.shadowRoot?.querySelectorAll(".cancel-button")?.length ?? 0,
+      viewerUrl: String(viewer?.src ?? "").slice(0, 512), cancelCount: strip?.shadowRoot?.querySelectorAll(layout === "edge154" ? "fluent-button.cancel" : ".cancel-button")?.length ?? 0,
       elements });
   }
   try { observe(); } catch (error) { observations.push({ captureError: error.message }); }
   try {
     const deadline = startedAt + 15000;
-    let area, info, viewer;
+    let ui;
     while (Date.now() < deadline) {
-      const app = document.querySelector("print-preview-app");
-      area = app?.shadowRoot?.querySelector("print-preview-preview-area");
-      info = app?.shadowRoot?.querySelector("print-preview-document-info");
-      viewer = area?.shadowRoot?.querySelector("#pdf-viewer");
-      if (area?.previewLoaded?.() && viewer?.contentWindow && info?.documentSettings?.pageCount > 0) break;
+      ui = readUi();
+      if (ui.ready && ui.viewer?.contentWindow && ui.pageCount > 0) break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const pageCount = info?.documentSettings?.pageCount;
+    const pageCount = ui?.pageCount, viewer = ui?.viewer;
     if (!Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 200)
       throw new Error("native preview page limit or unreadable page count");
-    if (!area?.previewLoaded?.() || !viewer?.contentWindow)
+    if (!ui.ready || !viewer?.contentWindow)
       throw new Error("native preview PDF did not load");
-    const viewerUrl = viewer.src;
-    if (!/^(?:chrome|edge):\/\/print\/pdf\/index_print\.html\?/.test(viewerUrl))
+    const viewerUrl = viewer.src, source = new URL(viewerUrl);
+    const paths = ui.layout === "edge154"
+      ? ["/edge_pdf/edge_pdf/index_print.html", "/edge_pdf/edge_pdf/index_print_minimal.html"]
+      : ["/pdf/index_print.html"];
+    if (source.protocol !== new URL(location.href).protocol || source.host !== "print" || !paths.includes(source.pathname)
+      || !/^\?chrome-untrusted:\/\/print\/\d+\/-?\d+\/print\.pdf$/.test(source.search) || source.hash)
       throw new Error("native preview PDF viewer source changed");
-    const viewerOrigin = new URL(viewerUrl).protocol + "//" + new URL(viewerUrl).host;
+    const viewerOrigin = source.protocol + "//" + source.host;
     const text = await new Promise((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); window.removeEventListener("message", receive); };
       const timer = setTimeout(() => { cleanup(); reject(new Error("native preview PDF text timeout")); }, 5000);
@@ -163,7 +180,7 @@ export async function waitForNativePrintPreview(page, evidenceDir) {
 
 export async function cancelNativePrintPreview(preview) {
   if (!isNativePrintPreviewUrl(preview.url())) throw new Error("native preview cancel target changed");
-  const cancel = preview.locator("print-preview-button-strip .cancel-button");
+  const cancel = preview.locator("print-preview-button-strip .cancel-button, app-shell print-preview side-bar footer-container fluent-button.cancel");
   if (await cancel.count() !== 1) throw new Error("one native print preview Cancel button required");
   await Promise.all([preview.waitForEvent("close", { timeout: 15000 }), cancel.click({ timeout: 5000 })]);
 }

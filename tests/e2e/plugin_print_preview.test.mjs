@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import vm from "node:vm";
 import { assertNativePrintSnapshot, cancelNativePrintPreview, nativePrintPreviewPages, readNativePrintPreviewInPage, waitForNativePrintPreview, observeNativePrintPreviewFailure } from "./plugin_print_preview.mjs";
 
 const report = "synthetic authorized print row 0\nsynthetic authorized print row 99";
@@ -14,27 +15,31 @@ test("actual preview snapshot requires multiple pages, first/last row and exclud
   assert.throws(() => assertNativePrintSnapshot({ pageCount: 1, text: "platform rows" }, report));
 });
 
-function installPreview({ pageCount = 4, text = report, replySource = true, transportFailure = false, url = "chrome://print/" } = {}) {
+function installPreview({ pageCount = 4, text = report, replySource = true, transportFailure = false, url = "chrome://print/", layout = "chromium", pluginLoaded = true, documentReady = true, viewerPath = "index_print.html", viewerSource } = {}) {
   const originals = Object.fromEntries(["window", "document", "location"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const listeners = new Set(); const messages = [];
-  const viewer = { contentWindow: { postMessage(message) {
+  const viewer = { contentWindow: { postMessage(message, targetOrigin) {
+    assert.equal(targetOrigin, layout === "edge" ? "edge://print" : "chrome://print");
     if (transportFailure) throw new Error("synthetic PDF viewer gone");
     messages.push(message.type);
     if (message.type === "getSelectedText") queueMicrotask(() => {
       for (const listener of [...listeners]) {
         // A forged sibling cannot answer the PDF text request.
-        listener({ source: {}, origin: "chrome://print", data: { type: "getSelectedTextReply", selectedText: "forged private text" } });
-        listener({ source: replySource ? viewer.contentWindow : {}, origin: "chrome://print", data: { type: "getSelectedTextReply", selectedText: text } });
+        listener({ source: {}, origin: layout === "edge" ? "edge://print" : "chrome://print", data: { type: "getSelectedTextReply", selectedText: "forged private text" } });
+        listener({ source: replySource ? viewer.contentWindow : {}, origin: layout === "edge" ? "edge://print" : "chrome://print", data: { type: "getSelectedTextReply", selectedText: text } });
       }
     });
-  } }, src: "chrome://print/pdf/index_print.html?chrome-untrusted://print/123/0/print.pdf" };
-  const area = { previewLoaded: () => true, shadowRoot: { querySelector: selector => selector === "#pdf-viewer" ? viewer : null } };
+  } }, src: layout === "edge" ? `edge://print/edge_pdf/edge_pdf/${viewerPath}?chrome-untrusted://print/123/0/print.pdf` : "chrome://print/pdf/index_print.html?chrome-untrusted://print/123/0/print.pdf" };
+  if (viewerSource) viewer.src = viewerSource;
+  const area = { printPreviewState: { pluginLoaded, documentReady }, documentInfoService: { pageCount }, previewLoaded: () => true, shadowRoot: { querySelector: selector => selector === "#pdf-viewer" ? viewer : null } };
   const info = { documentSettings: { pageCount } };
   const app = { shadowRoot: { querySelector: selector => selector === "print-preview-preview-area" ? area : selector === "print-preview-document-info" ? info : null } };
+  const edgePreview = { shadowRoot: { querySelector: selector => selector === "preview-area" ? area : null } };
+  const shell = { shadowRoot: { querySelector: selector => selector === "print-preview" ? edgePreview : null } };
   Object.defineProperty(globalThis, "window", { configurable: true, value: {
     addEventListener(_name, callback) { listeners.add(callback); }, removeEventListener(_name, callback) { listeners.delete(callback); },
   } });
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: () => app } });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: selector => layout === "both" ? (selector === "app-shell" ? shell : selector === "print-preview-app" ? app : null) : layout === "edge" ? (selector === "app-shell" ? shell : null) : (selector === "print-preview-app" ? app : null) } });
   Object.defineProperty(globalThis, "location", { configurable: true, value: { href: url } });
   return { messages, listeners, restore() { for (const [key, descriptor] of Object.entries(originals)) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
@@ -72,7 +77,7 @@ test("native preview discovery excludes app and forged internal URLs", () => {
 test("native cancel clicks only the single browser Cancel control and observes target closure", async () => {
   const actions = [];
   const preview = { url: () => "edge://print/", locator(selector) {
-    assert.equal(selector, "print-preview-button-strip .cancel-button");
+    assert.equal(selector, "print-preview-button-strip .cancel-button, app-shell print-preview side-bar footer-container fluent-button.cancel");
     return { count: async () => 1, click: async () => actions.push("cancel") };
   }, waitForEvent: async event => { assert.equal(event, "close"); actions.push("observe-close"); } };
   await cancelNativePrintPreview(preview);
@@ -162,4 +167,75 @@ test("a diagnostic DOM failure cannot mask the original reader failure", async (
       return true;
     });
   } finally { Date.now = now; f.restore(); }
+});
+
+
+test("actual Edge154 DOM and verified readiness services read the existing PDF viewer", async () => {
+  for (const viewerPath of ["index_print.html", "index_print_minimal.html"]) {
+    const f = installPreview({ layout: "edge", url: "edge://print/", viewerPath });
+    const now = Date.now; let calls = 0;
+    try {
+      Date.now = () => ++calls < 4 ? 0 : 15001;
+      const snapshot = await readNativePrintPreviewInPage();
+      assert.equal(snapshot.pageCount, 4);
+      assert.equal(snapshot.text, report);
+      assert.equal(snapshot.viewerUrl, `edge://print/edge_pdf/edge_pdf/${viewerPath}?chrome-untrusted://print/123/0/print.pdf`);
+      assert.deepEqual(f.messages, ["selectAll", "getSelectedText"]);
+    } finally { Date.now = now; f.restore(); }
+  }
+});
+
+
+test("Edge readiness requires both exact observed booleans before reading PDF text", async () => {
+  for (const state of [{ pluginLoaded: false }, { documentReady: false }, { pluginLoaded: 1 }, { documentReady: "true" }]) {
+    const f = installPreview({ layout: "edge", url: "edge://print/", ...state });
+    const now = Date.now; let calls = 0;
+    try {
+      Date.now = () => ++calls < 4 ? 0 : 15001;
+      await assert.rejects(readNativePrintPreviewInPage(), /native preview PDF did not load/);
+      assert.deepEqual(f.messages, []);
+    } finally { Date.now = now; f.restore(); }
+  }
+});
+
+test("Edge rejects an unreadable page count, unsupported viewer path or non-preview PDF source", async () => {
+  for (const invalid of [{ pageCount: 201 }, { viewerPath: "unexpected.html" },
+    { viewerSource: "edge://print/edge_pdf/edge_pdf/index_print.html?https://app.vibetable.local/private.pdf" },
+    { viewerSource: "https://print/edge_pdf/edge_pdf/index_print.html?chrome-untrusted://print/123/0/print.pdf" }]) {
+    const f = installPreview({ layout: "edge", url: "edge://print/", ...invalid });
+    try { await assert.rejects(readNativePrintPreviewInPage(), /native preview (page limit|PDF viewer source changed)/); assert.deepEqual(f.messages, []); }
+    finally { f.restore(); }
+  }
+});
+
+test("two live native WebUI roots cannot choose a report implicitly", async () => {
+  const f = installPreview({ layout: "both" });
+  try { await assert.rejects(readNativePrintPreviewInPage(), /ambiguous native print WebUI roots/); assert.deepEqual(f.messages, []); }
+  finally { f.restore(); }
+});
+
+
+test("an exposed Edge preview Page also resolves its real footer Cancel", async () => {
+  const actions = [];
+  const preview = { url: () => "edge://print/", locator(selector) {
+    return { count: async () => selector.includes("footer-container fluent-button.cancel") ? 1 : 0,
+      click: async () => actions.push("cancel") };
+  }, waitForEvent: async () => actions.push("close") };
+  await cancelNativePrintPreview(preview);
+  assert.deepEqual(actions, ["close", "cancel"]);
+});
+
+
+test("both native readers execute as the serialized fixed CDP function without imported closures", async () => {
+  for (const layout of ["chromium", "edge"]) {
+    const f = installPreview({ layout, url: layout === "edge" ? "edge://print/" : "chrome://print/" });
+    try {
+      const snapshot = await vm.runInNewContext(`(${readNativePrintPreviewInPage.toString()})()`,
+        { window, document, location, URL, Date, setTimeout, clearTimeout });
+      assert.equal(snapshot.pageCount, 4);
+      assert.equal(snapshot.text, report);
+      assertNativePrintSnapshot(snapshot);
+      assert.equal(f.listeners.size, 0);
+    } finally { f.restore(); }
+  }
 });

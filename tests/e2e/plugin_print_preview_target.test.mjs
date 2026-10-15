@@ -6,12 +6,16 @@ import fs from "node:fs/promises";
 import { attachNativePreview, selectOwnedPreviewTarget } from "./plugin_print_preview_target.mjs";
 import { waitForNativePrintPreview, cancelNativePrintPreview } from "./plugin_print_preview.mjs";
 const target = { targetId: "actual-preview", browserContextId: "owned", type: "page", url: "edge://print/", attached: false };
-function fixture() {
+function fixture(layout = "chromium") {
   const session = new EventEmitter(), calls = [];
   let current = { ...target }, detached = 0;
-  const cancel = { disabled: false, click: () => session.emit("Target.targetDestroyed", { targetId: target.targetId }) };
+  const cancel = { disabled: layout === "edge-disabled", click: () => session.emit("Target.targetDestroyed", { targetId: target.targetId }) };
   const strip = { shadowRoot: { querySelectorAll: () => [cancel] } };
   const app = { shadowRoot: { querySelector: selector => selector === "print-preview-sidebar" ? { shadowRoot: { querySelector: () => strip } } : strip } };
+  const footer = { shadowRoot: { querySelectorAll: selector => { assert.equal(selector, "fluent-button.cancel"); return [cancel]; } } };
+  const sidebar = { shadowRoot: { querySelector: selector => selector === "footer-container" ? footer : null } };
+  const edgePreview = { shadowRoot: { querySelector: selector => selector === "side-bar" ? sidebar : null } };
+  const shell = { shadowRoot: { querySelector: selector => selector === "print-preview" ? edgePreview : null } };
   session.send = async (method, params) => {
     calls.push({ method, params });
     if (method === "Target.getTargets") return { targetInfos: [current] };
@@ -19,7 +23,7 @@ function fixture() {
     if (method === "Target.attachToTarget") return { sessionId: "nested" };
     if (method === "Target.sendMessageToTarget") {
       const message = JSON.parse(params.message); let result = {};
-      if (message.method === "Runtime.evaluate") result = { result: { value: await vm.runInNewContext(message.params.expression, { location: { href: current.url }, document: { querySelector: () => app } }) } };
+      if (message.method === "Runtime.evaluate") result = { result: { value: await vm.runInNewContext(message.params.expression, { location: { href: current.url }, document: { querySelector: selector => layout === "both" ? (selector === "app-shell" ? shell : selector === "print-preview-app" ? app : null) : layout.startsWith("edge") ? (selector === "app-shell" ? shell : null) : (selector === "print-preview-app" ? app : null) } }) } };
       if (message.method === "Page.captureScreenshot") result = { data: Buffer.from("actual-target-png-protocol").toString("base64") };
       queueMicrotask(() => {
         session.emit("Target.receivedMessageFromTarget", { sessionId: "foreign", message: JSON.stringify({ id: message.id, result: { result: { value: "forged" } } }) });
@@ -111,4 +115,24 @@ test("failure capture identity check shares the bounded screenshot budget", asyn
     await assert.rejects(preview.screenshot({ path: "unused", timeout: 5 }), /native preview identity deadline/);
     assert.ok(!f.calls.some(call => call.method === "Target.sendMessageToTarget" && JSON.parse(call.params.message).method === "Page.captureScreenshot"));
   } finally { await preview.dispose(); }
+});
+
+
+test("actual Edge154 footer cancellation targets only fluent-button.cancel", async () => {
+  const f = fixture("edge"), preview = await attachNativePreview(f.session, target);
+  try { await cancelNativePrintPreview(preview); assert.equal(preview.isClosed(), true); }
+  finally { await preview.dispose(); }
+});
+
+
+test("Edge Cancel refuses disabled controls and ambiguous native roots", async () => {
+  for (const layout of ["edge-disabled", "both"]) {
+    const f = fixture(layout), preview = await attachNativePreview(f.session, target);
+    try {
+      await assert.rejects(cancelNativePrintPreview(preview), /one (enabled native Cancel|native print preview Cancel button) required/);
+      assert.equal(preview.isClosed(), false);
+    } finally { await preview.dispose(); }
+    assert.equal(f.detached(), 1);
+    assert.equal(f.session.listenerCount("Target.targetDestroyed"), 0);
+  }
 });
