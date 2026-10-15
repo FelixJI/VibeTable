@@ -313,7 +313,8 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 default: throw Error("plugin_api_unsupported");
             }
             if (!committed && !printOpened) CurrentSurface(frameToken, source);
-            string response = Reply(requestId, result);
+            string response = request.Method is "file.read" or "attachments.read"
+                ? ReadBlockReply(requestId, result) : Reply(requestId, result);
             if (Encoding.UTF8.GetByteCount(response) > MaxBytes) throw Error("plugin_message_too_large");
             return response;
         }
@@ -458,6 +459,30 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         or "mutation.relation.restricted" or "mutation.digest_conflict" or "mutation.revision_conflict" or "mutation.schema_revision_conflict" or "mutation.idempotency_conflict";
     private sealed class SurfaceAuthorityException(string code, bool notCommitted) : Exception
     { internal string Code { get; } = code; internal bool NotCommitted { get; } = notCommitted; }
+    private static string ReadBlockReply(string? id, object? result)
+    {
+        if (result is not JsonElement block) throw Error("plugin_capability_invalid");
+        string encoded = block.GetProperty("base64").GetString() ?? throw Error("plugin_capability_invalid");
+        if (encoded.Length > ((256 * 1024 + 2) / 3) * 4) throw Error("plugin_file_limit");
+        byte[] bytes = Convert.FromBase64String(encoded);
+        if (bytes.Length > 256 * 1024) throw Error("plugin_file_limit");
+        using var output = new System.IO.MemoryStream();
+        using (var writer = new Utf8JsonWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("contract", Contract);
+            writer.WriteString("requestId", id);
+            writer.WriteStartObject("result");
+            // Only base64 is emitted compactly. Other strings retain the default JSON encoder.
+            // The complete JSON is posted with CoreWebView2Frame.PostWebMessageAsJson, never embedded in HTML.
+            writer.WriteBase64String("base64", bytes);
+            writer.WriteBoolean("eof", block.GetProperty("eof").GetBoolean());
+            writer.WriteEndObject();
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(output.ToArray());
+    }
+
     private static string Reply(string? id, object? result) => JsonSerializer.Serialize(new { contract = Contract, requestId = id, result }, Json);
     internal void Retire(string token)
     { _surfaces.Close(token); RetireState(token); }

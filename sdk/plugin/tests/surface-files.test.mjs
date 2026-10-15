@@ -80,3 +80,27 @@ test("owned DataIO cancellation stays bounded and reachable with full normal req
   assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
   client.dispose(); await Promise.allSettled(busy);
 });
+
+
+for (const kind of ["file", "attachment"]) {
+  test(`${kind} read consumes maximum binary blocks with plus-heavy and mixed base64`, async () => {
+    const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+    const content = new Uint8Array(1024 * 1024);
+    const plusBytes = [251, 239, 190];
+    for (let index = 0; index < content.length; index++) content[index] = index < 3 * 262144 ? plusBytes[index % 3] : index % 256;
+    let reading;
+    if (kind === "file") {
+      const picking = client.file.pickRead(); wire.reply({ grantId: "binary", displayName: "binary.bin", mediaType: "application/octet-stream" });
+      reading = (await picking).read();
+    } else reading = client.attachments.read("opaque");
+    for (let offset = 0; offset < content.length; offset += 262144) {
+      assert.equal(wire.calls.at(-1).method, kind === "file" ? "file.read" : "attachments.read");
+      if (kind === "attachment") assert.equal(wire.calls.at(-1).params.offset, offset);
+      const block = { base64: Buffer.from(content.subarray(offset, offset + 262144)).toString("base64"), eof: kind === "attachment" && offset + 262144 === content.length };
+      const json = JSON.stringify(block); assert.ok(Buffer.byteLength(json) < 1048576);
+      wire.reply(JSON.parse(json)); await tick();
+    }
+    if (kind === "file") wire.reply({ base64: "", eof: true });
+    assert.deepEqual(await reading, content); client.dispose();
+  });
+}
