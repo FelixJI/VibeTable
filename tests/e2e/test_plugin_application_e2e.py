@@ -135,6 +135,7 @@ def test_contrast_restore_mismatch_keeps_exact_facts_and_fails_closed(tmp_path, 
         "status": "failed",
         "original": original,
         "attempt": original,
+        "onObserved": None,
         "observed": observed,
         "error": "controlled runner system contrast restoration did not match the recorded original",
     }
@@ -211,3 +212,201 @@ def test_contrast_evidence_failure_does_not_prevent_os_restoration(tmp_path, mon
     diagnostic = json.loads((tmp_path / "plugin-contrast-restoration.json").read_text())
     assert diagnostic["observed"] == original
     assert diagnostic["status"] == "failed"
+
+
+def test_unspecified_off_scheme_only_accepts_the_observed_enabled_default(tmp_path, monkeypatch):
+    from tests.e2e import plugin_application_native as native
+
+    original = {"flags": 126, "scheme": ""}
+    current = {"flags": 127, "scheme": "High Contrast Black"}
+    on_observed = dict(current)
+
+    def parameters(flags=None, scheme=""):
+        if flags is not None:
+            current["flags"] = flags
+            if scheme:
+                current["scheme"] = scheme
+        return dict(current)
+
+    monkeypatch.setattr(native, "_contrast_original", original)
+    monkeypatch.setattr(native, "_contrast_on_observed", on_observed, raising=False)
+    monkeypatch.setattr(native, "_contrast_parameters", parameters)
+    result = native.restore_system_contrast(evidence=tmp_path)
+    assert result["status"] == "restored"
+    assert result["onObserved"] == on_observed
+    assert result["schemeMaterialization"] == "unspecified-default-materialized"
+    assert native._contrast_original is None
+
+
+def test_highcontrast_get_copies_and_frees_only_system_allocated_pointer(monkeypatch):
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    class Value(ctypes.Structure):
+        _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", ctypes.c_void_p)]
+
+    buffer = ctypes.create_unicode_buffer("High Contrast Black")
+    address = ctypes.addressof(buffer)
+    freed = []
+
+    def spi(action, size, pointer, update):
+        value = ctypes.cast(pointer, ctypes.POINTER(Value)).contents
+        if action == 0x42:
+            assert value.scheme is None
+            value.flags = 127
+            value.scheme = address
+        else:
+            assert ctypes.wstring_at(value.scheme) == "explicit scheme"
+        return True
+
+    def free(pointer):
+        freed.append(pointer)
+        return None
+
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        lambda name, **_kwargs: SimpleNamespace(SystemParametersInfoW=spi, LocalFree=free),
+    )
+    assert native._contrast_parameters() == {"flags": 127, "scheme": "High Contrast Black"}
+    assert freed == [address]
+    native._contrast_parameters(126, "explicit scheme")
+    assert freed == [address]
+
+
+@pytest.mark.parametrize(
+    ("original", "on_observed", "restored"),
+    [
+        (
+            {"flags": 126, "scheme": "explicit"},
+            {"flags": 127, "scheme": "explicit"},
+            {"flags": 126, "scheme": "other"},
+        ),
+        (
+            {"flags": 127, "scheme": ""},
+            {"flags": 127, "scheme": "Black"},
+            {"flags": 127, "scheme": "Black"},
+        ),
+        (
+            {"flags": 126, "scheme": ""},
+            {"flags": 127, "scheme": "Black"},
+            {"flags": 126, "scheme": "White"},
+        ),
+        ({"flags": 126, "scheme": ""}, None, {"flags": 126, "scheme": "Black"}),
+        (
+            {"flags": 126, "scheme": ""},
+            {"flags": 127, "scheme": "Black"},
+            {"flags": 124, "scheme": "Black"},
+        ),
+    ],
+)
+def test_contrast_restoration_rejects_unproved_scheme_or_flag_changes(
+    tmp_path, monkeypatch, original, on_observed, restored
+):
+    from tests.e2e import plugin_application_native as native
+
+    monkeypatch.setattr(native, "_contrast_original", original)
+    monkeypatch.setattr(native, "_contrast_on_observed", on_observed)
+    monkeypatch.setattr(native, "_contrast_parameters", lambda *_args: dict(restored))
+    with pytest.raises(OSError, match="restoration did not match"):
+        native.restore_system_contrast(evidence=tmp_path)
+    assert native._contrast_original == original
+
+
+def test_native_chrome_settles_owned_readiness_before_its_single_screenshot(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    button = {
+        "id": "plugin-manage",
+        "pid": 12,
+        "enabled": True,
+        "x": 10,
+        "y": 20,
+        "width": 30,
+        "height": 40,
+    }
+    commands = []
+
+    def observe(command, **kwargs):
+        commands.append(command)
+        assert 0 < kwargs["timeout"] <= 5
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {"pid": 12, "hwnd": 14, "buttons": [] if len(commands) == 1 else [button]}
+            )
+        )
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    monkeypatch.setattr(native.time, "sleep", lambda _delay: None)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12, _root_at=lambda _x, _y: 14)
+    observation, found = native._observe_owned_chrome(
+        owned,
+        tmp_path / "observer",
+        14,
+        12,
+        {"action": "observe", "stage": "contrast", "buttonId": "plugin-manage"},
+        tmp_path / "capture.png",
+        deadline=native.time.monotonic() + 15,
+    )
+    assert [command[1] for command in commands] == ["--buttons", "--buttons", "--screenshot"]
+    assert found == button
+    assert json.loads((tmp_path / "plugin-native-observation.json").read_text()) == observation
+
+
+def test_native_chrome_foreign_owner_fails_without_observation_retry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tests.e2e import plugin_application_native as native
+
+    calls = []
+
+    def observe(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(stdout=json.dumps({"pid": 99, "hwnd": 14, "buttons": []}))
+
+    monkeypatch.setattr(native.subprocess, "run", observe)
+    owned = SimpleNamespace(owner=lambda _hwnd: 12)
+    with pytest.raises(ValueError, match="identity changed"):
+        native._observe_owned_chrome(
+            owned,
+            tmp_path / "observer",
+            14,
+            12,
+            {"action": "observe", "stage": "contrast", "buttonId": "plugin-manage"},
+            tmp_path / "capture.png",
+            deadline=native.time.monotonic() + 15,
+        )
+    assert len(calls) == 1
+
+
+def test_failed_on_scheme_observation_still_restores_but_cannot_exempt_mismatch(
+    tmp_path, monkeypatch
+):
+    from tests.e2e import plugin_application_native as native
+
+    original = {"flags": 126, "scheme": ""}
+    calls = []
+
+    def parameters(flags=None, scheme=""):
+        if flags is not None:
+            calls.append((flags, scheme))
+            return {"flags": 126, "scheme": "Black"}
+        if not calls:
+            raise OSError("on scheme read failed")
+        return {"flags": 126, "scheme": "Black"}
+
+    monkeypatch.setattr(native, "_contrast_original", original)
+    monkeypatch.setattr(native, "_contrast_on_observed", {"flags": 127, "scheme": ""})
+    monkeypatch.setattr(native, "_contrast_parameters", parameters)
+    with pytest.raises(OSError, match="on scheme read failed"):
+        native.restore_system_contrast(evidence=tmp_path)
+    assert calls == [(126, "")]
+    diagnostic = json.loads((tmp_path / "plugin-contrast-restoration.json").read_text())
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["observed"] == {"flags": 126, "scheme": "Black"}
+    assert native._contrast_original == original

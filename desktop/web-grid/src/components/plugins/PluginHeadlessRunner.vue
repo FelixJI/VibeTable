@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
-import { useHostBridge } from "@/services/bridgeContext";
 import type { PluginSurfaceThemeSnapshot, PluginTaskViewSnapshot, WebPluginActionDescription } from "@/contracts";
 
 type HeadlessOutcomeStatus = "running" | "succeeded" | "failed" | "cancelled" | "aborted" | "unknown";
@@ -16,7 +15,6 @@ const emit = defineEmits<{
   cancel: [taskId: string];
   resolve: [decision: "approved" | "rejected"];
 }>();
-const bridge = useHostBridge();
 const surface = computed(() => props.description.surface);
 const moduleOutcome = ref<{ status: HeadlessOutcomeStatus; summary: string }>({ status: "running", summary: "" });
 const stopped = ref(false);
@@ -60,16 +58,7 @@ const statusLabel = computed(() => {
 function retireSurface(): void {
   if (stopped.value) return;
   stopped.value = true;
-  const token = surface.value?.surfaceToken;
-  if (!token) return;
-  // Best-effort token retire; unmounting below retires the WPF side through
-  // frame Destroyed as well.
-  bridge.notify("plugin.surface.event", {
-    contract: "vibetable.plugin-surface.v1",
-    surfaceToken: token,
-    event: "close",
-    payload: {},
-  });
+  // PluginSurfaceHost owns the single close notification during unmount.
 }
 
 function settleTerminal(status: HeadlessOutcomeStatus, summary: string): void {

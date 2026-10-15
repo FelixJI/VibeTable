@@ -3423,6 +3423,7 @@ def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(t
         "plugin-contrast-restoration.json",
         "plugin-contrast-cleanup.json",
         "plugin-native-result.json",
+        "plugin-native-observation.json",
     ):
         expected.append(f"49-plugin-application-security/{name}")
     for relative in expected:

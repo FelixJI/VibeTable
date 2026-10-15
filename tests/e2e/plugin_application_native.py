@@ -11,6 +11,7 @@ import json
 import math
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ def _validate_request(request: dict[str, Any]) -> None:
         "scaled",
         "dark",
         "contrast",
+        "contrast-restored",
     }:
         raise ValueError("native plugin evidence stage is invalid")
     if (
@@ -60,6 +62,7 @@ def _validate_request(request: dict[str, Any]) -> None:
 
 
 _contrast_original: dict[str, int | str] | None = None
+_contrast_on_observed: dict[str, int | str] | None = None
 
 
 def _require_controlled_contrast_runner() -> None:
@@ -71,20 +74,38 @@ def _contrast_parameters(flags: int | None = None, scheme: str = "") -> dict[str
     from ctypes import wintypes
 
     class HighContrast(ctypes.Structure):
-        _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", wintypes.LPWSTR)]
+        _fields_ = [("size", wintypes.UINT), ("flags", wintypes.DWORD), ("scheme", ctypes.c_void_p)]
 
-    buffer = ctypes.create_unicode_buffer(scheme, 1024)
+    # Desktop HIGHCONTRASTW GET returns a system-owned allocation; SET uses
+    # caller-owned storage. Keep the raw address until GET has been copied.
+    buffer = ctypes.create_unicode_buffer(scheme) if flags is not None else None
     value = HighContrast(
-        ctypes.sizeof(HighContrast), flags or 0, ctypes.cast(buffer, wintypes.LPWSTR)
+        ctypes.sizeof(HighContrast),
+        flags or 0,
+        ctypes.cast(buffer, ctypes.c_void_p) if buffer is not None else None,
     )
     api = ctypes.WinDLL("user32", use_last_error=True).SystemParametersInfoW
     api.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
     api.restype = wintypes.BOOL
-    if not api(
-        0x42 if flags is None else 0x43, value.size, ctypes.byref(value), 0 if flags is None else 2
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
-    return {"flags": int(value.flags), "scheme": value.scheme or ""}
+    try:
+        if not api(
+            0x42 if flags is None else 0x43,
+            value.size,
+            ctypes.byref(value),
+            0 if flags is None else 2,
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return {
+            "flags": int(value.flags),
+            "scheme": ctypes.wstring_at(value.scheme) if value.scheme else "",
+        }
+    finally:
+        if flags is None and value.scheme:
+            free = ctypes.WinDLL("kernel32", use_last_error=True).LocalFree
+            free.argtypes = [ctypes.c_void_p]
+            free.restype = ctypes.c_void_p
+            if free(value.scheme):
+                raise ctypes.WinError(ctypes.get_last_error())
 
 
 class ContrastRestorationError(OSError):
@@ -96,7 +117,7 @@ class ContrastRestorationError(OSError):
 def restore_system_contrast(
     *, evidence: Path | None = None, cleanup: bool = False
 ) -> dict[str, object] | None:
-    global _contrast_original
+    global _contrast_original, _contrast_on_observed
     if _contrast_original is None:
         return None
     original = dict(_contrast_original)
@@ -104,6 +125,7 @@ def restore_system_contrast(
         "status": "attempting",
         "original": original,
         "attempt": dict(original),
+        "onObserved": dict(_contrast_on_observed) if _contrast_on_observed is not None else None,
         "observed": None,
     }
     target = (
@@ -118,10 +140,31 @@ def restore_system_contrast(
                 target.write_text(json.dumps(diagnostic), encoding="utf-8")
         finally:
             # Evidence I/O must never prevent restoring the owned OS scope.
-            _contrast_parameters(int(original["flags"]), str(original["scheme"]))
-            restored = _contrast_parameters()
-            diagnostic["observed"] = restored
-        if restored != original:
+            # A successful ON read is required before recording its concrete
+            # default name. Freeze the first concrete name, never replace it.
+            try:
+                if _contrast_on_observed is not None and not _contrast_on_observed["scheme"]:
+                    current = _contrast_parameters()
+                    if int(current["flags"]) & 1 and current["scheme"]:
+                        _contrast_on_observed = current
+                diagnostic["onObserved"] = (
+                    dict(_contrast_on_observed) if _contrast_on_observed is not None else None
+                )
+            finally:
+                _contrast_parameters(int(original["flags"]), str(original["scheme"]))
+                restored = _contrast_parameters()
+                diagnostic["observed"] = restored
+        exact = restored == original
+        materialized = (
+            not int(original["flags"]) & 1
+            and not original["scheme"]
+            and restored["flags"] == original["flags"]
+            and _contrast_on_observed is not None
+            and bool(int(_contrast_on_observed["flags"]) & 1)
+            and bool(_contrast_on_observed["scheme"])
+            and restored["scheme"] == _contrast_on_observed["scheme"]
+        )
+        if not exact and not materialized:
             raise OSError(
                 "controlled runner system contrast restoration did not match the recorded original"
             )
@@ -131,14 +174,17 @@ def restore_system_contrast(
             target.write_text(json.dumps(diagnostic), encoding="utf-8")
         raise ContrastRestorationError(diagnostic) from error
     diagnostic["status"] = "restored"
+    if not exact:
+        diagnostic["schemeMaterialization"] = "unspecified-default-materialized"
     if target is not None:
         target.write_text(json.dumps(diagnostic), encoding="utf-8")
     _contrast_original = None
+    _contrast_on_observed = None
     return diagnostic
 
 
 def _change_system_contrast(action: str, evidence: Path) -> dict[str, object]:
-    global _contrast_original
+    global _contrast_original, _contrast_on_observed
     _require_controlled_contrast_runner()
     if action == "contrast-off":
         result = restore_system_contrast(evidence=evidence)
@@ -149,13 +195,15 @@ def _change_system_contrast(action: str, evidence: Path) -> dict[str, object]:
         raise OSError("controlled runner contrast scope is already active")
     original = _contrast_parameters()
     _contrast_original = original
+    _contrast_on_observed = None
     # Save the entire original contract before the first system write.
     (evidence / "plugin-contrast-original.json").write_text(json.dumps(original), encoding="utf-8")
     _contrast_parameters(int(original["flags"]) | 1, str(original["scheme"]))
     current = _contrast_parameters()
     if not int(current["flags"]) & 1:
         raise OSError("controlled runner did not enable system high contrast")
-    return {"status": "enabled", "original": original, "observed": current}
+    _contrast_on_observed = current
+    return {"status": "enabled", "original": original, "onObserved": current, "observed": current}
 
 
 def _send_input(native: Any, *, x: float | None = None, y: float | None = None) -> None:
@@ -207,12 +255,84 @@ def _send_input(native: Any, *, x: float | None = None, y: float | None = None) 
         raise OSError("native SendInput did not deliver all events")
 
 
+def _observe_owned_chrome(
+    native: Any,
+    observer: Path,
+    hwnd: int,
+    host_pid: int,
+    request: dict[str, Any],
+    screenshot: Path,
+    *,
+    deadline: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    settle = request["action"] == "observe" and request["stage"] in {
+        "contrast",
+        "contrast-restored",
+    }
+    capture = not settle
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OSError("owned native chrome did not settle within its request budget")
+        command = [str(observer), "--screenshot" if capture else "--buttons", str(hwnd)]
+        if capture:
+            command.append(str(screenshot.resolve()))
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+            timeout=min(5, remaining),
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        observation = json.loads(result.stdout)
+        (screenshot.parent / "plugin-native-observation.json").write_text(
+            json.dumps(observation), encoding="utf-8"
+        )
+        if (
+            observation["pid"] != host_pid
+            or observation["hwnd"] != hwnd
+            or native.owner(hwnd) != host_pid
+        ):
+            raise ValueError("native plugin window identity changed")
+        buttons = [
+            button for button in observation["buttons"] if button["id"] == request["buttonId"]
+        ]
+        if len(buttons) > 1 or (buttons and buttons[0]["pid"] != host_pid):
+            raise ValueError("expected one actual native plugin button")
+        button = buttons[0] if buttons else None
+        ready = (
+            button is not None
+            and all(
+                isinstance(button[key], (int, float)) and math.isfinite(button[key])
+                for key in ("x", "y", "width", "height")
+            )
+            and button["width"] > 0
+            and button["height"] > 0
+        )
+        if ready and button is not None:
+            x, y = button["x"] + button["width"] / 2, button["y"] + button["height"] / 2
+            ready = button["enabled"] and native._root_at(x, y) == hwnd
+        if ready and button is not None:
+            if capture:
+                return observation, button
+            capture = True
+            continue
+        if not settle or capture:
+            raise OSError("native plugin button is missing, disabled or obscured")
+        # Poll only owned native readiness while Windows' Please wait layer is
+        # active; no business action or system-setting write is repeated.
+        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+
 def handle_plugin_native_request(
     request: dict[str, Any], *, host_pid: int, evidence: Path
 ) -> dict[str, Any]:
     from tests.e2e import product_e2e_runner as runner
 
     native = None
+    deadline = time.monotonic() + 15
     try:
         _validate_request(request)
         runner._prepare_native_uia_observer()
@@ -236,47 +356,25 @@ def handle_plugin_native_request(
             if request["action"] in {"contrast-on", "contrast-off"}
             else None
         )
-        suffix = "contrast-restored" if request["action"] == "contrast-off" else request["stage"]
+        if contrast is not None:
+            return {
+                "requestId": request["requestId"],
+                "status": "completed",
+                "action": request["action"],
+                "contrast": contrast,
+            }
+        suffix = request["stage"]
         screenshot = evidence / f"48-native-{suffix}.png"
-        result = subprocess.run(
-            [
-                str(runner.NATIVE_UIA_OBSERVER_EXE),
-                "--screenshot",
-                str(hwnd),
-                str(screenshot.resolve()),
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-            timeout=5,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+        observation, button = _observe_owned_chrome(
+            native,
+            runner.NATIVE_UIA_OBSERVER_EXE,
+            hwnd,
+            host_pid,
+            request,
+            screenshot,
+            deadline=deadline,
         )
-        observation = json.loads(result.stdout)
-        if (
-            observation["pid"] != host_pid
-            or observation["hwnd"] != hwnd
-            or native.owner(hwnd) != host_pid
-        ):
-            raise ValueError("native plugin window identity changed")
-        buttons = [
-            button for button in observation["buttons"] if button["id"] == request["buttonId"]
-        ]
-        if len(buttons) != 1 or buttons[0]["pid"] != host_pid:
-            raise ValueError("expected one actual native plugin button")
-        button = buttons[0]
-        if (
-            any(
-                not isinstance(button[key], (int, float)) or not math.isfinite(button[key])
-                for key in ("x", "y", "width", "height")
-            )
-            or button["width"] <= 0
-            or button["height"] <= 0
-        ):
-            raise ValueError("native plugin button bounds are invalid")
         x, y = button["x"] + button["width"] / 2, button["y"] + button["height"] / 2
-        if not button["enabled"] or native._root_at(x, y) != hwnd:
-            raise OSError("native plugin button is disabled or obscured")
         if request["action"] == "click":
             _send_input(native, x=x, y=y)
         elif request["action"] == "escape":

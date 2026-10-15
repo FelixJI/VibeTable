@@ -70,18 +70,26 @@ export async function runApplicationSecurity(page, recorder, runtime, helpers) {
   // This closed parent-side scope is refused locally and runs only on the
   // controlled GitHub Windows CI runner; every driver exit restores it.
   const contrast = await nativePluginInput(runtime, "contrast-on", "plugin-manage", "contrast");
-  recorder.check("actual controlled-runner system high contrast is observed in WPF",
-    contrast.status === "completed" && contrast.observation.systemHighContrast === true
-      && (contrast.contrast.observed.flags & 1) === 1, { contrast });
+  recorder.check("controlled runner enables high contrast through the actual system API",
+    contrast.status === "completed" && (contrast.contrast.observed.flags & 1) === 1, { contrast });
   const projectedContrast = await helpers.waitForCapturedBridgeMessage(page, 10000);
   recorder.check("actual Host projects high contrast from the system notification", projectedContrast.payload.highContrast === true, { projectedContrast });
   await page.waitForFunction(() => matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
   const contrastPainted = await nativePluginInput(runtime, "observe", "plugin-manage", "contrast");
   recorder.check("WPF high-contrast screenshot follows the Host system projection", contrastPainted.status === "completed" && contrastPainted.observation.systemHighContrast === true, { contrastPainted });
   recorder.check("real WebView receives the operating system forced-color mode", await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
+  await helpers.beginBridgeMessageCapture(page, ["appearance.changed"]);
   const restoredContrast = await nativePluginInput(runtime, "contrast-off", "plugin-manage", "contrast");
-  recorder.check("controlled-runner system high contrast is restored exactly", restoredContrast.status === "completed"
-    && JSON.stringify(restoredContrast.contrast.original) === JSON.stringify(restoredContrast.contrast.observed), { restoredContrast });
+  recorder.check("controlled runner restores the recorded system contrast contract", restoredContrast.status === "completed"
+    && restoredContrast.contrast.status === "restored"
+    && restoredContrast.contrast.original.flags === restoredContrast.contrast.observed.flags, { restoredContrast });
+  const restoredProjection = await helpers.waitForCapturedBridgeMessage(page, 10000);
+  recorder.check("actual Host projects high contrast off after restoration", restoredProjection.payload.highContrast === false, { restoredProjection });
+  await page.waitForFunction(() => !matchMedia("(forced-colors: active)").matches, undefined, { timeout: 10000 });
+  recorder.check("plugin forced colors also leave high contrast", !await frame.evaluate(() => matchMedia("(forced-colors: active)").matches));
+  const restoredChrome = await nativePluginInput(runtime, "observe", "plugin-manage", "contrast-restored");
+  recorder.check("restored native chrome is owned, visible and reachable", restoredChrome.status === "completed"
+    && restoredChrome.observation.systemHighContrast === false, { restoredChrome });
   const scaling = await page.context().newCDPSession(page);
   try {
     await scaling.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.25 });

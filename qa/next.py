@@ -1488,6 +1488,7 @@ def persist_product_e2e_evidence(
                 "plugin-contrast-restoration.json",
                 "plugin-contrast-cleanup.json",
                 "plugin-native-result.json",
+                "plugin-native-observation.json",
             ):
                 _copy_if_file(scenario_source / filename, scenario_destination / filename)
         if scenario_id == "42-file-document-native-operations":

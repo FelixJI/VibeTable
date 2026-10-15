@@ -95,7 +95,7 @@ describe("PluginHeadlessRunner", () => {
     // The token retire is forwarded to the host bridge.
     expect(hostPostMessage).toHaveBeenCalledWith({
       type: "plugin.surface.event",
-      payload: surfaceCloseEnvelope({}),
+      payload: surfaceCloseEnvelope({ status: "succeeded", summary: "已记住当前活动表" }),
     });
     wrapper.unmount();
   });
@@ -164,6 +164,19 @@ describe("PluginHeadlessRunner", () => {
     dispatchFromFrame({ status: "cancelled", summary: "late module" }); await Promise.resolve();
     expect(wrapper.text()).toContain("已完成"); expect(wrapper.text()).not.toContain("late module");
     wrapper.unmount();
+  });
+
+  it.each(["success", "failure", "local-stop", "host-terminal"])("retires the frame exactly once for %s", async boundary => {
+    const { wrapper, hostPostMessage, dispatchFromFrame } = mountRunner(boundary === "host-terminal" ? runningTask : null);
+    if (boundary === "success" || boundary === "failure") dispatchFromFrame({ status: boundary === "success" ? "succeeded" : "failed", summary: "done" });
+    else if (boundary === "local-stop") await wrapper.get('[data-testid="plugin-headless-cancel"]').trigger("click");
+    else await wrapper.setProps({ task: { ...runningTask, state: "succeeded" } });
+    await Promise.resolve();
+    expect(wrapper.find("iframe").exists()).toBe(false);
+    wrapper.unmount();
+    const closes = hostPostMessage.mock.calls.filter(([message]) => message.type === "plugin.surface.event" && message.payload.event === "close");
+    expect(closes).toHaveLength(1);
+    expect(closes[0][0].payload.surfaceToken).toBe("headless-token");
   });
 
 });

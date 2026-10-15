@@ -52,7 +52,7 @@ function onMessage(event: MessageEvent): void {
     expectedSource: frame.value?.contentWindow ?? null,
     surfaceToken: activeToken.value,
   })) return;
-  bridge.notify("plugin.surface.event", event.data);
+  if (event.data.event !== "close") bridge.notify("plugin.surface.event", event.data);
   if (event.data.event === "action") {
     const payload = typeof event.data.payload === "object" && event.data.payload !== null
       && !Array.isArray(event.data.payload)
@@ -67,14 +67,11 @@ function onMessage(event: MessageEvent): void {
       && !Array.isArray(event.data.payload)
       ? event.data.payload as Readonly<Record<string, unknown>>
       : {};
-    if (typeof payload.status === "string" && payload.status) {
-      emit("finish", payload.status, typeof payload.summary === "string" ? payload.summary : "");
-    }
-    close();
+    close(payload);
   }
 }
 
-function close(): void {
+function close(payload: Readonly<Record<string, unknown>> = {}): void {
   if (!activeToken.value) return;
   const token = activeToken.value;
   activeToken.value = "";
@@ -82,8 +79,11 @@ function close(): void {
     contract: "vibetable.plugin-surface.v1",
     surfaceToken: token,
     event: "close",
-    payload: {},
+    payload,
   });
+  if (typeof payload.status === "string" && payload.status) {
+    emit("finish", payload.status, typeof payload.summary === "string" ? payload.summary : "");
+  }
   emit("close");
 }
 
@@ -106,7 +106,7 @@ onBeforeUnmount(() => {
   >
     <header v-if="variant !== 'app' && variant !== 'headless'">
       <div><span>ISOLATED SURFACE</span><strong>{{ title }}</strong></div>
-      <button type="button" aria-label="关闭插件页面" @click="close">×</button>
+      <button type="button" aria-label="关闭插件页面" @click="close()">×</button>
     </header>
     <iframe
       v-if="valid"
