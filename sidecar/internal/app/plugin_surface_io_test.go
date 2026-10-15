@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/vibetable/vibetable/sidecar/internal/importvalue"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
@@ -173,6 +174,79 @@ func TestPluginSurfaceImportFreezesUpsertAndRechecksAuthoritativeFieldGrants(t *
 	}
 	if _, err = call("data.ioProfile", map[string]any{"collection": table.Snapshot.TableID, "operation": "read", "fields": []string{name}}); surfaceErrorCode(t, err) != "plugin_read_denied" {
 		t.Fatalf("revoked export allowed: %v", err)
+	}
+}
+
+func TestPluginSurfaceUpsertPreviewFollowsActualMatchesWithInsertRequiredChecks(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkspaceMutationReplayFixture(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	keyDefaults, err := v2.RecommendedDefaults(v2.LogicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDefaults.Constraints.Unique.Enabled = true
+	key := applySchemaProductField(t, f.pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: f.request.TableID, Draft: &v2.FieldDraft{DisplayName: "Upsert key", LogicalType: v2.LogicalText, Value: keyDefaults.Value, Constraints: keyDefaults.Constraints, Storage: keyDefaults.Storage, Display: keyDefaults.Display}}, "preview-upsert-key").Definition
+	requiredDefaults, err := v2.RecommendedDefaults(v2.LogicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requiredDefaults.Value.Required = true
+	mandatory := applySchemaProductField(t, f.pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: f.request.TableID, Draft: &v2.FieldDraft{DisplayName: "Mandatory", LogicalType: v2.LogicalText, Value: requiredDefaults.Value, Constraints: requiredDefaults.Constraints, Storage: requiredDefaults.Storage, Display: requiredDefaults.Display}}, "preview-upsert-mandatory").Definition
+	table, err := schemaexecution.Describe(ctx, f.pb, f.request.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := f.definition.Snapshot.Fields[0].Identity.FieldID
+	source, err := queryschema.New(f.pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
+	existingID := "upsertmatch0001"
+	seed := mutation.Request{ContractVersion: "2.0", RequestID: "preview-seed", IdempotencyKey: "preview-seed", TableID: table.Snapshot.TableID, SchemaRevision: table.Snapshot.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "test"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, RecordID: &existingID, Values: map[string]any{key.Identity.FieldID: "existing", mandatory.Identity.FieldID: "seed", name: "before"}}}}
+	if _, err = kernel.Apply(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := surfaceIOInstallation(t, f.pb, workspace, table.Snapshot.TableID, []string{"id", name, key.Identity.FieldID, mandatory.Identity.FieldID})
+	ports := &pluginSurfaceIO{plans: newImportPlanOwner(workspace)}
+	call := func(method string, request any) (any, error) {
+		input.Method = method
+		input.Request, _ = json.Marshal(request)
+		return executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, nil, ports)
+	}
+	preview := func(rows ...map[string]any) (importvalue.Result, error) {
+		out, err := call("import.preview", map[string]any{"collection": table.Snapshot.TableID, "schemaRevision": table.Snapshot.SchemaRevision, "mode": "upsert", "upsertKey": key.Identity.FieldID, "rows": rows})
+		if err != nil {
+			return importvalue.Result{}, err
+		}
+		return out.(importvalue.Result), nil
+	}
+	normalized, err := preview(
+		map[string]any{key.Identity.FieldID: "existing", name: "partial-after"},
+		map[string]any{key.Identity.FieldID: "fresh", name: "created"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(normalized.Rows) != 2 {
+		t.Fatalf("unexpected preview rows: %+v", normalized.Rows)
+	}
+	// The matched row keeps partial update semantics: no required diagnostics.
+	for _, diagnostic := range normalized.Rows[0].Diagnostics {
+		if diagnostic.Field == mandatory.Identity.FieldID {
+			t.Fatalf("matched update row was normalized as insert: %+v", normalized.Rows[0].Diagnostics)
+		}
+	}
+	// The unmatched row is an insert, so its missing required field is a checkable diagnostic.
+	found := false
+	for _, diagnostic := range normalized.Rows[1].Diagnostics {
+		if diagnostic.Field == mandatory.Identity.FieldID && diagnostic.Code == "field.value.required" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("new insert row missed its required-field diagnostic: %+v", normalized.Rows[1].Diagnostics)
 	}
 }
 

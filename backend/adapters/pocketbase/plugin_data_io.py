@@ -35,10 +35,17 @@ class PluginExportPage:
 class ScopedImportPreview(PocketBaseBulkMutationClient):
     """Only ImportService.preview is composed with this port; apply stays in Host."""
 
-    def __init__(self, client: PocketBaseClient, scope: PluginIoScope, mode: str) -> None:
+    def __init__(
+        self,
+        client: PocketBaseClient,
+        scope: PluginIoScope,
+        mode: str,
+        upsert_key: str | None = None,
+    ) -> None:
         super().__init__(client=client, auth=PocketBaseLocalAuth())
         self._scope = scope
         self._mode = mode
+        self._upsert_key = upsert_key
 
     async def preview_import(
         self,
@@ -56,6 +63,11 @@ class ScopedImportPreview(PocketBaseBulkMutationClient):
                 "schemaRevision": schema_revision,
                 "rows": cast(list[JsonValue], rows),
                 "mode": self._mode,
+                # The authoritative preview matches rows by the same approved
+                # upsert key as import.mint, so unmatched rows are normalized
+                # as inserts and missing required fields surface as row
+                # diagnostics instead of a later request-level failure.
+                "upsertKey": self._upsert_key,
             },
         )
 
@@ -246,7 +258,7 @@ async def preview_plugin_import(
             },
         )
     )
-    bulk = ScopedImportPreview(client, scope, params.mode)
+    bulk = ScopedImportPreview(client, scope, params.mode, params.upsert_key)
     service = ImportService(
         bulk=bulk,
         maximum_source_expansion_bytes=128 * 1024 * 1024,

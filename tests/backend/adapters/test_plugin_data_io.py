@@ -167,6 +167,163 @@ async def test_scoped_import_uses_preview_and_go_plan_owner_without_platform_app
     ]
 
 
+async def test_scoped_upsert_preview_matches_by_key_and_surfaces_missing_required_rows(tmp_path):
+    """The full plugin chain must deliver the approved upsert key to the
+    authoritative preview so unmatched rows normalize as inserts; otherwise a
+    missing required field silently bypasses the checkable errorRows."""
+    from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
+
+    class UpsertClient(ScopedClient):
+        """Contract-faithful import.preview peer: insert mode checks required
+        fields, update mode does not, and upsert rows only update when the
+        approved key matches an existing record."""
+
+        def __init__(self):
+            super().__init__()
+            self.existing_keys = {"existing"}
+            self.required_fields = ("amount",)
+
+        async def plugin_surface(self, principal, method, request, **kwargs):
+            if method in {"data.ioProfile", "import.preview", "import.mint"}:
+                self.calls.append((principal, method, request, kwargs))
+            if method == "data.ioProfile":
+                return {
+                    "collection": "orders",
+                    "schema_revision": "schema_1",
+                    "fields": ["id", "key", "amount", "title"],
+                    "field_schemas": {
+                        "key": {"dataType": "text", "displayName": "key"},
+                        "amount": {"dataType": "number", "displayName": "amount"},
+                        "title": {"dataType": "text", "displayName": "title"},
+                    },
+                    "create_fields": ["key", "amount", "title"],
+                    "update_fields": ["key", "amount", "title"],
+                    "archive_field": None,
+                    "date_updated_field": None,
+                }
+            if method == "import.preview":
+                upsert_key = request.get("upsertKey")
+                rows_out = []
+                for row in request["rows"]:
+                    mode = "update" if request["mode"] == "upsert" else "insert"
+                    if request["mode"] == "upsert" and upsert_key:
+                        matched = row.get(upsert_key) in self.existing_keys
+                        mode = "update" if matched else "insert"
+                    diagnostics = []
+                    if mode == "insert":
+                        for field in self.required_fields:
+                            if row.get(field) is None or row.get(field) == "":
+                                diagnostics.append(
+                                    {
+                                        "field": field,
+                                        "code": "field.value.required",
+                                        "message": "required field is not supplied",
+                                    }
+                                )
+                    rows_out.append({"values": row, "diagnostics": diagnostics})
+                return {"rows": rows_out}
+            if method == "import.mint":
+                return {"token": "imp1.host-owned", "expiresAt": 9999999999}
+            return await super().plugin_surface(principal, method, request, **kwargs)
+
+    peer = LocalFilePeer()
+    source = tmp_path / "upsert.csv"
+    source.write_text("key,amount,title\nexisting,10,keep\nfresh,,new\n", encoding="utf-8")
+    grant = peer.grants.issue(purpose="import_source", direction="read", path=str(source))
+    peer.runs[grant.grant_id] = "host-run"
+    client = UpsertClient()
+
+    async def progress(*_args):
+        pass
+
+    plan = await preview_plugin_import(
+        client,
+        peer.files,
+        {
+            "grantId": grant.grant_id,
+            "collection": "orders",
+            "schemaRevision": "schema_1",
+            "mode": "upsert",
+            "upsertKey": "key",
+            "pluginScope": scope(),
+        },
+        progress,
+        lambda: False,
+    )
+    # The matched row keeps partial update semantics; the new insert row
+    # surfaces its missing required field as a checkable diagnostic. These
+    # semantic checks come first: without the key the whole upsert batch is
+    # silently normalized as updates and the missing required field never
+    # enters the checkable errorRows.
+    assert plan.rows[0].diagnostics == []
+    assert any(diagnostic.code == "field.value.required" for diagnostic in plan.rows[1].diagnostics)
+    assert plan.summary.error_rows == 1
+    preview_call = None
+    for _, method, request, _ in client.calls:
+        if method == "import.preview":
+            preview_call = request
+            break
+    assert preview_call is not None
+    # The approved key reaches the authoritative preview on the public wire.
+    assert preview_call["upsertKey"] == "key"
+
+
+async def test_scoped_create_only_preview_keeps_insert_required_checks_and_null_key(tmp_path):
+    from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
+
+    class CreateOnlyClient(ScopedClient):
+        async def plugin_surface(self, principal, method, request, **kwargs):
+            if method == "import.preview":
+                assert request["mode"] == "create_only"
+                # Ordinary inserts always run the required-field check; the
+                # key is explicitly absent instead of silently defaulted.
+                assert "upsertKey" in request
+                assert request["upsertKey"] is None
+                diagnostics = (
+                    [
+                        {
+                            "field": "title",
+                            "code": "field.value.required",
+                            "message": "required field is not supplied",
+                        }
+                    ]
+                    if any(row.get("title") is None for row in request["rows"])
+                    else []
+                )
+                return {
+                    "rows": [
+                        {"values": row, "diagnostics": list(diagnostics)} for row in request["rows"]
+                    ]
+                }
+            if method == "import.mint":
+                return {"token": "imp1.host-owned", "expiresAt": 9999999999}
+            return await super().plugin_surface(principal, method, request, **kwargs)
+
+    peer = LocalFilePeer()
+    source = tmp_path / "create.csv"
+    source.write_text("title\n\n", encoding="utf-8")
+    grant = peer.grants.issue(purpose="import_source", direction="read", path=str(source))
+    peer.runs[grant.grant_id] = "host-run"
+
+    async def progress(*_args):
+        pass
+
+    plan = await preview_plugin_import(
+        CreateOnlyClient(),
+        peer.files,
+        {
+            "grantId": grant.grant_id,
+            "collection": "orders",
+            "schemaRevision": "schema_1",
+            "mode": "create_only",
+            "pluginScope": scope(),
+        },
+        progress,
+        lambda: False,
+    )
+    assert plan.summary.error_rows == 1
+
+
 async def test_bound_data_io_spool_rejects_oversize_before_commit_and_never_drops_run():
     calls = []
 

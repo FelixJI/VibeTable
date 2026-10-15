@@ -15,6 +15,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/productrow"
 	"github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
+	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemaexecution"
 )
 
@@ -231,6 +232,7 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				SchemaRevision string           `json:"schemaRevision"`
 				Rows           []map[string]any `json:"rows"`
 				Mode           string           `json:"mode"`
+				UpsertKey      *string          `json:"upsertKey"`
 			}
 			if decodePluginParams(input.Request, &request) != nil || len(request.Rows) > 1000 || len(request.Rows) == 0 || !pluginHas([]string{"create_only", "upsert"}, request.Mode) {
 				return pluginDataError("plugin_capability_invalid")
@@ -244,6 +246,24 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				return err
 			}
 			allowed := pluginAllowed(*grant, table.Snapshot)
+			// In upsert mode the row mode must follow the actual match, exactly like
+			// import.mint: only a row that matches an existing record updates with
+			// partial values; every new row is an insert, so a missing required field
+			// becomes a checkable preview diagnostic instead of a request failure.
+			var keyField v2.FieldDefinition
+			matchByUpsertKey := false
+			if request.Mode == "upsert" && request.UpsertKey != nil && *request.UpsertKey != "" {
+				if installed.grant(request.Collection, input.ActiveCollection) == nil {
+					return pluginDataError("plugin_write_denied")
+				}
+				field, ok := table.Field(*request.UpsertKey)
+				readAllowed := pluginAllowed(*installed.grant(request.Collection, input.ActiveCollection), table.Snapshot)
+				if !ok || !field.Constraints.Unique.Enabled || readAllowed[field.Identity.FieldID] == "" || readAllowed["id"] == "" {
+					return pluginDataError("plugin_write_denied")
+				}
+				keyField = field
+				matchByUpsertKey = true
+			}
 			preview := importvalue.Request{Contract: importvalue.Contract, TableID: request.Collection, SchemaRevision: request.SchemaRevision, Rows: []importvalue.Row{}}
 			for _, row := range request.Rows {
 				for key := range row {
@@ -255,6 +275,22 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				mode := fieldvalue.Insert
 				if request.Mode == "upsert" {
 					mode = fieldvalue.Update
+					if matchByUpsertKey {
+						value, present := row[*request.UpsertKey]
+						if !present || value == nil {
+							return pluginDataError("plugin_capability_invalid")
+						}
+						page, err := query.NewPort(tx, source).QueryPage(ctx, request.Collection, query.TableQuery{Limit: 2, Filters: []query.FilterExpression{{Field: keyField.Identity.PhysicalName, Operator: query.OperatorEqual, Value: value}}})
+						if err != nil {
+							return err
+						}
+						if len(page.Rows) > 1 {
+							return pluginDataError("plugin_capability_invalid")
+						}
+						if len(page.Rows) == 0 {
+							mode = fieldvalue.Insert
+						}
+					}
 				}
 				preview.Rows = append(preview.Rows, importvalue.Row{Values: row, Mode: mode})
 			}
