@@ -60,7 +60,7 @@ export interface SurfaceCapabilities {
     /** Unknown handles are a no-op; repeated in-flight releases share the same acknowledgement.
      * Normal requests and owned-handle releases each have eight slots. Failed releases retain ownership for explicit retry/dispose. */
     unsubscribe(subscriptionId: string): Promise<void>;
-    previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only"; readonly upsertKey?: undefined;
+    previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only"; readonly upsertKey?: string;
       readonly columnMapping?: readonly { readonly sourceColumn: string; readonly targetField: string; readonly relationId?: string; readonly matchField?: string }[] } | {
       /** Upsert matches rows by the approved unique key before preview starts; the key must be non-empty. */
       readonly collection: string; readonly schemaRevision: string; readonly mode: "upsert"; readonly upsertKey: string;
