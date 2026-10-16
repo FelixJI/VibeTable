@@ -5,7 +5,8 @@ import { sdk } from "./load-sdk.mjs";
 function channel() {
   const calls = []; const listeners = new Set();
   return { calls, postMessage: value => calls.push(value), addEventListener: (_, fn) => listeners.add(fn), removeEventListener: (_, fn) => listeners.delete(fn),
-    reply(result, error) { const wire = calls.at(-1); for (const fn of listeners) fn({ data: { contract: sdk.SURFACE_API_CONTRACT, requestId: wire.requestId, result, error } }); } };
+    reply(result, error) { this.replyTo(calls.at(-1), result, error); },
+    replyTo(request, result, error) { if (!request) return; for (const fn of listeners) fn({ data: { contract: sdk.SURFACE_API_CONTRACT, requestId: request.requestId, result, error } }); } };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -61,9 +62,13 @@ test("DataIO uses owned task status and cancellation; preview yields only a muta
   assert.equal((await result).planId, "plan");
   const startingExport = client.data.export({ collection: "t", fields: ["visible"], format: "csv", suggestedName: "out.csv" });
   wire.reply({ taskId: "export" }); const exporting = await startingExport;
-  const cancelled = exporting.cancel(); assert.equal(wire.calls.at(-1).method, "data.io.cancel"); wire.reply({ cancelRequested: true }); await cancelled;
-  const failed = exporting.result(); wire.reply({ taskId: "export", state: "failed", outcome: "unknown", progress: { done: 0, total: 0, message: "" } });
-  await assert.rejects(failed, error => error.code === "plugin_commit_unknown");
+  const cancelled = exporting.cancel(); assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+  wire.reply({ cancelRequested: true }); await tick();
+  // The acknowledgement is not the terminal; the tracked status settles the task and releases the handle.
+  assert.equal(wire.calls.at(-1).method, "data.io.status");
+  wire.reply({ taskId: "export", state: "failed", outcome: "unknown", progress: { done: 0, total: 0, message: "" } });
+  await cancelled;
+  await assert.rejects(exporting.result(), error => error.code === "plugin_commit_unknown");
   client.dispose();
 });
 
@@ -96,16 +101,38 @@ test("attachment reading is bounded and preview never sends native paths or stag
 });
 
 
-test("owned DataIO cancellation stays bounded and reachable with full normal request slots", async () => {
+test("owned DataIO cancellation stays bounded and recovers tracking after a full ordinary budget", async () => {
   const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
   const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
   wire.reply({ taskId: "owned" }); const task = await starting;
-  const busy = Array.from({ length: 8 }, (_, i) => client.storage.get(`key-${i}`));
+  const busy = [];
+  for (let i = 0; i < 8; i++) { const reading = client.storage.get(`key-${i}`); wire.reply({}); busy.push(reading); }
+  await Promise.all(busy);
+  const parked = [];
+  for (let i = 0; i < 8; i++) { const reading = client.storage.get(`held-${i}`); parked.push({ reading, request: wire.calls.at(-1) }); }
   const cancelled = task.cancel(); assert.equal(wire.calls.at(-1).method, "data.io.cancel");
   const count = wire.calls.length; const duplicate = task.cancel(); assert.equal(wire.calls.length, count);
-  wire.reply({ cancelRequested: true }); await Promise.all([cancelled, duplicate]);
+  wire.reply({ cancelRequested: true });
+  // The full ordinary budget blocks the terminal-tracking poll; the failure surfaces to
+  // the caller, the handle stays owned, and nothing retries silently.
+  await assert.rejects(cancelled, error => error.code === "plugin_concurrency_limit");
+  await assert.rejects(duplicate, error => error.code === "plugin_concurrency_limit");
   assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
-  client.dispose(); await Promise.allSettled(busy);
+  // Freeing the slots plus an explicit cancel() restarts the tracking and releases the handle.
+  for (const entry of parked) wire.replyTo(entry.request, {});
+  await Promise.all(parked.map(entry => entry.reading));
+  const recovered = task.cancel();
+  assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 2);
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.at(-1).method, "data.io.status");
+  wire.reply({ taskId: "owned", state: "cancelled", progress: { done: 0, total: 0, message: "" } });
+  await recovered;
+  const burst = Array.from({ length: 8 }, (_, i) => {
+    const next = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: `burst-${i}.csv` });
+    wire.reply({ taskId: `burst-${i}` }); return next;
+  });
+  await Promise.all(burst);
+  client.dispose();
 });
 
 
@@ -146,3 +173,202 @@ for (const kind of ["import", "export"]) {
     assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
   });
 }
+
+for (const kind of ["import", "export"]) {
+  test(`cancel-only DataIO ${kind} tasks track a stable terminal and release their slot`, async () => {
+    const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+    for (let i = 0; i < 9; i++) {
+      const starting = kind === "import" ? client.data.previewImport({ collection: "t", schemaRevision: "schema_1" })
+        : client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: `out-${i}.csv` });
+      wire.reply({ taskId: `owned-${i}` }); const task = await starting;
+      const cancelled = task.cancel();
+      assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+      wire.reply({ cancelRequested: true }); await tick();
+      // The acknowledgement itself is not terminal; the released handle must come from a polled status.
+      assert.equal(wire.calls.at(-1).method, "data.io.status");
+      wire.reply({ taskId: `owned-${i}`, state: "cancelled", progress: { done: 0, total: 0, message: "" } });
+      await cancelled;
+    }
+    client.dispose();
+  });
+}
+
+test("a cancel acknowledgement is not terminal; tracking polls until a stable terminal", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const cancelled = task.cancel();
+  assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 1);
+  wire.reply({ taskId: "owned", state: "running", progress: { done: 1, total: 2, message: "" } });
+  await new Promise(resolve => setTimeout(resolve, 130));
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 2, "polling continues while the worker is still running");
+  wire.reply({ taskId: "owned", state: "cancelled", progress: { done: 1, total: 2, message: "" } });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const settled = wire.calls.filter(call => call.method === "data.io.status").length;
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, settled, "tracking stops at the stable terminal");
+  await cancelled;
+  await task.cancel();
+  // The released slot admits a full fresh burst; a leaked handle would reject the eighth start.
+  const burst = Array.from({ length: 8 }, (_, i) => {
+    const next = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: `burst-${i}.csv` });
+    wire.reply({ taskId: `burst-${i}` }); return next;
+  });
+  await Promise.all(burst);
+  client.dispose();
+});
+
+test("dispose stops terminal tracking without resending or assuming the acknowledgement was terminal", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const cancelled = task.cancel();
+  assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 1);
+  client.dispose();
+  await assert.rejects(cancelled, error => error.code === "plugin_surface_closed");
+  await assert.rejects(task.cancel(), error => error.code === "plugin_surface_closed");
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 1, "no polls after dispose");
+  assert.ok(wire.calls.some(call => call.method === "data.io.cancel" && call.params.taskId === "owned"));
+});
+
+test("a surface closed during the tracking sleep rejects instead of silently releasing", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const cancelled = task.cancel();
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.at(-1).method, "data.io.status");
+  wire.reply({ taskId: "owned", state: "running", progress: { done: 1, total: 2, message: "" } });
+  // Dispose inside the 100ms poll sleep: no terminal was ever received.
+  client.dispose();
+  await assert.rejects(cancelled, error => error.code === "plugin_surface_closed");
+  await assert.rejects(task.cancel(), error => error.code === "plugin_surface_closed");
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 1, "no polls after dispose");
+});
+
+test("result maps an export cancel wait interrupted by dispose to an unknown commit", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const failing = task.result(AbortSignal.abort());
+  assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.at(-1).method, "data.io.status");   // terminal tracking in flight
+  client.dispose();
+  await assert.rejects(failing, error => error.code === "plugin_commit_unknown");
+  client.dispose();
+});
+
+test("terminal tracking keeps the Host's unknown-commit semantics after a cancel acknowledgement", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const cancelled = task.cancel();
+  assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.at(-1).method, "data.io.status");
+  wire.reply({ taskId: "owned", state: "failed", outcome: "unknown", progress: { done: 0, total: 0, message: "" } });
+  await cancelled;
+  await assert.rejects(task.result(), error => error.code === "plugin_commit_unknown");
+  client.dispose();
+});
+
+test("a failed terminal-tracking poll surfaces its error and an explicit cancel recovers the release", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const cancelled = task.cancel();
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.at(-1).method, "data.io.status");
+  // A genuine remote failure is reported, never retried silently.
+  wire.reply(undefined, { code: "plugin_transport_failed" });
+  await assert.rejects(cancelled, error => error.code === "plugin_transport_failed");
+  // An explicit caller retry re-acks (the Host coalesces) and restarts the tracking.
+  const recovered = task.cancel();
+  assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 2);
+  wire.reply({ cancelRequested: true }); await tick();
+  assert.equal(wire.calls.at(-1).method, "data.io.status");
+  wire.reply({ taskId: "owned", state: "cancelled", progress: { done: 0, total: 0, message: "" } });
+  await recovered;
+  const burst = Array.from({ length: 8 }, (_, i) => {
+    const next = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: `after-${i}.csv` });
+    wire.reply({ taskId: `after-${i}` }); return next;
+  });
+  await Promise.all(burst);
+  client.dispose();
+});
+for (const kind of ["import", "export"]) {
+  test(`aborted DataIO ${kind} result keeps reporting progress after the cancel acknowledgement`, async () => {
+    const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+    const starting = kind === "import" ? client.data.previewImport({ collection: "t", schemaRevision: "schema_1" })
+      : client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+    wire.reply({ taskId: "owned" }); const task = await starting;
+    const progress = [];
+    const result = task.result(AbortSignal.abort(), value => progress.push(value.done));
+    const rejected = assert.rejects(result, error => error.code === "plugin_cancel_requested");
+    assert.equal(wire.calls.at(-1).method, "data.io.cancel");
+    wire.reply({ cancelRequested: true }); await tick();
+    assert.equal(wire.calls.at(-1).method, "data.io.status");
+    wire.reply({ taskId: "owned", state: "running", progress: { done: 1, total: 2, message: "" } });
+    await new Promise(resolve => setTimeout(resolve, 130));
+    assert.equal(wire.calls.at(-1).method, "data.io.status");
+    wire.reply({ taskId: "owned", state: "cancelled", progress: { done: 2, total: 2, message: "" } });
+    await rejected;
+    client.dispose();
+    await task.cancel(); // Cached terminals remain settled after dispose.
+    assert.deepEqual(progress, [1, 2]);
+  });
+}
+for (const first of ["result", "cancel"]) {
+  test(`concurrent DataIO result and cancel share the acknowledgement with ${first} first`, async () => {
+    const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+    const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+    wire.reply({ taskId: "owned" }); const task = await starting;
+    const progress = [];
+    try {
+      const result = first === "result" ? task.result(AbortSignal.abort(), value => progress.push(value.done)) : undefined;
+      const cancelled = task.cancel();
+      const resultOutcome = (result ?? task.result(AbortSignal.abort(), value => progress.push(value.done)))
+        .then(value => ({ value }), error => ({ error }));
+      const cancelOutcome = cancelled.then(() => "settled", error => error);
+      assert.equal(task.cancel(), cancelled);
+      assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
+      wire.reply({ cancelRequested: true }); await tick();
+      const initial = wire.calls.filter(call => call.method === "data.io.status");
+      assert.equal(initial.length, 2, "result keeps its own progress polling alongside cancel tracking");
+      for (const request of initial) wire.replyTo(request, { taskId: "owned", state: "running", progress: { done: 1, total: 2, message: "" } });
+      await new Promise(resolve => setTimeout(resolve, 130));
+      const final = wire.calls.filter(call => call.method === "data.io.status").slice(initial.length);
+      assert.equal(final.length, 2);
+      for (const request of final) wire.replyTo(request, { taskId: "owned", state: "cancelled", progress: { done: 2, total: 2, message: "" } });
+      assert.equal((await resultOutcome).error?.code, "plugin_cancel_requested");
+      assert.equal(await cancelOutcome, "settled");
+      assert.deepEqual(progress, [1, 2]);
+      assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
+    } finally { client.dispose(); }
+  });
+}
+
+test("a shared cancel acknowledgement failure is observable and an explicit cancel recovers", async () => {
+  const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  const starting = client.data.export({ collection: "t", fields: ["f"], format: "csv", suggestedName: "out.csv" });
+  wire.reply({ taskId: "owned" }); const task = await starting;
+  const result = assert.rejects(task.result(AbortSignal.abort()), error => error.code === "plugin_transport_failed");
+  const cancelled = assert.rejects(task.cancel(), error => error.code === "plugin_transport_failed");
+  assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 1);
+  wire.reply(undefined, { code: "plugin_transport_failed" });
+  await Promise.all([result, cancelled]);
+  assert.equal(wire.calls.filter(call => call.method === "data.io.status").length, 0);
+  const recovered = task.cancel();
+  assert.equal(wire.calls.filter(call => call.method === "data.io.cancel").length, 2);
+  wire.reply({ cancelRequested: true }); await tick();
+  wire.reply({ taskId: "owned", state: "cancelled", progress: { done: 1, total: 1, message: "" } });
+  await recovered;
+  client.dispose();
+});

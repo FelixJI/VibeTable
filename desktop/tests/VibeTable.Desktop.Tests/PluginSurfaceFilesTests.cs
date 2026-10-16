@@ -709,6 +709,219 @@ public sealed class PluginSurfaceFilesTests
         hold.SetResult();
     }
 
+    [TestMethod]
+    public async Task CancelOnFinishedWorkerSettlesPreviewHandoffWithoutStatus()
+    {
+        await using var f = new Fixture();
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.AreEqual(true, (await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.freeze"),
+            "cancel on a finished worker must run the Gate-protected settlement now");
+        var settled = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        Assert.AreEqual("succeeded", settled.GetProperty("result").GetProperty("state").GetString());
+        string planId = settled.GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.IsNull(f.ReservationOutcomes.Single(), "a cancel-driven handoff must retain the reservation for submit");
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }))).GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual("consumed", f.ReservationOutcomes.Single());
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"),
+            "ownership moved to the plan; the handed-off grant must not be dropped");
+    }
+
+    [TestMethod]
+    public async Task ConcurrentStatusAndCancelOnFinishedWorkerShareOneHandoff()
+    {
+        await using var f = new Fixture();
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var replies = await Task.WhenAll(
+            f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })),
+            f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId })));
+        Assert.AreEqual("succeeded", replies[0].GetProperty("result").GetProperty("state").GetString());
+        Assert.AreEqual(true, replies[1].GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        Assert.AreEqual(1, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "import.freeze"),
+            "status and cancel must share one Gate-protected handoff, never a duplicate");
+        string planId = replies[0].GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.IsNull(f.ReservationOutcomes.Single());
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }))).GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual("consumed", f.ReservationOutcomes.Single());
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"));
+    }
+
+    [TestMethod]
+    public async Task CancelOnlyFinishedIoTasksReleaseTheirConcurrencySlots()
+    {
+        await using var f = new Fixture(); f.IoPreviewErrors = true;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        for (int i = 0; i < 9; i++)
+        {
+            string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+            var cancel = await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
+            Assert.AreEqual(true, cancel.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), $"iteration {i}");
+        }
+        Assert.AreEqual(9, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "import.drop"),
+            "each cancel-only finished preview must settle and drop its minted grant");
+    }
+
+    [TestMethod]
+    public async Task LateCancelCleanupKeepsTheHandedOffImportPlanAlive()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = hold;
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var parked = f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), "cancel-first");
+        // The worker finishes while the first cancel is still parked inside the port call.
+        f.SucceedIo();
+        Assert.AreEqual(true, (await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        Assert.AreEqual(1, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "import.freeze"));
+        hold.SetResult();
+        Assert.AreEqual(true, (await parked).GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"),
+            "late cancellation cleanup must not revoke or drop a handed-off plan");
+        Assert.IsNull(f.ReservationOutcomes.Single());
+        string planId = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }))).GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual("consumed", f.ReservationOutcomes.Single());
+    }
+
+    [TestMethod]
+    public async Task CancelSettlementFailureReleasesGrantAndKeepsStableTerminal()
+    {
+        await using var f = new Fixture(); f.Http.FailNextFreeze = true;
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.AreEqual(true, (await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+            JsonSerializer.SerializeToElement(new { grantId = f.IoGrant, runId = f.IoRun }), CancellationToken.None),
+            "the failed settlement must revoke the captured file grant");
+        var settled = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        Assert.AreEqual("failed", settled.GetProperty("result").GetProperty("state").GetString());
+        Assert.AreEqual("plugin_data_io_failed", settled.GetProperty("result").GetProperty("error").GetProperty("code").GetString());
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"));
+        string next = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.IsFalse(string.IsNullOrEmpty(next), "the settled task must not wedge the concurrency budget");
+    }
+
+    [TestMethod]
+    public async Task SurfaceRetirementDuringCancelSettlementStillReleasesTheFileGrant()
+    {
+        await using var f = new Fixture();
+        f.Http.OnFreeze = () => f.Surfaces.CloseAll();
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var cancel = await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
+        Assert.IsTrue(cancel.TryGetProperty("result", out _), cancel.GetRawText());
+        bool denied = false;
+        try { await f.Broker.HandleAsync("openRead", JsonSerializer.SerializeToElement(new { grantId = f.IoGrant, runId = f.IoRun }), CancellationToken.None); }
+        catch { denied = true; }
+        Assert.IsTrue(denied, "retirement during the settlement must still revoke or deny the captured file grant");
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"));
+    }
+
+    [TestMethod]
+    public async Task CancelReturningDuringHandoffKeepsTheHandedOffPlanAlive()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var portHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var freezeHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = portHold; f.Http.HoldFreeze = freezeHold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        var parkedCancel = f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), "cancel-first");
+        // The worker finishes while the first cancel is still parked inside the port call.
+        f.SucceedIo();
+        var settling = f.CallWithId("data.io.status", JsonSerializer.Serialize(new { taskId }), "status-during");
+        bool freezeParked = false;
+        for (int i = 0; i < 500 && !(freezeParked = f.Http.FreezeHeld == 1); i++) await Task.Delay(10);
+        Assert.IsTrue(freezeParked, "the settlement must be parked inside the handoff");
+        // The port cancel now returns while the handoff is still in flight; its cleanup must
+        // wait for the Gate instead of revoking the grant the handoff is about to own.
+        portHold.SetResult();
+        bool cancelFinishedFirst = await Task.WhenAny(parkedCancel, Task.Delay(TimeSpan.FromSeconds(3))) == parkedCancel;
+        Assert.IsFalse(cancelFinishedFirst,
+            "cancellation cleanup must not settle ownership while a handoff holds the Gate");
+        freezeHold.SetResult();
+        var status = await settling;
+        Assert.AreEqual("succeeded", status.GetProperty("result").GetProperty("state").GetString(), status.GetRawText());
+        string planId = status.GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        var firstReply = await parkedCancel;
+        Assert.AreEqual(true, firstReply.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), firstReply.GetRawText());
+        Assert.AreEqual(1, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "import.freeze"));
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"),
+            "the late cancellation cleanup must not drop the handed-off plan");
+        Assert.IsNull(f.ReservationOutcomes.Single());
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }))).GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual("consumed", f.ReservationOutcomes.Single());
+    }
+
+    [TestMethod]
+    public async Task CancelRevokedGrantCannotBeHandedOffByALaterSettlement()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var freezeHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Http.HoldFreeze = freezeHold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        // The ack is ordered after the Gate-protected revoke, so this reply proves the grant is gone.
+        Assert.AreEqual(true, (await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId })))
+            .GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        f.SucceedIo();
+        var settling = f.CallWithId("data.io.status", JsonSerializer.Serialize(new { taskId }), "status-after");
+        bool freezeParked = false;
+        for (int i = 0; i < 500 && !(freezeParked = f.Http.FreezeHeld == 1); i++) await Task.Delay(10);
+        Assert.IsTrue(freezeParked, "the later settlement must still attempt the handoff under the Gate");
+        freezeHold.SetResult();
+        var status = await settling;
+        Assert.AreEqual("failed", status.GetProperty("result").GetProperty("state").GetString(), status.GetRawText());
+        Assert.AreEqual("plugin_data_io_failed", status.GetProperty("result").GetProperty("error").GetProperty("code").GetString());
+        Assert.IsEmpty(f.ReservationOutcomes, "no reservation may be minted from a revoked grant");
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"),
+            "the dead grant's Go claim must be dropped");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.HandleAsync("openRead",
+            JsonSerializer.SerializeToElement(new { grantId = f.IoGrant, runId = f.IoRun }), CancellationToken.None));
+    }
+
+    [TestMethod]
+    public async Task CancelAckFailsPromptlyWhenSettlementHoldsTheGatePastItsBudget()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        var portHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var freezeHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = portHold; f.Http.HoldFreeze = freezeHold;
+        const string importStart = "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}";
+        string taskId = (await f.Call("data.import.start", importStart)).GetProperty("result").GetProperty("taskId").GetString()!;
+        var parkedCancel = f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), "cancel-budget");
+        f.SucceedIo();
+        var settling = f.CallWithId("data.io.status", JsonSerializer.Serialize(new { taskId }), "status-budget");
+        bool freezeParked = false;
+        for (int i = 0; i < 500 && !(freezeParked = f.Http.FreezeHeld == 1); i++) await Task.Delay(10);
+        Assert.IsTrue(freezeParked, "the settlement must legitimately hold the Gate at freeze");
+        // The port cancel returns with most of its 5s budget left; the Gate wait then
+        // consumes the rest. The acknowledgement must fail promptly (well before the
+        // 15s request deadline an unbudgeted Gate wait would run into).
+        portHold.SetResult();
+        var cancelReply = await parkedCancel.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.AreEqual("plugin_timeout", cancelReply.GetProperty("error").GetProperty("code").GetString(), cancelReply.GetRawText());
+        // The owed Gate-protected decision still completes afterwards: the settlement's
+        // handoff wins and the late cancellation must neither revoke nor drop it.
+        freezeHold.SetResult();
+        var status = await settling;
+        Assert.AreEqual("succeeded", status.GetProperty("result").GetProperty("state").GetString(), status.GetRawText());
+        string planId = status.GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.IsNull(f.ReservationOutcomes.Single());
+        Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"),
+            "the completed handoff must survive the timed-out cancellation");
+        Assert.AreEqual("succeeded", (await f.Call("mutation.submit", JsonSerializer.Serialize(new { planId }))).GetProperty("result").GetProperty("status").GetString());
+        Assert.AreEqual("consumed", f.ReservationOutcomes.Single());
+    }
+
     private sealed class Fixture : IAsyncDisposable, IWebReplySink, INativeProductFileHost
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "vibetable-plugin-files-" + Guid.NewGuid().ToString("N"));
@@ -734,6 +947,7 @@ public sealed class PluginSurfaceFilesTests
         internal Action? AfterNativeCommit;
         internal bool NativeConfirmation;
         internal bool IoRunning;
+        internal bool IoPreviewErrors;
         internal int IoCancels;
         internal TaskCompletionSource? IoCancelHold;
         internal bool FailTaskNotifications;
@@ -772,8 +986,15 @@ public sealed class PluginSurfaceFilesTests
             string transferId = opened.GetProperty("transferId").GetString()!;
             for (; ; ) { var block = await Broker.HandleAsync("read", JsonSerializer.SerializeToElement(new { transferId, maxBytes = 262144 }), token); if (block.GetProperty("eof").GetBoolean()) break; }
             await Broker.HandleAsync("closeRead", JsonSerializer.SerializeToElement(new { transferId }), token);
-            _status = JsonSerializer.SerializeToElement(new { taskId = "owned-task-" + Interlocked.Increment(ref IoStarts), kind, state = IoRunning ? "running" : "succeeded", progress = new { done = 1, total = 1, message = "parsed" }, result = new { token = new { token = "internal-go-token" }, summary = new { totalRows = 1, validRows = 1, errorRows = 0 }, rows = Array.Empty<object>() }, error = (string?)null }); return _status;
+            _status = JsonSerializer.SerializeToElement(new { taskId = "owned-task-" + Interlocked.Increment(ref IoStarts), kind, state = IoRunning ? "running" : "succeeded", progress = new { done = 1, total = 1, message = "parsed" }, result = new { token = new { token = "internal-go-token" }, summary = new { totalRows = 1, validRows = IoPreviewErrors ? 0 : 1, errorRows = IoPreviewErrors ? 1 : 0 }, rows = Array.Empty<object>() }, error = (string?)null }); return _status;
         }
+        internal void SucceedIo() => _status = JsonSerializer.SerializeToElement(new
+        {
+            taskId = _status.GetProperty("taskId").GetString()!, kind = "data.previewImport", state = "succeeded",
+            progress = new { done = 1, total = 1, message = "parsed" },
+            result = new { token = new { token = "internal-go-token" }, summary = new { totalRows = 1, validRows = 1, errorRows = 0 }, rows = Array.Empty<object>() },
+            error = (string?)null
+        });
         internal async Task<JsonElement> Call(string method, string parameters)
             => JsonDocument.Parse(await CallRaw(method, parameters)).RootElement.Clone();
         internal async Task<JsonElement> CallWithId(string method, string parameters, string requestId)
@@ -811,6 +1032,9 @@ public sealed class PluginSurfaceFilesTests
         internal Action? OnSettleAttempt;
         internal bool FailNextFreeze;
         internal Action? OnFreeze;
+        internal TaskCompletionSource? HoldFreeze;
+        private int _freezeHeld;
+        internal int FreezeHeld => _freezeHeld;
         internal TaskCompletionSource? HoldStorageSet;
         private int _storageSetHeld;
         internal int StorageSetHeld => _storageSetHeld;
@@ -837,6 +1061,7 @@ public sealed class PluginSurfaceFilesTests
             if (method == "storage.set" && HoldStorageSet is { } parked) { Interlocked.Increment(ref _storageSetHeld); await parked.Task.WaitAsync(token); }
             if (method == "attachment.stage") { AttachmentStageWires.Add(bodyBytes); AttachmentStageMediaTypes.Add(request.Content.Headers.ContentType?.MediaType); }
             if (method == "file.authorize") { var after = AfterAuthorize; AfterAuthorize = null; after?.Invoke(); }
+            if (method == "import.freeze" && HoldFreeze is { } heldFreeze) { Interlocked.Increment(ref _freezeHeld); await heldFreeze.Task.WaitAsync(token); }
             if (method == "import.freeze") { var freeze = OnFreeze; OnFreeze = null; freeze?.Invoke(); }
             if (method == "import.freeze" && FailNextFreeze) { FailNextFreeze = false; return new(HttpStatusCode.Conflict) { Content = new StringContent("{\"code\":\"import_plan_invalid\"}") }; }
             if (method == "mutation.commit" && FailNextCommitBody is { } commitBody)

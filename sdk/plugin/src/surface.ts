@@ -33,6 +33,13 @@ export interface SurfaceIoStatus<T> {
 export interface SurfaceIoTask<T> {
   readonly taskId: string;
   status(): Promise<SurfaceIoStatus<T>>;
+  /** Requests cancellation: awaits the Host acknowledgement, then polls until a stable
+   * terminal is recorded and the handle is released. Resolving does not guarantee the
+   * worker actually cancelled — it may already have succeeded or failed. Tracking
+   * failures reject and keep the task owned for explicit cancel()/status()/result()
+   * recovery while the surface is open. Closing before a terminal receipt rejects,
+   * including repeated calls; an already recorded terminal still resolves.
+   * The acknowledgement itself is never treated as the terminal. */
   cancel(): Promise<void>;
   result(signal?: AbortSignal, progress?: (value: SurfaceIoStatus<T>["progress"]) => void): Promise<T>;
 }
@@ -266,20 +273,62 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     if (closed) { release("data.io.cancel", { taskId: started.taskId }); throw new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."); }
     let running: Promise<T> | undefined;
     let cancelling: Promise<void> | undefined;
+    let cancellationRequest: Promise<void> | undefined;
     let terminal: SurfaceIoStatus<T> | undefined;
+    const requestCancellation = (): Promise<void> => {
+      if (terminal) return Promise.resolve();
+      if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
+      // Share the acknowledgement without taking over result()'s progress polling.
+      return cancellationRequest ??= call<void>("data.io.cancel", { taskId: started.taskId }).catch(error => {
+        cancellationRequest = undefined; throw error;
+      });
+    };
     const task: SurfaceIoTask<T> = {
       taskId: started.taskId,
       status: async () => { if (terminal) return terminal;
         const status = await call<SurfaceIoStatus<T>>("data.io.status", { taskId: started.taskId });
         if (status.state !== "queued" && status.state !== "running") { terminal = status; ioTasks.delete(started.taskId); } return status; },
       cancel: () => {
-        if (closed || !ioTasks.has(started.taskId)) return Promise.resolve();
-        return cancelling ??= call<void>("data.io.cancel", { taskId: started.taskId }).catch(error => { cancelling = undefined; throw error; });
+        if (terminal) return Promise.resolve();
+        return cancelling ??= (async (): Promise<void> => {
+          let settled = false;
+          try {
+            // The Host acknowledgement settles the cancellation itself; it is never
+            // treated as a terminal state of the worker.
+            await requestCancellation();
+            // Track to a stable terminal so status() records the terminal and releases
+            // the handle exactly once; a cancel-only caller therefore cannot pin the
+            // task slots. A failed poll surfaces here and keeps the handle owned — no
+            // silent stop, no fake release, no retry loop and no extra budget: one
+            // poll is in flight at a time. The coalesced promise resets so a later
+            // explicit cancel() restarts the tracking after a reported failure.
+            while (!closed && terminal === undefined && ioTasks.has(started.taskId)) {
+              const status = await task.status();
+              if (status.state !== "queued" && status.state !== "running") { settled = true; return; }
+              await new Promise<void>(resolve => setTimeout(resolve, 100));
+            }
+            // Only a recorded terminal is a stable settlement; a surface that closed
+            // mid-tracking (including during the poll sleep) never releases silently.
+            // A terminal tracked by any path stays sticky: the resolved promise persists.
+            if (terminal !== undefined) { settled = true; return; }
+            throw new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed before the DataIO terminal receipt.");
+          } finally { if (!settled) { cancelling = undefined; cancellationRequest = undefined; } }
+        })();
       },
       result: (signal, progress) => running ??= (async (): Promise<T> => {
         let cancelSent = false;
         for (;;) {
-          if (signal?.aborted && !cancelSent) { cancelSent = true; await task.cancel(); }
+          if (signal?.aborted && !cancelSent) {
+            cancelSent = true;
+            try { await requestCancellation(); }
+            catch (error) {
+              // The cancel acknowledgement follows the same export-closure mapping as the status
+              // poll: an export whose terminal receipt never arrived stays unknown
+              // instead of surfacing the raw transport closure.
+              if (method === "data.export.start" && closed) throw new PluginCapabilityError("plugin_commit_unknown", "Surface closed before output receipt; no automatic replay.");
+              throw error;
+            }
+          }
           let status: SurfaceIoStatus<T>;
           try { status = await task.status(); }
           catch (error) { if (method === "data.export.start" && closed) throw new PluginCapabilityError("plugin_commit_unknown", "Surface closed before output receipt; no automatic replay."); throw error; }

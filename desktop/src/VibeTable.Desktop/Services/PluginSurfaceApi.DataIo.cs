@@ -22,6 +22,9 @@ internal sealed partial class PluginSurfaceApi
         internal ProductSidecarGenerationSnapshot Generation { get; } = generation;
         internal SemaphoreSlim Gate { get; } = new(1);
         internal JsonElement? Terminal { get; set; }
+        // Volatile flag: ownership of the file grant and import plan moved to a minted
+        // plan; cancellation cleanup must then neither revoke nor drop them.
+        internal int Transferred;
         internal int CancellationStarted;
         internal TaskCompletionSource<bool> CancelAck { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -39,88 +42,19 @@ internal sealed partial class PluginSurfaceApi
             if (method == "data.io.cancel")
             {
                 string phase = task.Port.Status(id).GetProperty("state").GetString()!;
-                if (phase is "succeeded" or "failed" or "cancelled" or "aborted") return new { cancelRequested = false };
-                EnsureIoCancellation(task);
-                return new { cancelRequested = await task.CancelAck.Task.WaitAsync(token) };
-            }
-            await task.Gate.WaitAsync(token);
-            try
-            {
-                if (task.Terminal is { } terminal) return terminal;
-                var status = task.Port.Status(id);
-                string phase = status.GetProperty("state").GetString()!;
-                if (phase is not ("succeeded" or "failed" or "cancelled" or "aborted")) return SafeIoStatus(status);
-                bool transferred = false;
-                ImportSource? reservedSource = null;
-                try
+                if (phase is not ("succeeded" or "failed" or "cancelled" or "aborted"))
                 {
-                    if (phase == "succeeded" && task.Kind == "data.previewImport")
-                    {
-                        JsonElement preview = status.GetProperty("result");
-                        if (preview.GetProperty("summary").GetProperty("errorRows").GetInt32() != 0)
-                        {
-                            task.Terminal = JsonSerializer.SerializeToElement(new
-                            {
-                                taskId = id,
-                                kind = task.Kind,
-                                state = phase,
-                                progress = status.GetProperty("progress"),
-                                result = new
-                                {
-                                    planId = (string?)null,
-                                    affectedCount = 0,
-                                    summary = preview.GetProperty("summary"),
-                                    rows = ImportSampleRows(preview)
-                                }
-                            }, Json);
-                        }
-                        else
-                        {
-                            // The finished preview already minted a Go import plan for this grant;
-                            // every failure below must still settle this task so its task slot,
-                            // file grant and minted plan are released now instead of wedging the
-                            // surface until the 10-minute plan TTL expires.
-                            string importToken = preview.GetProperty("token").GetProperty("token").GetString()!;
-                            if (state.Plans.Count >= 8) throw Error("plugin_plan_limit");
-                            JsonElement frozen = await CallAsync(surface, "import.freeze", JsonSerializer.SerializeToElement(new
-                            { token = importToken, grantId = task.File.GrantId, collection = task.Collection }), token);
-                            JsonElement plan = frozen.GetProperty("plan").Clone();
-                            long attempt = frozen.GetProperty("attempt").GetInt64();
-                            var reservation = await task.File.Broker.HandleAsync("reservePluginImport", JsonSerializer.SerializeToElement(new
-                            { grantId = task.File.GrantId, runId = task.File.RunId, token = importToken }), token);
-                            string planId = Guid.NewGuid().ToString("N");
-                            // This request owns the reservation until the plan handoff succeeds.
-                            reservedSource = new ImportSource(task.File, importToken, attempt, reservation.GetProperty("reservationId").GetString()!, surface, task.Generation);
-                            JsonElement receipt = JsonSerializer.SerializeToElement(new
-                            {
-                                taskId = id,
-                                kind = task.Kind,
-                                state = phase,
-                                progress = status.GetProperty("progress"),
-                                result = new { planId, affectedCount = plan.GetProperty("operations").GetArrayLength(), summary = preview.GetProperty("summary"), rows = ImportSampleRows(preview) }
-                            }, Json);
-                            if (!_surfaces.TryUseCurrent(surface, () => !state.Lifetime.IsCancellationRequested && state.Plans.Count < 8
-                                && state.Plans.TryAdd(planId, new Plan(plan, plan.GetProperty("operations").GetArrayLength(), DateTimeOffset.UtcNow.AddMinutes(2), reservedSource))))
-                                throw Error("plugin_session_stale");
-                            task.Terminal = receipt;
-                            // Ownership of the file grant and import plan moved to the plan.
-                            transferred = true;
-                        }
-                    }
-                    else task.Terminal = SafeIoStatus(status);
+                    EnsureIoCancellation(task);
+                    return new { cancelRequested = await task.CancelAck.Task.WaitAsync(token) };
                 }
-                catch (Exception error) when (task.Terminal is null)
-                { task.Terminal = FailedIoTerminal(task, status, error, state.Plans.Count); }
-                if (!transferred)
-                {
-                    if (reservedSource is not null) await SettleImportSourceAsync(surface, reservedSource, "rejected");
-                    else await RevokeSurfaceFileAsync(task.File);
-                    if (task.Kind == "data.previewImport") await DropImportGrantAsync(surface, task.Generation, task.File.GrantId);
-                }
-                return task.Terminal.Value;
+                // The worker already reached a terminal state by itself. Settle through
+                // the same Gate-protected path as status so the preview plan handoff or
+                // drop runs and the file grant and task slot are released now; a racing
+                // status or cancel only replays the recorded terminal, never a second handoff.
+                await SettleIoTaskAsync(surface, state, task, token);
+                return new { cancelRequested = false };
             }
-            catch { await RevokeSurfaceFileAsync(task.File); throw; }
-            finally { task.Gate.Release(); }
+            return await SettleIoTaskAsync(surface, state, task, token);
         }
         bool export = method == "data.export.start";
         if (export) ExactFile(parameters, "collection", "fields", "query", "format", "suggestedName");
@@ -195,6 +129,99 @@ internal sealed partial class PluginSurfaceApi
         catch { owned.TryRemove(grantId, out _); await port.Files.RevokeRunAsync(runId); throw; }
     }
 
+    /// <summary>
+    /// The single Gate-protected settlement shared by data.io.status and data.io.cancel:
+    /// the first caller to observe a worker terminal performs the preview plan handoff
+    /// (or drop) and releases the file grant and task slot; later callers only replay
+    /// the recorded terminal, so concurrent status/cancel cannot duplicate the handoff.
+    /// </summary>
+    private async Task<JsonElement> SettleIoTaskAsync(PluginSurfaceSession surface, SurfaceState state,
+        IoTask task, CancellationToken token)
+    {
+        await task.Gate.WaitAsync(token);
+        try
+        {
+            if (task.Terminal is { } terminal) return terminal;
+            var status = task.Port.Status(task.Id);
+            string phase = status.GetProperty("state").GetString()!;
+            if (phase is not ("succeeded" or "failed" or "cancelled" or "aborted")) return SafeIoStatus(status);
+            bool transferred = false;
+            ImportSource? reservedSource = null;
+            try
+            {
+                if (phase == "succeeded" && task.Kind == "data.previewImport")
+                {
+                    JsonElement preview = status.GetProperty("result");
+                    if (preview.GetProperty("summary").GetProperty("errorRows").GetInt32() != 0)
+                    {
+                        task.Terminal = JsonSerializer.SerializeToElement(new
+                        {
+                            taskId = task.Id,
+                            kind = task.Kind,
+                            state = phase,
+                            progress = status.GetProperty("progress"),
+                            result = new
+                            {
+                                planId = (string?)null,
+                                affectedCount = 0,
+                                summary = preview.GetProperty("summary"),
+                                rows = ImportSampleRows(preview)
+                            }
+                        }, Json);
+                    }
+                    else
+                    {
+                        // The finished preview already minted a Go import plan for this grant;
+                        // every failure below must still settle this task so its task slot,
+                        // file grant and minted plan are released now instead of wedging the
+                        // surface until the 10-minute plan TTL expires.
+                        string importToken = preview.GetProperty("token").GetProperty("token").GetString()!;
+                        if (state.Plans.Count >= 8) throw Error("plugin_plan_limit");
+                        JsonElement frozen = await CallAsync(surface, "import.freeze", JsonSerializer.SerializeToElement(new
+                        { token = importToken, grantId = task.File.GrantId, collection = task.Collection }), token);
+                        JsonElement plan = frozen.GetProperty("plan").Clone();
+                        long attempt = frozen.GetProperty("attempt").GetInt64();
+                        var reservation = await task.File.Broker.HandleAsync("reservePluginImport", JsonSerializer.SerializeToElement(new
+                        { grantId = task.File.GrantId, runId = task.File.RunId, token = importToken }), token);
+                        string planId = Guid.NewGuid().ToString("N");
+                        // This request owns the reservation until the plan handoff succeeds.
+                        reservedSource = new ImportSource(task.File, importToken, attempt, reservation.GetProperty("reservationId").GetString()!, surface, task.Generation);
+                        JsonElement receipt = JsonSerializer.SerializeToElement(new
+                        {
+                            taskId = task.Id,
+                            kind = task.Kind,
+                            state = phase,
+                            progress = status.GetProperty("progress"),
+                            result = new { planId, affectedCount = plan.GetProperty("operations").GetArrayLength(), summary = preview.GetProperty("summary"), rows = ImportSampleRows(preview) }
+                        }, Json);
+                        if (!_surfaces.TryUseCurrent(surface, () => !state.Lifetime.IsCancellationRequested && state.Plans.Count < 8
+                            && state.Plans.TryAdd(planId, new Plan(plan, plan.GetProperty("operations").GetArrayLength(), DateTimeOffset.UtcNow.AddMinutes(2), reservedSource))))
+                            throw Error("plugin_session_stale");
+                        task.Terminal = receipt;
+                        // Ownership of the file grant and import plan moved to the plan;
+                        // an in-flight port cancellation must not revoke or drop them.
+                        Volatile.Write(ref task.Transferred, 1);
+                        transferred = true;
+                    }
+                }
+                else task.Terminal = SafeIoStatus(status);
+            }
+            catch (Exception error) when (task.Terminal is null)
+            { task.Terminal = FailedIoTerminal(task, status, error, state.Plans.Count); }
+            if (!transferred)
+            {
+                if (reservedSource is not null) await SettleImportSourceAsync(surface, reservedSource, "rejected");
+                else await RevokeSurfaceFileAsync(task.File);
+                if (task.Kind == "data.previewImport") await DropImportGrantAsync(surface, task.Generation, task.File.GrantId);
+            }
+            return task.Terminal.Value;
+        }
+        // Ownership may already have moved to a minted plan; never revoke that grant twice.
+        catch when (Volatile.Read(ref task.Transferred) == 0)
+        { await RevokeSurfaceFileAsync(task.File); throw; }
+        finally { task.Gate.Release(); }
+    }
+
     private static IReadOnlyList<JsonElement> ImportSampleRows(JsonElement preview)
     {
         var rows = new List<JsonElement>(); int bytes = 0;
@@ -242,17 +269,71 @@ internal sealed partial class PluginSurfaceApi
     }
     private async Task CancelIoAsync(IoTask task)
     {
+        // Set when the Gate stayed contended past the whole 5s budget: the owed
+        // ownership decision is then completed in the finally, unbudgeted but still
+        // Gate-protected, because the settlement always releases the Gate in its own
+        // finally. Cleanup is never skipped and a completed handoff is never revoked.
+        Exception? owedOwnership = null;
+        Exception? failure = null;
         try
         {
             using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try { await task.Port.Cancel(task.Id, budget.Token); }
-            finally { await RevokeSurfaceFileAsync(task.File); }
+            catch (Exception error) { failure = error; }
+            // The revoke ownership decision runs under the settlement's Gate and inside
+            // the same caller-visible 5s budget: a legitimate settlement holding the
+            // Gate for its freeze round trips surfaces here as a timely cancellation
+            // failure instead of stalling the acknowledgement far past its budget.
+            try { await CancelIoOwnershipAsync(task, revoke: true, budget.Token); }
+            catch (OperationCanceledException) when (budget.IsCancellationRequested)
+            {
+                owedOwnership = new OperationCanceledException(
+                    "Plugin DataIO cancellation budget expired while the settlement held the Gate.");
+                failure ??= owedOwnership;
+            }
+            if (failure is not null) throw failure;
             task.CancelAck.TrySetResult(true);
             await task.Port.WaitTerminal(task.Id, budget.Token);
-            if (task.Kind == "data.previewImport") await DropImportGrantAsync(task.Surface, task.Generation, task.File.GrantId);
+            if (task.Kind == "data.previewImport") await CancelIoOwnershipAsync(task, revoke: false, CancellationToken.None);
         }
         catch (Exception error)
         { task.CancelAck.TrySetException(error); System.Diagnostics.Trace.TraceWarning($"Plugin DataIO cancellation failed: {error}"); }
+        finally
+        {
+            if (owedOwnership is not null)
+            {
+                try
+                {
+                    // Complete the remaining cancellation path once the Gate frees up:
+                    // the revoke (or the skip after a completed handoff), then the
+                    // terminal wait and the Go grant drop with their own bounded budget.
+                    await CancelIoOwnershipAsync(task, revoke: true, CancellationToken.None);
+                    using var cleanupBudget = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await task.Port.WaitTerminal(task.Id, cleanupBudget.Token);
+                    if (task.Kind == "data.previewImport") await CancelIoOwnershipAsync(task, revoke: false, CancellationToken.None);
+                }
+                catch (Exception error) { System.Diagnostics.Trace.TraceWarning($"Plugin DataIO cancellation cleanup failed: {error}"); }
+            }
+        }
+    }
+
+    /// <summary>
+    /// One Gate-protected ownership decision for a cancelled task: the revoke/drop either
+    /// precedes any handoff (a later settlement then fails its freeze/reserve against the
+    /// dead grant) or observes the completed handoff and keeps the plan's grant alive.
+    /// The token bounds only the Gate wait; once held, the decision always runs to
+    /// completion, so a cancelled wait never leaves ownership half-decided.
+    /// </summary>
+    private async Task CancelIoOwnershipAsync(IoTask task, bool revoke, CancellationToken token)
+    {
+        await task.Gate.WaitAsync(token);
+        try
+        {
+            if (Volatile.Read(ref task.Transferred) != 0) return;
+            if (revoke) await RevokeSurfaceFileAsync(task.File);
+            else await DropImportGrantAsync(task.Surface, task.Generation, task.File.GrantId);
+        }
+        finally { task.Gate.Release(); }
     }
     private void ReleaseImportSource(ImportSource? source)
     { if (source is not null) TrackCleanup(ReleaseImportSourceAsync(source)); }

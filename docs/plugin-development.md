@@ -444,8 +444,14 @@ surface、记录、字段及 Host 文件 run，并在 canonical `setAttachments`
 row guard、MIME/大小/数量策略。拒绝、过期和退役会丢弃未用 stage。
 
 导入/导出使用已有 `HostDataIoTaskRegistry`，SDK 只获得本 surface 的任务句柄。
-`task.status()` 读取进度/终态，`task.cancel()` 请求取消，`task.result(signal, onProgress)`
-等待结果并报告进度；没有列出、广播或取消其它 surface/平台任务的入口。
+`task.status()` 读取进度/终态，`task.result(signal, onProgress)` 等待结果并报告进度；
+`task.cancel()` 请求取消：先等待 Host 取消回执，再轮询到稳定终态并释放任务句柄后才 resolve。
+resolve 不保证 worker 真被取消（可能早已 succeeded/failed）；取消回执本身不是终态。
+跟踪失败会显式 reject，并在 surface 存活时保持任务占用，后续显式
+`task.cancel()`/`task.status()`/`task.result()` 可恢复释放。关闭且未收到终态时，
+重复 `task.cancel()` 仍 reject；已缓存终态的取消等待仍 resolve。
+`result(signal, onProgress)` 收到取消回执后继续自己的轮询和进度通知，直到权威终态。
+没有列出、广播或取消其它 surface/平台任务的入口。
 普通请求与获准 IO 任务的取消回执各有 8 个槽，重复取消合并；SDK 对已知终态不再发送取消，
 Host 拒绝外来 taskId。
 导入源与导出目标由对应方法自行请求原生选择，不接受插件提供的路径或平台 grant。
