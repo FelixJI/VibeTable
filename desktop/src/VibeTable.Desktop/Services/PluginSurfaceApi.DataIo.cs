@@ -129,6 +129,17 @@ internal sealed partial class PluginSurfaceApi
         if (collection.Length is 0 or > 128) throw Error("plugin_capability_invalid");
         string format = export ? parameters.GetProperty("format").GetString()! : "";
         if (export && format is not ("csv" or "xlsx")) throw Error("plugin_capability_invalid");
+        string importMode = export ? "" : parameters.GetProperty("mode").GetString() ?? "";
+        if (!export && importMode is not ("create_only" or "upsert")) throw Error("plugin_capability_invalid");
+        if (importMode == "upsert")
+        {
+            // Upsert matches rows by an approved key before preview starts; a null or empty
+            // key would otherwise be silently normalized as updates until the authoritative
+            // mint rejects the whole batch.
+            JsonElement upsertKey = parameters.GetProperty("upsertKey");
+            if (upsertKey.ValueKind != JsonValueKind.String || upsertKey.GetString()!.Length is 0 or > 128)
+                throw Error("plugin_capability_invalid");
+        }
         string suggested = export ? SafeFileName(parameters.GetProperty("suggestedName").GetString()) : "";
         JsonElement fields = export ? parameters.GetProperty("fields").Clone() : JsonSerializer.SerializeToElement(Array.Empty<string>());
         async Task Authorize(CancellationToken call)

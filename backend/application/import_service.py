@@ -43,6 +43,7 @@ from backend.contracts.data_io import (
     ImportCellDiagnostic,
     ImportChunkResult,
     ImportColumnMapping,
+    ImportMode,
     ImportPlan,
     ImportPlanRow,
     ImportPreviewToken,
@@ -401,14 +402,26 @@ def auto_map_columns(
     header: list[str],
     profile: CollectionProfile,
     explicit: list[ImportColumnMapping],
+    *,
+    mode: ImportMode = "create_only",
 ) -> tuple[dict[int, str], list[str]]:
     """Map source column indices → collection field names.
 
     Explicit mappings take precedence; remaining columns are auto-matched by
     field key (case-insensitive). Returns ``(mapping, unmatched_columns)``.
+
+    In upsert mode a column may map to any field writable through the create
+    or the update grant, because matched and new rows carry different fields;
+    which rows may actually write a mapped field stays decided per row by the
+    authoritative Go preview and mint, never by this union.
     """
     explicit_by_source = {m.source_column: m.target_field for m in explicit}
-    create_fields = set(profile.create_fields)
+    importable = list(profile.create_fields)
+    if mode == "upsert":
+        importable += [
+            field for field in profile.update_fields if field not in set(profile.create_fields)
+        ]
+    importable_set = set(importable)
     mapping: dict[int, str] = {}
     matched_sources: set[str] = set()
     for index, name in enumerate(header):
@@ -421,7 +434,7 @@ def auto_map_columns(
                     "或移除该映射并由本地编号字段重新生成。",
                     code="mutation.field.read_only",
                 )
-            if target in create_fields:
+            if target in importable_set:
                 mapping[index] = target
                 matched_sources.add(clean)
             continue
@@ -435,7 +448,7 @@ def auto_map_columns(
                 "或移除该来源列并由本地编号字段重新生成。",
                 code="mutation.field.read_only",
             )
-        for field in profile.create_fields:
+        for field in importable:
             if field.lower() == lowered:
                 mapping[index] = field
                 matched_sources.add(clean)
@@ -526,7 +539,9 @@ class ImportService:
             raise asyncio.CancelledError
         if progress:
             await progress(len(rows), 0, f"校验导入数据：{len(rows)} 行")
-        mapping, unmatched = auto_map_columns(header, profile, params.column_mapping)
+        mapping, unmatched = auto_map_columns(
+            header, profile, params.column_mapping, mode=params.mode
+        )
         relations = {r.field: r for r in profile.relations}
         explicit_by_source = {item.source_column.strip(): item for item in params.column_mapping}
         relation_targets: dict[int, RelationImportTarget] = {}

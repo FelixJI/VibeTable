@@ -14,7 +14,7 @@ from backend.adapters.pocketbase.mutation import PocketBaseBulkMutationClient
 from backend.adapters.pocketbase.relation_io import PocketBaseRelationImportProvider
 from backend.application.export_service import ExportError, ExportService, QueryPage
 from backend.application.host_files import HostFiles
-from backend.application.import_service import ImportService
+from backend.application.import_service import ImportFlowError, ImportService
 from backend.contracts.data_io import ExportParams, ExportResult, ImportPlan, PreviewImportParams
 from backend.contracts.data_profile import CollectionProfile
 from backend.contracts.plugin_data_io import PluginIoScope
@@ -246,6 +246,14 @@ async def preview_plugin_import(
     copied = dict(raw)
     scope = PluginIoScope.model_validate(copied.pop("pluginScope"))
     params = PreviewImportParams.model_validate(copied)
+    if params.mode == "upsert" and not params.upsert_key:
+        # Upsert matches rows by an approved key before preview starts; a missing
+        # key would otherwise be silently normalized as updates until the
+        # authoritative mint rejects the whole batch.
+        raise ImportFlowError(
+            "upsert import requires a non-empty upsertKey",
+            code="plugin_capability_invalid",
+        )
     profile = CollectionProfile.model_validate(
         await client.plugin_surface(
             scope.principal,

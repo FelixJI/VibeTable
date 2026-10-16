@@ -254,6 +254,180 @@ func TestPluginSurfaceUpsertPreviewFollowsActualMatchesWithInsertRequiredChecks(
 	}
 }
 
+func TestPluginSurfaceUpsertPreviewUsesActualOperationGrantPerRow(t *testing.T) {
+	ctx := context.Background()
+	f := newWorkspaceMutationReplayFixture(t)
+	workspace := "11111111-1111-4111-8111-111111111111"
+	keyDefaults, err := v2.RecommendedDefaults(v2.LogicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDefaults.Constraints.Unique.Enabled = true
+	key := applySchemaProductField(t, f.pb, v2.FieldChangeIntent{Action: v2.ActionCreate, TableID: f.request.TableID, Draft: &v2.FieldDraft{DisplayName: "Upsert key", LogicalType: v2.LogicalText, Value: keyDefaults.Value, Constraints: keyDefaults.Constraints, Storage: keyDefaults.Storage, Display: keyDefaults.Display}}, "grant-upsert-key").Definition
+	createOnly := createSchemaProductField(t, f.pb, f.request.TableID, v2.LogicalText, "Create only", "grant-create-only").Definition
+	updateOnly := createSchemaProductField(t, f.pb, f.request.TableID, v2.LogicalText, "Update only", "grant-update-only").Definition
+	table, err := schemaexecution.Describe(ctx, f.pb, f.request.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := f.definition.Snapshot.Fields[0].Identity.FieldID
+	source, err := queryschema.New(f.pb.DataDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kernel := mutation.New(f.pb, mutation.MetadataSchemaSource{})
+	existingID := "grantmatch00001"
+	seed := mutation.Request{ContractVersion: "2.0", RequestID: "grant-seed", IdempotencyKey: "grant-seed", TableID: table.Snapshot.TableID, SchemaRevision: table.Snapshot.SchemaRevision, Actor: mutation.Actor{Type: "user", ID: "test"}, Operations: []mutation.Operation{{Kind: mutation.OperationInsert, RecordID: &existingID, Values: map[string]any{key.Identity.FieldID: "existing", name: "seed"}}}}
+	if _, err = kernel.Apply(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	hasDiagnostic := func(row importvalue.ResultRow, field, code string) bool {
+		for _, diagnostic := range row.Diagnostics {
+			if diagnostic.Field == field && diagnostic.Code == code {
+				return true
+			}
+		}
+		return false
+	}
+	preview := func(call func(string, any) (any, error), rows ...map[string]any) (importvalue.Result, error) {
+		out, err := call("import.preview", map[string]any{"collection": table.Snapshot.TableID, "schemaRevision": table.Snapshot.SchemaRevision, "mode": "upsert", "upsertKey": key.Identity.FieldID, "rows": rows})
+		if err != nil {
+			return importvalue.Result{}, err
+		}
+		return out.(importvalue.Result), nil
+	}
+	install := func(pluginID string, dataGrants []any) func(string, any) (any, error) {
+		t.Helper()
+		store := pluginstore.New(f.pb, workspace)
+		hash := strings.Repeat("b", 64)
+		manifest := map[string]any{"$schema": "vibetable.plugin-manifest.v2", "pluginId": pluginID, "version": "1.0.0", "displayName": map[string]any{}, "description": map[string]any{}, "compatibility": map[string]any{"pluginApi": "3.x"}, "permissions": map[string]any{"files": []string{"pickRead", "pickWrite"}, "data": dataGrants}, "actions": []any{map[string]any{"actionId": "save", "risk": "write", "mode": "local", "invocation": "manual"}}, "ui": map[string]any{"customViews": []any{map[string]any{"viewId": "save", "actionId": "save", "entry": "ui/index.html"}}}}
+		if _, err := store.SaveInstallation(ctx, installationSnapshot(t, store.ProjectKey(), pluginID, hash, manifest, 1, "enabled"), nil); err != nil {
+			t.Fatal(err)
+		}
+		input := pluginSurfaceAPIRequest{ProjectKey: store.ProjectKey(), PluginID: pluginID, ActionID: "save", Entry: "ui/index.html", PackageHash: hash, SessionEpoch: 7, InstallationRevision: 1, InstallationID: installationRecordID(t, store, pluginID), ActiveCollection: table.Snapshot.TableID, SurfaceToken: "surface-grants", RequestID: "grants-request"}
+		ports := &pluginSurfaceIO{plans: newImportPlanOwner(workspace)}
+		return func(method string, request any) (any, error) {
+			input.Method = method
+			input.Request, _ = json.Marshal(request)
+			return executePluginSurfaceAPI(ctx, f.pb, source, kernel, workspace, input, nil, ports)
+		}
+	}
+	collection := table.Snapshot.TableID
+
+	t.Run("split grants authorize each row by its actual operation", func(t *testing.T) {
+		call := install("com.example.grants.split", []any{
+			map[string]any{"collection": collection, "operations": []string{"read", "query", "create"}, "fields": []string{"id", name, key.Identity.FieldID, createOnly.Identity.FieldID}},
+			map[string]any{"collection": collection, "operations": []string{"update"}, "fields": []string{"id", name, key.Identity.FieldID, updateOnly.Identity.FieldID}},
+		})
+		// ioProfile must not advertise the create/update union as both writable lists.
+		profile, err := call("data.ioProfile", map[string]any{"collection": collection, "operation": "create", "fields": []string{}, "mode": "upsert"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		column := func(listKey string, field string) bool {
+			for _, item := range profile.(map[string]any)[listKey].([]string) {
+				if item == field {
+					return true
+				}
+			}
+			return false
+		}
+		if !column("create_fields", createOnly.Identity.FieldID) || column("create_fields", updateOnly.Identity.FieldID) {
+			t.Fatalf("create_fields is not the create grant: %v", profile.(map[string]any)["create_fields"])
+		}
+		if !column("update_fields", updateOnly.Identity.FieldID) || column("update_fields", createOnly.Identity.FieldID) {
+			t.Fatalf("update_fields is not the update grant: %v", profile.(map[string]any)["update_fields"])
+		}
+		if !column("fields", createOnly.Identity.FieldID) || !column("fields", updateOnly.Identity.FieldID) {
+			t.Fatal("visibility dropped the union of both import grants")
+		}
+		normalized, err := preview(call,
+			map[string]any{key.Identity.FieldID: "existing", updateOnly.Identity.FieldID: "after"},
+			map[string]any{key.Identity.FieldID: "fresh", createOnly.Identity.FieldID: "created"},
+			map[string]any{key.Identity.FieldID: "existing", createOnly.Identity.FieldID: "update-row"},
+			map[string]any{key.Identity.FieldID: "fresh-2", updateOnly.Identity.FieldID: "insert-row"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(normalized.Rows) != 4 {
+			t.Fatalf("unexpected preview rows: %+v", normalized.Rows)
+		}
+		if len(normalized.Rows[0].Diagnostics) != 0 || len(normalized.Rows[1].Diagnostics) != 0 {
+			t.Fatalf("authorized heterogeneous rows were denied: %+v %+v", normalized.Rows[0].Diagnostics, normalized.Rows[1].Diagnostics)
+		}
+		if !hasDiagnostic(normalized.Rows[2], createOnly.Identity.FieldID, "field.grant.denied") {
+			t.Fatalf("matched update row kept a create-only field without a diagnostic: %+v", normalized.Rows[2].Diagnostics)
+		}
+		if !hasDiagnostic(normalized.Rows[3], updateOnly.Identity.FieldID, "field.grant.denied") {
+			t.Fatalf("new insert row kept an update-only field without a diagnostic: %+v", normalized.Rows[3].Diagnostics)
+		}
+	})
+
+	t.Run("missing update grant previews checkable diagnostics and mint stays authoritative", func(t *testing.T) {
+		call := install("com.example.grants.create", []any{
+			map[string]any{"collection": collection, "operations": []string{"read", "query", "create"}, "fields": []string{"id", name, key.Identity.FieldID}},
+		})
+		normalized, err := preview(call,
+			map[string]any{key.Identity.FieldID: "existing", name: "after"},
+			map[string]any{key.Identity.FieldID: "fresh", name: "created"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasDiagnostic(normalized.Rows[0], key.Identity.FieldID, "import.operation.denied") {
+			t.Fatalf("matched row without an update grant was not checkable: %+v", normalized.Rows[0].Diagnostics)
+		}
+		if len(normalized.Rows[1].Diagnostics) != 0 {
+			t.Fatalf("insert row was denied: %+v", normalized.Rows[1].Diagnostics)
+		}
+		mint := func(values map[string]any) (any, error) {
+			return call("import.mint", map[string]any{"contract": importPlanContract, "collection": collection, "grantId": "host-source", "schemaRevision": table.Snapshot.SchemaRevision, "capabilityHash": table.Snapshot.SchemaRevision, "sourceHash": "grant-source-contract", "mode": "upsert", "upsertKey": key.Identity.FieldID, "rows": []any{map[string]any{"sourceRow": 2, "values": values, "diagnostics": []any{}, "relationResolutions": []any{}}}})
+		}
+		if _, err = mint(map[string]any{key.Identity.FieldID: "existing", name: "after"}); surfaceErrorCode(t, err) != "plugin_write_denied" {
+			t.Fatalf("mint did not reject the ungranted update: %v", err)
+		}
+	})
+
+	t.Run("missing create grant denies only the insert rows", func(t *testing.T) {
+		call := install("com.example.grants.update", []any{
+			map[string]any{"collection": collection, "operations": []string{"read", "query", "update"}, "fields": []string{"id", name, key.Identity.FieldID}},
+		})
+		normalized, err := preview(call,
+			map[string]any{key.Identity.FieldID: "existing", name: "after"},
+			map[string]any{key.Identity.FieldID: "fresh", name: "created"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(normalized.Rows[0].Diagnostics) != 0 {
+			t.Fatalf("matched update row was denied: %+v", normalized.Rows[0].Diagnostics)
+		}
+		if !hasDiagnostic(normalized.Rows[1], key.Identity.FieldID, "import.operation.denied") {
+			t.Fatalf("insert row without a create grant was not checkable: %+v", normalized.Rows[1].Diagnostics)
+		}
+	})
+
+	t.Run("upsert requires a usable key before preview", func(t *testing.T) {
+		call := install("com.example.grants.keys", []any{
+			map[string]any{"collection": collection, "operations": []string{"read", "query", "create", "update"}, "fields": []string{"id", name, key.Identity.FieldID, createOnly.Identity.FieldID}},
+		})
+		rows := []map[string]any{{key.Identity.FieldID: "existing", name: "after"}}
+		for _, upsertKey := range []any{nil, ""} {
+			if _, err = call("import.preview", map[string]any{"collection": collection, "schemaRevision": table.Snapshot.SchemaRevision, "mode": "upsert", "upsertKey": upsertKey, "rows": rows}); surfaceErrorCode(t, err) != "plugin_capability_invalid" {
+				t.Fatalf("missing upsert key preview returned %v", err)
+			}
+		}
+		// A key outside the read grant or a readable non-unique field stays denied.
+		if _, err = call("import.preview", map[string]any{"collection": collection, "schemaRevision": table.Snapshot.SchemaRevision, "mode": "upsert", "upsertKey": updateOnly.Identity.FieldID, "rows": rows}); surfaceErrorCode(t, err) != "plugin_write_denied" {
+			t.Fatalf("unauthorized upsert key preview returned %v", err)
+		}
+		if _, err = call("import.preview", map[string]any{"collection": collection, "schemaRevision": table.Snapshot.SchemaRevision, "mode": "upsert", "upsertKey": name, "rows": rows}); surfaceErrorCode(t, err) != "plugin_write_denied" {
+			t.Fatalf("non-unique upsert key preview returned %v", err)
+		}
+	})
+}
+
 func TestPluginSurfaceRecordNotFoundAfterConfirmationIsADefiniteRejection(t *testing.T) {
 	// The P2 race is a delete plan whose target disappears after native
 	// confirmation; the update variant keeps the original coverage.

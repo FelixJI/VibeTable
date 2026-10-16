@@ -324,6 +324,161 @@ async def test_scoped_create_only_preview_keeps_insert_required_checks_and_null_
     assert plan.summary.error_rows == 1
 
 
+async def test_scoped_upsert_maps_operation_specific_columns_and_denies_wrong_operation_rows(
+    tmp_path,
+):
+    """The full plugin chain routes columns granted by either import operation:
+    an update-only column reaches the authoritative preview, a matched row
+    keeps it clean, and an unmatched insert row gets the Go per-operation
+    field-grant diagnostic instead of silently dropping the column."""
+    from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
+
+    class HeterogeneousGrantClient(ScopedClient):
+        """Contract-faithful import.preview peer mirroring the fixed Go surface:
+        rows are matched by the approved key, then authorized against their
+        actual operation grant exactly like the authoritative preview/mint."""
+
+        def __init__(self):
+            super().__init__()
+            self.existing_keys = {"existing"}
+            self.create_fields = {"key", "title"}
+            self.update_fields = {"key", "note"}
+
+        async def plugin_surface(self, principal, method, request, **kwargs):
+            if method in {"data.ioProfile", "import.preview", "import.mint"}:
+                self.calls.append((principal, method, request, kwargs))
+            if method == "data.ioProfile":
+                return {
+                    "collection": "orders",
+                    "schema_revision": "schema_1",
+                    "fields": ["id", "key", "title", "note"],
+                    "field_schemas": {
+                        field: {"dataType": "text", "displayName": field}
+                        for field in ("key", "title", "note")
+                    },
+                    # The authoritative profile splits the import grants per
+                    # operation instead of advertising their union twice.
+                    "create_fields": ["key", "title"],
+                    "update_fields": ["key", "note"],
+                    "archive_field": None,
+                    "date_updated_field": None,
+                }
+            if method == "import.preview":
+                assert request["mode"] == "upsert"
+                assert request["upsertKey"] == "key"
+                rows_out = []
+                for row in request["rows"]:
+                    matched = row.get("key") in self.existing_keys
+                    operation, grant_fields = (
+                        ("update", self.update_fields)
+                        if matched
+                        else ("create", self.create_fields)
+                    )
+                    diagnostics = []
+                    for field in row:
+                        if field not in grant_fields:
+                            diagnostics.append(
+                                {
+                                    "field": field,
+                                    "code": "field.grant.denied",
+                                    "message": f"field is not authorized by the {operation} grant",
+                                }
+                            )
+                    rows_out.append({"values": row, "diagnostics": diagnostics})
+                return {"rows": rows_out}
+            if method == "import.mint":
+                self.minted_rows = list(request["rows"])
+                return {"token": "imp1.host-owned", "expiresAt": 9999999999}
+            return await super().plugin_surface(principal, method, request, **kwargs)
+
+    peer = LocalFilePeer()
+    source = tmp_path / "upsert-grants.csv"
+    # "note" is only writable through the update grant; "existing" matches a
+    # record while "fresh" is a new insert row.
+    source.write_text("key,note\nexisting,after\nfresh,new\n", encoding="utf-8")
+    grant = peer.grants.issue(purpose="import_source", direction="read", path=str(source))
+    peer.runs[grant.grant_id] = "host-run"
+    client = HeterogeneousGrantClient()
+
+    async def progress(*_args):
+        pass
+
+    plan = await preview_plugin_import(
+        client,
+        peer.files,
+        {
+            "grantId": grant.grant_id,
+            "collection": "orders",
+            "schemaRevision": "schema_1",
+            "mode": "upsert",
+            "upsertKey": "key",
+            "pluginScope": scope(),
+        },
+        progress,
+        lambda: False,
+    )
+    preview_call = next(
+        request for _, method, request, _ in client.calls if method == "import.preview"
+    )
+    # The update-only column was routed through mapping into the authoritative preview.
+    assert preview_call["rows"][0] == {"key": "existing", "note": "after"}
+    assert preview_call["rows"][1] == {"key": "fresh", "note": "new"}
+    # The matched update row keeps its granted update-only field clean.
+    assert plan.rows[0].values == {"key": "existing", "note": "after"}
+    assert plan.rows[0].diagnostics == []
+    # The unmatched insert row is denied per row, not by dropping the column.
+    assert [
+        (diagnostic.code, diagnostic.column)
+        for diagnostic in plan.rows[1].diagnostics
+        if diagnostic.code == "field.grant.denied"
+    ] == [("field.grant.denied", 2)]
+    assert plan.summary.error_rows == 1
+    # The minted plan still carries the routed values for the frozen Go plan path.
+    assert [row["values"] for row in client.minted_rows] == [
+        {"key": "existing", "note": "after"},
+        {"key": "fresh", "note": "new"},
+    ]
+
+
+async def test_plugin_upsert_preview_requires_non_empty_upsert_key_before_authorization(tmp_path):
+    """The plugin chain rejects an upsert without its approved key before any
+    surface call, instead of previewing misleading updates the mint later rejects."""
+    from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
+    from backend.application.import_service import ImportFlowError
+
+    peer = LocalFilePeer()
+    source = tmp_path / "upsert-missing-key.csv"
+    source.write_text("key,title\nexisting,keep\n", encoding="utf-8")
+    grant = peer.grants.issue(purpose="import_source", direction="read", path=str(source))
+    peer.runs[grant.grant_id] = "host-run"
+    client = ScopedClient()
+
+    async def progress(*_args):
+        pass
+
+    for raw in (
+        {
+            "grantId": grant.grant_id,
+            "collection": "orders",
+            "schemaRevision": "schema_1",
+            "mode": "upsert",
+            "pluginScope": scope(),
+        },
+        {
+            "grantId": grant.grant_id,
+            "collection": "orders",
+            "schemaRevision": "schema_1",
+            "mode": "upsert",
+            "upsertKey": "",
+            "pluginScope": scope(),
+        },
+    ):
+        with pytest.raises(ImportFlowError) as error:
+            await preview_plugin_import(client, peer.files, raw, progress, lambda: False)
+        assert error.value.code == "plugin_capability_invalid"
+    assert client.calls == [], "validation must precede any surface authorization"
+
+
 async def test_bound_data_io_spool_rejects_oversize_before_commit_and_never_drops_run():
     calls = []
 

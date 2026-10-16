@@ -186,9 +186,26 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				return pluginDataError("plugin_read_denied")
 			}
 			allowed := pluginAllowed(*grant, table.Snapshot)
+			// Upsert imports see the union of the create and update grants for
+			// visibility, but each writable column list must follow its own
+			// operation grant; the union in both lists would advertise fields the
+			// authoritative per-operation plan authorization rejects.
+			createAllowed := allowed
+			updateAllowed := allowed
+			if request.Operation == "create" && request.Mode == "upsert" {
+				createAllowed = map[string]string{}
+				if create := surfaceIOGrant(installed, input, request.Collection, "create"); create != nil {
+					createAllowed = pluginAllowed(*create, table.Snapshot)
+				}
+				updateAllowed = map[string]string{}
+				if update := surfaceIOGrant(installed, input, request.Collection, "update"); update != nil {
+					updateAllowed = pluginAllowed(*update, table.Snapshot)
+				}
+			}
 			fields := []string{"id"}
 			schemas := map[string]any{}
-			writable := []string{}
+			createWritable := []string{}
+			updateWritable := []string{}
 			relations := []any{}
 			for _, field := range table.Snapshot.Fields {
 				id := field.Identity.FieldID
@@ -204,8 +221,14 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 					}
 					relations = append(relations, map[string]any{"relation_id": request.Collection + "." + id, "field": id, "kind": kind, "related_collection": field.Relation.TargetTableID, "display_fields": []string{}})
 				}
-				if !describeFieldReadonly(table.Snapshot, field) {
-					writable = append(writable, id)
+				if describeFieldReadonly(table.Snapshot, field) {
+					continue
+				}
+				if createAllowed[id] != "" {
+					createWritable = append(createWritable, id)
+				}
+				if updateAllowed[id] != "" {
+					updateWritable = append(updateWritable, id)
 				}
 			}
 			if request.Operation == "read" {
@@ -224,7 +247,7 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				}
 			}
 			// id is internal profile bookkeeping only. ExportService receives an explicit output column list.
-			result = map[string]any{"collection": request.Collection, "schema_revision": table.Snapshot.SchemaRevision, "fields": fields, "field_schemas": schemas, "relations": relations, "create_fields": writable, "update_fields": writable, "archive_field": nil, "date_updated_field": nil}
+			result = map[string]any{"collection": request.Collection, "schema_revision": table.Snapshot.SchemaRevision, "fields": fields, "field_schemas": schemas, "relations": relations, "create_fields": createWritable, "update_fields": updateWritable, "archive_field": nil, "date_updated_field": nil}
 			return nil
 		case "import.preview":
 			var request struct {
@@ -234,7 +257,8 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				Mode           string           `json:"mode"`
 				UpsertKey      *string          `json:"upsertKey"`
 			}
-			if decodePluginParams(input.Request, &request) != nil || len(request.Rows) > 1000 || len(request.Rows) == 0 || !pluginHas([]string{"create_only", "upsert"}, request.Mode) {
+			if decodePluginParams(input.Request, &request) != nil || len(request.Rows) > 1000 || len(request.Rows) == 0 || !pluginHas([]string{"create_only", "upsert"}, request.Mode) ||
+				request.Mode == "upsert" && (request.UpsertKey == nil || *request.UpsertKey == "") {
 				return pluginDataError("plugin_capability_invalid")
 			}
 			grant := surfaceImportGrant(installed, input, request.Collection, request.Mode)
@@ -250,9 +274,25 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 			// import.mint: only a row that matches an existing record updates with
 			// partial values; every new row is an insert, so a missing required field
 			// becomes a checkable preview diagnostic instead of a request failure.
+			// Each row is then authorized against its actual operation grant: a
+			// matched row needs the update grant and a new row needs the create
+			// grant, so a missing operation grant or a field outside that grant
+			// becomes a checkable row diagnostic; import.mint keeps its own
+			// authoritative per-operation rejection and is not loosened here.
+			var createGrant, updateGrant *pluginReadGrant
+			createAllowed := allowed
+			updateAllowed := allowed
+			if request.Mode == "upsert" {
+				createAllowed, updateAllowed = map[string]string{}, map[string]string{}
+				if createGrant = surfaceIOGrant(installed, input, request.Collection, "create"); createGrant != nil {
+					createAllowed = pluginAllowed(*createGrant, table.Snapshot)
+				}
+				if updateGrant = surfaceIOGrant(installed, input, request.Collection, "update"); updateGrant != nil {
+					updateAllowed = pluginAllowed(*updateGrant, table.Snapshot)
+				}
+			}
 			var keyField v2.FieldDefinition
-			matchByUpsertKey := false
-			if request.Mode == "upsert" && request.UpsertKey != nil && *request.UpsertKey != "" {
+			if request.Mode == "upsert" {
 				if installed.grant(request.Collection, input.ActiveCollection) == nil {
 					return pluginDataError("plugin_write_denied")
 				}
@@ -262,9 +302,9 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 					return pluginDataError("plugin_write_denied")
 				}
 				keyField = field
-				matchByUpsertKey = true
 			}
 			preview := importvalue.Request{Contract: importvalue.Contract, TableID: request.Collection, SchemaRevision: request.SchemaRevision, Rows: []importvalue.Row{}}
+			modes := make([]fieldvalue.WriteMode, 0, len(request.Rows))
 			for _, row := range request.Rows {
 				for key := range row {
 					field, ok := table.Field(key)
@@ -275,28 +315,52 @@ func executeSurfaceIO(ctx context.Context, app core.App, source *queryschema.Sou
 				mode := fieldvalue.Insert
 				if request.Mode == "upsert" {
 					mode = fieldvalue.Update
-					if matchByUpsertKey {
-						value, present := row[*request.UpsertKey]
-						if !present || value == nil {
-							return pluginDataError("plugin_capability_invalid")
-						}
-						page, err := query.NewPort(tx, source).QueryPage(ctx, request.Collection, query.TableQuery{Limit: 2, Filters: []query.FilterExpression{{Field: keyField.Identity.PhysicalName, Operator: query.OperatorEqual, Value: value}}})
-						if err != nil {
-							return err
-						}
-						if len(page.Rows) > 1 {
-							return pluginDataError("plugin_capability_invalid")
-						}
-						if len(page.Rows) == 0 {
-							mode = fieldvalue.Insert
-						}
+					value, present := row[*request.UpsertKey]
+					if !present || value == nil {
+						return pluginDataError("plugin_capability_invalid")
+					}
+					page, err := query.NewPort(tx, source).QueryPage(ctx, request.Collection, query.TableQuery{Limit: 2, Filters: []query.FilterExpression{{Field: keyField.Identity.PhysicalName, Operator: query.OperatorEqual, Value: value}}})
+					if err != nil {
+						return err
+					}
+					if len(page.Rows) > 1 {
+						return pluginDataError("plugin_capability_invalid")
+					}
+					if len(page.Rows) == 0 {
+						mode = fieldvalue.Insert
 					}
 				}
+				modes = append(modes, mode)
 				preview.Rows = append(preview.Rows, importvalue.Row{Values: row, Mode: mode})
 			}
 			normalized, err := importvalue.New(fieldchange.NewCatalog(tx)).Preview(ctx, preview)
 			if err != nil {
 				return err
+			}
+			if request.Mode == "upsert" {
+				for index := range normalized.Rows {
+					operation := "update"
+					rowAllowed, rowGrant := updateAllowed, updateGrant
+					if modes[index] == fieldvalue.Insert {
+						operation, rowAllowed, rowGrant = "create", createAllowed, createGrant
+					}
+					if rowGrant == nil {
+						normalized.Rows[index].Diagnostics = append(normalized.Rows[index].Diagnostics, importvalue.Diagnostic{
+							Field: *request.UpsertKey, Code: "import.operation.denied",
+							Message: "row requires the " + operation + " grant, which is not authorized",
+						})
+						continue
+					}
+					for key := range request.Rows[index] {
+						field, _ := table.Field(key)
+						if rowAllowed[field.Identity.FieldID] == "" {
+							normalized.Rows[index].Diagnostics = append(normalized.Rows[index].Diagnostics, importvalue.Diagnostic{
+								Field: field.Identity.FieldID, Code: "field.grant.denied",
+								Message: "field is not authorized by the " + operation + " grant",
+							})
+						}
+					}
+				}
 			}
 			for _, row := range normalized.Rows {
 				for _, diagnostic := range row.Diagnostics {

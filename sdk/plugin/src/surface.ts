@@ -60,7 +60,10 @@ export interface SurfaceCapabilities {
     /** Unknown handles are a no-op; repeated in-flight releases share the same acknowledgement.
      * Normal requests and owned-handle releases each have eight slots. Failed releases retain ownership for explicit retry/dispose. */
     unsubscribe(subscriptionId: string): Promise<void>;
-    previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only" | "upsert"; readonly upsertKey?: string;
+    previewImport(request: { readonly collection: string; readonly schemaRevision: string; readonly mode?: "create_only"; readonly upsertKey?: undefined;
+      readonly columnMapping?: readonly { readonly sourceColumn: string; readonly targetField: string; readonly relationId?: string; readonly matchField?: string }[] } | {
+      /** Upsert matches rows by the approved unique key before preview starts; the key must be non-empty. */
+      readonly collection: string; readonly schemaRevision: string; readonly mode: "upsert"; readonly upsertKey: string;
       readonly columnMapping?: readonly { readonly sourceColumn: string; readonly targetField: string; readonly relationId?: string; readonly matchField?: string }[] }): Promise<SurfaceIoTask<SurfaceImportPreview> | null>;
     export(request: { readonly collection: string; readonly fields: readonly string[]; readonly query?: Omit<DataQueryRequest, "contract" | "collection" | "fields" | "cursor" | "pageSize">;
       readonly format: "csv" | "xlsx"; readonly suggestedName: string }): Promise<SurfaceIoTask<{ readonly rowsWritten: number; readonly outputDisplayName: string }> | null>;
@@ -329,7 +332,13 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     tasks: presentation.tasks,
     ui: presentation.ui,
     data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe,
-      previewImport: request => startIo("data.import.start", { ...request, mode: request.mode ?? "create_only", upsertKey: request.upsertKey ?? null, columnMapping: request.columnMapping ?? [] }),
+      previewImport: request => {
+        // Upsert requires its approved key up front: a null key would otherwise be
+        // silently normalized as updates until the authoritative mint rejects it.
+        if ((request.mode ?? "create_only") === "upsert" && (typeof request.upsertKey !== "string" || request.upsertKey === ""))
+          throw new PluginCapabilityError("plugin_capability_invalid", "Upsert imports require a non-empty upsertKey.");
+        return startIo("data.import.start", { ...request, mode: request.mode ?? "create_only", upsertKey: request.upsertKey ?? null, columnMapping: request.columnMapping ?? [] });
+      },
       export: request => startIo("data.export.start", { ...request, query: request.query ?? {} }) },
     file: { pickRead: options => pick(false, { mediaTypes: options?.mediaTypes ?? [] }) as Promise<ReadGrant | null>,
       pickWrite: options => pick(true, options) as Promise<WriteGrant | null> },

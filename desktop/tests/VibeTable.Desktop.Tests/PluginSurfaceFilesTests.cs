@@ -71,6 +71,29 @@ public sealed class PluginSurfaceFilesTests
         }
     }
     [TestMethod]
+    public async Task UpsertImportStartRequiresApprovedKeyBeforeAnyAuthorization()
+    {
+        await using var f = new Fixture();
+        foreach (var upsertKey in new[] { "null", "\"\"", "12" })
+        {
+            var denied = await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"upsert\",\"upsertKey\":" + upsertKey + ",\"columnMapping\":[]}");
+            Assert.IsTrue(denied.TryGetProperty("error", out var deniedError) && deniedError.GetProperty("code").GetString() == "plugin_capability_invalid", denied.GetRawText());
+        }
+        var invalidMode = await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"recreate\",\"upsertKey\":null,\"columnMapping\":[]}");
+        Assert.AreEqual("plugin_capability_invalid", invalidMode.GetProperty("error").GetProperty("code").GetString(), invalidMode.GetRawText());
+        Assert.AreEqual(0, f.Http.Calls.Count, "validation must precede surface authorization");
+        Assert.AreEqual(0, f.GrantCount, "invalid metadata must not mint a grant");
+        int selections = 0; f.AfterPick = () => selections++;
+        // An approved non-empty key still starts normally and keeps the picker flow.
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"upsert\",\"upsertKey\":\"key\",\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.AreEqual(1, selections);
+        Assert.IsTrue(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "data.ioProfile"
+            && call.GetProperty("request").GetProperty("mode").GetString() == "upsert"));
+        await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
+    }
+
+    [TestMethod]
     public async Task NativePickerFilesAreOpaqueOwnedBoundedAndRetiredBeforeFinalSave()
     {
         await using var f = new Fixture();

@@ -44,8 +44,18 @@ test("file limits, lost receipt and pending picker disposal never replay a write
 
 test("DataIO uses owned task status and cancellation; preview yields only a mutation handle", async () => {
   const wire = channel(); const client = sdk.createSurfaceClient("s", wire);
+  // Upsert without an approved key never starts a task; create_only keeps the null key.
+  assert.throws(() => client.data.previewImport({ collection: "t", schemaRevision: "schema_1", mode: "upsert" }), error => error.code === "plugin_capability_invalid");
+  assert.throws(() => client.data.previewImport({ collection: "t", schemaRevision: "schema_1", mode: "upsert", upsertKey: "" }), error => error.code === "plugin_capability_invalid");
+  assert.equal(wire.calls.filter(call => call.method === "data.import.start").length, 0);
+  const upserting = client.data.previewImport({ collection: "t", schemaRevision: "schema_1", mode: "upsert", upsertKey: "key" });
+  assert.deepEqual(wire.calls.at(-1).params, { collection: "t", schemaRevision: "schema_1", mode: "upsert", upsertKey: "key", columnMapping: [] });
+  wire.reply({ taskId: "upsert-owned" }); const upsertTask = await upserting;
+  const upsertResult = upsertTask.result(); wire.reply({ taskId: "upsert-owned", state: "succeeded", progress: { done: 1, total: 1, message: "" }, result: { planId: "plan", affectedCount: 1, rows: [], summary: { totalRows: 1, validRows: 1, errorRows: 0 } } });
+  assert.equal((await upsertResult).planId, "plan");
   const starting = client.data.previewImport({ collection: "t", schemaRevision: "schema_1" });
   assert.equal(wire.calls.at(-1).method, "data.import.start"); assert.equal("principal" in wire.calls.at(-1).params, false);
+  assert.deepEqual(wire.calls.at(-1).params, { collection: "t", schemaRevision: "schema_1", mode: "create_only", upsertKey: null, columnMapping: [] });
   wire.reply({ taskId: "owned" }); const task = await starting;
   const result = task.result(); wire.reply({ taskId: "owned", state: "succeeded", progress: { done: 1, total: 1, message: "" }, result: { planId: "plan", affectedCount: 1, rows: [], summary: { totalRows: 1, validRows: 1, errorRows: 0 } } });
   assert.equal((await result).planId, "plan");
