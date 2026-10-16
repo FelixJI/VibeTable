@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -201,6 +202,7 @@ type Catalog interface {
 
 type Coordinator struct {
 	captureMu sync.Mutex
+	logger    *slog.Logger
 
 	repository objectrepo.Repository
 	barrier    Barrier
@@ -217,12 +219,75 @@ func NewCoordinator(repository objectrepo.Repository, barrier Barrier, catalog C
 	}
 }
 
+// WithLogger records content-free capture-phase diagnostics. A nil logger
+// (the default for every existing constructor call) disables all phase
+// logging without changing capture behavior or error semantics.
+func (coordinator *Coordinator) WithLogger(logger *slog.Logger) *Coordinator {
+	coordinator.logger = logger
+	return coordinator
+}
+
+// Capture serializes every capture through captureMu, then freezes sources
+// under the barrier. The optional logger records the closed phase set
+// (mutex queued/acquired, capture completed/failed) so a stalled capture can
+// be attributed to a layer. Every duration clock starts after its
+// boundary-entry log write completes and is read before the boundary-exit log
+// is emitted, so log I/O never masquerades as the measured wait. captureMu is
+// released by a defer registered immediately after Lock: lock release never
+// depends on logging succeeding (slog discards handler errors; only a
+// panicking handler propagates, and unwinding still runs both defers, unlock
+// first, terminal log second — outside the critical section).
 func (coordinator *Coordinator) Capture(
 	ctx context.Context,
 	request CaptureRequest,
-) (Record, bool, error) {
+) (record Record, created bool, err error) {
+	if coordinator.logger != nil {
+		coordinator.logger.Info(
+			"snapshot.capture.mutex_waiting",
+			slog.String("module", "snapshot"),
+			slog.String("workspaceId", request.WorkspaceID),
+			slog.String("operationId", operationIDFromContext(ctx)),
+		)
+	}
+	mutexStart := time.Now()
+	var captureStart time.Time
+	// Registered before the unlock defer so the terminal event is written
+	// after captureMu is released: logging never extends the critical section.
+	defer func() {
+		if coordinator.logger == nil || captureStart.IsZero() {
+			return
+		}
+		attributes := []any{
+			slog.String("module", "snapshot"),
+			slog.String("workspaceId", request.WorkspaceID),
+			slog.String("operationId", operationIDFromContext(ctx)),
+			slog.Float64("durationMs", PhaseDurationMs(time.Since(captureStart))),
+		}
+		if err != nil {
+			coordinator.logger.Error(
+				"snapshot.capture.failed",
+				append(attributes, slog.String("errorCode", CaptureErrorCode(err)))...,
+			)
+			return
+		}
+		coordinator.logger.Info("snapshot.capture.completed", attributes...)
+	}()
 	coordinator.captureMu.Lock()
 	defer coordinator.captureMu.Unlock()
+	mutexAcquiredAt := time.Now()
+	mutexWait := mutexAcquiredAt.Sub(mutexStart)
+	if coordinator.logger != nil {
+		coordinator.logger.Info(
+			"snapshot.capture.mutex_acquired",
+			slog.String("module", "snapshot"),
+			slog.String("workspaceId", request.WorkspaceID),
+			slog.String("operationId", operationIDFromContext(ctx)),
+			slog.Float64("durationMs", PhaseDurationMs(mutexWait)),
+		)
+	}
+	// Clock for the terminal event starts only after the mutex_acquired log
+	// write completes, so that write's cost stays outside its own interval.
+	captureStart = time.Now()
 	if coordinator.repository == nil || coordinator.barrier == nil || coordinator.catalog == nil {
 		return Record{}, false, errors.New("snapshot.dependencies_required")
 	}
@@ -385,7 +450,7 @@ func (coordinator *Coordinator) Capture(
 		releasePin()
 		return Record{}, false, err
 	}
-	record := Record{
+	record = Record{
 		SnapshotID: snapshotID, WorkspaceID: request.WorkspaceID,
 		ManifestID:            receipt.Manifests["snapshot"],
 		SealID:                sealReceipt.Manifests["snapshot-seal"],
