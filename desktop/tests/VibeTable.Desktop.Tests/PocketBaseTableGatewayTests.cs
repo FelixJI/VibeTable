@@ -1241,14 +1241,17 @@ public sealed class PocketBaseTableGatewayTests
 
     [TestMethod]
     [DoNotParallelize]
-    [DataRow("preflight", "RPC:-32150:mutation.schema_revision_conflict")]
-    [DataRow("guard", "TableEditConflictException")]
-    [DataRow("apply", "RPC:-32150:mutation.digest_conflict")]
-    [DataRow("readback", "RPC:-32150")]
-    [DataRow("receipt", "InvalidOperationException")]
+    [DataRow("preflight", "RPC:-32150:schema.table.not_found", "schema.table.not_found")]
+    [DataRow("preflight", "RPC:-32150", "schema.table.not_found\nprivate-user-value-path-password")]
+    [DataRow("guard", "TableEditConflictException", null)]
+    [DataRow("apply", "RPC:-32150:mutation.digest_conflict", null)]
+    [DataRow("readback", "RPC:-32150:query.storage.failed", "query.storage.failed")]
+    [DataRow("readback", "RPC:-32150", "query.private-user-value-path-password")]
+    [DataRow("receipt", "InvalidOperationException", null)]
     public async Task UpdateFailureRecordsOnlyStageAndSafeCode(
         string stage,
-        string expectedCode)
+        string expectedCode,
+        string? productCode)
     {
         var transport = new ProductTransport();
         const string privateText = "private-user-value-path-password";
@@ -1259,7 +1262,7 @@ public sealed class PocketBaseTableGatewayTests
         if (stage == "preflight")
         {
             transport.RespondError("schema.getTable", -32150, privateText,
-                """{"code":"mutation.schema_revision_conflict","message":"private-user-value-path-password"}""");
+                JsonSerializer.Serialize(new { code = productCode, message = privateText }));
         }
         else
         {
@@ -1276,7 +1279,7 @@ public sealed class PocketBaseTableGatewayTests
                 transport.Respond("mutation.apply", """{"newRevision":"invalid"}""");
                 if (stage == "readback")
                     transport.RespondError("query.readRows", -32150, privateText,
-                        """{"code":"private-user-value-path-password"}""");
+                        JsonSerializer.Serialize(new { code = productCode, details = new { path = privateText } }));
                 else
                     transport.Respond("query.readRows", before);
             }

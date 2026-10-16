@@ -199,7 +199,19 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                             or "formula.runtime" or "formula.type"
                             or "formula.cycle" or "formula.divide_by_zero"
                             or "formula.null" or "formula.overflow"
-                            or "formula.timezone" or "formula.syntax")
+                            or "formula.timezone" or "formula.syntax"
+                            or "schema.table.not_found" or "field.internal.failed"
+                            or "field.not_found" or "field.contract.invalid"
+                            or "field.capability.unsupported" or "lookup.path.invalid"
+                            or "lookup.path.depth_limit" or "lookup.condition.invalid"
+                            or "lookup.aggregation.invalid" or "query.request.invalid"
+                            or "query.internal.failed" or "query.rows.limit"
+                            or "query.storage.failed" or "query.schema.failed"
+                            or "query.port.unconfigured" or "query.snapshot.failed"
+                            or "query.schema.invalid" or "query.schema.unconfigured"
+                            or "query.schema.unsupported_field" or "query.table.not_found"
+                            or "query.computed.version_unavailable" or "query.archive.invalid"
+                            or "query.table.invalid")
                     {
                         code += ":" + productCode;
                     }
