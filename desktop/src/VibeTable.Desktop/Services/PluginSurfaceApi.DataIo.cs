@@ -25,8 +25,7 @@ internal sealed partial class PluginSurfaceApi
         // Volatile flag: ownership of the file grant and import plan moved to a minted
         // plan; cancellation cleanup must then neither revoke nor drop them.
         internal int Transferred;
-        internal int CancellationStarted;
-        internal TaskCompletionSource<bool> CancelAck { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<bool>? CancelAck;
     }
     private sealed record ImportSource(SurfaceFile File, string Token, long Attempt, string Reservation, PluginSurfaceSession Surface, ProductSidecarGenerationSnapshot Generation);
 
@@ -44,8 +43,7 @@ internal sealed partial class PluginSurfaceApi
                 string phase = task.Port.Status(id).GetProperty("state").GetString()!;
                 if (phase is not ("succeeded" or "failed" or "cancelled" or "aborted"))
                 {
-                    EnsureIoCancellation(task);
-                    return new { cancelRequested = await task.CancelAck.Task.WaitAsync(token) };
+                    return new { cancelRequested = await EnsureIoCancellation(task, retryFailure: true).WaitAsync(token) };
                 }
                 // The worker already reached a terminal state by itself. Settle through
                 // the same Gate-protected path as status so the preview plan handoff or
@@ -269,13 +267,22 @@ internal sealed partial class PluginSurfaceApi
     private void ReleaseDataIo(string surfaceToken)
     {
         if (!_ioTasks.TryRemove(surfaceToken, out var tasks)) return;
-        foreach (var task in tasks.Values) EnsureIoCancellation(task);
+        foreach (var task in tasks.Values) _ = EnsureIoCancellation(task);
     }
-    private void EnsureIoCancellation(IoTask task)
+    private Task<bool> EnsureIoCancellation(IoTask task, bool retryFailure = false)
     {
-        if (Interlocked.CompareExchange(ref task.CancellationStarted, 1, 0) == 0) TrackCleanup(CancelIoAsync(task));
+        TaskCompletionSource<bool> acknowledgement;
+        lock (task)
+        {
+            // Only a new explicit request may replace a failed attempt; in-flight and
+            // successful acknowledgements stay shared, including during retirement.
+            if (task.CancelAck is { } current && (!retryFailure || !current.Task.IsFaulted)) return current.Task;
+            acknowledgement = task.CancelAck = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        TrackCleanup(CancelIoAsync(task, acknowledgement));
+        return acknowledgement.Task;
     }
-    private async Task CancelIoAsync(IoTask task)
+    private async Task CancelIoAsync(IoTask task, TaskCompletionSource<bool> acknowledgement)
     {
         // Set when the Gate stayed contended past the whole 5s budget: the owed
         // ownership decision is then completed in the finally, unbudgeted but still
@@ -300,12 +307,12 @@ internal sealed partial class PluginSurfaceApi
                 failure ??= owedOwnership;
             }
             if (failure is not null) throw failure;
-            task.CancelAck.TrySetResult(true);
+            acknowledgement.TrySetResult(true);
             await task.Port.WaitTerminal(task.Id, budget.Token);
             if (task.Kind == "data.previewImport") await CancelIoOwnershipAsync(task, revoke: false, CancellationToken.None);
         }
         catch (Exception error)
-        { task.CancelAck.TrySetException(error); System.Diagnostics.Trace.TraceWarning($"Plugin DataIO cancellation failed: {error}"); }
+        { acknowledgement.TrySetException(error); System.Diagnostics.Trace.TraceWarning($"Plugin DataIO cancellation failed: {error}"); }
         finally
         {
             if (owedOwnership is not null)

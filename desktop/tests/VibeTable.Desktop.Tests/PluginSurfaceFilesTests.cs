@@ -699,6 +699,69 @@ public sealed class PluginSurfaceFilesTests
     }
 
     [TestMethod]
+    public async Task TimedOutIoCancelAllowsAnExplicitRetryWhileItsCleanupIsStillPending()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        f.IoCancelHold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoWaitTerminal = async token =>
+        {
+            cleanupEntered.TrySetResult();
+            await cleanupHold.Task.WaitAsync(token);
+        };
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        string parameters = JsonSerializer.Serialize(new { taskId });
+        var first = f.CallWithId("data.io.cancel", parameters, "timeout-first");
+        var sharedFirst = f.CallWithId("data.io.cancel", parameters, "timeout-shared");
+        Assert.AreEqual(1, f.IoCancels);
+        // Use the actual 5s Port.Cancel budget: no worker terminal is fabricated on timeout.
+        foreach (var reply in await Task.WhenAll(first, sharedFirst).WaitAsync(TimeSpan.FromSeconds(10)))
+            Assert.AreEqual("plugin_timeout", reply.GetProperty("error").GetProperty("code").GetString(), reply.GetRawText());
+        await cleanupEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Task oldCleanup = ((System.Collections.IDictionary)typeof(PluginSurfaceApi)
+            .GetField("_cleanups", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(f.Api)!).Values.Cast<Task>().Single();
+        Assert.AreEqual("running", (await f.Call("data.io.status", parameters)).GetProperty("result").GetProperty("state").GetString());
+        Assert.AreEqual(1, f.IoCancels, "a failed attempt must not retry itself");
+
+        var retryHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold = retryHold; f.IoWaitTerminal = null;
+        var retry = f.CallWithId("data.io.cancel", parameters, "retry-first");
+        var sharedRetry = f.CallWithId("data.io.cancel", parameters, "retry-shared");
+        try
+        {
+            Assert.AreEqual(2, f.IoCancels, "a new explicit cancel must reach Port.Cancel after the failed attempt");
+            Assert.IsFalse(retry.IsCompleted || sharedRetry.IsCompleted, "the new attempt must await its own acknowledgement");
+            // A late failure from the old attempt must neither finish nor replace the new ack.
+            cleanupHold.TrySetException(new InvalidOperationException("old cleanup failed"));
+            await oldCleanup.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(retry.IsCompleted || sharedRetry.IsCompleted);
+            retryHold.SetResult();
+            foreach (var reply in await Task.WhenAll(retry, sharedRetry))
+                Assert.IsTrue(reply.GetProperty("result").GetProperty("cancelRequested").GetBoolean(), reply.GetRawText());
+            Assert.IsTrue((await f.Call("data.io.cancel", parameters)).GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+            Assert.AreEqual(2, f.IoCancels, "the successful acknowledgement must stay sticky");
+            Assert.AreEqual("running", (await f.Call("data.io.status", parameters)).GetProperty("result").GetProperty("state").GetString());
+        }
+        finally { cleanupHold.TrySetResult(); retryHold.TrySetResult(); }
+    }
+
+    [TestMethod]
+    public async Task RetirementDoesNotRetryAFailedIoCancellation()
+    {
+        await using var f = new Fixture(); f.IoRunning = true;
+        f.IoCancelHold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.IoCancelHold.SetException(new InvalidOperationException("port cancellation failed"));
+        string taskId = (await f.Call("data.import.start", "{\"collection\":\"orders\",\"schemaRevision\":\"schema_1\",\"mode\":\"create_only\",\"upsertKey\":null,\"columnMapping\":[]}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        Assert.IsTrue((await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }))).TryGetProperty("error", out _));
+        Assert.AreEqual(1, f.IoCancels);
+        f.Surfaces.CloseAll();
+        Assert.AreEqual(1, f.IoCancels, "retirement must not automatically retry a failed acknowledgement");
+    }
+
+    [TestMethod]
     public async Task RawFrameIoCancelAdmissionIsBoundedIndependentAndReleasesSlots()
     {
         await using var f = new Fixture(); f.IoRunning = true;
@@ -1002,12 +1065,19 @@ public sealed class PluginSurfaceFilesTests
         portHold.SetResult();
         var cancelReply = await parkedCancel.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.AreEqual("plugin_timeout", cancelReply.GetProperty("error").GetProperty("code").GetString(), cancelReply.GetRawText());
+        // A new explicit cancel now observes the finished worker and joins settlement,
+        // while the first attempt still owes its Gate-protected cleanup decision.
+        var repeatedCancel = f.CallWithId("data.io.cancel", JsonSerializer.Serialize(new { taskId }), "cancel-after-budget");
+        Assert.IsFalse(repeatedCancel.IsCompleted, "the repeated cancel must wait for the handoff");
         // The owed Gate-protected decision still completes afterwards: the settlement's
         // handoff wins and the late cancellation must neither revoke nor drop it.
         freezeHold.SetResult();
         var status = await settling;
         Assert.AreEqual("succeeded", status.GetProperty("result").GetProperty("state").GetString(), status.GetRawText());
         string planId = status.GetProperty("result").GetProperty("result").GetProperty("planId").GetString()!;
+        Assert.IsTrue((await repeatedCancel).GetProperty("result").GetProperty("cancelRequested").GetBoolean());
+        Assert.AreEqual(1, f.IoCancels, "a finished worker must settle rather than start another port cancellation");
+        Assert.AreEqual(1, f.Http.Calls.Count(call => call.GetProperty("method").GetString() == "import.freeze"));
         Assert.IsNull(f.ReservationOutcomes.Single());
         Assert.IsFalse(f.Http.Calls.Any(call => call.GetProperty("method").GetString() == "import.drop"),
             "the completed handoff must survive the timed-out cancellation");
@@ -1043,6 +1113,7 @@ public sealed class PluginSurfaceFilesTests
         internal bool IoPreviewErrors;
         internal int IoCancels;
         internal TaskCompletionSource? IoCancelHold;
+        internal Func<CancellationToken, Task>? IoWaitTerminal;
         internal JsonElement? ExportStatus;
         internal bool FailTaskNotifications;
         internal bool FailNextTaskNotification;
@@ -1064,7 +1135,7 @@ public sealed class PluginSurfaceFilesTests
             Surfaces.TryGet(surface.SurfaceToken, out var bound); Surface = bound!;
             _generation = new ProductSidecarGenerationSnapshot(this, 1, new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "synthetic"), new ProductSidecarIdentity("11111111-1111-4111-8111-111111111111", 7, 1, "claim"), [], action => action());
             Broker = new HostSessionFileBroker(() => { Interlocked.Increment(ref Leases); return new WorkspaceRequestEpochLease(new WorkspaceWireScope { Scope = "workspace", WorkspaceId = Guid.Parse("11111111-1111-4111-8111-111111111111"), SessionEpoch = 7, OperationId = Guid.NewGuid(), Sequence = 1 }, CancellationToken.None, () => Interlocked.Decrement(ref Leases)); }, action => { action(); if (File.ReadAllText(Target) == "new") { var after = AfterNativeCommit; AfterNativeCommit = null; after?.Invoke(); } });
-            Api = new(Surfaces, _tasks, () => _generation, this, Http, files: () => Broker, fileHost: this, pickFile: pick => Task.FromResult(pick()), dataIo: () => new(Broker, StartIo, _ => _status, CancelPort, (_, _) => Task.CompletedTask));
+            Api = new(Surfaces, _tasks, () => _generation, this, Http, files: () => Broker, fileHost: this, pickFile: pick => Task.FromResult(pick()), dataIo: () => new(Broker, StartIo, _ => _status, CancelPort, (_, token) => IoWaitTerminal?.Invoke(token) ?? Task.CompletedTask));
         }
         private async Task<JsonElement> CancelPort(string id, CancellationToken token)
         {
