@@ -178,7 +178,28 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
                             or "mutation.schema_revision_conflict" or "mutation.record.not_found"
                             or "mutation.request.invalid" or "mutation.internal.failed"
                             or "mutation.storage.failed" or "mutation.field.read_only"
-                            or "mutation.idempotency_conflict")
+                            or "mutation.idempotency_conflict"
+                            or "mutation.body.limit" or "mutation.table.not_found"
+                            or "mutation.table.read_only" or "mutation.field.unknown"
+                            or "mutation.field.invalid_value" or "mutation.attachment.requires_operation"
+                            or "mutation.archive.requires_operation" or "mutation.metadata.invalid_data_revision"
+                            or "mutation.metadata.data_revision_exhausted" or "mutation.schema.field_missing"
+                            or "mutation.schema.storage_mismatch" or "mutation.schema_revision.invalid"
+                            or "mutation.system.autodate_invalid" or "mutation.validation.failed"
+                            or "mutation.formula.failed" or "mutation.formula.invalid_output"
+                            or "mutation.computed.version_failed" or "mutation.relation.target_table_not_found"
+                            or "mutation.relation.target_not_found" or "mutation.relation.pair_invalid"
+                            or "mutation.relation.reciprocal_cardinality" or "mutation.relation.stored_value_invalid"
+                            or "mutation.schema.autodate_invalid" or "mutation.relation.storage_failed"
+                            or "mutation.lookup.schema_invalid" or "mutation.lookup.invalid_value"
+                            or "mutation.lookup.storage_failed" or "lookup.value.too_expensive"
+                            or "lookup.value.source_missing" or "lookup.aggregation.value_not_finite"
+                            or "lookup.aggregation.value_not_numeric" or "field.migration.write_locked"
+                            or "formula.dependency" or "formula.resource_limit"
+                            or "formula.runtime" or "formula.type"
+                            or "formula.cycle" or "formula.divide_by_zero"
+                            or "formula.null" or "formula.overflow"
+                            or "formula.timezone" or "formula.syntax")
                     {
                         code += ":" + productCode;
                     }

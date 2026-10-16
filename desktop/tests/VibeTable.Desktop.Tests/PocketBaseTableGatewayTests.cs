@@ -1345,6 +1345,65 @@ public sealed class PocketBaseTableGatewayTests
         Assert.HasCount(1, listener.Lines);
     }
 
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow("mutation.field.invalid_value", true)]
+    [DataRow("mutation.formula.failed", true)]
+    [DataRow("mutation.table.read_only", true)]
+    [DataRow("mutation.lookup.storage_failed", true)]
+    [DataRow("lookup.aggregation.value_not_numeric", true)]
+    [DataRow("formula.divide_by_zero", true)]
+    [DataRow("field.migration.write_locked", true)]
+    [DataRow("mutation.future_code", false)]
+    [DataRow("mutation.field.invalid_value:private-user-value-path-password", false)]
+    [DataRow("formula.author.token", false)]
+    [DataRow("mutation.record.already_exists", false)]
+    [DataRow("field.migration.write_locked\nprivate-user-value-path-password", false)]
+    public async Task UpdateFailureRetainsOnlyFixedCodesFromTheUpdatePath(
+        string productCode,
+        bool persisted)
+    {
+        const string privateText = "private-user-value-path-password";
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond("query.readRows", """
+            {"rows":[{"id":"row-1","title":"Before",
+             "__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+            """);
+        string errorData = JsonSerializer.Serialize(new
+        {
+            code = productCode,
+            message = privateText,
+            details = new { path = privateText, accessToken = privateText },
+        });
+        transport.RespondError("mutation.apply", -32150, privateText, errorData);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        using var listener = new EditDiagnosticListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+                gateway.UpdateCellAsync("orders", "row-1", "title", "Before", privateText,
+                    "schema_0001", CancellationToken.None));
+            Assert.AreEqual(privateText, error.Message);
+            Assert.AreEqual(errorData, error.ErrorData!.Value.GetRawText());
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+
+        Assert.HasCount(1, listener.Lines);
+        string line = listener.Lines[0];
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(line));
+        using JsonDocument diagnostic = JsonDocument.Parse(line);
+        Assert.AreEqual("table.updateCell.apply",
+            diagnostic.RootElement.GetProperty("event").GetString());
+        Assert.AreEqual(persisted ? "RPC:-32150:" + productCode : "RPC:-32150",
+            diagnostic.RootElement.GetProperty("errorCode").GetString());
+        Assert.IsFalse(line.Contains(privateText, StringComparison.Ordinal));
+    }
     private sealed class EditDiagnosticListener : TraceListener
     {
         public List<string> Lines { get; } = [];
