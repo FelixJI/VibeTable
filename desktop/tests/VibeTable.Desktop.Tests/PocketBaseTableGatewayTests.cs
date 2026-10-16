@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Tests;
@@ -114,6 +116,7 @@ public sealed class PocketBaseTableGatewayTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task UpdateChecksCurrentValueAndCommitsThroughMutationKernel()
     {
         var transport = new ProductTransport();
@@ -136,32 +139,42 @@ public sealed class PocketBaseTableGatewayTests
         using var gateway = new PocketBaseTableGateway(
             new JsonRpcProductDataGateway(client));
 
-        var result = await gateway.UpdateCellAsync(
-            "orders",
-            "row-1",
-            "title",
-            "Before",
-            "After",
-            "schema_0001",
-            CancellationToken.None);
+        using var listener = new EditDiagnosticListener { ThrowOnWrite = true };
+        Trace.Listeners.Add(listener);
+        try
+        {
+            var result = await gateway.UpdateCellAsync(
+                "orders",
+                "row-1",
+                "title",
+                "Before",
+                "After",
+                "schema_0001",
+                CancellationToken.None);
 
-        Assert.AreEqual("After", result.StoredValue);
-        Assert.AreEqual(2, result.Revision.DataRevision);
-        CollectionAssert.AreEqual(
-            new[]
-            {
-                "schema.getTable",
-                "query.readRows",
-                "mutation.apply",
-                "query.readRows",
-            },
-            transport.Methods);
-        StringAssert.Contains(
-            transport.Serialized,
-            @"""operations"":[{""kind"":""update"",""recordId"":""row-1""");
-        StringAssert.Contains(
-            transport.Serialized,
-            @"""expectedDigest"":""sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""");
+            Assert.AreEqual("After", result.StoredValue);
+            Assert.AreEqual(2, result.Revision.DataRevision);
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "schema.getTable",
+                    "query.readRows",
+                    "mutation.apply",
+                    "query.readRows",
+                },
+                transport.Methods);
+            StringAssert.Contains(
+                transport.Serialized,
+                @"""operations"":[{""kind"":""update"",""recordId"":""row-1""");
+            StringAssert.Contains(
+                transport.Serialized,
+                @"""expectedDigest"":""sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""");
+            Assert.HasCount(0, listener.Lines);
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
     }
 
     [TestMethod]
@@ -1225,6 +1238,188 @@ public sealed class PocketBaseTableGatewayTests
             offset.ToString(System.Globalization.CultureInfo.InvariantCulture),
             StringComparison.Ordinal)
         .Replace("__SCHEMA__", schemaRevision, StringComparison.Ordinal);
+
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow("preflight", "RPC:-32150:schema.table.not_found", "schema.table.not_found")]
+    [DataRow("preflight", "RPC:-32150", "schema.table.not_found\nprivate-user-value-path-password")]
+    [DataRow("guard", "TableEditConflictException", null)]
+    [DataRow("apply", "RPC:-32150:mutation.digest_conflict", null)]
+    [DataRow("readback", "RPC:-32150:query.storage.failed", "query.storage.failed")]
+    [DataRow("readback", "RPC:-32150", "query.private-user-value-path-password")]
+    [DataRow("receipt", "InvalidOperationException", null)]
+    public async Task UpdateFailureRecordsOnlyStageAndSafeCode(
+        string stage,
+        string expectedCode,
+        string? productCode)
+    {
+        var transport = new ProductTransport();
+        const string privateText = "private-user-value-path-password";
+        const string before = """
+            {"rows":[{"id":"row-1","title":"Before",
+             "__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+            """;
+        if (stage == "preflight")
+        {
+            transport.RespondError("schema.getTable", -32150, privateText,
+                JsonSerializer.Serialize(new { code = productCode, message = privateText }));
+        }
+        else
+        {
+            transport.Respond("schema.getTable", Schema("orders"));
+            transport.Respond("query.readRows", stage == "guard"
+                ? before.Replace("Before", "Changed", StringComparison.Ordinal) : before);
+            if (stage == "apply")
+            {
+                transport.RespondError("mutation.apply", -32150, privateText,
+                    """{"code":"mutation.digest_conflict","details":{"path":"private-user-value-path-password"}}""");
+            }
+            else if (stage is "readback" or "receipt")
+            {
+                transport.Respond("mutation.apply", """{"newRevision":"invalid"}""");
+                if (stage == "readback")
+                    transport.RespondError("query.readRows", -32150, privateText,
+                        JsonSerializer.Serialize(new { code = productCode, details = new { path = privateText } }));
+                else
+                    transport.Respond("query.readRows", before);
+            }
+        }
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        var service = new TableWorkspaceService(gateway);
+        var notifications = new List<TableNotification>();
+        service.Notification += notifications.Add;
+        using var listener = new EditDiagnosticListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            Assert.IsFalse(await service.UpdateCellAsync(
+                "orders", "row-1", "title", "Before", privateText, "schema_0001",
+                requestId: privateText));
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+
+        Assert.HasCount(1, listener.Lines);
+        string line = listener.Lines[0];
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(line));
+        using JsonDocument diagnostic = JsonDocument.Parse(line);
+        Assert.AreEqual("table.updateCell." + stage,
+            diagnostic.RootElement.GetProperty("event").GetString());
+        Assert.AreEqual(expectedCode, diagnostic.RootElement.GetProperty("errorCode").GetString());
+        Assert.AreEqual(JsonValueKind.Null, diagnostic.RootElement.GetProperty("requestId").ValueKind);
+        Assert.IsFalse(line.Contains(privateText, StringComparison.Ordinal));
+        Assert.IsFalse(line.Contains("orders", StringComparison.Ordinal));
+        Assert.IsFalse(line.Contains("row-1", StringComparison.Ordinal));
+        Assert.IsFalse(line.Contains("Before", StringComparison.Ordinal));
+        Assert.HasCount(1, notifications);
+        Assert.AreEqual("table.editRejected", notifications[0].Type);
+        Assert.AreEqual(privateText, notifications[0].RequestId);
+        Assert.AreEqual(stage == "guard" ? MutationErrorKind.EditConflict : MutationErrorKind.Unknown,
+            notifications[0].MutationResult!.Error!.Value.Kind);
+        Assert.AreEqual(stage is "preflight" or "guard" ? 0 : 1,
+            transport.Methods.Count(method => method == "mutation.apply"));
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task UpdateDiagnosticSinkFailureDoesNotReplaceTheOriginalFailure()
+    {
+        var transport = new ProductTransport();
+        transport.RespondError("schema.getTable", -32150, "original failure", "{}");
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        using var listener = new EditDiagnosticListener { ThrowOnWrite = true };
+        Trace.Listeners.Add(listener);
+        try
+        {
+            RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+                gateway.UpdateCellAsync("orders", "row-1", "title", "Before", "After",
+                    "schema_0001", CancellationToken.None));
+            Assert.AreEqual(-32150, error.Code);
+            Assert.AreEqual("original failure", error.Message);
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+        Assert.HasCount(1, listener.Lines);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    [DataRow("mutation.field.invalid_value", true)]
+    [DataRow("mutation.formula.failed", true)]
+    [DataRow("mutation.table.read_only", true)]
+    [DataRow("mutation.lookup.storage_failed", true)]
+    [DataRow("lookup.aggregation.value_not_numeric", true)]
+    [DataRow("formula.divide_by_zero", true)]
+    [DataRow("field.migration.write_locked", true)]
+    [DataRow("mutation.future_code", false)]
+    [DataRow("mutation.field.invalid_value:private-user-value-path-password", false)]
+    [DataRow("formula.author.token", false)]
+    [DataRow("mutation.record.already_exists", false)]
+    [DataRow("field.migration.write_locked\nprivate-user-value-path-password", false)]
+    public async Task UpdateFailureRetainsOnlyFixedCodesFromTheUpdatePath(
+        string productCode,
+        bool persisted)
+    {
+        const string privateText = "private-user-value-path-password";
+        var transport = new ProductTransport();
+        transport.Respond("schema.getTable", Schema("orders"));
+        transport.Respond("query.readRows", """
+            {"rows":[{"id":"row-1","title":"Before",
+             "__vibetableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+            """);
+        string errorData = JsonSerializer.Serialize(new
+        {
+            code = productCode,
+            message = privateText,
+            details = new { path = privateText, accessToken = privateText },
+        });
+        transport.RespondError("mutation.apply", -32150, privateText, errorData);
+        await using var client = new JsonRpcClient(transport);
+        using var gateway = new PocketBaseTableGateway(new JsonRpcProductDataGateway(client));
+        using var listener = new EditDiagnosticListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            RpcRemoteException error = await Assert.ThrowsExactlyAsync<RpcRemoteException>(() =>
+                gateway.UpdateCellAsync("orders", "row-1", "title", "Before", privateText,
+                    "schema_0001", CancellationToken.None));
+            Assert.AreEqual(privateText, error.Message);
+            Assert.AreEqual(errorData, error.ErrorData!.Value.GetRawText());
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+        }
+
+        Assert.HasCount(1, listener.Lines);
+        string line = listener.Lines[0];
+        Assert.IsTrue(DiagnosticLogLine.IsSafe(line));
+        using JsonDocument diagnostic = JsonDocument.Parse(line);
+        Assert.AreEqual("table.updateCell.apply",
+            diagnostic.RootElement.GetProperty("event").GetString());
+        Assert.AreEqual(persisted ? "RPC:-32150:" + productCode : "RPC:-32150",
+            diagnostic.RootElement.GetProperty("errorCode").GetString());
+        Assert.IsFalse(line.Contains(privateText, StringComparison.Ordinal));
+    }
+    private sealed class EditDiagnosticListener : TraceListener
+    {
+        public List<string> Lines { get; } = [];
+        public bool ThrowOnWrite { get; init; }
+        public override void Write(string? message) { }
+        public override void WriteLine(string? message)
+        {
+            if (message is null || !message.Contains(
+                    "VibeTable.Desktop.PocketBaseTableGateway", StringComparison.Ordinal)) return;
+            Lines.Add(message);
+            if (ThrowOnWrite) throw new IOException("diagnostic sink failure");
+        }
+    }
 
     private sealed class ProductTransport : IJsonLineTransport
     {

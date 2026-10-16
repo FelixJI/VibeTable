@@ -234,7 +234,10 @@ public sealed class HostSessionFileBrokerTests
         Assert.AreEqual(reserved, (await f.Call("reserveImport", new { grantId = grant, token = "plan" })).GetProperty("reservationId").GetString());
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("reserveImport", new { grantId = grant, token = "different" }));
         f.Clock.Now = f.Clock.Now.AddMinutes(6);
+        _ = await f.Issue(source, false); // Pruning must preserve an active reservation past admission expiry.
         await f.Call("settleImport", new { reservationId = reserved, outcome = "consumed" });
+        await f.Broker.RevokeAsync(grant);
+        _ = await f.Issue(source, false); // Revocation must not erase an unexpired consumed receipt.
         await f.Call("settleImport", new { reservationId = reserved, outcome = "consumed" });
         await Assert.ThrowsAsync<IOException>(() => f.Call("settleImport", new { reservationId = reserved, outcome = "released" }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("openRead", new { grantId = grant }));
@@ -251,6 +254,28 @@ public sealed class HostSessionFileBrokerTests
         await f.Broker.RevokeAsync(grant);
         await Assert.ThrowsAsync<IOException>(() => f.Call("settleImport", new { reservationId = reserved, outcome = "released" }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("openRead", new { grantId = grant }));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ExpiredRevokedImportReservationsDoNotExhaustTheBroker(bool revokeRun)
+    {
+        await using var f = new Fixture();
+        string source = Path.Combine(f.Root, "revoked-import.csv");
+        File.WriteAllText(source, "x\n1");
+        for (int i = 0; i < 129; i++)
+        {
+            string runId = "run-" + i;
+            string grant = (await f.Broker.IssueAsync(source, false, runId, CancellationToken.None,
+                purpose: "import")).GetProperty("grantId").GetString()!;
+            string reservation = (await f.Call("reservePluginImport", new { grantId = grant, runId, token = "plan-" + i }))
+                .GetProperty("reservationId").GetString()!;
+            if (revokeRun) await f.Broker.RevokeRunAsync(runId);
+            else await f.Broker.RevokeAsync(grant);
+            await Assert.ThrowsAsync<IOException>(() => f.Call("settleImport", new { reservationId = reservation, outcome = "released" }));
+            f.Clock.Now = f.Clock.Now.AddMinutes(6);
+        }
     }
 
     [TestMethod]
@@ -330,6 +355,46 @@ public sealed class HostSessionFileBrokerTests
         Assert.IsFalse(reply.GetRawText().Contains("private-path-marker", StringComparison.Ordinal));
         Assert.IsFalse(reply.GetRawText().Contains(f.Root, StringComparison.Ordinal));
         Assert.AreEqual(0, f.Leases);
+    }
+
+    [TestMethod]
+    public async Task PluginOwnerGateRejectsFinalReplaceAndImportPreviewDoesNotConsumeItsSource()
+    {
+        await using var f = new Fixture();
+        string path = Path.Combine(f.Root, "owner.txt"); File.WriteAllText(path, "old");
+        bool current = true;
+        var descriptor = await f.Broker.IssueAsync(path, true, "host-run", CancellationToken.None,
+            ownerCommit: action => { if (!current) return false; action(); return true; });
+        string id = descriptor.GetProperty("grantId").GetString()!;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("openWrite", new { grantId = id }));
+        string transfer = (await f.Call("openWrite", new { grantId = id, runId = "host-run" })).GetProperty("transferId").GetString()!;
+        await f.Call("write", new { transferId = transfer, offset = 0, base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("new")) });
+        current = false;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("finishWrite", new { transferId = transfer, commit = true }));
+        Assert.AreEqual("old", File.ReadAllText(path)); Assert.AreEqual(0, f.Leases);
+        current = true;
+        var source = await f.Broker.IssueAsync(path, false, "import-run", CancellationToken.None, purpose: "import", byteLimit: 32L * 1024 * 1024);
+        string sourceId = source.GetProperty("grantId").GetString()!;
+        string reading = (await f.Call("openRead", new { grantId = sourceId, runId = "import-run" })).GetProperty("transferId").GetString()!;
+        await f.Call("read", new { transferId = reading, maxBytes = 1024 }); await f.Call("read", new { transferId = reading, maxBytes = 1024 });
+        await f.Call("closeRead", new { transferId = reading });
+        string reservation = (await f.Call("reservePluginImport", new { grantId = sourceId, runId = "import-run", token = "plan" })).GetProperty("reservationId").GetString()!;
+        await f.Call("settleImport", new { reservationId = reservation, outcome = "consumed" });
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Call("openRead", new { grantId = sourceId, runId = "import-run" }));
+    }
+
+    [TestMethod]
+    public async Task PluginAuthorizationNeverWaitsUnderBrokerGateAndClosedOwnerCannotIssue()
+    {
+        await using var f = new Fixture();
+        string path = Path.Combine(f.Root, "auth.txt"); File.WriteAllText(path, "value");
+        int calls = 0;
+        async Task Authorize(CancellationToken token) { calls++; await f.Broker.RevokeRunAsync("other-run"); token.ThrowIfCancellationRequested(); }
+        var grant = await f.Broker.IssueAsync(path, false, "run", CancellationToken.None, authorize: Authorize);
+        await f.Call("openRead", new { grantId = grant.GetProperty("grantId").GetString(), runId = "run" }).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.AreEqual(2, calls);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Broker.IssueAsync(path, false, "closed-run", CancellationToken.None, ownerCommit: _ => false));
+        await f.Broker.RevokeRunAsync("run"); Assert.AreEqual(0, f.Leases);
     }
 
     private sealed class FilePeer : IJsonLineTransport

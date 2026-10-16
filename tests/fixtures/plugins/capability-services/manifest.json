@@ -1,0 +1,76 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.e2e.capability-services",
+  "version": "1.0.0",
+  "displayName": {
+    "zh-CN": "能力服务合成验证"
+  },
+  "compatibility": {
+    "minHostVersion": "0.5.3",
+    "pluginApi": "3.x"
+  },
+  "permissions": {
+    "data": [
+      {
+        "collection": "$active",
+        "operations": [
+          "read",
+          "query",
+          "create",
+          "update",
+          "delete"
+        ],
+        "fields": [
+          "*"
+        ]
+      }
+    ],
+    "files": [
+      "pickRead",
+      "pickWrite"
+    ],
+    "privateStorage": true,
+    "network": {
+      "domains": [],
+      "methods": []
+    }
+  },
+  "actions": [
+    {
+      "actionId": "open-app",
+      "displayName": {
+        "zh-CN": "能力服务验证"
+      },
+      "mode": "local",
+      "risk": "destructive",
+      "presentation": "application",
+      "entry": "ui/index.html",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ]
+    },
+    {
+      "actionId": "panel-services",
+      "displayName": {
+        "zh-CN": "能力服务验证"
+      },
+      "mode": "local",
+      "risk": "destructive",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ]
+    }
+  ],
+  "ui": {
+    "customViews": [
+      {
+        "viewId": "services",
+        "actionId": "panel-services",
+        "entry": "ui/index.html",
+        "script": "dist/services.js"
+      }
+    ]
+  }
+}

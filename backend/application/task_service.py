@@ -27,7 +27,13 @@ class TaskService:
             if not isinstance(grant_id, str):
                 raise ValueError("Export requires a grantId.")
             async with self._export_admission:
-                descriptor = await self.files.describe(grant_id)
+                files = self.files
+                if "pluginScope" in params.params:
+                    from backend.contracts.plugin_data_io import PluginIoScope
+
+                    scope = PluginIoScope.model_validate(params.params["pluginScope"])
+                    files = files.bound_run(scope.run_id)
+                descriptor = await files.describe(grant_id)
                 if descriptor.purpose != "export_target" or descriptor.direction != "write":
                     raise PathGrantError(
                         "Export requires a writable Host grant.", code="grant_direction_mismatch"

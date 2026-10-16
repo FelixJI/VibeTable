@@ -274,4 +274,17 @@ describe("PluginHeadlessRunner", () => {
     wrapper.unmount();
   });
 
+  it("SDK task cancellation targets only one authority task and leaves the module and other tasks running", async () => {
+    const { wrapper, iframe } = mountRunner();
+    await wrapper.setProps({ tasks: [runningTask, { ...runningTask, taskId: "second" }] });
+    window.dispatchEvent(new MessageEvent("message", { origin: new URL(src).origin, source: iframe.element.contentWindow,
+      data: { contract: "vibetable.plugin-surface.v1", surfaceToken: "headless-token", event: "action",
+        payload: { service: "ui", requestId: "cancel-one", method: "tasks.cancel", params: { taskId: "second" } } } }));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("cancel")).toEqual([["second"]]);
+    expect(wrapper.find("iframe").exists()).toBe(true);
+    expect(wrapper.get("header b").attributes("data-state")).toBe("running");
+    wrapper.unmount();
+  });
+
 });

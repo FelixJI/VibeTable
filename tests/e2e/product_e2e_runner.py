@@ -1557,25 +1557,65 @@ class _DocumentNativeWindows:
         hwnd = self.user32.WindowFromPoint(wintypes.POINT(round(x), round(y)))
         return int(self.user32.GetAncestor(hwnd, 2) or 0)
 
-    def foreground(self, root: int, host_pid: int) -> None:
+    def foreground(self, root: int, host_pid: int, *, settle_deadline: float | None = None) -> None:
+        settle_until = (
+            min(settle_deadline, time.monotonic() + 2) if settle_deadline is not None else None
+        )
         if self.owner(root) != host_pid:
             raise ValueError("native document foreground HWND owner changed")
         before = int(self.user32.GetForegroundWindow() or 0)
         observation = {"beforeHwnd": before, "hostHwnd": root, "hostPid": host_pid}
+
+        def owner_or_none(hwnd: int) -> int | None:
+            try:
+                return self.owner(hwnd) if hwnd else None
+            except OSError:
+                return None
+
+        observation["beforePid"] = owner_or_none(before)
         self.foreground_observation = observation
         if before != root:
+            if settle_until is not None and time.monotonic() >= settle_until:
+                raise OSError("packaged Host foreground synchronization deadline expired")
             observation["activationAccepted"] = bool(self.user32.SetForegroundWindow(root))
             if not observation["activationAccepted"]:
                 raise OSError("packaged Host foreground activation was denied")
             # Cross-input-queue activation is asynchronous. WM_NULL synchronizes
             # one accepted activation; it does not retry or grant foreground rights.
+            timeout_ms = 2000
+            if settle_until is not None:
+                remaining = settle_until - time.monotonic()
+                if remaining <= 0:
+                    raise OSError("packaged Host foreground synchronization deadline expired")
+                timeout_ms = max(1, min(2000, math.ceil(remaining * 1000)))
             result = ctypes.c_size_t()
             observation["activationSynchronized"] = bool(
-                self.user32.SendMessageTimeoutW(root, 0, 0, 0, 0x22, 2000, ctypes.byref(result))
+                self.user32.SendMessageTimeoutW(
+                    root, 0, 0, 0, 0x22, timeout_ms, ctypes.byref(result)
+                )
             )
             if not observation["activationSynchronized"]:
                 raise OSError("packaged Host foreground activation did not synchronize")
         observation["afterHwnd"] = int(self.user32.GetForegroundWindow() or 0)
+        if settle_until is not None and observation.get("activationSynchronized") is True:
+            # GetForegroundWindow can be NULL during deactivation. Observe only
+            # that transition within the original synchronization budget; never
+            # reactivate or accept a nonzero foreign window.
+            null_samples = 0
+            while observation["afterHwnd"] == 0:
+                null_samples += 1
+                if self.owner(root) != host_pid:
+                    break
+                remaining = settle_until - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
+                if time.monotonic() >= settle_until:
+                    break
+                observation["afterHwnd"] = int(self.user32.GetForegroundWindow() or 0)
+            observation["nullForegroundSamples"] = null_samples
+        observation["afterPid"] = owner_or_none(observation["afterHwnd"])
+        observation["hostOwnerPid"] = owner_or_none(root)
         if observation["afterHwnd"] != root or self.owner(root) != host_pid:
             raise OSError("packaged Host cannot become the foreground input owner")
 
@@ -2184,6 +2224,29 @@ def _run_node_runner_guarded(
                     stdout, stderr = node_process.communicate(timeout=10)
                     raise subprocess.TimeoutExpired(command, 180, stdout, stderr)
                 _write_json_atomic(scenario_dir / "file-document-native-result.json", native_result)
+        file_dialog_path = scenario_dir / "plugin-file-dialog-request.json"
+        file_dialog_request = _read_json(file_dialog_path)
+        if file_dialog_request is not None:
+            file_dialog_path.unlink()
+            if (
+                "--scenario" not in command
+                or command[command.index("--scenario") + 1] != "52-plugin-capability-services"
+            ):
+                file_result = {
+                    "requestId": file_dialog_request.get("requestId"),
+                    "status": "failed",
+                    "error": "picker scenario not authorized",
+                }
+            else:
+                from tests.e2e.plugin_file_dialog import handle_file_dialog
+
+                file_result = handle_file_dialog(
+                    file_dialog_request,
+                    host_scope=host_scope,
+                    controls=controls,
+                    evidence=scenario_dir,
+                )
+            _write_json_atomic(scenario_dir / "plugin-file-dialog-result.json", file_result)
         plugin_native_path = scenario_dir / "plugin-native-request.json"
         plugin_native_request = _read_json(plugin_native_path)
         if plugin_native_request is not None:
@@ -2196,6 +2259,7 @@ def _run_node_runner_guarded(
                     "49-plugin-application-security",
                     "50-plugin-headless-budget",
                     "51-plugin-application-commit-unknown",
+                    "52-plugin-capability-services",
                 }:
                     native_result = {
                         "requestId": native_id,
@@ -2587,6 +2651,10 @@ def run_scenario(
         from tests.e2e.plugin_application_packages import prepare_application_packages
 
         prepare_application_packages(controls_dir)
+    if scenario.id == "52-plugin-capability-services":
+        from tests.e2e.plugin_capability_packages import prepare_capability_packages
+
+        prepare_capability_packages(controls_dir)
     if scenario.id == "47-plugin-surface-api":
         source = ROOT / "examples/plugins/surface-data-editor"
         plugin_cli = ROOT / "scripts/vibetable_plugin.py"
@@ -2711,6 +2779,7 @@ def run_scenario(
         "49-plugin-application-security",
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
+        "52-plugin-capability-services",
     }:
         environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
@@ -3186,6 +3255,7 @@ def run_product_acceptance(
             "49-plugin-application-security",
             "50-plugin-headless-budget",
             "51-plugin-application-commit-unknown",
+            "52-plugin-capability-services",
         }
         for scenario in scenarios
     ):
@@ -3212,6 +3282,7 @@ def run_product_acceptance(
                 "49-plugin-application-security",
                 "50-plugin-headless-budget",
                 "51-plugin-application-commit-unknown",
+                "52-plugin-capability-services",
             }
             and native_observer_error is not None
         ):

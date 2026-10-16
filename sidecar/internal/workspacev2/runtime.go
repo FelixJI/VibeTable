@@ -71,6 +71,7 @@ type WorkspaceRepository interface {
 type Runtime struct {
 	recoverySnapshotMu       sync.Mutex
 	app                      core.App
+	logger                   *slog.Logger
 	paths                    workspacePaths
 	manifest                 contractsv2.WorkspaceManifest
 	dispatcher               *protocolv2.Dispatcher
@@ -159,6 +160,7 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 
 	result := &Runtime{
 		app:             options.App,
+		logger:          options.Logger,
 		paths:           paths,
 		manifest:        manifest,
 		ledger:          options.Ledger,
@@ -347,11 +349,12 @@ func Open(ctx context.Context, options Options) (_ *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
+	barrier.WithLogger(options.Logger)
 	result.snapshots = snapshot.NewCoordinator(
 		result.repository,
 		barrier,
 		result.catalog,
-	)
+	).WithLogger(options.Logger)
 	result.ingestor, err = filehistory.NewIngestor(result.history, nil)
 	if err != nil {
 		return nil, err

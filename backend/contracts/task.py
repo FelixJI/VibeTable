@@ -81,6 +81,13 @@ class TaskStatus(CamelModel):
 
     ``result`` carries the typed payload on ``succeeded`` (the specific task
     kind defines its shape). ``error`` carries a UI-ready message on ``failed``.
+
+    ``commit_receipt`` is the worker's positive receipt that a local-side-effect
+    task provably ended *before* its native commit was ever submitted (an
+    export whose ``finishWrite(commit=False)`` abort path ran). It is the only
+    authority for "definitely not committed": an absent receipt must always be
+    treated as unknown, never as a default not-committed claim, and it never
+    travels to renderers or plugins.
     """
 
     task_id: str = Field(min_length=1, max_length=128)
@@ -89,6 +96,7 @@ class TaskStatus(CamelModel):
     progress: TaskProgress = Field(default_factory=TaskProgress)
     result: Any = None
     error: str | None = Field(default=None, max_length=1024)
+    commit_receipt: Literal["not_committed"] | None = Field(default=None)
 
 
 class CreateTaskParams(CamelModel):

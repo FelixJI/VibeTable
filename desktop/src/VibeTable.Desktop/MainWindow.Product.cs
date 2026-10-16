@@ -394,8 +394,6 @@ public partial class MainWindow : Window
                         "state", "plugin-packages") : null;
             });
         var dailyQuotes = new DailyQuoteHostClient();
-        _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
-            () => _runtime.CaptureProductSidecarGeneration(), _webBridge);
         _webBridge.PluginInteractionRequested += OnPluginInteractionRequested;
         _tableGateway = new LazyProductTableGateway(_workspaceSessionFilter);
         _workspace = new TableWorkspaceService(_tableGateway);
@@ -439,7 +437,8 @@ public partial class MainWindow : Window
                 ? _runtime.CaptureProductSidecarGeneration() : null,
             _workspaceSessions, _workspaceSessionFilter, _webBridge.Realtime,
             _workspace.UpdateKnownCatalog, code => _readiness?.Trace(code),
-            projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent);
+            projectPluginCatalog: _pluginDispatcher.ProjectCatalogEvent,
+            observePluginData: (snapshot, topic, payload, gate) => _webBridge.PluginApi?.OfferInvalidation(snapshot, topic, payload, gate));
         _authorityTransition = new ProductAuthorityTransitionCoordinator(
             productAuthority,
             _dispatcher.RetireDatabaseOpensAfterAuthorityTransition,
@@ -472,6 +471,16 @@ public partial class MainWindow : Window
             ResolveDashboardExportBroker,
             _dashboardDownloadGate,
             message => _readiness?.Trace(message));
+        _webBridge.PluginApi = new PluginSurfaceApi(_pluginSurfaces, _pluginDispatcher.Tasks,
+            () => _runtime.CaptureProductSidecarGeneration(), _webBridge,
+            subscriptionSource: (snapshot, action) => _productRealtime?.TryUseSubscriptionSource(snapshot, action) == true,
+            preparePrint: _webBridge.PreparePluginPrintAsync,
+            showPrint: _dashboardOutput.ShowPluginPrintDialog,
+            releasePrint: _webBridge.ReleasePluginPrintAsync,
+            files: () => _productGateway?.EnableHostFiles() ?? throw new BackendUnavailableException("Plugin files are unavailable."),
+            fileHost: new WindowsNativeProductFileHost(this, () => [], _e2eControlsDir, _attachmentPreviewRoot, _attachmentPreview),
+            pickFile: pick => Dispatcher.InvokeAsync(pick).Task,
+            dataIo: () => _productGateway?.CapturePluginDataIo() ?? throw new BackendUnavailableException("Plugin DataIO is unavailable."));
         _applicationRequests = new ApplicationRequestController(
             _webBridge,
             new ApplicationRequestHost(

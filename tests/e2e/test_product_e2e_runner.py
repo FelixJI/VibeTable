@@ -5039,11 +5039,77 @@ def test_realtime_scenario_refreshes_the_active_table_without_reselection() -> N
     assert "grid did not reach a stable expected state" in source
 
 
+# Existing theme hook/body/cleanup budgets; the separate watchdog cannot consume
+# the pure protocol group's unchanged 30s. Job cleanup adds at most 5s + 5s.
+_THEME_NODE_WATCHDOG_SECONDS = 30 + 10 + 10
+_NODE_JOB_CLEANUP_SECONDS = 5
+
+
+def _run_node_contract_files(test_files: Sequence[Path], evidence: Path, *, timeout: float) -> None:
+    command = [
+        str(ensure_node(runner.ROOT)),
+        "--test",
+        "--test-concurrency=1",
+        *(str(path) for path in test_files),
+    ]
+    evidence.mkdir(parents=True, exist_ok=True)
+    stdout_path, stderr_path = evidence / "stdout.log", evidence / "stderr.log"
+    failure: BaseException | None = None
+    cleanup_errors: list[str] = []
+    returncode = None
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        scope = runner._launch_host_process(
+            command, cwd=runner.ROOT, env=runner.os.environ.copy(), stdout=stdout, stderr=stderr
+        )
+        try:
+            try:
+                returncode = scope.root.wait(timeout=timeout)
+            except BaseException as error:
+                failure = error
+            terminate = failure is not None
+            if not terminate:
+                try:
+                    empty = scope.wait_empty(timeout=_NODE_JOB_CLEANUP_SECONDS)
+                    if not empty.success:
+                        cleanup_errors.append(f"Node Job not empty after root exit: {empty}")
+                        terminate = True
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(f"Node Job empty check failed: {error}")
+                    terminate = True
+            if terminate:
+                try:
+                    result = scope.terminate_all(timeout=_NODE_JOB_CLEANUP_SECONDS)
+                    if not result.success:
+                        cleanup_errors.append(f"Node Job termination failed: {result}")
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(f"Node Job termination failed: {error}")
+        finally:
+            try:
+                scope.close()
+            except (OSError, RuntimeError) as error:
+                cleanup_errors.append(f"Node Job close failed: {error}")
+    output = stdout_path.read_text(encoding="utf-8", errors="replace")
+    errors = stderr_path.read_text(encoding="utf-8", errors="replace")
+    diagnostics = (
+        f"Node contract stdout ({stdout_path}):\n{output or '<no captured output>'}",
+        f"Node contract stderr ({stderr_path}):\n{errors or '<no captured output>'}",
+    )
+    if failure is not None:
+        for note in (*diagnostics, *cleanup_errors):
+            failure.add_note(note)
+        raise failure
+    assert not cleanup_errors, "\n".join((*cleanup_errors, *diagnostics))
+    assert returncode == 0, "\n".join(diagnostics)
+
+
 def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime() -> None:
     test_files = [
         runner.NODE_RUNNER.with_name("bridge_failure_policy.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_capture_wait.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_applications.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_print_preview.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_print_preview_target.test.mjs"),
+        runner.NODE_RUNNER.with_name("plugin_capability_services.test.mjs"),
         runner.NODE_RUNNER.with_name("plugin_application_security.test.mjs"),
         runner.NODE_RUNNER.with_name("bridge_diagnostics_instrumentation.test.mjs"),
         runner.NODE_RUNNER.with_name("renderer_diagnostics_policy.test.mjs"),
@@ -5061,7 +5127,6 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("workspace_search_submit.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_search_terminal.test.mjs"),
         runner.NODE_RUNNER.with_name("workspace_v2_method_terminal.test.mjs"),
-        runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs"),
         runner.NODE_RUNNER.with_name("host_presentation_restart.test.mjs"),
         runner.NODE_RUNNER.with_name("lookup_sources_viewport.test.mjs"),
         runner.NODE_RUNNER.with_name("test_phase_evidence.test.mjs"),
@@ -5075,28 +5140,17 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
         runner.NODE_RUNNER.with_name("file_workflow_combination.test.mjs"),
         runner.NODE_RUNNER.with_name("isolated_native_clipboard_guard.test.mjs"),
     ]
-    try:
-        completed = subprocess.run(
-            [
-                str(ensure_node(runner.ROOT)),
-                "--test",
-                "--test-concurrency=1",
-                *(str(path) for path in test_files),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as error:
-        for label, output in (("stdout", error.stdout), ("stderr", error.stderr)):
-            text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
-            error.add_note(f"Node contract {label}:\n{text or '<no captured output>'}")
-        raise
+    _run_node_contract_files(
+        test_files, runner.ROOT / "build/qa/node-contracts/protocol", timeout=30
+    )
 
-    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+def test_connected_theme_surface_contract_uses_its_independent_phase_budgets() -> None:
+    _run_node_contract_files(
+        [runner.NODE_RUNNER.with_name("theme_surface_probe.test.mjs")],
+        runner.ROOT / "build/qa/node-contracts/theme",
+        timeout=_THEME_NODE_WATCHDOG_SECONDS,
+    )
 
 
 @pytest.mark.parametrize(
@@ -5113,6 +5167,7 @@ def test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtim
 )
 def test_node_contract_timeout_preserves_output_and_original_failure(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     stdout: bytes | str,
     stderr: bytes | str,
     expected_stdout: str,
@@ -5120,21 +5175,161 @@ def test_node_contract_timeout_preserves_output_and_original_failure(
 ) -> None:
     failure = subprocess.TimeoutExpired(["locked-node", "--test"], 30, output=stdout, stderr=stderr)
 
-    def timeout(*args: object, **kwargs: object) -> None:
-        assert kwargs["timeout"] == 30
+    def wait(*, timeout: float) -> None:
+        assert timeout == 30
         raise failure
 
+    def launch(command, **kwargs):
+        kwargs["stdout"].write(stdout if isinstance(stdout, bytes) else stdout.encode())
+        kwargs["stderr"].write(stderr if isinstance(stderr, bytes) else stderr.encode())
+        return SimpleNamespace(
+            root=SimpleNamespace(wait=wait),
+            terminate_all=lambda **_kwargs: runner.ScopeTerminationResult(True, (), ()),
+            close=lambda: None,
+        )
+
     monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
-    monkeypatch.setattr(subprocess, "run", timeout)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
 
     assert caught.value is failure
     rendered = str(caught.getrepr())
-    assert f"Node contract stdout:\n{expected_stdout}" in "\n".join(caught.value.__notes__)
-    assert f"Node contract stderr:\n{expected_stderr}" in "\n".join(caught.value.__notes__)
+    assert expected_stdout in "\n".join(caught.value.__notes__)
+    assert expected_stderr in "\n".join(caught.value.__notes__)
     assert expected_stdout in rendered
     assert expected_stderr in rendered
+
+
+def test_node_contract_aggregation_excludes_browser_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def run(command, **kwargs):
+        assert not any(Path(item).name == "theme_surface_probe.test.mjs" for item in command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def scoped(files, evidence, *, timeout):
+        calls.append((files, timeout))
+        if timeout == 30:
+            run([str(path) for path in files])
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_run_node_contract_files"]),
+        "_run_node_contract_files",
+        scoped,
+        raising=False,
+    )
+    test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
+    assert len(calls) == 1
+    assert calls[0][1] == 30
+    test_connected_theme_surface_contract_uses_its_independent_phase_budgets()
+    assert len(calls) == 2
+    assert calls[1][1] == 30 + 10 + 10
+    assert [path.name for path in calls[1][0]] == ["theme_surface_probe.test.mjs"]
+
+
+def test_node_contract_timeout_drains_owned_descendants_and_retains_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    failure = subprocess.TimeoutExpired(["locked-node"], 30)
+    state = {"child_alive": True, "closed": False}
+
+    def wait(*, timeout):
+        assert timeout == 30
+        raise failure
+
+    def terminate_all(*, timeout):
+        assert timeout == 5
+        state["child_alive"] = False
+        return runner.ScopeTerminationResult(True, (), ())
+
+    scope = SimpleNamespace(
+        root=SimpleNamespace(wait=wait),
+        terminate_all=terminate_all,
+        close=lambda: state.update(closed=True),
+    )
+
+    def launch(command, **kwargs):
+        kwargs["stdout"].write(b"partial Node output\xff")
+        kwargs["stderr"].write(b"pending Edge launch\xfe")
+        return scope
+
+    def old_run(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_launch_host_process", launch)
+    monkeypatch.setattr(subprocess, "run", old_run)
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        test_bridge_recovery_and_workspace_wire_contracts_use_the_locked_node_runtime()
+    assert caught.value is failure
+    assert state == {"child_alive": False, "closed": True}
+    assert any("partial Node output\ufffd" in note for note in failure.__notes__)
+    assert any("pending Edge launch\ufffd" in note for note in failure.__notes__)
+
+
+@pytest.mark.parametrize(
+    "mode", ["normal", "orphan", "query-error", "terminate-error", "close-error"]
+)
+def test_node_contract_scope_cleanup_cannot_turn_a_failure_into_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    calls = []
+    timeout_failure = subprocess.TimeoutExpired(["locked-node"], 30)
+
+    def wait(*, timeout):
+        assert timeout == 30
+        if mode in {"terminate-error", "close-error"}:
+            raise timeout_failure
+        return 0
+
+    def empty(*, timeout):
+        assert timeout == 5
+        calls.append("empty")
+        if mode == "query-error":
+            raise OSError("cannot query owned Job")
+        return runner.ScopeWaitResult(() if mode == "normal" else (123,))
+
+    def terminate(*, timeout):
+        assert timeout == 5
+        calls.append("terminate")
+        if mode == "terminate-error":
+            return runner.ScopeTerminationResult(True, (123,), ("owned child still running",))
+        return runner.ScopeTerminationResult(True, (), ())
+
+    def close():
+        calls.append("close")
+        if mode == "close-error":
+            raise OSError("Job close denied")
+
+    scope = SimpleNamespace(
+        root=SimpleNamespace(wait=wait), wait_empty=empty, terminate_all=terminate, close=close
+    )
+    monkeypatch.setattr(runner, "_launch_host_process", lambda *args, **kwargs: scope)
+    monkeypatch.setattr(f"{__name__}.ensure_node", lambda root: Path("locked-node"))
+    if mode == "normal":
+        _run_node_contract_files([], tmp_path, timeout=30)
+        assert calls == ["empty", "close"]
+    elif mode in {"orphan", "query-error"}:
+        with pytest.raises(AssertionError, match="Node Job"):
+            _run_node_contract_files([], tmp_path, timeout=30)
+        assert calls == ["empty", "terminate", "close"]
+    else:
+        with pytest.raises(subprocess.TimeoutExpired) as failure:
+            _run_node_contract_files([], tmp_path, timeout=30)
+        assert failure.value is timeout_failure
+        assert calls == ["terminate", "close"]
+        notes = "\n".join(failure.value.__notes__)
+        assert (
+            "owned child still running" in notes
+            if mode == "terminate-error"
+            else "Job close denied" in notes
+        )
 
 
 def test_realtime_scenario_recovers_a_packaged_backend_with_a_fresh_safe_session() -> None:
@@ -6334,13 +6529,17 @@ def test_native_foreground_synchronizes_one_accepted_activation_and_fails_closed
         SetForegroundWindow=activate,
         SendMessageTimeoutW=synchronize,
     )
-    native.owner = lambda _hwnd: 200 if mode == "owner" else 100
+    native.owner = lambda _hwnd: 200 if mode == "owner" or _hwnd == 20 else 100
     if mode in {"already", "async"}:
         native.foreground(10, 100)
         assert native.foreground_observation["afterHwnd"] == 10
     else:
         with pytest.raises((OSError, ValueError)):
             native.foreground(10, 100)
+    if mode == "changed":
+        assert native.foreground_observation["beforePid"] == 200
+        assert native.foreground_observation["afterPid"] == 200
+        assert native.foreground_observation["hostOwnerPid"] == 100
     assert calls == (
         []
         if mode in {"already", "owner"}
@@ -7125,3 +7324,117 @@ def test_plugin_contrast_cleanup_failure_preserves_original_node_error(
     assert cleanup["primaryError"] == (
         {"name": "RuntimeError", "message": "node failed before result"} if node_raises else primary
     )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "root",
+        "foreign",
+        "null",
+        "owner",
+        "denied",
+        "hung",
+        "sync-budget",
+        "request-budget",
+        "activation-budget",
+    ],
+)
+def test_native_foreground_null_observation_shares_budget_and_keeps_fail_closed(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [0.0]
+    current = [20]
+    calls: list[tuple[str, int]] = []
+    samples = [0]
+    owner = [100]
+
+    def foreground() -> int:
+        value = current[0]
+        if value == 0:
+            samples[0] += 1
+            if samples[0] > 1 and mode in {"root", "foreign"}:
+                current[0] = 10 if mode == "root" else 30
+                value = current[0]
+        return value
+
+    def activate(hwnd: int) -> bool:
+        calls.append(("activate", hwnd))
+        if mode == "activation-budget":
+            clock[0] = 1.5
+        return mode != "denied"
+
+    def synchronize(*args: object) -> bool:
+        assert isinstance(args[5], int)
+        calls.append(("synchronize", args[5]))
+        current[0] = 0
+        if mode == "owner":
+            owner[0] = 200
+        if mode in {"sync-budget", "activation-budget"}:
+            clock[0] = 1.9
+        return mode != "hung"
+
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    native.user32 = SimpleNamespace(
+        GetForegroundWindow=foreground,
+        SetForegroundWindow=activate,
+        SendMessageTimeoutW=synchronize,
+    )
+    native.owner = lambda hwnd: owner[0] if hwnd == 10 else 300
+    monkeypatch.setattr(runner.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    deadline = 0.03 if mode == "request-budget" else 15.0
+    if mode == "root":
+        native.foreground(10, 100, settle_deadline=deadline)
+        assert native.foreground_observation["afterHwnd"] == 10
+        assert native.foreground_observation["hostOwnerPid"] == 100
+    else:
+        with pytest.raises((OSError, ValueError)):
+            native.foreground(10, 100, settle_deadline=deadline)
+    assert [name for name, _ in calls].count("activate") == 1
+    if mode == "denied":
+        assert calls == [("activate", 10)]
+    else:
+        assert calls == [
+            ("activate", 10),
+            (
+                "synchronize",
+                30 if mode == "request-budget" else 500 if mode == "activation-budget" else 2000,
+            ),
+        ]
+    assert clock[0] <= min(deadline, 2.0)
+    if mode in {"null", "sync-budget", "request-budget", "activation-budget"}:
+        assert clock[0] == min(deadline, 2.0)
+        assert native.foreground_observation["afterHwnd"] == 0
+    if mode == "foreign":
+        assert clock[0] == 0.05
+        assert native.foreground_observation["afterHwnd"] == 30
+    if mode == "owner":
+        assert clock[0] == 0
+        assert native.foreground_observation["hostOwnerPid"] == 200
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_native_foreground_settling_requires_accepted_activation_and_live_budget(
+    expired: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+    samples = iter([20 if expired else 10, 0, 10])
+    native = runner._DocumentNativeWindows.__new__(runner._DocumentNativeWindows)
+    native.user32 = SimpleNamespace(
+        GetForegroundWindow=lambda: next(samples),
+        SetForegroundWindow=lambda hwnd: calls.append(hwnd) or True,
+    )
+    native.owner = lambda _hwnd: 100
+    monkeypatch.setattr(runner.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(
+        runner.time, "sleep", lambda _seconds: pytest.fail("no accepted activation")
+    )
+    with pytest.raises(
+        OSError,
+        match=r"packaged Host (foreground synchronization deadline expired|cannot become the foreground input owner)",
+    ):
+        native.foreground(10, 100, settle_deadline=10.0 if expired else 25.0)
+    assert calls == []

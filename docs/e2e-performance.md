@@ -4,7 +4,7 @@
 
 ## 当前 CI 分片
 
-`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程及 S48–S51 插件应用块；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
+`data-io` lane 的 `product-e2e-data-io` stage 执行 S23/S24 目录副本、S34/S35 数据互操作、S02/S05/S06/S26 定义与公式生命周期及 S37/S38 公式/计算链旅程；`file-io` lane 的 `product-e2e-file-io` stage 执行 S39–S45 文件/文档/历史旅程及 S48–S52 插件应用与能力服务块；其余场景由 `resilience` lane 的 `product-e2e` stage 执行。三个 stage 各保留 1800 秒上限，共用同一候选，并由聚合门禁核对当前 manifest 的完整、不重复、不重叠覆盖。
 
 分片调整依据为：
 
@@ -24,11 +24,11 @@
 - GitHub run：[main CI 38337858898](https://github.com/FelixJI/VibeTable/actions/runs/38337858898)
 - 报告契约：`contractVersion=2.0`
 - 结果：45/45 passed、0 failed、0 skipped。
-- 当前 manifest gap：5（`47-plugin-surface-api`、`48-plugin-applications`、`49-plugin-application-security`、`50-plugin-headless-budget`、`51-plugin-application-commit-unknown`）。
+- 当前 manifest gap：6（`47-plugin-surface-api`、`48-plugin-applications`、`49-plugin-application-security`、`50-plugin-headless-budget`、`51-plugin-application-commit-unknown`、`52-plugin-capability-services`）。
 - 当前 manifest surplus：无。
 - 当前 manifest changed：无。
 
-同一 main 候选的 data-io 13 场与 resilience 32 场精确、不重复覆盖该 source SHA 对应 manifest 的全部场景；新增无 Worker 页面与应用场景47–51尚未包含在这份历史运行证据中。两份原始产品报告均通过，六 lane 报告的 commit/source/candidate/资产绑定一致、所有 stage 返回码为零，聚合 required 成功。报告内部路径分别为 `lane-evidence/data-io/20261013T030351Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261013T030528Z/product-e2e-report.json`。
+同一 main 候选的 data-io 13 场与 resilience 32 场精确、不重复覆盖该 source SHA 对应 manifest 的全部场景；新增无 Worker 页面、应用与能力服务场景47–52尚未包含在这份历史运行证据中。两份原始产品报告均通过，六 lane 报告的 commit/source/candidate/资产绑定一致、所有 stage 返回码为零，聚合 required 成功。报告内部路径分别为 `lane-evidence/data-io/20261013T030351Z/product-e2e-report.json` 和 `lane-evidence/resilience/20261013T030528Z/product-e2e-report.json`。
 
 覆盖清单：`01-offline-first-start`、`02-all-field-schema`、`03-schema-errors`、`04-json-round-trip`、`05-formula-lifecycle`、`06-relation-fanout`、`07-attachment-history`、`08-stale-conflict`、`09-atomic-import-scale`、`10-sse-reconnect`、`11-plugin-mutation`、`12-backup-consistency`、`13-protection-policy`、`14-document-diff`、`15-workspace-snapshot-package`、`16-dashboard-lifecycle`、`17-interface-lifecycle`、`18-workspace-search`、`19-gallery-lifecycle`、`20-kanban-lane-drag`、`21-calendar-date-move`、`22-timeline-date-move`、`23-directory-replica-recovery`、`24-directory-replica-conflict`、`26-lookup-definition-read`、`27-relation-target-search`、`28-relation-delta-preview`、`29-lookup-source-pagination`、`30-query-snapshot-validation`、`31-relation-pair-inspection`、`32-shared-work-calendar`、`33-host-grid-presentation`、`34-relation-lookup-data-io`、`35-data-io-interoperability`、`36-backend-import-exit`、`37-collection-formula-journey`、`38-calculation-chain-journey`、`39-file-workflow-combination`、`40-file-history-capacity`、`41-file-document-operations`、`42-file-document-native-operations`、`43-file-revision-leaves`、`44-file-restore-crash`、`45-common-field-display`、`46-dashboard-native-output`。
 

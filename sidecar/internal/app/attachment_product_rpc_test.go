@@ -72,6 +72,10 @@ type fileListFixture struct {
 }
 
 func newFileListFixture(t *testing.T) fileListFixture {
+	return newFileListFixtureWithLimit(t, 4096)
+}
+
+func newFileListFixtureWithLimit(t *testing.T, maxFileBytes int64) fileListFixture {
 	t.Helper()
 	pb := schemaProductStore(t)
 	ctx := context.Background()
@@ -95,7 +99,7 @@ func newFileListFixture(t *testing.T) fileListFixture {
 		Constraints: recommended.Constraints, Storage: recommended.Storage,
 		Display: recommended.Display, JSON: recommended.JSON,
 		File: &v2.FileSpec{
-			MaxFiles: 1, MaxBytesPerFile: 4096, AllowedMIMETypes: []string{"image/png"},
+			MaxFiles: 1, MaxBytesPerFile: maxFileBytes, AllowedMIMETypes: []string{"image/png"},
 			Thumbs: []string{"8x8"}, Protected: true,
 		},
 	}

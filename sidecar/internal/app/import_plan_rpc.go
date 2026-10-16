@@ -27,6 +27,7 @@ func importPlanError(code, message string, details map[string]any) error {
 }
 
 type importPlanMintRequest struct {
+	pluginOwner    string
 	Contract       string            `json:"contract"`
 	Collection     string            `json:"collection"`
 	GrantID        string            `json:"grantId"`
@@ -84,6 +85,8 @@ type importPlanSettleRequest struct {
 }
 
 type importStoredPlan struct {
+	pluginOwner    string
+	pluginPlan     json.RawMessage
 	collection     string
 	grantID        string
 	schemaRevision string
@@ -151,7 +154,29 @@ func (owner *importPlanOwner) mint(request importPlanMintRequest) (importPlanTok
 	// Retired plans stay for the workspace process lifetime, exactly like the
 	// pre-migration Python store: an expired token keeps answering
 	// import_token_expired instead of collapsing to unknown.
+	if request.pluginOwner != "" {
+		count := 0
+		total := 0
+		for key, stored := range owner.plans {
+			if stored.pluginOwner == "" {
+				continue
+			}
+			if !owner.now().Before(stored.expiresAt) {
+				delete(owner.plans, key)
+				continue
+			}
+			total++
+			if stored.pluginOwner == request.pluginOwner {
+				count++
+			}
+		}
+		if count >= 8 || total >= 128 {
+			owner.mu.Unlock()
+			return reply, pluginDataError("plugin_plan_limit")
+		}
+	}
 	owner.plans[token] = &importStoredPlan{
+		pluginOwner:    request.pluginOwner,
 		collection:     request.Collection,
 		grantID:        request.GrantID,
 		schemaRevision: request.SchemaRevision,

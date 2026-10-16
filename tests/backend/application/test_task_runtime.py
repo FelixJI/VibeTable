@@ -14,12 +14,15 @@ from typing import Any
 import pytest
 
 import backend.__main__ as backend_main
+from backend.application.export_service import ExportError
+from backend.application.host_files import HostFiles, current_native_write_phase
 from backend.application.import_service import ImportFlowError
 from backend.application.path_grant import PathGrantError
 from backend.application.task_runtime import (
     CancellationToken,
     HostExecutionRuntime,
 )
+from backend.contracts.data_io import ExportResult
 from backend.contracts.task import TaskStatus
 from backend.rpc.dispatcher import RpcDispatcher
 from backend.rpc.framing import MAX_FRAME_BYTES, FrameTooLargeError, read_frame
@@ -111,6 +114,422 @@ async def test_host_execution_reports_unknown_import_without_zero_write_result()
     assert reports[-1].result is None
 
 
+@pytest.mark.asyncio
+async def test_precommit_export_failure_carries_not_committed_receipt() -> None:
+    """A failure that provably precedes the native commit is a definite failure.
+
+    HostFiles.write only raises ``export_outcome_unknown`` after
+    ``finishWrite(commit=True)`` was submitted; every other export failure
+    (query authorization, computed-not-ready, the 32 MiB bounded writer)
+    ended on its ``finishWrite(commit=False)`` abort path and must carry the
+    positive not-committed receipt for the host.
+    """
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    async def export(_task_id, _reporter, _token, _params):
+        raise ExportError(
+            "query includes computed cells waiting for recalculation",
+            code="export_computed_cell_not_ready",
+        )
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(10):
+        if reports and reports[-1].state == "failed":
+            break
+        await asyncio.sleep(0)
+    assert reports[-1].state == "failed"
+    assert reports[-1].commit_receipt == "not_committed"
+    assert "recalculation" in (reports[-1].error or "")
+
+
+@pytest.mark.asyncio
+async def test_lost_commit_receipt_export_failure_keeps_receipt_absent() -> None:
+    """A lost native commit receipt never claims a not-committed outcome."""
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is True
+        raise OSError("host channel broke during the native commit")
+
+    async def export(_task_id, _reporter, _token, _params):
+        async with HostFiles(call).write("g") as target:
+            target.stream.write(b"abc")
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(10):
+        if reports and reports[-1].state == "failed":
+            break
+        await asyncio.sleep(0)
+    assert reports[-1].state == "failed"
+    assert "unknown" in (reports[-1].error or "")
+    assert reports[-1].commit_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_arbitrary_failure_after_a_committed_export_never_claims_not_committed() -> None:
+    """Post-commit bookkeeping failures keep the unknown boundary.
+
+    The receipt rests on the HostFiles submission boundary, not on a complement
+    of known exception codes: once the synthetic broker genuinely committed the
+    file, an unrecognized later failure — here a result-shape ValidationError
+    from a 129-char revision that CollectionProfile accepts but the frozen
+    ExportResult contract rejects — must stay unknown, never not-committed.
+    """
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is True
+        return {"committed": True, "bytes": 3}
+
+    async def export(_task_id, _reporter, _token, _params):
+        async with HostFiles(call).write("g") as target:
+            target.stream.write(b"abc")
+        # The native commit already succeeded; the typed result then drifts past
+        # its frozen contract limit and raises after the submission boundary.
+        ExportResult(
+            collection="orders",
+            format="csv",
+            rows_written=1,
+            schema_revision="x" * 129,
+            capability_hash="x" * 129,
+            output_display_name="out.csv",
+        )
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(10):
+        if reports and reports[-1].state == "failed":
+            break
+        await asyncio.sleep(0)
+    assert any(params.get("commit") is True for _, params in calls)
+    assert reports[-1].state == "failed"
+    assert reports[-1].commit_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_failure_inside_the_write_boundary_carries_not_committed_receipt() -> None:
+    """A query/computed/byte-budget failure inside the write context is precommit."""
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is False
+        return {"committed": False, "bytes": 0}
+
+    async def export(_task_id, _reporter, _token, _params):
+        async with HostFiles(call).write("g") as target:
+            target.stream.write(b"abc")
+            raise ExportError(
+                "query includes computed cells waiting for recalculation",
+                code="export_computed_cell_not_ready",
+            )
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(10):
+        if reports and reports[-1].state == "failed":
+            break
+        await asyncio.sleep(0)
+    assert [params for _, params in calls if params.get("commit") is True] == []
+    assert reports[-1].state == "failed"
+    assert reports[-1].commit_receipt == "not_committed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_race_inside_commit_window_stays_failed_without_receipt() -> None:
+    """Cancellation submitted after the native commit keeps the unknown boundary.
+
+    The cancel flag alone must not turn a lost commit receipt into a clean
+    "cancelled" (definitely not committed) terminal.
+    """
+    calls = []
+    release = asyncio.Event()
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is True
+        await release.wait()
+        raise OSError("host channel broke during the native commit")
+
+    async def export(_task_id, _reporter, _token, _params):
+        async with HostFiles(call).write("g") as target:
+            target.stream.write(b"abc")
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(100):
+        if any(action == "finishWrite" for action, _ in calls):
+            break
+        await asyncio.sleep(0)
+    assert await runtime.cancel("host-task") is True
+    release.set()
+    for _ in range(10):
+        if reports and reports[-1].state == "failed":
+            break
+        await asyncio.sleep(0)
+    assert reports[-1].state == "failed"
+    assert "unknown" in (reports[-1].error or "")
+    assert reports[-1].commit_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_flag_after_a_committed_export_keeps_failed_unknown() -> None:
+    """An ordinary error plus a pending cancel flag must not claim a clean cancel.
+
+    The write phase — not the exception code — decides: after the native commit
+    was genuinely submitted and confirmed by the synthetic broker, a later
+    ordinary failure with the cancel flag already set stays failed/unknown.
+    """
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is True
+        return {"committed": True, "bytes": 3}
+
+    async def export(_task_id, _reporter, token, _params):
+        async with HostFiles(call).write("g") as target:
+            target.stream.write(b"abc")
+        token.cancel()
+        raise RuntimeError("post-commit bookkeeping crashed")
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(10):
+        if reports and reports[-1].state in {"failed", "cancelled"}:
+            break
+        await asyncio.sleep(0)
+    assert any(params.get("commit") is True for _, params in calls)
+    assert reports[-1].state == "failed", "a committed export must never claim cancelled"
+    assert "post-commit" in (reports[-1].error or "")
+    assert reports[-1].commit_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_after_commit_submission_stays_failed_unknown() -> None:
+    """A CancelledError from the submitted commit itself stays failed/unknown.
+
+    The synthetic broker's finishWrite(commit=True) call is cancelled in
+    flight; the real HostFiles submission boundary already flipped the phase,
+    so the terminal may not downgrade to a definite cancelled.
+    """
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is True
+        raise asyncio.CancelledError
+
+    async def export(_task_id, _reporter, _token, _params):
+        async with HostFiles(call).write("g") as target:
+            target.stream.write(b"abc")
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    for _ in range(10):
+        if reports and reports[-1].state in {"failed", "cancelled"}:
+            break
+        await asyncio.sleep(0)
+    assert any(params.get("commit") is True for _, params in calls)
+    assert reports[-1].state == "failed", (
+        "a cancelled submitted commit must surface unknown, not a definite cancel"
+    )
+    assert "unknown" in (reports[-1].error or "")
+    assert reports[-1].commit_receipt is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_submission_stays_a_clean_cancelled_terminal() -> None:
+    """Contrast: a cooperative cancel with no commit submitted stays cancelled."""
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        raise AssertionError(f"unexpected native file call {action}")
+
+    async def export(_task_id, _reporter, token, _params):
+        await token.wait()
+        raise asyncio.CancelledError
+
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register("data.export", export)
+    await runtime.start("host-task", "data.export", {}, export_grant_id="grant")
+    await asyncio.sleep(0)
+    assert await runtime.cancel("host-task") is True
+    for _ in range(10):
+        if reports and reports[-1].state == "cancelled":
+            break
+        await asyncio.sleep(0)
+    assert calls == []
+    assert reports[-1].state == "cancelled"
+    assert reports[-1].error is None
+    assert reports[-1].commit_receipt is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["data.import", "data.previewImport"])
+@pytest.mark.parametrize("cancelled_error", [True, False])
+async def test_direct_export_does_not_change_later_import_cancellation(
+    kind: str, cancelled_error: bool
+) -> None:
+    """Serial RPCs share a Task; a direct export must not taint later workers."""
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        if action == "openWrite":
+            return {"transferId": "t", "displayName": "out.csv"}
+        if action == "write":
+            return {"offset": 3}
+        assert action == "finishWrite"
+        assert params["commit"] is True
+        return {"committed": True, "bytes": 3}
+
+    async with HostFiles(call).write("g") as target:
+        target.stream.write(b"abc")
+    assert calls[-1] == ("finishWrite", {"transferId": "t", "commit": True})
+
+    reports = []
+    entered = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def sink(status):
+        reports.append(status)
+        if status.state != "running":
+            finished.set()
+
+    async def import_data(_task_id, _reporter, token, _params):
+        entered.set()
+        await token.wait()
+        if cancelled_error:
+            raise asyncio.CancelledError
+        raise RuntimeError("import interrupted before submission")
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    runtime.register(kind, import_data)
+    await runtime.start("import-task", kind, {})
+    await asyncio.wait_for(entered.wait(), 2)
+    assert await runtime.cancel("import-task") is True
+    await asyncio.wait_for(finished.wait(), 2)
+
+    assert reports[-1].state == "cancelled"
+    assert reports[-1].error is None
+    assert reports[-1].commit_receipt is None
+    assert current_native_write_phase() is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_and_import_failures_never_carry_export_receipt() -> None:
+    """The positive receipt is scoped to failed export terminals only."""
+    reports = []
+
+    async def sink(status):
+        reports.append(status)
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+
+    async def cancelled_export(_task_id, _reporter, token, _params):
+        token.cancel()
+        raise ExportError("export paging identity changed", code="export_snapshot_changed")
+
+    runtime.register("data.export", cancelled_export)
+    await runtime.start("cancel-task", "data.export", {}, export_grant_id="grant")
+
+    async def failing_import(_task_id, _reporter, _token, _params):
+        raise ImportFlowError("preview failed", code="import_source_unreadable")
+
+    runtime.register("data.import", failing_import)
+    await runtime.start("import-task", "data.import", {})
+    for _ in range(20):
+        if len(reports) >= 2 and all(status.state in ("cancelled", "failed") for status in reports):
+            break
+        await asyncio.sleep(0)
+    by_task = {status.task_id: status for status in reports}
+    assert by_task["cancel-task"].state == "cancelled"
+    assert by_task["cancel-task"].commit_receipt is None
+    assert by_task["import-task"].state == "failed"
+    assert by_task["import-task"].commit_receipt is None
+
+
 class _PipeWriter:
     """Real in-memory pipe transport: server frames flow to a host reader."""
 
@@ -194,6 +613,28 @@ async def test_oversize_terminal_downgrades_to_small_failure_and_releases_slot()
     assert len(json.dumps(terminal, ensure_ascii=False).encode("utf-8")) <= MAX_FRAME_BYTES
     # The execution slot is freed only after a terminal state was delivered.
     assert await runtime.cancel("host-task") is False
+
+
+@pytest.mark.asyncio
+async def test_execution_report_wire_carries_camel_case_not_committed_receipt() -> None:
+    """The receipt must cross the real wire composition in camelCase.
+
+    The host registry re-serializes the deserialized terminal, so the marker
+    has to survive the production execution-report path (pydantic ``by_alias``
+    serialization through ``_send_execution_report``) to reach the surface.
+    """
+    host_reader, runtime = _execution_report_pipe()
+
+    async def export(_task_id, _reporter, _token, _params):  # type: ignore[no-untyped-def]
+        raise ExportError("byte budget", code="export_computed_cell_not_ready")
+
+    runtime.register("data.export", export)
+    assert await runtime.start("host-task", "data.export", {}, export_grant_id="grant") is True
+
+    assert (await _read_status(host_reader))["state"] == "running"
+    terminal = await _read_status(host_reader)
+    assert terminal["state"] == "failed"
+    assert terminal["commitReceipt"] == "not_committed"
 
 
 @pytest.mark.asyncio

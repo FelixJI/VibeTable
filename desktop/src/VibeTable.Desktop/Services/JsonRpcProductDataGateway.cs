@@ -40,6 +40,9 @@ public sealed class JsonRpcProductDataGateway : IProductDataRpcGateway, ISurface
 
     }
 
+    internal PluginDataIoPort CapturePluginDataIo()
+        => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required.")).CapturePluginDataIo();
+
     internal HostSessionFileBroker EnableHostFiles()
         => (_hostInvoker ?? throw new InvalidOperationException("Host binding is required.")).EnableHostFiles();
 

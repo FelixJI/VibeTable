@@ -147,6 +147,7 @@ def test_product_e2e_partitions_exactly_cover_the_live_manifest() -> None:
         "49-plugin-application-security",
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
+        "52-plugin-capability-services",
     }
 
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -248,6 +249,22 @@ func (runtime *Runtime) requestSnapshot(
 	if params.Urgency != "foreground" && params.Urgency != "background" {
 		return nil, errors.New("workspace.request_invalid")
 	}
+	// Phase forensics for stalled protection snapshots: the closed event set
+	// entered/completed/failed brackets every blocking layer below (capture
+	// mutex, write gate, source freeze, bundle/catalog). The total duration
+	// clock starts after this log write completes and is read before the
+	// terminal log is emitted, so it includes intermediate phase-log overhead
+	// but never its own boundary writes.
+	eventSuffix := "." + string(trigger) + "." + params.Urgency
+	requestAttributes := []any{
+		slog.String("module", "snapshot"),
+		slog.String("operationId", wire.OperationID),
+		slog.String("workspaceId", runtime.manifest.WorkspaceID),
+	}
+	if runtime.logger != nil {
+		runtime.logger.Info("snapshot.request.entered"+eventSuffix, requestAttributes...)
+	}
+	requestStarted := time.Now()
 	token, _ := runtime.coordinator.Current()
 	result := map[string]any{
 		"operationId": wire.OperationID,
@@ -279,7 +296,28 @@ func (runtime *Runtime) requestSnapshot(
 		},
 	)
 	if err != nil {
+		elapsed := time.Since(requestStarted)
+		if runtime.logger != nil {
+			runtime.logger.Error(
+				"snapshot.request.failed"+eventSuffix,
+				append(
+					append([]any(nil), requestAttributes...),
+					slog.Float64("durationMs", snapshot.PhaseDurationMs(elapsed)),
+					slog.String("errorCode", snapshot.CaptureErrorCode(err)),
+				)...,
+			)
+		}
 		return nil, err
+	}
+	elapsed := time.Since(requestStarted)
+	if runtime.logger != nil {
+		runtime.logger.Info(
+			"snapshot.request.completed"+eventSuffix,
+			append(
+				append([]any(nil), requestAttributes...),
+				slog.Float64("durationMs", snapshot.PhaseDurationMs(elapsed)),
+			)...,
+		)
 	}
 	result["snapshotId"] = record.SnapshotID
 	result["mutationRevision"] = record.MutationRevision

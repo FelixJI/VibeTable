@@ -39,8 +39,11 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     }
 
     internal async Task<JsonElement> IssueAsync(string path, bool write, string? runId,
-        CancellationToken token, string? mimeType = null)
+        CancellationToken token, string? mimeType = null,
+        Func<Action, bool>? ownerCommit = null, string purpose = "ordinary", long? byteLimit = null,
+        Func<CancellationToken, Task>? authorize = null)
     {
+        if (authorize is not null) await authorize(token).ConfigureAwait(false);
         using WorkspaceRequestEpochLease lease = _capture();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lease.CancellationToken, _retired.Token);
         await _gate.WaitAsync(linked.Token).ConfigureAwait(false);
@@ -60,10 +63,10 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             if (name.Length is 0 or > 256 || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
                 || !Directory.Exists(Path.GetDirectoryName(full))) throw new IOException("Invalid selected file.");
             long? length = write ? null : new FileInfo(full).Length;
-            if (runId is not null && length > PluginBytes) throw new IOException("Plugin file is too large.");
+            if (runId is not null && length > (byteLimit ?? PluginBytes)) throw new IOException("Plugin file is too large.");
             var grant = new Grant("grant-" + Guid.NewGuid().ToString("N"), full, write, runId,
-                _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0 + 300, length, mimeType);
-            _commitCurrent(() => { linked.Token.ThrowIfCancellationRequested(); _grants.Add(grant.Id, grant); });
+                _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0 + 300, length, mimeType, ownerCommit, purpose, byteLimit ?? PluginBytes, authorize);
+            _commitCurrent(() => { linked.Token.ThrowIfCancellationRequested(); CommitOwner(grant, () => _grants.Add(grant.Id, grant)); });
             return Descriptor(grant);
         }
         finally { _gate.Release(); }
@@ -91,6 +94,20 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     public async Task<JsonElement> HandleAsync(string action, JsonElement parameters, CancellationToken token)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _retired.Token);
+        Func<CancellationToken, Task>? authorize;
+        await _gate.WaitAsync(linked.Token).ConfigureAwait(false);
+        try
+        {
+            Grant? authority = parameters.TryGetProperty("grantId", out var grantId) && grantId.ValueKind == JsonValueKind.String
+                && _grants.TryGetValue(grantId.GetString()!, out var grant) ? grant : null;
+            if (authority is null && parameters.TryGetProperty("transferId", out var transferId)
+                && transferId.ValueKind == JsonValueKind.String && _transfers.TryGetValue(transferId.GetString()!, out var transfer))
+                authority = transfer.Grant;
+            authorize = authority?.Authorize;
+        }
+        finally { _gate.Release(); }
+        // HTTP authorization never runs under the broker's synchronous commit gate.
+        if (authorize is not null) await authorize(linked.Token).ConfigureAwait(false);
         await _gate.WaitAsync(linked.Token).ConfigureAwait(false);
         try
         {
@@ -106,6 +123,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 "closeRead" => await CloseReadAsync(parameters).ConfigureAwait(false),
                 "finishWrite" => await FinishWriteAsync(parameters, linked.Token).ConfigureAwait(false),
                 "reserveImport" => Reserve(parameters),
+                "reservePluginImport" => Reserve(parameters, plugin: true),
                 "settleImport" => Settle(parameters),
                 _ => throw new JsonException("Unknown native file operation."),
             };
@@ -115,8 +133,9 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
 
     private JsonElement Describe(JsonElement p)
     {
-        Exact(p, "grantId");
-        return Descriptor(Available(Text(p, "grantId"), write: null, runId: null));
+        bool plugin = p.TryGetProperty("runId", out _);
+        Exact(p, plugin ? ["grantId", "runId"] : ["grantId"]);
+        return Descriptor(Available(Text(p, "grantId"), write: null, runId: plugin ? Text(p, "runId") : null));
     }
 
     private JsonElement DescribeImport(JsonElement p)
@@ -159,7 +178,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             stream = new FileStream(temporary ?? grant.Path, write ? FileMode.CreateNew : FileMode.Open,
                 write ? FileAccess.Write : FileAccess.Read, write ? FileShare.None : FileShare.Read,
                 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (!write && grant.RunId is not null && stream.Length > PluginBytes)
+            if (!write && grant.RunId is not null && stream.Length > grant.ByteLimit)
                 throw new IOException("Plugin file is too large.");
             string id = "transfer-" + Guid.NewGuid().ToString("N");
             _commitCurrent(() =>
@@ -188,7 +207,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         byte[] buffer = new byte[maximum];
         int read = await transfer.Stream.ReadAsync(buffer, token).ConfigureAwait(false);
         transfer.Offset += read;
-        if (transfer.Grant.RunId is not null && transfer.Offset > PluginBytes)
+        if (transfer.Grant.RunId is not null && transfer.Offset > transfer.Grant.ByteLimit)
             throw new IOException("Plugin file is too large.");
         transfer.Eof = read == 0;
         return JsonSerializer.SerializeToElement(new { base64 = Convert.ToBase64String(buffer, 0, read), eof = transfer.Eof });
@@ -202,7 +221,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         string encoded = Text(p, "base64");
         if (encoded.Length > (BlockBytes + 2) / 3 * 4) throw new IOException("Native write is too large.");
         byte[] bytes = Convert.FromBase64String(encoded);
-        if (bytes.Length > BlockBytes || (transfer.Grant.RunId is not null && transfer.Offset + bytes.Length > PluginBytes))
+        if (bytes.Length > BlockBytes || (transfer.Grant.RunId is not null && transfer.Offset + bytes.Length > transfer.Grant.ByteLimit))
             throw new IOException("Native write is too large.");
         await transfer.Stream.WriteAsync(bytes, token).ConfigureAwait(false);
         transfer.Offset += bytes.Length;
@@ -217,7 +236,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         if (!transfer.Closed)
         {
             await CloseAsync(transfer).ConfigureAwait(false);
-            transfer.Grant.State = transfer.Grant.RunId is not null && transfer.Eof ? "consumed" : "available";
+            transfer.Grant.State = transfer.Grant.RunId is not null && transfer.Grant.Purpose == "ordinary" && transfer.Eof ? "consumed" : "available";
         }
         return JsonSerializer.SerializeToElement(new { closed = true });
     }
@@ -245,9 +264,12 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 _commitCurrent(() =>
                 {
                     token.ThrowIfCancellationRequested();
-                    File.Move(transfer.Temporary!, transfer.Grant.Path, overwrite: true);
-                    transfer.Outcome = true;
-                    transfer.Grant.State = "consumed";
+                    CommitOwner(transfer.Grant, () =>
+                    {
+                        File.Move(transfer.Temporary!, transfer.Grant.Path, overwrite: true);
+                        transfer.Outcome = true;
+                        transfer.Grant.State = "consumed";
+                    });
                 });
             }
             else
@@ -268,15 +290,16 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         }
     }
 
-    private JsonElement Reserve(JsonElement p)
+    private JsonElement Reserve(JsonElement p, bool plugin = false)
     {
-        Exact(p, "grantId", "token");
+        Exact(p, plugin ? ["grantId", "token", "runId"] : ["grantId", "token"]);
         string grantId = Text(p, "grantId"), plan = Text(p, "token");
         foreach ((string existingId, Reservation existing) in _reservations)
             if (existing.Grant.Id == grantId && existing.Plan == plan && existing.Outcome is null
                 && existing.Grant.State == "reserved")
                 return JsonSerializer.SerializeToElement(new { reservationId = existingId });
-        Grant grant = Available(grantId, write: false, runId: null);
+        Grant grant = Available(grantId, write: false, runId: plugin ? Text(p, "runId") : null);
+        if (plugin && grant.Purpose != "import") throw new HostPathGrantException();
         if (_reservations.Count >= 128) throw new InvalidOperationException("Too many import reservations.");
         string id = "reservation-" + Guid.NewGuid().ToString("N");
         _reservations.Add(id, new Reservation(grant, plan));
@@ -577,7 +600,9 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         double now = _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0;
         foreach (string id in _transfers.Where(pair => pair.Value.Closed && pair.Value.ReceiptExpiresAt <= now)
             .Select(pair => pair.Key).ToArray()) _transfers.Remove(id);
-        foreach (string id in _reservations.Where(pair => pair.Value.Outcome is not null && pair.Value.ReceiptExpiresAt <= now)
+        foreach (string id in _reservations.Where(pair =>
+            (pair.Value.Outcome is not null && pair.Value.ReceiptExpiresAt <= now)
+            || (pair.Value.Outcome is null && pair.Value.Grant.State == "revoked" && pair.Value.Grant.ExpiresAt <= now))
             .Select(pair => pair.Key).ToArray()) _reservations.Remove(id);
         foreach (string id in _downloads.Where(pair => !pair.Value.CleanupPending
             && pair.Value.ReceiptExpiresAt is not null && pair.Value.ReceiptExpiresAt <= now)
@@ -610,7 +635,14 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
             || grant.ExpiresAt <= _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0
             || (write.HasValue && grant.Write != write.Value) || grant.RunId != runId)
             throw new HostPathGrantException();
+        CommitOwner(grant, () => { });
         return grant;
+    }
+
+    private static void CommitOwner(Grant grant, Action action)
+    {
+        if (grant.OwnerCommit is null) action();
+        else if (!grant.OwnerCommit(action)) throw new HostPathGrantException();
     }
 
     private Transfer FindTransfer(JsonElement p)
@@ -622,6 +654,8 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         Transfer transfer = FindTransfer(p);
         if (transfer.Closed || transfer.Grant.Write != write || transfer.Grant.State != (write ? "writing" : "reading"))
             throw new InvalidOperationException("File transfer is not active.");
+        CommitOwner(transfer.Grant, () => { });
+        if (transfer.Grant.RunId is not null && transfer.Grant.ExpiresAt <= _time.GetUtcNow().ToUnixTimeMilliseconds() / 1000.0) throw new HostPathGrantException();
         return transfer;
     }
 
@@ -642,7 +676,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
         if (actual.Length != keys.Length || actual.Distinct(StringComparer.Ordinal).Count() != keys.Length
             || actual.Any(key => !keys.Contains(key, StringComparer.Ordinal))) throw new JsonException("Invalid native file request.");
     }
-    private sealed record Grant(string Id, string Path, bool Write, string? RunId, double ExpiresAt, long? Size, string? MimeType)
+    private sealed record Grant(string Id, string Path, bool Write, string? RunId, double ExpiresAt, long? Size, string? MimeType, Func<Action, bool>? OwnerCommit, string Purpose, long ByteLimit, Func<CancellationToken, Task>? Authorize)
     { internal string State { get; set; } = "available"; }
     private sealed record Transfer(Grant Grant, FileStream Stream, string? Temporary, WorkspaceRequestEpochLease Lease)
     {

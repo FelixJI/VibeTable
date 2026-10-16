@@ -1185,7 +1185,7 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
         ("race-b", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("data-io", ["uv-sync", "npm-ci"]),
-        ("file-io", ["uv-sync", "npm-ci"]),
+        ("file-io", ["uv-sync", "npm-ci", "npm-ci", "npm-ci"]),
         ("release", []),
     ],
 )
@@ -1227,15 +1227,17 @@ def test_smoke_lane_prepares_only_its_required_toolchain(
 def test_resilience_prepare_restores_the_example_plugins_its_e2e_rebuilds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The resilience product E2E rebuilds both example plugins through the
-    plugin CLI (scenario 11-plugin-mutation), so the lane prepare must restore
-    each example's local esbuild; the data-io and file-io lanes' scenarios never
-    build plugins and must stay narrower."""
+    """The resilience product E2E rebuilds its example plugins through the
+    plugin CLI (scenarios 11/47), so the lane prepare must restore
+    each example's local esbuild; data-io needs no plugin build, while file-io
+    restores only the SDK and surface bundler used by scenario 52."""
     observed: list[tuple[str, str]] = []
 
     def record_run(*command: str, **kwargs: object) -> None:
         cwd = kwargs.get("cwd", automation_project.REPO_ROOT)
         assert isinstance(cwd, Path)
+        if command[:2] == ("npm", "ci"):
+            assert kwargs["env"] == {"PATH": "C:/locked-node"}
         observed.append(
             (" ".join(command), cwd.relative_to(automation_project.REPO_ROOT).as_posix())
         )
@@ -1271,6 +1273,8 @@ def test_resilience_prepare_restores_the_example_plugins_its_e2e_rebuilds(
     assert observed == [
         ("uv sync --frozen --group dev --group build", "."),
         ("npm ci", "desktop/web-grid"),
+        ("npm ci", "sdk/plugin"),
+        ("npm ci", "examples/plugins/surface-data-editor"),
     ]
 
 

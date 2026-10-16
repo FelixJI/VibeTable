@@ -631,6 +631,51 @@ def test_auto_mapping_is_case_insensitive_and_explicit_mapping_wins() -> None:
     assert unmatched == []
 
 
+def test_upsert_mapping_routes_operation_specific_fields_create_only_stays_narrow() -> None:
+    """Upsert routes columns for fields granted by either import operation; the
+    create_only default keeps mapping only through the create grant."""
+    profile = CollectionProfile(
+        collection="orders",
+        schema_revision="schema-1",
+        fields=["id", "key", "title", "note"],
+        field_schemas={
+            "key": {"dataType": "shortText"},
+            "title": {"dataType": "shortText"},
+            "note": {"dataType": "shortText"},
+        },
+        create_fields=["key", "title"],
+        update_fields=["key", "note"],
+        archive_field=None,
+        date_updated_field=None,
+    )
+    header = ["key", "title", "note"]
+    # create_only never routes the update-only column; it stays unmatched.
+    mapping, unmatched = auto_map_columns(header, profile, [])
+    assert mapping == {0: "key", 1: "title"}
+    assert unmatched == ["note"]
+    # Upsert routes every column writable through either grant, explicitly too.
+    mapping, unmatched = auto_map_columns(header, profile, [], mode="upsert")
+    assert mapping == {0: "key", 1: "title", 2: "note"}
+    assert unmatched == []
+    mapping, unmatched = auto_map_columns(
+        ["External note"],
+        profile,
+        [ImportColumnMapping(source_column="External note", target_field="note")],
+        mode="upsert",
+    )
+    assert mapping == {0: "note"}
+    assert unmatched == []
+    # A field granted by neither operation stays unrouteable even in upsert.
+    mapping, unmatched = auto_map_columns(
+        ["other"],
+        profile,
+        [ImportColumnMapping(source_column="other", target_field="other")],
+        mode="upsert",
+    )
+    assert mapping == {}
+    assert unmatched == ["other"]
+
+
 @pytest.mark.asyncio
 async def test_preview_binds_source_and_normalizes_product_fields(tmp_path: Path) -> None:
     path = tmp_path / "source.csv"

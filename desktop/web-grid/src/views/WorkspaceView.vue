@@ -60,6 +60,8 @@ import PluginCenterView from "@/views/PluginCenterView.vue";
 import PluginActionPanel from "@/components/plugins/PluginActionPanel.vue";
 import PluginSurfaceHost from "@/components/plugins/PluginSurfaceHost.vue";
 import PluginHeadlessRunner from "@/components/plugins/PluginHeadlessRunner.vue";
+import { installPluginPrintScope } from "@/components/plugins/pluginPrintScope";
+import "@/components/plugins/pluginPrintScope.css";
 import PluginAppViewport from "@/components/plugins/PluginAppViewport.vue";
 import PluginTaskList from "@/components/plugins/PluginTaskList.vue";
 import WorkspaceCenter from "@/components/workspace/WorkspaceCenter.vue";
@@ -913,6 +915,16 @@ const pluginActionTask = pluginController.actionTask;
 const pluginActionTasks = pluginController.actionTasks;
 const pluginAppNav = createPluginAppNavigation(plugins, ui);
 const activePluginAppEntry = pluginAppNav.activeEntry;
+function backFromPluginSurface(token: string): boolean {
+  const isApplication = () => activePluginAppEntry.value?.surfaceToken === token;
+  const isPanel = () => plugins.actionOpen && plugins.describedAction?.surface?.surfaceToken === token;
+  if (!isApplication() && !isPanel()) return false;
+  const departure = workspaceNavigation.authorizeDeparture();
+  if (!departure || (!isApplication() && !isPanel())) return false;
+  departure.commit();
+  if (isApplication()) ui.closePluginApp(); else plugins.closeAction();
+  return true;
+}
 const closedPluginTaskReceipts = computed(() => {
   const visibleTokens = new Set<string>();
   if (!showWorkspaceCenterScreen.value && activePluginAppEntry.value)
@@ -1410,6 +1422,13 @@ useKeyboard({
   onUndo: () => void mutationService.performUndo(),
   onRedo: () => void mutationService.performRedo(),
 });
+const pluginPrintScope = installPluginPrintScope(() =>
+  !showWorkspaceCenterScreen.value && !isForegroundOverlayOpen()
+    && !workspaceSession.isTransitioning ? activePluginAppEntry.value : null);
+watch(() => [activePluginAppEntry.value?.surfaceToken, showWorkspaceCenterScreen.value,
+  isForegroundOverlayOpen(), workspaceSession.sessionEpoch, workspaceSession.isTransitioning],
+() => pluginPrintScope.clear(), { flush: "sync" });
+onBeforeUnmount(() => pluginPrintScope.dispose());
 </script>
 
 <template>
@@ -1721,6 +1740,7 @@ useKeyboard({
           :surface-token="activePluginAppEntry.surfaceToken"
           :title="activePluginAppEntry.label"
           :theme="pluginTheme"
+          :navigate-back="backFromPluginSurface"
           :tasks="pluginApplicationTasks"
           @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
           @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"
@@ -2032,6 +2052,7 @@ useKeyboard({
         :surface-token="plugins.describedAction.surface.surfaceToken"
         :title="plugins.describedAction.surface.title"
         :theme="pluginTheme"
+        :navigate-back="backFromPluginSurface"
         :tasks="pluginActionTasks"
         @action="pluginController.dispatch({ type: 'action.start', payload: $event })"
         @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
@@ -2043,6 +2064,7 @@ useKeyboard({
         v-else-if="plugins.describedAction.presentation === 'headless'"
         :description="plugins.describedAction"
         :theme="pluginTheme"
+        :navigate-back="backFromPluginSurface"
         :tasks="pluginActionTasks"
         @resolve="(decision, taskId) => pluginController.dispatch({ type: 'interaction.resolve', taskId, decision })"
         @cancel="pluginController.dispatch({ type: 'task.cancel', taskId: $event })"

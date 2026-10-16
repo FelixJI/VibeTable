@@ -336,6 +336,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "49-plugin-application-security",
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
+        "52-plugin-capability-services",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
@@ -1458,18 +1459,106 @@ def test_product_e2e_failure_evidence_rejects_a_symlinked_rotated_log(
     assert not (copied_runtime / f"{log_prefix}-20260103-030303333.log").exists()
 
 
+@pytest.mark.parametrize("report_status", ["passed", "failed"])
+def test_product_e2e_passing_s42_retains_only_bounded_preview_logs(
+    tmp_path: Path, report_status: str
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    scenario_id = "42-file-document-native-operations"
+    scenario = run_root / scenario_id
+    scenario.mkdir(parents=True)
+    for filename in (
+        "415-native-file-document.png",
+        "42-file-document-native-operations-trace.zip",
+    ):
+        (scenario / filename).write_text("required S42 evidence", encoding="utf-8")
+    scenarios = [{"scenario": scenario_id, "status": "passed"}]
+    scenarios.append({"scenario": "16-healthy-scenario", "status": "passed"})
+    if report_status == "failed":
+        scenarios.append({"scenario": "17-interface-lifecycle", "status": "failed"})
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps({"status": report_status, "scenarios": scenarios}), encoding="utf-8"
+    )
+    runtime = run_root / "_runtime" / "42" / "controls" / "preview-host"
+    logs = runtime / "desktop-logs"
+    logs.mkdir(parents=True)
+    retained = ("preview-1234.log", "preview-5678-20260817-010203040.log")
+    for filename in (*retained, "preview-0.log", "preview-1234-notes.log", "desktop.log"):
+        (logs / filename).write_text(filename, encoding="utf-8")
+    (logs / "preview-9999.log").mkdir()
+    (runtime / "vibetable-trace.log").write_text("not passing preview evidence", encoding="utf-8")
+    workspace_logs = (
+        runtime / "local-data" / "workspaces" / "workspace" / ".vibetable" / "temp" / "logs"
+    )
+    workspace_logs.mkdir(parents=True)
+    for filename in next_gate.PRODUCT_E2E_RUNTIME_LOGS:
+        (workspace_logs / filename).write_text("not passing preview evidence", encoding="utf-8")
+    for relative in ("42/host", "16/controls/preview-host"):
+        other = run_root / "_runtime" / relative / "desktop-logs"
+        other.mkdir(parents=True)
+        (other / "preview-3456.log").write_text("not S42 preview evidence", encoding="utf-8")
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    copied = destination / "_runtime" / "42" / "controls" / "preview-host"
+    assert sorted(path.name for path in copied.iterdir()) == sorted(retained)
+    for filename in retained:
+        assert (copied / filename).read_text(encoding="utf-8") == filename
+    assert not (destination / "_runtime" / "42" / "host").exists()
+    assert not list(destination.rglob("preview-3456.log"))
+
+
+@pytest.mark.parametrize("linked_entry", ["desktop-logs", "preview-5678.log"])
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_product_e2e_passing_s42_rejects_linked_preview_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked_entry: str, link_kind: str
+) -> None:
+    source_root = tmp_path / "source"
+    run_root = source_root / "20260817T010203Z"
+    scenario_id = "42-file-document-native-operations"
+    scenario = run_root / scenario_id
+    scenario.mkdir(parents=True)
+    for filename in ("415-native-file-document.png", f"{scenario_id}-trace.zip"):
+        (scenario / filename).write_text("required S42 evidence", encoding="utf-8")
+    (run_root / "product-e2e-report.json").write_text(
+        json.dumps(
+            {"status": "passed", "scenarios": [{"scenario": scenario_id, "status": "passed"}]}
+        ),
+        encoding="utf-8",
+    )
+    runtime = run_root / "_runtime" / "42" / "controls" / "preview-host"
+    logs = runtime / "desktop-logs"
+    logs.mkdir(parents=True)
+    for filename in ("preview-1234.log", "preview-5678.log"):
+        (logs / filename).write_text("synthetic linked log", encoding="utf-8")
+    linked = logs if linked_entry == "desktop-logs" else logs / linked_entry
+    method = f"is_{link_kind}"
+    real_check = getattr(Path, method)
+    monkeypatch.setattr(Path, method, lambda path: path == linked or real_check(path))
+
+    destination = next_gate.persist_product_e2e_evidence(source_root, tmp_path / "destination")
+
+    assert destination is not None
+    copied = list(destination.rglob("preview-*.log"))
+    assert [path.name for path in copied] == ([] if linked == logs else ["preview-1234.log"])
+
+
+@pytest.mark.parametrize("status", ["failed", "passed"])
 @pytest.mark.parametrize("linked_directory", ["_runtime", "42", "controls", "preview-host"])
 def test_product_e2e_failure_evidence_rejects_linked_preview_host_ancestors(
-    tmp_path: Path, linked_directory: str
+    tmp_path: Path, linked_directory: str, status: str
 ) -> None:
     source_root = tmp_path / "source"
     run_root = source_root / "20260817T010203Z"
     failed_id = "42-file-document-native-operations"
-    (run_root / failed_id).mkdir(parents=True)
+    scenario = run_root / failed_id
+    scenario.mkdir(parents=True)
+    for filename in ("415-native-file-document.png", f"{failed_id}-trace.zip"):
+        (scenario / filename).write_text("required S42 evidence", encoding="utf-8")
     (run_root / "product-e2e-report.json").write_text(
-        json.dumps(
-            {"status": "failed", "scenarios": [{"scenario": failed_id, "status": "failed"}]}
-        ),
+        json.dumps({"status": status, "scenarios": [{"scenario": failed_id, "status": status}]}),
         encoding="utf-8",
     )
     parts = ("_runtime", "42", "controls", "preview-host")
@@ -2063,6 +2152,10 @@ def _prepare_complete_product_reports(
                     "48-native-application.png",
                     "48-native-approved.png",
                     "48-native-rejected.png",
+                    "48-plugin-print-scope.png",
+                    "48-plugin-print-dialog-opened.png",
+                    "48-plugin-print-preview-second.png",
+                    "48-plugin-print-preview.json",
                     "48-plugin-applications-trace.zip",
                 ),
             }.items():
@@ -2930,6 +3023,21 @@ SCENARIO_SCREENSHOTS = {
         "49-plugin-application-security-trace.zip",
     ),
     "50-plugin-headless-budget": ("48-native-recovered.png", "50-plugin-headless-budget-trace.zip"),
+    "52-plugin-capability-services": (
+        "52-capability-services.json",
+        "52-capability-services.png",
+        "52-ui-context.png",
+        "52-plugin-capability-services-trace.zip",
+        "52-picker-read-cancel.png",
+        "52-picker-read-select.png",
+        "52-picker-write-select.png",
+        "52-picker-import-select.png",
+        "52-picker-export-select.png",
+        "52-confirm-update-rejected.png",
+        "52-confirm-delete-approved.png",
+        "52-confirm-attachment-approved.png",
+        "52-confirm-import-approved.png",
+    ),
     "51-plugin-application-commit-unknown": (
         "48-native-cancelled.png",
         "48-native-recovered.png",
@@ -3440,6 +3548,12 @@ def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(t
     phase = "48-plugin-applications/seed/20261015T000001Z"
     for name in (*next_gate.PRODUCT_E2E_EVIDENCE_FILES, "48-plugin-applications-result.json"):
         expected.append(f"{phase}/{name}")
+    for filename in (
+        "48-plugin-print-preview.json",
+        "48-plugin-print-preview-unobservable.json",
+        "48-plugin-print-preview-failed.png",
+    ):
+        expected.append(f"{phase}/{filename}")
     expected.append("48-plugin-applications/persistent/host/vibetable-trace.log")
     for name in (
         "plugin-contrast-original.json",
@@ -3461,3 +3575,17 @@ def test_plugin_application_failure_retains_closed_phase_and_contrast_evidence(t
         assert (retained / relative).read_text() == f"raw:{relative}"
     assert not (retained / phase / "workspace.db").exists()
     assert not (retained / "49-plugin-application-security/unrelated.json").exists()
+
+
+def test_capability_services_failure_retains_picker_proof_without_private_state(tmp_path):
+    scenario_id = "52-plugin-capability-services"
+    run = _scenario_screenshot_run(tmp_path, scenario_id, "failed")
+    for filename in ("plugin-file-dialog-result.json", "plugin-file-dialog-observation.json"):
+        (run / scenario_id / filename).write_text("raw-native-proof")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    assert (retained / scenario_id / "52-capability-services.json").exists()
+    for filename in ("plugin-file-dialog-result.json", "plugin-file-dialog-observation.json"):
+        assert (retained / scenario_id / filename).read_text() == "raw-native-proof"
+    assert not (retained / scenario_id / "workspace.db").exists()
+    assert not (retained / scenario_id / "unrelated.png").exists()

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using VibeTable.Contracts;
+using VibeTable.Infrastructure.Diagnostics;
 using VibeTable.Infrastructure.Rpc;
 
 namespace VibeTable.Desktop.Services;
@@ -108,49 +110,123 @@ public sealed class PocketBaseTableGateway : ITableRpcGateway, IDisposable
         CancellationToken token,
         string? expectedDigest = null)
     {
-        string recordId = RowId(rowKey);
-        IReadOnlyList<IReadOnlyDictionary<string, object?>> before =
-            await ReadRowsInternalAsync(table, new[] { recordId }, schemaRevision, token)
-                .ConfigureAwait(false);
-        if (before.Count != 1
-            || !before[0].TryGetValue(column, out object? actual)
-            || !JsonEquivalent(actual, oldValue))
+        string stage = "preflight";
+        try
         {
-            throw new TableEditConflictException(
-                "The row changed before the edit could be applied.");
-        }
-        string digestGuard = expectedDigest ?? RequiredRowDigest(before[0]);
-
-        JsonElement receipt = await ApplyAsync(
-            table,
-            schemaRevision,
-            new object[]
+            string recordId = RowId(rowKey);
+            IReadOnlyList<IReadOnlyDictionary<string, object?>> before =
+                await ReadRowsInternalAsync(table, new[] { recordId }, schemaRevision, token)
+                    .ConfigureAwait(false);
+            stage = "guard";
+            if (before.Count != 1
+                || !before[0].TryGetValue(column, out object? actual)
+                || !JsonEquivalent(actual, oldValue))
             {
-                new Dictionary<string, object?>
+                throw new TableEditConflictException(
+                    "The row changed before the edit could be applied.");
+            }
+            string digestGuard = expectedDigest ?? RequiredRowDigest(before[0]);
+
+            stage = "apply";
+            JsonElement receipt = await ApplyAsync(
+                table,
+                schemaRevision,
+                new object[]
                 {
-                    ["kind"] = "update",
-                    ["recordId"] = recordId,
-                    ["values"] = new Dictionary<string, object?> { [column] = newValue },
-                    ["expectedDigest"] = digestGuard,
+                    new Dictionary<string, object?>
+                    {
+                        ["kind"] = "update",
+                        ["recordId"] = recordId,
+                        ["values"] = new Dictionary<string, object?> { [column] = newValue },
+                        ["expectedDigest"] = digestGuard,
+                    },
                 },
-            },
-            token).ConfigureAwait(false);
-        var rows = await ReadRowsInternalAsync(
-            table,
-            new[] { recordId },
-            schemaRevision,
-            token).ConfigureAwait(false);
-        if (rows.Count != 1)
-        {
-            throw new InvalidOperationException("PocketBase omitted the updated row.");
+                token).ConfigureAwait(false);
+            stage = "readback";
+            var rows = await ReadRowsInternalAsync(
+                table,
+                new[] { recordId },
+                schemaRevision,
+                token).ConfigureAwait(false);
+            if (rows.Count != 1)
+            {
+                throw new InvalidOperationException("PocketBase omitted the updated row.");
+            }
+            rows[0].TryGetValue(column, out object? storedValue);
+            stage = "receipt";
+            return new UpdateCellResult(
+                rowKey,
+                column,
+                storedValue,
+                rows[0],
+                Revision(schemaRevision, receipt));
         }
-        rows[0].TryGetValue(column, out object? storedValue);
-        return new UpdateCellResult(
-            rowKey,
-            column,
-            storedValue,
-            rows[0],
-            Revision(schemaRevision, receipt));
+        catch (Exception exception)
+        {
+            try
+            {
+                string code = exception.GetType().Name;
+                if (exception is RpcRemoteException remote)
+                {
+                    code = "RPC:" + remote.Code.ToString(CultureInfo.InvariantCulture);
+                    // Only known product codes may cross the persisted diagnostic boundary.
+                    if (remote.ErrorData is JsonElement { ValueKind: JsonValueKind.Object } data
+                        && data.TryGetProperty("code", out JsonElement codeValue)
+                        && codeValue.ValueKind == JsonValueKind.String
+                        && codeValue.GetString() is string productCode
+                        && productCode is "mutation.digest_conflict" or "mutation.revision_conflict"
+                            or "mutation.schema_revision_conflict" or "mutation.record.not_found"
+                            or "mutation.request.invalid" or "mutation.internal.failed"
+                            or "mutation.storage.failed" or "mutation.field.read_only"
+                            or "mutation.idempotency_conflict"
+                            or "mutation.body.limit" or "mutation.table.not_found"
+                            or "mutation.table.read_only" or "mutation.field.unknown"
+                            or "mutation.field.invalid_value" or "mutation.attachment.requires_operation"
+                            or "mutation.archive.requires_operation" or "mutation.metadata.invalid_data_revision"
+                            or "mutation.metadata.data_revision_exhausted" or "mutation.schema.field_missing"
+                            or "mutation.schema.storage_mismatch" or "mutation.schema_revision.invalid"
+                            or "mutation.system.autodate_invalid" or "mutation.validation.failed"
+                            or "mutation.formula.failed" or "mutation.formula.invalid_output"
+                            or "mutation.computed.version_failed" or "mutation.relation.target_table_not_found"
+                            or "mutation.relation.target_not_found" or "mutation.relation.pair_invalid"
+                            or "mutation.relation.reciprocal_cardinality" or "mutation.relation.stored_value_invalid"
+                            or "mutation.schema.autodate_invalid" or "mutation.relation.storage_failed"
+                            or "mutation.lookup.schema_invalid" or "mutation.lookup.invalid_value"
+                            or "mutation.lookup.storage_failed" or "lookup.value.too_expensive"
+                            or "lookup.value.source_missing" or "lookup.aggregation.value_not_finite"
+                            or "lookup.aggregation.value_not_numeric" or "field.migration.write_locked"
+                            or "formula.dependency" or "formula.resource_limit"
+                            or "formula.runtime" or "formula.type"
+                            or "formula.cycle" or "formula.divide_by_zero"
+                            or "formula.null" or "formula.overflow"
+                            or "formula.timezone" or "formula.syntax"
+                            or "schema.table.not_found" or "field.internal.failed"
+                            or "field.not_found" or "field.contract.invalid"
+                            or "field.capability.unsupported" or "lookup.path.invalid"
+                            or "lookup.path.depth_limit" or "lookup.condition.invalid"
+                            or "lookup.aggregation.invalid" or "query.request.invalid"
+                            or "query.internal.failed" or "query.rows.limit"
+                            or "query.storage.failed" or "query.schema.failed"
+                            or "query.port.unconfigured" or "query.snapshot.failed"
+                            or "query.schema.invalid" or "query.schema.unconfigured"
+                            or "query.schema.unsupported_field" or "query.table.not_found"
+                            or "query.computed.version_unavailable" or "query.archive.invalid"
+                            or "query.table.invalid")
+                    {
+                        code += ":" + productCode;
+                    }
+                }
+                Trace.TraceError(DiagnosticEvent.Failure(
+                    "VibeTable.Desktop.PocketBaseTableGateway",
+                    "table.updateCell." + stage,
+                    code));
+            }
+            catch
+            {
+                // Diagnostics must never replace the original edit failure.
+            }
+            throw;
+        }
     }
 
     public async Task<InsertRowResult> InsertRowAsync(

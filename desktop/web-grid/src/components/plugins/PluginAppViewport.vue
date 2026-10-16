@@ -7,6 +7,7 @@ defineProps<{
   surfaceToken: string;
   title: string;
   theme: PluginSurfaceThemeSnapshot;
+  navigateBack?: (surfaceToken: string) => boolean;
   task?: PluginTaskViewSnapshot | null;
   tasks?: readonly PluginTaskViewSnapshot[];
 }>();
@@ -42,6 +43,7 @@ const emit = defineEmits<{
         :surface-token="surfaceToken"
         :title="title"
         :theme="theme"
+        :navigate-back="navigateBack"
         :task="task"
         :tasks="tasks"
         variant="app"

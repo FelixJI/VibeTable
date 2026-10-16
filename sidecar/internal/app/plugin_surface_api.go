@@ -24,10 +24,14 @@ import (
 
 const pluginSurfaceAPIPath = "/api/vibetable/v3/plugins/surface"
 
+// Host-only base64 stage envelope; all other methods retain the ordinary 1 MiB limit.
+const pluginSurfaceAttachmentStageRequestBytes = 2 * maxMutationRequestBytes
+
 var pluginSurfaceStorageKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // This seam is session-authenticated Host-only; no Product RPC registration exists.
 type pluginSurfaceAPIRequest struct {
+	SurfaceToken         string                            `json:"surfaceToken,omitempty"`
 	InstallationID       string                            `json:"installationId"`
 	ActionID             string                            `json:"actionId"`
 	Entry                string                            `json:"entry"`
@@ -109,11 +113,11 @@ func surfaceInstallation(ctx context.Context, app core.App, workspace string, in
 	return installed, pluginDataError("plugin_capability_invalid")
 }
 
-func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, epoch uint64, gate businessWriteGate) {
+func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, epoch uint64, gate businessWriteGate, ioPorts ...*pluginSurfaceIO) {
 	r.POST(pluginSurfaceAPIPath, func(event *core.RequestEvent) error {
-		raw, err := io.ReadAll(io.LimitReader(event.Request.Body, maxMutationRequestBytes+1))
+		raw, err := io.ReadAll(io.LimitReader(event.Request.Body, pluginSurfaceAttachmentStageRequestBytes+1))
 		var input pluginSurfaceAPIRequest
-		if err != nil || len(raw) > maxMutationRequestBytes || decodePluginParams(raw, &input) != nil || input.SessionEpoch != epoch || epoch == 0 || input.RequestID == "" {
+		if err != nil || len(raw) > pluginSurfaceAttachmentStageRequestBytes || decodePluginParams(raw, &input) != nil || (len(raw) > maxMutationRequestBytes && input.Method != "attachment.stage") || input.SessionEpoch != epoch || epoch == 0 || input.RequestID == "" {
 			return event.JSON(http.StatusBadRequest, map[string]any{"code": "plugin_capability_invalid"})
 		}
 		budget := 15 * time.Second
@@ -122,7 +126,7 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 		}
 		ctx, cancel := context.WithTimeout(event.Request.Context(), budget)
 		defer cancel()
-		result, err := executePluginSurfaceAPI(ctx, app, source, kernel, workspace, input, gate)
+		result, err := executePluginSurfaceAPI(ctx, app, source, kernel, workspace, input, gate, ioPorts...)
 		if err != nil {
 			code := "plugin_request_failed"
 			var product *query.ProductError
@@ -156,7 +160,8 @@ func registerPluginSurfaceAPIRoutes(r *router.Router[*core.RequestEvent], app co
 func surfaceCommitRejection(code string) bool {
 	switch code {
 	case "plugin_read_denied", "plugin_write_denied", "plugin_cursor_stale", "plugin_api_unsupported", "plugin_capability_invalid", "plugin_guard_required", "plugin_audit_invalid",
-		"mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict":
+		"mutation.relation.restricted", "mutation.digest_conflict", "mutation.revision_conflict", "mutation.schema_revision_conflict", "mutation.idempotency_conflict",
+		"mutation.record.not_found":
 		return true
 	default:
 		return false
@@ -183,7 +188,21 @@ func surfaceCommitOutcome(ctx context.Context, app core.App, workspace string, i
 	return "not-committed"
 }
 
-func executePluginSurfaceAPI(ctx context.Context, app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate) (any, error) {
+func executePluginSurfaceAPI(ctx context.Context, app core.App, source *queryschema.Source, kernel *mutation.Kernel, workspace string, input pluginSurfaceAPIRequest, gate businessWriteGate, ioPorts ...*pluginSurfaceIO) (any, error) {
+	if input.Method == "import.drop" || input.Method == "import.settle" {
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return ports.cleanupImport(input)
+	}
+	if input.Method == "attachment.drop" {
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return ports.dropAttachments(input)
+	}
 	if input.Method == "audit.finish" {
 		var terminal struct {
 			Outcome   string `json:"outcome"`
@@ -201,6 +220,18 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		return nil, err
 	}
 	switch input.Method {
+	case "attachment.stage", "attachment.list", "attachment.read":
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return executeSurfaceAttachment(ctx, app, workspace, input, ports)
+	case "data.ioProfile", "data.ioRelations", "data.ioTargetSchema", "import.preview", "import.mint", "import.freeze", "import.bind":
+		var ports *pluginSurfaceIO
+		if len(ioPorts) > 0 {
+			ports = ioPorts[0]
+		}
+		return executeSurfaceIO(ctx, app, source, kernel, workspace, input, ports)
 	case "audit.start":
 		if installed.ActionRisk == "read" {
 			return nil, pluginDataError("plugin_write_denied")
@@ -214,7 +245,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		}
 		planInput := input
 		planInput.Request = start.Plan
-		request, err := surfaceMutationRequest(ctx, app, workspace, planInput)
+		request, err := surfaceMutationRequest(ctx, app, workspace, planInput, ioPorts...)
 		if err != nil {
 			return nil, err
 		}
@@ -233,12 +264,53 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 			return err
 		})
 		return nil, err
-	case "data.describe", "data.query":
+	case "data.describe", "data.query", "data.exportQuery":
 		operation := "describe"
 		if input.Method == "data.query" {
 			operation = "query"
 		}
+		if input.Method == "data.exportQuery" {
+			operation = "exportQuery"
+		}
 		return executePluginData(ctx, app, source, workspace, pluginDataRequest{InstallationID: input.InstallationID, PackageHash: input.PackageHash, Operation: operation, ProjectKey: input.ProjectKey, PluginID: input.PluginID, SessionEpoch: input.SessionEpoch, InstallationRevision: input.InstallationRevision, ActiveCollection: input.ActiveCollection, Request: input.Request, Cursor: input.Cursor, Dependencies: input.Dependencies})
+	case "file.authorize":
+		var request struct {
+			Operation string `json:"operation"`
+		}
+		if decodePluginParams(input.Request, &request) != nil || !pluginHas([]string{"pickRead", "pickWrite"}, request.Operation) {
+			return nil, pluginDataError("plugin_capability_invalid")
+		}
+		if !pluginHas(installed.Manifest.Permissions.Files, request.Operation) {
+			return nil, pluginDataError("plugin_file_denied")
+		}
+		return map[string]any{"authorized": true}, nil
+	case "data.authorizeSubscription":
+		var request struct {
+			Collection string `json:"collection"`
+		}
+		if decodePluginParams(input.Request, &request) != nil || request.Collection == "" || len(request.Collection) > 128 {
+			return nil, pluginDataError("plugin_capability_invalid")
+		}
+		// Identity, grants, and canonical table existence belong to one DB snapshot.
+		// This read-only transaction creates no subscription state or parallel authority.
+		err := app.RunInTransaction(func(tx core.App) error {
+			current, err := surfaceInstallation(ctx, tx, workspace, input)
+			if err != nil {
+				return err
+			}
+			if current.grant(request.Collection, input.ActiveCollection) == nil {
+				return pluginDataError("plugin_read_denied")
+			}
+			table, err := schemaexecution.Describe(ctx, tx, request.Collection)
+			if err != nil || table.Snapshot.TableID != request.Collection {
+				return pluginDataError("plugin_read_denied")
+			}
+			return ctx.Err()
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"collection": request.Collection}, nil
 	case "context.read":
 		if string(input.Request) != "{}" {
 			return nil, pluginDataError("plugin_capability_invalid")
@@ -306,7 +378,7 @@ func executePluginSurfaceAPI(ctx context.Context, app core.App, source *querysch
 		if installed.ActionRisk == "read" {
 			return nil, pluginDataError("plugin_write_denied")
 		}
-		request, err := surfaceMutationRequest(ctx, app, workspace, input)
+		request, err := surfaceMutationRequest(ctx, app, workspace, input, ioPorts...)
 		if err != nil {
 			return nil, err
 		}
@@ -506,16 +578,19 @@ func surfaceCommandContext(ctx context.Context, app core.App, source *queryschem
 	return map[string]any{"contract": "vibetable.command-context.v1", "projectKey": input.ProjectKey, "collection": active, "selectedKeys": selected, "querySnapshot": snapshot, "locale": "zh-CN", "theme": "light", "density": "comfortable", "user": invocation.User, "hostVersion": ""}, nil
 }
 
-func surfaceMutationRequest(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest) (mutation.Request, error) {
+func surfaceMutationRequest(ctx context.Context, app core.App, workspace string, input pluginSurfaceAPIRequest, ioPorts ...*pluginSurfaceIO) (mutation.Request, error) {
 	var plan struct {
 		Contract       string `json:"contract"`
 		Collection     string `json:"collection"`
 		SchemaRevision string `json:"schemaRevision"`
 		Operations     []struct {
-			Kind           string         `json:"kind"`
-			PrimaryKey     *string        `json:"primaryKey,omitempty"`
-			ExpectedDigest *string        `json:"expectedDigest,omitempty"`
-			Values         map[string]any `json:"values"`
+			Kind              string          `json:"kind"`
+			FieldID           string          `json:"fieldId,omitempty"`
+			UploadHandles     []string        `json:"uploadHandles,omitempty"`
+			RemoveStoredNames []string        `json:"removeStoredNames,omitempty"`
+			PrimaryKey        *string         `json:"primaryKey,omitempty"`
+			ExpectedDigest    *string         `json:"expectedDigest,omitempty"`
+			Values            json.RawMessage `json:"values,omitempty"`
 		} `json:"operations"`
 	}
 	if decodePluginParams(input.Request, &plan) != nil || plan.Contract != "vibetable.surface-mutation-plan.v1" || len(plan.Operations) < 1 || len(plan.Operations) > 1000 || plan.SchemaRevision == "" {
@@ -524,15 +599,30 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 	request := mutation.Request{ContractVersion: "2.0", RequestID: input.RequestID, IdempotencyKey: input.RequestID, TableID: plan.Collection, SchemaRevision: plan.SchemaRevision, Actor: mutation.Actor{Type: "plugin", ID: input.PluginID}}
 	for _, item := range plan.Operations {
 		kind := mutation.OperationInsert
-		if item.Kind == "update" {
-			kind = mutation.OperationUpdate
+		if item.Kind == "update" || item.Kind == "delete" || item.Kind == "setAttachments" {
+			if item.Kind == "delete" {
+				kind = mutation.OperationDelete
+				// Deletion carries no values; the row guard is the authoritative write contract.
+				if len(item.Values) != 0 {
+					return request, pluginDataError("plugin_capability_invalid")
+				}
+			} else {
+				kind = mutation.OperationUpdate
+				if item.Kind == "setAttachments" {
+					kind = mutation.OperationSetAttachments
+				}
+			}
 			if item.PrimaryKey == nil || item.ExpectedDigest == nil {
 				return request, pluginDataError("plugin_guard_required")
 			}
 		} else if item.Kind != "create" || item.PrimaryKey != nil || item.ExpectedDigest != nil {
 			return request, pluginDataError("plugin_capability_invalid")
 		}
-		request.Operations = append(request.Operations, mutation.Operation{Kind: kind, RecordID: item.PrimaryKey, ExpectedDigest: item.ExpectedDigest, Values: item.Values})
+		var values map[string]any
+		if kind != mutation.OperationDelete && kind != mutation.OperationSetAttachments && (decodePluginParams(item.Values, &values) != nil || values == nil) {
+			return request, pluginDataError("plugin_capability_invalid")
+		}
+		request.Operations = append(request.Operations, mutation.Operation{Kind: kind, RecordID: item.PrimaryKey, ExpectedDigest: item.ExpectedDigest, Values: values, FieldID: item.FieldID, UploadHandles: item.UploadHandles, RemoveStoredNames: item.RemoveStoredNames})
 	}
 	request.Authorize = func(ctx context.Context, tx core.App) error {
 		installed, err := surfaceInstallation(ctx, tx, workspace, input)
@@ -548,8 +638,10 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 		}
 		for _, operation := range request.Operations {
 			name := "create"
-			if operation.Kind == mutation.OperationUpdate {
+			if operation.Kind == mutation.OperationUpdate || operation.Kind == mutation.OperationSetAttachments {
 				name = "update"
+			} else if operation.Kind == mutation.OperationDelete {
+				name = "delete"
 			}
 			var grant *pluginReadGrant
 			for _, candidate := range installed.Manifest.Permissions.Data {
@@ -563,8 +655,21 @@ func surfaceMutationRequest(ctx context.Context, app core.App, workspace string,
 				return pluginDataError("plugin_write_denied")
 			}
 			allowed := pluginAllowed(*grant, table.Snapshot)
-			if operation.Kind == mutation.OperationUpdate && allowed["id"] == "" {
+			if operation.Kind != mutation.OperationInsert && allowed["id"] == "" {
 				return pluginDataError("plugin_write_denied")
+			}
+			if operation.Kind == mutation.OperationSetAttachments {
+				field, ok := table.Field(operation.FieldID)
+				if !ok || field.File == nil || allowed[field.Identity.FieldID] == "" {
+					return pluginDataError("plugin_write_denied")
+				}
+				var ports *pluginSurfaceIO
+				if len(ioPorts) > 0 {
+					ports = ioPorts[0]
+				}
+				if err := surfaceAttachmentOperation(input, ports, plan.Collection, operation); err != nil {
+					return err
+				}
 			}
 			for key := range operation.Values {
 				field, found := table.Field(key)

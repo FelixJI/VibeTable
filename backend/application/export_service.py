@@ -126,11 +126,13 @@ class ExportService:
         profiles: dict[str, CollectionProfile],
         files: HostFiles,
         lookup_provider: AuthoritativeLookupExportProvider | None = None,
+        output_columns: list[str] | None = None,
     ) -> None:
         self._query_port = query_port
         self._profiles = profiles
         self._files = files
         self._lookup_provider = lookup_provider
+        self._output_columns = output_columns
 
     async def export(
         self,
@@ -140,7 +142,11 @@ class ExportService:
         cancelled: Callable[[], bool] | None = None,
     ) -> ExportResult:
         profile = self._profile(params.collection)
-        output_columns = list(profile.fields)
+        output_columns = list(
+            self._output_columns if self._output_columns is not None else profile.fields
+        )
+        if not output_columns or not set(output_columns) <= set(profile.fields):
+            raise ExportError("export columns are not authorized", code="plugin_read_denied")
         if params.include_relations:
             for relation in profile.relations:
                 for display in relation.display_fields:
@@ -189,14 +195,20 @@ class ExportService:
                 raise asyncio.CancelledError
             if progress:
                 await progress(rows_written, 0, f"写出 {fmt.upper()}：{rows_written} 行")
-        return ExportResult(
-            collection=params.collection,
-            format=fmt,
-            rows_written=rows_written,
-            schema_revision=profile.capability_hash,
-            capability_hash=profile.capability_hash,
-            output_display_name=target.display_name,
-        )
+            # Construct and validate the typed result before the native commit: a
+            # result-shape failure (for example a schema revision that satisfies
+            # CollectionProfile but exceeds the frozen ExportResult limit) must
+            # abort on the finishWrite(commit=False) path and never replace the
+            # target file first, so the not-committed receipt stays honest.
+            result = ExportResult(
+                collection=params.collection,
+                format=fmt,
+                rows_written=rows_written,
+                schema_revision=profile.capability_hash,
+                capability_hash=profile.capability_hash,
+                output_display_name=target.display_name,
+            )
+        return result
 
     async def generate_template(
         self,

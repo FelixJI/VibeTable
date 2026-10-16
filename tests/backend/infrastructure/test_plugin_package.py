@@ -684,3 +684,40 @@ def test_manifest_rejects_non_object_schema_reference() -> None:
     ]
     with pytest.raises(PluginPackageError, match="not a supported JSON Schema"):
         validate_plugin_manifest(entries)
+
+
+def test_surface_delete_grant_keeps_legacy_worker_mutations_closed() -> None:
+    from backend.contracts.plugin import MutationPlan, PluginManifest
+
+    manifest = _valid_manifest()
+    manifest["$schema"] = "vibetable.plugin-manifest.v2"
+    manifest["compatibility"]["pluginApi"] = "3.x"
+    manifest["permissions"]["data"][0]["operations"] = [
+        "read",
+        "query",
+        "create",
+        "update",
+        "delete",
+    ]
+    manifest["actions"][0].pop("workerEntry")
+    manifest["actions"][0]["risk"] = "write"
+    manifest["ui"]["customViews"] = [
+        {"viewId": "delete", "actionId": "read-selection", "entry": "dist/read.js"}
+    ]
+    assert (
+        validate_plugin_manifest(_valid_entries(manifest))["permissions"] == manifest["permissions"]
+    )
+    assert PluginManifest.model_validate(manifest).permissions == manifest["permissions"]
+    with pytest.raises(ValueError, match="kind"):
+        MutationPlan.model_validate(
+            {
+                "contract": "vibetable.mutation-plan.v1",
+                "collection": "orders",
+                "operations": [{"kind": "delete", "primaryKey": "r1", "expectedDigest": "guard"}],
+                "preview": {"affectedCount": 1},
+            }
+        )
+    manifest["permissions"]["data"][0]["operations"] = ["truncate"]
+    with pytest.raises(PluginPackageError) as error:
+        validate_plugin_manifest(_valid_entries(manifest))
+    assert error.value.code == "permissions_invalid"

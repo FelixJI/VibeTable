@@ -1256,7 +1256,7 @@ def persist_product_e2e_evidence(
     require_passing_report: bool = False,
     expected_scenarios: tuple[str, ...] | None = None,
 ) -> Path | None:
-    """Persist the newest product E2E report and bounded diagnostics for failures."""
+    """Persist reports, bounded failure diagnostics, and S42 preview phase diagnostics."""
 
     reports = sorted(
         (
@@ -1301,6 +1301,53 @@ def persist_product_e2e_evidence(
                 f"product E2E scenario coverage mismatch: expected {expected_scenarios}, "
                 f"found {actual_scenarios} in {report_path}"
             )
+
+    def copy_runtime_diagnostics(
+        runtime_source: Path,
+        runtime_destination: Path,
+        *,
+        preview_host: bool = False,
+        preview_logs_only: bool = False,
+    ) -> None:
+        if preview_host:
+            ancestor = runtime_source
+            while ancestor != run_source.parent:
+                if ancestor.is_symlink() or ancestor.is_junction():
+                    return
+                ancestor = ancestor.parent
+        # Fixed readiness-root diagnostics only; the shared user desktop.log is never read.
+        if not preview_logs_only:
+            _copy_if_file(
+                runtime_source / "vibetable-trace.log",
+                runtime_destination / "vibetable-trace.log",
+            )
+        # Optional isolated desktop logs: a missing or linked desktop-logs directory is simply skipped.
+        desktop_logs = runtime_source / "desktop-logs"
+        if desktop_logs.is_dir() and not (desktop_logs.is_symlink() or desktop_logs.is_junction()):
+            pattern = (
+                r"preview-[1-9]\d*(?:-\d{8}-\d{9})?\.log"
+                if preview_host
+                else r"desktop(?:-\d{8}-\d{9})?\.log"
+            )
+            for log_path in sorted(desktop_logs.iterdir()):
+                if (
+                    log_path.is_symlink()
+                    or log_path.is_junction()
+                    or re.fullmatch(pattern, log_path.name) is None
+                    or not log_path.is_file()
+                ):
+                    continue
+                _copy_if_file(log_path, runtime_destination / log_path.name)
+        if preview_logs_only:
+            return
+        workspace_root = runtime_source / "local-data" / "workspaces"
+        for log_name in PRODUCT_E2E_RUNTIME_LOGS:
+            for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
+                workspace_id = log_path.parents[3].name
+                _copy_if_file(
+                    log_path,
+                    runtime_destination / "workspace-logs" / workspace_id / log_name,
+                )
 
     for item in scenarios:
         if item["scenario"] != "40-file-history-capacity":
@@ -1366,6 +1413,21 @@ def persist_product_e2e_evidence(
                 "49-security-observations.json",
                 "49-plugin-application-security-trace.zip",
             ),
+            "52-plugin-capability-services": (
+                "52-capability-services.json",
+                "52-capability-services.png",
+                "52-ui-context.png",
+                "52-plugin-capability-services-trace.zip",
+                "52-picker-read-cancel.png",
+                "52-picker-read-select.png",
+                "52-picker-write-select.png",
+                "52-picker-import-select.png",
+                "52-picker-export-select.png",
+                "52-confirm-update-rejected.png",
+                "52-confirm-delete-approved.png",
+                "52-confirm-attachment-approved.png",
+                "52-confirm-import-approved.png",
+            ),
             "51-plugin-application-commit-unknown": (
                 "48-native-cancelled.png",
                 "48-native-recovered.png",
@@ -1406,6 +1468,13 @@ def persist_product_e2e_evidence(
                     f"passing {scenario_id} report lacks screenshot evidence: {filename}"
                 )
         if scenario_id == "42-file-document-native-operations":
+            if item["status"] == "passed":
+                copy_runtime_diagnostics(
+                    run_source / "_runtime" / "42" / "controls" / "preview-host",
+                    run_destination / "_runtime" / "42" / "controls" / "preview-host",
+                    preview_host=True,
+                    preview_logs_only=True,
+                )
             for filename in (
                 "415-native-file-document.png",
                 "42-file-document-native-operations-trace.zip",
@@ -1422,6 +1491,10 @@ def persist_product_e2e_evidence(
                     "48-native-application.png",
                     "48-native-approved.png",
                     "48-native-rejected.png",
+                    "48-plugin-print-scope.png",
+                    "48-plugin-print-dialog-opened.png",
+                    "48-plugin-print-preview-second.png",
+                    "48-plugin-print-preview.json",
                     "48-plugin-applications-trace.zip",
                 ),
             },
@@ -1490,6 +1563,26 @@ def persist_product_e2e_evidence(
 
         scenario_number = scenario_id.partition("-")[0]
         runtime_root = run_source / "_runtime" / scenario_number
+        if scenario_id == "52-plugin-capability-services":
+            for filename in (
+                "52-capability-services.json",
+                "52-capability-services.png",
+                "52-ui-context.png",
+                "52-picker-read-cancel.png",
+                "52-picker-read-select.png",
+                "52-picker-write-select.png",
+                "52-picker-import-select.png",
+                "52-picker-export-select.png",
+                "52-confirm-update-rejected.png",
+                "52-confirm-delete-approved.png",
+                "52-confirm-attachment-approved.png",
+                "52-confirm-import-approved.png",
+                "plugin-file-dialog-result.json",
+                "plugin-file-dialog-observation.json",
+                "plugin-native-result.json",
+                "plugin-native-observation.json",
+            ):
+                _copy_if_file(scenario_source / filename, scenario_destination / filename)
         if scenario_id == "49-plugin-application-security":
             for filename in (
                 "plugin-contrast-original.json",
@@ -1518,48 +1611,6 @@ def persist_product_e2e_evidence(
                     runtime_root / "controls" / filename,
                     run_destination / "_runtime" / scenario_number / "controls" / filename,
                 )
-
-        def copy_runtime_diagnostics(
-            runtime_source: Path, runtime_destination: Path, *, preview_host: bool = False
-        ) -> None:
-            if preview_host:
-                ancestor = runtime_source
-                while ancestor != run_source.parent:
-                    if ancestor.is_symlink() or ancestor.is_junction():
-                        return
-                    ancestor = ancestor.parent
-            # Fixed readiness-root diagnostics only; the shared user desktop.log is never read.
-            _copy_if_file(
-                runtime_source / "vibetable-trace.log",
-                runtime_destination / "vibetable-trace.log",
-            )
-            # Optional isolated desktop logs: a missing or linked desktop-logs directory is simply skipped.
-            desktop_logs = runtime_source / "desktop-logs"
-            if desktop_logs.is_dir() and not (
-                desktop_logs.is_symlink() or desktop_logs.is_junction()
-            ):
-                pattern = (
-                    r"preview-[1-9]\d*(?:-\d{8}-\d{9})?\.log"
-                    if preview_host
-                    else r"desktop(?:-\d{8}-\d{9})?\.log"
-                )
-                for log_path in sorted(desktop_logs.iterdir()):
-                    if (
-                        log_path.is_symlink()
-                        or log_path.is_junction()
-                        or re.fullmatch(pattern, log_path.name) is None
-                        or not log_path.is_file()
-                    ):
-                        continue
-                    _copy_if_file(log_path, runtime_destination / log_path.name)
-            workspace_root = runtime_source / "local-data" / "workspaces"
-            for log_name in PRODUCT_E2E_RUNTIME_LOGS:
-                for log_path in sorted(workspace_root.glob(f"*/.vibetable/temp/logs/{log_name}")):
-                    workspace_id = log_path.parents[3].name
-                    _copy_if_file(
-                        log_path,
-                        runtime_destination / "workspace-logs" / workspace_id / log_name,
-                    )
 
         copy_runtime_diagnostics(
             runtime_root / "host",
@@ -1595,6 +1646,16 @@ def persist_product_e2e_evidence(
                         f"{scenario_id}.png",
                     ):
                         _copy_if_file(phase_run / filename, retained / filename)
+                    if scenario_id == "48-plugin-applications":
+                        for filename in (
+                            "48-plugin-print-preview.json",
+                            "48-plugin-print-preview-unobservable.json",
+                            "48-plugin-print-preview-failed.png",
+                            "48-plugin-print-dialog-opened.png",
+                            "48-plugin-print-preview-second.png",
+                            "48-plugin-print-preview-navigation.png",
+                        ):
+                            _copy_if_file(phase_run / filename, retained / filename)
                     if scenario_id == "44-file-restore-crash":
                         for filename in (
                             "fault-request.json",

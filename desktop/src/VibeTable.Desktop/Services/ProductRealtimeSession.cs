@@ -17,6 +17,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
     private readonly Action<TableSummary> _applyCatalog;
     private readonly Action<string> _failed;
     private readonly Func<JsonElement, PluginEventEnvelope>? _projectPluginCatalog;
+    private readonly Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? _observePluginData;
     private readonly HttpMessageHandler? _handler;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private Binding? _requested;
@@ -25,6 +26,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
     private CancellationTokenSource? _active;
     private Task? _worker;
     private bool _disposed;
+    private bool _streamStopped;
 
     internal ProductRealtimeSession(IProductSidecarGenerationAuthority authority,
         Func<ProductSidecarGenerationSnapshot?> capture, WorkspaceSessionManager sessions,
@@ -32,7 +34,8 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         Action<TableSummary> applyCatalog, Action<string> failed,
         HttpMessageHandler? handler = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null)
+        Func<JsonElement, PluginEventEnvelope>? projectPluginCatalog = null,
+        Action<ProductSidecarGenerationSnapshot, string, JsonElement, Func<Func<bool>, bool>>? observePluginData = null)
     {
         _authority = authority;
         _capture = capture;
@@ -42,6 +45,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
         _applyCatalog = applyCatalog;
         _failed = failed;
         _projectPluginCatalog = projectPluginCatalog;
+        _observePluginData = observePluginData;
         _handler = handler;
         _delay = delay ?? Task.Delay;
         authority.CurrentChanged += Refresh;
@@ -104,6 +108,20 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                         && _leases.IsCurrent(lease) && action();
             }));
 
+    // Same owner and binding as delivery; no second stream or inferred event-based recovery.
+    // Lock order remains authority -> generation admission -> workspace -> realtime owner.
+    internal bool TryUseSubscriptionSource(ProductSidecarGenerationSnapshot snapshot, Func<bool> action)
+    {
+        Binding? binding;
+        lock (_gate)
+            binding = !_disposed && !_streamStopped && _requested?.Snapshot.Matches(snapshot) == true
+                ? _requested : null;
+        if (binding is null || !_leases.TryCaptureHost(binding.Scope.WorkspaceId, binding.Scope.Epoch,
+            Guid.NewGuid(), out WorkspaceRequestEpochLease? lease) || lease is null) return false;
+        using (lease)
+            return TryUseBinding(binding, lease, lease.CancellationToken, () => !_streamStopped && action());
+    }
+
     private void Refresh()
     {
         lock (_refreshGate)
@@ -123,6 +141,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                 if (_scope != scope) { _scope = scope; _bookmark = null; }
                 if (_requested == next) return;
                 _requested = next;
+                _streamStopped = false;
                 _active?.Cancel();
                 _worker ??= Task.Run(RunAsync);
             }
@@ -155,7 +174,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
             }
             lock (_gate)
             {
-                if (_requested == binding) { _worker = null; return; }
+                if (_requested == binding) { _streamStopped = true; _worker = null; return; }
             }
         }
     }
@@ -199,6 +218,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                                     post(frame.Topic, (_projectPluginCatalog
                                         ?? throw new InvalidOperationException("Plugin projection is unavailable."))(frame.Payload));
                                 else post(frame.Topic, frame.Payload);
+                                _observePluginData?.Invoke(binding.Snapshot, frame.Topic, frame.Payload, Current);
                                 if (summary is not null) _applyCatalog(summary);
                                 _bookmark = frame.Cursor;
                                 return true;
@@ -219,6 +239,9 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
             catch (Exception error)
             {
                 if (token.IsCancellationRequested) return;
+                // Seal admission before exposing failure or queuing a closed notification.
+                // Closed callbacks and in-flight Go grants must observe the same stop fact.
+                Current(() => { _streamStopped = true; return true; });
                 _failed("realtime.failed:" + error.GetType().Name);
                 // A failed renderer Post cannot carry another notification.
                 if (posting) return;
@@ -226,6 +249,7 @@ internal sealed class ProductRealtimeSession : IAsyncDisposable
                 {
                     await _delivery.PostAsync(binding.Scope.Renderer, post => Current(() =>
                     {
+                        _observePluginData?.Invoke(binding.Snapshot, "realtime.stopped", default, Current);
                         post("operation.failed", new
                         {
                             operation = "realtime.stream", code = "realtime.stopped",

@@ -630,9 +630,9 @@ internal sealed class WindowsNativeProductFileHost : INativeProductFileHost
             string controlName = replacement
                 ? "attachment-replacement-source.txt"
                 : "attachment-source.txt";
-            return new NativeAttachmentSelection(
-                [ReadE2eControlPath(controlName, requireExistingFile: true)!],
-                PickerWasShown: false);
+            string? controlled = ReadE2eControlPath(controlName, requireExistingFile: true);
+            if (controlled is not null)
+                return new NativeAttachmentSelection([controlled], PickerWasShown: false);
         }
         var dialog = new OpenFileDialog
         {
@@ -701,6 +701,8 @@ internal sealed class WindowsNativeProductFileHost : INativeProductFileHost
             throw new InvalidOperationException(
                 $"Empty test-mode control file: {controlName}");
         }
+        if (IsNativeDialogControl(value, Environment.GetEnvironmentVariable("GITHUB_ACTIONS"),
+            Environment.GetEnvironmentVariable("CI"))) return null;
         string fullPath = Path.GetFullPath(value);
         if (requireExistingFile && !File.Exists(fullPath))
         {
@@ -709,5 +711,13 @@ internal sealed class WindowsNativeProductFileHost : INativeProductFileHost
                 fullPath);
         }
         return fullPath;
+    }
+
+    internal static bool IsNativeDialogControl(string value, string? githubActions, string? ci)
+    {
+        if (value != "native-dialog") return false;
+        if (githubActions != "true" || ci != "true")
+            throw new InvalidOperationException("Native dialog test control requires the controlled GitHub CI runner.");
+        return true;
     }
 }

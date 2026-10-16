@@ -64,6 +64,7 @@ type pluginInstallation struct {
 		Permissions struct {
 			Data           []pluginReadGrant `json:"data"`
 			PrivateStorage bool              `json:"privateStorage"`
+			Files          []string          `json:"files"`
 		} `json:"permissions"`
 	} `json:"manifest"`
 }
@@ -175,7 +176,7 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 			}
 			result = map[string]any{"contract": pluginDataContract, "tables": tables}
 			return nil
-		case "query":
+		case "query", "exportQuery":
 			var request pluginQueryRequest
 			if decodePluginParams(input.Request, &request) != nil || request.Contract != "vibetable.plugin-query.v2" || request.Collection == "" || request.Fields == nil {
 				return pluginDataError("plugin_capability_invalid")
@@ -249,6 +250,9 @@ func executePluginData(ctx context.Context, app core.App, source *queryschema.So
 			}
 			result = map[string]any{"contract": "vibetable.plugin-query-page.v2", "items": items, "nextCursor": page.NextCursor, "filteredRows": page.FilteredRows, "totalRows": page.TotalRows,
 				"schemaRevision": page.Snapshot.SchemaRevision, "dataRevision": page.Snapshot.DataRevision, "complete": complete, "dependencies": scoped.current, "rowGuards": guards}
+			if input.Operation == "exportQuery" {
+				result["clockPeriod"] = page.Snapshot.ClockPeriod
+			}
 			return nil
 		default:
 			return pluginDataError("plugin_capability_invalid")

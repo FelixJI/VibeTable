@@ -600,16 +600,14 @@ def _prepare_smoke_lane(lane: str) -> None:
         for project in PLUGIN_BUILD_PROJECTS:
             _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     elif lane in {"data-io", "file-io"}:
-        # Both product E2E lanes replay packaged scenarios without rebuilding
-        # example plugins; only the resilience scenarios 11/47 use the plugin
-        # CLI, so these lanes share the narrower bootstrap dependencies.
+        # QA52 compiles its real SDK fixture in the file-io shard; restore its
+        # locked compiler/bundler here rather than relying on another lane.
         _run("uv", "sync", "--frozen", "--group", "dev", "--group", "build")
-        _run(
-            "npm",
-            "ci",
-            cwd=REPO_ROOT / "desktop" / "web-grid",
-            env=_node_environment(),
-        )
+        node_env = _node_environment()
+        _run("npm", "ci", cwd=REPO_ROOT / "desktop" / "web-grid", env=node_env)
+        if lane == "file-io":
+            for project in (Path("sdk/plugin"), Path("examples/plugins/surface-data-editor")):
+                _run("npm", "ci", cwd=REPO_ROOT / project, env=node_env)
     elif lane != "release":
         raise RuntimeError(f"unknown release smoke lane: {lane}")
 

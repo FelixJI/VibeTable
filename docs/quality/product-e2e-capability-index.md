@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：50
-- 唯一能力：71
-- 场景—能力关联：119
+- 场景：51
+- 唯一能力：77
+- 场景—能力关联：127
 - `release.smoke` 场景：5
 
 ## 能力到场景
@@ -59,11 +59,17 @@
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
 | `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
 | `plugin.applications` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知） |
+| `plugin.attachments` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.data-io` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.files` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `plugin.headless` | <code>50-plugin-headless-budget</code>（无界面插件原生执行预算） |
 | `plugin.isolation` | <code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复） |
 | `plugin.lifecycle` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期） |
-| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理）、<code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知） |
-| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算） |
+| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理）、<code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.output.print` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期） |
+| `plugin.subscriptions` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.ui-services` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
 | `record-document-link.lifecycle` | <code>18-workspace-search</code>（内容、文件关联与统一搜索闭环）、<code>39-file-workflow-combination</code>（同包同UUID计算链与文件全流程组合） |
@@ -138,7 +144,8 @@
 | <code>45-common-field-display</code> | 常用字段显示、重开与快照恢复旅程 | 独立场景执行常用字段显示完整旅程：进度百分比与起止边界保持原值；评分预设预检解释非法样本并阻止应用且零写入；电话、布尔自定义文字、时间毫秒与瞬间时区/精度按保存配置渲染；select改名停用保留稳定optionId与多选原始顺序；富文本为有界纯文本摘要不执行脚本；正常关闭重开后同workspace UUID递增session epoch并恢复显示参数与原值；Snapshot捕获规范显示配置，可见变更后真实恢复；新建Gallery卡片与网格显示一致。全程不唤醒按需Worker。 | `schema.v2`、`release.smoke` |
 | <code>46-dashboard-native-output</code> | 仪表盘真实 WebView 下载与原生输出 | 独立场景验证仪表盘原生输出闭环：真实 WebView2 下载 CSV 落盘内容含 BOM、表头与权威行；PNG 下载落盘为非平凡 PNG 签名字节；取消保存经显式合成控制seam回报 CANCELLED 且零落盘；打印仅验证原生对话框打开回执，不假报完成。全程经宿主保存对话框授权与单一 blob URL 门控。 | `dashboard.export`、`dashboard.print` |
 | <code>47-plugin-surface-api</code> | 无 Worker 插件真实页面读写 | 仅在本次合成Host进程禁用NodePluginWorkerAdapter，以真实manifest.v2安装和实际隔离frame通过公开SDK读取550条200/200/150记录、保存私设、编辑草稿并由Host一次确认后经Go提交；拒绝和提交前取消零写入，记录页面/确认截图、Host任务及权威结果。旧Worker场景11完整保留。 | `plugin.surface-api`、`plugin.mutation` |
-| <code>48-plugin-applications</code> | 完整插件应用与同UUID冷重启生命周期 | 真实WPF安装无Worker包，两同名插件独立scope和三hash页、长期70调用、headless完成失败取消与回收；第二冷Host同UUID新epoch核原生键鼠确认、权限增量升级、失败保快照、禁用撤权、缺包恢复及卸载业务记录保留。 | `plugin.applications`、`plugin.lifecycle`、`plugin.surface-api` |
+| <code>48-plugin-applications</code> | 完整插件应用与同UUID冷重启生命周期 | 真实WPF安装无Worker包，两同名插件独立scope和三hash页、长期70调用、headless完成失败取消与回收；第二冷Host同UUID新epoch核原生键鼠确认、权限增量升级、失败保快照、禁用撤权、缺包恢复及卸载业务记录保留；当前应用原生打印opened-only与body/portal白名单；真实预览PDF首末行/多页、取消afterprint后再打印、原生预览期间导航快照不泄漏平台。 | `plugin.applications`、`plugin.lifecycle`、`plugin.surface-api`、`plugin.output.print` |
 | <code>49-plugin-application-security</code> | 完整插件应用真实安全壳与renderer恢复 | 同包真实WebView2 CSP跨插件脚本/fetch/内联/编码穿越、顶层导航、伪造消息与宿主对象拒绝；合成死循环后真实WPF SendInput停止与同env恢复、旧renderer释放和token拒绝；真实renderer崩溃自动恢复且数据保留；实际明暗主题、受控GitHub runner系统高对比及finally恢复、125%内容scale与实际DPI观察，截图来自原生窗口。 | `plugin.applications`、`plugin.isolation`、`workspace.recovery` |
 | <code>50-plugin-headless-budget</code> | 无界面插件原生执行预算 | 真实合成模块不finish并持续timer，在实际frame创建后的两分钟原生预算到期后撤权和恢复；隐藏frame被释放、旧token拒绝、原生界面仍可操作；应用页面不设总寿命。 | `plugin.applications`、`plugin.headless`、`plugin.surface-api` |
 | <code>51-plugin-application-commit-unknown</code> | 完整应用原生中止与提交回执未知 | 同包真实插件无前序记录写入，在既有Go after_record合成barrier处经真实原生确认启动唯一create；Native SendInput停止并确认生产恢复封token后释放barrier，新renderer保留Host unknown并独立读取权威数据，不误报回滚、不重放、不恢复旧token。 | `plugin.applications`、`plugin.mutation`、`workspace.recovery` |
+| <code>52-plugin-capability-services</code> | 无 Worker 插件文件与完整能力服务 | 独立file-io场景在合成工作区以真实SDK编译无Worker应用；Job-owned原生picker取消/选择和SendInput精确确认拒绝/批准，普通文件逐字节读写、附件阶段/确认/读取、导入preview任务与授权提交、显式字段CSV导出实际落盘；query/create/update/delete及合法自关系写入、非法批次零提交、范围内单调失效通知、任务成功和批准前取消零提交、context/通知/返回、退役旧token/跨surface文件handle拒绝。真实打印保持48、unknown保持51独立门禁；非受控CI不得打开本场景原生对话框。 | `plugin.surface-api`、`plugin.mutation`、`plugin.files`、`plugin.attachments`、`plugin.data-io`、`plugin.subscriptions`、`plugin.ui-services` |

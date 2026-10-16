@@ -134,6 +134,25 @@ class PocketBaseClient:
         self._transport = transport
         self._headers = {SESSION_HEADER: session_secret}
 
+    async def plugin_surface(
+        self,
+        principal: Mapping[str, JsonValue],
+        method: str,
+        request: Mapping[str, JsonValue],
+        *,
+        cursor: str | None = None,
+        dependencies: Mapping[str, JsonValue] | None = None,
+    ) -> JsonObject:
+        payload: JsonObject = dict(principal)
+        payload.update(method=method, request=dict(request))
+        if cursor is not None:
+            payload["cursor"] = cursor
+        if dependencies is not None:
+            payload["dependencies"] = dict(dependencies)
+        return _object(
+            await self._post("/api/vibetable/v3/plugins/surface", payload), "plugin surface"
+        )
+
     async def preview_mutation(self, request: Mapping[str, JsonValue]) -> JsonObject:
         return _object(
             await self._post(MUTATION_PREVIEW_PATH, request),

@@ -248,6 +248,79 @@ public sealed class PluginSurfaceApiTests
     }
 
     [TestMethod]
+    public async Task DeleteEscalatesConfirmationRiskAndBindsTheExactPlan()
+    {
+        const string delete = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"delete","primaryKey":"r1","expectedDigest":"sha256:existing"}]}""";
+        foreach (string decision in new[] { "approved", "rejected", "cancel" })
+        {
+            using var fixture = new Fixture(risk: "write") { Decision = decision };
+            string plan = (await fixture.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
+            Assert.AreEqual("plugin_capability_invalid", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\",\"approved\":true}}")));
+            Assert.AreEqual("plugin_api_unsupported", Code(await fixture.Call("interaction.resolve", "{\"decision\":\"approved\"}")));
+            var response = await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+            var confirmation = fixture.LastInteraction!.PendingConfirmation!;
+            Assert.AreEqual("destructive", confirmation.Risk);
+            Assert.AreEqual(1, confirmation.Preview.AffectedCount);
+            Assert.AreEqual("orders", confirmation.Preview.Summary[0]["collection"].GetString());
+            Assert.AreEqual("delete", confirmation.Preview.SampleRows[0]["kind"].GetString());
+            Assert.AreEqual("r1", confirmation.Preview.SampleRows[0]["primaryKey"].GetString());
+            Assert.AreEqual("sha256:existing", confirmation.Preview.SampleRows[0]["expectedDigest"].GetString());
+            Assert.IsFalse(confirmation.Preview.SampleRows[0].ContainsKey("values"));
+            int commits = fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit");
+            Assert.AreEqual(decision == "approved" ? 1 : 0, commits);
+            if (decision == "approved")
+            {
+                Assert.AreEqual("succeeded", response.GetProperty("result").GetProperty("status").GetString());
+                var committed = fixture.Http.Calls.Single(call => call.GetProperty("method").GetString() == "mutation.commit");
+                Assert.AreEqual(delete, committed.GetProperty("request").GetRawText());
+            }
+            Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+        }
+        using var read = new Fixture(risk: "read");
+        Assert.AreEqual("plugin_write_denied", Code(await read.Call("mutation.preview", delete)));
+        Assert.AreEqual(0, read.Http.Calls.Count);
+    }
+
+    [TestMethod]
+    public async Task DeletePlansFromEveryPresentationAreNativeOnlyAndRendererCannotConsume()
+    {
+        const string delete = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"delete","primaryKey":"r1","expectedDigest":"sha256:existing"}]}""";
+        foreach (var (presentation, risk) in new[] { ("surface", "write"), ("surface", "destructive"), ("application", "write"), ("headless", "destructive") })
+        {
+            using var fixture = new Fixture(risk: risk, presentation: presentation) { Decision = "approved" };
+            var requested = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            fixture.OnConfirmation = () => requested.TrySetResult(); // Hold the exact decision for this test.
+            string plan = (await fixture.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
+            var submitted = fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}");
+            // The pending confirmation exists and is native-only: neither a
+            // renderer approve nor a renderer reject may consume it.
+            await requested.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            string runId = fixture.LastInteraction!.RunId!;
+            string interactionId = fixture.LastInteraction.PendingConfirmation!.InteractionId!;
+            Assert.IsTrue(fixture.Tasks.RequiresNativeConfirmation(runId), presentation);
+            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), out _).Status);
+            Assert.AreEqual("native-required", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "rejected"), out _).Status);
+            Assert.IsTrue(fixture.Tasks.IsInteractionPending(new(runId, interactionId, "approved")));
+            Assert.AreEqual(0, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+            // Only the exact one-shot native-host decision completes the submit.
+            Assert.AreEqual("resolved", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), out _, fromNativeHost: true).Status);
+            Assert.AreEqual("succeeded", (await submitted).GetProperty("result").GetProperty("status").GetString());
+            // The settled run keeps its terminal state; even the native entry cannot resolve it again.
+            Assert.AreEqual("expired", fixture.Tasks.BeginInteractionResolve(new(runId, interactionId, "approved"), out _, fromNativeHost: true).Status);
+            Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+            Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+        }
+        // A cancelled delete run clears its pending interaction; neither the
+        // renderer nor the native entry can revive or consume it afterwards.
+        using var cancelled = new Fixture(risk: "write") { Decision = "cancel" };
+        string cancelledPlan = (await cancelled.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
+        await cancelled.Call("mutation.submit", $"{{\"planId\":\"{cancelledPlan}\"}}");
+        Assert.IsFalse(cancelled.Tasks.IsInteractionPending(new(cancelled.LastInteraction!.RunId!, cancelled.LastInteraction.PendingConfirmation!.InteractionId!, "approved")));
+        Assert.AreEqual("expired", cancelled.Tasks.BeginInteractionResolve(new(cancelled.LastInteraction.RunId!, cancelled.LastInteraction.PendingConfirmation.InteractionId!, "approved"), out _, fromNativeHost: true).Status);
+        Assert.AreEqual(0, cancelled.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+    }
+
+    [TestMethod]
     public async Task RejectionAndCancelWriteNothingAndLostReceiptIsUnknownWithoutReplay()
     {
         foreach (string decision in new[] { "rejected", "cancel", "approved" })
@@ -284,6 +357,21 @@ public sealed class PluginSurfaceApiTests
         Assert.IsFalse(fixture.Surfaces.IsActive(fixture.Surface.SurfaceToken));
         Assert.IsFalse(fixture.Tasks.IsInteractionPending(new(fixture.LastInteraction!.RunId,
             fixture.LastInteraction.PendingConfirmation!.InteractionId, "approved")));
+    }
+
+    [TestMethod]
+    public async Task DeleteReceiptMustMatchBothOperationAndPrimaryKey()
+    {
+        const string delete = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"delete","primaryKey":"r1","expectedDigest":"sha256:existing"}]}""";
+        foreach (var (kind, id) in new[] { ("update", "r1"), ("delete", "other") })
+        {
+            using var fixture = new Fixture(risk: "write");
+            fixture.Http.CommitResultBody = JsonSerializer.Serialize(new
+            { contractVersion = "2.0", status = "applied", affectedRows = new[] { new { recordId = id, operation = kind } } });
+            string plan = (await fixture.Call("mutation.preview", delete)).GetProperty("result").GetProperty("planId").GetString()!;
+            Assert.AreEqual("plugin_commit_unknown", Code(await fixture.Call("mutation.submit", $"{{\"planId\":\"{plan}\"}}")));
+            Assert.AreEqual(1, fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"));
+        }
     }
 
     [TestMethod]
@@ -344,7 +432,7 @@ public sealed class PluginSurfaceApiTests
     [TestMethod]
     public async Task ExplicitAuthorityProofPreservesPermissionRejectionAndCommitCancellationIsUnknown()
     {
-        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale" })
+        foreach (string code in new[] { "plugin_write_denied", "plugin_cursor_stale", "mutation.relation.restricted" })
         {
             using var fixture = new Fixture();
             fixture.Http.CommitErrorBody = JsonSerializer.Serialize(new { code, commitOutcome = "not-committed" });
@@ -444,6 +532,103 @@ public sealed class PluginSurfaceApiTests
         Assert.AreEqual(0, fixture.LateNotifications);
     }
 
+    [TestMethod]
+    public async Task PrintOnlyOpensCurrentApplicationAndNeverAcceptsCallerContent()
+    {
+        using var app = new Fixture(presentation: "application");
+        var result = await app.Call("output.print", "{}");
+        Assert.IsTrue(result.GetProperty("result").GetProperty("opened").GetBoolean());
+        Assert.AreEqual(1, app.Prints);
+        Assert.AreEqual("context.read", app.Http.Calls.Single().GetProperty("method").GetString());
+        foreach (string parameters in new[] { "{\"html\":\"private\"}", "{\"url\":\"file:///x\"}", "{\"surfaceToken\":\"other\"}" })
+            Assert.AreEqual("plugin_capability_invalid", Code(await app.Call("output.print", parameters)));
+        Assert.AreEqual(1, app.Prints);
+        Assert.AreEqual("plugin_source_denied", Code(await app.Call("output.print", "{}", source: "https://evil.test")));
+        foreach (string presentation in new[] { "surface", "custom", "headless" })
+        {
+            using var hidden = new Fixture(presentation: presentation);
+            Assert.AreEqual("plugin_print_denied", Code(await hidden.Call("output.print", "{}")));
+            Assert.AreEqual(0, hidden.Prints);
+            Assert.AreEqual(0, hidden.Http.Calls.Count);
+        }
+    }
+
+    [TestMethod]
+    public async Task PrintPreparationCannotReviveRetiredReboundOrBackgroundSurface()
+    {
+        foreach (string transition in new[] { "retire", "revision", "background", "generation", "cancel" })
+        {
+            using var app = new Fixture(presentation: "application");
+            var prepared = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            app.PreparePrint = (_, _) => prepared.Task;
+            string request = app.Wire("output.print", "{}");
+            var pending = app.Api.HandleAsync(app.Surface.SurfaceToken, app.Source, request);
+            if (transition == "retire") app.Surfaces.Close(app.Surface.SurfaceToken);
+            if (transition == "revision") app.Surfaces.BindIdentity(app.Surface.SurfaceToken, app.Context, 2, "3.x", presentation: "application", installationId: "replacement");
+            if (transition == "generation") app.RetireAfterReceipt();
+            if (transition == "cancel")
+            {
+                string id = JsonDocument.Parse(request).RootElement.GetProperty("requestId").GetString()!;
+                await app.Call("request.cancel", JsonSerializer.Serialize(new { requestId = id }));
+            }
+            prepared.SetResult(transition != "background");
+            var result = JsonDocument.Parse(await pending).RootElement;
+            Assert.IsTrue(result.TryGetProperty("error", out _), transition);
+            Assert.AreEqual(0, app.Prints, transition);
+        }
+    }
+
+    [TestMethod]
+    public async Task PrintRechecksGoAuthorityAfterDeferredPreparationBeforeNativeOutput()
+    {
+        // These are Go's actual disable/package and reinstall/revision rejections.
+        foreach (string code in new[] { "plugin_read_denied", "plugin_cursor_stale" })
+        {
+            using var app = new Fixture(presentation: "application");
+            var prepared = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            app.PreparePrint = (_, _) => prepared.Task;
+            var pending = app.Call("output.print", "{}");
+            app.Http.ContextError = code; // Go changed; Host catalog/surface cache is deliberately still current.
+            prepared.SetResult(true);
+            var result = await pending;
+            Assert.IsTrue(result.TryGetProperty("error", out _), "authority revoked during preparation must prevent native output");
+            Assert.AreEqual(code, Code(result));
+            Assert.AreEqual(0, app.Prints);
+            Assert.AreEqual(1, app.PrintReleases);
+        }
+    }
+
+    [TestMethod]
+    public void PrintLayoutIsBoundedAndBelongsToTheExactCurrentDocument()
+    {
+        var source = new Uri("https://synthetic.plugins.vibetable.local/ui/index.html?entry=1");
+        Assert.AreEqual(3822, ProductWebViewBridge.ReadPluginPrintHeight(source,
+            JsonSerializer.Serialize(new { source = source.AbsoluteUri + "#detail", height = 3822 })));
+        foreach (int height in new[] { 0, -1, 100001 })
+            Assert.AreEqual("plugin_print_limit", Assert.ThrowsExactly<PluginSurfacePolicyException>(() =>
+                ProductWebViewBridge.ReadPluginPrintHeight(source, JsonSerializer.Serialize(new { source = source.AbsoluteUri, height }))).Code);
+        foreach (string changed in new[] { "https://other.test/ui/index.html?entry=1", source.AbsoluteUri + "&other=1", "file:///x" })
+            Assert.AreEqual("plugin_print_denied", Assert.ThrowsExactly<PluginSurfacePolicyException>(() =>
+                ProductWebViewBridge.ReadPluginPrintHeight(source, JsonSerializer.Serialize(new { source = changed, height = 3822 }))).Code);
+    }
+
+    [TestMethod]
+    public async Task NativePrintFailureKeepsIsolatedUnknownDialogAndOpenedReceiptSurvivesLateRetirement()
+    {
+        using var failed = new Fixture(presentation: "application");
+        failed.OnPrint = () => throw new InvalidOperationException("synthetic native failure");
+        Assert.AreEqual("plugin_print_failed", Code(await failed.Call("output.print", "{}")));
+        Assert.AreEqual(0, failed.PrintReleases);
+        using var denied = new Fixture(presentation: "application");
+        denied.PreparePrint = (_, _) => Task.FromResult(false);
+        Assert.AreEqual("plugin_print_denied", Code(await denied.Call("output.print", "{}")));
+        Assert.AreEqual(1, denied.PrintReleases);
+        using var opened = new Fixture(presentation: "application");
+        opened.OnPrint = opened.RetireAfterReceipt;
+        Assert.IsTrue((await opened.Call("output.print", "{}")).GetProperty("result").GetProperty("opened").GetBoolean());
+        Assert.AreEqual(0, opened.PrintReleases);
+    }
+
     private const string Plan = """{"contract":"vibetable.surface-mutation-plan.v1","collection":"orders","schemaRevision":"schema_1","operations":[{"kind":"update","primaryKey":"r1","expectedDigest":"sha256:existing","values":{"name":"new"}}]}""";
     private static string? Code(JsonElement result) => result.GetProperty("error").GetProperty("code").GetString();
     private static string? Code(string result) => Code(JsonDocument.Parse(result).RootElement);
@@ -459,6 +644,10 @@ public sealed class PluginSurfaceApiTests
         internal PluginSurfaceApi Api { get; }
         internal string Decision { get; init; } = "approved";
         internal int Confirmations { get; private set; }
+        internal int Prints { get; private set; }
+        internal Action? OnPrint { get; set; }
+        internal int PrintReleases { get; private set; }
+        internal Func<PluginSurfaceSession, CancellationToken, Task<bool>> PreparePrint { get; set; } = (_, _) => Task.FromResult(true);
         internal PluginRuntimeInteractionSnapshot? LastInteraction { get; private set; }
         internal Action? OnConfirmation { get; set; }
         internal int LateNotifications { get; private set; }
@@ -481,7 +670,7 @@ public sealed class PluginSurfaceApiTests
         private readonly ProductAuthorityEpoch _authority = new();
         private string? _taskId;
         internal string TaskId => _taskId!;
-        internal Fixture(PluginProjectContext? context = null, string actionId = "save", string risk = "destructive")
+        internal Fixture(PluginProjectContext? context = null, string actionId = "save", string risk = "destructive", string presentation = "surface")
         {
             Context = context ?? Context;
             _authority.Transition(Context);
@@ -489,14 +678,17 @@ public sealed class PluginSurfaceApiTests
             Tasks.SetWorkspaceContext(Context);
             var revision = PluginPackageRevision.Create("C:/plugins/synthetic", new string('a', 64));
             Surface = Surfaces.Open(Context.ProjectKey, "com.example.surface", revision, "ui/index.html");
-            Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html", installationId: "record-surface");
+            Surfaces.BindIdentity(Surface.SurfaceToken, Context, 1, "3.x", "1.0.0", actionId, risk, "ui/index.html", presentation: presentation, installationId: "record-surface");
             Surfaces.TryGet(Surface.SurfaceToken, out var bound);
             Surface = bound!;
             _generation = new ProductSidecarGenerationSnapshot(this, 1,
                 new PocketBaseAdminContext(new Uri("http://127.0.0.1:1/bootstrap"), new Uri("http://127.0.0.1:1/"), "X-VibeTable-Session", "private-test-secret"),
                 new ProductSidecarIdentity(Guid.ParseExact(Context.ProjectKey["local:".Length..], "N").ToString("D"), Context.SessionGeneration, 1, "claim"), [],
                 action => _generationCurrent && action());
-            Api = new(Surfaces, Tasks, () => _generation, this, Http);
+            Api = new(Surfaces, Tasks, () => _generation, this, Http,
+                preparePrint: (surface, _, token) => PreparePrint(surface, token),
+                showPrint: () => { Prints++; OnPrint?.Invoke(); },
+                releasePrint: _ => { PrintReleases++; return Task.CompletedTask; });
         }
         internal string Wire(string method, string parameters, string? token = null, string? version = null) => JsonSerializer.Serialize(new
         { contract = version ?? PluginSurfaceApi.Contract, surfaceToken = token ?? Surface.SurfaceToken, requestId = Guid.NewGuid().ToString("N"), method, @params = JsonDocument.Parse(parameters).RootElement });
@@ -514,7 +706,8 @@ public sealed class PluginSurfaceApiTests
                 var interaction = envelope.Snapshot.Deserialize<PluginRuntimeInteractionSnapshot>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
                 LastInteraction = interaction;
                 if (OnConfirmation is { } onConfirmation) { onConfirmation(); return; }
-                Assert.AreEqual("new", interaction.PendingConfirmation!.Preview.SampleRows[0]["values"].GetProperty("name").GetString());
+                if (interaction.PendingConfirmation!.Preview.SampleRows[0].TryGetValue("values", out var values))
+                    Assert.AreEqual("new", values.GetProperty("name").GetString());
                 if (Decision == "retire")
                 {
                     _generationCurrent = false;
@@ -524,7 +717,8 @@ public sealed class PluginSurfaceApiTests
                 }
                 else if (Decision == "installation-retire") Surfaces.CloseForInstallation(Surface.ProjectKey, Surface.PluginId);
                 else if (Decision == "cancel") Tasks.RequestCancel(_taskId!, out _, out _);
-                else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision), out _);
+                else Tasks.BeginInteractionResolve(new(interaction.RunId, interaction.PendingConfirmation.InteractionId, Decision), out _,
+                    fromNativeHost: Tasks.RequiresNativeConfirmation(interaction.RunId));
             }
         }
         public void PostResponse(string type, string? requestId, object? payload) { }
@@ -553,7 +747,9 @@ public sealed class PluginSurfaceApiTests
         internal bool Conflict { get; set; }
         internal bool Incomplete { get; set; }
         internal bool FailAuditStart { get; set; }
+        internal string? ContextError { get; set; }
         internal string? CommitErrorBody { get; set; }
+        internal string? CommitResultBody { get; set; }
         internal Action? OnCommit { get; set; }
         internal bool CommitObservedCancellation { get; private set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -576,6 +772,7 @@ public sealed class PluginSurfaceApiTests
                 if (await Task.WhenAny(hang, watchdog) == hang) CommitObservedCancellation = true;
                 token.ThrowIfCancellationRequested();
             }
+            if (method == "context.read" && ContextError is { } contextError) return new(HttpStatusCode.Forbidden) { Content = new StringContent(JsonSerializer.Serialize(new { code = contextError })) };
             if (method == "audit.start" && FailAuditStart) return new(HttpStatusCode.Conflict) { Content = new StringContent("""{"code":"plugin_audit_failed"}""") };
             if (method == "mutation.commit" && LoseCommit) throw new HttpRequestException("synthetic lost receipt");
             if (method == "mutation.commit" && CommitErrorBody is { } errorBody) return new(HttpStatusCode.Conflict) { Content = new StringContent(errorBody) };
@@ -585,9 +782,10 @@ public sealed class PluginSurfaceApiTests
             {
                 "data.query" => """{"items":[],"nextCursor":"go-cursor","dependencies":{}}""",
                 "mutation.preview" => """{"affectedCount":1}""",
-                "mutation.commit" => """{"contractVersion":"2.0","status":"applied","affectedRows":[{"recordId":"r1","operation":"update"}]}""",
+                "mutation.commit" => JsonSerializer.Serialize(new { contractVersion = "2.0", status = "applied", affectedRows = call.GetProperty("request").GetProperty("operations").EnumerateArray().Select(operation => new { recordId = "r1", operation = operation.GetProperty("kind").GetString() == "create" ? "insert" : operation.GetProperty("kind").GetString() }) }),
                 _ => "{}",
             };
+            if (method == "mutation.commit" && CommitResultBody is { } commitResult) result = commitResult;
             if (method == "mutation.commit" && Incomplete) result = """{"contractVersion":"2.0","status":"applied","affectedRows":[]}""";
             if (method == "mutation.commit" && ReplayCommit) result = result.Replace("applied", "replayed", StringComparison.Ordinal);
             return new(HttpStatusCode.OK) { Content = method == AfterReadMethod && AfterCommitRead is { } after

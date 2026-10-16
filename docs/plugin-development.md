@@ -48,24 +48,64 @@ const metadata = await api.data.describe({ accepts: ["vibetable.plugin-data.v2"]
 ```
 
 公开合同是 `contracts/plugin-surface-api.v1.json`。方法闭集为 `context.read`、`data.describe/query`、
-`storage.get/set/delete`、`mutation.preview/submit` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
+`data.subscribe/unsubscribe`、`storage.get/set/delete`、`mutation.preview/submit`、`output.print` 和请求取消。SDK 没有通用 RPC、SQL、进程或路径代理。
 查询复用 v2 原始值、computed freshness 和 canonical 字段；必须跟随 `nextCursor` 直到为空，
 中途失败不能报告完整结果。新增 `rowGuards` 是既有 Go opaque expectedDigest，不暴露隐藏字段。
-只有获准读取 `id` 时才返回 rowGuards，按 ID 更新也要求该授权。`context.read` 保留绑定的用户上下文；
+只有获准读取 `id` 时才返回 rowGuards，按 ID 更新或删除也要求该授权。`context.read` 保留绑定的用户上下文；
 选择 ID 受同一授权控制，查询快照只返回获准字段的 canonical 条件及 schema/data revision，
 隐藏条件或未授权关联目标使整份快照返回 null，不公开内部 cursor/snapshot/database 标识。
 
+`api.output.print(signal?)` 仅允许当前可见、激活的 `application` 页面请求原生打印预览；
+不另授读权限，输出是该页面已经获准读取并自行渲染的内容。Host 向 Go 重核当前安装、包、动作和
+工作区身份，可信父页只保留该 iframe 的打印路径；平台表格、导航、任务与确认页脚、消息、
+lookup/附件/字段/历史/记录抽屉及其它 portal 均排除。panel、headless、后台或旧 surface 不可打印。
+参数固定为空对象，不能提交 HTML、URL、路径、选择器、目标打印机或使用 dashboard 的输出桥。
+准备期间切换、退役或取消会拒绝开窗；预览期间离开应用会清空父页打印路径，直至浏览器结束打印态。
+回执严格为 `{ opened: true }`，只表示宿主已调用原生预览；没有打印完成、成功或取消回执，
+也不自动重试、回滚或直接发送到默认打印机。并发预览准备拒绝为 `plugin_print_denied`；
+原生开窗异常为 `plugin_print_failed`，此时预览状态未知，保留隔离打印态直到浏览器结束打印或页面重载。Host 固定探测当前 frame 的布局高度（最多 100,000 CSS px），
+超限返回 `plugin_print_limit`，不静默截断；插件自己的打印 CSS 及虚拟列表需自行提供适合打印的内容。跨页布局和预览快照时点以受控 WebView2 产品 QA 为准。
+受控 QA 48 必须观察真实 browser print preview 的 PDF 页数与首末行，原生取消后验证真实
+`afterprint` 清理并再次打印，再在真实预览打开期间导航，确认预览保持授权快照或为空。
+证据记录于 `48-plugin-print-preview.json` 与实际预览截图；运行时若不暴露可观测的预览目标，
+保存目标诊断并使场景失败，不能用 `emulateMedia` 或普通产品页截图替代。
+
 写入计划使用 `vibetable.surface-mutation-plan.v1`，包含 `collection`、`schemaRevision` 和
-`create/update` operations；更新必须带查询的 `expectedDigest`。`mutation.preview` 返回不可转移的
+`create/update/delete` operations；更新、删除必须带 `primaryKey` 和查询返回的 opaque `expectedDigest`，
+删除不接受 `values`（包括 null），且必须显式声明 `permissions.data.operations` 的 `delete`。
+每次计划仅覆盖一表的 1–1000 个操作，整批原子提交；任一非法操作、row guard 冲突或 restrict 引用
+均零业务写入，不支持跨表原子事务。关系字段编辑沿用 canonical 校验并要求目标表的读取 grant。
+`mutation.preview` 返回不可转移的
 `planId`，`mutation.submit(planId, signal?)` 只请求宿主确认，不能传入 `approved`。
 Host 展示真实操作样本和数量、绑定精确计划并单次消费；surface 的 actionId 和风险固定为实际
 customView 对应的声明动作。同 entry 的不同动作持有独立 surface token 和调用上下文；
 Go 独立核对当前 manifest 的 action/entry 绑定。read 页面不能请求写计划，
-write/destructive 风险原样进入任务、确认和持久审计。`requires.selection` 的 one-or-more/exactly-one
+write/destructive 声明风险进入任务和持久审计；任何含 delete 的计划都升级为 destructive 原生确认，
+write 动作也不能降低删除确认风险，renderer 不能批准。旧 Worker 的 MutationPlan 仍只接受 create/update。
+`requires.selection` 的 one-or-more/exactly-one
 在 Host describe 时校验，不满足时不改变已绑定上下文。Interface 的动作按钮目前仅支持 Worker 动作，
 3.x 页面动作不进入其选择器，已有绑定执行时明确提示需要独立插件页面。提交前及 MutationKernel 事务内重核安装
 revision/status、权限、包修订。拒绝/提交前取消零写入，冲突返回权威错误；丢失或不完整回执为
 `plugin_commit_unknown`，不得自动重放，迟到取消或工作区退役保留已读取并完整校验的 applied/replayed 回执成功；旧任务通知不投递到新会话。
+
+`data.subscribe({ collection }, listener, signal?)` 订阅一个 canonical 表，返回 `{subscriptionId}`；
+`data.unsubscribe(subscriptionId)` 立即移除本地回调并退订，AbortSignal 或 client.dispose 也会释放。
+每个 surface 最多 8 个，整个 Host API 最多 64 个；超限为 `plugin_subscription_limit`。表 ID 最长
+128 UTF-8 字节。必须有该表当前的 read/query grant；Go 在同一只读事务核对 installationId、revision、
+status、包修订及表存在，订阅时与每次通知前都重新授权，不能转移 handle。
+
+通知沿唯一 ProductRealtimeSession SSE 接线，仅发送获准表的失效信号；SDK 回调为
+`{type:"invalidated", collection, sequence}`，不包含记录 ID、字段、原始事件或隐藏表信息。
+sequence 是当前订阅的本地通知顺序，不是数据 revision；先完成 subscribe 再做初始 query，
+此后收到信号重新 query，不把信号当数据。
+繁忙时同一订阅只保留一个待发失效，Host 单工作者依次处理有界集合，不阻塞平台 SSE。
+恢复连接会使当前获准表失效以便重查。权限变化/流终止/授权检查失败会结束订阅，回调
+`{type:"closed", code}`（如 plugin_read_denied、plugin_cursor_stale、plugin_subscription_failed）；
+frame 投递失败则退役该 surface，不自动重建或重试订阅。重新订阅应由仍有效的当前页面发起。
+当前 SSE 已终止时，新的订阅会以 `plugin_subscription_failed` 拒绝；须关闭并重新打开工作区，
+或等待真实的新 renderer/generation 绑定建立实时流后再申请，普通迟到事件不会重新开启准入。
+最后的 frame post 在实际 UI 回调内核对 renderer、SSE session/generation、当前 surface 与订阅存活；
+关闭、切换工作区、禁用/升级、退订后的迟到通知不能投递，SDK 丢弃重复/乱序通知并阻止已结束 handle 复活。
 
 Host 在真实 frame 创建时捕获可信 iframe name/token，验证 WebMessage 的实际 source 文档，
 并绑定安装、workspace UUID/sessionEpoch 和授权上下文。插件 payload 的 `pluginId/projectKey/scope`
@@ -375,3 +415,128 @@ Go 真实生产者 conformance fixture 在 `tests/contract/fixtures/plugin-capab
 应用验收的系统高对比切换只在显式 `GITHUB_ACTIONS=true` 且 `CI=true` 的受控 Windows runner 中进行，
 QA 父进程先保存原 flags/方案、按闭集操作切换，并在正常结束、失败和 driver 异常退出的 `finally` 恢复；
 恢复失败使验收失败。本机不修改系统设置。内容 scale 与实际窗口 DPI 分别记录，不把内容缩放称为物理 DPI 变更。
+
+
+### Plugin API 3.x 原生文件、附件和数据 IO
+
+`createSurfaceClient(surfaceToken)` 的 `file` 接口复用 SDK 的 `ReadGrant` / `WriteGrant`。
+`permissions.files` 必须显式声明 `pickRead` / `pickWrite`。选择与覆盖提示由原生 Host 完成，
+取消返回 `null`。插件只收到 grantId、显示文件名与媒体类型，不收到路径。
+每个 surface 最多持有 8 个文件 grant（普通文件与 IO 来源/目标共享），生命周期 5 分钟；普通文件最多 1 MiB，按
+256 KiB 分块传输。`read()` / `write()` 一次消费，结束或 `dispose()` 释放。
+`mediaTypes` 是调用方的类型提示，授权仍以用户在原生文件选择器中的实际选择为准。
+
+```ts
+const source = await api.file.pickRead({ mediaTypes: ["text/plain"] });
+if (source) consume(await source.read());
+const target = await api.file.pickWrite({ suggestedName: "result.txt", mediaType: "text/plain" });
+if (target) await target.write(new TextEncoder().encode("result"));
+```
+
+附件通过 `attachments.list({ collection, recordId, fieldId })` 返回本 surface 的 opaque
+`attachmentId`、文件名、类型和大小，最多缓存 64 个引用；重复列表复用引用。
+`attachments.read(attachmentId)` 按块重查 Go 当前安装与字段授权，最多读取 1 MiB。
+引用不包含 storedName、内部 stage handle、download capability 或路径，也不支持 iframe 下载。
+关联/替换/移除先调用 `attachments.previewChange({ collection, recordId, fieldId, expectedDigest,
+addFile, removeAttachmentIds })`，其中 addFile 触发原生选择；取消返回 null。
+返回的 planId 交给 `mutation.submit`，由原生确认批准精确计划。Go 将 stage 绑定原安装、
+surface、记录、字段及 Host 文件 run，并在 canonical `setAttachments` 事务中重查授权、
+row guard、MIME/大小/数量策略。拒绝、过期和退役会丢弃未用 stage。
+
+导入/导出使用已有 `HostDataIoTaskRegistry`，SDK 只获得本 surface 的任务句柄。
+`task.status()` 读取进度/终态，`task.result(signal, onProgress)` 等待结果并报告进度；
+`task.cancel()` 请求取消：先等待 Host 取消回执，再轮询到稳定终态并释放任务句柄后才 resolve。
+resolve 不保证 worker 真被取消（可能早已 succeeded/failed）；取消回执本身不是终态。
+跟踪失败会显式 reject，并在 surface 存活时保持任务占用，后续显式
+`task.cancel()`/`task.status()`/`task.result()` 可恢复释放。关闭且未收到终态时，
+重复 `task.cancel()` 仍 reject；已缓存终态的取消等待仍 resolve。
+`result(signal, onProgress)` 收到取消回执后继续自己的轮询和进度通知，直到权威终态。
+没有列出、广播或取消其它 surface/平台任务的入口。
+普通请求与获准 IO 任务的取消回执各有 8 个槽，重复取消合并；SDK 对已知终态不再发送取消，
+Host 拒绝外来 taskId。
+导入源与导出目标由对应方法自行请求原生选择，不接受插件提供的路径或平台 grant。
+
+```ts
+const task = await api.data.previewImport({
+  collection, schemaRevision, mode: "create_only",
+  columnMapping: [{ sourceColumn: "名称", targetField: fieldId }],
+});
+if (task) {
+  const preview = await task.result(signal, showProgress);
+  if (preview.planId) await api.mutation.submit(preview.planId, signal);
+}
+const output = await api.data.export({ collection, fields: [fieldId],
+  query: { filters: [], sorts: [] }, format: "xlsx", suggestedName: "result.xlsx" });
+if (output) await output.result(signal, showProgress);
+```
+
+导入复用 Python `ImportService.preview` 和 Go import plan owner；Go 在事务中授权表、字段、
+操作及 canonical 关系目标。upsert 仅接受获准唯一键，并在确认前固定 create/update、目标 ID、
+规范化 values 与既有 row guard，提交时不重新匹配。最多单表 1000 行、768 KiB 导入计划；
+跨表写入不受支持。预览返回完整 summary 与最多 20 行/128 KiB 样本；有错误时 planId 为 null。
+预览不会按普通文件 EOF 规则消耗导入源。提交继续使用 `HostPluginTaskRegistry` 的原生精确确认。
+显式关系映射复用已有 resolver，但目标表及匹配字段必须获得当前授权。
+
+导出复用 `ExportService` 的 CSV/XLSX formatter，字段必须显式列举；隐藏 id 不自动加入，
+关系默认只输出原始 ID，不提供关系 display label 或附件 ZIP 导出。
+每一页以及原生最终保存前都复核当前安装/修订与表字段 grant，schema/data/clock 快照变化失败。
+插件数据 IO 新增独立的 32 MiB 来源/输出预算，区别于普通文件的 1 MiB；XLSX 来源另限
+128 MiB 展开内容及 4096 个 ZIP entry。格式化 spool 和最终 broker 均实施字节上限。
+每 surface 最多 8 个 IO 任务、8 个导入计划，Go 全局最多 128 个插件导入计划与 128 个 stage。
+这些是本插件入口的预算，不能推导为平台所有导出路径的既有保证。
+
+grant 绑定 surface token、installationId/revision/package、workspace epoch、Host run 和用途。
+关闭、禁用、安装替换、取消及 dispose 回收本 scope 的资源；旧 handle 不能转交新页面。
+Go 撤权与 OS 文件替换不是跨系统原子事务：Go 授权后，最终替换仍必须经过 broker 的同步
+workspace/generation/surface 门禁。已验证保存成功保持成功；缺少回执或输出任务异常保留
+`plugin_commit_unknown` / unknown，不自动重放。清理/取消有界等待，无法确认停止时保留未知，
+Go 临时计划仍受固定 TTL 与容量限制。常用拒绝码还有 `plugin_file_denied`、`plugin_file_limit`、
+`plugin_read_denied`、`plugin_write_denied`、`plugin_plan_limit`、`plugin_plan_stale`、
+`plugin_cursor_stale` 和 canonical mutation 冲突码。
+
+新增 DataIO principal 只存在于 Host-only 任务组合和现有鉴权 surface HTTP 端口；没有新增
+Product RPC 或旧 Worker 能力。API 1.x/2.x 的 grant、任务与读取行为继续使用原契约。
+
+内部 Host-only `attachment.stage` 的完整 JSON/base64 编码请求上限为 2 MiB，解码后的附件仍限 1 MiB；
+普通 frame 与其它 surface HTTP 请求保持 1 MiB。此编码预算不授予插件更大普通消息能力。
+导出仅按 Go 授权 profile 的 `dataType=formula/lookup` 解包计算结果，且要求 ready/fresh；
+普通 JSON 字段即使恰含 state/value/fresh 三键，也完整序列化原值。
+
+### 无 Worker 页面的 UI 公共服务
+
+`createSurfaceClient(token)` 同时使用当前 frame 的原生数据通道和可信父页
+`https://app.vibetable.local` 的展示通道。父页严格核对 origin、source 和当前 surfaceToken；
+UI 消息不会转成 Worker action 或通用 Product RPC。`client.ui.capabilities()` 返回当前闭集方法
+及明确不支持列表。
+
+- `context.read()` 先读取 Go 授权的项目、表、选择等数据上下文，再叠加父页此刻的 theme/locale/density。
+  `context.current()` 只读取当前展示快照（mode、locale、density、CSS variables），
+  `context.onChanged(listener)` 监听此展示快照并返回取消监听函数。这些展示值不是权限或身份。
+- `tasks.list()` / `tasks.onChanged(listener)` 只提供当前 surface 创建的既有 Host 任务，含真实进度、
+  成功摘要与安全错误；未知总量为 `null`。不暴露 input、原生批准预览、隐藏记录或其它插件任务。
+  任务记录按 revision 去重并保持成功/失败/取消/aborted 终态粘滞，最多保留256条；
+  超限保留活跃任务，并按本地受理顺序回收旧终态（不是按创建顺序裁掉刚结束的旧任务）。
+  每条出站 `taskChanged`/`tasksChanged` 都使用同一精简投影；旧事件名不再携带父页确认或原始结果DTO。`aborted + plugin_commit_unknown` 表示结果未知，应核对实际数据，禁止自动重放。
+- `tasks.cancel(taskId)` 仅请求取消当前 surface 拥有且可取消的任务。返回的 `cancelRequested` 只表示
+  请求进入已有 Host 控制流程，仍须通过任务投影等待权威终态；不表示写入已取消或回滚。
+  此通道没有任务创建、批准或插件自报进度接口。文件/导入导出等其它平台任务由对应受控能力返回，
+  本列表不会把任意 DataIO/Worker taskId 当作当前页面的任务。
+- `ui.notifications.show(text)` 在父页展示“插件 · 当前入口标题”归属的纯文本消息，不能插入HTML、
+  自定义来源、按钮或安全批准UI；每条最多500字符、每surface生命周期最多8条、可见最多3条。
+- `ui.navigation.back()` 请求返回平台，复用当前页面 token 核验和既有草稿离开守卫。
+  用户拒绝丢弃草稿时返回 `{navigated:false}`。关闭页面不表示在途写入已取消，回执仍由Host保存。
+  首版明确不支持表/记录/任意URL导航、任务创建和批准；这些不是空实现，也不会回退到内部RPC。
+
+展示通道另有最多8个在途请求、20秒响应截止；失败不会自动重试或重放。`dispose()` 释放监听和待回复，
+旧surface/工作区退役后消息不能进入新页面。
+
+```ts
+const client = createSurfaceClient(window.name);
+const stopTheme = client.context.onChanged(theme => renderTheme(theme));
+const stopTasks = client.tasks.onChanged(tasks => renderHostReceipts(tasks));
+const context = await client.context.read(); // 权威数据范围 + 当前展示偏好
+await client.ui.notifications.show("操作请求已发送，最终结果请见宿主任务记录。");
+// 用户操作时：await client.tasks.cancel(ownedTaskId);
+// 用户请求离开时：await client.ui.navigation.back();
+// 卸载时：stopTheme(); stopTasks(); client.dispose();
+```
