@@ -238,8 +238,16 @@ internal sealed partial class PluginSurfaceApi
         var safe = JsonNode.Parse(status.GetRawText())!.AsObject();
         // Worker errors may contain internal plan/grant details; expose only a stable status code.
         if (safe["error"] is not null) safe["error"] = JsonSerializer.SerializeToNode(new { code = "plugin_data_io_failed", message = "插件数据任务未完成，请核对任务。" });
-        if (safe["kind"]?.GetValue<string>() == "data.export" && safe["state"]?.GetValue<string>() is "failed" or "aborted")
+        // A failed/aborted export stays "unknown" unless the worker attached its
+        // positive not-committed receipt (the failure provably preceded the native
+        // finishWrite(commit:true) submission). A missing receipt must never default
+        // to not-committed; the internal receipt itself never crosses to plugins.
+        string? receipt = (safe["commitReceipt"] as JsonValue)?.GetValue<string>();
+        safe.Remove("commitReceipt");
+        if (safe["kind"]?.GetValue<string>() == "data.export" && safe["state"]?.GetValue<string>() is "failed" or "aborted"
+            && receipt != "not_committed")
             safe["outcome"] = "unknown";
+        else safe.Remove("outcome");
         return JsonSerializer.SerializeToElement(safe);
     }
     private static JsonElement FailedIoTerminal(IoTask task, JsonElement status, Exception error, int pendingPlans)

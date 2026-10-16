@@ -455,6 +455,34 @@ public sealed class JsonRpcProductDataGatewayTests
     }
 
     [TestMethod]
+    public async Task ExportNotCommittedReceiptSurvivesTheReportSnapshotRoundTrip()
+    {
+        await using var client = new JsonRpcClient(new AutoRespondTransport());
+        using var tasks = new HostDataIoTaskRegistry();
+        var identity = new ProductSidecarIdentity(Guid.NewGuid().ToString("D"), 1, 1,
+            Guid.NewGuid().ToString("D"));
+        tasks.BindClient(client, identity);
+        string id = tasks.Admit(client, identity, "data.export").TaskId;
+        // The worker terminal carries the positive not-committed receipt in its
+        // camelCase wire form; the registry must keep it through the deserialize →
+        // re-serialize snapshot that the plugin surface's SafeIoStatus consumes.
+        tasks.ApplyReport(client, JsonSerializer.SerializeToElement(new
+        {
+            taskId = id, kind = "data.export", state = "failed",
+            progress = new { done = 0, total = 0, message = "" },
+            result = (object?)null,
+            error = "query includes computed cells waiting for recalculation",
+            commitReceipt = "not_committed",
+        }));
+        JsonElement snapshot = tasks.Status(id);
+        Assert.AreEqual("failed", snapshot.GetProperty("state").GetString());
+        Assert.AreEqual("not_committed", snapshot.GetProperty("commitReceipt").GetString(),
+            "the receipt must survive the registry snapshot for the surface classification");
+        Task<TaskStatus> terminal = tasks.WaitForTerminalAsync(id, CancellationToken.None);
+        Assert.AreEqual("not_committed", terminal.Result.CommitReceipt);
+    }
+
+    [TestMethod]
     public async Task CapturedTerminalSurvivesPruningAndDisposedOwnerRejectsLateReports()
     {
         await using var client = new JsonRpcClient(new AutoRespondTransport());

@@ -7,6 +7,7 @@ import copy
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from backend.application.host_files import enter_native_write_phase
 from backend.contracts.task import TaskProgress, TaskState, TaskStatus
 
 #: The handler signature: receives the task id, a progress reporter and a
@@ -115,21 +116,46 @@ class HostExecutionRuntime:
                 await self._sink(status)
 
             reporter = ProgressReporter(task_id, kind, emit)
+            phase = None
             try:
                 await emit(TaskStatus(task_id=task_id, kind=kind, state="running"))
+                if kind == "data.export":
+                    # The export's native commit capability is exclusively
+                    # HostFiles.write; establishing its write phase up front lets
+                    # the terminal receipt rest on the submission boundary itself.
+                    phase = enter_native_write_phase()
                 result = await handler(task_id, reporter, token, copied)
                 final = TaskStatus(
                     task_id=task_id, kind=kind, state="succeeded", progress=progress, result=result
                 )
             except asyncio.CancelledError:
-                final = TaskStatus(task_id=task_id, kind=kind, state="cancelled", progress=progress)
+                # The same positive write phase drives terminal classification:
+                # a cancellation landing after the native commit was submitted
+                # cannot claim a clean "cancelled" (the SDK would read a definite
+                # cancel over a possibly committed file). It stays failed — the
+                # unknown boundary — while an unsubmitted cancel stays cancelled.
+                submitted = phase is not None and phase.submitted
+                final = TaskStatus(
+                    task_id=task_id,
+                    kind=kind,
+                    state="failed" if submitted else "cancelled",
+                    progress=progress,
+                    error=(
+                        "Export submission outcome is unknown; verify the target file."
+                        if submitted
+                        else None
+                    ),
+                )
             except Exception as exc:
                 outcome_unknown = getattr(exc, "code", None) in {
                     "import_outcome_unknown",
                     "export_outcome_unknown",
                 }
+                submitted = phase is not None and phase.submitted
                 state: TaskState = (
-                    "cancelled" if token.cancelled and not outcome_unknown else "failed"
+                    "cancelled"
+                    if token.cancelled and not outcome_unknown and not submitted
+                    else "failed"
                 )
                 final = TaskStatus(
                     task_id=task_id,
@@ -137,6 +163,21 @@ class HostExecutionRuntime:
                     state=state,
                     progress=progress,
                     error=(None if state == "cancelled" else str(exc) or exc.__class__.__name__),
+                    # Positive proof only: the export task established its write
+                    # phase and the failure provably preceded the native
+                    # finishWrite(commit=True) submission (authorization, result
+                    # validation, byte budget, or the commit=False abort path).
+                    # Once a commit was submitted — lost receipt, or any later
+                    # unrecognized failure — the receipt stays absent, i.e. the
+                    # outcome remains unknown. No exception-code complement.
+                    commit_receipt=(
+                        "not_committed"
+                        if kind == "data.export"
+                        and state == "failed"
+                        and phase is not None
+                        and not phase.submitted
+                        else None
+                    ),
                 )
             try:
                 await self._sink(final)

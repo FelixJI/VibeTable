@@ -195,14 +195,20 @@ class ExportService:
                 raise asyncio.CancelledError
             if progress:
                 await progress(rows_written, 0, f"写出 {fmt.upper()}：{rows_written} 行")
-        return ExportResult(
-            collection=params.collection,
-            format=fmt,
-            rows_written=rows_written,
-            schema_revision=profile.capability_hash,
-            capability_hash=profile.capability_hash,
-            output_display_name=target.display_name,
-        )
+            # Construct and validate the typed result before the native commit: a
+            # result-shape failure (for example a schema revision that satisfies
+            # CollectionProfile but exceeds the frozen ExportResult limit) must
+            # abort on the finishWrite(commit=False) path and never replace the
+            # target file first, so the not-committed receipt stays honest.
+            result = ExportResult(
+                collection=params.collection,
+                format=fmt,
+                rows_written=rows_written,
+                schema_revision=profile.capability_hash,
+                capability_hash=profile.capability_hash,
+                output_display_name=target.display_name,
+            )
+        return result
 
     async def generate_template(
         self,

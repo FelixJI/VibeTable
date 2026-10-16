@@ -28940,6 +28940,18 @@
               }
             ],
             "default": null
+          },
+          "commitReceipt": {
+            "anyOf": [
+              {
+                "const": "not_committed",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -28970,7 +28982,8 @@
             "message": ""
           },
           "result": null,
-          "error": null
+          "error": null,
+          "commitReceipt": null
         }
       },
       "error": {
@@ -29089,6 +29102,18 @@
               }
             ],
             "default": null
+          },
+          "commitReceipt": {
+            "anyOf": [
+              {
+                "const": "not_committed",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -29120,7 +29145,8 @@
             "message": ""
           },
           "result": null,
-          "error": null
+          "error": null,
+          "commitReceipt": null
         }
       },
       "error": {
@@ -29305,6 +29331,18 @@
               }
             ],
             "default": null
+          },
+          "commitReceipt": {
+            "anyOf": [
+              {
+                "const": "not_committed",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -29335,7 +29373,8 @@
             "message": ""
           },
           "result": null,
-          "error": null
+          "error": null,
+          "commitReceipt": null
         }
       },
       "error": {

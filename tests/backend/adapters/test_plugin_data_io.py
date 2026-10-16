@@ -134,6 +134,69 @@ async def test_scoped_export_reuses_real_task_and_formatter_without_hidden_id(tm
     assert "must-not-export" not in str(rows)
 
 
+async def test_result_shape_drift_aborts_before_commit_and_reports_not_committed(tmp_path):
+    """A result-contract drift must abort the export before the native commit.
+
+    CollectionProfile accepts a schema revision longer than the frozen
+    ExportResult limit. Constructing the typed result before the commit turns
+    that drift into a definite pre-commit failure — finishWrite(commit=False),
+    target untouched, positive not-committed receipt — instead of a committed
+    file mislabeled as not committed.
+    """
+    import asyncio
+
+    peer = LocalFilePeer()
+    path = tmp_path / "drift.csv"
+    grant = peer.grants.issue(purpose="export_target", direction="write", path=str(path))
+    peer.runs[grant.grant_id] = "host-run"
+    original = peer.call
+    calls = []
+
+    async def call(action, params):
+        calls.append((action, params))
+        return await original(action, params)
+
+    reports = []
+
+    async def sink(value):
+        reports.append(value)
+
+    class LongRevisionClient(ScopedClient):
+        async def plugin_surface(self, principal, method, request, **kwargs):
+            result = await super().plugin_surface(principal, method, request, **kwargs)
+            if method == "data.ioProfile":
+                result["schema_revision"] = "r" * 129
+            return result
+
+    runtime = HostExecutionRuntime(notification_sink=sink)
+    tasks = TaskService(runtime, HostFiles(call))
+    ProductDataIoRuntime(client=LongRevisionClient(), task_service=tasks).register_tasks()
+    await tasks.start_execution(
+        StartTaskExecutionParams(
+            task_id="owned-task",
+            kind="data.export",
+            params={
+                "grantId": grant.grant_id,
+                "collection": "orders",
+                "format": "csv",
+                "pluginScope": scope(),
+            },
+        )
+    )
+    for _ in range(200):
+        if reports and reports[-1].state in {"succeeded", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+    terminal = reports[-1]
+    assert terminal.state == "failed", terminal.error
+    assert terminal.commit_receipt == "not_committed"
+    assert not path.exists(), "the drift must abort before the target file is replaced"
+    assert [
+        params for action, params in calls if action == "finishWrite" and params["commit"] is True
+    ] == []
+    assert any(action == "finishWrite" and params["commit"] is False for action, params in calls)
+
+
 async def test_scoped_import_uses_preview_and_go_plan_owner_without_platform_apply(tmp_path):
     from backend.adapters.pocketbase.plugin_data_io import preview_plugin_import
 

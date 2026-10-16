@@ -29,7 +29,13 @@ public sealed record TaskStatus(
     string State,
     TaskProgress Progress,
     object? Result,
-    string? Error);
+    string? Error,
+    /// <summary>
+    /// Positive worker receipt that the task provably ended before its native
+    /// commit was ever submitted. Null never means "not committed"; consumers
+    /// must keep treating a missing receipt as unknown.
+    /// </summary>
+    string? CommitReceipt = null);
 
 public sealed record CreateTaskParams(string Kind, IReadOnlyDictionary<string, object?> Params);
 

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using VibeTable.Contracts;
 using VibeTable.Desktop.Services;
 using VibeTable.Infrastructure.PocketBase;
@@ -137,6 +138,98 @@ public sealed class PluginSurfaceFilesTests
         Assert.IsTrue(f.NativeConfirmation); Assert.IsTrue(f.Http.Calls.Any(value => value.GetProperty("method").GetString() == "import.bind"));
         await f.Call("data.io.cancel", JsonSerializer.Serialize(new { taskId }));
         Assert.AreEqual("succeeded", (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }))).GetProperty("result").GetProperty("state").GetString());
+    }
+
+    [TestMethod]
+    public async Task PrecommitExportFailureSurfacesDefiniteFailureWithoutUnknownOutcome()
+    {
+        await using var f = new Fixture();
+        f.ExportStatus = JsonSerializer.SerializeToElement(new
+        {
+            kind = "data.export", state = "failed",
+            progress = new { done = 0, total = 0, message = "" },
+            result = (object?)null,
+            error = "query includes computed cells waiting for recalculation",
+            commitReceipt = "not_committed",
+        });
+        string taskId = (await f.Call("data.export.start",
+            "{\"collection\":\"orders\",\"fields\":[\"title\"],\"query\":{},\"format\":\"csv\",\"suggestedName\":\"out.csv\"}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var failed = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        var terminal = failed.GetProperty("result");
+        Assert.AreEqual("failed", terminal.GetProperty("state").GetString(), failed.GetRawText());
+        Assert.AreEqual("plugin_data_io_failed", terminal.GetProperty("error").GetProperty("code").GetString());
+        // The worker's positive not-committed receipt turns this into a definite
+        // failure; the SDK then classifies via the stable error code instead of
+        // forcing plugin_commit_unknown over a provably uncommitted export.
+        Assert.IsFalse(terminal.TryGetProperty("outcome", out _), "a positively not-committed export failure must not claim an unknown commit outcome");
+        Assert.IsFalse(failed.GetRawText().Contains("commitReceipt", StringComparison.Ordinal), "the internal receipt never crosses to plugins");
+    }
+
+    [TestMethod]
+    public async Task LostCommitReceiptExportFailureKeepsUnknownOutcome()
+    {
+        await using var f = new Fixture();
+        f.ExportStatus = JsonSerializer.SerializeToElement(new
+        {
+            kind = "data.export", state = "failed",
+            progress = new { done = 1, total = 1, message = "" },
+            result = (object?)null,
+            error = "Export submission outcome is unknown; verify the target file.",
+        });
+        string taskId = (await f.Call("data.export.start",
+            "{\"collection\":\"orders\",\"fields\":[\"title\"],\"query\":{},\"format\":\"csv\",\"suggestedName\":\"out.csv\"}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var failed = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        var terminal = failed.GetProperty("result");
+        Assert.AreEqual("failed", terminal.GetProperty("state").GetString(), failed.GetRawText());
+        // A missing receipt must stay fail-closed: the export entered its native
+        // commit and lost the receipt, so only the unknown outcome is honest.
+        Assert.AreEqual("unknown", terminal.GetProperty("outcome").GetString());
+    }
+
+    [TestMethod]
+    public async Task AbortedExportStaysUnknownAndCancelledKeepsItsOwnOutcome()
+    {
+        await using var f = new Fixture();
+        f.ExportStatus = JsonSerializer.SerializeToElement(new
+        {
+            kind = "data.export", state = "aborted",
+            progress = new { done = 0, total = 0, message = "" }, result = (object?)null,
+            error = "数据执行通道已中断；业务提交结果待核实。",
+        });
+        string abortedTask = (await f.Call("data.export.start",
+            "{\"collection\":\"orders\",\"fields\":[\"title\"],\"query\":{},\"format\":\"csv\",\"suggestedName\":\"aborted.csv\"}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var aborted = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId = abortedTask }))).GetProperty("result");
+        Assert.AreEqual("aborted", aborted.GetProperty("state").GetString());
+        Assert.AreEqual("unknown", aborted.GetProperty("outcome").GetString());
+        f.ExportStatus = JsonSerializer.SerializeToElement(new
+        {
+            kind = "data.export", state = "cancelled",
+            progress = new { done = 1, total = 1, message = "" }, result = (object?)null, error = (string?)null,
+        });
+        string cancelledTask = (await f.Call("data.export.start",
+            "{\"collection\":\"orders\",\"fields\":[\"title\"],\"query\":{},\"format\":\"csv\",\"suggestedName\":\"cancelled.csv\"}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var cancelled = (await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId = cancelledTask }))).GetProperty("result");
+        Assert.AreEqual("cancelled", cancelled.GetProperty("state").GetString());
+        Assert.IsFalse(cancelled.TryGetProperty("outcome", out _), "a cooperatively cancelled export is its own outcome, never an unknown commit");
+    }
+
+    [TestMethod]
+    public async Task SucceededExportResultPassesThroughWithoutOutcome()
+    {
+        await using var f = new Fixture();
+        string taskId = (await f.Call("data.export.start",
+            "{\"collection\":\"orders\",\"fields\":[\"title\"],\"query\":{},\"format\":\"csv\",\"suggestedName\":\"ok.csv\"}"))
+            .GetProperty("result").GetProperty("taskId").GetString()!;
+        var done = await f.Call("data.io.status", JsonSerializer.Serialize(new { taskId }));
+        var terminal = done.GetProperty("result");
+        Assert.AreEqual("succeeded", terminal.GetProperty("state").GetString(), done.GetRawText());
+        Assert.AreEqual(1, terminal.GetProperty("result").GetProperty("rowsWritten").GetInt32());
+        Assert.IsFalse(terminal.TryGetProperty("outcome", out _));
+        Assert.IsFalse(done.GetRawText().Contains("commitReceipt", StringComparison.Ordinal));
     }
 
     [TestMethod]
@@ -950,6 +1043,7 @@ public sealed class PluginSurfaceFilesTests
         internal bool IoPreviewErrors;
         internal int IoCancels;
         internal TaskCompletionSource? IoCancelHold;
+        internal JsonElement? ExportStatus;
         internal bool FailTaskNotifications;
         internal bool FailNextTaskNotification;
         internal string? LastTaskId;
@@ -982,6 +1076,28 @@ public sealed class PluginSurfaceFilesTests
         {
             string grantId = parameters.GetProperty("grantId").GetString()!; string runId = parameters.GetProperty("pluginScope").GetProperty("runId").GetString()!;
             IoGrant = grantId; IoRun = runId;
+            if (kind == "data.export")
+            {
+                // The fake port owns the terminal the tests need to observe; a
+                // template without a taskId gets a fresh host identity stamped.
+                var template = ExportStatus is { } custom
+                    ? JsonNode.Parse(custom.GetRawText())!.AsObject()
+                    : new JsonObject
+                    {
+                        ["kind"] = kind,
+                        ["state"] = IoRunning ? "running" : "succeeded",
+                        ["progress"] = JsonSerializer.SerializeToNode(new { done = 1, total = 1, message = "written" }),
+                        ["result"] = JsonSerializer.SerializeToNode(new
+                        {
+                            collection = "orders", format = "csv", rowsWritten = 1,
+                            schemaRevision = "schema_1", capabilityHash = "schema_1", outputDisplayName = "out.txt"
+                        }),
+                        ["error"] = null,
+                    };
+                template["taskId"] = "owned-task-" + Interlocked.Increment(ref IoStarts);
+                _status = JsonSerializer.SerializeToElement(template);
+                return _status;
+            }
             var opened = await Broker.HandleAsync("openRead", JsonSerializer.SerializeToElement(new { grantId, runId }), token);
             string transferId = opened.GetProperty("transferId").GetString()!;
             for (; ; ) { var block = await Broker.HandleAsync("read", JsonSerializer.SerializeToElement(new { transferId, maxBytes = 262144 }), token); if (block.GetProperty("eof").GetBoolean()) break; }
