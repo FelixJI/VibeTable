@@ -1,0 +1,55 @@
+{
+  "contract": "vibetable.plugin-surface-outcomes.v1",
+  "cases": [
+    {
+      "scenario": "approved",
+      "status": "succeeded",
+      "commits": 1
+    },
+    {
+      "scenario": "rejected",
+      "status": "rejected",
+      "commits": 0
+    },
+    {
+      "scenario": "cancel-before-approval",
+      "code": "plugin_cancel_requested",
+      "commits": 0
+    },
+    {
+      "scenario": "conflict",
+      "code": "mutation.digest_conflict",
+      "commits": 1
+    },
+    {
+      "scenario": "lost-receipt",
+      "code": "plugin_commit_unknown",
+      "commits": 1
+    },
+    {
+      "scenario": "incomplete-receipt",
+      "code": "plugin_commit_unknown",
+      "commits": 1
+    },
+    {
+      "scenario": "read-only",
+      "code": "plugin_write_denied",
+      "commits": 0
+    },
+    {
+      "scenario": "unsupported-protocol",
+      "code": "plugin_api_unsupported",
+      "commits": 0
+    }
+  ],
+  "idGrantCases": [
+    {
+      "operation": "update",
+      "code": "plugin_write_denied"
+    },
+    {
+      "operation": "delete",
+      "code": "plugin_write_denied"
+    }
+  ]
+}

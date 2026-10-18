@@ -11,6 +11,142 @@ namespace VibeTable.Desktop.Tests;
 public sealed class PluginSurfaceApiTests
 {
     [TestMethod]
+    public async Task CursorReleaseIsScopedIdempotentAndDoesNotCallAuthority()
+    {
+        using var fixture = new Fixture();
+        const string query = "{\"collection\":\"orders\"}";
+        string cursor = (await fixture.Call("data.query", query)).GetProperty("result").GetProperty("nextCursor").GetString()!;
+        var foreign = fixture.Surfaces.Open(fixture.Context.ProjectKey, "com.example.foreign", PluginPackageRevision.Create("C:/plugins/foreign", new string('b', 64)), "ui/index.html");
+        fixture.Surfaces.BindIdentity(foreign.SurfaceToken, fixture.Context, 1, "3.x", installationId: "foreign-install");
+        int calls = fixture.Http.Calls.Count;
+        string foreignReply = await fixture.Api.HandleAsync(foreign.SurfaceToken, foreign.DocumentUri.AbsoluteUri,
+            fixture.Wire("data.releaseCursor", JsonSerializer.Serialize(new { cursor }), token: foreign.SurfaceToken));
+        Assert.IsTrue(JsonDocument.Parse(foreignReply).RootElement.GetProperty("result").GetProperty("released").GetBoolean());
+        Assert.AreEqual(calls, fixture.Http.Calls.Count);
+        var continued = await fixture.Call("data.query", JsonSerializer.Serialize(new { collection = "orders", cursor }));
+        Assert.IsFalse(continued.TryGetProperty("error", out _), "foreign release must not remove the owner's handle");
+        string next = continued.GetProperty("result").GetProperty("nextCursor").GetString()!;
+        calls = fixture.Http.Calls.Count;
+        foreach (string handle in new[] { next, next, "unknown" })
+            Assert.IsTrue((await fixture.Call("data.releaseCursor", JsonSerializer.Serialize(new { cursor = handle }))).GetProperty("result").GetProperty("released").GetBoolean());
+        Assert.AreEqual(calls, fixture.Http.Calls.Count);
+        Assert.AreEqual("plugin_capability_invalid", Code(await fixture.Call("data.releaseCursor", "{\"cursor\":\"x\",\"collection\":\"orders\"}")));
+        fixture.Surfaces.Close(fixture.Surface.SurfaceToken);
+        Assert.AreEqual("plugin_source_denied", Code(await fixture.Call("data.releaseCursor", JsonSerializer.Serialize(new { cursor = next }))));
+    }
+
+    [TestMethod]
+    public async Task CursorCapacityStays64DuringConcurrentQueriesAndReleaseBypassesFullNormalSlots()
+    {
+        using var fixture = new Fixture();
+        var handles = new List<string>();
+        for (int i = 0; i < 64; i++) handles.Add((await fixture.Call("data.query", "{\"collection\":\"orders\"}")).GetProperty("result").GetProperty("nextCursor").GetString()!);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int pending = 0;
+        fixture.Http.OnQuery = token => { if (Interlocked.Increment(ref pending) == 8) entered.TrySetResult(); return resume.Task.WaitAsync(token); };
+        var queries = Enumerable.Range(0, 8).Select(_ => fixture.Call("data.query", "{\"collection\":\"orders\"}")).ToArray();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        int authorityCalls = fixture.Http.Calls.Count;
+        try
+        {
+            Assert.AreEqual("plugin_concurrency_limit", Code(await fixture.Call("data.query", "{\"collection\":\"orders\"}")));
+            for (int i = 0; i < 4; i++)
+                Assert.IsTrue((await fixture.Call("data.releaseCursor", JsonSerializer.Serialize(new { cursor = handles[i] }))).GetProperty("result").GetProperty("released").GetBoolean());
+            Assert.AreEqual(authorityCalls, fixture.Http.Calls.Count);
+        }
+        finally { resume.TrySetResult(); }
+        JsonElement[] results = await Task.WhenAll(queries);
+        Assert.AreEqual(4, results.Count(result => !result.TryGetProperty("error", out _)));
+        Assert.AreEqual(4, results.Count(result => result.TryGetProperty("error", out var error) && error.GetProperty("code").GetString() == "plugin_query_limit"));
+        fixture.Http.OnQuery = null;
+        Assert.AreEqual("plugin_query_limit", Code(await fixture.Call("data.query", "{\"collection\":\"orders\"}")));
+        foreach (var result in results.Where(result => !result.TryGetProperty("error", out _))) handles.Add(result.GetProperty("result").GetProperty("nextCursor").GetString()!);
+        foreach (string cursor in handles) await fixture.Call("data.releaseCursor", JsonSerializer.Serialize(new { cursor }));
+        Assert.IsFalse((await fixture.Call("data.query", "{\"collection\":\"orders\"}")).TryGetProperty("error", out _));
+    }
+
+    [TestMethod]
+    public async Task CancellingAfterDeliveryOrAtLateAuthorityReadDoesNotLeakQueryHandles()
+    {
+        using var fixture = new Fixture();
+        for (int i = 0; i < 70; i++)
+        {
+            string wire = fixture.Wire("data.query", "{\"collection\":\"orders\"}");
+            string id = JsonDocument.Parse(wire).RootElement.GetProperty("requestId").GetString()!;
+            Task<string>? cancel = null;
+            if (i % 2 == 0)
+            {
+                fixture.Http.AfterReadMethod = "data.query";
+                fixture.Http.AfterCommitRead = () => cancel = fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source,
+                    fixture.Wire("request.cancel", JsonSerializer.Serialize(new { requestId = id })));
+            }
+            JsonElement response = JsonDocument.Parse(await fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source, wire)).RootElement.Clone();
+            fixture.Http.AfterCommitRead = null;
+            if (i % 2 == 0)
+            {
+                Assert.IsNotNull(cancel); await cancel;
+                Assert.AreEqual("plugin_cancel_requested", Code(response));
+            }
+            else
+            {
+                string cursor = response.GetProperty("result").GetProperty("nextCursor").GetString()!;
+                await fixture.Api.HandleAsync(fixture.Surface.SurfaceToken, fixture.Source,
+                    fixture.Wire("request.cancel", JsonSerializer.Serialize(new { requestId = id })));
+                Assert.AreEqual("plugin_cursor_invalid", Code(await fixture.Call("data.query", JsonSerializer.Serialize(new { collection = "orders", cursor }))));
+            }
+        }
+        for (int i = 0; i < 64; i++) Assert.IsFalse((await fixture.Call("data.query", "{\"collection\":\"orders\"}")).TryGetProperty("error", out _));
+        Assert.AreEqual("plugin_query_limit", Code(await fixture.Call("data.query", "{\"collection\":\"orders\"}")));
+    }
+
+    [TestMethod]
+    public async Task QueryEnvelopeFailureReclaimsTheHandleAllocatedBeforeSerialization()
+    {
+        using var fixture = new Fixture();
+        const string prefix = "{\"items\":[{\"text\":\"";
+        const string suffix = "\"}],\"nextCursor\":\"go-cursor\",\"dependencies\":{}}";
+        fixture.Http.QueryResultBody = prefix + new string('x', 1024 * 1024 - 32 - prefix.Length - suffix.Length) + suffix;
+        Assert.AreEqual("plugin_message_too_large", Code(await fixture.Call("data.query", "{\"collection\":\"orders\"}")));
+        fixture.Http.QueryResultBody = null;
+        for (int i = 0; i < 64; i++) Assert.IsFalse((await fixture.Call("data.query", "{\"collection\":\"orders\"}")).TryGetProperty("error", out _));
+    }
+
+    [TestMethod]
+    public async Task SharedOfflineOutcomeCorpusMatchesActualHostRoutingAndCommitBoundary()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "contracts", "plugin-surface-api.v1.json"))) root = root.Parent;
+        Assert.IsNotNull(root, "repository contract root must be available");
+        using var corpus = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root.FullName,
+            "tests", "contract", "fixtures", "plugin-surface-outcomes-v1.json")));
+        foreach (var item in corpus.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            string scenario = item.GetProperty("scenario").GetString()!;
+            using var fixture = new Fixture(risk: scenario == "read-only" ? "read" : "destructive")
+            { Decision = scenario == "rejected" ? "rejected" : scenario == "cancel-before-approval" ? "cancel" : "approved" };
+            fixture.Http.Conflict = scenario == "conflict";
+            fixture.Http.LoseCommit = scenario == "lost-receipt";
+            fixture.Http.Incomplete = scenario == "incomplete-receipt";
+            JsonElement response;
+            if (scenario == "unsupported-protocol") response = await fixture.Call("context.read", "{}", version: "vibetable.plugin-api.v99");
+            else
+            {
+                response = await fixture.Call("mutation.preview", Plan);
+                if (scenario != "read-only")
+                {
+                    string plan = response.GetProperty("result").GetProperty("planId").GetString()!;
+                    response = await fixture.Call("mutation.submit", JsonSerializer.Serialize(new { planId = plan }));
+                    Assert.AreEqual("plugin_plan_stale", Code(await fixture.Call("mutation.submit", JsonSerializer.Serialize(new { planId = plan }))), scenario);
+                }
+            }
+            if (item.TryGetProperty("code", out var expectedCode)) Assert.AreEqual(expectedCode.GetString(), Code(response), scenario);
+            else Assert.AreEqual(item.GetProperty("status").GetString(), response.GetProperty("result").GetProperty("status").GetString(), scenario);
+            Assert.AreEqual(item.GetProperty("commits").GetInt32(), fixture.Http.Calls.Count(call => call.GetProperty("method").GetString() == "mutation.commit"), scenario);
+        }
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task SameWorkspaceRendererDrainKeepsSuccessOrUnknownForHistoryProjection(bool incomplete)
@@ -745,6 +881,8 @@ public sealed class PluginSurfaceApiTests
         internal bool ReplayCommit { get; set; }
         internal bool LoseCommit { get; set; }
         internal bool Conflict { get; set; }
+        internal Func<CancellationToken, Task>? OnQuery { get; set; }
+        internal string? QueryResultBody { get; set; }
         internal bool Incomplete { get; set; }
         internal bool FailAuditStart { get; set; }
         internal string? ContextError { get; set; }
@@ -758,6 +896,7 @@ public sealed class PluginSurfaceApiTests
             var call = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone();
             Calls.Add(call);
             string method = call.GetProperty("method").GetString()!;
+            if (method == "data.query" && OnQuery is { } onQuery) await onQuery(token);
             if (method == "mutation.commit" && OnCommit is { } onCommit)
             {
                 onCommit();
@@ -785,6 +924,7 @@ public sealed class PluginSurfaceApiTests
                 "mutation.commit" => JsonSerializer.Serialize(new { contractVersion = "2.0", status = "applied", affectedRows = call.GetProperty("request").GetProperty("operations").EnumerateArray().Select(operation => new { recordId = "r1", operation = operation.GetProperty("kind").GetString() == "create" ? "insert" : operation.GetProperty("kind").GetString() }) }),
                 _ => "{}",
             };
+            if (method == "data.query" && QueryResultBody is { } queryResult) result = queryResult;
             if (method == "mutation.commit" && CommitResultBody is { } commitResult) result = commitResult;
             if (method == "mutation.commit" && Incomplete) result = """{"contractVersion":"2.0","status":"applied","affectedRows":[]}""";
             if (method == "mutation.commit" && ReplayCommit) result = result.Replace("applied", "replayed", StringComparison.Ordinal);

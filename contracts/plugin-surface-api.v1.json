@@ -6,6 +6,7 @@
     "context.read",
     "data.describe",
     "data.query",
+    "data.releaseCursor",
     "data.subscribe",
     "data.unsubscribe",
     "storage.get",
