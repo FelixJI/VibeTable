@@ -41,6 +41,22 @@ test("opaque cursors are single-use and reject changed queries, runs and revisio
   const fresh = await execution.capabilities.data.query(corpus.request);
   await assert.rejects(execution.capabilities.data.query({ ...corpus.request, sorts: [], cursor: fresh.nextCursor }), error => error.code === "plugin_cursor_invalid");
 });
+test("cursor binding matches Host DeepEquals: key reorder binds, array/value changes reject", async () => {
+  const { host } = fixture();
+  // Top-level object keys inserted in a different order are the same query.
+  const first = await host.capabilities.data.query(corpus.request);
+  const reordered = { sorts: corpus.request.sorts, pageSize: corpus.request.pageSize, fields: corpus.request.fields, contract: corpus.request.contract, collection: corpus.request.collection, cursor: first.nextCursor };
+  const second = await host.capabilities.data.query(reordered);
+  // Nested object members (sort entries) reorder the same way.
+  const third = await host.capabilities.data.query({ collection: corpus.request.collection, contract: corpus.request.contract, fields: corpus.request.fields,
+    pageSize: corpus.request.pageSize, sorts: [{ field: "fld_amount", direction: "asc" }], cursor: second.nextCursor });
+  assert.equal(third.nextCursor, null);
+  // Array order and real value changes stay exact, like JsonNode.DeepEquals.
+  const arrayOrder = await host.capabilities.data.query(corpus.request);
+  await assert.rejects(host.capabilities.data.query({ ...corpus.request, fields: [...corpus.request.fields].reverse(), cursor: arrayOrder.nextCursor }), error => error.code === "plugin_cursor_invalid");
+  const changed = await host.capabilities.data.query(corpus.request);
+  await assert.rejects(host.capabilities.data.query({ ...corpus.request, pageSize: 100, cursor: changed.nextCursor }), error => error.code === "plugin_cursor_invalid");
+});
 test("v1 rejects negotiation, missing adapters and cancellation fail closed", async () => {
   await assert.rejects(testing.createOfflineHost().capabilities.data.describe({ accepts: ["vibetable.plugin-data.v2"] }), error => error.code === "plugin_api_unsupported");
   await assert.rejects(fixture({ queryAdapter: undefined }).host.capabilities.data.query(corpus.request), error => error.code === "plugin_query_failed");

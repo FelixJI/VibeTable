@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { installApplication, openApplication, nativePluginInput } from "./plugin_applications.mjs";
+import { installApplication, openApplication, nativePluginInput, selectPlugin } from "./plugin_applications.mjs";
 const ID = "com.vibetable.e2e.capability-services";
 const OTHER = "com.vibetable.e2e.capability-other";
 export function requireReceipt(receipt, label) {
@@ -23,7 +23,7 @@ export function requireSingleColumnExport(csv, expectedHeader, expectedValues) {
   // header carries that stable identifier; mutable display names never become column identities.
   if (rows.shift() !== expectedHeader || JSON.stringify(rows.sort()) !== JSON.stringify([...expectedValues].sort())) throw new Error("export bytes do not equal the explicit authorized projection");
 }
-async function picker(runtime, kind, action = "select") {
+export async function picker(runtime, kind, action = "select") {
   const requestId = crypto.randomUUID();
   const target = path.join(runtime.evidenceDir, "plugin-file-dialog-request.json");
   await fs.writeFile(`${target}.tmp`, JSON.stringify({ requestId, kind, action }));

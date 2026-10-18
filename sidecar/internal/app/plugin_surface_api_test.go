@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/auth"
 	"github.com/vibetable/vibetable/sidecar/internal/mutation"
 	"github.com/vibetable/vibetable/sidecar/internal/pluginstore"
+	pluginquery "github.com/vibetable/vibetable/sidecar/internal/query"
 	"github.com/vibetable/vibetable/sidecar/internal/queryschema"
 	v2 "github.com/vibetable/vibetable/sidecar/internal/schema/v2"
 	"github.com/vibetable/vibetable/sidecar/internal/schemacore"
@@ -683,7 +685,7 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		limited["pluginId"] = "com.example.noid"
 		m := limited["manifest"].(map[string]any)
 		m["pluginId"] = limited["pluginId"]
-		m["permissions"].(map[string]any)["data"] = []any{map[string]any{"collection": table.TableID, "operations": []string{"read", "query", "update"}, "fields": []string{amount.Identity.FieldID}}}
+		m["permissions"].(map[string]any)["data"] = []any{map[string]any{"collection": table.TableID, "operations": []string{"read", "query", "update", "delete"}, "fields": []string{amount.Identity.FieldID}}}
 		limitedRaw, _ := json.Marshal(limited)
 		if _, err := store.SaveInstallation(ctx, limitedRaw, nil); err != nil {
 			t.Fatal(err)
@@ -720,8 +722,66 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 		input.InvocationContext = nil
 		id := allRows[0].(map[string]any)["id"].(string)
 		guard := first["rowGuards"].(map[string]any)[id]
-		if _, err := call("mutation.preview", map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": table.TableID, "schemaRevision": first["schemaRevision"], "operations": []any{map[string]any{"kind": "update", "primaryKey": id, "expectedDigest": guard, "values": map[string]any{amount.Identity.FieldID: 77}}}}); err == nil {
-			t.Error("update accepted an ungranted primary key")
+		fixture, err := os.ReadFile("../../../tests/contract/fixtures/plugin-surface-outcomes-v1.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var corpus struct {
+			IDGrantCases []struct {
+				Operation string `json:"operation"`
+				Code      string `json:"code"`
+			} `json:"idGrantCases"`
+		}
+		if err := json.Unmarshal(fixture, &corpus); err != nil {
+			t.Fatal(err)
+		}
+		if len(corpus.IDGrantCases) != 2 {
+			t.Fatal("update/delete conformance cases are required")
+		}
+		for _, item := range corpus.IDGrantCases {
+			operation := map[string]any{"kind": item.Operation, "primaryKey": id, "expectedDigest": guard}
+			if item.Operation == "update" {
+				operation["values"] = map[string]any{amount.Identity.FieldID: 77}
+			}
+			_, err := call("mutation.preview", map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": table.TableID, "schemaRevision": first["schemaRevision"], "operations": []any{operation}})
+			var product *pluginquery.ProductError
+			if !errors.As(err, &product) || product.Code != item.Code {
+				t.Fatalf("%s without ID grant: %v want %s", item.Operation, err, item.Code)
+			}
+		}
+	})
+	t.Run("shared create shape corpus is rejected by decode before any preview or commit", func(t *testing.T) {
+		fixture, err := os.ReadFile("../../../tests/contract/fixtures/plugin-surface-outcomes-v1.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var corpus struct {
+			CreateShapeCases []struct {
+				Name      string         `json:"name"`
+				Operation map[string]any `json:"operation"`
+				Code      string         `json:"code"`
+			} `json:"createShapeCases"`
+		}
+		if err := json.Unmarshal(fixture, &corpus); err != nil {
+			t.Fatal(err)
+		}
+		if len(corpus.CreateShapeCases) < 4 {
+			t.Fatal("create shape conformance cases are required")
+		}
+		for _, item := range corpus.CreateShapeCases {
+			plan, err := json.Marshal(map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": table.TableID, "schemaRevision": first["schemaRevision"], "operations": []any{item.Operation}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decode := input
+			decode.Request = plan
+			// Decode-only: surfaceMutationRequest itself rejects the shared create
+			// shape corpus; no preview, commit, or audit path may be reached.
+			_, decodeErr := surfaceMutationRequest(ctx, pb, workspace, decode)
+			var product *pluginquery.ProductError
+			if !errors.As(decodeErr, &product) || product.Code != item.Code {
+				t.Fatalf("%s: %v want %s", item.Name, decodeErr, item.Code)
+			}
 		}
 	})
 	for _, patch := range []map[string]any{{"fields": []string{secret.Identity.FieldID}}, {"sorts": []any{map[string]any{"field": secret.Identity.FieldID}}}, {"filters": []any{map[string]any{"field": secret.Identity.FieldID, "operator": "eq", "value": "never expose"}}}, {"sql": "select *"}, {"pluginId": "fake"}} {

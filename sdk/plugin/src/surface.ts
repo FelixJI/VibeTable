@@ -62,7 +62,14 @@ export interface SurfaceCapabilities {
   readonly ui: ReturnType<typeof createSurfacePresentationClient>["ui"];
   readonly data: {
     describe(request: DataDescribeRequest): Promise<DataCatalog | DataDescription>;
-    query(request: DataQueryRequest): Promise<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }>;
+    /** The Host consumes the input cursor once at query admission. A failure that
+     * definitively left it unconsumed keeps it owned and retryable; definitively
+     * consumed failures drop it locally; unknown ownership converges through the
+     * acknowledged releaseCursor, whose failure keeps it for explicit retry or
+     * dispose. The 64-handle budget itself never widens. */
+    query(request: DataQueryRequest, signal?: AbortSignal): Promise<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }>;
+    /** Release an owned opaque cursor; no existence disclosure. Failed releases retain ownership for explicit retry/dispose. */
+    releaseCursor(cursor: string): Promise<void>;
     subscribe(request: { readonly collection: string }, listener: (event: SurfaceDataEvent) => void, signal?: AbortSignal): Promise<SurfaceSubscription>;
     /** Unknown handles are a no-op; repeated in-flight releases share the same acknowledgement.
      * Normal requests and owned-handle releases each have eight slots. Failed releases retain ownership for explicit retry/dispose. */
@@ -103,6 +110,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
   const presentation = createSurfacePresentationClient(surfaceToken, parentTransport);
   let closed = false;
   const files = new Set<string>();
+  const cursors = new Map<string, { release?: Promise<void> }>();
   let pickingFiles = 0;
   const ioTasks = new Map<string, SurfaceIoTask<unknown>>();
   let ioStarting = 0;
@@ -154,11 +162,12 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     else request.resolve(reply.result);
   };
   channel.addEventListener("message", receive);
-  function call<T>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
+  function call<T>(method: string, params: unknown, signal?: AbortSignal, onSent?: () => void): Promise<T> {
     if (closed) return Promise.reject(new PluginCapabilityError("plugin_surface_closed", "Plugin surface closed."));
-    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe").length;
+    const releaseMethod = method === "data.unsubscribe" || method === "data.releaseCursor";
+    const releases = [...pending.values()].filter(request => request.method === "data.unsubscribe" || request.method === "data.releaseCursor").length;
     const ioCancels = [...pending.values()].filter(request => request.method === "data.io.cancel").length;
-    if (method === "data.unsubscribe" ? releases >= 8 : method === "data.io.cancel" ? ioCancels >= 8 : pending.size - releases - ioCancels >= 8)
+    if (releaseMethod ? releases >= 8 : method === "data.io.cancel" ? ioCancels >= 8 : pending.size - releases - ioCancels >= 8)
       return Promise.reject(new PluginCapabilityError("plugin_concurrency_limit", "Too many requests."));
     if (signal?.aborted) return Promise.reject(new PluginCapabilityError("plugin_cancel_requested", "Request cancelled."));
     const requestId = crypto.randomUUID();
@@ -176,9 +185,63 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       }, method === "mutation.submit" || method === "file.pickRead" || method === "file.pickWrite" || method === "data.import.start" || method === "data.export.start" || method === "attachments.previewChange" ? 125_000 : 20_000);
       pending.set(requestId, { method, resolve: value => resolve(value as T), reject, timer, cleanup });
       signal?.addEventListener("abort", cancel, { once: true });
-      try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); }
+      try { channel!.postMessage({ contract: SURFACE_API_CONTRACT, surfaceToken, requestId, method, params }); onSent?.(); }
       catch { pending.delete(requestId); clearTimeout(timer); cleanup(); reject(new PluginCapabilityError("plugin_transport_failed", "Plugin transport failed.")); }
     });
+  }
+  function releaseCursor(cursor: string): Promise<void> {
+    const owned = cursors.get(cursor);
+    if (!owned) return Promise.resolve();
+    if (owned.release) return owned.release;
+    owned.release = call<{ readonly released: true }>("data.releaseCursor", { cursor }).then(receipt => {
+      if (receipt?.released !== true) throw new PluginCapabilityError("plugin_transport_failed", "Cursor release receipt is unknown; no automatic retry.");
+      if (cursors.get(cursor) === owned) cursors.delete(cursor);
+    }).catch(error => { delete owned.release; throw error; });
+    return owned.release;
+  }
+  // Host replies produced before data.query admission never consumed the input
+  // cursor: ownership stays intact on both sides and the query stays retryable.
+  const CursorUnconsumedReplies = ["plugin_concurrency_limit", "plugin_request_duplicate", "plugin_api_unsupported", "plugin_source_denied"];
+  // Failure boundaries where the Host may still own the input cursor (SDK
+  // deadline, broken cancel transport, or admission-ambiguous Host codes:
+  // an oversize request is rejected before Host consumption, for example).
+  // These converge through the acknowledged releaseCursor — a no-op for handles
+  // the Host no longer owns — so a failed cleanup keeps local ownership for
+  // explicit retry/dispose; neither the quota nor retries are widened.
+  const CursorOwnershipUnknown = ["plugin_timeout", "plugin_transport_failed", "plugin_capability_invalid", "plugin_session_stale", "plugin_message_too_large"];
+  async function query(request: DataQueryRequest, signal?: AbortSignal): Promise<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }> {
+    if (signal?.aborted) throw new PluginCapabilityError("plugin_cancel_requested", "Request cancelled.");
+    if (cursors.size >= 64 && (!request.cursor || !cursors.has(request.cursor))) throw new PluginCapabilityError("plugin_query_limit", "Release outstanding cursors before querying.");
+    const input = typeof request.cursor === "string" ? request.cursor : "";
+    let sent = false;
+    let page: DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> };
+    try { page = await call<DataQueryPage & { readonly rowGuards: Readonly<Record<string, string>> }>("data.query", request, signal, () => { sent = true; }); }
+    catch (error) {
+      // The Host admits data.query by consuming the input cursor exactly once
+      // (TryRemove at receipt). Converge local ownership to the same boundary:
+      // a request that never left the frame, or a Host reply from before query
+      // admission, keeps the handle retryable; definitively consumed failures
+      // drop it locally. Unknown ownership converges through the acknowledged
+      // releaseCursor — the local handle is removed only by its success receipt,
+      // and a failed release keeps it for explicit retry/dispose. The release
+      // outcome never replaces the original query error.
+      const code = error instanceof PluginCapabilityError ? error.code : "";
+      if (input && sent && code !== "" && cursors.has(input) && !CursorUnconsumedReplies.includes(code)) {
+        if (CursorOwnershipUnknown.includes(code)) void releaseCursor(input).catch(() => { /* retained for explicit retry/dispose */ });
+        else cursors.delete(input);
+      }
+      throw error;
+    }
+    if (input) cursors.delete(input);
+    if (page.nextCursor) cursors.set(page.nextCursor, {});
+    if (closed || signal?.aborted) {
+      if (page.nextCursor) {
+        if (closed) { release("data.releaseCursor", { cursor: page.nextCursor }); cursors.delete(page.nextCursor); }
+        else await releaseCursor(page.nextCursor);
+      }
+      throw new PluginCapabilityError(closed ? "plugin_surface_closed" : "plugin_cancel_requested", "Query cancelled.");
+    }
+    return page;
   }
   async function unsubscribe(subscriptionId: string): Promise<void> {
     const prior = subscriptions.get(subscriptionId);
@@ -380,7 +443,7 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
     },
     tasks: presentation.tasks,
     ui: presentation.ui,
-    data: { describe: request => call("data.describe", request), query: request => call("data.query", request), subscribe, unsubscribe,
+    data: { describe: request => call("data.describe", request), query, releaseCursor, subscribe, unsubscribe,
       previewImport: request => {
         // Upsert requires its approved key up front: a null key would otherwise be
         // silently normalized as updates until the authoritative mint rejects it.
@@ -406,12 +469,14 @@ export function createSurfaceClient(surfaceToken: string, transport?: SurfaceTra
       subscriptions.clear(); early.clear();
       for (const grantId of files) release("file.release", { grantId });
       files.clear();
+      for (const [cursor, owned] of cursors) if (!owned.release) release("data.releaseCursor", { cursor });
+      cursors.clear();
       for (const taskId of ioTasks.keys()) release("data.io.cancel", { taskId });
       ioTasks.clear();
       channel.removeEventListener("message", receive);
       // A sent submit may already be committing; dispose reports unknown and resends nothing.
       for (const [requestId, request] of pending) {
-        if (["data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
+        if (["data.query", "data.subscribe", "file.pickRead", "file.pickWrite", "data.import.start", "data.export.start", "attachments.previewChange"].includes(request.method)) release("request.cancel", { requestId });
         clearTimeout(request.timer);
         request.cleanup();
         request.reject((request.method === "mutation.submit" || request.method === "file.write")

@@ -7,9 +7,9 @@
 
 ## 当前声明范围
 
-- 场景：51
+- 场景：52
 - 唯一能力：77
-- 场景—能力关联：127
+- 场景—能力关联：132
 - `release.smoke` 场景：5
 
 ## 能力到场景
@@ -58,17 +58,17 @@
 | `mutation.conflict` | <code>08-stale-conflict</code>（两次过期编辑显示明确冲突） |
 | `offline.start` | <code>01-offline-first-start</code>（干净数据目录离线首次启动） |
 | `plugin.action.lifecycle` | <code>17-interface-lifecycle</code>（Interface 构建、运行、重启与删除） |
-| `plugin.applications` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知） |
+| `plugin.applications` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.attachments` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
-| `plugin.data-io` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.data-io` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.files` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `plugin.headless` | <code>50-plugin-headless-budget</code>（无界面插件原生执行预算） |
 | `plugin.isolation` | <code>49-plugin-application-security</code>（完整插件应用真实安全壳与renderer恢复） |
 | `plugin.lifecycle` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期） |
-| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理）、<code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.mutation` | <code>11-plugin-mutation</code>（插件安装、重启与执行清理）、<code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>51-plugin-application-commit-unknown</code>（完整应用原生中止与提交回执未知）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.output.print` | <code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期） |
-| `plugin.subscriptions` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
-| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
+| `plugin.subscriptions` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
+| `plugin.surface-api` | <code>47-plugin-surface-api</code>（无 Worker 插件真实页面读写）、<code>48-plugin-applications</code>（完整插件应用与同UUID冷重启生命周期）、<code>50-plugin-headless-budget</code>（无界面插件原生执行预算）、<code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务）、<code>53-record-manager</code>（无 Worker 记录管理应用完整用户路径） |
 | `plugin.ui-services` | <code>52-plugin-capability-services</code>（无 Worker 插件文件与完整能力服务） |
 | `preset.conflict` | <code>19-gallery-lifecycle</code>（Gallery 创建、重开与冲突恢复） |
 | `realtime.reconnect` | <code>10-sse-reconnect</code>（SSE 断线重连且不重复应用） |
@@ -149,3 +149,4 @@
 | <code>50-plugin-headless-budget</code> | 无界面插件原生执行预算 | 真实合成模块不finish并持续timer，在实际frame创建后的两分钟原生预算到期后撤权和恢复；隐藏frame被释放、旧token拒绝、原生界面仍可操作；应用页面不设总寿命。 | `plugin.applications`、`plugin.headless`、`plugin.surface-api` |
 | <code>51-plugin-application-commit-unknown</code> | 完整应用原生中止与提交回执未知 | 同包真实插件无前序记录写入，在既有Go after_record合成barrier处经真实原生确认启动唯一create；Native SendInput停止并确认生产恢复封token后释放barrier，新renderer保留Host unknown并独立读取权威数据，不误报回滚、不重放、不恢复旧token。 | `plugin.applications`、`plugin.mutation`、`workspace.recovery` |
 | <code>52-plugin-capability-services</code> | 无 Worker 插件文件与完整能力服务 | 独立file-io场景在合成工作区以真实SDK编译无Worker应用；Job-owned原生picker取消/选择和SendInput精确确认拒绝/批准，普通文件逐字节读写、附件阶段/确认/读取、导入preview任务与授权提交、显式字段CSV导出实际落盘；query/create/update/delete及合法自关系写入、非法批次零提交、范围内单调失效通知、任务成功和批准前取消零提交、context/通知/返回、退役旧token/跨surface文件handle拒绝。真实打印保持48、unknown保持51独立门禁；非受控CI不得打开本场景原生对话框。 | `plugin.surface-api`、`plugin.mutation`、`plugin.files`、`plugin.attachments`、`plugin.data-io`、`plugin.subscriptions`、`plugin.ui-services` |
+| <code>53-record-manager</code> | 无 Worker 记录管理应用完整用户路径 | 同一WPF/WebView2包在独立合成工作区安装真实记录管理源码构建包，核对三页路由与权威总数、创建/修改、原生确认后的批量规范化、外部失效刷新、真实CSV原生选址与落盘、重开、受控删除拒绝及批准、禁用恢复与持久记录。保留52原能力门禁；沿既有Host-owned进程清理及证据归档，无静态demo替代。 | `plugin.applications`、`plugin.surface-api`、`plugin.mutation`、`plugin.data-io`、`plugin.subscriptions` |

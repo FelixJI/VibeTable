@@ -17,5 +17,5 @@ Node 扩展协议、没有常驻 Python 执行器。页面脚本通过外部文�
 打包（无 npm 依赖）：
 
 ```
-uv run python scripts/vibetable_plugin.py package examples/plugins/team-tasks-app
+uv run python scripts/vibetable_plugin.py pack examples/plugins/team-tasks-app --output build/plugins/team-tasks-app.vtplugin
 ```

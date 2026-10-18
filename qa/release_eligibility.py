@@ -112,6 +112,7 @@ FILE_IO_SCENARIO_IDS = (
     "50-plugin-headless-budget",
     "51-plugin-application-commit-unknown",
     "52-plugin-capability-services",
+    "53-record-manager",
 )
 LANE_STAGE_SCENARIO_IDS = {
     "product-e2e-data-io": DATA_IO_SCENARIO_IDS,

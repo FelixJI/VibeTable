@@ -337,6 +337,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
         "52-plugin-capability-services",
+        "53-record-manager",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
@@ -3023,6 +3024,19 @@ SCENARIO_SCREENSHOTS = {
         "49-plugin-application-security-trace.zip",
     ),
     "50-plugin-headless-budget": ("48-native-recovered.png", "50-plugin-headless-budget-trace.zip"),
+    "53-record-manager": (
+        "53-record-manager.json",
+        "53-record-manager-overview.png",
+        "53-record-manager-list.png",
+        "53-record-manager-reopened.png",
+        "53-record-manager-trace.zip",
+        "53-confirm-create.png",
+        "53-confirm-update.png",
+        "53-confirm-normalize.png",
+        "53-confirm-delete-rejected.png",
+        "53-confirm-delete-approved.png",
+        "52-picker-export-select.png",
+    ),
     "52-plugin-capability-services": (
         "52-capability-services.json",
         "52-capability-services.png",

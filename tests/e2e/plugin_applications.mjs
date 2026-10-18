@@ -4,7 +4,7 @@ import { runApplicationPrint } from "./plugin_application_print.mjs";
 
 const A = "com.vibetable.e2e.application-a";
 const B = "com.vibetable.e2e.application-b";
-const APP = id => `nav-plugin-app-${id}/open-app`;
+const APP = (id, actionId = "open-app") => `nav-plugin-app-${id}/${actionId}`;
 
 // Observe the one UI-approved lease; hiding the plan is not a Host terminal.
 export function installPluginUpgradeCaptureInPage(plan) {
@@ -79,7 +79,7 @@ export async function nativePluginInput(runtime, action, buttonId, stage) {
   throw new Error("owned native plugin input deadline");
 }
 
-export async function installApplication(page, runtime, archive = "app-a", id = A) {
+export async function installApplication(page, runtime, archive = "app-a", id = A, actionId = "open-app") {
   await fs.writeFile(path.join(runtime.controlsDir, "plugin-source.txt"), `${path.join(runtime.controlsDir, archive + ".vtplugin")}\n`);
   await page.getByTestId("nav-plugins").click();
   await page.getByTestId("plugin-install-package").click();
@@ -88,11 +88,11 @@ export async function installApplication(page, runtime, archive = "app-a", id = 
   const row = page.locator("button.plugin-row").filter({ hasText: id });
   await row.waitFor({ timeout: 60000 });
   await row.click();
-  await page.getByTestId(APP(id)).waitFor({ timeout: 30000 });
+  await page.getByTestId(APP(id, actionId)).waitFor({ timeout: 30000 });
 }
 
-export async function openApplication(page, id = A) {
-  await page.getByTestId(APP(id)).click();
+export async function openApplication(page, id = A, actionId = "open-app") {
+  await page.getByTestId(APP(id, actionId)).click();
   const frame = page.frameLocator('[data-testid="plugin-app-viewport"] iframe');
   await frame.locator("#status").filter({ hasText: /^ready$/ }).waitFor({ timeout: 30000 });
   return page.frames().find(candidate => candidate.url().includes(".plugins.vibetable.local/ui/index.html"));
@@ -102,11 +102,10 @@ async function terminalText(frame, text) {
   await frame.locator("#result").filter({ hasText: new RegExp(`^${text}$`) }).waitFor({ timeout: 30000 });
 }
 
-async function selectPlugin(page, id) {
+export async function selectPlugin(page, id) {
   await page.getByTestId("nav-plugins").click();
   await page.locator("button.plugin-row").filter({ hasText: id }).click();
 }
-
 async function headless(page, id, actionId) {
   await selectPlugin(page, id);
   await page.locator(".action-row").filter({ hasText: actionId }).locator("button.run-button").click();

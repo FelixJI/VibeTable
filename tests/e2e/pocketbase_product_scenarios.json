@@ -340,5 +340,17 @@
     "plugin.subscriptions",
     "plugin.ui-services"
   ]
+},
+{
+  "id": "53-record-manager",
+  "title": "无 Worker 记录管理应用完整用户路径",
+  "requirement": "同一WPF/WebView2包在独立合成工作区安装真实记录管理源码构建包，核对三页路由与权威总数、创建/修改、原生确认后的批量规范化、外部失效刷新、真实CSV原生选址与落盘、重开、受控删除拒绝及批准、禁用恢复与持久记录。保留52原能力门禁；沿既有Host-owned进程清理及证据归档，无静态demo替代。",
+  "capabilities": [
+    "plugin.applications",
+    "plugin.surface-api",
+    "plugin.mutation",
+    "plugin.data-io",
+    "plugin.subscriptions"
+  ]
 }
 ]

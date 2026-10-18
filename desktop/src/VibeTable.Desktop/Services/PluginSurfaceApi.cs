@@ -64,6 +64,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         SurfaceState? state = null;
         ApiRequest? request = null;
         bool admitted = false;
+        string? createdCursor = null;
         try
         {
             if (Encoding.UTF8.GetByteCount(raw) > MaxBytes)
@@ -94,6 +95,9 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                 var target = ReadHandle(request.Params, "requestId");
                 CancelSubscriptionRequest(frameToken, target);
                 if (state.Pending.TryGetValue(target, out var active)) { state.Cancelled[target] = true; await active.CancelAsync(); }
+                // Cancel before scanning: allocation may finish between the Pending lookup and this request.
+                // The query checks its token before publishing; an already delivered handle is reclaimed here.
+                foreach (var pair in state.Cursors.Where(pair => pair.Value.RequestId == target)) state.Cursors.TryRemove(pair.Key, out _);
                 return Reply(requestId, new { cancelRequested = true });
             }
             if (request.Method == "data.io.cancel")
@@ -117,6 +121,11 @@ internal sealed partial class PluginSurfaceApi : IDisposable
             {
                 Unsubscribe(surface.SurfaceToken, ReadHandle(request.Params, "subscriptionId"));
                 return Reply(requestId, new { unsubscribed = true });
+            }
+            if (request.Method == "data.releaseCursor")
+            {
+                state.Cursors.TryRemove(ReadHandle(request.Params, "cursor"), out _);
+                return Reply(requestId, new { released = true });
             }
             if (!state.Pending.TryAdd(requestId, deadline)) throw Error("plugin_request_duplicate");
             admitted = true;
@@ -213,9 +222,19 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                         string? next = output["nextCursor"]?.GetValue<string>();
                         if (!string.IsNullOrEmpty(next))
                         {
-                            if (state.Cursors.Count >= 64) throw Error("plugin_query_limit");
                             string handle = Guid.NewGuid().ToString("N");
-                            state.Cursors[handle] = new(parameters.DeepClone()!.AsObject(), next, page.GetProperty("dependencies").Clone(), DateTimeOffset.UtcNow.AddMinutes(5));
+                            var generation = _generation() ?? throw Error("plugin_session_stale");
+                            if (!generation.TryUseCurrent(() => _surfaces.TryUseCurrent(surface, () =>
+                            {
+                                lock (state.Cursors)
+                                {
+                                    deadline.Token.ThrowIfCancellationRequested();
+                                    if (state.Cursors.Count >= 64) throw Error("plugin_query_limit");
+                                    state.Cursors[handle] = new(parameters.DeepClone()!.AsObject(), next, page.GetProperty("dependencies").Clone(), DateTimeOffset.UtcNow.AddMinutes(5), requestId);
+                                    createdCursor = handle;
+                                }
+                                return true;
+                            }))) throw Error("plugin_session_stale");
                             output["nextCursor"] = handle;
                         }
                         output.Remove("dependencies");
@@ -354,6 +373,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
                     }
                 default: throw Error("plugin_api_unsupported");
             }
+            if (request.Method == "data.query") deadline.Token.ThrowIfCancellationRequested();
             if (!committed && !printOpened) CurrentSurface(frameToken, source);
             string response = request.Method is "file.read" or "attachments.read"
                 ? ReadBlockReply(requestId, result) : Reply(requestId, result);
@@ -362,6 +382,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
         }
         catch (Exception ex)
         {
+            if (createdCursor is not null) state?.Cursors.TryRemove(createdCursor, out _);
             string code = committing ? "plugin_commit_unknown" : ex switch
             {
                 PluginSurfacePolicyException policy => policy.Code,
@@ -556,7 +577,7 @@ internal sealed partial class PluginSurfaceApi : IDisposable
     }
     internal bool HasWrites => !_writes.IsEmpty;
     private sealed record ApiRequest(string Contract, string SurfaceToken, string RequestId, string Method, JsonElement Params);
-    private sealed record Cursor(JsonObject Query, string GoCursor, JsonElement Dependencies, DateTimeOffset Expires);
+    private sealed record Cursor(JsonObject Query, string GoCursor, JsonElement Dependencies, DateTimeOffset Expires, string RequestId);
     private sealed record Plan(JsonElement Payload, int Count, DateTimeOffset Expires, ImportSource? Source = null, AttachmentStages? Attachments = null);
     private sealed class SurfaceState(PluginSurfaceSession identity)
     {

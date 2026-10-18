@@ -12,17 +12,25 @@ VibeTable 插件是离线优先的 `.vtplugin` 包。新代码页面通过隔离
 - TypeScript SDK：`sdk/plugin/`
 - 开发与打包 CLI：`scripts/vibetable_plugin.py`
 - 包解析与完整性契约：`backend/infrastructure/plugin_package.py`
-- 可运行示例：`examples/plugins/surface-data-editor/`（无 Worker）、`examples/plugins/data-overview/`、`examples/plugins/normalize-text/`（旧链）
+- 可运行示例：`examples/plugins/surface-data-editor/`（无 Worker）、`examples/plugins/record-manager/`（无 Worker 完整应用）、`examples/plugins/data-overview/`、`examples/plugins/normalize-text/`（旧链）
 
 当前 SDK 支持 Plugin API 1.x/2.x/3.x，包标记为 `private`，CLI 也属于 VibeTable 主仓，尚未发布到 npm 或独立工具仓。
 外部插件仓库不得声明一个并不存在的 npm 版本；应在 CI 中 checkout 明确的 VibeTable commit，
 并用该 commit 的 SDK/CLI 完成最终 validate/build/pack。固定 commit 需要由插件维护者显式更新，
 这样一次 Release 的包契约不会随 `main` 漂移。
 
+API 3.x 的已合并历史基线是 `ada6290921ffadf17a75b5018fbce144841e8594`（#483）。
+它不包含本节 #484 的新初始化模板、显示辅助或离线 surface 工具；这些功能必须固定到包含 #484 的实际实现提交。
+本节新 SDK、CLI、记录管理示例和 `data.releaseCursor` 固定到实现提交
+[`d90238b21ba337a06b6795099007031245e90726`](https://github.com/FelixJI/VibeTable/tree/d90238b21ba337a06b6795099007031245e90726)。
+在 VibeTable checkout 中执行 `git checkout --detach d90238b21ba337a06b6795099007031245e90726`，
+再按下文恢复锁定环境、构建和校验；Host 也须使用包含该提交能力的构建，不代表本轮已发布新版本。
+开发时可在该已检出的固定源码里运行 `git rev-parse HEAD` 记录版本；不要把可变的 `main` 当作插件供应链 pin。
+
 Host 产品版本取唯一版本源 `backend/_version.py`；SDK 的 `1.0.0` 和 manifest 的
 `pluginApi: "1.x"` / `"2.x"` / `"3.x"` 是不同的版本边界。旧示例 `minHostVersion: "0.5.1"`，新示例为 `0.5.3`，不要求不存在的
 Host 1.0。该最低版本号不承诺已发布的 0.5.1 包实现本分支新增合同；新增 rowGuards /
-expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 Host 配套验证。本 Task
+expectedDigest / data.releaseCursor 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 Host 配套验证。本 Task
 不升级产品版本、不发版。使用仓库锁定的 Python、Node/npm；Python 环境通过 `uv sync --frozen --group dev
 --group build` 恢复，插件不会启动额外的数据库权威。
 
@@ -30,9 +38,12 @@ expectedDigest 必须使用同一固定 commit 的 SDK、CLI 和正式构建的 
 
 ### 2.1 无 Worker 的隔离页面 API
 
-`manifest.v2` 必须声明 `compatibility.pluginApi: "3.x"`，动作不允许 `workerEntry`；通过
-`ui.customViews` 为每个动作绑定有效的 `actionId` 和 `entry` 页面，可另声明 `script`。
-CLI 的同一个 esbuild 构建入口将 `src/<script-stem>.ts`
+`manifest.v2` 必须声明 `compatibility.pluginApi: "3.x"`，动作不允许 `workerEntry`。
+仅 `presentation: "surface"` 动作通过 `ui.customViews` 绑定 `actionId` 和 `entry` 页面，可另声明 `script`；
+`application` 与 `headless` 动作分别使用自身的 HTML/JS `entry`，不声明 customView。
+application 的 HTML 标准 `<script type="module" src="../dist/app.js">` 引用直接声明构建输出，
+CLI 将同名 `src/app.ts` 打包，不需要额外的 surface/panel 动作。headless 的 `entry` 和
+customView 的 `script` 同样由 CLI 将 `src/<script-stem>.ts`
 编译到声明的 `script`，打包仍走既有完整性契约；`build` 在任何编译前先按包路径规则校验每个声明输出
 （绝对路径、`..` 穿越与 reparse point 逃逸直接拒绝，且输出必须是 Host 实际执行的 `.js`/`.mjs` 成员、
 不得覆盖 `manifest.json`、entry/html/style 或 schema 等插件输入），声明输出（含 `dist/` 之外的路径）执行与 `dist/` 产物
@@ -119,7 +130,18 @@ Host 在真实 frame 创建时捕获可信 iframe name/token，验证 WebMessage
 
 每条消息及 Go请求上限 1 MiB，分页最多 200 行，每 surface 最多 8 个在途请求/8 个预览计划、
 64 个游标句柄；普通请求 15 秒，Host 确认/提交请求 120 秒，句柄一次消费。长驻页面没有旧
-Worker 的 15 秒/64 次总寿命。完整示例和同包 `47-plugin-surface-api` 会在禁用旧 Node 执行器时
+Worker 的 15 秒/64 次总寿命。
+
+`data.releaseCursor({cursor})` 是 Host 闭集方法；SDK 调用 `await api.data.releaseCursor(cursor)`。
+消费下一页会替换当前句柄；放弃分页、回退重查、刷新字段或仅查询计数后，必须显式释放未消费的
+`nextCursor`。Host 先核当前 surface/身份，只删除该 surface 自有句柄，不访问 Go，也不新增数据权限；
+未知、外国和重复句柄都返回相同 `{released:true}`，不透露其是否存在。SDK 对自己未持有的句柄直接完成。
+普通 8 个请求槽满时仍可释放；SDK 的游标释放与订阅释放共用另 8 个有界回执槽，重复在途释放共享回执。
+失败或回执未知时拒绝并保留 SDK 所有权，不自动重试；调用方可显式重试释放或关闭客户端。
+客户端关闭会发送仍持有句柄的释放请求；页面/surface 退役由 Host 清理其所有句柄。
+查询取消通过原 requestId 同时回收迟到创建的句柄，客户端已收到但尚未交付的句柄也会释放。
+
+完整示例和同包 `47-plugin-surface-api` 会在禁用旧 Node 执行器时
 完成 550 条查询和拒绝/取消/批准保存；测试环境开关仅设置在该合成 Host 子进程。
 
 ### 2.2 应用与无界面动作形态（#482）
@@ -142,7 +164,8 @@ Worker 的 15 秒/64 次总寿命。完整示例和同包 `47-plugin-surface-api
 
 旧栈（未升级的 Python/Go）安装 application/headless 包会明确失败；新栈保持旧 v1/v2 包语义与
 序列化字节不变（新字段为默认值时不写入清单）。完整示例见
-`examples/plugins/team-tasks-app`（application 三页 hash 路由 + headless 动作，同一包、同一 API）。
+`examples/plugins/team-tasks-app`（application 三页 hash 路由 + headless 动作，同一包、同一 API）与
+`examples/plugins/record-manager`（类型化 SDK 构建的完整记录管理应用，见下节）。
 
 ```typescript
 import { createSurfaceClient, finishHeadlessRun } from "@vibetable/plugin-sdk";
@@ -151,18 +174,73 @@ const context = await api.context.read();
 finishHeadlessRun(window.name, "succeeded", "已完成");
 ```
 
+### 纯代码记录管理应用（#484）
+
+`examples/plugins/record-manager` 是最小完整的纯代码业务应用：一个 `application` 入口内含
+概览 / 列表 / 详情表单三个 hash 页面，加一个不依赖任何界面组件的 `headless` 动作；`npm run build`
+经同一 CLI 将 `src/app.ts`、`src/audit.ts` 用仓库固定 commit 的 SDK 源码打包为自包含脚本，不引用未发布
+npm 包，也不需要 Worker 文件或入口占位。
+
+- 概览页只展示授权表/字段/关系与宿主权威 `totalRows`（一次 `pageSize:1` 探针），不把分页累计或截断结果当作全量。
+- 列表页每次前进消费现有游标，仅查询一页；回退释放当前游标并重查至目标页，途中消费每个句柄，只保留一个继续页句柄。概览与无界面计数探针在 `finally` 释放继续页句柄。`data.query(request, signal?)` 可传 AbortSignal 取消在途查询（复用既有 `request.cancel`，取消错误为 `plugin_cancel_requested`，不自动重放）。原值与显示分离：显示用 SDK `describeCellValue`/`formatCellValue`/`isMissingCell` 纯辅助，`0`、`false`、空串与 `null`/缺失区分；`{state,value,fresh}` 只有在调用方声明该字段为 computed 时才解包，未 fresh 显示为计算中，不把格式化文本回写数据。
+- 详情/表单页用 `mutation.preview` + `mutation.submit` 完成创建、更新、受控删除（delete 触发宿主破坏性确认）与预览后批量规范化（带 rowGuards 行保护；拒绝/取消零写入；`plugin_commit_unknown` 结果未知，不自动重放，需核对权威数据）。导出用 `data.export` 任务（csv/xlsx，字段显式列举）。
+- 离线测试（`npm test`）用同一锁定 esbuild 打包真实 SDK 源码与 `src/records.ts`，宿主通道按公开合同伪造：550 条多页、空表、末页、变更、取消、授权不足、确认拒绝、冲突、未知提交不重放，以及两插件/两 surface token 隔离，全部用合成数据。
+- 同包产品验收接入 `53-record-manager`：独立场景准备阶段用真实 CLI+packer 产出 `record-manager.vtplugin`，驱动安装、三页导航、创建/编辑/批量规范化原生确认、导出落盘、重开与禁用，截图与证据进入既有归档（本机未跑真实 WPF，由 CI 验证）。
+
+表单显式使用 null 复选框；空文本 `""`、数字 `0` 和布尔 `false` 保持原值。更新仅提交发生变化的字段，
+JSON/多选用 JSON 原值编辑，关系用 canonical 目标记录 ID（跨表关系还需目标表 read grant；当前示例只授 `$active`，
+因此跨表未授权目标由 Host 拒绝）。附件、富文本 editor、计算和未知类型在此示例中明确只读；附件更改使用专属 API，
+不会把显示文本回写。字段由概览的授权字段选择器控制，不截断为前六项。缺记录/row guard 的详情不能提交，
+提交期间可取消；冲突、取消、拒绝后须重新查询行保护。unknown 只提示核对权威记录，不自动重放。
+CSV 导出声明 `files: ["pickWrite"]`，原生保存选址与实际落盘仍归 Host。
+
+离线 `createOfflineSurfaceHost` 仅供测试：复用 `createOfflineHost` 已与 Go 独立语料核对的 v2 查询验证、单次游标和 revision，
+在 API 3.x 不施加旧 Worker 的终身 64 次预算。私设按可信 plugin/workspace 身份隔离，重开 token 不改变存储归属；
+预览与提交必须显式提供合成 authority port，没有默认成功，也不连接真实业务库。查询独立语料为
+`tests/contract/fixtures/plugin-capabilities-v2.json`；终态语料 `plugin-surface-outcomes-v1.json` 同时由真实
+`PluginSurfaceApiTests` 与离线示例消费。原生 picker/确认、订阅和权限持久化仍以产品 QA47/48/49/51/52/53 为准，
+DOM/离线测试不能替代 WPF 验收。
+
+旧 Worker 包升级：把业务计算保留为纯函数，数据读写改用 `createSurfaceClient`，写入使用 `mutation.preview/submit`；
+入口改为 `application/headless` 并移除 `workerEntry` 与旧输入/输出 schema。安装/升级始终经过 Host 包计划确认，
+新增 `delete`/`pickWrite`、改字段或授权表范围时由 Host 展示新的权限声明；插件不能自行批准。旧 Host 明确拒绝
+v2/3.x 包，当前旧链兼容只为迁移保留，其最终退役由 #486 处理。本轮不改独立 WeRead 插件仓库。
+
+### 初始化三种无 Worker 包
+
+```powershell
+# 在包含 #484 的固定 VibeTable 源码中（真实提交 SHA 见上面的 pin 说明）
+uv sync --frozen --group dev --group build
+uv run --frozen --no-sync python scripts/vibetable_plugin.py init build/plugins/my-app `
+  --plugin-id com.example.my-app --display-name "我的应用" --template application
+# --template action 只有 headless 动作；--template combined 同时贡献应用和动作（默认）。
+Set-Location build/plugins/my-app
+npm ci
+npm run typecheck
+npm test
+npm run build
+Set-Location ../../..
+uv run --frozen --no-sync python scripts/vibetable_plugin.py validate build/plugins/my-app
+uv run --frozen --no-sync python scripts/vibetable_plugin.py inspect-permissions build/plugins/my-app
+uv run --frozen --no-sync python scripts/vibetable_plugin.py pack build/plugins/my-app --output build/plugins/my-app.vtplugin
+```
+
+生成器复用仓库已锁定的 esbuild/TypeScript lock，包里不包含未发布的 npm SDK 依赖、Worker 文件或入口占位。
+应用/动作都通过同一个 SDK；Node/npm 仅在构建时使用。独立插件目录在本次命令环境设置
+`$env:VIBETABLE_SDK_ROOT = "已固定的 VibeTable checkout 路径"` 后使用相同 npm 脚本，路径不会写入源码或包。
+类型检查临时配置只生成在该 checkout 的 `build/plugins/typecheck`。CLI 继续接受现有旧链包，新的 init 不生成旧链。
+
 ```text
 manifest.json
 package.json
 package-lock.json
 tsconfig.json
 src/
-  <worker>.ts
-views/
-  <view>/index.{html,css,js}
-schemas/
-  action-input.v1.json
-  action-output.v1.json
+  app.ts / action.ts
+ui/
+  index.html
+dist/
+  app.js / action.js（生成，不提交）
 tests/
   *.test.mjs
 .github/workflows/ci.yml
