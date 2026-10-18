@@ -393,8 +393,17 @@ def _application_scripts(source: Path, manifest: dict[str, Any]) -> set[str]:
                 raise PluginPackageError(
                     "unsafe_path", "application script escapes the plugin root"
                 )
-            if (source / "src" / f"{target.stem}.ts").is_file():
+            script_source = source / "src" / f"{target.stem}.ts"
+            if script_source.is_file():
                 scripts.add(target.relative_to(source).as_posix())
+            elif not target.is_file():
+                relative = target.relative_to(source).as_posix()
+                raise PluginPackageError(
+                    "script_missing",
+                    f"application module {relative!r} requires an existing script or "
+                    f"{script_source.relative_to(source).as_posix()}",
+                    path=relative,
+                )
     return scripts
 
 

@@ -14,7 +14,7 @@ const appSource = await compile("examples/plugins/record-manager/src/app.ts");
 const html = await readFile(new URL("examples/plugins/record-manager/ui/index.html", root), "utf8");
 const wait = async predicate => { const end = Date.now() + 3000; while (!predicate()) { if (Date.now() > end) throw new Error("DOM did not reach the expected state"); await new Promise(resolve => setTimeout(resolve, 1)); } };
 const field = (fieldId, logicalType, readonly = false) => ({ fieldId, displayName: fieldId, logicalType, resultType: logicalType, readonly, nullable: true, display: null, options: [], constraints: null, filterOperators: [], sortable: true });
-async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false, null], owner: "target-id" }], guards = { "record-one": "go-guard" }, submit = async () => ({ status: "succeeded", taskId: "task" }) } = {}) {
+async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false, null], owner: "target-id" }], guards = { "record-one": "go-guard" }, submit = async () => ({ status: "succeeded", taskId: "task" }), preview = async () => {} } = {}) {
   const dom = new JSDOM(html, { url: "https://synthetic.plugins.vibetable.local/ui/index.html", runScripts: "outside-only" });
   const window = dom.window; window.name = "surface-test"; window.TextEncoder = TextEncoder; window.structuredClone = structuredClone;
   window.eval(`${testingSource}; globalThis.testing = module;`);
@@ -25,7 +25,7 @@ async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false,
       const matching = query.ids ? rows.filter(row => query.ids.includes(row.id)) : rows;
       const offset = query.cursor ? Number(query.cursor) : 0, size = query.pageSize ?? 100;
       return { contract: "vibetable.plugin-query-page.v2", items: matching.slice(offset, offset + size).map(row => Object.fromEntries(query.fields.map(id => [id, row[id] ?? null]))), totalRows: rows.length, filteredRows: matching.length, nextCursor: offset + size < matching.length ? String(offset + size) : null, complete: true, schemaRevision: "schema-one", dataRevision: revision };
-    }, previewMutation: async plan => { plans.push(plan); }, submitMutation: submit,
+    }, previewMutation: async plan => { plans.push(plan); await preview(plan); }, submitMutation: submit,
   });
   const send = data => { for (const listener of subscribers) listener({ data }); };
   const transport = { postMessage(message) {
@@ -42,13 +42,13 @@ async function fixture({ rows = [{ id: "record-one", title: "", json: [0, false,
   const route = async hash => { window.location.hash = hash; await new Promise(resolve => setTimeout(resolve, 10)); };
   const close = () => { window.dispatchEvent(new window.Event("pagehide")); window.close(); };
   const input = (id, text) => { const item = $(`[data-field-id="${id}"]`); item.value = text; item.dispatchEvent(new window.Event("input", { bubbles: true })); };
-  const save = () => $("#record-form").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  const save = () => $("#record-save").click();
   return { window, $, plans, calls, route, close, input, save, get cursorCount() { return host.cursorCount; }, invalidate() { revision++; send({ contract: "vibetable.plugin-api.v1", surfaceToken: window.name, event: "data.invalidated", subscriptionId: "subscription-one", collection: "articles", sequence: revision }); } };
 }
 test("真实应用 DOM：缺行 guard 和不存在记录均不能降级为创建", async () => {
   const app = await fixture({ guards: {} });
   try {
-    await app.route("#detail/record-one"); assert.equal(app.$('#record-form button[type="submit"]').disabled, true);
+    await app.route("#detail/record-one"); assert.equal(app.$('#record-save').disabled, true);
     app.save(); await new Promise(resolve => setImmediate(resolve)); assert.equal(app.plans.length, 0);
     await app.route("#detail/missing"); assert.equal(app.$("#record-form"), null); assert.match(app.$("#detail-body").textContent, /未切换为创建/); assert.equal(app.plans.length, 0);
   } finally { app.close(); }
@@ -59,7 +59,7 @@ test("真实应用 DOM：编辑只提交改动，原有空串/JSON/关系不被�
     await app.route("#detail/record-one"); assert.equal(app.$('[data-null-field-id="title"]').checked, false);
     app.input("title", "updated"); app.save(); await wait(() => app.$("#status").textContent === "保存：已提交。");
     assert.deepEqual(JSON.parse(JSON.stringify(app.plans[0].operations)), [{ kind: "update", primaryKey: "record-one", expectedDigest: "go-guard", values: { title: "updated" } }]);
-    assert.equal(app.$('#record-form button[type="submit"]').disabled, true);
+    assert.equal(app.$('#record-save').disabled, true);
   } finally { app.close(); }
 });
 test("真实应用 DOM：在途提交可取消，重复 submit 不启动第二次计划，未知结果不重放", async () => {
@@ -73,7 +73,7 @@ test("真实应用 DOM：在途提交可取消，重复 submit 不启动第二�
   const unknown = await fixture({ submit: async () => { throw { code: "plugin_commit_unknown" }; } });
   try {
     await unknown.route("#detail/record-one"); unknown.input("title", "changed"); unknown.save(); await wait(() => unknown.$("#status").textContent.includes("提交结果未知"));
-    unknown.save(); assert.equal(unknown.plans.length, 1); assert.equal(unknown.$('#record-form button[type="submit"]').disabled, true);
+    unknown.save(); assert.equal(unknown.plans.length, 1); assert.equal(unknown.$('#record-save').disabled, true);
   } finally { unknown.close(); }
 });
 test("真实应用 DOM：前进后退按钮更新；失效后取消旧页并从首页重查", async () => {
@@ -100,4 +100,26 @@ test("真实应用DOM：概览100次失效/刷新均释放探针，不耗尽64�
     }
     assert.match(app.$("#overview-body").textContent, /权威记录数：550 条/);
   } finally { app.close(); }
+});
+
+
+test("真实应用DOM：preview期间禁止取消，九次保存均进入submit后才可取消且不遗留计划", async () => {
+  let releasePreview, submits = 0;
+  const app = await fixture({ preview: () => new Promise(resolve => releasePreview = resolve), submit: (_plan, signal) => {
+    submits++; return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject({ code: "plugin_cancel_requested" }), { once: true }));
+  } });
+  try {
+    for (let i = 0; i < 9; i++) {
+      await app.route("#list"); await app.route("#detail/record-one");
+      app.input("title", `changed-${i}`); app.save(); await wait(() => app.plans.length === i + 1);
+      const cancel = [...app.window.document.querySelectorAll("button")].find(button => button.textContent === "取消在途提交");
+      assert.equal(cancel.disabled, true); cancel.click(); assert.equal(submits, i);
+      releasePreview(); await wait(() => submits === i + 1);
+      assert.equal(cancel.disabled, false); cancel.click();
+      await wait(() => app.$("#status").textContent === "保存：已取消。");
+      assert.equal(cancel.disabled, true);
+    }
+    assert.equal(submits, 9); assert.equal(app.plans.length, 9);
+    assert.equal(app.calls.filter(call => call.method === "mutation.submit").length, 9);
+  } finally { releasePreview?.(); app.close(); }
 });

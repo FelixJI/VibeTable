@@ -758,3 +758,42 @@ def test_application_module_escape_is_rejected_before_bundling(tmp_path: Path) -
     assert json.loads(rejected.stdout)["code"] == "unsafe_path"
     assert not calls.exists()
     assert not (tmp_path / "outside.js").exists()
+
+
+@pytest.mark.parametrize("script_state", ["missing", "directory", "authored", "typescript"])
+def test_application_module_must_have_a_real_target_or_typescript_source(
+    tmp_path: Path, script_state: str
+) -> None:
+    plugin = tmp_path / "application"
+    initialized = _run_cli(
+        "init",
+        str(plugin),
+        "--plugin-id",
+        "com.example.module-target",
+        "--display-name",
+        "Module target",
+        "--template",
+        "application",
+    )
+    assert initialized.returncode == 0, initialized.stdout
+    (plugin / "src/app.ts").unlink()
+    target = plugin / "dist/app.js"
+    if script_state == "directory":
+        target.mkdir(parents=True)
+    elif script_state == "authored":
+        target.parent.mkdir(parents=True)
+        target.write_text("globalThis.applicationReady = true;\n", encoding="utf-8")
+    elif script_state == "typescript":
+        (plugin / "src/app.ts").write_text(
+            "globalThis.applicationReady = true;\n", encoding="utf-8"
+        )
+    result = _run_cli("build", str(plugin), env=_bundler_env())
+    if script_state in {"missing", "directory"}:
+        assert result.returncode == 2, result.stdout
+        error = json.loads(result.stdout)
+        assert error["code"] == "script_missing"
+        assert error["path"] == "dist/app.js"
+        assert "src/app.ts" in error["message"]
+    else:
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "applicationReady" in target.read_text(encoding="utf-8")

@@ -201,6 +201,7 @@ export function buildNormalizationPlan(
       skipped += 1;
       continue;
     }
+    if (operations.length === 1000) throw new Error("批量规范化超过单次 1000 条变更上限；本示例不自动分批，未提交任何修改。");
     changed.push({ id: String(row.id), before: raw, after });
     operations.push({ kind: "update", primaryKey: String(row.id), expectedDigest: digest, values: { [fieldId]: after } });
   }

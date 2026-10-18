@@ -143,10 +143,11 @@ function reportOutcome(outcome: MutationOutcomeView, label: string): void {
   else if (outcome.status === "cancelled") setStatus(`${label}：已取消。`);
   else setStatus(`${label}：失败 ${outcome.code}；请刷新后核对。`);
 }
-async function submitPlan(plan: SurfaceMutationPlan, signal: AbortSignal, label: string): Promise<void> {
+async function submitPlan(plan: SurfaceMutationPlan, signal: AbortSignal, label: string, enableCancel: () => void): Promise<void> {
   const preview = await api.mutation.preview(plan);
   if (signal.aborted) throw new PluginCapabilityError("plugin_cancel_requested", "提交已取消。");
   setStatus(`${label}：等待宿主确认（${preview.affectedCount} 项）…`);
+  enableCancel();
   reportOutcome(describeSubmitOutcome(await api.mutation.submit(preview.planId, signal)), label);
 }
 async function renderDetail(recordId: string | null): Promise<void> {
@@ -192,19 +193,19 @@ async function renderDetail(recordId: string | null): Promise<void> {
     form.append(label, nullLabel);
   }
   const button = (text: string, type: "submit" | "button" = "button"): HTMLButtonElement => { const item = document.createElement("button"); item.type = type; item.textContent = text; form.appendChild(item); return item; };
-  const save = button(recordId === null ? "预览并创建" : "预览并保存", "submit");
+  const save = button(recordId === null ? "预览并创建" : "预览并保存"); save.id = "record-save";
   const del = button("删除（宿主确认）");
   const normalize = button("预览批量规范化文本");
-  const cancel = button("取消在途提交"); cancel.disabled = !saving;
+  const cancel = button("取消在途提交"); cancel.disabled = true;
   const writable = recordId === null || !!guard;
   save.disabled = !writable || unknownCommit; del.disabled = !row || !guard || unknownCommit; normalize.disabled = unknownCommit;
   if (!writable) setStatus("该记录缺少行保护；仅展示，不能保存或删除。");
   host.appendChild(form);
-  const run = async (label: string, work: (signal: AbortSignal) => Promise<void>): Promise<void> => {
+  const run = async (label: string, work: (signal: AbortSignal, enableCancel: () => void) => Promise<void>): Promise<void> => {
     if (saving || unknownCommit) return;
     const controller = new AbortController(); saving = controller;
-    save.disabled = del.disabled = normalize.disabled = true; cancel.disabled = false;
-    try { await work(controller.signal); }
+    save.disabled = del.disabled = normalize.disabled = true; cancel.disabled = true;
+    try { await work(controller.signal, () => { if (saving === controller) cancel.disabled = false; }); }
     catch (error) { reportOutcome(describeMutationFailure(error), label); }
     finally {
       if (saving === controller) saving = null;
@@ -214,27 +215,35 @@ async function renderDetail(recordId: string | null): Promise<void> {
       del.disabled = true; normalize.disabled = unknownCommit;
     }
   };
-  form.addEventListener("submit", event => {
-    event.preventDefault();
-    if (!writable) return;
-    void run(recordId === null ? "创建" : "保存", async signal => {
+  const saveRecord = (): void => {
+    if (!writable || save.disabled) return;
+    void run(recordId === null ? "创建" : "保存", async (signal, enableCancel) => {
       const edits = new Map<string, FormEdit>();
       for (const [fieldId, item] of inputs) edits.set(fieldId, { text: item.input.value, isNull: item.nullInput.checked, changed: item.input.value !== item.initial || item.nullInput.checked !== item.initialNull });
       const values = formValues(table, edits, recordId === null);
       if (!Object.keys(values).length) { setStatus("没有修改的字段。"); return; }
       const operations: SurfaceMutationPlan["operations"] = recordId === null ? [{ kind: "create", values }] : [{ kind: "update", primaryKey: recordId, expectedDigest: guard!, values }];
-      await submitPlan({ contract: "vibetable.surface-mutation-plan.v1", collection: table.collection, schemaRevision: table.schemaRevision, operations }, signal, recordId === null ? "创建" : "保存");
+      await submitPlan({ contract: "vibetable.surface-mutation-plan.v1", collection: table.collection, schemaRevision: table.schemaRevision, operations }, signal, recordId === null ? "创建" : "保存", enableCancel);
     });
+  };
+  // The isolated frame intentionally forbids native form submission (no allow-forms).
+  // Use controlled button/Enter events; a submit listener alone never runs in that sandbox.
+  save.addEventListener("click", saveRecord);
+  form.addEventListener("submit", event => event.preventDefault());
+  form.addEventListener("keydown", event => {
+    if (event.key !== "Enter" || event.isComposing || !(event.target instanceof HTMLInputElement)) return;
+    event.preventDefault();
+    if (!event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) saveRecord();
   });
-  del.addEventListener("click", () => { if (recordId && guard) void run("删除", signal => submitPlan({ contract: "vibetable.surface-mutation-plan.v1", collection: table.collection, schemaRevision: table.schemaRevision, operations: [{ kind: "delete", primaryKey: recordId, expectedDigest: guard }] }, signal, "删除")); });
-  normalize.addEventListener("click", () => void run("批量规范化", async signal => {
+  del.addEventListener("click", () => { if (recordId && guard) void run("删除", (signal, enableCancel) => submitPlan({ contract: "vibetable.surface-mutation-plan.v1", collection: table.collection, schemaRevision: table.schemaRevision, operations: [{ kind: "delete", primaryKey: recordId, expectedDigest: guard }] }, signal, "删除", enableCancel)); });
+  normalize.addEventListener("click", () => void run("批量规范化", async (signal, enableCancel) => {
     const target = editableFields(table).find(field => field.logicalType === "text" && fields.includes(field.fieldId));
     if (!target) { setStatus("当前选择没有可规范化的文本字段。"); return; }
     setStatus("读取全表用于批量规范化…");
     const fold = await foldAllPages((request, abort) => api.data.query(request, abort), cursor => api.data.releaseCursor(cursor), table.collection, ["id", target.fieldId], { sorts: [{ field: "id", direction: "asc" }], pageSize: 200, signal });
     const preview = buildNormalizationPlan(table, fold.rows, fold.guards, target.fieldId);
     if (!preview.plan) { setStatus(`批量规范化：无需要修改的记录（未变 ${preview.unchanged}，跳过 ${preview.skipped}）。`); return; }
-    await submitPlan(preview.plan, signal, "批量规范化");
+    await submitPlan(preview.plan, signal, "批量规范化", enableCancel);
   }));
   cancel.addEventListener("click", () => { saving?.abort(); cancel.disabled = true; });
 }

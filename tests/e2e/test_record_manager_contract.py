@@ -28,6 +28,21 @@ def test_record_manager_real_source_dom_contract() -> None:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+def test_record_manager_real_sandbox_contract() -> None:
+    node = resolve_node(ROOT)
+    assert node is not None
+    completed = subprocess.run(
+        [node, "--test", str(ROOT / "tests/e2e/record_manager_sandbox.test.mjs")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_record_manager_package_has_only_real_app_and_headless_entries(tmp_path: Path) -> None:
     prepare_record_manager_package(tmp_path)
     manifest = inspect_plugin_package(tmp_path / "record-manager.vtplugin").manifest

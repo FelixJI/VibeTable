@@ -282,3 +282,36 @@ test("分页查询失败且释放失败时保留原句柄，显式关闭才能�
     rejectRelease = false; await pager.close(); assert.equal(releases, 2); assert.equal(host.cursorCount, 0);
   } finally { api.dispose(); }
 });
+
+
+test("批量规范化1000条变化合法，1001条明确拒绝且不截断，未变行不占预算", () => {
+  const description = { ...DESCRIPTION, fields: [{ ...DESCRIPTION.fields[0], fieldId: "title", displayName: "Title", logicalType: "text", readonly: false }] };
+  const rows = Array.from({ length: 1001 }, (_, i) => ({ id: `row-${i}`, title: " change  me " }));
+  const guards = Object.fromEntries(rows.map(row => [row.id, `guard-${row.id}`]));
+  assert.equal(records.buildNormalizationPlan(description, rows.slice(0, 1000), guards, "title").plan.operations.length, 1000);
+  assert.throws(() => records.buildNormalizationPlan(description, rows, guards, "title"), /1000.*未提交/);
+  assert.equal(records.buildNormalizationPlan(description, [...rows.slice(0, 1000), { id: "unchanged", title: "same" }], guards, "title").plan.operations.length, 1000);
+});
+
+test("headless清理失败不能先落盘snapshot；成功时清理完成后才持久化", async () => {
+  for (const failing of [true, false]) {
+    const { api, host } = fixture({ queryAdapter: async () => ({ ...corpus.pages[0], items: corpus.pages[0].items.slice(0, 1), nextCursor: "remaining" }) });
+    let releases = 0;
+    const consumer = { ...api, data: { ...api.data, releaseCursor: async cursor => {
+      releases++; assert.equal(await api.storage.get("auditSnapshot"), null);
+      if (failing) throw new Error("release receipt lost");
+      await api.data.releaseCursor(cursor);
+    } } };
+    try {
+      if (failing) {
+        await assert.rejects(runAudit(consumer), /release receipt lost/);
+        assert.equal(await api.storage.get("auditSnapshot"), null);
+      } else {
+        assert.match(await runAudit(consumer), /权威计数 550 条/);
+        assert.equal((await api.storage.get("auditSnapshot")).totalRows, 550);
+        assert.equal(host.cursorCount, 0);
+      }
+      assert.equal(releases, 1);
+    } finally { api.dispose(); }
+  }
+});

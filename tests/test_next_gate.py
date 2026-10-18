@@ -337,6 +337,7 @@ def test_product_e2e_stage_commands_select_exact_manifest_partition() -> None:
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
         "52-plugin-capability-services",
+        "53-record-manager",
     }
     evidence_roots = [Path(command[command.index("--evidence-root") + 1]) for command in commands]
     assert [root.name for root in evidence_roots] == ["p", "d", "f"]
