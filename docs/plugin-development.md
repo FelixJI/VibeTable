@@ -21,7 +21,10 @@ VibeTable 插件是离线优先的 `.vtplugin` 包。新代码页面通过隔离
 
 API 3.x 的已合并历史基线是 `ada6290921ffadf17a75b5018fbce144841e8594`（#483）。
 它不包含本节 #484 的新初始化模板、显示辅助或离线 surface 工具；这些功能必须固定到包含 #484 的实际实现提交。
-<!-- TASK484_SDK_COMMIT_PIN: 集成提交后由主代理补真实实现 SHA，不使用历史基线冒充新 CLI。 -->
+本节新 SDK、CLI、记录管理示例和 `data.releaseCursor` 固定到实现提交
+[`cb0ee571479067ca6bf9577db10dba08149ae050`](https://github.com/FelixJI/VibeTable/tree/cb0ee571479067ca6bf9577db10dba08149ae050)。
+在 VibeTable checkout 中执行 `git checkout --detach cb0ee571479067ca6bf9577db10dba08149ae050`，
+再按下文恢复锁定环境、构建和校验；Host 也须使用包含该提交能力的构建，不代表本轮已发布新版本。
 开发时可在该已检出的固定源码里运行 `git rev-parse HEAD` 记录版本；不要把可变的 `main` 当作插件供应链 pin。
 
 Host 产品版本取唯一版本源 `backend/_version.py`；SDK 的 `1.0.0` 和 manifest 的
