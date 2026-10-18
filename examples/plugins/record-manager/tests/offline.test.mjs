@@ -67,7 +67,8 @@ test("游标绑定精确请求、会话、工作区和 data revision，且单次
   try {
     const first = await a.api.data.query(request);
     await assert.rejects(b.api.data.query({ ...request, cursor: first.nextCursor }), code("plugin_cursor_invalid"));
-    const second = await a.api.data.query({ ...request, cursor: first.nextCursor });
+    // 对象键插入顺序不同是同一查询（真实 Host 用 JsonNode.DeepEquals）。
+    const second = await a.api.data.query({ sorts: request.sorts, pageSize: request.pageSize, fields: request.fields, contract: request.contract, collection: request.collection, cursor: first.nextCursor });
     await assert.rejects(a.api.data.query({ ...request, cursor: first.nextCursor }), code("plugin_cursor_invalid"));
     a.changeRevision();
     await assert.rejects(a.api.data.query({ ...request, cursor: second.nextCursor }), code("plugin_cursor_stale"));

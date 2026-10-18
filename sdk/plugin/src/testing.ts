@@ -90,6 +90,21 @@ function objectValue(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// The real Host binds cursors with JsonNode.DeepEquals: object member order is
+// irrelevant while array order and exact values stay significant. Mirror that
+// structurally instead of comparing JSON.stringify insertion order.
+function jsonEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((item, index) => jsonEqual(item, right[index]));
+  }
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every(key => Object.hasOwn(right, key) && jsonEqual((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
+}
+
 function arrayOf(value: unknown, member: (item: unknown) => boolean): boolean {
   return value === undefined || (Array.isArray(value) && value.every(member));
 }
@@ -259,7 +274,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
       if (cursor !== undefined) {
         const saved = state.cursors.get(cursor);
         state.cursors.delete(cursor);
-        if (!saved || saved.binding !== binding) reject("plugin_cursor_invalid", "plugin cursor is invalid");
+        if (!saved || !jsonEqual(JSON.parse(saved.binding), JSON.parse(binding))) reject("plugin_cursor_invalid", "plugin cursor is invalid");
         if (saved.revision !== revision) reject("plugin_cursor_stale", "plugin cursor is stale");
         previous = saved.cursor;
       }
