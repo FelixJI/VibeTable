@@ -22,8 +22,8 @@ VibeTable 插件是离线优先的 `.vtplugin` 包。新代码页面通过隔离
 API 3.x 的已合并历史基线是 `ada6290921ffadf17a75b5018fbce144841e8594`（#483）。
 它不包含本节 #484 的新初始化模板、显示辅助或离线 surface 工具；这些功能必须固定到包含 #484 的实际实现提交。
 本节新 SDK、CLI、记录管理示例和 `data.releaseCursor` 固定到实现提交
-[`3bef14f865c38ab750d495a9a4474c4ccefe3c60`](https://github.com/FelixJI/VibeTable/tree/3bef14f865c38ab750d495a9a4474c4ccefe3c60)。
-在 VibeTable checkout 中执行 `git checkout --detach 3bef14f865c38ab750d495a9a4474c4ccefe3c60`，
+[`5d557b0f2757a4e6c817e5b93c83f9825fc01c77`](https://github.com/FelixJI/VibeTable/tree/5d557b0f2757a4e6c817e5b93c83f9825fc01c77)。
+在 VibeTable checkout 中执行 `git checkout --detach 5d557b0f2757a4e6c817e5b93c83f9825fc01c77`，
 再按下文恢复锁定环境、构建和校验；Host 也须使用包含该提交能力的构建，不代表本轮已发布新版本。
 开发时可在该已检出的固定源码里运行 `git rev-parse HEAD` 记录版本；不要把可变的 `main` 当作插件供应链 pin。
 
