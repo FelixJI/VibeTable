@@ -67,3 +67,156 @@ test("unknown release receipt retains the cursor for an explicit retry", async (
     wire.reply(wire.calls.at(-1), { released: true }); await explicit;
   } finally { api.dispose(); }
 });
+
+test("host-consumed query failures converge the input cursor instead of leaking the 64-handle quota", async () => {
+  const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+  try {
+    for (let i = 0; i < 65; i++) {
+      const allocating = api.data.query(request);
+      wire.reply(wire.calls.at(-1), page(`cursor-${i}`));
+      await allocating;
+      // A Host reply from after query admission consumed the input cursor on
+      // the Host side; the SDK must drop it locally without a release round
+      // trip, so repeated failures never accumulate toward plugin_query_limit.
+      const failing = assert.rejects(api.data.query({ ...request, cursor: `cursor-${i}` }), error => error.code === "plugin_query_failed");
+      wire.reply(wire.calls.at(-1), undefined, { code: "plugin_query_failed" });
+      await failing;
+      assert.equal(wire.calls.filter(call => call.method === "data.releaseCursor").length, 0);
+      const explicit = api.data.releaseCursor(`cursor-${i}`);
+      const releaseWire = wire.calls.filter(call => call.method === "data.releaseCursor").at(-1);
+      if (releaseWire) wire.reply(releaseWire, { released: true });
+      await explicit;
+      assert.equal(wire.calls.filter(call => call.method === "data.releaseCursor").length, 0, `cycle ${i}`);
+    }
+  } finally { api.dispose(); }
+});
+
+test("unknown Host ownership boundaries converge through the acknowledged release", async () => {
+  for (const code of ["plugin_session_stale", "plugin_capability_invalid", "plugin_message_too_large"]) {
+    const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+    try {
+      await allocate(api, wire, "input-cursor");
+      const failing = assert.rejects(api.data.query({ ...request, cursor: "input-cursor" }), error => error.code === code, code);
+      wire.reply(wire.calls.at(-1), undefined, { code });
+      await failing;
+      const released = wire.calls.filter(call => call.method === "data.releaseCursor");
+      assert.equal(released.length, 1, code);
+      assert.deepEqual(released[0].params, { cursor: "input-cursor" }, code);
+      // Only the success receipt removes local ownership.
+      wire.reply(released[0], { released: true });
+      await new Promise(resolve => setImmediate(resolve));
+      await api.data.releaseCursor("input-cursor");
+      assert.equal(wire.calls.filter(call => call.method === "data.releaseCursor").length, 1, code);
+    } finally { api.dispose(); }
+  }
+});
+
+test("a failed convergence release keeps the cursor for explicit retry and dispose", async () => {
+  for (const name of ["error receipt", "send throws"]) {
+    const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+    const send = wire.postMessage;
+    let failRelease = name === "send throws";
+    wire.postMessage = message => {
+      if (message.method === "data.releaseCursor" && failRelease) throw new Error("synthetic cleanup send failure");
+      send(message);
+    };
+    try {
+      await allocate(api, wire, "input-cursor");
+      const failing = assert.rejects(api.data.query({ ...request, cursor: "input-cursor" }), error => error.code === "plugin_session_stale", name);
+      wire.reply(wire.calls.at(-1), undefined, { code: "plugin_session_stale" });
+      await failing;
+      await new Promise(resolve => setImmediate(resolve));
+      if (name === "error receipt") {
+        const cleanup = wire.calls.filter(call => call.method === "data.releaseCursor").at(-1);
+        assert.ok(cleanup, name);
+        wire.reply(cleanup, undefined, { code: "plugin_transport_failed" });
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      // The failed cleanup retains local ownership, so the plugin can still
+      // release explicitly once the transport recovers.
+      failRelease = false;
+      const explicit = api.data.releaseCursor("input-cursor");
+      const retryWire = wire.calls.filter(call => call.method === "data.releaseCursor").at(-1);
+      assert.ok(retryWire, name);
+      wire.reply(retryWire, { released: true });
+      await explicit;
+    } finally { api.dispose(); }
+  }
+});
+
+test("an invalid cursor reply drops the dead local entry without a release round trip", async () => {
+  const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+  try {
+    await allocate(api, wire, "stale-cursor");
+    const failing = assert.rejects(api.data.query({ ...request, cursor: "stale-cursor" }), error => error.code === "plugin_cursor_invalid");
+    wire.reply(wire.calls.at(-1), undefined, { code: "plugin_cursor_invalid" });
+    await failing;
+    const explicit = api.data.releaseCursor("stale-cursor");
+    const releaseWire = wire.calls.filter(call => call.method === "data.releaseCursor").at(-1);
+    if (releaseWire) wire.reply(releaseWire, { released: true });
+    await explicit;
+    assert.equal(wire.calls.filter(call => call.method === "data.releaseCursor").length, 0);
+  } finally { api.dispose(); }
+});
+
+test("unconsumed boundaries keep the input cursor owned and retryable on both sides", async () => {
+  const boundaries = [
+    ["local abort", async (wire, api) => {
+      const abort = new AbortController(); abort.abort();
+      await assert.rejects(api.data.query({ ...request, cursor: "retry-cursor" }, abort.signal), error => error.code === "plugin_cancel_requested");
+    }],
+    ["failed send", async (wire, api) => {
+      const send = wire.postMessage;
+      wire.postMessage = message => { if (message.method === "data.query") throw new Error("synthetic send failure"); send(message); };
+      await assert.rejects(api.data.query({ ...request, cursor: "retry-cursor" }), error => error.code === "plugin_transport_failed");
+    }],
+    ...["plugin_request_duplicate", "plugin_concurrency_limit", "plugin_api_unsupported", "plugin_source_denied"].map(code => [code, async (wire, api) => {
+      const failing = assert.rejects(api.data.query({ ...request, cursor: "retry-cursor" }), error => error.code === code, code);
+      wire.reply(wire.calls.at(-1), undefined, { code });
+      await failing;
+    }]),
+  ];
+  for (const [name, fail] of boundaries) {
+    const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+    try {
+      await allocate(api, wire, "retry-cursor");
+      await fail(wire, api);
+      // Nothing reached Host query admission, so the cursor stays owned: an
+      // explicit release still needs the wire round trip.
+      const explicit = api.data.releaseCursor("retry-cursor");
+      assert.equal(wire.calls.at(-1).method, "data.releaseCursor", name);
+      wire.reply(wire.calls.at(-1), { released: true });
+      await explicit;
+    } finally { api.dispose(); }
+  }
+  // A transient pre-admission rejection leaves the same query retryable.
+  const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+  try {
+    await allocate(api, wire, "retry-cursor");
+    const busy = assert.rejects(api.data.query({ ...request, cursor: "retry-cursor" }), error => error.code === "plugin_request_duplicate");
+    wire.reply(wire.calls.at(-1), undefined, { code: "plugin_request_duplicate" });
+    await busy;
+    const retried = api.data.query({ ...request, cursor: "retry-cursor" });
+    wire.reply(wire.calls.at(-1), page(null));
+    await retried;
+  } finally { api.dispose(); }
+});
+
+test("an SDK deadline on a cursor query converges with the acknowledged release", async t => {
+  const wire = channel(), api = sdk.createSurfaceClient("surface", wire);
+  await allocate(api, wire, "input-cursor");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const failing = assert.rejects(api.data.query({ ...request, cursor: "input-cursor" }), error => error.code === "plugin_timeout");
+    t.mock.timers.tick(20000);
+    await failing;
+    assert.ok(wire.calls.some(call => call.method === "request.cancel"));
+    const released = wire.calls.filter(call => call.method === "data.releaseCursor");
+    assert.equal(released.length, 1);
+    assert.deepEqual(released[0].params, { cursor: "input-cursor" });
+    wire.reply(released[0], { released: true });
+    await new Promise(resolve => setImmediate(resolve));
+    await api.data.releaseCursor("input-cursor");
+    assert.equal(wire.calls.filter(call => call.method === "data.releaseCursor").length, 1);
+  } finally { api.dispose(); }
+});

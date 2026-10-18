@@ -750,6 +750,40 @@ func TestPluginSurfaceReal550ReadWriteAndLiveAuthority(t *testing.T) {
 			}
 		}
 	})
+	t.Run("shared create shape corpus is rejected by decode before any preview or commit", func(t *testing.T) {
+		fixture, err := os.ReadFile("../../../tests/contract/fixtures/plugin-surface-outcomes-v1.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var corpus struct {
+			CreateShapeCases []struct {
+				Name      string         `json:"name"`
+				Operation map[string]any `json:"operation"`
+				Code      string         `json:"code"`
+			} `json:"createShapeCases"`
+		}
+		if err := json.Unmarshal(fixture, &corpus); err != nil {
+			t.Fatal(err)
+		}
+		if len(corpus.CreateShapeCases) < 4 {
+			t.Fatal("create shape conformance cases are required")
+		}
+		for _, item := range corpus.CreateShapeCases {
+			plan, err := json.Marshal(map[string]any{"contract": "vibetable.surface-mutation-plan.v1", "collection": table.TableID, "schemaRevision": first["schemaRevision"], "operations": []any{item.Operation}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decode := input
+			decode.Request = plan
+			// Decode-only: surfaceMutationRequest itself rejects the shared create
+			// shape corpus; no preview, commit, or audit path may be reached.
+			_, decodeErr := surfaceMutationRequest(ctx, pb, workspace, decode)
+			var product *pluginquery.ProductError
+			if !errors.As(decodeErr, &product) || product.Code != item.Code {
+				t.Fatalf("%s: %v want %s", item.Name, decodeErr, item.Code)
+			}
+		}
+	})
 	for _, patch := range []map[string]any{{"fields": []string{secret.Identity.FieldID}}, {"sorts": []any{map[string]any{"field": secret.Identity.FieldID}}}, {"filters": []any{map[string]any{"field": secret.Identity.FieldID, "operator": "eq", "value": "never expose"}}}, {"sql": "select *"}, {"pluginId": "fake"}} {
 		bad := map[string]any{}
 		for k, v := range query {

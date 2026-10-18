@@ -107,6 +107,30 @@ def test_native_cli_accepts_explicit_v2_without_worker_and_rejects_unknown_api(
     assert json.loads(rejected.stdout)["code"] == "version_incompatible"
 
 
+@pytest.mark.parametrize("bad_action", [None, "read", 3])
+def test_build_reports_structured_error_for_malformed_action_entries(
+    tmp_path: Path, bad_action: object
+) -> None:
+    """actions 中的 null/字符串/数值由打包校验给出结构化错误，而非转译阶段的 AttributeError。"""
+    plugin = tmp_path / "malformed-actions"
+    _write_surface_page_plugin(plugin, "ui/runtime.js", 'const runtime = { status: "ready" };\n')
+    manifest_path = plugin / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["actions"].append(bad_action)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    built = _run_cli("build", str(plugin))
+    rejected = _run_cli("validate", str(plugin), "--json")
+
+    assert built.returncode == 2, (built.stdout, built.stderr)
+    error = json.loads(built.stdout)
+    assert error["code"] == "manifest_invalid"
+    assert "action" in error["message"]
+    # build 与 validate 在正式校验上收敛为同一个结构化错误。
+    assert json.loads(rejected.stdout) == error
+    assert rejected.returncode == 2
+
+
 def test_validate_reports_plugin_identity_as_json(tmp_path: Path) -> None:
     plugin = tmp_path / "reader"
     _write_readonly_plugin(plugin)

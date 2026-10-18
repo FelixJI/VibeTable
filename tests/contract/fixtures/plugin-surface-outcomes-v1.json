@@ -51,5 +51,42 @@
       "operation": "delete",
       "code": "plugin_write_denied"
     }
+  ],
+  "createShapeCases": [
+    {
+      "name": "create-with-primary-key",
+      "operation": {
+        "kind": "create",
+        "values": { "fld_amount": 0 },
+        "primaryKey": "row-1"
+      },
+      "code": "plugin_capability_invalid"
+    },
+    {
+      "name": "create-with-expected-digest",
+      "operation": {
+        "kind": "create",
+        "values": { "fld_amount": 0 },
+        "expectedDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "code": "plugin_capability_invalid"
+    },
+    {
+      "name": "create-with-both-guards",
+      "operation": {
+        "kind": "create",
+        "values": { "fld_amount": 0 },
+        "primaryKey": "row-1",
+        "expectedDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "code": "plugin_capability_invalid"
+    },
+    {
+      "name": "create-without-values",
+      "operation": {
+        "kind": "create"
+      },
+      "code": "plugin_capability_invalid"
+    }
   ]
 }

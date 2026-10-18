@@ -378,6 +378,11 @@ class _ModuleScripts(HTMLParser):
 def _application_scripts(source: Path, manifest: dict[str, Any]) -> set[str]:
     scripts: set[str] = set()
     for action in manifest.get("actions", []):
+        # Reuse the Worker traversal guard: malformed entries (null, strings,
+        # numbers) surface as the package validator's structured
+        # PluginPackageError JSON, never as an AttributeError here.
+        if not isinstance(action, dict):
+            continue
         if action.get("presentation") != "application" or not isinstance(action.get("entry"), str):
             continue
         entry = (source / normalize_member_path(action["entry"])).resolve()

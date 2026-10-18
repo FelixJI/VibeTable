@@ -41,8 +41,19 @@ export function createOfflineSurfaceHost(options: OfflineSurfaceOptions) {
       host.releaseCursor(params.cursor); cursors.delete(params.cursor); return { released: true };
     }
     if (method === "data.query") {
-      const page = await host.capabilities.data.query(params as unknown as Parameters<typeof host.capabilities.data.query>[0]);
-      if (typeof params.cursor === "string") cursors.delete(params.cursor);
+      // The real Host consumes the input cursor once at admission (TryRemove at
+      // receipt), whatever the authority replies afterwards; model the same boundary.
+      const input = typeof params.cursor === "string" ? params.cursor : "";
+      if (input) cursors.delete(input);
+      let page: Awaited<ReturnType<typeof host.capabilities.data.query>>;
+      try { page = await host.capabilities.data.query(params as unknown as Parameters<typeof host.capabilities.data.query>[0]); }
+      catch (error) {
+        // The authority may reject before its own cursor consumption (field
+        // validation precedes it); the receipt boundary above already claimed
+        // the handle, so reclaim the underlying idempotently here.
+        if (input) host.releaseCursor(input);
+        throw error;
+      }
       if (page.nextCursor) cursors.set(page.nextCursor, requestId);
       if (signal.aborted || retired) {
         if (page.nextCursor) { host.releaseCursor(page.nextCursor); cursors.delete(page.nextCursor); }
@@ -78,8 +89,11 @@ export function createOfflineSurfaceHost(options: OfflineSurfaceOptions) {
           && item.operations.some(kind => kind === operation.kind));
         if (!permission || operation.kind !== "create" && !permission.fields.some(field => ["id", "*", "$configured"].includes(field))) fail("plugin_write_denied");
         if (operation.kind !== "create" && (typeof operation.primaryKey !== "string" || !operation.primaryKey || typeof operation.expectedDigest !== "string" || !operation.expectedDigest)) fail("plugin_capability_invalid");
-        if (Object.keys(operation).some(key => !(operation.kind === "delete" ? ["kind", "primaryKey", "expectedDigest"] : ["kind", "primaryKey", "expectedDigest", "values"]).includes(key))) fail("plugin_capability_invalid");
-        if (operation.kind !== "delete" && (!object(operation.values) || Object.keys(operation.values).some(field => !permission.fields.some(grant => grant === "*" || grant === "$configured" || grant === field)))) fail("plugin_write_denied");
+        // Real Go accepts only kind/values for create; guard fields and missing
+        // values are rejected as invalid operations.
+        if (Object.keys(operation).some(key => !(operation.kind === "create" ? ["kind", "values"] : operation.kind === "delete" ? ["kind", "primaryKey", "expectedDigest"] : ["kind", "primaryKey", "expectedDigest", "values"]).includes(key))) fail("plugin_capability_invalid");
+        if (operation.kind !== "delete" && !object(operation.values)) fail("plugin_capability_invalid");
+        if (operation.kind !== "delete" && object(operation.values) && Object.keys(operation.values).some(field => !permission.fields.some(grant => grant === "*" || grant === "$configured" || grant === field))) fail("plugin_write_denied");
         if (operation.kind !== "delete" && object(operation.values)) {
           for (const fieldId of Object.keys(operation.values)) {
             const field = description.fields.find(item => item.fieldId === fieldId);

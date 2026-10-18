@@ -205,6 +205,54 @@ test("离线 surface 不制造未授权/只读字段、旧schema或缺adapter的
 });
 
 
+test("共享 Go 反例：create 只接受 kind/values，携带 guard 或缺失 values 同样拒绝", async () => {
+  const outcomes = JSON.parse(await readFile(new URL("../../../../tests/contract/fixtures/plugin-surface-outcomes-v1.json", import.meta.url), "utf8"));
+  assert.ok(outcomes.createShapeCases.length >= 4);
+  const { api } = fixture({ previewMutation: async () => {} });
+  try {
+    for (const item of outcomes.createShapeCases) {
+      await assert.rejects(api.mutation.preview({ ...plan, operations: [item.operation] }), code(item.code), item.name);
+    }
+    // 对照：仅 kind/values 的 create 仍可预览，合同没有收紧到拒绝合法创建。
+    const preview = await api.mutation.preview(plan);
+    assert.equal(typeof preview.planId, "string");
+  } finally { api.dispose(); }
+});
+
+test("中间页失败后 Host 与 SDK 同时收敛游标，重复失败不耗尽本地额度", async () => {
+  let fail = true;
+  const { api, host } = fixture({ queryAdapter: async query => {
+    if (query.cursor && fail) throw new sdk.PluginCapabilityError("plugin_query_failed", "authority failed");
+    const index = query.cursor ? Number(query.cursor.split("-").at(-1)) - 1 : 0;
+    return corpus.pages[index];
+  } });
+  try {
+    for (let i = 0; i < 65; i++) {
+      const first = await api.data.query(request);
+      await assert.rejects(api.data.query({ ...request, cursor: first.nextCursor }), code("plugin_query_failed"));
+    }
+    assert.equal(host.cursorCount, 0);
+    fail = false;
+    const recovered = await api.data.query(request);
+    await api.data.releaseCursor(recovered.nextCursor);
+    assert.equal(host.cursorCount, 0);
+  } finally { api.dispose(); }
+});
+test("非法字段续页失败幂等回收底层游标，显式释放与退役均归零", async () => {
+  const { api, host } = fixture();
+  try {
+    const first = await api.data.query(request);
+    assert.equal(host.cursorCount, 1);
+    // 权威侧在自身消费前因字段校验拒绝；接收边界已认领句柄，失败路径必须
+    // 幂等回收底层，否则显式释放/退役都无法归零。
+    await assert.rejects(api.data.query({ ...request, cursor: first.nextCursor, fields: ["not-authorized"] }), code("plugin_read_denied"));
+    assert.equal(host.cursorCount, 0);
+    await api.data.releaseCursor(first.nextCursor);
+    assert.equal(host.cursorCount, 0);
+    host.retire();
+    assert.equal(host.cursorCount, 0);
+  } finally { api.dispose(); }
+});
 test("共享 Go 反例：只授业务字段时不能凭 primaryKey 更新或删除", async () => {
   const corpus = JSON.parse(await readFile(new URL("../../../../tests/contract/fixtures/plugin-surface-outcomes-v1.json", import.meta.url), "utf8"));
   let previews = 0, submits = 0;
