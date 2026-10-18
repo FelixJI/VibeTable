@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记录管理示例应用</title>
+<style>
+:root { color-scheme: light dark; }
+body { font: 14px/1.6 system-ui, "Segoe UI", sans-serif; margin: 0; padding: 16px 24px; color: var(--vt-plugin-text, #222); background: var(--vt-plugin-bg, #fff); }
+main { max-width: 960px; margin: 0 auto; }
+nav { display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline; margin-bottom: 8px; }
+nav a { color: var(--vt-plugin-accent, #2563eb); }
+nav a[aria-current="page"] { font-weight: 700; text-decoration: none; }
+h1 { font-size: 18px; margin: 0; margin-right: auto; }
+table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+th, td { border: 1px solid var(--vt-plugin-border, #d1d5db); padding: 4px 8px; text-align: left; vertical-align: top; }
+tbody tr, table tr:not(:first-child) { cursor: pointer; }
+.muted { color: var(--vt-plugin-muted, #6b7280); }
+.error { color: var(--vt-plugin-danger, #b91c1c); }
+label { display: block; margin: 8px 0; }
+label input:not([type="checkbox"]), label select { display: block; margin-top: 2px; min-width: 320px; padding: 4px 6px; }
+input[type="checkbox"] { margin-right: 6px; }
+output { display: block; }
+button { padding: 6px 14px; margin: 8px 8px 0 0; }
+#status { min-height: 1.6em; }
+#stale { color: var(--vt-plugin-warning, #b45309); }
+[hidden] { display: none !important; }
+@media print { nav, button, #list-nav { display: none; } }
+</style>
+</head>
+<body>
+<main>
+<nav aria-label="应用内导航">
+<h1>记录管理</h1>
+<a href="#overview" data-page="overview">概览</a>
+<a href="#list" data-page="list">列表</a>
+<a href="#detail/new" data-page="detail">详情 / 表单</a>
+<button id="reload" type="button">刷新</button>
+<button id="export" type="button">导出 CSV</button>
+</nav>
+<p id="status" role="status">正在连接宿主…</p>
+<p id="stale" hidden>数据已变化（失效通知）：列表与概览将重新查询。</p>
+<section id="page-overview" aria-labelledby="overview-title">
+<h2 id="overview-title">概览（授权元数据与权威计数）</h2>
+<div id="overview-body"><p class="muted">读取中…</p></div>
+</section>
+<section id="page-list" aria-labelledby="list-title" hidden>
+<h2 id="list-title">记录列表</h2>
+<div id="list-body"><p class="muted">读取中…</p></div>
+<p id="list-nav">
+<button id="page-prev" type="button">上一页</button>
+<button id="page-next" type="button">下一页</button>
+<span class="muted">游标分页：原值显示，空值为（空），计算未就绪为（计算中…）。</span>
+</p>
+</section>
+<section id="page-detail" aria-labelledby="detail-title" hidden>
+<h2 id="detail-title">详情 / 表单</h2>
+<div id="detail-body"><p class="muted">读取中…</p></div>
+</section>
+</main>
+<script type="module" src="../dist/app.js"></script>
+</body>
+</html>

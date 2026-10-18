@@ -9,7 +9,7 @@ import type { CommandContext, JsonObject, JsonValue, PluginAction, PluginResult 
 
 export interface DataGrant {
   readonly collection: string;
-  readonly operations: readonly ("read" | "query" | "create" | "update")[];
+  readonly operations: readonly ("read" | "query" | "create" | "update" | "delete")[];
   readonly fields: readonly string[];
 }
 
@@ -20,7 +20,7 @@ export interface OfflineHostOptions {
     readonly files?: readonly ("pickRead" | "pickWrite")[];
     readonly privateStorage?: boolean;
   };
-  readonly pluginApi?: "1.x" | "2.x";
+  readonly pluginApi?: "1.x" | "2.x" | "3.x";
   /** Synthetic Go-produced metadata; no logical type inference. */
   readonly descriptions?: Readonly<Record<string, DataDescription>>;
   /** Closed synthetic port: supply Go conformance outputs, never business data. */
@@ -47,6 +47,9 @@ export interface OfflineHost {
   readonly progressEvents: readonly PluginProgress[];
   readonly writtenFiles: ReadonlyMap<string, Uint8Array>;
   setContext(patch: Partial<CommandContext>): void;
+  /** Test-only view/release of surface-owned query handles. */
+  readonly cursorCount: number;
+  releaseCursor(cursor: string): void;
   /** Host-level cancel; it only feeds capabilities used outside an execution. */
   requestCancel(): void;
   /** One isolated execution: cancel/progress state never crosses executions. */
@@ -64,7 +67,7 @@ export interface OfflineExecution {
 interface ExecutionState {
   cancelRequested: boolean;
   lastProgress: number;
-  cursors: Map<string, { binding: string; cursor: string; revision: string }>;
+  cursors: Map<string, { binding: string; cursor: string; revision: string; expires: number }>;
   calls: number;
 }
 
@@ -190,7 +193,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
     if (options.pluginApi === "2.x" && ++state.calls > 64) reject("plugin_worker_failed", "plugin capability budget exceeded");
   };
   const requireV2 = (state: ExecutionState) => {
-    if ((options.pluginApi ?? "1.x") !== "2.x") reject("plugin_api_unsupported", "plugin API v2 was not declared");
+    if (!["2.x", "3.x"].includes(options.pluginApi ?? "1.x")) reject("plugin_api_unsupported", "plugin API v2 was not declared");
     if (state.cancelRequested) reject("plugin_cancel_requested", "plugin cancellation requested");
     trackCall(state);
   };
@@ -248,6 +251,7 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
         if (!wireObject(sort as unknown, ["field", "direction", "nullsLast"])) reject("plugin_capability_invalid", "plugin query sort is invalid");
         if (!requireField(sort.field).sortable) reject("query.cursor.unsupported_sort", "plugin query sort is unavailable");
       }
+      for (const [handle, saved] of state.cursors) if (saved.expires < Date.now()) state.cursors.delete(handle);
       const { cursor, ...query } = request;
       const revision = `${context.projectKey}:${context.collection}:${options.descriptions?.[request.collection]?.schemaRevision}:${options.revision?.() ?? "1"}`;
       const binding = JSON.stringify(query);
@@ -265,8 +269,9 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
       if (new TextEncoder().encode(JSON.stringify(page)).length > 1_048_576) reject("plugin_query_limit", "plugin response budget exceeded");
       let nextCursor: string | null = null;
       if (page.nextCursor !== null) {
+        if (state.cursors.size >= 64) reject("plugin_query_limit", "plugin cursor handle budget exceeded");
         nextCursor = globalThis.crypto.randomUUID();
-        state.cursors.set(nextCursor, { binding, cursor: page.nextCursor, revision });
+        state.cursors.set(nextCursor, { binding, cursor: page.nextCursor, revision, expires: Date.now() + 300000 });
       }
       return { ...page, nextCursor };
     },
@@ -387,6 +392,8 @@ export function createOfflineHost(options: OfflineHostOptions = {}): OfflineHost
   const hostState: ExecutionState = { cancelRequested: false, lastProgress: 0, cursors: new Map(), calls: 0 };
   return {
     capabilities: capabilitiesFor(hostState), mutationPlans, progressEvents, writtenFiles,
+    get cursorCount() { return hostState.cursors.size; },
+    releaseCursor(cursor) { hostState.cursors.delete(cursor); },
     setContext(patch) { context = { ...context, ...patch }; },
     requestCancel() { hostState.cancelRequested = true; },
     createExecution() {
@@ -457,3 +464,6 @@ export function startOfflineAction<TInput, TOutput extends JsonValue>(
     },
   };
 }
+
+export { createOfflineSurfaceHost } from "./testing-surface.js";
+export type { OfflineSurfaceOptions } from "./testing-surface.js";

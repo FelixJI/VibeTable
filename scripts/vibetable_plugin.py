@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Sequence
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from scripts.node_toolchain import resolve_node  # noqa: E402
 
 
 def _print_json(value: Any) -> None:
-    print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(value, sort_keys=True))
 
 
 def _validation_report(source: Path) -> dict[str, Any]:
@@ -106,73 +107,154 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8", newline="\n")
 
 
+_SCAFFOLD_TOOLS = r"""import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+let sdkRoot = process.env.VIBETABLE_SDK_ROOT;
+if (!sdkRoot) {
+  for (let parent = root; ; parent = path.dirname(parent)) {
+    if (fs.existsSync(path.join(parent, "scripts/vibetable_plugin.py"))) { sdkRoot = parent; break; }
+    if (parent === path.dirname(parent)) throw new Error("Set VIBETABLE_SDK_ROOT to the fixed VibeTable checkout.");
+  }
+}
+sdkRoot = path.resolve(sdkRoot);
+if (process.argv[2] === "typecheck") {
+  const output = path.join(sdkRoot, "build/plugins/typecheck");
+  fs.mkdirSync(output, { recursive: true });
+  const config = path.join(output, `${crypto.randomUUID()}.json`);
+  fs.writeFileSync(config, JSON.stringify({ extends: path.join(root, "tsconfig.json"), compilerOptions: { paths: { "@vibetable/plugin-sdk": [path.join(sdkRoot, "sdk/plugin/src/index.ts")] } } }));
+  const result = spawnSync(process.execPath, [path.join(root, "node_modules/typescript/bin/tsc"), "--project", config], { cwd: root, stdio: "inherit" });
+  if (result.error) throw result.error;
+  process.exit(result.status ?? 1);
+} else {
+  const result = spawnSync("uv", ["run", "--frozen", "--no-sync", "--project", sdkRoot, "python", path.join(sdkRoot, "scripts/vibetable_plugin.py"), process.argv[2] ?? "build", root], { cwd: root, stdio: "inherit" });
+  if (result.error) throw result.error;
+  process.exit(result.status ?? 1);
+}
+"""
+
+
 def _command_init(args: argparse.Namespace) -> int:
     root = args.path
     if root.exists() and any(root.iterdir()):
         raise PluginPackageError("destination_not_empty", f"destination is not empty: {root}")
     root.mkdir(parents=True, exist_ok=True)
-    action_id = "run"
-    manifest: dict[str, Any] = {
-        "$schema": "vibetable.plugin-manifest.v1",
-        "pluginId": args.plugin_id,
-        "version": "0.1.0",
-        "displayName": {"zh-CN": args.display_name},
-        "description": {"zh-CN": args.description or args.display_name},
-        "compatibility": {
-            "minHostVersion": __version__,
-            "pluginApi": "1.x",
-        },
-        "permissions": {
-            "data": [],
-            "files": [],
-            "privateStorage": False,
-            "network": {"domains": [], "methods": ["GET"]},
-        },
-        "actions": [
+    actions: list[dict[str, Any]] = []
+    if args.template in {"application", "combined"}:
+        actions.append(
             {
-                "actionId": action_id,
+                "actionId": "open-app",
+                "displayName": {"zh-CN": "打开应用"},
+                "mode": "local",
+                "risk": "read",
+                "invocation": "manual",
+                "placements": [],
+                "presentation": "application",
+                "entry": "ui/index.html",
+            }
+        )
+        _write_text(
+            root / "ui/index.html",
+            '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>插件应用</title><h1>插件应用</h1><p id="status" role="status">连接中…</p><script type="module" src="../dist/app.js"></script></html>\n',
+        )
+        _write_text(
+            root / "src/app.ts",
+            'import { createSurfaceClient } from "@vibetable/plugin-sdk";\nimport { contextSummary } from "./message.js";\nconst api = createSurfaceClient(window.name);\ntry { document.getElementById("status")!.textContent = contextSummary(await api.context.read()); }\ncatch (error) { document.getElementById("status")!.textContent = String(error); }\nwindow.addEventListener("pagehide", () => api.dispose());\n',
+        )
+    if args.template in {"action", "combined"}:
+        actions.append(
+            {
+                "actionId": "run",
                 "displayName": {"zh-CN": "运行"},
                 "mode": "local",
                 "risk": "read",
                 "invocation": "manual",
                 "placements": ["table.toolbar"],
-                "inputSchema": "schemas/action-input.v1.json",
-                "outputSchema": "schemas/action-output.v1.json",
-                "workerEntry": "dist/workers/action.js",
+                "presentation": "headless",
+                "entry": "dist/action.js",
             }
-        ],
+        )
+        _write_text(
+            root / "src/action.ts",
+            'import { createSurfaceClient, finishHeadlessRun } from "@vibetable/plugin-sdk";\nimport { contextSummary } from "./message.js";\nconst api = createSurfaceClient(window.name);\ntry { finishHeadlessRun(window.name, "succeeded", contextSummary(await api.context.read())); }\ncatch (error) { finishHeadlessRun(window.name, "failed", String(error)); }\nfinally { api.dispose(); }\n',
+        )
+    manifest: dict[str, Any] = {
+        "$schema": "vibetable.plugin-manifest.v2",
+        "pluginId": args.plugin_id,
+        "version": "0.1.0",
+        "displayName": {"zh-CN": args.display_name},
+        "description": {"zh-CN": args.description or args.display_name},
+        "compatibility": {"minHostVersion": __version__, "pluginApi": "3.x"},
+        "permissions": {
+            "data": [],
+            "files": [],
+            "privateStorage": False,
+            "network": {"domains": [], "methods": []},
+        },
+        "actions": actions,
         "ui": {"customViews": []},
     }
     _write_text(root / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-    schema = '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}\n'
-    _write_text(root / "schemas" / "action-input.v1.json", schema)
-    _write_text(root / "schemas" / "action-output.v1.json", schema)
     _write_text(
-        root / "src" / "action.ts",
-        "export async function run(_input: Record<string, unknown>) {\n"
-        '  return { contract: "vibetable.plugin-result.v1", status: "success", '
-        'summary: "插件动作已完成", metrics: [], artifacts: [], warnings: [] };\n'
-        "}\n",
+        root / "src/message.ts",
+        'import type { CommandContext } from "@vibetable/plugin-sdk";\nexport function contextSummary(context: Pick<CommandContext, "collection">): string {\n  return context.collection === null ? "没有活动数据表" : `活动表：${context.collection}`;\n}\n',
+    )
+    _write_text(root / "tests/tools.mjs", _SCAFFOLD_TOOLS)
+    _write_text(
+        root / "tests/offline.test.mjs",
+        'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { build } from "esbuild";\nconst compiled = await build({ entryPoints: ["src/message.ts"], bundle: true, format: "esm", platform: "neutral", write: false });\nconst { contextSummary } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`);\ntest("context summary preserves canonical identity and empty context", () => {\n  assert.equal(contextSummary({ collection: null }), "没有活动数据表");\n  assert.equal(contextSummary({ collection: "tbl_123" }), "活动表：tbl_123");\n});\n',
     )
     _write_text(
-        root / "tests" / "offline.test.mjs",
-        'import test from "node:test";\nimport assert from "node:assert/strict";\n'
-        'test("offline scaffold", () => assert.equal(1, 1));\n',
-    )
-    _write_text(
-        root / "package.json",
+        root / "tsconfig.json",
         json.dumps(
             {
-                "name": args.plugin_id,
-                "private": True,
-                "type": "module",
-                "scripts": {"build": "vibetable-plugin build", "test": "vibetable-plugin test"},
+                "compilerOptions": {
+                    "target": "ES2022",
+                    "module": "ESNext",
+                    "moduleResolution": "Bundler",
+                    "lib": ["ES2022", "DOM"],
+                    "strict": True,
+                    "noEmit": True,
+                    "verbatimModuleSyntax": True,
+                },
+                "include": ["src/**/*.ts"],
             },
             indent=2,
         )
         + "\n",
     )
-    print(f"initialized {args.plugin_id} in {root}")
+    package = {
+        "name": args.plugin_id,
+        "version": "0.1.0",
+        "private": True,
+        "type": "module",
+        "scripts": {
+            "typecheck": "node tests/tools.mjs typecheck",
+            "build": "node tests/tools.mjs build",
+            "test": "npm run build && node --test tests/*.test.mjs",
+        },
+        "devDependencies": {"esbuild": "0.28.1", "typescript": "7.0.2"},
+        "packageManager": "npm@12.2.0",
+        "engines": {"node": ">=26 <27"},
+    }
+    _write_text(root / "package.json", json.dumps(package, indent=2) + "\n")
+    # Reuse the repository-restored lock; init changes root metadata, never resolves packages.
+    lock = json.loads(
+        (REPO_ROOT / "examples/plugins/record-manager/package-lock.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    lock.update(name=args.plugin_id, version="0.1.0")
+    lock["packages"][""].update(name=args.plugin_id, version="0.1.0")
+    _write_text(root / "package-lock.json", json.dumps(lock, indent=2) + "\n")
+    _write_text(root / ".gitignore", "node_modules/\ndist/\nbuild/\n*.vtplugin\n")
+    _write_text(
+        root / "README.md",
+        "# 无 Worker 插件\n\n使用固定 commit 的 VibeTable checkout（见 docs/plugin-development.md），通过 uv sync --frozen --group dev --group build 恢复开发环境。\n外部目录设置 VIBETABLE_SDK_ROOT 为该 checkout；路径只在本次环境中设置，不写入包。使用仓库锁定 Node/npm，运行 npm ci、npm run typecheck、npm test、npm run build。\n随后用该 checkout 的 scripts/vibetable_plugin.py validate / inspect-permissions / pack 校验和打包本目录。运行时不需要 Node。\n",
+    )
+    print(f"initialized {args.plugin_id} ({args.template}) in {root}")
     return 0
 
 
@@ -282,6 +364,40 @@ def _validated_output(source: Path, entry: str, protected: frozenset[Path]) -> P
     return destination
 
 
+class _ModuleScripts(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sources: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and attributes.get("type") == "module" and attributes.get("src"):
+            self.sources.append(str(attributes["src"]))
+
+
+def _application_scripts(source: Path, manifest: dict[str, Any]) -> set[str]:
+    scripts: set[str] = set()
+    for action in manifest.get("actions", []):
+        if action.get("presentation") != "application" or not isinstance(action.get("entry"), str):
+            continue
+        entry = (source / normalize_member_path(action["entry"])).resolve()
+        if not entry.is_relative_to(source):
+            raise PluginPackageError("unsafe_path", "application entry escapes the plugin root")
+        if not entry.is_file():
+            continue  # The package validator reports the missing entry.
+        parser = _ModuleScripts()
+        parser.feed(entry.read_text(encoding="utf-8"))
+        for reference in parser.sources:
+            target = (entry.parent / reference).resolve()
+            if not target.is_relative_to(source) or "\\" in reference or ":" in reference:
+                raise PluginPackageError(
+                    "unsafe_path", "application script escapes the plugin root"
+                )
+            if (source / "src" / f"{target.stem}.ts").is_file():
+                scripts.add(target.relative_to(source).as_posix())
+    return scripts
+
+
 def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[Path]:
     """Compile every declared entry in place and return its validated output paths."""
     entries = sorted(
@@ -295,6 +411,7 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
         entries = sorted(
             {
                 *entries,
+                *_application_scripts(source, manifest),
                 *(
                     view["script"]
                     for view in manifest.get("ui", {}).get("customViews", [])
@@ -322,14 +439,14 @@ def _transpile_declared_workers(source: Path, manifest: dict[str, Any]) -> list[
     if node is None or bundler is None or not sdk_entry.is_file():
         raise PluginPackageError(
             "bundler_missing",
-            "Node.js, a plugin-local esbuild dependency and Plugin SDK are required to build Workers",
+            "Node.js, a plugin-local esbuild dependency and Plugin SDK are required to build plugin scripts",
         )
     for entry, destination in outputs:
         worker_source = source / "src" / f"{Path(entry).stem}.ts"
         if not worker_source.is_file():
             raise PluginPackageError(
                 "worker_source_missing",
-                f"declared Worker {entry!r} requires {worker_source.relative_to(source)}",
+                f"declared script {entry!r} requires {worker_source.relative_to(source)}",
             )
         completed = subprocess.run(
             [
@@ -439,6 +556,9 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--plugin-id", required=True)
     init.add_argument("--display-name", required=True)
     init.add_argument("--description")
+    init.add_argument(
+        "--template", choices=("application", "action", "combined"), default="combined"
+    )
     init.set_defaults(handler=_command_init)
 
     for name, handler, help_text in (

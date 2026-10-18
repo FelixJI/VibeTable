@@ -84,6 +84,9 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
         (("npm", "run", "typecheck"), "examples/plugins/surface-data-editor"),
         (("npm", "run", "test"), "examples/plugins/surface-data-editor"),
         (("npm", "run", "build"), "examples/plugins/surface-data-editor"),
+        (("npm", "run", "typecheck"), "examples/plugins/record-manager"),
+        (("npm", "run", "test"), "examples/plugins/record-manager"),
+        (("npm", "run", "build"), "examples/plugins/record-manager"),
         (("npm", "run", "test:coverage"), "desktop/web-grid"),
     ]
 
@@ -92,7 +95,7 @@ def test_core_node_stage_checks_plugins_and_preserves_web_coverage(
     ("project", "script", "expected_calls"),
     [
         ("examples/plugins/data-overview", "test", 4),
-        ("desktop/web-grid", "test:coverage", 12),
+        ("desktop/web-grid", "test:coverage", 15),
     ],
 )
 def test_node_stage_stops_on_plugin_or_web_failure(
@@ -1180,7 +1183,7 @@ def test_artifacts_directory_is_explicit_and_repository_relative(
 @pytest.mark.parametrize(
     ("lane", "expected"),
     [
-        ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
+        ("core", ["bootstrap", "npm-ci", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),
         ("race-a", ["w64devkit"]),
         ("race-b", ["w64devkit"]),
         ("resilience", ["uv-sync", "npm-ci", "npm-ci", "npm-ci", "npm-ci"]),

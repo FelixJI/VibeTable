@@ -655,7 +655,8 @@ def test_render_index_escapes_loader_valid_markdown_text() -> None:
     ) in rendered
 
 
-def test_check_generated_detects_manual_and_manifest_drift(tmp_path: Path) -> None:
+def test_check_generated_detects_manual_and_manifest_drift(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(capability_index, "REPO_ROOT", tmp_path / "isolated-repository")
     manifest_path = tmp_path / "scenarios.json"
     output_path = tmp_path / "capability-index.md"
     scenarios = [

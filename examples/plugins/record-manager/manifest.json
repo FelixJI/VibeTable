@@ -1,0 +1,77 @@
+{
+  "$schema": "vibetable.plugin-manifest.v2",
+  "pluginId": "com.vibetable.examples.record-manager",
+  "version": "1.0.0",
+  "displayName": {
+    "zh-CN": "记录管理示例应用"
+  },
+  "description": {
+    "zh-CN": "最小完整记录管理：概览 / 列表 / 详情表单三页，授权字段与关系、创建更新删除、预览批量规范化、导出与主题刷新，业务持久化仅经统一 surface API。"
+  },
+  "compatibility": {
+    "minHostVersion": "0.5.3",
+    "pluginApi": "3.x"
+  },
+  "permissions": {
+    "data": [
+      {
+        "collection": "$active",
+        "operations": [
+          "read",
+          "query",
+          "create",
+          "update",
+          "delete"
+        ],
+        "fields": [
+          "*"
+        ]
+      }
+    ],
+    "privateStorage": true,
+    "files": [
+      "pickWrite"
+    ],
+    "network": {
+      "domains": [],
+      "methods": []
+    }
+  },
+  "actions": [
+    {
+      "actionId": "open-manager",
+      "displayName": {
+        "zh-CN": "打开记录管理"
+      },
+      "description": {
+        "zh-CN": "完整业务视口应用：概览 / 列表 / 详情表单三个内部页面。"
+      },
+      "mode": "local",
+      "risk": "destructive",
+      "invocation": "manual",
+      "placements": [],
+      "presentation": "application",
+      "entry": "ui/index.html"
+    },
+    {
+      "actionId": "audit-snapshot",
+      "displayName": {
+        "zh-CN": "记录审计快照（无界面动作）"
+      },
+      "description": {
+        "zh-CN": "headless 动作：读取授权元数据并把权威计数保存到插件私有存储，不使用任何界面组件。"
+      },
+      "mode": "local",
+      "risk": "read",
+      "invocation": "manual",
+      "placements": [
+        "table.toolbar"
+      ],
+      "presentation": "headless",
+      "entry": "ui/audit.js"
+    }
+  ],
+  "ui": {
+    "customViews": []
+  }
+}

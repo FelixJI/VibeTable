@@ -2228,10 +2228,10 @@ def _run_node_runner_guarded(
         file_dialog_request = _read_json(file_dialog_path)
         if file_dialog_request is not None:
             file_dialog_path.unlink()
-            if (
-                "--scenario" not in command
-                or command[command.index("--scenario") + 1] != "52-plugin-capability-services"
-            ):
+            if "--scenario" not in command or command[command.index("--scenario") + 1] not in {
+                "52-plugin-capability-services",
+                "53-record-manager",
+            }:
                 file_result = {
                     "requestId": file_dialog_request.get("requestId"),
                     "status": "failed",
@@ -2260,6 +2260,7 @@ def _run_node_runner_guarded(
                     "50-plugin-headless-budget",
                     "51-plugin-application-commit-unknown",
                     "52-plugin-capability-services",
+                    "53-record-manager",
                 }:
                     native_result = {
                         "requestId": native_id,
@@ -2655,6 +2656,10 @@ def run_scenario(
         from tests.e2e.plugin_capability_packages import prepare_capability_packages
 
         prepare_capability_packages(controls_dir)
+    if scenario.id == "53-record-manager":
+        from tests.e2e.plugin_capability_packages import prepare_record_manager_package
+
+        prepare_record_manager_package(controls_dir)
     if scenario.id == "47-plugin-surface-api":
         source = ROOT / "examples/plugins/surface-data-editor"
         plugin_cli = ROOT / "scripts/vibetable_plugin.py"
@@ -2780,6 +2785,7 @@ def run_scenario(
         "50-plugin-headless-budget",
         "51-plugin-application-commit-unknown",
         "52-plugin-capability-services",
+        "53-record-manager",
     }:
         environment["VIBETABLE_DISABLE_PLUGIN_WORKER"] = "1"
     environment["VIBETABLE_WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
@@ -3256,6 +3262,7 @@ def run_product_acceptance(
             "50-plugin-headless-budget",
             "51-plugin-application-commit-unknown",
             "52-plugin-capability-services",
+            "53-record-manager",
         }
         for scenario in scenarios
     ):
@@ -3283,6 +3290,7 @@ def run_product_acceptance(
                 "50-plugin-headless-budget",
                 "51-plugin-application-commit-unknown",
                 "52-plugin-capability-services",
+                "53-record-manager",
             }
             and native_observer_error is not None
         ):

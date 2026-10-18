@@ -42,6 +42,7 @@ NPM_PROJECTS = (
     Path("examples/plugins/data-overview"),
     Path("examples/plugins/normalize-text"),
     Path("examples/plugins/surface-data-editor"),
+    Path("examples/plugins/record-manager"),
 )
 # Example plugins the resilience lane's product E2E rebuilds through the plugin
 # CLI (scenarios 11-plugin-mutation and 47-plugin-surface-api). The CLI resolves

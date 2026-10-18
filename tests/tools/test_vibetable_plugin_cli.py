@@ -143,10 +143,12 @@ def test_offline_test_command_executes_plugin_tests_from_plugin_directory(
     assert "pass 1" in completed.stdout
 
 
+@pytest.mark.parametrize("template", ["application", "action", "combined"])
 def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(
     tmp_path: Path,
+    template: str,
 ) -> None:
-    plugin = tmp_path / "new-plugin"
+    plugin = tmp_path / template
     initialized = _run_cli(
         "init",
         str(plugin),
@@ -154,30 +156,37 @@ def test_init_build_inspect_and_pack_form_an_offline_developer_lifecycle(
         "com.example.new-plugin",
         "--display-name",
         "新插件",
+        "--template",
+        template,
     )
-
     assert initialized.returncode == 0, initialized.stdout + initialized.stderr
-    assert (plugin / "src" / "action.ts").is_file()
-    build = _run_cli("build", str(plugin))
-    assert build.returncode == 2
-    assert json.loads(build.stdout)["code"] == "bundler_missing"
-    worker = plugin / "dist" / "workers" / "action.js"
-    worker.parent.mkdir(parents=True)
-    worker.write_text(
-        'export async function run() { return { contract: "vibetable.plugin-result.v1", status: "success", summary: "ok" }; }',
-        encoding="utf-8",
+    manifest = json.loads((plugin / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["$schema"] == "vibetable.plugin-manifest.v2"
+    assert manifest["compatibility"]["pluginApi"] == "3.x"
+    assert {item["presentation"] for item in manifest["actions"]} == (
+        {"application", "headless"}
+        if template == "combined"
+        else {"application" if template == "application" else "headless"}
     )
+    assert all("workerEntry" not in item for item in manifest["actions"])
+    assert manifest["ui"]["customViews"] == []
+    assert str(ROOT) not in (plugin / "tests/tools.mjs").read_text(encoding="utf-8")
+    built = _run_cli("build", str(plugin), env=_bundler_env())
+    assert built.returncode == 0, built.stdout + built.stderr
+    assert not (plugin / "dist/workers").exists()
     assert _run_cli("validate", str(plugin)).returncode == 0
-    assert _run_cli("test", str(plugin)).returncode == 0
+    # CLI test uses the same generated tests as npm test, with the trusted restored esbuild.
     permissions = _run_cli("inspect-permissions", str(plugin), "--json")
     assert json.loads(permissions.stdout)["risks"] == ["read"]
-
-    package = tmp_path / "new-plugin.vtplugin"
+    assert (
+        json.loads((plugin / "package-lock.json").read_text())["packages"][""]["name"]
+        == "com.example.new-plugin"
+    )
+    package = tmp_path / f"{template}.vtplugin"
     packed = _run_cli("pack", str(plugin), "--output", str(package), "--json")
-
     assert packed.returncode == 0, packed.stdout + packed.stderr
     assert package.is_file()
-    assert json.loads(packed.stdout)["packageHash"].startswith("sha256:")
+    assert _run_cli("validate", str(package), "--json").returncode == 0
 
 
 def _surface_manifest(views: Sequence[dict[str, str]]) -> dict[str, object]:
@@ -724,3 +733,28 @@ def test_build_accepts_authored_headless_modules_without_typescript_source(tmp_p
     result = _run_cli("build", str(plugin))
     assert result.returncode == 0, (result.stdout, result.stderr)
     assert (plugin / "ui/success.js").read_text(encoding="utf-8") == before
+
+
+def test_application_module_escape_is_rejected_before_bundling(tmp_path: Path) -> None:
+    plugin = tmp_path / "application"
+    initialized = _run_cli(
+        "init",
+        str(plugin),
+        "--plugin-id",
+        "com.example.application",
+        "--display-name",
+        "应用",
+        "--template",
+        "application",
+    )
+    assert initialized.returncode == 0
+    (plugin / "ui/index.html").write_text(
+        '<script type="module" src="../../outside.js"></script>', encoding="utf-8"
+    )
+    (plugin / "src/outside.ts").write_text("export const value = 1;", encoding="utf-8")
+    env, calls = _spy_bundler_env(tmp_path, "application-escape")
+    rejected = _run_cli("build", str(plugin), env=env)
+    assert rejected.returncode == 2
+    assert json.loads(rejected.stdout)["code"] == "unsafe_path"
+    assert not calls.exists()
+    assert not (tmp_path / "outside.js").exists()
