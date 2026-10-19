@@ -1517,6 +1517,83 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
+  it("keeps a legacy-layout report pending beyond the ordinary RPC budget until the Host settles it", async () => {
+    vi.useFakeTimers();
+    let counter = 0;
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 10_000,
+      generateRequestId: () => `report-budget-${++counter}`,
+    });
+    bridge.start();
+    const handle = bridge.requestWithHandle("legacyLayout.reportRequested", { reason: "detect" });
+    let settled = false;
+    void handle.promise.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    // A large workspace paginates far past any renderer wall-clock budget; the
+    // Host runner owns the terminal state (5-minute timeout + retirement).
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(settled).toBe(false);
+
+    webview.emit({
+      type: "legacyLayout.reportLoaded",
+      requestId: handle.requestId,
+      payload: { interfaces: 120, dashboards: 12, panels: 340, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" },
+    });
+    await expect(handle.promise).resolves.toMatchObject({ interfaces: 120 });
+    bridge.stop();
+  });
+
+  it("retires a host-owned legacy-layout report when its workspace session drains", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    const bridge = createHostBridge({ webview, generateRequestId: () => "report-retire-1" });
+    bridge.start();
+    const pending = bridge.request("legacyLayout.reportRequested", { reason: "detect" });
+    expect(session.beginClose()).toBe(true);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    bridge.stop();
+  });
+
+  it("forwards the correlated cancel protocol for an abandoned legacy-layout request", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    let counter = 0;
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1_000,
+      generateRequestId: () => `cancel-${++counter}`,
+    });
+    bridge.start();
+    const handle = bridge.requestWithHandle("legacyLayout.reportRequested", { reason: "detect" });
+    bridge.notify("legacyLayout.cancelRequested", { targetRequestId: handle.requestId });
+
+    const cancelEnvelope = webview.postMessage.mock.calls.at(-1)![0] as BridgeMessage & { scope?: unknown };
+    expect(cancelEnvelope).toMatchObject({
+      type: "legacyLayout.cancelRequested",
+      payload: { targetRequestId: handle.requestId },
+    });
+    // The Host controller requires a current workspace scope on the cancel.
+    expect(cancelEnvelope.scope).toMatchObject({
+      scope: "workspace",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
+    });
+
+    // The Host settles the TARGET request; the notify-only cancel itself
+    // never receives a correlated reply.
+    webview.emit({
+      type: "operation.failed",
+      requestId: handle.requestId,
+      payload: { message: "已取消保全。", code: "CANCELLED", operation: "legacyLayout.reportRequested" },
+    });
+    await expect(handle.promise).rejects.toMatchObject({ code: "CANCELLED" });
+    bridge.stop();
+  });
+
   it("blocks retired relation/Lookup schema writers while keeping read-only lookup access", () => {
     const bridge = createHostBridge({ webview, timeoutMs: 1000 });
     bridge.start();

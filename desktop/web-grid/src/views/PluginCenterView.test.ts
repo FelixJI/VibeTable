@@ -106,10 +106,14 @@ describe("PluginCenterView", () => {
     session.sessionEpoch = 7;
     let resolveExport!: (value: { cancelled: boolean; outputDisplayName: string }) => void;
     const bridge = createHostBridge({ webview: { postMessage: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined } });
-    const request = vi.spyOn(bridge, "request");
-    request.mockImplementation(((type: string) => type === "legacyLayout.reportRequested"
-      ? Promise.resolve({ interfaces: 1, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "today" })
-      : new Promise(resolve => { resolveExport = resolve; })) as HostBridge["request"]);
+    const requestWithHandle = vi.spyOn(bridge, "requestWithHandle");
+    let sequence = 0;
+    requestWithHandle.mockImplementation(((type: string) => {
+      const requestId = `${type}-${++sequence}`;
+      return type === "legacyLayout.reportRequested"
+        ? { requestId, promise: Promise.resolve({ interfaces: 1, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "today" }) }
+        : { requestId, promise: new Promise<{ cancelled: boolean; outputDisplayName: string }>(resolve => { resolveExport = resolve; }) };
+    }) as HostBridge["requestWithHandle"]);
     setHostBridgeForTesting(bridge);
     const wrapper = mount(PluginCenterView, { props: { autoLoad: false } });
     await wrapper.get('[data-testid="legacy-layout-detect"]').trigger("click");
@@ -124,6 +128,112 @@ describe("PluginCenterView", () => {
     await flushPromises();
     expect(wrapper.text()).not.toContain("stale.json");
     wrapper.unmount();
+  });
+
+  it("cancels an unfinished detection on unmount and keeps a fresh detection free of stale results", async () => {
+    const posted: { type: string; requestId?: string; payload?: { targetRequestId?: string } }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `legacy-lifecycle-${++sequence}`,
+      webview: {
+        postMessage: (message) => { posted.push(message as (typeof posted)[number]); },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const first = mount(PluginCenterView, { props: { autoLoad: false } });
+    await first.get('[data-testid="legacy-layout-detect"]').trigger("click");
+    await flushPromises();
+    expect(posted.find(message => message.type === "legacyLayout.reportRequested")).toMatchObject({
+      requestId: "legacy-lifecycle-1",
+      payload: { reason: "detect" },
+    });
+    expect(first.get('[data-testid="legacy-layout-detect"]').attributes("disabled")).toBeDefined();
+
+    first.unmount();
+    // Unmounting mid-scan must free the Host's single preservation gate by
+    // cancelling exactly the correlated request that is still running.
+    expect(posted.filter(message => message.type === "legacyLayout.cancelRequested")).toMatchObject([
+      { payload: { targetRequestId: "legacy-lifecycle-1" } },
+    ]);
+
+    // The abandoned scan may still settle after its cancel; the fresh panel
+    // must stay isolated from that late result and from the old promise.
+    const second = mount(PluginCenterView, { props: { autoLoad: false } });
+    await second.get('[data-testid="legacy-layout-detect"]').trigger("click");
+    await flushPromises();
+    listener?.({ data: {
+      type: "legacyLayout.reportLoaded",
+      requestId: "legacy-lifecycle-1",
+      payload: { interfaces: 99, dashboards: 99, panels: 99, diagnostics: [], collectedAt: "stale" },
+    } });
+    await flushPromises();
+    expect(second.find('[data-testid="legacy-layout-counts"]').exists()).toBe(false);
+    listener?.({ data: {
+      type: "legacyLayout.reportLoaded",
+      requestId: "legacy-lifecycle-2",
+      payload: { interfaces: 2, dashboards: 1, panels: 4, diagnostics: [], collectedAt: "fresh" },
+    } });
+    await flushPromises();
+    expect(second.get('[data-testid="legacy-layout-counts"]').text()).toContain("Interface 2");
+    second.unmount();
+    bridge.stop();
+  });
+
+  it("cancels an in-flight export on unmount and still reports saved material afterwards", async () => {
+    const posted: { type: string; requestId?: string; payload?: unknown }[] = [];
+    let listener: ((event: { data: unknown }) => void) | undefined;
+    let sequence = 0;
+    const bridge = createHostBridge({
+      generateRequestId: () => `export-lifecycle-${++sequence}`,
+      webview: {
+        postMessage: (message) => { posted.push(message as (typeof posted)[number]); },
+        addEventListener: (_type, handler) => { listener = handler; },
+        removeEventListener: () => undefined,
+      },
+    });
+    bridge.start();
+    setHostBridgeForTesting(bridge);
+    const report = { interfaces: 1, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "today" };
+    const first = mount(PluginCenterView, { props: { autoLoad: false } });
+    await first.get('[data-testid="legacy-layout-detect"]').trigger("click");
+    listener?.({ data: { type: "legacyLayout.reportLoaded", requestId: "export-lifecycle-1", payload: report } });
+    await flushPromises();
+    await first.get('[data-testid="legacy-layout-export"]').trigger("click");
+    await flushPromises();
+
+    first.unmount();
+    expect(posted.filter(message => message.type === "legacyLayout.cancelRequested")).toMatchObject([
+      { payload: { targetRequestId: "export-lifecycle-2" } },
+    ]);
+    // A late completion of the abandoned export settles its isolated promise
+    // and must neither throw nor leak into any surface.
+    listener?.({ data: {
+      type: "legacyLayout.exportCompleted",
+      requestId: "export-lifecycle-2",
+      payload: { cancelled: false, outputDisplayName: "late.json" },
+    } });
+    await flushPromises();
+
+    const second = mount(PluginCenterView, { props: { autoLoad: false } });
+    await second.get('[data-testid="legacy-layout-detect"]').trigger("click");
+    listener?.({ data: { type: "legacyLayout.reportLoaded", requestId: "export-lifecycle-3", payload: report } });
+    await flushPromises();
+    await second.get('[data-testid="legacy-layout-export"]').trigger("click");
+    listener?.({ data: {
+      type: "legacyLayout.exportCompleted",
+      requestId: "export-lifecycle-4",
+      payload: { cancelled: false, outputDisplayName: "saved.json" },
+    } });
+    await flushPromises();
+    expect(second.text()).toContain("已保存保全材料：saved.json");
+    second.unmount();
+    // A completed request is no longer in flight: unmount posts no extra cancel.
+    expect(posted.filter(message => message.type === "legacyLayout.cancelRequested")).toHaveLength(1);
+    bridge.stop();
   });
 
   it("projects canonical manifest blockers and permissions", () => {

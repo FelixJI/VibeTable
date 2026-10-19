@@ -4,12 +4,16 @@
  * read-only preservation channel. The renderer may request a detection report
  * and ask the Host to save an authoritative preservation snapshot; it never
  * supplies export content or a target path, and no import/execution entry
- * exists on this contract.
+ * exists on this contract. Abandoning an in-flight request uses the
+ * fire-and-forget `legacyLayout.cancelRequested` envelope: the Host cancels
+ * the correlated target request (freeing its single concurrency gate) and
+ * settles the TARGET with `CANCELLED`; the cancel itself gets no reply.
  */
 
 export type LegacyLayoutWebMessageType =
   | "legacyLayout.reportRequested"
-  | "legacyLayout.exportRequested";
+  | "legacyLayout.exportRequested"
+  | "legacyLayout.cancelRequested";
 
 export type LegacyLayoutHostMessageType =
   | "legacyLayout.reportLoaded"
@@ -40,6 +44,16 @@ export interface LegacyLayoutReportRequest {
 
 export type LegacyLayoutExportRequest = Readonly<Record<string, never>>;
 
+/**
+ * Renderer cancellation of an in-flight preservation request: the Host
+ * correlates `targetRequestId` and settles the TARGET (`CANCELLED`); the
+ * cancel envelope itself is notify-only (no correlated reply) but must carry
+ * the current workspace scope just like the requests it cancels.
+ */
+export interface LegacyLayoutCancelRequest {
+  readonly targetRequestId: string;
+}
+
 export interface LegacyLayoutExportResult {
   readonly cancelled: boolean;
   /** Display name of the saved file; never a filesystem path. */
@@ -49,6 +63,7 @@ export interface LegacyLayoutExportResult {
 export interface LegacyLayoutWebPayloadMap {
   "legacyLayout.reportRequested": LegacyLayoutReportRequest;
   "legacyLayout.exportRequested": LegacyLayoutExportRequest;
+  "legacyLayout.cancelRequested": LegacyLayoutCancelRequest;
 }
 
 export interface LegacyLayoutHostPayloadMap {
@@ -59,6 +74,7 @@ export interface LegacyLayoutHostPayloadMap {
 export const LEGACY_LAYOUT_WEB_MESSAGE_TYPES = [
   "legacyLayout.reportRequested",
   "legacyLayout.exportRequested",
+  "legacyLayout.cancelRequested",
 ] as const satisfies readonly LegacyLayoutWebMessageType[];
 
 export const LEGACY_LAYOUT_HOST_MESSAGE_TYPES = [
@@ -69,4 +85,6 @@ export const LEGACY_LAYOUT_HOST_MESSAGE_TYPES = [
 export interface LegacyLayoutRequestResults {
   "legacyLayout.reportRequested": LegacyLayoutReport;
   "legacyLayout.exportRequested": LegacyLayoutExportResult;
+  /** Cancellation is notify-only; the Host settles the target request instead. */
+  "legacyLayout.cancelRequested": never;
 }

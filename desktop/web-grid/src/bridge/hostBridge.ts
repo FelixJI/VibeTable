@@ -590,14 +590,18 @@ const HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES: ReadonlySet<WebMessageType> = new Se
   "tableAdmin.createRequested",
   "tableAdmin.deleteRequested",
 ]);
-const HOST_OWNED_NATIVE_ACTION_MESSAGES: ReadonlySet<WebMessageType> = new Set([
+// Requests whose terminal state the Host owns (native dialog, wizard, or a
+// host-side lifecycle with its own timeout); the renderer arms no local
+// wall-clock timer and only stop()/workspace retirement settle locally.
+const HOST_OWNED_TERMINAL_STATE_MESSAGES: ReadonlySet<WebMessageType> = new Set([
   "sourceImport.open",
   "file.previewRequested",
   "file.downloadRequested",
-  // The legacy-layout preservation export waits in the host-owned
-  // SaveFileDialog; the native dialog owns completion and stop() still
-  // clears the pending entry. The renderer never supplies content or path.
+  // Both block on host-owned work (SaveFileDialog; paginated collection scan)
+  // that can outlast any renderer budget; abandonment cancels explicitly via
+  // legacyLayout.cancelRequested.
   "legacyLayout.exportRequested",
+  "legacyLayout.reportRequested",
 ]);
 
 function containsHostPickerSentinel(value: unknown): boolean {
@@ -683,7 +687,7 @@ export interface HostBridge {
   requestWithHandle<K extends LegacyLayoutWebMessageType>(
     type: K,
     payload: LegacyLayoutWebPayloadMap[K],
-  ): { readonly requestId: string; readonly promise: Promise<unknown> };
+  ): { readonly requestId: string; readonly promise: Promise<LegacyLayoutRequestResults[K]> };
   requestWithHandle<K extends SharedWebMessageType>(
     type: K,
     payload: SharedWebPayloadMap[K],
@@ -1125,7 +1129,7 @@ export function createHostBridge(options: HostBridgeOptions = {}): HostBridge {
             ? null
           : HOST_OWNED_SCHEMA_LIFECYCLE_MESSAGES.has(type)
             ? null
-          : HOST_OWNED_NATIVE_ACTION_MESSAGES.has(type)
+          : HOST_OWNED_TERMINAL_STATE_MESSAGES.has(type)
             ? null
           : type === "workspace.v2.request" && isWorkspaceBootstrapRequest(payload)
             ? workspaceBootstrapTimeoutMs

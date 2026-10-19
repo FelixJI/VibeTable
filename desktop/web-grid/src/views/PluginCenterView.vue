@@ -37,29 +37,60 @@ const legacyReport = ref<LegacyLayoutReport | null>(null);
 const legacyBusy = ref(false);
 const legacyStatus = ref("");
 let legacyGeneration = 0;
+// Host preservation runs behind a single concurrency gate: abandoning the panel without cancelling keeps that gate busy until the Host's own timeout.
+let legacyInFlightId: string | null = null;
+function cancelLegacyRequest(): void {
+  const target = legacyInFlightId;
+  legacyInFlightId = null;
+  if (target === null) return;
+  // Draining/rotating sessions cancel scoped requests via the Host lease; a stale-scope cancel would only broadcast an unrelated failure.
+  if (workspaceSession.enabled && (!workspaceSession.hasOpenWorkspace || workspaceSession.isTransitioning)) return;
+  try {
+    bridge.notify("legacyLayout.cancelRequested", { targetRequestId: target });
+  } catch {
+    // Best effort only; the Host timeout and workspace retirement remain the backstop.
+  }
+}
 async function detectLegacy(): Promise<void> {
   const generation = ++legacyGeneration;
+  cancelLegacyRequest();
   legacyBusy.value = true;
   legacyStatus.value = "";
+  let requestId: string | null = null;
   try {
-    const report = await bridge.request("legacyLayout.reportRequested", { reason: "detect" });
+    const handle = bridge.requestWithHandle("legacyLayout.reportRequested", { reason: "detect" });
+    requestId = handle.requestId;
+    legacyInFlightId = requestId;
+    const report = await handle.promise;
     if (generation === legacyGeneration) legacyReport.value = report;
   } catch (error) {
     if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "旧布局检测失败";
-  } finally { if (generation === legacyGeneration) legacyBusy.value = false; }
+  } finally {
+    if (legacyInFlightId === requestId) legacyInFlightId = null;
+    if (generation === legacyGeneration) legacyBusy.value = false;
+  }
 }
 async function exportLegacy(): Promise<void> {
   const generation = legacyGeneration;
   legacyBusy.value = true;
+  let requestId: string | null = null;
   try {
-    const result = await bridge.request("legacyLayout.exportRequested", {});
+    const handle = bridge.requestWithHandle("legacyLayout.exportRequested", {});
+    requestId = handle.requestId;
+    legacyInFlightId = requestId;
+    const result = await handle.promise;
     if (generation === legacyGeneration) legacyStatus.value = result.cancelled ? "已取消保存，原定义未改变。" : `已保存保全材料：${result.outputDisplayName}`;
   } catch (error) {
     if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "保全失败，原定义未改变";
-  } finally { if (generation === legacyGeneration) legacyBusy.value = false; }
+  } finally {
+    if (legacyInFlightId === requestId) legacyInFlightId = null;
+    if (generation === legacyGeneration) legacyBusy.value = false;
+  }
 }
 watch(() => [store.projectKey, workspaceSession.sessionEpoch, workspaceSession.sessionState], () => {
   ++legacyGeneration;
+  // Retire the abandoned request under its captured id so the next generation never queues behind it on the Host gate.
+  cancelLegacyRequest();
   legacyReport.value = null;
   legacyBusy.value = false;
   legacyStatus.value = "";
@@ -248,7 +279,7 @@ onMounted(() => {
     if (store.selectedPlugin) auditEvents.value = await service.listAudit(store.selectedPlugin.pluginId);
   });
 });
-onBeforeUnmount(() => { ++legacyGeneration; service.dispose(); });
+onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispose(); });
 </script>
 
 <template>
