@@ -48,6 +48,7 @@ func presetProductMux(t *testing.T, pb *pocketbase.PocketBase, gates ...business
 			unrelatedPresetRegistration(t, "interface.delete"),
 			unrelatedPresetRegistration(t, "interface.list"),
 			unrelatedPresetRegistration(t, "interface.load"),
+			unrelatedLegacyLayoutSnapshotRegistration(t),
 			unrelatedPresetRegistration(t, "insights.dashboardQueryLimits"),
 			unrelatedPresetRegistration(t, "insights.deleteDashboardWorkspace"),
 			unrelatedPresetRegistration(t, "insights.executeDashboardQuery"),

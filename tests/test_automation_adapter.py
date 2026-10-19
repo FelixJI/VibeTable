@@ -452,7 +452,7 @@ def test_ci_candidate_download_binds_current_run_and_propagates_failure(
     assert ("candidate-consumer-reached" in output) is (download_exit == 0)
 
 
-def test_candidate_prepare_bootstraps_only_release_build_dependencies(
+def test_candidate_prepare_bootstraps_release_and_replacement_plugin_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[tuple[str, ...], Path]] = []
@@ -488,6 +488,10 @@ def test_candidate_prepare_bootstraps_only_release_build_dependencies(
         (
             ("npm", "ci"),
             automation_project.REPO_ROOT / "desktop" / "web-grid",
+        ),
+        (
+            ("npm", "ci"),
+            automation_project.REPO_ROOT / "examples/plugins/surface-data-editor",
         ),
         (
             ("dotnet", "restore", "desktop/VibeTable.Desktop.sln"),

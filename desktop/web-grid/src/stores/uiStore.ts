@@ -4,7 +4,7 @@ import { getLocale, setLocale, type Locale } from "@/i18n";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type SystemBaseTheme = "light" | "dark";
-export type AppView = "home" | "tables" | "imports" | "dashboard" | "interfaces" | "files" | "search" | "conflicts" | "plugins" | "settings";
+export type AppView = "home" | "tables" | "imports" | "files" | "search" | "conflicts" | "plugins" | "settings";
 export type StartupPage = "home" | "tables";
 export type WorkspaceStartupPolicy = "lastWorkspace" | "workspaceCenter";
 export type DensityMode = "comfortable" | "compact";

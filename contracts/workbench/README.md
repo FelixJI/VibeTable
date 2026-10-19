@@ -1,6 +1,6 @@
 # Offline workbench contracts
 
-`workbench.schema.json` 是 ViewQuery、DataBinding、Interface、Search、Formula author document、
+`workbench.schema.json` 是 ViewQuery、DataBinding、ContentProfile、RecordDocumentLink、Search、Formula author document、
 computed envelope 与 schema audit event 的唯一语言无关事实源。
 
 生成器只接受 `x-vibetable-generate` 中列出的、全部字段 required 且 `additionalProperties: false` 的闭合对象；遇到开放对象、可选字段或不支持的 `$ref` 会失败。生成物不包含字段资格、查询规划、搜索排名等业务规则。
@@ -19,3 +19,5 @@ Schema 只冻结可跨语言严格解码的结构。token kind 与 ID 组合、r
 `ComputedCellEnvelope.state` 的公开闭集为 `ready`、`updating`、`failed`、`cancelled`、`invalid` 和
 `too_expensive`。旧的 `pending`、`stale`、`error` 不属于该契约；各状态对 value、diagnostic 与 freshness
 版本的组合约束由计算 runtime owner 统一实施。
+
+Interface 设计器 DTO 已退役；历史布局经 `legacyLayout.snapshot` 作为原始 JSON 保全，不再生成可执行设计器定义或提交契约。

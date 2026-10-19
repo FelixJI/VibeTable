@@ -381,15 +381,6 @@ class PocketBaseClient:
             "internal metadata deletion",
         )
 
-    async def commit_dashboard_metadata(
-        self,
-        request: Mapping[str, JsonValue],
-    ) -> JsonObject:
-        return _object(
-            await self._post(METADATA_PATH + "/dashboards/commit", request),
-            "dashboard metadata commit",
-        )
-
     async def plugin_store(
         self,
         operation: str,

@@ -132,7 +132,7 @@ func (service *PresetService) Save(ctx context.Context, request PresetRequest) (
 		if err != nil {
 			return nil, nil, err
 		}
-		item, change, err := service.metadata.upsert(tx, NamespacePresets, ItemMutation{LogicalID: id, Payload: raw, ExpectedRevision: expected}, "", "")
+		item, change, err := service.metadata.upsert(tx, NamespacePresets, ItemMutation{LogicalID: id, Payload: raw, ExpectedRevision: expected}, "")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -160,7 +160,7 @@ func (service *PresetService) Delete(ctx context.Context, request PresetRequest)
 		if current == nil || current.Revision != *request.ExpectedRevision {
 			return nil, nil, &PresetError{"preset_edit_conflict", "Preset changed elsewhere.", "expectedRevision"}
 		}
-		change, err := service.metadata.delete(tx, NamespacePresets, ItemDelete{LogicalID: *request.PresetID, ExpectedRevision: *request.ExpectedRevision}, "", "")
+		change, err := service.metadata.delete(tx, NamespacePresets, ItemDelete{LogicalID: *request.PresetID, ExpectedRevision: *request.ExpectedRevision}, "")
 		return map[string]any{"deleted": *request.PresetID, "status": StatusApplied}, []metadataChange{change}, err
 	}, decoratePresetReceipt, func(*presetReceipt) {}, func() error { return writecoordinator.ReplayedBusinessWrite(ctx, "metadata.presets.delete", key) })
 	return result, presetMutationError(err)

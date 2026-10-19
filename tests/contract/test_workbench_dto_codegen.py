@@ -46,7 +46,6 @@ def test_generated_dtos_are_current_and_schema_subset_is_closed() -> None:
     assert {name for name, _ in selected} >= {
         "ViewQuery",
         "DataBinding",
-        "InterfaceDefinition",
         "SearchRequest",
         "SearchHit",
         "SearchStatus",

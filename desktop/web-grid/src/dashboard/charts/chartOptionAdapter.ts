@@ -1,4 +1,4 @@
-import type { DashboardPanel } from "../types";
+import type { DashboardChartInput } from "../types";
 import { lttb, prepareBarData, preparePieData, type CategoryValue } from "../sampling";
 import type { DashboardChartOption } from "./echartsCore";
 
@@ -12,7 +12,7 @@ export interface DashboardChartSelection {
 }
 
 export function buildDashboardChartOption(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   rows: readonly Record<string, unknown>[],
   dark: boolean,
   otherLabel = "Other",
@@ -134,7 +134,7 @@ export function buildDashboardChartOption(
   };
 }
 
-export function dashboardMeasureKeys(panel: DashboardPanel): string[] {
+export function dashboardMeasureKeys(panel: DashboardChartInput): string[] {
   if (Array.isArray(panel.query.measures)) {
     const keys = panel.query.measures.flatMap((item) => isRecord(item) && typeof item.key === "string" ? [item.key] : []);
     if (keys.length > 0) return keys;
@@ -143,7 +143,7 @@ export function dashboardMeasureKeys(panel: DashboardPanel): string[] {
 }
 
 export function extractCategories(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   rows: readonly Record<string, unknown>[],
   measureKey?: string,
 ): CategoryValue[] {
@@ -170,7 +170,7 @@ export function numericValue(row: Record<string, unknown>): number {
 }
 
 function categoryLabel(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   row: Record<string, unknown>,
   index: number,
   measureKeys = new Set<string>(),
@@ -180,7 +180,7 @@ function categoryLabel(
 }
 
 function categorySelectionValue(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   row: Record<string, unknown>,
   index: number,
   measureKeys = new Set<string>(),
@@ -199,7 +199,7 @@ function categorySelectionValue(
   return index + 1;
 }
 
-function numericX(panel: DashboardPanel, row: Record<string, unknown>, index: number): number {
+function numericX(panel: DashboardChartInput, row: Record<string, unknown>, index: number): number {
   const timeBucket = isRecord(panel.query.timeBucket) ? panel.query.timeBucket : null;
   const timeField = typeof timeBucket?.field === "string" ? timeBucket.field : null;
   if (timeField) {
@@ -219,7 +219,7 @@ function parseTimeValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function timeSelectionValue(panel: DashboardPanel, row: Record<string, unknown>, x: number): string {
+function timeSelectionValue(panel: DashboardChartInput, row: Record<string, unknown>, x: number): string {
   const timeBucket = isRecord(panel.query.timeBucket) ? panel.query.timeBucket : null;
   const field = typeof timeBucket?.field === "string" ? timeBucket.field : null;
   const parsed = parseTimeValue(field ? row[field] : undefined);
@@ -227,7 +227,7 @@ function timeSelectionValue(panel: DashboardPanel, row: Record<string, unknown>,
 }
 
 function rowSelection(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   row: Record<string, unknown>,
   index: number,
   measureKeys = new Set<string>(),
@@ -244,7 +244,7 @@ function rowSelection(
 }
 
 function timeRowSelection(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   row: Record<string, unknown>,
   x: number,
 ): DashboardChartSelection {
@@ -258,7 +258,7 @@ function timeRowSelection(
   return { primaryField: timeField, primaryValue: timeValue, values };
 }
 
-function dimensionKeys(panel: DashboardPanel): string[] {
+function dimensionKeys(panel: DashboardChartInput): string[] {
   return Array.isArray(panel.query.dimensions)
     ? panel.query.dimensions.filter((item): item is string => typeof item === "string")
     : [];
@@ -278,7 +278,7 @@ export function dashboardChartSelectionValue(event: unknown): unknown {
 }
 
 export function dashboardChartKeyboardSelections(
-  panel: DashboardPanel,
+  panel: DashboardChartInput,
   rows: readonly Record<string, unknown>[],
   limit = 200,
 ): Array<{ label: string; value: unknown }> {

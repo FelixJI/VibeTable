@@ -17,8 +17,6 @@ public sealed class WorkspaceRequestDispatcher :
     private readonly WorkspaceTableRequestController _tableController;
     private readonly ProductDataRequestController _productController;
     private readonly GridRequestController _gridController;
-    private readonly DashboardRequestController _dashboardController;
-    private readonly SurfaceRequestController _surfaceController;
     private readonly DocumentBrowseRequestController _documentController;
     private readonly RequestRoute[] _routes;
     private readonly PluginProjectContextBindingRegistry _pluginBindings;
@@ -151,15 +149,6 @@ public sealed class WorkspaceRequestDispatcher :
                 sessionEnvelopeFilter);
         _gridController = new GridRequestController(
             coordinator, _reply, () => _workspaceSessionToken, sessionEnvelopeFilter);
-        _dashboardController = new DashboardRequestController(
-            _reply,
-            correlatedRequestTimeout,
-            () => _workspaceSessionToken,
-            sessionEnvelopeFilter);
-        _surfaceController = new SurfaceRequestController(
-            _reply,
-            correlatedRequestTimeout,
-            () => _workspaceSessionToken);
         _documentController = new DocumentBrowseRequestController(
             _reply,
             readRecoveryTimeout);
@@ -168,8 +157,6 @@ public sealed class WorkspaceRequestDispatcher :
             new(_tableController.HandlesRequest, _tableController.DispatchAsync),
             new(ProductDataRequestController.Handles, _productController.DispatchAsync),
             new(GridRequestController.Handles, _gridController.DispatchAsync),
-            new(DashboardRequestController.Handles, _dashboardController.DispatchAsync),
-            new(SurfaceRequestController.Handles, _surfaceController.DispatchAsync),
             new(DocumentBrowseRequestController.Handles, _documentController.DispatchAsync),
         ];
     }
@@ -229,6 +216,7 @@ public sealed class WorkspaceRequestDispatcher :
         PluginProjectContext? context,
         CancellationToken sessionToken = default)
     {
+        _workspaceSessionToken = sessionToken;
         _authority.Transition(context, sessionToken);
         PostRetiredDatabaseOpenCancellations(
             RetireDatabaseOpensAfterAuthorityTransition(context, sessionToken));
@@ -248,17 +236,6 @@ public sealed class WorkspaceRequestDispatcher :
         if (_ownsPluginBindings) _pluginBindings.Dispose();
         if (_ownsAuthority) _authority.Dispose();
     }
-
-    public void SetDashboardGateway(
-        IDashboardRpcGateway gateway,
-        CancellationToken sessionToken = default)
-    {
-        _workspaceSessionToken = sessionToken;
-        _dashboardController.SetGateway(gateway, sessionToken);
-    }
-
-    public void SetSurfaceGateway(ISurfaceRpcGateway gateway)
-        => _surfaceController.SetGateway(gateway);
 
     public void SetDocumentWorkspace(WorkspaceDocumentOsAdapter documents)
         => _documentController.SetWorkspace(documents);

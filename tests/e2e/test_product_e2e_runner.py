@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import base64
 import hashlib
+import inspect
 import io
 import json
 import sqlite3
@@ -1994,13 +1995,14 @@ def test_new_capability_scenarios_are_driven_through_product_ui() -> None:
     assert 'getByTestId("snapshot-export-open")' in workspace
     assert 'getByTestId("snapshot-import")' in workspace
     assert "requestWithStaleWorkspaceScope" in workspace
-    assert 'getByTestId("dashboard-create")' in dashboard
-    assert 'getByTestId("dashboard-save")' in dashboard
-    assert 'getByTestId("dashboard-refresh")' in dashboard
-    assert 'getByTestId("nav-interfaces")' in interface
-    assert 'getByTestId("interface-add-text")' in interface
-    assert 'getByTestId("interface-save")' in interface
-    assert 'getByTestId("interface-run")' in interface
+    assert "seedLegacyLayoutProduct" in dashboard
+    assert "rejectLegacyRoutes" in interface
+    assert "runRecordManagerProduct" in interface
+    legacy = (runner.NODE_RUNNER.parent / "legacy_layout_product.mjs").read_text(encoding="utf-8")
+    assert 'getByTestId("legacy-layout-counts")' in legacy
+    assert "resumeLegacyLayoutProduct" in legacy
+    assert "runApplicationPrint" in legacy
+    assert "activateRestartedWorkspace(page, state.workspaceId)" in legacy
     assert 'getByTestId("nav-search")' in search
     search_submit = runner.NODE_RUNNER.with_name("workspace_search_submit.mjs").read_text(
         encoding="utf-8"
@@ -4175,56 +4177,37 @@ def test_long_scenario_names_do_not_expand_the_packaged_runtime_path(tmp_path: P
     assert scenario.id not in str(runtime_dir)
 
 
-def test_dashboard_scenario_clears_the_default_name_before_asserting_empty_validation() -> None:
-    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario16") : source.index("const scenarios")]
-    clear = 'getByTestId("dashboard-create-name").locator("input").fill("")'
-    disabled = 'recorder.check("Dashboard rejects an empty name before persistence"'
-
-    assert clear in scenario
-    assert scenario.index(clear) < scenario.index(disabled)
-
-
-def test_dashboard_filter_waits_for_the_unbound_metric_to_settle() -> None:
-    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario16") : source.index("const scenarios")]
-    filter_action = scenario.index(
-        'await addVisibleNTagOption(page, "dashboard-filter-value-region"'
+def test_legacy_scenario_rejects_forged_export_before_adopting_plugin() -> None:
+    source = (runner.NODE_RUNNER.parent / "legacy_layout_product.mjs").read_text(encoding="utf-8")
+    assert '"legacyLayout.exportRequested", payload' in source
+    assert 'rejected.payload?.code === "BAD_PAYLOAD"' in source
+    assert source.index("const snapshot = await exportLegacyProduct") < source.index(
+        'await installApplication(page, runtime, "record-manager"'
     )
-    assertion = scenario.index(
-        'recorder.check("the real FilterBar limits only its explicitly bound record panel"'
+
+
+def test_legacy_scenario_reconciles_authority_rows_and_original_definitions() -> None:
+    source = (runner.NODE_RUNNER.parent / "legacy_layout_product.mjs").read_text(encoding="utf-8")
+    assert "row.id === item.recordId" in source
+    assert "row.payload_json === item.rawPayload" in source
+    assert "row.parent_id" in source
+    assert "isDeepStrictEqual(before.legacyPreservation, after.legacyPreservation)" in source
+    assert 'frame.locator("#list-body")' in source
+
+
+def test_legacy_scenario_reopens_the_same_workspace_after_plugin_adoption() -> None:
+    assert runner._PERSISTENT_RESTART_SEED_FIELDS["16-dashboard-lifecycle"] == (
+        "workspaceId",
+        "tableId",
+        "field",
+        "projectKey",
     )
-    setup = scenario[:filter_action]
-    synchronization = scenario[filter_action:assertion]
-
-    assert "const filterQueryStart = await page.evaluate" in setup
-    assert "__vibetableE2EBridgeDiagnostics?.roundTrips" in synchronization
-    assert ".slice(start)" in synchronization
-    assert 'item.requestType === "dashboard.queryRequested"' in synchronization
-    assert 'item.responseType === "dashboard.queryLoaded"' in synchronization
-    assert 'querySelector(".metric-panel strong")?.textContent?.trim()' in synchronization
-    assert 'metricValue === "2"' in synchronization
-    assert 'locator(".metric-panel strong").innerText()' in synchronization
-    assert 'metricValue.trim() === "2"' in scenario[filter_action:]
-
-
-def test_dashboard_conflict_reload_reads_the_winning_note_through_settings() -> None:
-    source = runner.NODE_RUNNER.read_text(encoding="utf-8")
-    scenario = source[source.index("async function scenario16") : source.index("const scenarios")]
-    reload_conflict = scenario.index('getByTestId("dashboard-reload-conflict").click()')
-    setup = scenario[:reload_conflict]
-    recovery = scenario[reload_conflict:]
-
-    assert "const conflictReloadStart = await page.evaluate" in setup
-    assert ".slice(start)" in recovery
-    assert 'item.requestType === "dashboard.readRequested"' in recovery
-    assert 'item.responseType === "dashboard.loaded"' in recovery
-    assert 'const editAfterReload = page.getByTestId("dashboard-edit")' in recovery
-    assert "await editAfterReload.click()" in recovery
-    assert 'const configureAfterReload = page.getByTestId("dashboard-configure")' in recovery
-    assert "await configureAfterReload.click()" in recovery
-    assert 'getByTestId("dashboard-settings-note")' in recovery
-    assert 'reloadedNote === "competing E2E save"' in recovery
+    source = inspect.getsource(runner._run_host_presentation_restart_acceptance)
+    assert source.index('seed.get("lifecycle", {}).get("status") != "passed"') < source.index(
+        "seed_legacy_layouts("
+    )
+    assert 'phase_results["reopened"] = reopened' in source
+    assert '"LEGACY_REOPEN_FAILED"' in source
 
 
 def test_workspace_switch_scenario_accepts_the_closed_stale_session_error() -> None:

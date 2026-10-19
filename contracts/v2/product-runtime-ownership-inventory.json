@@ -380,8 +380,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "goSidecar",
-        "pocketBase"
+        "goSidecar"
       ],
       "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
@@ -403,8 +402,7 @@
         "state": []
       },
       "stateHolders": [
-        "goSidecar",
-        "pocketBase"
+        "goSidecar"
       ],
       "stateLifetime": "workspace",
       "cancellation": "cooperative",
@@ -414,12 +412,12 @@
       ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Dashboard Product owner serves all seven aggregate methods; Python Dashboard handlers and generic Dashboard/Panel writes are retired.",
+      "deleteWhen": "Retired methods are explicit host-only rejection tombstones. No layout read, write or execution remains registered; legacyLayout.snapshot is the separate read-only preservation path.",
       "evidence": [
-        "sidecar/internal/app/dashboard_product_rpc.go",
-        "sidecar/internal/metadata/dashboard.go",
-        "desktop/src/VibeTable.Desktop/Services/JsonRpcDashboardGateway.cs",
-        "contracts/v2/dashboard-python-oracle.json"
+        "sidecar/internal/app/legacy_layout_rpc.go",
+        "sidecar/internal/app/app.go",
+        "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
+        "tests/e2e/legacy_layout_product.mjs"
       ]
     },
     {
@@ -474,23 +472,39 @@
     {
       "id": "rpc.data-import-history",
       "kind": "rpc",
-      "names": ["data.importHistory"],
-      "currentPath": ["renderer", "wpfHost", "goSidecar", "pocketBase"],
+      "names": [
+        "data.importHistory"
+      ],
+      "currentPath": [
+        "renderer",
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
       "currentRoute": "wpfHost",
       "classification": "HOST_NATIVE",
       "targetOwner": "HOST_NATIVE",
       "authority": "HOST_NATIVE",
       "effects": {
-        "read": ["data.importHistory"],
+        "read": [
+          "data.importHistory"
+        ],
         "write": [],
         "notification": [],
         "state": []
       },
-      "stateHolders": ["goSidecar", "pocketBase", "wpfHost"],
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase",
+        "wpfHost"
+      ],
       "stateLifetime": "workspace",
       "cancellation": "cooperative",
       "timeout": "operationBounded",
-      "productScenarios": ["04-json-round-trip", "09-atomic-import-scale"],
+      "productScenarios": [
+        "04-json-round-trip",
+        "09-atomic-import-scale"
+      ],
       "targetSlice": "L7",
       "targetPr": null,
       "deleteWhen": "Host overlays only its current live import tasks on Go-owned durable receipts; history reads never launch the file Worker or replay mutations.",
@@ -1179,6 +1193,45 @@
         "sidecar/internal/app/content_version_product_rpc.go",
         "contracts/v2/content-version-python-oracle.json",
         "tests/e2e/pocketbase_product_scenarios.json"
+      ]
+    },
+    {
+      "id": "rpc.legacy-layout-preservation",
+      "kind": "rpc",
+      "names": [
+        "legacyLayout.snapshot"
+      ],
+      "currentPath": [
+        "wpfHost",
+        "goSidecar",
+        "pocketBase"
+      ],
+      "currentRoute": "goSidecar",
+      "classification": "GO_AUTHORITY",
+      "targetOwner": "GO_AUTHORITY",
+      "authority": "GO_AUTHORITY",
+      "effects": {
+        "read": [
+          "legacyLayout.snapshot"
+        ],
+        "write": [],
+        "notification": [],
+        "state": []
+      },
+      "stateHolders": [
+        "goSidecar",
+        "pocketBase"
+      ],
+      "stateLifetime": "workspace",
+      "cancellation": "cooperative",
+      "timeout": "perHopBounded",
+      "productScenarios": [],
+      "targetSlice": "L5",
+      "targetPr": null,
+      "deleteWhen": "Retired layout collections are removed with their preservation window; the snapshot itself never writes.",
+      "evidence": [
+        "sidecar/internal/metadata/legacy_preservation.go",
+        "sidecar/internal/app/legacy_layout_rpc.go"
       ]
     },
     {
@@ -2557,8 +2610,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "goSidecar",
-        "pocketBase"
+        "goSidecar"
       ],
       "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
@@ -2574,8 +2626,7 @@
         "state": []
       },
       "stateHolders": [
-        "goSidecar",
-        "pocketBase"
+        "goSidecar"
       ],
       "stateLifetime": "workspace",
       "cancellation": "cooperative",
@@ -2585,13 +2636,12 @@
       ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Python SurfaceService and its dedicated Host gateway are removed; retain the four atomic public Interface methods and frozen DTO/domain contracts.",
+      "deleteWhen": "Retired methods are explicit host-only rejection tombstones. No layout read, write or execution remains registered; legacyLayout.snapshot is the separate read-only preservation path.",
       "evidence": [
-        "sidecar/internal/metadata/surface.go",
-        "sidecar/internal/app/surface_product_rpc.go",
-        "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
-        "contracts/v2/surface-python-oracle.json",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "sidecar/internal/app/legacy_layout_rpc.go",
+        "sidecar/internal/app/app.go",
+        "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
+        "tests/e2e/legacy_layout_product.mjs"
       ]
     },
     {
@@ -2603,8 +2653,7 @@
       ],
       "currentPath": [
         "wpfHost",
-        "goSidecar",
-        "pocketBase"
+        "goSidecar"
       ],
       "currentRoute": "goSidecar",
       "classification": "GO_AUTHORITY",
@@ -2620,8 +2669,7 @@
         "state": []
       },
       "stateHolders": [
-        "goSidecar",
-        "pocketBase"
+        "goSidecar"
       ],
       "stateLifetime": "workspace",
       "cancellation": "cooperative",
@@ -2631,13 +2679,12 @@
       ],
       "targetSlice": "L5",
       "targetPr": null,
-      "deleteWhen": "Python SurfaceService and its dedicated Host gateway are removed; retain the four atomic public Interface methods and frozen DTO/domain contracts.",
+      "deleteWhen": "Retired methods are explicit host-only rejection tombstones. No layout read, write or execution remains registered; legacyLayout.snapshot is the separate read-only preservation path.",
       "evidence": [
-        "sidecar/internal/metadata/surface.go",
-        "sidecar/internal/app/surface_product_rpc.go",
-        "desktop/src/VibeTable.Desktop/Services/JsonRpcProductDataGateway.cs",
-        "contracts/v2/surface-python-oracle.json",
-        "tests/e2e/pocketbase_product_scenarios.json"
+        "sidecar/internal/app/legacy_layout_rpc.go",
+        "sidecar/internal/app/app.go",
+        "desktop/src/VibeTable.Desktop/Services/WebMessageRouter.cs",
+        "tests/e2e/legacy_layout_product.mjs"
       ]
     },
     {

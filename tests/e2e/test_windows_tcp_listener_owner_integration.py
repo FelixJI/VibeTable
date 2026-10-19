@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 import subprocess
 import sys
 import time
@@ -34,6 +36,7 @@ def test_real_listener_owner_handle_converges_after_the_process_exits() -> None:
         try:
             process.stdin.write(b"x")
             process.stdin.flush()
+            process.wait(timeout=15.0)
             report = lease.observe_release(timeout=15.0)
         finally:
             owner_cleanup = lease.close()
@@ -90,3 +93,23 @@ def test_real_listener_release_does_not_wait_for_the_still_live_owner_process() 
     assert report.errors == ()
     assert observation_seconds < 5.0
     assert owner_cleanup.stable_handle_closed is True
+
+
+@pytest.mark.parametrize(
+    ("family", "address"), [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")]
+)
+def test_native_listener_table_excludes_connected_client_socket(family: int, address: str) -> None:
+    from scripts.qa._windows_process_scope_win32 import _Win32TcpListenerOwnerAdapter
+
+    with socket.socket(family) as listener, socket.socket(family) as client:
+        listener.bind((address, 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        client.connect((address, port))
+        with listener.accept()[0]:
+            adapter = _Win32TcpListenerOwnerAdapter()
+            rows = adapter.query_listeners(port, timeout=5)
+            assert len(rows) == 1
+            assert rows[0].pid == os.getpid()
+            assert rows[0].state.startswith("LISTENER_TABLE(rawState=")
+            assert adapter.query_listeners(client.getsockname()[1], timeout=5) == ()

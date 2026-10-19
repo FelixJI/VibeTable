@@ -2170,6 +2170,12 @@ def _prepare_complete_product_reports(
                 phase_root.mkdir(parents=True)
                 for filename in filenames:
                     (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
+        if "16-dashboard-lifecycle" in selected[stage]:
+            for phase, filenames in S16_SCREENSHOTS.items():
+                phase_root = run_root / "16-dashboard-lifecycle" / phase / "20260817T010204Z"
+                phase_root.mkdir(parents=True)
+                for filename in filenames:
+                    (phase_root / filename).write_bytes(b"synthetic unit-test image payload")
         for scenario_id, filenames in {
             **NATIVE_RESTORE_PASS_EVIDENCE,
             **SCENARIO_SCREENSHOTS,
@@ -3087,10 +3093,24 @@ SCENARIO_SCREENSHOTS = {
         "45-common-field-display-lookup-kanban.png",
     ),
     "46-dashboard-native-output": (
-        "46-dashboard-export-csv.png",
-        "46-dashboard-export-png.png",
-        "46-dashboard-export-cancelled.png",
-        "46-dashboard-print-dialog-opened.png",
+        "48-plugin-print-scope.png",
+        "48-plugin-print-dialog-opened.png",
+        "48-plugin-print-preview-second.png",
+        "48-plugin-print-preview.json",
+        "46-dashboard-native-output-trace.zip",
+    ),
+    "17-interface-lifecycle": (
+        "53-record-manager.json",
+        "53-record-manager-overview.png",
+        "53-record-manager-list.png",
+        "53-record-manager-reopened.png",
+        "53-confirm-create.png",
+        "53-confirm-update.png",
+        "53-confirm-normalize.png",
+        "53-confirm-delete-rejected.png",
+        "53-confirm-delete-approved.png",
+        "52-picker-export-select.png",
+        "17-interface-lifecycle-trace.zip",
     ),
     "47-plugin-surface-api": (
         "47-surface-read.png",
@@ -3283,6 +3303,123 @@ def test_s39_screenshots_failed_report_keeps_only_images_produced_in_current_pha
     assert retained is not None
     images = {path.relative_to(retained).as_posix() for path in retained.rglob("*.png")}
     assert images == {"39-file-workflow-combination/seed/20261001T231002Z/39-record-file-entry.png"}
+
+
+S16_SCREENSHOTS = {
+    "resume": (
+        "16-legacy-layout-warning.png",
+        "16-replacement-business-page.png",
+        "16-legacy-reconciliation.json",
+        "16-dashboard-lifecycle-trace.zip",
+    ),
+    "reopened": (
+        "16-legacy-layout-warning.png",
+        "16-replacement-business-page.png",
+        "16-legacy-reconciliation.json",
+        "16-dashboard-lifecycle-trace.zip",
+    ),
+}
+S16_PHASE_RUNS = {
+    "seed": "20261019T013053Z",
+    "resume": "20261019T013121Z",
+    "reopened": "20261019T013147Z",
+}
+
+
+def _s16_screenshot_run(tmp_path: Path, status: str) -> Path:
+    run = tmp_path / "source" / "20261019T013000Z"
+    run.mkdir(parents=True)
+    (run / "product-e2e-report.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "scenarios": [
+                    {"scenario": "16-dashboard-lifecycle", "status": status},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for phase, latest in S16_PHASE_RUNS.items():
+        for timestamp in (latest, "20261019T013059Z"):
+            directory = run / "16-dashboard-lifecycle" / phase / timestamp
+            directory.mkdir(parents=True)
+            (directory / "16-dashboard-lifecycle-result.json").write_bytes(b"result")
+            if phase in S16_SCREENSHOTS:
+                for filename in S16_SCREENSHOTS[phase]:
+                    prefix = "decoy" if timestamp != latest else "current"
+                    (directory / filename).write_bytes(f"{prefix}:{timestamp}:{filename}".encode())
+            (directory / "unrelated.png").write_bytes(b"unrelated")
+            (directory / "workspace.db").write_bytes(b"private")
+    (run / "16-dashboard-lifecycle" / "not-a-phase-run").mkdir()
+    (tmp_path / "outside.png").write_bytes(b"outside")
+    return run
+
+
+def test_s16_preservation_archives_both_resume_and_reopened_runs(tmp_path: Path) -> None:
+    run = _s16_screenshot_run(tmp_path, "passed")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    expected = {"product-e2e-report.json"}
+    for phase, latest in S16_PHASE_RUNS.items():
+        if phase not in S16_SCREENSHOTS:
+            continue
+        for filename in S16_SCREENSHOTS[phase]:
+            relative = f"16-dashboard-lifecycle/{phase}/{latest}/{filename}"
+            expected.add(relative)
+            assert (retained / relative).read_bytes() == f"current:{latest}:{filename}".encode()
+    assert {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    } == expected
+
+
+@pytest.mark.parametrize("phase", ["resume", "reopened"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "16-legacy-layout-warning.png",
+        "16-replacement-business-page.png",
+        "16-legacy-reconciliation.json",
+        "16-dashboard-lifecycle-trace.zip",
+    ],
+)
+def test_s16_missing_restart_evidence_in_either_phase_rejects_passing_report(
+    tmp_path: Path, phase: str, filename: str
+) -> None:
+    run = _s16_screenshot_run(tmp_path, "passed")
+    (run / "16-dashboard-lifecycle" / phase / S16_PHASE_RUNS[phase] / filename).unlink()
+    with pytest.raises(ValueError, match=filename):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_s16_missing_reopened_phase_directory_rejects_passing_report(tmp_path: Path) -> None:
+    run = _s16_screenshot_run(tmp_path, "passed")
+    (run / "16-dashboard-lifecycle" / "reopened").rename(run.parent / "moved-reopened")
+    with pytest.raises(ValueError, match=r"16-legacy-layout-warning\.png"):
+        next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+
+
+def test_s46_retired_names_are_neither_required_nor_archived(tmp_path: Path) -> None:
+    retired = (
+        "46-dashboard-export-csv.png",
+        "46-dashboard-export-png.png",
+        "46-dashboard-export-cancelled.png",
+        "46-dashboard-print-dialog-opened.png",
+    )
+    run = _scenario_screenshot_run(tmp_path, "46-dashboard-native-output", "passed")
+    scenario_directory = run / "46-dashboard-native-output"
+    for filename in retired:
+        (scenario_directory / filename).write_bytes(b"retired artifact")
+    retained = next_gate.persist_product_e2e_evidence(run.parent, tmp_path / "destination")
+    assert retained is not None
+    archived = {
+        path.relative_to(retained).as_posix() for path in retained.rglob("*") if path.is_file()
+    }
+    assert all(f"46-dashboard-native-output/{filename}" not in archived for filename in retired)
+    assert all(
+        f"46-dashboard-native-output/{filename}" in archived
+        for filename in SCENARIO_SCREENSHOTS["46-dashboard-native-output"]
+    )
 
 
 NATIVE_RESTORE_PASS_EVIDENCE = {

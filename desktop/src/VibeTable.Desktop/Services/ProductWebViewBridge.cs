@@ -127,12 +127,6 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         }
     }
 
-    /// <summary>
-    /// Optional dashboard download admission source. Assigned before
-    /// <see cref="LoadAsync"/> runs; when unset every WebView download is
-    /// cancelled.
-    /// </summary>
-    internal Func<DashboardExportDownloadGate?>? DashboardDownloads { get; set; }
 
     private void PostRealtimeNotification(string type, object? payload)
     {
@@ -470,103 +464,8 @@ public sealed class ProductWebViewBridge : IWebViewBridge, IWebReplySink
         };
     }
 
-    private async void OnDownloadStarting(
-        object? sender,
-        CoreWebView2DownloadStartingEventArgs args)
-    {
-        CoreWebView2Deferral deferral = args.GetDeferral();
-        DashboardExportDownloadGate? gate = null;
-        DashboardDownloadAdmission? admission = null;
-        try
-        {
-            gate = DashboardDownloads?.Invoke();
-            string uri = args.DownloadOperation.Uri ?? string.Empty;
-            if (gate is null || !gate.TryAdmit(uri, out admission)
-                || admission is null)
-            {
-                _readiness?.Trace($"Download rejected; uri={uri}");
-                args.Cancel = true;
-                return;
-            }
-            // The host-owned SaveFileDialog already chose the destination.
-            args.Handled = true;
-            args.ResultFilePath = admission.TemporaryPath;
-            CoreWebView2DownloadOperation operation = args.DownloadOperation;
-            // The broker drain cancels the WebView2 operation through this
-            // termination before cleaning up, so the temporary file is never
-            // deleted while WebView2 still writes it.
-            if (!await admission.Broker.AttachDownloadTerminationAsync(
-                admission.Token,
-                () => _owner.Dispatcher.InvokeAsync(() =>
-                {
-                    if (operation.State == CoreWebView2DownloadState.InProgress)
-                        operation.Cancel();
-                    ObserveDownloadState(gate, admission, operation);
-                }).Task))
-            {
-                args.Cancel = true;
-                string reason = admission.Broker.IsRetired ? "SessionRetired" : "SAVE_TIMEOUT";
-                if (reason == "SAVE_TIMEOUT") admission.RecordFailure(reason);
-                _ = gate.SettleAsync(admission, completed: false, reason);
-                return;
-            }
-            operation.BytesReceivedChanged += (_, _) =>
-                ObserveDownloadState(gate, admission, operation);
-            operation.StateChanged += (_, _) => ObserveDownloadState(gate, admission, operation);
-            // A fast local blob download may already be past InProgress before
-            // the subscription runs; check the current state explicitly.
-            ObserveDownloadState(gate, admission, operation);
-        }
-        catch (Exception error)
-        {
-            args.Cancel = true;
-            _readiness?.Trace($"Dashboard download start failed; exception={error.GetType().Name}");
-            if (gate is not null && admission is not null)
-            {
-                admission.RecordFailure("DOWNLOAD_START_FAILED");
-                _ = gate.SettleAsync(admission, completed: false, error.GetType().Name);
-            }
-        }
-        finally
-        {
-            deferral.Complete();
-        }
-    }
-
-    private void ObserveDownloadState(
-        DashboardExportDownloadGate gate,
-        DashboardDownloadAdmission admission,
-        CoreWebView2DownloadOperation operation)
-    {
-        switch (operation.State)
-        {
-            case CoreWebView2DownloadState.InProgress:
-                // Bound the bytes WebView2 may write even before completion:
-                // once progress passes the export budget the download is
-                // failed and cancelled instead of writing without a limit.
-                if (operation.BytesReceived > DashboardExportDownloadGate.MaxExportBytes
-                    || (operation.TotalBytesToReceive is ulong estimated
-                        && estimated > (ulong)DashboardExportDownloadGate.MaxExportBytes))
-                {
-                    _readiness?.Trace(
-                        $"Dashboard download over budget; bytes={operation.BytesReceived}");
-                    // Keep the failure until the terminal callback: Cancel can
-                    // return before WebView2 releases its temporary writer.
-                    if (admission.RecordFailure("EXPORT_TOO_LARGE")) operation.Cancel();
-                }
-                return;
-            case CoreWebView2DownloadState.Completed:
-                _ = gate.SettleAsync(admission, completed: true, null);
-                break;
-            default:
-                _ = gate.SettleAsync(
-                    admission,
-                    completed: false,
-                    operation.InterruptReason.ToString());
-                break;
-        }
-    }
-
+    private void OnDownloadStarting(object? sender, CoreWebView2DownloadStartingEventArgs args)
+        => args.Cancel = true;
     internal async Task<bool> PreparePluginPrintAsync(PluginSurfaceSession surface, string preparationId, CancellationToken token)
     {
         CoreWebView2? core = _currentCore;

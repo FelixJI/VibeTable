@@ -12,7 +12,7 @@ import (
 	"github.com/vibetable/vibetable/sidecar/internal/sourceimport"
 )
 
-func sourceRuntimePorts(t *testing.T, runtime *dashboardRuntimeFixture) (*sourceImportAuthorityFixture, *sourceImportJournal) {
+func sourceRuntimePorts(t *testing.T, runtime *metadataRuntimeFixture) (*sourceImportAuthorityFixture, *sourceImportJournal) {
 	t.Helper()
 	gate := businessWriteGate(runtime.runtime.CoordinateBusinessWrite)
 	r := router.NewRouter(func(w http.ResponseWriter, request *http.Request) (*core.RequestEvent, router.EventCleanupFunc) {
@@ -41,7 +41,7 @@ func sourceRuntimeAdmission(t *testing.T, journal *sourceImportJournal, job stri
 }
 
 func TestSourceImportRuntimeAdmissionReplayDoesNotAdvanceRevision(t *testing.T) {
-	runtime := newDashboardRuntimeFixture(t)
+	runtime := newMetadataRuntimeFixture(t)
 	_, journal := sourceRuntimePorts(t, runtime)
 	owner, input, admitted := sourceRuntimeAdmission(t, journal, "runtime-admission-replay")
 	before := runtime.state(t)
@@ -58,7 +58,7 @@ func TestSourceImportRuntimeAdmissionReplayDoesNotAdvanceRevision(t *testing.T) 
 
 func TestSourceImportRuntimeAdmittedExecutionPersistsAndReopens(t *testing.T) {
 	ctx := context.Background()
-	runtime := newDashboardRuntimeFixture(t)
+	runtime := newMetadataRuntimeFixture(t)
 	authority, journal := sourceRuntimePorts(t, runtime)
 	owner, input, admitted := sourceRuntimeAdmission(t, journal, "runtime-admitted-execution")
 	admittedState := runtime.state(t)
@@ -108,7 +108,7 @@ func TestSourceImportRuntimeAdmittedExecutionPersistsAndReopens(t *testing.T) {
 func TestSourceImportRuntimePreparationTerminalKeepsZeroBusinessWrites(t *testing.T) {
 	for _, state := range []string{"failed", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
-			runtime := newDashboardRuntimeFixture(t)
+			runtime := newMetadataRuntimeFixture(t)
 			_, journal := sourceRuntimePorts(t, runtime)
 			before := sourceExecutionFacts(t, runtime.pb)
 			owner, input, admitted := sourceRuntimeAdmission(t, journal, "runtime-preparation-"+state)

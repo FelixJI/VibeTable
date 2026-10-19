@@ -1382,6 +1382,19 @@ def persist_product_e2e_evidence(
                 "12-dark-modal.png",
                 "12-dark-popover.png",
             ),
+            "17-interface-lifecycle": (
+                "53-record-manager.json",
+                "53-record-manager-overview.png",
+                "53-record-manager-list.png",
+                "53-record-manager-reopened.png",
+                "53-confirm-create.png",
+                "53-confirm-update.png",
+                "53-confirm-normalize.png",
+                "53-confirm-delete-rejected.png",
+                "53-confirm-delete-approved.png",
+                "52-picker-export-select.png",
+                "17-interface-lifecycle-trace.zip",
+            ),
             "28-relation-delta-preview": (
                 "28-contract-grid.png",
                 "28-contract-picker-refresh.png",
@@ -1396,11 +1409,17 @@ def persist_product_e2e_evidence(
                 "45-common-field-display-lookup-cards.png",
                 "45-common-field-display-lookup-kanban.png",
             ),
+            # The retired dashboard export UI was replaced by the shared
+            # application print flow, so 46 archives that producer's real
+            # artifacts. The conditional navigation screenshot
+            # (48-plugin-print-preview-navigation.png) is legitimately absent
+            # when navigation closes the preview and is therefore not required.
             "46-dashboard-native-output": (
-                "46-dashboard-export-csv.png",
-                "46-dashboard-export-png.png",
-                "46-dashboard-export-cancelled.png",
-                "46-dashboard-print-dialog-opened.png",
+                "48-plugin-print-scope.png",
+                "48-plugin-print-dialog-opened.png",
+                "48-plugin-print-preview-second.png",
+                "48-plugin-print-preview.json",
+                "46-dashboard-native-output-trace.zip",
             ),
             "49-plugin-application-security": (
                 "48-native-dark.png",
@@ -1525,6 +1544,23 @@ def persist_product_e2e_evidence(
                     "44-file-restore-crash-before-kill-trace.zip",
                 ),
                 "resume": ("44-file-restore-crash.png", "44-file-restore-crash-trace.zip"),
+            },
+            "16-dashboard-lifecycle": {
+                # Preservation is proven by two independent restart phases; both
+                # the resume and the reopened run must keep their reconciliation
+                # evidence, screenshots and the real per-phase trace.
+                "resume": (
+                    "16-legacy-layout-warning.png",
+                    "16-replacement-business-page.png",
+                    "16-legacy-reconciliation.json",
+                    "16-dashboard-lifecycle-trace.zip",
+                ),
+                "reopened": (
+                    "16-legacy-layout-warning.png",
+                    "16-replacement-business-page.png",
+                    "16-legacy-reconciliation.json",
+                    "16-dashboard-lifecycle-trace.zip",
+                ),
             },
         }.get(scenario_id)
         if phase_evidence is None:

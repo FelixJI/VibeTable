@@ -326,7 +326,7 @@ func (s *ContentVersions) Write(ctx context.Context, method string, p VersionPar
 		}
 		var changes []metadataChange
 		if method == "version.delete" {
-			change, err := s.metadata.delete(tx, NamespaceContentVersions, ItemDelete{LogicalID: p.VersionID, ExpectedRevision: p.ExpectedRevision}, "version", "")
+			change, err := s.metadata.delete(tx, NamespaceContentVersions, ItemDelete{LogicalID: p.VersionID, ExpectedRevision: p.ExpectedRevision}, "version")
 			if err != nil {
 				return err
 			}
@@ -352,7 +352,7 @@ func (s *ContentVersions) Write(ctx context.Context, method string, p VersionPar
 			if err != nil {
 				return err
 			}
-			saved, change, err := s.metadata.upsert(tx, NamespaceContentVersions, ItemMutation{LogicalID: id, Payload: encoded, ExpectedRevision: expected}, "version", "")
+			saved, change, err := s.metadata.upsert(tx, NamespaceContentVersions, ItemMutation{LogicalID: id, Payload: encoded, ExpectedRevision: expected}, "version")
 			if err != nil {
 				return err
 			}

@@ -1,10 +1,10 @@
+import { seedLegacyLayoutProduct, resumeLegacyLayoutProduct, rejectLegacyRoutes, runRetiredNativeOutput } from "./legacy_layout_product.mjs";
 import { runRecordManagerProduct } from "./record_manager_product.mjs";
 import { runCapabilityServices } from "./plugin_capability_services.mjs";
 import { runApplicationCommitUnknown } from "./plugin_application_commit_unknown.mjs";
 import { runCommonFieldDisplayJourney } from "./common_field_display_journey.mjs";
 import { runAutoNumberJourney, prepareAutoNumberSnapshot, verifyAutoNumberSnapshot } from "./auto_number_journey.mjs";
 import { seedHostCommands, resumeHostCommands, verifyHostCommandsReopen } from "./host_commands_ui.mjs";
-import { awaitDashboardPanelReady } from "./dashboard_panel_editor_completion.mjs";
 import { exerciseSdkExamples } from "./plugin_sdk_examples.mjs";
 import { runPluginApplications, runHeadlessBudget } from "./plugin_applications.mjs";
 import { runApplicationSecurity, selectExpectedPluginSecurityConsoleEntries } from "./plugin_application_security.mjs";
@@ -2545,7 +2545,7 @@ async function waitForPublishedPreviewArtifact(runtime, expectedHash, expectedSi
   return { previewArtifact, previewResult };
 }
 
-async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
+async function requestStorageProof(runtime, tableId, timeoutMs = 30_000, legacyLayoutProof = false) {
   const requestPath = path.join(runtime.evidenceDir, "storage-proof-request.json");
   const resultPath = path.join(runtime.evidenceDir, "storage-proof-result.json");
   const requestId = crypto.randomUUID();
@@ -2554,6 +2554,7 @@ async function requestStorageProof(runtime, tableId, timeoutMs = 30_000) {
     `${JSON.stringify({
       requestId,
       tableId,
+      legacyLayoutProof,
       requestedAt: new Date().toISOString(),
     }, null, 2)}\n`,
     "utf8",
@@ -9634,671 +9635,46 @@ async function scenario15(page, recorder, _network, runtime) {
   });
 }
 
-async function scenario16(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder);
-  await page.getByTestId("nav-tables").click();
-  const seeded = await createSimpleTable(page, "E2E Dashboard Data", "Region");
-  const dashboardSeed = await applyProductMutation(page, seeded.tableId, [
-    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "North" } },
-    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "South" } },
-  ], "dashboard-seed");
-  recorder.check("Dashboard E2E starts from authoritative PocketBase records",
-    dashboardSeed.payload?.status === "applied", { dashboardSeed });
-
-  await page.getByTestId("nav-dashboard").click();
-  const workspace = page.getByTestId("dashboard-workspace");
-  await workspace.waitFor({ state: "visible", timeout: 30_000 });
-
-  await page.getByTestId("dashboard-create").click();
-  const modal = page.getByTestId("dashboard-create-modal");
-  await modal.waitFor({ state: "visible", timeout: 10_000 });
-  const createSubmit = page.getByTestId("dashboard-create-submit");
-  await page.getByTestId("dashboard-create-name").locator("input").fill("");
-  recorder.check("Dashboard rejects an empty name before persistence",
-    await createSubmit.isDisabled());
-  await page.getByTestId("dashboard-create-name").locator("input").fill("E2E Dashboard");
-  await page.getByTestId("dashboard-create-template-blank").click();
-  await createSubmit.click();
-
-  const save = page.getByTestId("dashboard-save");
-  await save.waitFor({ state: "visible", timeout: 10_000 });
-  recorder.check("a blank Dashboard draft is created through the product UI",
-    await save.isEnabled());
-
-  async function addPanel(name, typeLabel, dimensions = []) {
-    await page.getByTestId("dashboard-add-panel").click();
-    await page.getByTestId("dashboard-panel-editor").waitFor({ state: "visible" });
-    await fillNInput(page, "dashboard-panel-name", name);
-    await selectVisibleNOption(page, "dashboard-panel-type", typeLabel);
-    await selectVisibleNOption(page, "dashboard-panel-collection", seeded.tableId);
-    if (/Record list|明细列表/u.test(String(typeLabel))) {
-      await page.getByTestId("dashboard-panel-fields").waitFor({ state: "visible" });
-      await selectVisibleNOptions(page, "dashboard-panel-fields", ["Region"]);
-    } else if (dimensions.length > 0) {
-      await page.getByTestId("dashboard-panel-dimensions").waitFor({ state: "visible" });
-      await selectVisibleNOptions(page, "dashboard-panel-dimensions", dimensions);
-    }
-    const submit = page.getByTestId("dashboard-panel-submit");
-    await submit.waitFor({ state: "visible" });
-    await page.waitForFunction(
-      () => !document.querySelector('[data-testid="dashboard-panel-submit"]')?.hasAttribute("disabled"),
-      undefined,
-      { timeout: 20_000 },
-    );
-    await submit.click();
-    const panel = workspace.locator(".dashboard-panel").filter({ hasText: name });
-    // Wait for editor teardown so its focus restoration completes before keyboard input.
-    await awaitDashboardPanelReady(page, panel);
-    return panel;
+async function verifyLegacySidecarRecovery(page, recorder, runtime, tableId) {
+  const diagnostics = await waitForBridgeDiagnosticsToSettle(page);
+  if (!diagnostics || diagnostics.pending?.length || diagnostics.failures?.length) {
+    throw new Error("legacy preservation recovery requires a quiescent bridge");
   }
-
-  const barPanel = await addPanel("Regional bars", /^(柱状图|Bar chart)$/u, ["Region"]);
-  const dataPanel = await addPanel("Regional records", /^(明细列表|Record list)$/u);
-  const metricPanel = await addPanel("Record count", /^(单指标|Metric)$/u);
-  const piePanel = await addPanel("Regional share", /^(饼图|Pie chart)$/u, ["Region"]);
-  await dataPanel.getByText("North", { exact: true }).waitFor({ timeout: 30_000 });
-  await page.waitForFunction(
-    () => [...document.querySelectorAll(".dashboard-panel")].every((panel) =>
-      !panel.textContent?.includes("正在加载") && !panel.textContent?.includes("Loading")),
-    undefined,
-    { timeout: 30_000 },
-  );
-  recorder.check("Dashboard renders four typed panel families over authoritative rows",
-    (await dataPanel.innerText()).includes("North")
-      && (await dataPanel.innerText()).includes("South")
-      && /2/u.test(await metricPanel.innerText())
-      && await barPanel.getByTestId("dashboard-chart-selection").isVisible()
-      && await piePanel.getByTestId("dashboard-chart-selection").isVisible(),
-  {
-    recordPanel: await dataPanel.innerText(),
-    metricPanel: await metricPanel.innerText(),
-    panelCount: await workspace.locator(".dashboard-panel").count(),
-  });
-
-  const layoutItem = workspace.locator(".grid-stack-item").filter({ hasText: "Regional records" });
-  const layoutBefore = {
-    x: await layoutItem.getAttribute("gs-x"),
-    height: await layoutItem.getAttribute("gs-h"),
-  };
-  const layoutPanelId = await layoutItem.getAttribute("data-panel-id");
-  if (!layoutPanelId) throw new Error("Dashboard layout panel id is unavailable");
-  await layoutItem.press("Alt+ArrowRight");
-  // Observe each user action before issuing the next one: the grid update and
-  // Vue's canonical panel projection do not share Playwright's keyup boundary.
-  await page.waitForFunction(({ panelId, beforeX }) => {
-    const item = document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
-    return item && Number(item.getAttribute("gs-x") ?? 0) === Number(beforeX ?? 0) + 1;
-  }, { panelId: layoutPanelId, beforeX: layoutBefore.x }, { timeout: 20_000 });
-  const movedX = await layoutItem.getAttribute("gs-x");
-  await layoutItem.press("Alt+Shift+ArrowDown");
-  await page.waitForFunction(({ panelId, expectedX, beforeHeight }) => {
-    const item = document.querySelector(`[data-panel-id="${CSS.escape(panelId)}"]`);
-    return item && item.getAttribute("gs-x") === expectedX
-      && Number(item.getAttribute("gs-h")) === Number(beforeHeight) + 1;
-  }, {
-    panelId: layoutPanelId, expectedX: movedX, beforeHeight: layoutBefore.height,
-  }, { timeout: 20_000 });
-  const layoutAfter = {
-    x: await layoutItem.getAttribute("gs-x"),
-    height: await layoutItem.getAttribute("gs-h"),
-  };
-  recorder.check("Dashboard keyboard layout moves and resizes the selected panel",
-    layoutAfter.x !== layoutBefore.x && layoutAfter.height !== layoutBefore.height,
-  { layoutBefore, layoutAfter });
-
-  const dataPanelId = await dataPanel.evaluate((node) =>
-    node.closest("[data-panel-id]")?.getAttribute("data-panel-id") ?? null,
-  );
-  if (!dataPanelId) throw new Error("Dashboard record panel id is unavailable");
-
-  await page.getByTestId("dashboard-configure").click();
-  await page.getByTestId("dashboard-settings").waitFor({ state: "visible" });
-  await page.getByTestId("dashboard-add-filter").click();
-  await fillNInput(page, "dashboard-filter-label-0", "Region");
-  await fillNInput(page, "dashboard-filter-key-0", "region");
-  await selectVisibleNOption(page, "dashboard-filter-type-0", /^(枚举多选|Enum multi-select)$/u);
-  const filterTargets = page.getByTestId("dashboard-filter-targets-0");
-  await filterTargets.locator(".n-tag")
-    .filter({ hasText: "Regional bars" })
-    .locator(".n-tag__close")
-    .click();
-  await selectVisibleNOptions(page, "dashboard-filter-targets-0", ["Regional records"]);
-  await selectVisibleNOption(page, `dashboard-filter-binding-0-${dataPanelId}`, "Region");
-  await page.getByTestId("dashboard-add-interaction").click();
-  const interactionSource = page.getByTestId("dashboard-interaction-source-0");
-  const interactionSourceField = page.getByTestId("dashboard-interaction-source-field-0");
-  const interactionTargets = page.getByTestId("dashboard-interaction-targets-0");
-  recorder.check("Dashboard settings derives a visual chart-to-record interaction by default",
-    (await interactionSource.innerText()).includes("Regional bars")
-      && (await interactionSourceField.innerText()).includes("Region")
-      && (await interactionTargets.innerText()).includes("Regional records"),
-  {
-    source: await interactionSource.innerText(),
-    sourceField: await interactionSourceField.innerText(),
-    targets: await interactionTargets.innerText(),
-  });
-  await selectVisibleNOption(page, "dashboard-interaction-target-field-0", "Region");
-  const settingsSubmit = page.getByTestId("dashboard-settings-submit");
-  await page.waitForFunction(
-    () => !document.querySelector('[data-testid="dashboard-settings-submit"]')?.hasAttribute("disabled"),
-    undefined,
-    { timeout: 20_000 },
-  );
-  await settingsSubmit.click();
-  await save.click();
-
-  const persisted = workspace.locator('[data-testid^="dashboard-select-"]').filter({
-    hasText: "E2E Dashboard",
-  });
-  await persisted.waitFor({ state: "visible", timeout: 30_000 });
-  const dashboardId = (await persisted.getAttribute("data-testid"))
-    ?.replace("dashboard-select-", "");
-  if (!dashboardId) throw new Error("persisted Dashboard id is unavailable");
-  await page.getByTestId("nav-settings").click();
-  await page.getByTestId("nav-dashboard").click();
-  await workspace.waitFor({ state: "visible", timeout: 30_000 });
-  await persisted.waitFor({ state: "visible", timeout: 30_000 });
-  await persisted.click();
-  await page.getByTestId("dashboard-refresh").click();
-  const reopenedPanel = workspace.locator(".dashboard-panel").filter({ hasText: "Regional records" });
-  await reopenedPanel.waitFor({ state: "visible", timeout: 30_000 });
-  const reopenedBar = workspace.locator(".dashboard-panel").filter({ hasText: "Regional bars" });
-  const reopenedMetric = workspace.locator(".dashboard-panel").filter({ hasText: "Record count" });
-  const reopened = await rawBridgeRequest(page, "dashboard.readRequested", {
-    dashboardId,
-  }, 20_000, ["dashboard.loaded"]);
-  const persistedFilter = reopened.payload?.config?.globalFilters?.find((filter) =>
-    filter.key === "region",
-  );
-  const persistedDataPanelId = reopened.payload?.dashboard?.panels?.find((panel) =>
-    panel.name === "Regional records",
-  )?.id;
-  recorder.check("Dashboard persists the visual global-filter definition and explicit field binding",
-    persistedFilter?.label === "Region"
-      && persistedFilter?.type === "enum"
-      && persistedFilter?.targetPanels?.length === 1
-      && persistedFilter.targetPanels[0] === persistedDataPanelId
-      && persistedFilter?.fieldBindings?.[persistedDataPanelId] === seeded.field.physicalName
-      && !Object.prototype.hasOwnProperty.call(persistedFilter, "value"),
-  { persistedFilter, draftDataPanelId: dataPanelId, persistedDataPanelId, field: seeded.field.physicalName });
-
-  const filterQueryStart = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
-  );
-  await addVisibleNTagOption(page, "dashboard-filter-value-region", "North");
-  await page.waitForFunction(
-    ({ start }) => window.__vibetableE2EBridgeDiagnostics?.roundTrips
-      .slice(start)
-      .filter((item) => item.requestType === "dashboard.queryRequested"
-        && item.responseType === "dashboard.queryLoaded").length >= 4,
-    { start: filterQueryStart },
-    { timeout: 30_000 },
-  );
-  await page.waitForFunction(
-    () => {
-      const panels = [...document.querySelectorAll(".dashboard-panel")];
-      const panel = panels
-        .find((item) => item.textContent?.includes("Regional records"));
-      const metric = panels.find((item) => item.textContent?.includes("Record count"));
-      const metricValue = metric?.querySelector(".metric-panel strong")?.textContent?.trim();
-      return panel?.textContent?.includes("North")
-        && !panel?.textContent?.includes("South")
-        && metricValue === "2";
-    },
-    undefined,
-    { timeout: 30_000 },
-  );
-  const globallyFilteredText = await reopenedPanel.innerText();
-  const metricText = await reopenedMetric.innerText();
-  const metricValue = await reopenedMetric.locator(".metric-panel strong").innerText();
-  recorder.check("the real FilterBar limits only its explicitly bound record panel",
-    globallyFilteredText.includes("North")
-      && !globallyFilteredText.includes("South")
-      && metricValue.trim() === "2",
-  { globallyFilteredText, metricText, metricValue });
-  await page.getByTestId("dashboard-filters-clear").click();
-  await page.waitForFunction(
-    () => {
-      const panel = [...document.querySelectorAll(".dashboard-panel")]
-        .find((item) => item.textContent?.includes("Regional records"));
-      return panel?.textContent?.includes("North") && panel?.textContent?.includes("South");
-    },
-    undefined,
-    { timeout: 30_000 },
-  );
-  recorder.check("clearing global filters restores all authoritative record rows",
-    (await reopenedPanel.innerText()).includes("North")
-      && (await reopenedPanel.innerText()).includes("South"));
-
-  const chartSelection = reopenedBar.getByTestId("dashboard-chart-selection");
-  await chartSelection.waitFor({ state: "visible", timeout: 30_000 });
-  await chartSelection.selectOption({ label: "North" });
-  const drilldown = page.getByTestId("dashboard-drilldown");
-  await drilldown.waitFor({ state: "visible", timeout: 30_000 });
-  await drilldown.getByText("North", { exact: true }).first().waitFor({ timeout: 30_000 });
-  await page.waitForFunction(
-    () => {
-      const panel = [...document.querySelectorAll(".dashboard-panel")]
-        .find((item) => item.textContent?.includes("Regional records"));
-      return panel?.textContent?.includes("North") && !panel?.textContent?.includes("South");
-    },
-    undefined,
-    { timeout: 30_000 },
-  );
-  const linkedText = await reopenedPanel.innerText();
-  recorder.check("the saved Dashboard reopens and chart selection drives linked filtering plus drilldown",
-    await persisted.getAttribute("aria-selected") === "true"
-      && linkedText.includes("North") && !linkedText.includes("South")
-      && (await drilldown.innerText()).includes("North"),
-  { dashboardName: "E2E Dashboard", linkedText, drilldownText: await drilldown.innerText() });
-
-  await page.keyboard.press("Escape");
-  await page.getByTestId("dashboard-edit").click();
-  await page.getByTestId("dashboard-configure").click();
-  const conflictSettings = page.getByTestId("dashboard-settings");
-  await conflictSettings.waitFor({ state: "visible", timeout: 10_000 });
-  await conflictSettings.locator("textarea").fill("local E2E edit before competing save");
-  await page.getByTestId("dashboard-settings-submit").click();
-  await page.waitForFunction(
-    () => !document.querySelector('[data-testid="dashboard-save"]')?.hasAttribute("disabled"),
-    undefined,
-    { timeout: 10_000 },
-  );
-  const current = await rawBridgeRequest(page, "dashboard.readRequested", {
-    dashboardId,
-  }, 20_000, ["dashboard.loaded"]);
-  const server = current.payload;
-  const competing = await rawBridgeRequest(page, "dashboard.saveRequested", {
-    dashboardId: server.dashboard.id,
-    expectedRevision: server.revision,
-    idempotencyKey: crypto.randomUUID(),
-    name: server.dashboard.name,
-    note: "competing E2E save",
-    panels: server.dashboard.panels.map((panel) => ({
-      clientId: panel.id,
-      panelId: panel.id,
-      name: panel.name,
-      type: panel.type,
-      position: panel.position,
-      note: panel.note ?? null,
-      icon: panel.icon ?? null,
-      color: panel.color ?? null,
-      showHeader: panel.showHeader !== false,
-      options: panel.options,
-      query: panel.query,
-    })),
-    deletedPanelIds: [],
-    config: server.config,
-  }, 20_000, ["dashboard.saved"]);
-  recorder.check("a competing Dashboard commit advances the authoritative revision",
-    competing.type === "dashboard.saved"
-      && typeof competing.payload?.workspace?.revision === "string"
-      && competing.payload.workspace.revision !== server.revision,
-  {
-    before: server.revision,
-    after: competing.payload?.workspace?.revision,
-    responseType: competing.type,
-    error: competing.type === "operation.failed" ? competing.payload : undefined,
-  });
-  await save.click();
-  const conflict = page.getByTestId("dashboard-conflict-error");
-  await conflict.waitFor({ state: "visible", timeout: 30_000 });
-  const conflictText = await conflict.innerText();
-  const conflictReloadStart = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
-  );
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByTestId("dashboard-reload-conflict").click();
-  await page.waitForFunction(
-    ({ start }) => window.__vibetableE2EBridgeDiagnostics?.roundTrips
-      .slice(start)
-      .some((item) => item.requestType === "dashboard.readRequested"
-        && item.responseType === "dashboard.loaded") ?? false,
-    { start: conflictReloadStart },
-    { timeout: 30_000 },
-  );
-  await conflict.waitFor({ state: "hidden", timeout: 30_000 });
-  await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "dashboard_edit_conflict");
-  while (await acknowledgeExpectedBridgeFailureByCodeIfPresent(page, "DASHBOARD_CANCELLED")) {
-    // Rapid Dashboard reloads intentionally cancel superseded panel reads.
-  }
-  const editAfterReload = page.getByTestId("dashboard-edit");
-  await editAfterReload.waitFor({ state: "visible", timeout: 30_000 });
-  await editAfterReload.click();
-  const configureAfterReload = page.getByTestId("dashboard-configure");
-  await configureAfterReload.waitFor({ state: "visible", timeout: 30_000 });
-  await configureAfterReload.click();
-  const reloadedSettings = page.getByTestId("dashboard-settings");
-  await reloadedSettings.waitFor({ state: "visible", timeout: 30_000 });
-  const reloadedNote = await page.getByTestId("dashboard-settings-note")
-    .locator("textarea")
-    .inputValue();
-  recorder.check("Dashboard exposes a CAS conflict and reloads the winning revision",
-    conflictText.trim().length > 0 && reloadedNote === "competing E2E save",
-  {
-    conflictText,
-    reloadedNote,
-    winningRevision: competing.payload?.workspace?.revision,
-  });
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "16-dashboard-lifecycle.png"),
-    fullPage: true,
-  });
-  await page.locator(".n-drawer-content").filter({ has: reloadedSettings })
-    .locator(".n-drawer-header__close").click();
-  await reloadedSettings.waitFor({ state: "hidden", timeout: 30_000 });
-  const committedDashboard = await rawBridgeRequest(page, "dashboard.readRequested", {
-    dashboardId,
-  }, 20_000, ["dashboard.loaded"]);
-  await page.getByTestId("nav-tables").click();
-  const dashboardTableName = page.getByTestId("sidebar-table-name")
-    .filter({ hasText: "E2E Dashboard Data" });
-  await dashboardTableName.locator("xpath=ancestor::button").click();
-  const beforeRestartData = await rawBridgeRequest(page, "query.page", {
-    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  const quiet = await waitForBridgeDiagnosticsToSettle(page);
-  recorder.check("Dashboard restart begins from a quiescent bridge",
-    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
-  const recoveryOwner = `dashboard-recovery-${crypto.randomUUID()}`;
-  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
-    ownerToken: recoveryOwner, tableId: seeded.tableId,
-  });
-  let recoveryError = null;
+  const ownerToken = `legacy-recovery-${crypto.randomUUID()}`;
+  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, { ownerToken, tableId });
+  let primaryError = null;
   try {
-    const restart = await requestSidecarKill(runtime, "verify Dashboard aggregate and records survive sidecar restart");
-    recorder.check("Dashboard restart terminates only the exact sidecar child",
-      restart.processName === "vibetable-pb.exe", { restart });
-    await waitForTableRecovery(page, "E2E Dashboard Data", seeded.tableId, 2, 60_000, recoveryOwner);
+    const restart = await requestSidecarKill(runtime, "verify legacy definitions and original business data survive sidecar crash");
+    recorder.check("legacy recovery terminates only the owned exact sidecar", restart.processName === "vibetable-pb.exe", { restart });
+    await waitForTableRecovery(page, "Historical business records", tableId, 2, 60000, ownerToken);
   } catch (error) {
-    recoveryError = error;
+    primaryError = error;
     throw error;
   } finally {
     try {
-      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
-    } catch (cleanupError) {
-      if (!attachCleanupFailure(recoveryError, cleanupError, "Dashboard recovery window cleanup also failed")) {
-        throw cleanupError;
-      }
+      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken });
+    } catch (error) {
+      if (!attachCleanupFailure(primaryError, error, "legacy recovery cleanup also failed")) throw error;
     }
   }
-  const afterRestartData = await rawBridgeRequest(page, "query.page", {
-    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  recorder.check("Dashboard source records survive sidecar restart unchanged",
-    beforeRestartData.payload?.rows?.length === 2
-      && isDeepStrictEqual(afterRestartData.payload?.rows, beforeRestartData.payload.rows),
-    { beforeRestartData, afterRestartData });
-  await page.getByTestId("nav-dashboard").click();
-  await workspace.waitFor({ state: "visible", timeout: 30_000 });
-  const freshList = await rawBridgeRequest(page, "dashboard.listRequested", {}, 20_000, ["dashboard.listLoaded"]);
-  recorder.check("fresh public Dashboard list retains the committed aggregate after restart",
-    freshList.payload?.dashboards?.some(item => item.id === dashboardId), { freshList });
-  await persisted.waitFor({ state: "visible", timeout: 30_000 });
-  await persisted.click();
-  const freshWorkspace = await rawBridgeRequest(page, "dashboard.readRequested", {
-    dashboardId,
-  }, 20_000, ["dashboard.loaded"]);
-  recorder.check("fresh Dashboard workspace preserves complete panels, bindings, config and revision",
-    isDeepStrictEqual(freshWorkspace.payload, committedDashboard.payload),
-    { committedDashboard, freshWorkspace });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "16-dashboard-restarted.png"), fullPage: true });
 }
 
+function legacyLayoutHelpers() {
+  return { waitForShell, createSimpleTable, applyProductMutation, rawBridgeRequest,
+    activateRestartedWorkspace, selectTable, acknowledgeExpectedBridgeFailure, requestStorageProof,
+    createV2Field, waitForAttachmentList, verifyLegacySidecarRecovery };
+}
+async function scenario16(page, recorder, _network, runtime) {
+  return seedLegacyLayoutProduct(page, recorder, runtime, legacyLayoutHelpers());
+}
 async function scenario17(page, recorder, _network, runtime) {
-  const databaseOpened = await waitForShell(page, recorder, { requireDatabaseOpened: true });
-  const projectKey = databaseOpened.payload.projectKey.trim();
-  await page.getByTestId("nav-plugins").click();
-  await page.getByTestId("plugin-install-folder").click();
-  const pluginInstallPlan = page.getByTestId("plugin-install-plan");
-  await pluginInstallPlan.waitFor({ timeout: 30_000 });
-  const pluginInstallPlanText = await pluginInstallPlan.innerText();
-  await page.getByTestId("plugin-install-commit").click();
-  const interfacePlugin = page.locator("button.plugin-row")
-    .filter({ hasText: "com.vibetable.e2e.mutation-boundary" });
-  await interfacePlugin.waitFor({ timeout: 60_000 });
-  recorder.check("Interface packaged journey installs the real mutation-boundary plugin",
-    await interfacePlugin.isVisible(), { installPlan: pluginInstallPlanText });
-  await page.getByTestId("nav-tables").click();
-  const seeded = await createSimpleTable(page, "E2E Interface Data", "Subject");
-  await applyProductMutation(page, seeded.tableId, [{
-    kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "Existing request" },
-  }], "interface-seed");
-  await page.getByTestId("nav-interfaces").click();
-  const workspace = page.getByTestId("interface-workspace");
-  await workspace.waitFor({ state: "visible", timeout: 30_000 });
-
-  page.once("dialog", (dialog) => dialog.accept("E2E Interface"));
-  await page.getByTestId("interface-create").click();
-  const nameInput = workspace.locator(".surface-name input");
-  await nameInput.fill("E2E Interface");
-  await page.getByTestId("interface-add-text").click();
-  const element = workspace.locator('[data-testid^="interface-builder-element-"]').first();
-  await element.waitFor({ state: "visible", timeout: 10_000 });
-  const inspectorText = workspace.locator(".inspector-panel label").filter({ hasText: "文本" })
-    .locator("input");
-  await inspectorText.fill("E2E Interface Content");
-  const saveButton = page.getByTestId("interface-save");
-  const saveDisabled = await saveButton.isDisabled();
-  if (saveDisabled) {
-    const diagnostic = await page.getByTestId("interface-diagnostics").textContent()
-      .catch(() => null);
-    throw new Error(`Interface save is disabled: ${diagnostic ?? "no diagnostic rendered"}`);
-  }
-  await beginBridgeMessageCapture(page, ["interface.committed"]);
-  await saveButton.click();
-  const initialCommit = await waitForCapturedBridgeMessage(page, 30_000);
-  const persistedEntry = {
-    interfaceId: initialCommit.payload?.definition?.interfaceId,
-    name: initialCommit.payload?.definition?.name,
-  };
-  if (!persistedEntry?.interfaceId) {
-    throw new Error(`Interface save did not commit a definition: ${JSON.stringify(initialCommit)}`);
-  }
-  const persisted = page.getByTestId(`interface-select-${persistedEntry.interfaceId}`);
-  await persisted.waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("nav-files").click();
-  await page.getByTestId("nav-interfaces").click();
-  await persisted.waitFor({ state: "visible", timeout: 30_000 });
-  await persisted.click();
-  const loaded = await rawBridgeRequest(page, "interface.loadRequested", {
-    interfaceId: persistedEntry.interfaceId,
-  }, 20_000, ["interface.loaded"]);
-  const interfaceId = loaded.payload?.definition?.interfaceId;
-  const definition = {
-    contractVersion: "1.0",
-    interfaceId,
-    name: "E2E Interface",
-    bindings: [{
-      bindingId: "requests",
-      query: {
-        contractVersion: "1.0", tableId: seeded.tableId,
-        fields: [seeded.field.physicalName], filters: [],
-        sorts: [{ fieldId: seeded.field.physicalName, direction: "desc" }], cursor: null, pageSize: 1,
-      },
-      variables: [],
-    }],
-    actions: [
-      { actionId: "create", kind: "record.create", bindingId: "requests", targetPageId: null, pluginId: null, pluginActionId: null, requiresConfirmation: false },
-      { actionId: "update", kind: "record.update", bindingId: "requests", targetPageId: null, pluginId: null, pluginActionId: null, requiresConfirmation: true },
-      { actionId: "refresh", kind: "binding.refresh", bindingId: "requests", targetPageId: null, pluginId: null, pluginActionId: null, requiresConfirmation: false },
-      { actionId: "details", kind: "navigate", bindingId: null, targetPageId: "details", pluginId: null, pluginActionId: null, requiresConfirmation: false },
-      { actionId: "plugin-action", kind: "plugin", bindingId: null, targetPageId: null, pluginId: "com.vibetable.e2e.mutation-boundary", pluginActionId: "allowed-plan", requiresConfirmation: true },
-    ],
-    pages: [
-      { pageId: "main", title: "Requests", elements: [
-        { elementId: "list", kind: "record-list", bindingId: "requests", actionId: null, text: "Requests", width: "full", children: [] },
-        { elementId: "update", kind: "form", bindingId: "requests", actionId: "update", text: "Update request", width: "half", children: [] },
-        { elementId: "form", kind: "form", bindingId: "requests", actionId: "create", text: "New request", width: "half", children: [] },
-        { elementId: "refresh", kind: "button", bindingId: null, actionId: "refresh", text: "Refresh", width: "third", children: [] },
-        { elementId: "navigate", kind: "navigation", bindingId: null, actionId: "details", text: "Open details", width: "third", children: [] },
-        { elementId: "plugin-action", kind: "button", bindingId: "requests", actionId: "plugin-action", text: "Run plugin", width: "third", children: [] },
-      ] },
-      { pageId: "details", title: "Details", elements: [
-        { elementId: "detail-text", kind: "text", bindingId: null, actionId: null, text: "E2E Interface Details", width: "full", children: [] },
-      ] },
-    ],
-  };
-  const committed = await rawBridgeRequest(page, "interface.commitRequested", {
-    definition, expectedRevision: loaded.payload?.revision, idempotencyKey: crypto.randomUUID(),
-  }, 20_000, ["interface.committed"]);
-  recorder.check("Interface definition commits pages, binding and closed actions atomically",
-    committed.payload?.definition?.actions?.length === 5
-      && committed.payload?.definition?.pages?.length === 2,
-  { committed });
-  await persisted.click();
-  await page.getByTestId("interface-run").click();
-  const runtimeSurface = page.getByTestId("interface-runtime");
-  await runtimeSurface.waitFor({ state: "visible", timeout: 10_000 });
-  await runtimeSurface.getByText("Existing request", { exact: true }).waitFor({ timeout: 30_000 });
-  const updateForm = page.getByTestId("interface-runtime-update");
-  await updateForm.locator("input").fill("Updated through Interface");
-  page.once("dialog", (dialog) => dialog.accept());
-  await updateForm.getByRole("button", { name: "提交" }).click();
-  await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
-  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
-  recorder.check("Interface runtime performs a confirmed CAS record update and refreshes the binding",
-    !(await runtimeSurface.innerText()).includes("Existing request"),
-  { runtimeText: await runtimeSurface.innerText() });
-  const form = page.getByTestId("interface-runtime-form");
-  await form.locator("input").fill("Created through Interface");
-  await form.getByRole("button", { name: "提交" }).click();
-  await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
-  const cursorPager = runtimeSurface.getByRole("navigation", { name: "requests 分页", exact: true });
-  await cursorPager.getByRole("button", { name: "下一页", exact: true }).click();
-  await runtimeSurface.getByText("Created through Interface", { exact: true }).waitFor({ timeout: 30_000 });
-  recorder.check("Interface cursor fetch renders the second record and terminates pagination",
-    (await cursorPager.innerText()).includes("2–2 / 2")
-      && await cursorPager.getByRole("button", { name: "下一页", exact: true }).isDisabled()
-      && !(await runtimeSurface.innerText()).includes("Updated through Interface"),
-    { pager: await cursorPager.innerText() });
-  await cursorPager.getByRole("button", { name: "上一页", exact: true }).click();
-  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
-  recorder.check("Interface cursor reopens the first window when navigating back",
-    (await cursorPager.innerText()).includes("1–1 / 2")
-      && await cursorPager.getByRole("button", { name: "上一页", exact: true }).isDisabled(),
-    { pager: await cursorPager.innerText() });
-
-  const pluginAction = page.getByTestId("interface-runtime-plugin-action").getByRole("button");
-  page.once("dialog", (dialog) => dialog.accept());
-  await pluginAction.click();
-  const pluginConfirmation = page.getByTestId("plugin-confirmation");
-  await pluginConfirmation.waitFor({ timeout: 30_000 });
-  await page.getByTestId("plugin-confirm-reject").click();
-  await runtimeSurface.getByText("插件操作已拒绝", { exact: true }).waitFor({ timeout: 30_000 });
-  recorder.check("Interface plugin action exposes and records an explicit broker rejection",
-    !(await runtimeSurface.innerText()).includes("插件动作执行失败"));
-
-  page.once("dialog", (dialog) => dialog.accept());
-  await pluginAction.click();
-  await pluginConfirmation.waitFor({ timeout: 30_000 });
-  await page.getByTestId("plugin-task-cancel").click();
-  await runtimeSurface.getByText("插件操作已取消", { exact: true }).waitFor({ timeout: 30_000 });
-  recorder.check("Interface plugin action cancels the authoritative in-flight task",
-    !(await runtimeSurface.innerText()).includes("操作已完成"));
-
-  page.once("dialog", (dialog) => dialog.accept());
-  await pluginAction.click();
-  await pluginConfirmation.waitFor({ timeout: 30_000 });
-  const confirmationText = await pluginConfirmation.innerText();
-  await page.getByTestId("plugin-confirm-approve").click();
-  await runtimeSurface.getByText("操作已完成", { exact: true }).waitFor({ timeout: 30_000 });
-  recorder.check("Interface plugin action waits for broker approval and terminal success",
-    /FINAL WRITE CONFIRMATION/i.test(confirmationText), { confirmationText });
-
-  await page.getByTestId("interface-runtime-navigate").getByRole("button").click();
-  const runtimeText = await runtimeSurface.innerText();
-  recorder.check("Interface runtime creates a record, refreshes its binding and navigates pages",
-    runtimeText.includes("E2E Interface Details"),
-  { interfaceName: "E2E Interface", runtimeText });
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "17-interface-lifecycle.png"),
-    fullPage: true,
+  return runRecordManagerProduct(page, recorder, runtime, {
+    waitForShell: async (...args) => {
+      const opened = await waitForShell(...args);
+      await rejectLegacyRoutes(page, recorder, legacyLayoutHelpers());
+      return opened;
+    }, createSimpleTable, applyProductMutation, rawBridgeRequest,
   });
-
-  await page.getByTestId("nav-tables").click();
-  const tableName = page.getByTestId("sidebar-table-name").filter({ hasText: "E2E Interface Data" });
-  await tableName.locator("xpath=ancestor::button").click();
-  const beforeRestart = await rawBridgeRequest(page, "query.page", {
-    tableId: seeded.tableId, query: { filters: [], sorts: [], offset: 0, limit: 100 },
-  });
-  recorder.check("Interface authoring and approved runtime actions persist three records",
-    beforeRestart.type === "query.page" && beforeRestart.payload?.rows?.length === 3,
-    { beforeRestart });
-  const pluginCatalogBefore = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey });
-  const pluginAuditParams = { projectKey, pluginId: "com.vibetable.e2e.mutation-boundary" };
-  const pluginAuditBefore = await rawBridgeRequest(page, "plugin.audit.list", pluginAuditParams);
-  recorder.check("plugin restart baseline includes the installed identity and lifecycle audit",
-    pluginCatalogBefore.type === "plugin.catalog.list"
-      && pluginCatalogBefore.payload?.some(item => item.pluginId === pluginAuditParams.pluginId)
-      && pluginAuditBefore.type === "plugin.audit.list"
-      && pluginAuditBefore.payload?.some(event => event.eventType === "install"),
-    { pluginCatalogBefore, pluginAuditBefore });
-  const quiet = await waitForBridgeDiagnosticsToSettle(page);
-  recorder.check("Interface restart begins from a quiescent bridge",
-    quiet !== null && quiet.failures.length === 0 && quiet.pending.length === 0, { quiet });
-  const recoveryOwner = `interface-recovery-${crypto.randomUUID()}`;
-  await page.evaluate(beginSidecarRecoveryNotificationFailureWindowInPage, {
-    ownerToken: recoveryOwner, tableId: seeded.tableId,
-  });
-  let recoveryError = null;
-  try {
-    const restart = await requestSidecarKill(runtime, "verify Interface aggregate survives sidecar restart");
-    recorder.check("Interface restart terminates only the exact sidecar child",
-      restart.processName === "vibetable-pb.exe", { restart });
-    await waitForTableRecovery(page, "E2E Interface Data", seeded.tableId, 3, 60_000, recoveryOwner);
-  } catch (error) {
-    recoveryError = error;
-    throw error;
-  } finally {
-    try {
-      await page.evaluate(releaseSidecarRecoveryNotificationFailureWindowInPage, { ownerToken: recoveryOwner });
-    } catch (cleanupError) {
-      if (!attachCleanupFailure(recoveryError, cleanupError, "Interface recovery window cleanup also failed")) {
-        throw cleanupError;
-      }
-    }
-  }
-  await beginBridgeMessageCapture(page, ["interface.listLoaded"]);
-  await page.getByTestId("nav-interfaces").click();
-  const freshList = await waitForCapturedBridgeMessage(page, 30_000);
-  recorder.check("fresh Interface list after restart contains the committed revision",
-    freshList.payload?.items?.some(item => item.interfaceId === interfaceId
-      && item.revision === committed.payload.revision), { freshList });
-  await persisted.waitFor({ state: "visible", timeout: 30_000 });
-  await beginBridgeMessageCapture(page, ["interface.loaded"]);
-  await persisted.click();
-  const freshLoad = await waitForCapturedBridgeMessage(page, 30_000);
-  recorder.check("fresh public Interface load preserves the complete pages, bindings and actions after restart",
-    isDeepStrictEqual(freshLoad.payload, committed.payload), { committed, freshLoad });
-  const pluginCatalogAfter = await rawBridgeRequest(page, "plugin.catalog.list", { projectKey });
-  const pluginAuditAfter = await rawBridgeRequest(page, "plugin.audit.list", pluginAuditParams);
-  recorder.check("Go plugin installation and complete audit survive the real sidecar restart",
-    pluginCatalogAfter.type === "plugin.catalog.list"
-      && pluginAuditAfter.type === "plugin.audit.list"
-      && isDeepStrictEqual(pluginCatalogAfter.payload, pluginCatalogBefore.payload)
-      && isDeepStrictEqual(pluginAuditAfter.payload, pluginAuditBefore.payload),
-    { pluginCatalogBefore, pluginCatalogAfter, pluginAuditBefore, pluginAuditAfter });
-  await page.getByTestId("interface-run").click();
-  await runtimeSurface.getByText("Updated through Interface", { exact: true }).waitFor({ timeout: 30_000 });
-  await page.screenshot({ path: path.join(runtime.evidenceDir, "17-interface-restarted.png"), fullPage: true });
-
-  await beginBridgeMessageCapture(page, ["interface.deleted"]);
-  page.once("dialog", dialog => dialog.accept());
-  await page.getByRole("button", { name: "删除界面", exact: true }).click();
-  const deleted = await waitForCapturedBridgeMessage(page, 30_000);
-  recorder.check("real Interface delete acknowledges exactly the selected aggregate",
-    deleted.payload?.interfaceId === interfaceId, { deleted });
-  await persisted.waitFor({ state: "hidden", timeout: 30_000 });
-  const afterDelete = await rawBridgeRequest(page, "interface.listRequested", {}, 20_000, ["interface.listLoaded"]);
-  recorder.check("fresh public Interface list omits the deleted aggregate",
-    Array.isArray(afterDelete.payload?.items)
-      && !afterDelete.payload.items.some(item => item.interfaceId === interfaceId), { afterDelete });
-  const missing = await rawBridgeRequest(page, "interface.loadRequested", { interfaceId }, 20_000, ["operation.failed"]);
-  const expectedMissing = missing.type === "operation.failed" && missing.payload?.code === "surface.not_found";
-  recorder.check("deleted Interface cannot be loaded through the real Host Product path", expectedMissing, { missing });
-  if (!expectedMissing) throw new Error(`Unexpected deleted Interface response: ${JSON.stringify(missing)}`);
-  await acknowledgeExpectedBridgeFailure(page, missing);
 }
 
 async function scenario18(page, recorder, _network, runtime) {
@@ -12431,137 +11807,7 @@ async function waitForDashboardExportSettlement(page, timeoutMs, settledTokens) 
 }
 
 async function scenario46(page, recorder, _network, runtime) {
-  await waitForShell(page, recorder);
-  await page.getByTestId("nav-tables").click();
-  const seeded = await createSimpleTable(page, "E2E Dashboard Export", "Region");
-  await applyProductMutation(page, seeded.tableId, [
-    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "North" } },
-    { kind: "insert", recordId: null, values: { [seeded.field.physicalName]: "South" } },
-  ], "dashboard-export-seed");
-
-  await page.getByTestId("nav-dashboard").click();
-  const workspace = page.getByTestId("dashboard-workspace");
-  await workspace.waitFor({ state: "visible", timeout: 30_000 });
-  await page.getByTestId("dashboard-create").click();
-  const modal = page.getByTestId("dashboard-create-modal");
-  await modal.waitFor({ state: "visible", timeout: 10_000 });
-  await page.getByTestId("dashboard-create-name").locator("input").fill("Native Output");
-  await page.getByTestId("dashboard-create-template-blank").click();
-  await page.getByTestId("dashboard-create-submit").click();
-  await page.getByTestId("dashboard-save").waitFor({ state: "visible", timeout: 10_000 });
-
-  await page.getByTestId("dashboard-add-panel").click();
-  await page.getByTestId("dashboard-panel-editor").waitFor({ state: "visible" });
-  await fillNInput(page, "dashboard-panel-name", "Export records");
-  await selectVisibleNOption(page, "dashboard-panel-type", /^(明细列表|Record list)$/u);
-  await selectVisibleNOption(page, "dashboard-panel-collection", seeded.tableId);
-  await page.getByTestId("dashboard-panel-fields").waitFor({ state: "visible" });
-  await selectVisibleNOptions(page, "dashboard-panel-fields", ["Region"]);
-  const submit = page.getByTestId("dashboard-panel-submit");
-  await page.waitForFunction(
-    () => !document.querySelector('[data-testid="dashboard-panel-submit"]')?.hasAttribute("disabled"),
-    undefined, { timeout: 20_000 },
-  );
-  await submit.click();
-  const panel = workspace.locator(".dashboard-panel").filter({ hasText: "Export records" });
-  await awaitDashboardPanelReady(page, panel);
-  await panel.getByText("North", { exact: true }).waitFor({ timeout: 30_000 });
-
-  // Real WebView2 CSV download: the host-owned save dialog is synthesized
-  // through the test-mode control file, and the download itself is admitted
-  // and settled by the native bridge.
-  const settledTokens = new Set();
-  const csvTarget = path.join(runtime.controlsDir, "46-dashboard-export.csv");
-  await fs.rm(csvTarget, { force: true });
-  await fs.writeFile(
-    path.join(runtime.controlsDir, "dashboard-export-target.txt"),
-    `${csvTarget}\r\n`, "utf8");
-  await beginBridgeMessageCapture(page, ["dashboard.exportSettled"]);
-  await panel.getByRole("button", { name: /^(导出 CSV|Export CSV)$/u }).click();
-  const csvSettled = await waitForDashboardExportSettlement(page, 30_000, settledTokens);
-  const csvStat = await waitForFileOnDisk(csvTarget, 30_000);
-  const csvBytes = await fs.readFile(csvTarget);
-  const csvText = csvBytes.toString("utf8");
-  const csvLines = csvText.trimEnd().split(/\r?\n/u);
-  recorder.check("the real WebView2 CSV download lands the declared dashboard rows on disk",
-    csvBytes[0] === 0xef && csvBytes[1] === 0xbb && csvBytes[2] === 0xbf
-      && csvLines.length === 3
-      && csvLines.some((line) => line.includes("North"))
-      && csvLines.some((line) => line.includes("South"))
-      && !csvText.includes("undefined"),
-  { csvTarget, csvBytes: csvStat.size, settledToken: csvSettled.token });
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "46-dashboard-export-csv.png"),
-    fullPage: true,
-  });
-
-  // Real WebView2 PNG download of the whole dashboard surface.
-  const pngTarget = path.join(runtime.controlsDir, "46-dashboard-export.png");
-  await fs.rm(pngTarget, { force: true });
-  await fs.writeFile(
-    path.join(runtime.controlsDir, "dashboard-export-target.txt"),
-    `${pngTarget}\r\n`, "utf8");
-  await beginBridgeMessageCapture(page, ["dashboard.exportSettled"]);
-  await page.getByRole("button", { name: /^(导出仪表盘 PNG|Export dashboard PNG)$/u }).click();
-  const pngSettled = await waitForDashboardExportSettlement(page, 30_000, settledTokens);
-  const pngStat = await waitForFileOnDisk(pngTarget, 60_000);
-  const pngBytes = await fs.readFile(pngTarget);
-  recorder.check("the real WebView2 PNG download writes a non-trivial PNG image on disk",
-    pngBytes.length > 2_048
-      && pngBytes[0] === 0x89 && pngBytes[1] === 0x50 && pngBytes[2] === 0x4e
-      && pngBytes[3] === 0x47 && pngBytes[4] === 0x0d && pngBytes[5] === 0x0a
-      && pngBytes[6] === 0x1a && pngBytes[7] === 0x0a,
-  { pngTarget, pngBytes: pngStat.size, settledToken: pngSettled.token });
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "46-dashboard-export-png.png"),
-    fullPage: true,
-  });
-
-  // Cancelled save: the explicit test-mode cancel seam behaves exactly like
-  // a user cancelling the native dialog, and nothing is written to disk.
-  const cancelTarget = path.join(runtime.controlsDir, "46-dashboard-cancelled.csv");
-  await fs.writeFile(path.join(runtime.controlsDir, "dashboard-export-target.txt"),
-    `${cancelTarget}\r\n`, "utf8");
-  await fs.writeFile(path.join(runtime.controlsDir, "dashboard-export-cancel.txt"), "cancel\r\n", "utf8");
-  const cancelFailureStart = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics?.failures.length ?? 0,
-  );
-  await panel.getByRole("button", { name: /^(导出 CSV|Export CSV)$/u }).click();
-  const cancelFailure = await page.waitForFunction(({ start }) =>
-    window.__vibetableE2EBridgeDiagnostics?.failures.slice(start)
-      .find((failure) => failure.requestType === "dashboard.exportTargetRequested"
-        && failure.code === "CANCELLED"),
-  { start: cancelFailureStart }, { timeout: 30_000 });
-  await fs.rm(path.join(runtime.controlsDir, "dashboard-export-cancel.txt"), { force: true });
-  let cancelledFileExists = false;
-  try { await fs.access(cancelTarget); cancelledFileExists = true; } catch { /* absent */ }
-  recorder.check("cancelling the native save dialog reports CANCELLED without writing a file",
-    !cancelledFileExists,
-  { cancelTarget });
-  await acknowledgeExpectedBridgeFailure(page, await cancelFailure.jsonValue());
-  await cancelFailure.dispose();
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "46-dashboard-export-cancelled.png"),
-    fullPage: true,
-  });
-
-  // Print: the WebView2 browser preview is native UI; the bridge can only
-  // truthfully report that the dialog opened, never that printing completed.
-  const printStart = await page.evaluate(
-    () => window.__vibetableE2EBridgeDiagnostics?.roundTrips.length ?? 0,
-  );
-  await page.getByRole("button", { name: /^(打印|Print)$/u }).click();
-  await page.waitForFunction(({ start }) =>
-    window.__vibetableE2EBridgeDiagnostics?.roundTrips.slice(start)
-      .some((trip) => trip.requestType === "dashboard.printRequested"
-        && trip.responseType === "dashboard.printDialogOpened"),
-  { start: printStart }, { timeout: 30_000 });
-  recorder.check("the native print preview reports only that the dialog opened",
-    true, {});
-  await page.screenshot({
-    path: path.join(runtime.evidenceDir, "46-dashboard-print-dialog-opened.png"),
-    fullPage: true,
-  });
+  return runRetiredNativeOutput(page, recorder, runtime, legacyLayoutHelpers());
 }
 
 const scenarios = {
@@ -12969,6 +12215,7 @@ async function main() {
     await installBridgeDiagnostics(page);
     const implementation = args["persistent-phase"] === "seed"
       ? (candidate, checks, network, runtime) => {
+        if (args.scenario === "16-dashboard-lifecycle") return scenario16(candidate, checks, network, runtime);
         if (args.scenario === "33-host-grid-presentation") {
           return scenario33(candidate, checks, network, runtime);
         }
@@ -12989,6 +12236,7 @@ async function main() {
       }
       : args["persistent-phase"] === "resume"
         ? (candidate, checks, _network, runtime) => {
+          if (args.scenario === "16-dashboard-lifecycle") return resumeLegacyLayoutProduct(candidate, checks, runtime, legacyLayoutHelpers(), args.state);
           if (args.scenario === "33-host-grid-presentation") {
             return resumeHostPresentation(candidate, checks, args.state, runtime);
           }

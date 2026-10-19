@@ -7,18 +7,22 @@ import { useSystemTimeZone } from "@/composables/useSystemTimeZone";
 import { usePluginStore } from "@/stores/pluginStore";
 import { createPluginCommandContext, usePluginService } from "@/services/pluginService";
 import { useUiStore } from "@/stores/uiStore";
+import { useWorkspaceSessionStore } from "@/stores/workspaceSessionStore";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import { useTableStore } from "@/stores/tableStore";
 import { projectPluginTheme } from "@/components/plugins/pluginTheme";
 import { permissionDeclarations } from "@/services/pluginPermissionDeclarations";
 import { publicCapabilityPolicy } from "@/services/publicCapabilityPolicy";
 import { t } from "@/i18n";
+import { useHostBridge } from "@/services/bridgeContext";
+import type { LegacyLayoutReport } from "@/contracts/surfaceBridgeContracts";
 
 const props = withDefaults(defineProps<{ autoLoad?: boolean }>(), { autoLoad: true });
 const store = usePluginStore();
 const service = usePluginService();
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
+const workspaceSession = useWorkspaceSessionStore();
 const table = useTableStore();
 const systemTimeZone = useSystemTimeZone();
 const plannedUpgradePluginId = ref<string | null>(null);
@@ -28,6 +32,70 @@ const uninstalling = computed(() => uninstallTarget.value !== null);
 const auditEvents = ref<readonly PluginAuditEvent[]>([]);
 const pendingCleanup = ref<readonly PluginAuditEvent[]>([]);
 const githubRepository = ref("");
+const bridge = useHostBridge();
+const legacyReport = ref<LegacyLayoutReport | null>(null);
+const legacyBusy = ref(false);
+const legacyStatus = ref("");
+let legacyGeneration = 0;
+// Host preservation runs behind a single concurrency gate: abandoning the panel without cancelling keeps that gate busy until the Host's own timeout.
+let legacyInFlightId: string | null = null;
+function cancelLegacyRequest(): void {
+  const target = legacyInFlightId;
+  legacyInFlightId = null;
+  if (target === null) return;
+  // Draining/rotating sessions cancel scoped requests via the Host lease; a stale-scope cancel would only broadcast an unrelated failure.
+  if (workspaceSession.enabled && (!workspaceSession.hasOpenWorkspace || workspaceSession.isTransitioning)) return;
+  try {
+    bridge.notify("legacyLayout.cancelRequested", { targetRequestId: target });
+  } catch {
+    // Best effort only; the Host timeout and workspace retirement remain the backstop.
+  }
+}
+async function detectLegacy(): Promise<void> {
+  const generation = ++legacyGeneration;
+  cancelLegacyRequest();
+  legacyBusy.value = true;
+  legacyStatus.value = "";
+  let requestId: string | null = null;
+  try {
+    const handle = bridge.requestWithHandle("legacyLayout.reportRequested", { reason: "detect" });
+    requestId = handle.requestId;
+    legacyInFlightId = requestId;
+    const report = await handle.promise;
+    if (generation === legacyGeneration) legacyReport.value = report;
+  } catch (error) {
+    if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "旧布局检测失败";
+  } finally {
+    if (legacyInFlightId === requestId) legacyInFlightId = null;
+    if (generation === legacyGeneration) legacyBusy.value = false;
+  }
+}
+async function exportLegacy(): Promise<void> {
+  const generation = legacyGeneration;
+  legacyBusy.value = true;
+  let requestId: string | null = null;
+  try {
+    const handle = bridge.requestWithHandle("legacyLayout.exportRequested", {});
+    requestId = handle.requestId;
+    legacyInFlightId = requestId;
+    const result = await handle.promise;
+    if (generation === legacyGeneration) legacyStatus.value = result.cancelled ? "已取消保存，原定义未改变。" : `已保存保全材料：${result.outputDisplayName}`;
+  } catch (error) {
+    if (generation === legacyGeneration) legacyStatus.value = error instanceof Error ? error.message : "保全失败，原定义未改变";
+  } finally {
+    if (legacyInFlightId === requestId) legacyInFlightId = null;
+    if (generation === legacyGeneration) legacyBusy.value = false;
+  }
+}
+watch(() => [store.projectKey, workspaceSession.sessionEpoch, workspaceSession.sessionState], () => {
+  ++legacyGeneration;
+  // Retire the abandoned request under its captured id so the next generation never queues behind it on the Host gate.
+  cancelLegacyRequest();
+  legacyReport.value = null;
+  legacyBusy.value = false;
+  legacyStatus.value = "";
+  if (props.autoLoad && store.projectContextReady && (!workspaceSession.enabled || (workspaceSession.hasOpenWorkspace && !workspaceSession.isTransitioning))) void detectLegacy();
+}, { flush: "sync" });
 
 const plugin = computed(() => store.selectedPlugin);
 function cancelUninstall(): void {
@@ -204,13 +272,14 @@ async function retryCleanup(event: PluginAuditEvent): Promise<void> {
 
 onMounted(() => {
   service.init();
+  if (props.autoLoad && store.projectContextReady) void detectLegacy();
   if (props.autoLoad) void safely(async () => {
     await service.list();
     pendingCleanup.value = await service.listPendingCleanup();
     if (store.selectedPlugin) auditEvents.value = await service.listAudit(store.selectedPlugin.pluginId);
   });
 });
-onBeforeUnmount(() => service.dispose());
+onBeforeUnmount(() => { ++legacyGeneration; cancelLegacyRequest(); service.dispose(); });
 </script>
 
 <template>
@@ -249,6 +318,20 @@ onBeforeUnmount(() => service.dispose());
         </button>
       </div>
     </header>
+
+    <section class="cleanup-queue" aria-label="旧布局保全" data-testid="legacy-layout-preservation">
+      <h2>旧布局保全</h2>
+      <p>可视化业务搭建已退役。原定义保留为只读材料，不会自动转换或执行。</p>
+      <p>文本、记录列表与详情表单可参照 record-manager 代码插件，使用原业务表、字段和记录 ID 人工改写；聚合、图表、复杂布局及未知内容需单独改写。</p>
+      <button type="button" data-testid="legacy-layout-detect" :disabled="!store.projectContextReady || legacyBusy" @click="detectLegacy">检测旧布局</button>
+      <button type="button" data-testid="legacy-layout-export" :disabled="!store.projectContextReady || legacyBusy || !legacyReport" @click="exportLegacy">保存 JSON 保全材料</button>
+      <p v-if="legacyReport" data-testid="legacy-layout-counts">Interface {{ legacyReport.interfaces }} · dashboard {{ legacyReport.dashboards }} · panel {{ legacyReport.panels }}</p>
+      <p v-if="legacyReport?.diagnosticsTruncated" data-testid="legacy-layout-diagnostics-truncated">共 {{ legacyReport.diagnosticCount }} 条诊断，最多显示前 100 条摘要，长路径会缩短；导出包含全部诊断与完整路径。</p>
+      <ul v-if="legacyReport?.diagnostics.length" data-testid="legacy-layout-diagnostics">
+        <li v-for="(diagnostic, index) in legacyReport.diagnostics" :key="index">{{ diagnostic.itemId }} {{ diagnostic.path }} · {{ diagnostic.code }}：{{ diagnostic.message }}</li>
+      </ul>
+      <p v-if="legacyStatus" role="status">{{ legacyStatus }}</p>
+    </section>
 
     <div v-if="store.lastError" class="global-error" role="alert"><ShieldAlert :size="15" />{{ store.lastError }}</div>
 

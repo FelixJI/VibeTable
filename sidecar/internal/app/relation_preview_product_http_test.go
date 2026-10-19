@@ -84,6 +84,7 @@ func relationPreviewHTTPMux(t *testing.T, pb *pocketbase.PocketBase, registratio
 			unrelatedSurfaceRegistration(t, "interface.load"),
 			unrelatedSurfaceRegistration(t, "interface.commit"),
 			unrelatedSurfaceRegistration(t, "interface.delete"),
+			unrelatedLegacyLayoutSnapshotRegistration(t),
 			historyReadRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyPreviewRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),
 			historyApplyRestoreRegistration(unrelatedHistoryReadMustNotRun{t: t}),

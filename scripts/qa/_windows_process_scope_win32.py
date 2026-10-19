@@ -6,6 +6,8 @@ import ctypes
 import math
 import msvcrt
 import os
+import socket
+import struct
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -13,7 +15,7 @@ from ctypes import wintypes
 from pathlib import PureWindowsPath
 from typing import IO, Protocol
 
-from ._windows_tcp_table import WindowsTcpRow, query_windows_tcp_table
+from ._windows_tcp_table import WindowsTcpRow
 from .windows_process_scope import ProcessLaunchSpec
 
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
@@ -400,13 +402,80 @@ class _Win32TcpListenerOwnerHandle:
         self._process.close()
 
 
+def _query_native_tcp_listeners(*, timeout: float) -> tuple[WindowsTcpRow, ...]:
+    """Use the OS listener-only table; netstat can omit state-0 listener rows.
+
+    The table selector supplies listening membership, never an assumption about
+    an unknown state in the all-connections table. Preserve the raw state in
+    evidence and still require the selected local port and stable owner handle.
+    """
+    if timeout <= 0:
+        raise TimeoutError("Windows TCP listener query deadline is exhausted")
+    deadline = time.monotonic() + timeout
+    query = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
+    query.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+        wintypes.ULONG,
+        ctypes.c_int,
+        wintypes.ULONG,
+    ]
+    query.restype = wintypes.DWORD
+    rows: list[WindowsTcpRow] = []
+    for family, row_size in ((socket.AF_INET, 24), (socket.AF_INET6, 56)):
+        size = wintypes.DWORD()
+        result = query(None, ctypes.byref(size), False, family, 3, 0)  # OWNER_PID_LISTENER
+        if result not in (0, 122):  # ERROR_INSUFFICIENT_BUFFER is the sizing contract.
+            raise ctypes.WinError(result, "GetExtendedTcpTable(listener size)")
+        buffer = ctypes.create_string_buffer(size.value)
+        for _ in range(3):  # Only retry a table growth between sizing and reading.
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Windows TCP listener query exceeded its deadline")
+            result = query(buffer, ctypes.byref(size), False, family, 3, 0)
+            if result != 122:
+                break
+            buffer = ctypes.create_string_buffer(size.value)
+        if result:
+            raise ctypes.WinError(result, "GetExtendedTcpTable(listener rows)")
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Windows TCP listener query exceeded its deadline")
+        count = struct.unpack_from("<I", buffer)[0]
+        if 4 + count * row_size > len(buffer):
+            raise RuntimeError("Windows TCP listener table is truncated")
+        for index in range(count):
+            offset = 4 + index * row_size
+            if family == socket.AF_INET:
+                state, local, local_port, remote, remote_port, pid = struct.unpack_from(
+                    "<6I", buffer, offset
+                )
+                local_host = socket.inet_ntop(family, struct.pack("<I", local))
+                remote_host = socket.inet_ntop(family, struct.pack("<I", remote))
+            else:
+                local, _local_scope, local_port, remote, _remote_scope, remote_port, state, pid = (
+                    struct.unpack_from("<16sII16sIIII", buffer, offset)
+                )
+                local_host = f"[{socket.inet_ntop(family, local)}]"
+                remote_host = f"[{socket.inet_ntop(family, remote)}]"
+            rows.append(
+                WindowsTcpRow(
+                    "TCP",
+                    f"{local_host}:{socket.ntohs(local_port & 65535)}",
+                    f"{remote_host}:{socket.ntohs(remote_port & 65535)}",
+                    f"LISTENER_TABLE(rawState={state})",
+                    pid,
+                )
+            )
+    return tuple(rows)
+
+
 class _Win32TcpListenerOwnerAdapter:
     """Read TCP rows and open a non-terminating stable owner handle."""
 
     @staticmethod
     def query_listeners(port: int, *, timeout: float) -> tuple[WindowsTcpRow, ...]:
         return tuple(
-            row for row in query_windows_tcp_table(timeout=timeout) if row.is_listener_on(port)
+            row for row in _query_native_tcp_listeners(timeout=timeout) if row.is_listener_on(port)
         )
 
     @staticmethod

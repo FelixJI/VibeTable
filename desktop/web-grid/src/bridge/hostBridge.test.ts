@@ -158,8 +158,8 @@ describe("HostBridge", () => {
       const requests = [
         bridge.request("clipboard.readText", {}),
         bridge.request("clipboard.writeText", { text: "copied" }),
-        bridge.request("dashboard.listRequested", {}),
-        bridge.request("dashboard.manifestRequested", {}),
+        bridge.request("legacyLayout.reportRequested", {}),
+        bridge.request("legacyLayout.exportRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("gridState.get", { table: "orders" }),
         bridge.request("lookup.query", lookupQueryPayload()),
@@ -235,8 +235,7 @@ describe("HostBridge", () => {
         bridge.request("lookup.valuePage", lookupValuePagePayload()),
         bridge.request("clipboard.readText", {}),
         bridge.request("clipboard.writeText", { text: "copied" }),
-        bridge.request("dashboard.listRequested", {}),
-        bridge.request("dashboard.manifestRequested", {}),
+        bridge.request("legacyLayout.reportRequested", {}),
         bridge.request("settings.readWorkCalendar", {}),
         bridge.request("gridState.get", { table: "orders" }),
         bridge.request("plugin.catalog.list", { projectKey: pluginProjectKey }),
@@ -946,32 +945,32 @@ describe("HostBridge", () => {
     });
     bridge.start();
 
-    const pending = bridge.request("dashboard.listRequested", {});
+    const pending = bridge.request("legacyLayout.reportRequested", {});
     let settled = false;
     void pending.finally(() => {
       settled = true;
     });
 
     webview.emit({
-      type: "dashboard.queryLoaded",
+      type: "legacyLayout.exportCompleted",
       requestId: "req-mismatch",
-      payload: { rows: [{ forged: true }] },
+      payload: { cancelled: true, outputDisplayName: null },
     });
     await Promise.resolve();
 
     expect(settled).toBe(false);
     expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
       kind: "mismatched-response",
-      type: "dashboard.queryLoaded",
-      reason: expect.stringContaining("expected: dashboard.listLoaded"),
+      type: "legacyLayout.exportCompleted",
+      reason: expect.stringContaining("expected: legacyLayout.reportLoaded"),
     }));
 
     webview.emit({
-      type: "dashboard.listLoaded",
+      type: "legacyLayout.reportLoaded",
       requestId: "req-mismatch",
-      payload: { dashboards: [] },
+      payload: { interfaces: 0, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" },
     });
-    await expect(pending).resolves.toEqual({ dashboards: [] });
+    await expect(pending).resolves.toEqual({ interfaces: 0, dashboards: 0, panels: 0, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" });
     bridge.stop();
   });
 
@@ -1462,51 +1461,136 @@ describe("HostBridge", () => {
     bridge.stop();
   });
 
-  it("correlates native dashboard requests and posts dashboard cancellation", async () => {
+  it("retires an export without a timeout and accepts same-workspace epoch reopen", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    let counter = 0;
+    const bridge = createHostBridge({ webview, generateRequestId: () => "export-" + ++counter });
+    bridge.start();
+    const pending = bridge.request("legacyLayout.exportRequested", {}).catch(error => error);
+    expect(session.beginClose()).toBe(true);
+    await expect(pending).resolves.toMatchObject({ name: "AbortError" });
+    session.closeSession();
+    openWorkspaceSessionFixture(session);
+    session.sessionEpoch = 8;
+    const reopened = bridge.request("legacyLayout.exportRequested", {});
+    webview.emit({ type: "legacyLayout.exportCompleted", requestId: "export-2",
+      payload: { cancelled: false, outputDisplayName: "saved.json" },
+      scope: { scope: "workspace", workspaceId: session.activeWorkspaceId, sessionEpoch: 8,
+        operationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", sequence: 100 } });
+    await expect(reopened).resolves.toEqual({ cancelled: false, outputDisplayName: "saved.json" });
+    bridge.stop();
+  });
+
+  it("correlates native legacy-layout preservation requests through the host-owned channel", async () => {
     let counter = 0;
     const bridge = createHostBridge({
       webview,
       timeoutMs: 1000,
-      generateRequestId: () => `dashboard-${++counter}`,
+      generateRequestId: () => `legacy-${++counter}`,
     });
     bridge.start();
 
-    const list = bridge.request("dashboard.listRequested", {});
+    const report = bridge.request("legacyLayout.reportRequested", {});
     expect(webview.postMessage).toHaveBeenLastCalledWith({
-      type: "dashboard.listRequested",
-      requestId: "dashboard-1",
+      type: "legacyLayout.reportRequested",
+      requestId: "legacy-1",
       payload: {},
     });
     webview.emit({
-      type: "dashboard.listLoaded",
-      requestId: "dashboard-1",
-      payload: { dashboards: [] },
+      type: "legacyLayout.reportLoaded",
+      requestId: "legacy-1",
+      payload: { interfaces: 2, dashboards: 1, panels: 4, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" },
     });
-    await expect(list).resolves.toEqual({ dashboards: [] });
+    await expect(report).resolves.toEqual({ interfaces: 2, dashboards: 1, panels: 4, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" });
 
-    const query = bridge.requestWithHandle("dashboard.queryRequested", {
-      panelType: "metric",
-      query: {
-        kind: "aggregate",
-        collection: "orders",
-        measures: [{ key: "total", op: "sum", field: "amount" }],
-      },
-    });
-    expect(query.requestId).toBe("dashboard-2");
+    const exportRequest = bridge.requestWithHandle("legacyLayout.exportRequested", {});
+    expect(exportRequest.requestId).toBe("legacy-2");
     webview.emit({
-      type: "dashboard.queryLoaded",
-      requestId: "dashboard-2",
-      payload: { rows: [{ total: 42 }], truncated: false, maxPoints: 100_000 },
+      type: "legacyLayout.exportCompleted",
+      requestId: "legacy-2",
+      payload: { cancelled: false, outputDisplayName: "vibetable-legacy-layouts.json" },
     });
-    await expect(query.promise).resolves.toEqual({
-      rows: [{ total: 42 }], truncated: false, maxPoints: 100_000,
+    await expect(exportRequest.promise).resolves.toEqual({
+      cancelled: false, outputDisplayName: "vibetable-legacy-layouts.json",
+    });
+    bridge.stop();
+  });
+
+  it("keeps a legacy-layout report pending beyond the ordinary RPC budget until the Host settles it", async () => {
+    vi.useFakeTimers();
+    let counter = 0;
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 10_000,
+      generateRequestId: () => `report-budget-${++counter}`,
+    });
+    bridge.start();
+    const handle = bridge.requestWithHandle("legacyLayout.reportRequested", { reason: "detect" });
+    let settled = false;
+    void handle.promise.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    // A large workspace paginates far past any renderer wall-clock budget; the
+    // Host runner owns the terminal state (5-minute timeout + retirement).
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(settled).toBe(false);
+
+    webview.emit({
+      type: "legacyLayout.reportLoaded",
+      requestId: handle.requestId,
+      payload: { interfaces: 120, dashboards: 12, panels: 340, diagnostics: [], collectedAt: "2026-10-19T00:00:00.000Z" },
+    });
+    await expect(handle.promise).resolves.toMatchObject({ interfaces: 120 });
+    bridge.stop();
+  });
+
+  it("retires a host-owned legacy-layout report when its workspace session drains", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    const bridge = createHostBridge({ webview, generateRequestId: () => "report-retire-1" });
+    bridge.start();
+    const pending = bridge.request("legacyLayout.reportRequested", { reason: "detect" });
+    expect(session.beginClose()).toBe(true);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    bridge.stop();
+  });
+
+  it("forwards the correlated cancel protocol for an abandoned legacy-layout request", async () => {
+    const session = useWorkspaceSessionStore();
+    openWorkspaceSessionFixture(session);
+    let counter = 0;
+    const bridge = createHostBridge({
+      webview,
+      timeoutMs: 1_000,
+      generateRequestId: () => `cancel-${++counter}`,
+    });
+    bridge.start();
+    const handle = bridge.requestWithHandle("legacyLayout.reportRequested", { reason: "detect" });
+    bridge.notify("legacyLayout.cancelRequested", { targetRequestId: handle.requestId });
+
+    const cancelEnvelope = webview.postMessage.mock.calls.at(-1)![0] as BridgeMessage & { scope?: unknown };
+    expect(cancelEnvelope).toMatchObject({
+      type: "legacyLayout.cancelRequested",
+      payload: { targetRequestId: handle.requestId },
+    });
+    // The Host controller requires a current workspace scope on the cancel.
+    expect(cancelEnvelope.scope).toMatchObject({
+      scope: "workspace",
+      workspaceId: "11111111-1111-4111-8111-111111111111",
+      sessionEpoch: 7,
     });
 
-    bridge.notify("dashboard.cancelRequested", { targetRequestId: "dashboard-2" });
-    expect(webview.postMessage).toHaveBeenLastCalledWith({
-      type: "dashboard.cancelRequested",
-      payload: { targetRequestId: "dashboard-2" },
+    // The Host settles the TARGET request; the notify-only cancel itself
+    // never receives a correlated reply.
+    webview.emit({
+      type: "operation.failed",
+      requestId: handle.requestId,
+      payload: { message: "已取消保全。", code: "CANCELLED", operation: "legacyLayout.reportRequested" },
     });
+    await expect(handle.promise).rejects.toMatchObject({ code: "CANCELLED" });
     bridge.stop();
   });
 

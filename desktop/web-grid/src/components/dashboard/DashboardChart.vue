@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import type { DashboardPanel } from "@/dashboard";
+import type { DashboardChartInput } from "@/dashboard";
 import { useTheme } from "@/composables/useTheme";
 import { buildDashboardChartOption, dashboardChartKeyboardSelections, dashboardChartSelectionValue } from "@/dashboard/charts/chartOptionAdapter";
 import { createDashboardChart } from "@/dashboard/charts/echartsCore";
@@ -8,7 +8,7 @@ import type { EChartsType } from "echarts/core";
 import { t } from "@/i18n";
 
 const props = defineProps<{
-  panel: DashboardPanel;
+  panel: DashboardChartInput;
   rows: readonly Record<string, unknown>[];
 }>();
 const emit = defineEmits<{ select: [value: unknown] }>();

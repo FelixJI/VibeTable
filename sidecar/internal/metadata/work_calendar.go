@@ -155,7 +155,7 @@ func (service *Service) CommitWorkCalendar(ctx context.Context, request WorkCale
 			if err != nil {
 				return WorkCalendarReceipt{}, nil, err
 			}
-			item, change, err := service.upsert(tx, NamespaceSharedSettings, ItemMutation{LogicalID: WorkCalendarID, Payload: raw, ExpectedRevision: request.ExpectedRevision}, "", "")
+			item, change, err := service.upsert(tx, NamespaceSharedSettings, ItemMutation{LogicalID: WorkCalendarID, Payload: raw, ExpectedRevision: request.ExpectedRevision}, "")
 			if err != nil {
 				return WorkCalendarReceipt{}, nil, err
 			}

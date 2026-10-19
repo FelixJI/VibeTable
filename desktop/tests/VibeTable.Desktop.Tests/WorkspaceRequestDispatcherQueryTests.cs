@@ -703,8 +703,8 @@ public sealed class WorkspaceRequestDispatcherQueryTests
             NoDatabaseOpenRoute.Instance);
 
         Assert.IsTrue(dispatcher.Handles("table.queryRequested"));
-        Assert.IsTrue(dispatcher.Handles("dashboard.cancelRequested"));
-        Assert.IsTrue(dispatcher.Handles("interface.commitRequested"));
+        Assert.IsFalse(dispatcher.Handles("dashboard.cancelRequested"));
+        Assert.IsFalse(dispatcher.Handles("interface.commitRequested"));
         Assert.IsTrue(dispatcher.Handles("document.listRequested"));
         Assert.IsFalse(dispatcher.Handles("database.openRequested"));
         Assert.IsFalse(dispatcher.Handles("plugin.catalog.list"));

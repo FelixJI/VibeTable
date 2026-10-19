@@ -209,7 +209,7 @@ func (service *ContentService) replace(tx core.App, namespace Namespace, logical
 	if err != nil {
 		return Item{}, metadataChange{}, err
 	}
-	return service.store.upsert(tx, namespace, ItemMutation{LogicalID: logicalID, Payload: canonical, ExpectedRevision: expected}, "", "")
+	return service.store.upsert(tx, namespace, ItemMutation{LogicalID: logicalID, Payload: canonical, ExpectedRevision: expected}, "")
 }
 
 func (service *ContentService) write(ctx context.Context, method, key string, request any, apply func(core.App) (Item, metadataChange, error)) (MutationReceipt, error) {
@@ -261,7 +261,7 @@ func (service *ContentService) remove(ctx context.Context, method string, namesp
 		if item.Revision != expected {
 			return DeleteReceipt{}, nil, contentConflict("content_model.edit_conflict")
 		}
-		change, err := service.store.delete(tx, namespace, ItemDelete{LogicalID: logicalID, ExpectedRevision: expected}, "", "")
+		change, err := service.store.delete(tx, namespace, ItemDelete{LogicalID: logicalID, ExpectedRevision: expected}, "")
 		return DeleteReceipt{ReceiptTrace: ReceiptTrace{Status: StatusApplied}, Namespace: namespace, LogicalID: logicalID, Deleted: true}, []metadataChange{change}, err
 	}, func(receipt *DeleteReceipt, id string, events []string) {
 		receipt.ChangeSetID = id

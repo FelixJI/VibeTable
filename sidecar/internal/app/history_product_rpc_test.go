@@ -396,6 +396,7 @@ func historyRestoreProductFixture(
 			unrelatedSurfaceRegistration(t, "interface.load"),
 			unrelatedSurfaceRegistration(t, "interface.commit"),
 			unrelatedSurfaceRegistration(t, "interface.delete"),
+			unrelatedLegacyLayoutSnapshotRegistration(t),
 			historyReadRegistration(runtime),
 			historyPreviewRestoreRegistration(runtime),
 			historyApplyRestoreRegistration(runtime),

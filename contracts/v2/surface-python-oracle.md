@@ -1,3 +1,5 @@
+> #485 后续状态：本文保留固定 producer 的历史迁移证据。当前产品已移除 SurfaceService、专属 Go 注册和 Interface 生成 DTO；四方法仅返回退役错误。历史样本不证明当前场景，现行契约见 [旧布局退役说明](../../docs/architecture/legacy-layout-retirement.md)。
+
 # Surface / Interface 四方法迁移：固定公开基线与设计
 
 状态：四方法纵切源码已实施，待独立审查、完整质量与真实包 S17 资格。冻结提交 `86639eb5` 记录原始捕获来源；捕获工具现随本分支版本管理，检查不依赖该 squash 前 Git 对象；本分支是同一完整迁移 PR，不单独发起 oracle PR。
@@ -57,7 +59,7 @@ Go dispatcher 与 Host HTTP parser 仅允许四方法实际定义的 surface 错
 冻结阶段实际验证：`uv run --frozen --no-sync python contracts/v2/generate_surface_python_oracle.py --check` 78 例一致；`uv run --frozen --no-sync pytest tests/backend/application/test_surface_service.py tests/backend/test_main_surfaces.py --no-cov -q` 19 PASS/0.47s；生成脚本 Ruff format/check 通过。未运行完整质量、Go 构建、产品包或 S17。
 
 
-## 当前实施与有意差异
+## 历史迁移实施与有意差异（退役前）
 
 Go `SurfaceService` 只暴露 List/Load/Commit/Delete，聚合与树/DAG/动作验证在 `sidecar/internal/metadata/surface*.go`。四个公开注册位于 `sidecar/internal/app/surface_product_rpc.go`；两次写操作沿用 `metadata.interfaces.upsert/delete` coordinator identity，并复用 metadata receipt、CAS、audit/outbox 同事务机制。Generic HTTP 写入拒绝 interfaces，GET/internal snapshot 读取、集合及其他 namespace 保留。
 

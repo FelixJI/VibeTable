@@ -6,7 +6,6 @@ import {
   Database,
   Files,
   Home,
-  LayoutDashboard,
   LayoutTemplate,
   Blocks,
   Search,
@@ -45,8 +44,6 @@ const primary = computed(() => [
   { view: "home" as const, icon: Home, label: "nav.home" },
   { view: "tables" as const, icon: Table2, label: "nav.tables" },
   { view: "imports" as const, icon: ArrowDownToLine, label: "nav.imports", testid: "import-management-open" },
-  { view: "dashboard" as const, icon: LayoutDashboard, label: "nav.dashboard" },
-  { view: "interfaces" as const, icon: LayoutTemplate, label: "nav.interfaces" },
   { view: "files" as const, icon: Files, label: "nav.files" },
   { view: "search" as const, icon: Search, label: "nav.search" },
   ...(workspaceSession.conflictEnabled ? [{

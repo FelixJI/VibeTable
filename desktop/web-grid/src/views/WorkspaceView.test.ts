@@ -26,8 +26,6 @@ import { useTableStore } from "@/stores/tableStore";
 import { useRelationLookupStore } from "@/stores/relationLookupStore";
 import { useRevisionHistoryStore } from "@/stores/revisionHistoryStore";
 import { useDocumentWorkspaceStore } from "@/stores/documentWorkspaceStore";
-import { useSurfaceStore } from "@/stores/surfaceStore";
-import { useDashboardDraftStore } from "@/stores/dashboardStore";
 import { useRealtimeStore } from "@/stores/realtimeStore";
 import { usePresetVersionStore } from "@/stores/presetVersionStore";
 import { usePluginStore } from "@/stores/pluginStore";
@@ -857,7 +855,7 @@ describe("WorkspaceView", () => {
       window.dispatchEvent(new Event("afterprint"));
     });
 
-    it("consumes SDK back through the real application, dirty guard and single surface retirement", async () => {
+    it("consumes SDK back through the real application with direct surface retirement", async () => {
       const { wrapper, plugin, record, setCatalog } = await prepare();
       const source = `https://${"a".repeat(32)}.${"b".repeat(32)}.plugins.vibetable.local/ui/index.html`;
       setCatalog({ ...plugin, revision: 3, manifest: { ...plugin.manifest,
@@ -871,17 +869,13 @@ describe("WorkspaceView", () => {
         data: { contract: "vibetable.plugin-surface.v1", surfaceToken: token, event: "action",
           payload: { service: "ui", requestId: "back-request", method: "navigation.back", params: {} } },
       }));
-      const surfaces = useSurfaceStore(); surfaces.setDraftState("draft", true);
       const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
       send(); await flushPromises();
-      expect(confirm).toHaveBeenCalledOnce();
-      expect(useUiStore().activePluginApp?.actionId).toBe("application");
-      expect(post.mock.calls.at(-1)?.[0].payload.result).toEqual({ navigated: false });
-      expect(surfaces.dirty).toBe(true);
-      confirm.mockReturnValue(true);
-      send(); await flushPromises();
+      // #485: the dirty-guard departure gate retired with the layout builders;
+      // plugin navigation.back closes the app surface directly.
+      expect(confirm).not.toHaveBeenCalled();
       expect(useUiStore().activePluginApp).toBeNull();
-      expect(surfaces.dirty).toBe(false);
+      expect(post.mock.calls.at(-1)?.[0].payload.result).toEqual({ navigated: true });
       expect(wrapper.find('[data-testid="plugin-app-viewport"]').exists()).toBe(false);
       const closes = () => record.posted.filter(message => message.type === "plugin.surface.event"
         && (message.payload as { event?: string }).event === "close");
@@ -1095,8 +1089,6 @@ describe("WorkspaceView", () => {
     const cases = [
       ["home", ".home-view"],
       ["tables", ".tables-view"],
-      ["dashboard", null],
-      ["interfaces", null],
       ["files", "[data-testid='file-workspace']"],
       ["search", "[data-testid='workspace-search-view']"],
       ["conflicts", "[data-testid='conflict-center']"],
@@ -1107,11 +1099,14 @@ describe("WorkspaceView", () => {
       await wrapper.get(`[data-testid="nav-${view}"]`).trigger("click");
       await flushPromises();
       expect(ui.activeView).toBe(view);
-      if (selector === null) continue;
       await vi.waitFor(() => {
         expect(wrapper.find(selector).exists(), `${view} should render`).toBe(true);
       });
     }
+    // #485: the retired dashboard/interfaces workspaces have no navigation
+    // entry and no workspace view left to render.
+    expect(wrapper.find('[data-testid="nav-dashboard"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="nav-interfaces"]').exists()).toBe(false);
   });
 
   it("passes remembered document labels to a Content panel after WorkspaceView remounts", async () => {
@@ -1834,72 +1829,32 @@ describe("WorkspaceView", () => {
     });
   });
 
-  it("opens Interfaces and guards its unsaved draft before leaving", async () => {
+  it("opens plugin management directly after layout-builder retirement without a dirty guard", async () => {
     const { bridge, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
-    vi.spyOn(window, "prompt").mockReturnValue("Operations");
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const ui = useUiStore(testPinia);
-    const surfaces = useSurfaceStore(testPinia);
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
+    // #485: Interface/Dashboard builders are retired, so leaving a view is a
+    // direct navigation — no confirm guard may intercept it.
+    await wrapper.get('[data-testid="nav-plugins"]').trigger("click");
     await flushPromises();
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-testid="interface-workspace"]').exists()).toBe(true);
-    });
-    expect(posted.some((item) => item.type === "interface.listRequested")).toBe(true);
-
-    await wrapper.get('[data-testid="interface-create"]').trigger("click");
-    expect(surfaces.dirty).toBe(true);
-    await wrapper.get('[data-testid="nav-files"]').trigger("click");
-    expect(confirm).toHaveBeenCalledOnce();
-    expect(ui.activeView).toBe("interfaces");
-
-    confirm.mockReturnValue(true);
-    await wrapper.get('[data-testid="nav-files"]').trigger("click");
-    expect(ui.activeView).toBe("files");
-    await flushPromises();
-    await vi.waitFor(() => {
-      expect(wrapper.findComponent(FileWorkspaceView).exists()).toBe(true);
-    });
-    expect(surfaces.dirty).toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(ui.activeView).toBe("plugins");
+    expect(posted.some((item) => item.type === "interface.listRequested")).toBe(false);
+    expect(posted.some((item) => item.type === "dashboard.listRequested")).toBe(false);
   });
 
-  it("preserves Dashboard and Interface drafts until a confirmed reconnect opens", async () => {
+  it("keeps reconnect attempts independent of retired layout drafts", async () => {
     const { bridge, emit, posted } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
-    vi.spyOn(window, "prompt").mockReturnValue("Operations");
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const surfaces = useSurfaceStore(testPinia);
-    const dashboardDraft = useDashboardDraftStore(testPinia);
     const wrapper = mountView();
     await flushPromises();
 
-    await wrapper.get('[data-testid="nav-interfaces"]').trigger("click");
-    await flushPromises();
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-testid="interface-workspace"]').exists()).toBe(true);
-    });
-    await wrapper.get('[data-testid="interface-create"]').trigger("click");
-    expect(surfaces.dirty).toBe(true);
-    const draftInterfaceId = surfaces.selectedInterfaceId;
-    expect(draftInterfaceId).toMatch(/^interface-/u);
-    dashboardDraft.begin(
-      { id: "dashboard-1", name: "Operations", note: "", panels: [] },
-      { configVersion: 1, globalFilters: [], interactions: [], refreshInterval: 0 },
-      "revision-1",
-    );
-    dashboardDraft.rename("Unsaved operations", "");
-    expect(dashboardDraft.dirty).toBe(true);
-
-    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
-    expect(posted.filter(item => item.type === "database.openRequested")).toHaveLength(0);
-    expect(surfaces.dirty).toBe(true);
-    expect(dashboardDraft.dirty).toBe(true);
-    confirm.mockReturnValue(true);
-
+    // #485: with the Interface/Dashboard builders retired there is no dirty
+    // aggregate guarding a reconnect; the retry posts immediately.
     await wrapper.get('[data-testid="connection-retry"]').trigger("click");
     const request = [...posted].reverse().find(
       item => item.type === "database.openRequested",
@@ -1907,9 +1862,6 @@ describe("WorkspaceView", () => {
     expect(request?.payload).toEqual(expect.objectContaining({
       openId: expect.stringMatching(/^database-open:/u),
     }));
-    expect(confirm).toHaveBeenCalledTimes(3);
-    expect(surfaces.dirty).toBe(true);
-    expect(dashboardDraft.dirty).toBe(true);
 
     emit({
       type: "database.openCancelled",
@@ -1919,85 +1871,16 @@ describe("WorkspaceView", () => {
       },
     });
     await flushPromises();
-
-    expect(surfaces.dirty).toBe(true);
-    expect(surfaces.selectedInterfaceId).toBe(draftInterfaceId);
-    expect(dashboardDraft.dirty).toBe(true);
-    expect(dashboardDraft.draft?.name).toBe("Unsaved operations");
-
-    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
-    const failedRequest = [...posted].reverse().find(
-      item => item.type === "database.openRequested",
-    );
-    emit({
-      type: "operation.failed",
-      payload: {
-        operation: "database.openRequested",
-        operationId: (failedRequest!.payload as { openId: string }).openId,
-        code: "WORKSPACE_ERROR",
-        message: "Workspace operation failed.",
-      },
-    });
-    await flushPromises();
-    expect(surfaces.dirty).toBe(true);
-    expect(surfaces.selectedInterfaceId).toBe(draftInterfaceId);
-    expect(dashboardDraft.dirty).toBe(true);
-    expect(dashboardDraft.draft?.name).toBe("Unsaved operations");
-
-    await wrapper.get('[data-testid="connection-retry"]').trigger("click");
-    const openedRequest = [...posted].reverse().find(
-      item => item.type === "database.openRequested",
-    );
-    expect(surfaces.dirty).toBe(true);
-    emit({
-      type: "database.opened",
-      payload: {
-        openId: (openedRequest!.payload as { openId: string }).openId,
-        tables: ["orders"],
-        views: [],
-        displayNames: { orders: "Orders" },
-      },
-    });
-    await flushPromises();
-
-    expect(confirm).toHaveBeenCalledTimes(7);
-    expect(surfaces.dirty).toBe(false);
-    expect(surfaces.selectedInterfaceId).toBeNull();
-    expect(dashboardDraft.dirty).toBe(false);
-    expect(dashboardDraft.draft).toBeNull();
+    expect(wrapper.exists()).toBe(true);
   });
 
-  it.each(["Dashboard", "Interface"] as const)(
-    "blocks beforeunload while a %s draft is dirty",
-    async (kind) => {
-      const { bridge } = makeRecordingBridge();
-      setHostBridgeForTesting(bridge);
-      mountView();
-      await flushPromises();
-      if (kind === "Dashboard") {
-        const draft = useDashboardDraftStore(testPinia);
-        draft.begin(
-          { id: "dashboard-1", name: "Operations", note: "", panels: [] },
-          { configVersion: 1, globalFilters: [], interactions: [], refreshInterval: 0 },
-          "revision-1",
-        );
-        draft.rename("Unsaved operations", "");
-      } else {
-        useSurfaceStore(testPinia).setDraftState("interface-1", true);
-      }
-
-      const event = new Event("beforeunload", { cancelable: true });
-      expect(window.dispatchEvent(event)).toBe(false);
-      expect(event.defaultPrevented).toBe(true);
-    },
-  );
-
-  it("does not block beforeunload when both draft aggregates are clean", async () => {
+  it("never blocks beforeunload after the layout builder retired", async () => {
     const { bridge } = makeRecordingBridge();
     setHostBridgeForTesting(bridge);
     mountView();
     await flushPromises();
 
+    // #485: the only beforeunload guard belonged to the retired builders.
     const event = new Event("beforeunload", { cancelable: true });
     expect(window.dispatchEvent(event)).toBe(true);
     expect(event.defaultPrevented).toBe(false);
@@ -2151,9 +2034,7 @@ describe("WorkspaceView", () => {
     const beforeCurrentRecovery = posted.length;
     emit(recovered);
     await flushPromises();
-    expect(posted.slice(beforeCurrentRecovery).map(message => message.type)).toEqual([
-      "dashboard.listRequested", "dashboard.manifestRequested",
-    ]);
+    expect(posted.slice(beforeCurrentRecovery).map(message => message.type)).toEqual([]);
     expect(useRealtimeStore().activeFormulaBackfill?.taskId).toBe("late-recovery");
   });
 

@@ -8,7 +8,6 @@ import pytest
 
 from backend.adapters.pocketbase.internal_metadata import PocketBaseInternalMetadataPort
 from backend.application.revisioned_metadata_port import MetadataConflictError
-from backend.contracts.presets_versions_dashboards import SaveDashboardDraftParams
 
 
 class _ProductClient:
@@ -63,10 +62,6 @@ class _ProductClient:
             "logicalId": request["logicalId"],
             "deleted": True,
         }
-
-    async def commit_dashboard_metadata(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        self.dashboard_commits.append(dict(request))
-        return {"status": "applied"}
 
 
 class _CodedMetadataError(RuntimeError):
@@ -240,102 +235,30 @@ async def test_delete_with_explicit_revision_does_not_preread_missing_record() -
 
 
 @pytest.mark.asyncio
-async def test_dashboard_commit_maps_complete_draft_to_atomic_sidecar_request() -> None:
-    client = _ProductClient()
-    port = PocketBaseInternalMetadataPort(client=client)
-    dashboard_id = "123e4567-e89b-42d3-a456-426614174000"
-    panel_id = "123e4567-e89b-42d3-a456-426614174001"
-
-    result = await port.commit_dashboard(
-        SaveDashboardDraftParams.model_validate(
-            {
-                "dashboardId": dashboard_id,
-                "expectedRevision": None,
-                "idempotencyKey": "123e4567-e89b-42d3-a456-426614174099",
-                "name": "Sales",
-                "note": "",
-                "icon": None,
-                "color": None,
-                "panels": [
-                    {
-                        "clientId": "client-panel",
-                        "panelId": panel_id,
-                        "name": "Total",
-                        "note": None,
-                        "icon": None,
-                        "color": None,
-                        "showHeader": True,
-                        "type": "metric",
-                        "position": {"x": 0, "y": 0, "width": 4, "height": 4},
-                        "options": {},
-                        "query": None,
-                    }
-                ],
-                "deletedPanelIds": [],
-                "config": {
-                    "configVersion": 1,
-                    "globalFilters": [
-                        {
-                            "key": "region",
-                            "label": "Region",
-                            "type": "enum",
-                            "allowedFields": ["region"],
-                            "targetPanels": ["client-panel"],
-                            "fieldBindings": {"client-panel": "region"},
-                        }
-                    ],
-                    "interactions": [
-                        {
-                            "sourcePanelId": "client-panel",
-                            "sourceField": "region",
-                            "targetPanelIds": ["client-panel"],
-                            "targetField": "region",
-                        }
-                    ],
-                    "refreshInterval": 0,
-                },
-            }
-        )
-    )
-
-    assert result.client_panel_ids == {"client-panel": panel_id}
-    request = client.dashboard_commits[0]
-    assert request["dashboard"]["logicalId"] == dashboard_id
-    assert request["dashboard"]["expectedRevision"] == ""
-    assert request["panels"][0]["logicalId"] == panel_id
-    assert request["panels"][0]["payload"]["dashboardId"] == dashboard_id
-    assert request["deletePanels"] == []
-    expected_config = {
-        "configVersion": 1,
-        "globalFilters": [
-            {
-                "key": "region",
-                "label": "Region",
-                "type": "enum",
-                "defaultValue": None,
-                "allowedFields": ["region"],
-                "targetPanels": [panel_id],
-                "fieldBindings": {panel_id: "region"},
-            }
-        ],
-        "interactions": [
-            {
-                "sourcePanelId": panel_id,
-                "sourceField": "region",
-                "targetPanelIds": [panel_id],
-                "targetField": "region",
-            }
-        ],
-        "refreshInterval": 0,
-    }
-    assert request["dashboard"]["payload"]["config"] == expected_config
-    assert result.workspace.config.model_dump(by_alias=True, mode="json") == expected_config
-
-
-@pytest.mark.asyncio
 async def test_internal_metadata_rejects_unknown_namespace_before_io() -> None:
     client = _ProductClient()
     port = PocketBaseInternalMetadataPort(client=client)
 
     with pytest.raises(ValueError, match="unknown internal metadata namespace"):
         await port.list_metadata("raw_pb_collection")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace", ["interfaces", "dashboards", "panels"])
+async def test_retired_layout_writes_are_rejected_before_io(namespace: str) -> None:
+    client = _ProductClient()
+    port = PocketBaseInternalMetadataPort(client=client)
+    with pytest.raises(ValueError, match="read-only"):
+        await port.upsert_metadata(
+            namespace,
+            record_id="legacy",
+            values={},
+            expected_revision="r1",
+            idempotency_key="attempt",
+        )
+    with pytest.raises(ValueError, match="read-only"):
+        await port.delete_metadata(
+            namespace, record_id="legacy", expected_revision="r1", idempotency_key="attempt"
+        )
+    assert not client.upserts
+    assert not client.deletes

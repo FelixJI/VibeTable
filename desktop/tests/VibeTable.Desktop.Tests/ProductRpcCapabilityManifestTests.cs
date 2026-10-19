@@ -79,6 +79,7 @@ public sealed class ProductRpcCapabilityManifestTests
                 "interface.delete:workspace",
                 "interface.list:workspace",
                 "interface.load:workspace",
+                "legacyLayout.snapshot:workspace",
                 "lookup.draft.preview:workspace",
                 "lookup.list:workspace",
                 "lookup.query:workspace",

@@ -145,7 +145,7 @@ internal sealed class HostRequestDispatcher
         ApplicationRequestController application,
         DocumentRequestController documents,
         NativeProductFileRequestController nativeFiles,
-        DashboardNativeOutputController dashboardOutput,
+        LegacyLayoutRequestController legacyLayouts,
         PluginRequestDispatcher plugins,
         WorkspaceRequestDispatcher workspace,
         DeviceSettingsRequestController deviceSettings,
@@ -161,7 +161,7 @@ internal sealed class HostRequestDispatcher
         ArgumentNullException.ThrowIfNull(application);
         ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(nativeFiles);
-        ArgumentNullException.ThrowIfNull(dashboardOutput);
+        ArgumentNullException.ThrowIfNull(legacyLayouts);
         ArgumentNullException.ThrowIfNull(plugins);
         ArgumentNullException.ThrowIfNull(workspace);
         ArgumentNullException.ThrowIfNull(deviceSettings);
@@ -188,8 +188,8 @@ internal sealed class HostRequestDispatcher
                 request => _ = documents.DispatchAsync(request)),
             new(NativeProductFileRequestController.Handles,
                 request => _ = nativeFiles.DispatchAsync(request)),
-            new(DashboardNativeOutputController.Handles,
-                request => _ = dashboardOutput.DispatchAsync(request)),
+            new(LegacyLayoutRequestController.Handles,
+                request => _ = legacyLayouts.DispatchAsync(request)),
             new(PluginRequestDispatcher.Handles, plugins.Dispatch),
             new(workspace.Handles, workspace.Dispatch),
         ];

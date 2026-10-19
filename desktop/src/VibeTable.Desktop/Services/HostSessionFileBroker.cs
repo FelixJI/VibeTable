@@ -328,9 +328,12 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     /// Opens a host-driven download target: a validated native path plus a
     /// same-directory temporary file that WebView2 writes into directly.
     /// The caller must not hold any broker lock while waiting on a modal
-    /// picker; resolve the path before calling this method.
+    /// picker; resolve the path before calling this method. The default
+    /// deadline stays the ordinary WebView download lifetime; a host-driven
+    /// stream that is not bounded by that window (the legacy preservation
+    /// runner) passes its own bounded lifetime explicitly.
     /// </summary>
-    internal async Task<HostDownloadTarget> OpenDownloadTargetAsync(string path)
+    internal async Task<HostDownloadTarget> OpenDownloadTargetAsync(string path, TimeSpan? lifetime = null)
     {
         WorkspaceRequestEpochLease lease = _capture();
         try
@@ -357,7 +360,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                     || !Directory.Exists(Path.GetDirectoryName(full))) throw new IOException("Invalid selected file.");
                 string temporary = Path.Combine(Path.GetDirectoryName(full)!, $".vibetable-{Guid.NewGuid():N}.tmp");
                 string id = "download-" + Guid.NewGuid().ToString("N");
-                var download = new Download(id, full, temporary, lease, _time.GetUtcNow() + DownloadLifetime);
+                var download = new Download(id, full, temporary, lease, _time.GetUtcNow() + (lifetime ?? DownloadLifetime));
                 _commitCurrent(() => { _retired.Token.ThrowIfCancellationRequested(); _downloads.Add(id, download); });
                 return new HostDownloadTarget(id, temporary, name, download.Deadline);
             }
@@ -436,7 +439,7 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
     /// write that outlives the drain can always be cleaned up; committing
     /// after retirement is refused. Idempotent for a matching outcome.
     /// </summary>
-    internal async Task CompleteDownloadAsync(string id, bool commit)
+    internal async Task CompleteDownloadAsync(string id, bool commit, Action<Action>? commitRequest = null)
     {
         Download? download = null;
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -466,11 +469,16 @@ internal sealed class HostSessionFileBroker : IHostFileRequestHandler
                 {
                     _commitCurrent(() =>
                     {
-                        download.Lease.CancellationToken.ThrowIfCancellationRequested();
-                        _retired.Token.ThrowIfCancellationRequested();
-                        if (_time.GetUtcNow() >= download.Deadline)
-                            throw new TimeoutException("SAVE_TIMEOUT");
-                        File.Move(download.Temporary, download.Target, overwrite: true);
+                        void Apply()
+                        {
+                            download.Lease.CancellationToken.ThrowIfCancellationRequested();
+                            _retired.Token.ThrowIfCancellationRequested();
+                            if (_time.GetUtcNow() >= download.Deadline)
+                                throw new TimeoutException("SAVE_TIMEOUT");
+                            File.Move(download.Temporary, download.Target, overwrite: true);
+                        }
+                        if (commitRequest is null) Apply();
+                        else commitRequest(Apply);
                     });
                 }
                 catch
