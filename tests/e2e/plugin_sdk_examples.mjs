@@ -50,7 +50,7 @@ export async function exerciseSdkExamples(page, recorder, runtime, projectKey, h
     recorder.check("real overview surface reads all 550 rows through three pages", complete["筛选后记录"] === "550" && complete["读取页数"] === "3" && complete["完整计算"] === "是", { complete });
     await overview.locator("#field").selectOption(table.field.fieldId);
     await overview.locator("#contains").fill("row-"); await overview.locator("#refresh").click();
-    await overview.locator("#summary dd").filter({ hasText: /^548$/u }).waitFor({ timeout: 30000 });
+    await overview.locator("#summary dt").filter({ hasText: /^筛选后记录$/u }).locator("xpath=following-sibling::dd[1]").filter({ hasText: /^548$/u }).waitFor({ timeout: 30000 });
     const filtered = await metrics();
     recorder.check("real overview applies Go filters and preserves authority total", filtered["筛选后记录"] === "548" && filtered["权威总行数"] === "550", { filtered });
     await overview.locator("#field").evaluate(field => {
